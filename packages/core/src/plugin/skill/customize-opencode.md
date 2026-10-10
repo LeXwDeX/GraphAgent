@@ -348,14 +348,17 @@ that resumes an idle conversation, load the `configure-hooks` skill. Its event
 names, output protocol and `async` / `asyncRewake` fields belong to that system;
 they are not fields to add to the plugin callback object below.
 
-Legacy JavaScript plugin callbacks are awaited sequentially. Callbacks with an
+Legacy JavaScript plugin callbacks dispatched through `Plugin.trigger` are
+awaited sequentially. The `event({ event })` observer is fire-and-forget:
+bus delivery does not await it, and callbacks or later events can overlap.
+Callbacks with an
 `output` argument mutate that object in place and resolve to `void`; returning
 a replacement object does not apply it. Their inputs use JavaScript field
 names such as `sessionID`, unlike lifecycle command stdin.
 
 | Callback                               | Capability and output                                                                                                                           |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `event({ event })`                     | Observe published bus events; no decision output.                                                                                               |
+| `event({ event })`                     | Observe published bus events asynchronously without delaying bus delivery; no decision output or sequential-await guarantee.                    |
 | `config(cfg)`                          | Mutate the merged configuration during plugin initialization.                                                                                   |
 | `dispose()`                            | Release plugin-owned resources when the plugin instance is disposed; this is not the end of every assistant turn.                               |
 | `chat.message`                         | Receive session/agent/model/message identity and mutate `output.message` / `output.parts` for an incoming message.                              |
