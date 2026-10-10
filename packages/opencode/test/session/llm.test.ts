@@ -892,9 +892,9 @@ const foldingSnapshot = (): ContextFolding.HistorySnapshot => {
   }
 }
 
-const foldingTool = () =>
+const foldingTool = (description = "Read a file") =>
   tool({
-    description: "Read a file",
+    description,
     inputSchema: z.object({ filePath: z.string() }),
     execute: async () => ({ output: "unused" }),
   })
@@ -2284,6 +2284,79 @@ describe("session.llm.stream", () => {
   )
 
   it.instance(
+    "counts Native tool definitions before deciding whether to fold",
+    () =>
+      Effect.gen(function* () {
+        const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(foldingFixture.providerID),
+          ModelV2.ID.make(model.id),
+        )
+        const expanded = { ...resolved, limit: { ...resolved.limit, context: 800_000, input: 800_000 } }
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const messages = foldingMessages()
+        const before = JSON.stringify(messages)
+        const descriptions = ["Read a file", `Read a file ${"schema detail ".repeat(100_000)}`]
+
+        for (const [index, description] of descriptions.entries()) {
+          const request = waitRequest("/chat/completions", foldingResponse())
+          const sessionID = SessionID.make(`session-test-folding-native-tool-budget-${index}`)
+          yield* drainWith(
+            llmLayerWithExecutor(RequestExecutor.defaultLayer, {
+              experimentalNativeLlm: true,
+              outputTokenMax: 8_192,
+            }),
+            {
+              user: {
+                id: MessageID.make(`msg_user-folding-native-tool-budget-${index}`),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: agent.name,
+                model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: expanded.id },
+              } satisfies SessionV1.User,
+              sessionID,
+              model: expanded,
+              agent,
+              system: [],
+              messages,
+              tools: { read: foldingTool(description) },
+              purpose: "conversation",
+              contextFolding: foldingSnapshot(),
+            },
+          )
+
+          const wire = (yield* Effect.promise(() => request)).body
+          expect(wire.tools).toHaveLength(1)
+          expect(wire.tools).toMatchObject([
+            {
+              type: "function",
+              function: {
+                name: "read",
+                description,
+                parameters: {
+                  type: "object",
+                  properties: { filePath: { type: "string" } },
+                  required: ["filePath"],
+                },
+              },
+            },
+          ])
+          const sent = JSON.stringify(wire)
+          expect(sent.includes("Duplicate tool output folded")).toBe(index === 1)
+          expect(sent.split(foldingBody)).toHaveLength(index === 1 ? 2 : 3)
+          expect(JSON.stringify(messages)).toBe(before)
+        }
+      }),
+    { config: foldingConfig },
+  )
+
+  it.instance(
     "keeps Native canonical output unchanged when dynamic folding is disabled",
     () =>
       Effect.gen(function* () {
@@ -2300,6 +2373,8 @@ describe("session.llm.stream", () => {
           options: {},
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
         } satisfies Agent.Info
+        const messages = foldingMessages()
+        const before = JSON.stringify(messages)
 
         yield* drainWith(
           llmLayerWithExecutor(RequestExecutor.defaultLayer, {
@@ -2319,16 +2394,33 @@ describe("session.llm.stream", () => {
             model: resolved,
             agent,
             system: [],
-            messages: foldingMessages(),
+            messages,
             tools: { read: foldingTool() },
             purpose: "conversation",
             contextFolding: foldingSnapshot(),
           },
         )
 
-        const wire = JSON.stringify((yield* Effect.promise(() => request)).body)
+        const body = (yield* Effect.promise(() => request)).body
+        expect(body.tools).toHaveLength(1)
+        expect(body.tools).toMatchObject([
+          {
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read a file",
+              parameters: {
+                type: "object",
+                properties: { filePath: { type: "string" } },
+                required: ["filePath"],
+              },
+            },
+          },
+        ])
+        const wire = JSON.stringify(body)
         expect(wire).not.toContain("Duplicate tool output folded")
-        expect(wire.match(new RegExp(foldingBody.slice(0, 100), "g"))?.length).toBeGreaterThanOrEqual(2)
+        expect(wire.split(foldingBody)).toHaveLength(3)
+        expect(JSON.stringify(messages)).toBe(before)
       }),
     {
       config: () => ({

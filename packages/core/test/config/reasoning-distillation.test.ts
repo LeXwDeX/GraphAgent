@@ -3,10 +3,17 @@ import { Schema } from "effect"
 import { ConfigReasoningDistillation } from "../../src/config/reasoning-distillation"
 
 describe("ConfigReasoningDistillation.resolveEnabled (D02)", () => {
-  test("defaults off when nothing is set", () => {
+  test("defaults on when nothing is set", () => {
     expect(ConfigReasoningDistillation.resolveEnabled({ disabledByEnvironment: false })).toEqual({
-      enabled: false,
+      enabled: true,
       source: "default",
+    })
+  })
+
+  test("the environment kill-switch overrides the default", () => {
+    expect(ConfigReasoningDistillation.resolveEnabled({ disabledByEnvironment: true })).toEqual({
+      enabled: false,
+      source: "environment",
     })
   })
 

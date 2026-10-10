@@ -70,6 +70,34 @@ export function checkFixtureSemantics(id: string, texts: string[]): Record<strin
         read_only_logs: /只读(?:检查|核对)(?:超时)?日志/.test(text),
         config_unchanged: /(?:暂不|不得|不|禁止)(?:修改|变更)配置/.test(text),
       }
+    case "evidenced-exclusion":
+      return {
+        pool_exhaustion_excluded:
+          /已排除连接池耗尽|连接池耗尽.{0,4}(?:已|已经|被)排除/.test(text) &&
+          no(text, /(?:未|尚未|不能|无法)排除连接池|连接池耗尽.{0,4}(?:未|尚未|不能|无法)(?:被)?排除/),
+        exclusion_evidence:
+          /\/var\/log\/app\.log/.test(text) &&
+          /(?:低于|小于|<)5ms/.test(text) &&
+          /最高(?:为|是|:)?12/.test(text) &&
+          /上限(?:为|是|:)?20/.test(text),
+        // A short "misread as 50, discarded" note is tolerated; 50 must never read as the current limit.
+        obsolete_value_not_current: no(text, /上限(?:为|是|:)?50|50(?:为|是)(?:当前)?上限/),
+        cause_open:
+          /根因:?(?:仍|尚)?未(?:确定|确认)|(?:仍|尚)未(?:确定|确认)根因/.test(text) &&
+          no(text, /根因(?:是|为|已确定|已确认)/),
+        next_read_only: /只读检查锁等待/.test(text),
+      }
+    case "negative-check":
+      return {
+        checked_files_no_call:
+          /packages\/core\/src\/retry\.ts/.test(text) &&
+          /packages\/core\/src\/backoff\.ts/.test(text) &&
+          /(?:没有|未|无|均未|都未|不含).{0,12}sleepWithJitter|sleepWithJitter.{0,12}(?:没有|未|无)/.test(text),
+        reference_resolved:
+          /旧调度器.{0,12}LegacyScheduler|LegacyScheduler.{0,12}旧调度器/.test(text) &&
+          /packages\/core\/src\/legacy\/scheduler\.ts/.test(text),
+        next_read_only: /只读检查.{0,4}packages\/opencode\/src\/session\/prompt\.ts/.test(text),
+      }
     case "all-noise":
       return { empty: texts.length === 1 && texts[0] === NO_USEFUL_REASONING_TEXT.zh }
     case "short-reasoning": {
@@ -79,7 +107,7 @@ export function checkFixtureSemantics(id: string, texts: string[]): Record<strin
       const thursday = segment(text, "周四", "周五")
       const friday = segment(text, "周五", "最终")
       return {
-        monday_start: /(?:初始)?库存.{0,3}83/.test(monday),
+        monday_start: /周一.{0,8}83/.test(monday),
         tuesday_in_47_to_130: /入(?:库)?47.{0,12}(?:库存)?130/.test(tuesday),
         wednesday_out_29_to_101: /出(?:库)?29.{0,12}(?:库存)?101/.test(wednesday),
         thursday_floor_9_to_110: /(?:floor|向下取整|取整|⌊).{0,4}29\/3.{0,4}9.{0,12}(?:库存)?110/.test(thursday),
@@ -97,7 +125,7 @@ export function checkFixtureSemantics(id: string, texts: string[]): Record<strin
       const lock = segment(text, "锁竞争")
       return {
         test_only_production_read_only: /仅限测试环境/.test(text) && /生产数据库(?:只能|仅能)?只读/.test(text),
-        phase_a_done_no_repeat: /备份.{0,10}schema校验已完成/.test(phase) && /不要重复|不得重复/.test(phase),
+        phase_a_done_no_repeat: /备份.{0,10}schema校验已(?:经)?完成/.test(phase) && /不要重复|不得重复/.test(phase),
         migration_failed_rollback_no_retry:
           /(?:实际)?执行失败/.test(migration) &&
           /不支持online/.test(migration) &&

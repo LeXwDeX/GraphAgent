@@ -41,6 +41,7 @@ export const unavailable: Interface = {
 type State = {
   readonly nonce: string
   readonly identities: Map<string, ToolSourceIdentity>
+  revision: number
   signature?: string
   generation?: string
 }
@@ -62,6 +63,7 @@ export const layer: Layer.Layer<Service> = Layer.effect(
         const value: State = {
           nonce: crypto.randomUUID(),
           identities: new Map(),
+          revision: 0,
         }
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
@@ -80,8 +82,9 @@ export const layer: Layer.Layer<Service> = Layer.effect(
         const next = signature(registrations, materialization)
         if (current.signature !== next || !current.generation) {
           current.identities.clear()
+          current.revision++
           current.signature = next
-          current.generation = Hash.sha256(`${part(current.nonce)}${part(next)}`)
+          current.generation = Hash.sha256(`${part(current.nonce)}${part(String(current.revision))}${part(next)}`)
         }
         return current.generation
       },

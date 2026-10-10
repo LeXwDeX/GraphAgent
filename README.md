@@ -32,7 +32,7 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 
 | Feature | What it does | How to use it |
 | --- | --- | --- |
-| [Reasoning shaping](#reasoning-shaping) | Reorganizes each reasoning part with a small model before the model sees it again | `reasoningDistillation.enabled` + `small_model` |
+| [Reasoning shaping](#reasoning-shaping) | Reorganizes each reasoning part with a small model before the model sees it again (on by default) | `reasoningDistillation.enabled` + `small_model` |
 | [DAG workflows](#dag-workflows) | Decomposes a task into a durable dependency graph of child agents | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
 | [Project Memory](#project-memory) | Keeps confirmed preferences, decisions and terminology per project | `/memory on` |
 | [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally | `/goal`, `/subgoal` |
@@ -46,10 +46,13 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 Thinking models send their earlier reasoning back to the provider on later steps. Long reasoning is full of restated
 requests, abandoned guesses and correction narrative, and every later request pays for it again.
 
-With reasoning shaping on, each reasoning part is handed to the configured small model **as soon as it ends**. The
-organizer keeps final facts, values, calculations, constraints, real execution results and open items; it removes
-duplicates, refuted guesses and filler; paths, commands, code, URLs, configuration keys and numbers stay verbatim. The
-rewrite runs while the step's tools execute, and the next request carries it.
+Reasoning shaping is on by default. Each reasoning part is handed to the small model **as soon as it ends**: the
+configured `small_model`, otherwise the provider's own small model; with neither, nothing is rewritten. The organizer
+keeps final facts, values, calculations, constraints, real execution results and open items, plus the working state the
+reasoning built: excluded hypotheses with their evidence, checked locations with their results (including "nothing
+found") and confirmed references. It removes duplicates, refuted guesses and filler; paths, commands, code, URLs,
+configuration keys and numbers stay verbatim. The rewrite runs while the step's tools execute, and the next request
+carries it.
 
 - **Rewrite before first resend, or never.** Before every provider request, the session waits for unfinished rewrites
   up to a short window (`OPENCODE_REASONING_DISTILLATION_SETTLE_MS`, default 3000 ms). Anything not ready is sealed and
@@ -65,7 +68,7 @@ rewrite runs while the step's tools execute, and the next request carries it.
 {
   "small_model": "provider/small-model", // prefer one with a `none` reasoning variant
   "reasoningDistillation": {
-    "enabled": true,
+    "enabled": true, // default; false turns it off
     "language": "zh", // organizer prose language: "zh" (default) or "en"
   },
 }

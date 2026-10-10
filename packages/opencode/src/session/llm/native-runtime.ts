@@ -109,19 +109,22 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     const sourceMessages = ContextFolding.copyModelMessages(input.messages)
     const transformInput = ContextFolding.copyModelMessages(input.messages) ?? input.messages
     const transformedMessages = ProviderTransform.message(transformInput, input.model, input.providerOptions ?? {})
-    const canonical = LLMNative.request({
-      model: input.model,
-      apiKey: current.apiKey,
-      baseURL: current.baseURL,
-      messages: transformedMessages,
-      toolChoice: input.toolChoice,
-      temperature: input.temperature,
-      topP: input.topP,
-      topK: input.topK,
-      maxOutputTokens: input.maxOutputTokens,
-      providerOptions: ProviderTransform.providerOptions(input.model, input.providerOptions ?? {}),
-      headers: { ...providerHeaders(input.provider.options.headers), ...input.headers },
-    })
+    const canonical = LLMRequest.update(
+      LLMNative.request({
+        model: input.model,
+        apiKey: current.apiKey,
+        baseURL: current.baseURL,
+        messages: transformedMessages,
+        toolChoice: input.toolChoice,
+        temperature: input.temperature,
+        topP: input.topP,
+        topK: input.topK,
+        maxOutputTokens: input.maxOutputTokens,
+        providerOptions: ProviderTransform.providerOptions(input.model, input.providerOptions ?? {}),
+        headers: { ...providerHeaders(input.provider.options.headers), ...input.headers },
+      }),
+      { tools: toDefinitions(tools) },
+    )
     const folding = input.contextFolding
     const snapshot =
       folding?.enabled && folding.history && folding.purpose === "conversation" && sourceMessages
@@ -160,41 +163,35 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
           const settlements = yield* FiberSet.make<void>()
           const results = yield* Queue.unbounded<LLMEvent, Cause.Done>()
           const completion: LLMEvent[] = []
-          const provider = input.llmClient
-            .stream(
-              LLMRequest.update(request, {
-                tools: [...request.tools, ...toDefinitions(tools)],
-              }),
-            )
-            .pipe(
-              Stream.flatMap((event) => {
-                // The processor may close the stream for compaction at step-finish.
-                // Deliver every local settlement before exposing that boundary.
-                if (event.type === "step-finish" || event.type === "finish") {
-                  completion.push(event)
-                  return Stream.empty
-                }
-                return event.type !== "tool-call" || event.providerExecuted
-                  ? Stream.make(event)
-                  : Stream.make(event).pipe(
-                      Stream.concat(
-                        Stream.fromEffectDrain(
-                          ToolRuntime.dispatch(tools, event).pipe(
-                            Effect.flatMap((dispatched) => Queue.offerAll(results, dispatched.events)),
-                            Effect.catchCause((cause) => Queue.failCause(results, cause)),
-                            Effect.asVoid,
-                            FiberSet.run(settlements, { startImmediately: true }),
-                          ),
+          const provider = input.llmClient.stream(request).pipe(
+            Stream.flatMap((event) => {
+              // The processor may close the stream for compaction at step-finish.
+              // Deliver every local settlement before exposing that boundary.
+              if (event.type === "step-finish" || event.type === "finish") {
+                completion.push(event)
+                return Stream.empty
+              }
+              return event.type !== "tool-call" || event.providerExecuted
+                ? Stream.make(event)
+                : Stream.make(event).pipe(
+                    Stream.concat(
+                      Stream.fromEffectDrain(
+                        ToolRuntime.dispatch(tools, event).pipe(
+                          Effect.flatMap((dispatched) => Queue.offerAll(results, dispatched.events)),
+                          Effect.catchCause((cause) => Queue.failCause(results, cause)),
+                          Effect.asVoid,
+                          FiberSet.run(settlements, { startImmediately: true }),
                         ),
                       ),
-                    )
-              }),
-              Stream.concat(
-                Stream.fromEffectDrain(
-                  FiberSet.awaitEmpty(settlements).pipe(Effect.andThen(Queue.end(results)), Effect.asVoid),
-                ),
+                    ),
+                  )
+            }),
+            Stream.concat(
+              Stream.fromEffectDrain(
+                FiberSet.awaitEmpty(settlements).pipe(Effect.andThen(Queue.end(results)), Effect.asVoid),
               ),
-            )
+            ),
+          )
           return provider.pipe(
             Stream.concat(Stream.fromQueue(results)),
             Stream.concat(Stream.suspend(() => Stream.fromIterable(completion))),

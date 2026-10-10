@@ -121,6 +121,92 @@ const registerPair = (ledger: Ledger, sourceKind: "host-builtin" | "custom" | "m
   })
 
 describe("session tool-source ledger", () => {
+  it.instance("does not reuse registration generations after an ABA registration change", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      const builtin = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
+      const custom = [{ sourceKind: "custom" as const, registrationID: "custom:read" }]
+      const firstBuiltin = yield* ledger.activate(builtin)
+      yield* ledger.record(identity({ messageID: "msg_existing", callID: "call_existing", generation: firstBuiltin }))
+
+      const repeatedBuiltin = yield* ledger.activate(builtin)
+      expect(repeatedBuiltin).toBe(firstBuiltin)
+      expect(
+        yield* ledger.lookup({
+          sessionID,
+          assistantMessageID: "msg_existing",
+          callID: "call_existing",
+          toolName: "read",
+        }),
+      ).toBeDefined()
+
+      const customGeneration = yield* ledger.activate(custom)
+      const returnedBuiltin = yield* ledger.activate(builtin)
+      expect(returnedBuiltin).not.toBe(firstBuiltin)
+      expect(returnedBuiltin).not.toBe(customGeneration)
+
+      yield* ledger.record(identity({ messageID: "msg_late_a", callID: "call_late_a", generation: firstBuiltin }))
+      yield* ledger.record(identity({ messageID: "msg_late_b", callID: "call_late_b", generation: customGeneration }))
+      yield* ledger.record(identity({ messageID: "msg_current", callID: "call_current", generation: returnedBuiltin }))
+
+      for (const [messageID, callID] of [
+        ["msg_late_a", "call_late_a"],
+        ["msg_late_b", "call_late_b"],
+      ]) {
+        expect(
+          yield* ledger.lookup({ sessionID, assistantMessageID: messageID, callID, toolName: "read" }),
+        ).toBeUndefined()
+      }
+      expect(
+        yield* ledger.lookup({
+          sessionID,
+          assistantMessageID: "msg_current",
+          callID: "call_current",
+          toolName: "read",
+        }),
+      ).toMatchObject({ registrationGeneration: returnedBuiltin })
+    }),
+  )
+
+  it.instance("does not reuse generations after materialization returns to an earlier model", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      const registrations = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
+      const firstModel = yield* ledger.activate(registrations, "provider:model-a:schema-a")
+      const secondModel = yield* ledger.activate(registrations, "provider:model-b:schema-b")
+      const returnedModel = yield* ledger.activate(registrations, "provider:model-a:schema-a")
+
+      expect(returnedModel).not.toBe(firstModel)
+      expect(returnedModel).not.toBe(secondModel)
+      yield* ledger.record(
+        identity({ messageID: "msg_late_model_a", callID: "call_late_model_a", generation: firstModel }),
+      )
+      yield* ledger.record(
+        identity({ messageID: "msg_late_model_b", callID: "call_late_model_b", generation: secondModel }),
+      )
+      yield* ledger.record(
+        identity({ messageID: "msg_current_model_a", callID: "call_current_model_a", generation: returnedModel }),
+      )
+
+      for (const [messageID, callID] of [
+        ["msg_late_model_a", "call_late_model_a"],
+        ["msg_late_model_b", "call_late_model_b"],
+      ]) {
+        expect(
+          yield* ledger.lookup({ sessionID, assistantMessageID: messageID, callID, toolName: "read" }),
+        ).toBeUndefined()
+      }
+      expect(
+        yield* ledger.lookup({
+          sessionID,
+          assistantMessageID: "msg_current_model_a",
+          callID: "call_current_model_a",
+          toolName: "read",
+        }),
+      ).toMatchObject({ registrationGeneration: returnedModel })
+    }),
+  )
+
   it.instance("isolates session records and invalidates old registration generations", () =>
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service

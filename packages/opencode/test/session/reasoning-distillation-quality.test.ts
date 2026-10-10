@@ -14,6 +14,12 @@ const valid: Record<string, string[]> = {
   unresolved: [
     "日志提示可能是网络超时，也可能是锁竞争；目前没有证据排除其中任何一个，尚未确定原因。下一步只读检查超时日志，暂不修改配置。",
   ],
+  "evidenced-exclusion": [
+    "- 连接池上限为 20。\n- 连接池耗尽已排除：`/var/log/app.log` 显示连接池等待时间始终低于 5ms，活跃连接最高 12，未达到上限 20。\n- 根因仍未确定；下一步只读检查锁等待。",
+  ],
+  "negative-check": [
+    "- 已检查 `packages/core/src/retry.ts` 和 `packages/core/src/backoff.ts`：两处都没有调用 `sleepWithJitter`。\n- “旧调度器”指 `LegacyScheduler`（`packages/core/src/legacy/scheduler.ts`）。\n- 下一步：只读检查 `packages/opencode/src/session/prompt.ts`。",
+  ],
   "all-noise": [NO_USEFUL_REASONING_TEXT.zh],
   "short-reasoning": [
     "周一初始库存 83；周二入库 47，库存 130；周三出库 29，库存 101；周四退回 floor(29/3)=9，库存 110；周五出库 floor(110/4)=27，库存 83。最终库存：83。",
@@ -42,7 +48,76 @@ test("meaningful rejection accepts cause after decision", () => {
   )
 })
 
+// Live DeepSeek outputs (2026-10-09) that keep every fact in a wording the checks must accept.
+test("observed equivalent wordings pass", () => {
+  const cases: [string, string][] = [
+    [
+      "short-reasoning",
+      "周一初始：83。\n周二入库 47：130。\n周三出库 29：101。\n周四退回 `floor(29/3)=9`：110。\n周五出库 `floor(110/4)=27`：83。\n最终库存：83。",
+    ],
+    [
+      "short-reasoning",
+      "周一：83。\n周二入库 47：130。\n周三出库 29：101。\n周四返还 `floor(29/3)=9`：110。\n周五出库 `floor(110/4)=27`：83。\n最终库存：83。",
+    ],
+    [
+      "short-reasoning",
+      "从周一开始：83。周二入库 47：130。周三出库 29：101。周四退回 floor(29/3)=9：110。周五出库 floor(110/4)=27：83。最终库存：83。",
+    ],
+    [
+      "evidenced-exclusion",
+      "- 连接池上限为 20；曾误读为 50，已作废。\n- 连接池耗尽已排除：`/var/log/app.log` 显示连接池等待时间始终低于 5ms，活跃连接最高 12，未达到上限 20。\n- 根因仍未确定。\n- 下一步：只读检查锁等待。",
+    ],
+    [
+      "evidenced-exclusion",
+      "- 连接池上限：复查配置后确认上限是 20；此前读成 50 是看错，已作废。\n- 连接池耗尽：已排除。依据：`/var/log/app.log` 显示连接池等待时间始终低于 5ms，活跃连接最高 12，未达到上限 20。\n- 根因：仍未确定。\n- 下一步：只读检查锁等待。",
+    ],
+    [
+      "long-continuity",
+      "- 任务仅限测试环境，生产数据库只能只读访问。\n- 阶段A的备份与schema校验已经完成，不要重复。\n- 迁移M已经实际执行失败，原因是当前引擎不支持online选项；已回滚到迁移前状态，不得重试M。\n- 下一步只读核对日志和备份哈希，尚未授权再次迁移。\n- 请求超时45秒，测试任务最多重试2次。\n- 检查点保存到 /tmp/recovery-checkpoint.json。\n- 锁竞争是否根因仍未确认。",
+    ],
+  ]
+  for (const [id, text] of cases)
+    expect(Object.entries(checkFixtureSemantics(id, [text])).filter(([, passed]) => !passed)).toEqual([])
+})
+
 const mutations: { id: string; slot: number; from: string; to: string; fails: string }[] = [
+  {
+    id: "evidenced-exclusion",
+    slot: 0,
+    from: "连接池耗尽已排除",
+    to: "连接池耗尽尚未排除",
+    fails: "pool_exhaustion_excluded",
+  },
+  {
+    id: "evidenced-exclusion",
+    slot: 0,
+    from: "：`/var/log/app.log` 显示连接池等待时间始终低于 5ms，活跃连接最高 12，未达到上限 20",
+    to: "",
+    fails: "exclusion_evidence",
+  },
+  {
+    id: "evidenced-exclusion",
+    slot: 0,
+    from: "连接池上限为 20。",
+    to: "连接池上限为 50。",
+    fails: "obsolete_value_not_current",
+  },
+  { id: "evidenced-exclusion", slot: 0, from: "根因仍未确定", to: "根因是锁竞争", fails: "cause_open" },
+  { id: "negative-check", slot: 0, from: "两处都没有调用", to: "两处都调用了", fails: "checked_files_no_call" },
+  {
+    id: "negative-check",
+    slot: 0,
+    from: "- 已检查 `packages/core/src/retry.ts` 和 `packages/core/src/backoff.ts`：两处都没有调用 `sleepWithJitter`。\n",
+    to: "",
+    fails: "checked_files_no_call",
+  },
+  {
+    id: "negative-check",
+    slot: 0,
+    from: "- “旧调度器”指 `LegacyScheduler`（`packages/core/src/legacy/scheduler.ts`）。\n",
+    to: "",
+    fails: "reference_resolved",
+  },
   { id: "one-conclusion", slot: 0, from: "5 次", to: "3 次", fails: "final_retry_limit" },
   { id: "deduplicate", slot: 0, from: "不得写入", to: "可以写入", fails: "production_write_forbidden" },
   {

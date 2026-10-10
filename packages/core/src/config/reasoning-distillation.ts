@@ -17,7 +17,7 @@ export const Language = Schema.Literals(["zh", "en"])
 export type Language = typeof Language.Type
 
 /**
- * Reasoning-distillation switch (default-off). When enabled, each settled reasoning part whose provider carrier is
+ * Reasoning-distillation switch (default-on). When enabled, each settled reasoning part whose provider carrier is
  * plain or a plaintext mirror is organized by the small model as soon as it ends, and the result replaces the stored
  * text before the part is first resent. `compatibility` is accepted for older configurations and ignored.
  */
@@ -46,9 +46,9 @@ export type EnableInput = Readonly<{
   enabled?: boolean
 }>
 
-/** Resolve the effective switch without mutating persisted config. Disabled unless explicitly enabled. */
+/** Resolve the effective switch without mutating persisted config. Enabled unless explicitly disabled. */
 export function resolveEnabled(input: EnableInput): EnableResolution {
   if (input.disabledByEnvironment) return { enabled: false, source: "environment" }
   if (input.enabled !== undefined) return { enabled: input.enabled, source: "config" }
-  return { enabled: false, source: "default" }
+  return { enabled: true, source: "default" }
 }

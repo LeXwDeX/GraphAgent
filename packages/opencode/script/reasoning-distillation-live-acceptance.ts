@@ -83,6 +83,31 @@ const fixtures = [
     forbidden: ["重说一遍"],
   },
   {
+    id: "evidenced-exclusion",
+    text:
+      noise.repeat(10) +
+      "我先把连接池上限读成了50，复查配置后确认上限是20；50只是看错，作废。连接池耗尽已排除：/var/log/app.log 显示连接池等待时间始终低于5ms，活跃连接最高12，未达到上限20。根因仍未确定，下一步只读检查锁等待。\n" +
+      noise.repeat(8),
+    required: ["/var/log/app.log", "5ms", "12", "20"],
+    forbidden: ["重说一遍"],
+  },
+  {
+    id: "negative-check",
+    text:
+      noise.repeat(10) +
+      "已检查 packages/core/src/retry.ts 和 packages/core/src/backoff.ts，两处都没有调用 sleepWithJitter。这里的“旧调度器”指 LegacyScheduler（packages/core/src/legacy/scheduler.ts）。下一步只读检查 packages/opencode/src/session/prompt.ts。\n" +
+      noise.repeat(8),
+    required: [
+      "packages/core/src/retry.ts",
+      "packages/core/src/backoff.ts",
+      "sleepWithJitter",
+      "LegacyScheduler",
+      "packages/core/src/legacy/scheduler.ts",
+      "packages/opencode/src/session/prompt.ts",
+    ],
+    forbidden: ["重说一遍"],
+  },
+  {
     id: "all-noise",
     text: "嗯……让我想想。再想一下。不，这样说不好，换个说法。算了，刚才只是口头填充。\n".repeat(24),
     required: [],
