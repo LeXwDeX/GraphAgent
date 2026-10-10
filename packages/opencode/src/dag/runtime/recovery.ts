@@ -278,6 +278,11 @@ export function reconcileWorkflow(
               : undefined
           const snapshotID = frozen?.ok ? frozen.value?.id : undefined
           if (final?.ok && Option.isSome(messages) && !snapshotID) {
+            const currentInput = caller ? yield* messages.value.revisions(caller) : undefined
+            if (!currentInput?.ok || currentInput.value.queued > 0) {
+              continuations.add(node.id)
+              continue
+            }
             if (
               yield* settle(
                 node.id,
@@ -286,7 +291,7 @@ export function reconcileWorkflow(
                   node.id,
                   "recovered final assistant response has no associated input snapshot",
                   "exec_failed",
-                  attempt,
+                  { ...attempt, expectedAcceptedRevision: currentInput.value.accepted },
                 ),
               )
             )

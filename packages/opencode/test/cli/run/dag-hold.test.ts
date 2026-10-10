@@ -287,10 +287,21 @@ describe("dag hold decision rule (issue 614)", () => {
 })
 
 describe("final-response answer receipt polling", () => {
+  // Same shape a real final_response workflow persists (see the YAML specs in
+  // run-dag-hold-process.test.ts): parseWorkflowConfig must accept it.
+  const finalResponseNodes = [{ id: "final", name: "final", worker_type: "general", depends_on: [] }]
+  const finalResponseConfigJson = () =>
+    JSON.stringify({
+      name: "cli-final-response",
+      result_protocol: "final_response",
+      delivery_node: "final",
+      max_concurrency: 1,
+      nodes: finalResponseNodes,
+    })
   const completed = (id: string, seq: number) => ({
     id,
     status: "completed",
-    config: JSON.stringify({ result_protocol: "final_response" }),
+    config: finalResponseConfigJson(),
     seq,
     completed_at: 1000 + seq,
     time_updated: 1000 + seq,
@@ -396,6 +407,31 @@ describe("final-response answer receipt polling", () => {
     mode = "valid"
     expect((await poll())?.[0]?.awaitingReport).toBe(false)
     expect(reads).toBe(3)
+  })
+
+  test("malformed and non-final_response configs are legacy rows that never wait for receipts", async () => {
+    const rows = [
+      "not json at all",
+      JSON.stringify({ result_protocol: "final_response" }), // no nodes
+      JSON.stringify({ result_protocol: "final_response", nodes: "nope" }), // invalid nodes
+      JSON.stringify({ result_protocol: "final_response", delivery_node: 7, nodes: finalResponseNodes }), // invalid delivery_node
+      JSON.stringify({ result_protocol: "bogus", nodes: finalResponseNodes }), // invalid protocol
+      JSON.stringify({ result_protocol: "submit_result", nodes: finalResponseNodes }), // submit_result stays legacy
+      JSON.stringify({ nodes: finalResponseNodes }), // missing protocol stays legacy
+    ].map((config, index) => ({ ...completed(`legacy-${index}`, index + 1), config }))
+    let reads = 0
+    const client = {
+      dag: { bySession: async () => ({ data: rows }) },
+      session: {
+        message: async () => {
+          reads++
+          return { error: { name: "NotFoundError", data: { message: "Message not found" } } }
+        },
+      },
+    } as unknown as OpencodeClient
+    const poll = DagHold.makeDagWorkflowPoll(client, "parent")
+    expect((await poll())?.every((row) => row.awaitingReport === undefined)).toBe(true)
+    expect(reads).toBe(0)
   })
 
   test("startup retries a failed workflow list before freezing the receipt baseline", async () => {

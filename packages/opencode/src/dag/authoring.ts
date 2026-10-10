@@ -89,6 +89,24 @@ export function make(options: Options = {}) {
         if (profile === "portable") cache.set(key, result)
         return result
       }
+      if (decoded.value.action === "replan") {
+        const fragment = decoded.value.spec.fragment
+        const rejected = (["result_protocol", "delivery_node"] as const)
+          .filter((field) => fragment[field] !== undefined)
+          .map((field) =>
+            DagValidation.diagnostic({
+              code: DagValidation.DIAGNOSTIC_CODES.schemaInvalid,
+              path: `fragment.${field}`,
+              message: `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
+              hint: `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
+            }),
+          )
+        if (rejected.length > 0) {
+          const result = { ...invalidResult(sourceName, profile, rejected), document: decoded.value.spec }
+          if (profile === "portable") cache.set(key, result)
+          return result
+        }
+      }
       const compiled = compileAction(decoded.value, input.known_dependencies)
       if (!compiled.nodes) {
         const result = { ...invalidResult(sourceName, profile, compiled.diagnostics), document: decoded.value.spec }

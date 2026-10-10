@@ -443,6 +443,77 @@ for (const state of ["error", "unfinished", "wrong-parent", "dag-report"] as con
     ))
 }
 
+for (const command of ["memory", "trust", "goal", "subgoal"])
+  it(`delivers after a completed local /${command} without an assistant response`, () =>
+    fixture(({ sessions, store, deliver }) =>
+      Effect.gen(function* () {
+        const user: SessionV1.User = {
+          id: "msg_command" as never,
+          sessionID: "ses_parent" as never,
+          role: "user",
+          time: { created: 50 },
+          agent: "build",
+          model: { providerID: "test" as never, modelID: "test" as never },
+        }
+        yield* sessions.updateMessage(user)
+        yield* sessions.updatePart({
+          id: "prt_command" as never,
+          messageID: user.id,
+          sessionID: user.sessionID,
+          type: "text",
+          text: `/${command} status`,
+          metadata: { command },
+        })
+        expect(yield* deliver()).toBe(false)
+        yield* sessions.updatePart({
+          id: "prt_response" as never,
+          messageID: user.id,
+          sessionID: user.sessionID,
+          type: "text",
+          text: "Command completed",
+          ignored: command === "goal" || command === "subgoal",
+          time: { start: 60, end: 60 },
+        })
+        expect(yield* deliver()).toBe(true)
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+      }),
+    ))
+
+for (const state of ["unfinished", "synthetic", "same-part", "model-command"] as const)
+  it(`does not treat a ${state} command response as an answered user turn`, () =>
+    fixture(({ sessions, deliver }) =>
+      Effect.gen(function* () {
+        yield* sessions.updateMessage({
+          id: "msg_command" as never,
+          sessionID: "ses_parent" as never,
+          role: "user",
+          time: { created: 50 },
+          agent: "build",
+          model: { providerID: "test" as never, modelID: "test" as never },
+        })
+        yield* sessions.updatePart({
+          id: "prt_command" as never,
+          messageID: "msg_command" as never,
+          sessionID: "ses_parent" as never,
+          type: "text",
+          text: "/command",
+          metadata: { command: state === "model-command" ? "review" : "memory" },
+          ...(state === "same-part" ? { time: { start: 50, end: 50 } } : {}),
+        })
+        if (state !== "same-part")
+          yield* sessions.updatePart({
+            id: "prt_response" as never,
+            messageID: "msg_command" as never,
+            sessionID: "ses_parent" as never,
+            type: "text",
+            text: "Response text",
+            synthetic: state === "synthetic",
+            time: { start: 60, ...(state === "unfinished" ? {} : { end: 60 }) },
+          })
+        expect(yield* deliver()).toBe(false)
+      }),
+    ))
+
 it("keeps an unanswered user behind more than twenty assistant tool turns", () =>
   fixture(({ database, sessions, deliver }) =>
     Effect.gen(function* () {

@@ -368,3 +368,115 @@ describe("WorkflowAuthoring replan envelope (P0-B)", () => {
     }),
   )
 })
+
+describe("WorkflowAuthoring replan start-only capture fields", () => {
+  const replanPrepare = (content: string[]) =>
+    WorkflowAuthoring.make().prepare({
+      action: "replan",
+      source: { kind: "yaml", source: "replan.yaml", content: content.join("\n") },
+      profile: "portable",
+    })
+
+  const nodeLines = [
+    "  - id: work",
+    "    name: work",
+    "    worker_type: general",
+    "    depends_on: []",
+    "    prompt_template: { inline: Do the work }",
+  ]
+
+  it.effect("rejects a nodes replan fragment that specifies delivery_node with a field-specific diagnostic", () =>
+    Effect.gen(function* () {
+      const result = yield* replanPrepare([
+        "fragment:",
+        "  name: rebuild",
+        "  delivery_node: work",
+        "  nodes:",
+        ...nodeLines,
+      ])
+      expect(result.valid).toBe(false)
+      expect(result.prepared).toBeUndefined()
+      const error = result.errors.find((diagnostic) => diagnostic.path === "fragment.delivery_node")
+      expect(error).toBeDefined()
+      expect(error?.code).toBe(DagValidation.DIAGNOSTIC_CODES.schemaInvalid)
+      expect(error?.message).toContain("delivery_node only applies to start")
+      expect(error?.hint).toContain('Remove "delivery_node" from the fragment.')
+    }),
+  )
+
+  it.effect("rejects a blocks replan fragment that specifies delivery_node", () =>
+    Effect.gen(function* () {
+      const result = yield* replanPrepare([
+        "fragment:",
+        "  name: rebuild",
+        "  objective: Rebuild the thing.",
+        "  delivery_node: diagnose",
+        "  blocks:",
+        "    - id: diagnose",
+        "      kind: debug",
+        "      instruction: Reproduce the failure.",
+      ])
+      expect(result.valid).toBe(false)
+      const error = result.errors.find((diagnostic) => diagnostic.path === "fragment.delivery_node")
+      expect(error).toBeDefined()
+      expect(error?.code).toBe(DagValidation.DIAGNOSTIC_CODES.schemaInvalid)
+    }),
+  )
+
+  it.effect("rejects result_protocol on replans", () =>
+    Effect.gen(function* () {
+      const result = yield* replanPrepare([
+        "fragment:",
+        "  name: rebuild",
+        "  result_protocol: final_response",
+        "  nodes:",
+        ...nodeLines,
+      ])
+      expect(result.valid).toBe(false)
+      const error = result.errors.find((diagnostic) => diagnostic.path === "fragment.result_protocol")
+      expect(error).toBeDefined()
+      expect(error?.code).toBe(DagValidation.DIAGNOSTIC_CODES.schemaInvalid)
+    }),
+  )
+
+  it.effect("accepts the same config for start", () =>
+    Effect.gen(function* () {
+      const result = yield* WorkflowAuthoring.make().prepare({
+        action: "start",
+        source: {
+          kind: "yaml",
+          source: "start.yaml",
+          content: [
+            "config:",
+            "  name: capture",
+            "  delivery_node: work",
+            "  result_protocol: final_response",
+            "  nodes:",
+            ...nodeLines,
+          ].join("\n"),
+        },
+        profile: "portable",
+      })
+      expect(result.errors).toEqual([])
+      expect(result.valid).toBe(true)
+      expect(result.prepared?.action).toBe("start")
+    }),
+  )
+
+  it.effect("keeps ordinary replans and historical config fields working", () =>
+    Effect.gen(function* () {
+      const result = yield* replanPrepare([
+        "fragment:",
+        "  name: rebuild",
+        "  max_total_nodes: 40",
+        "  node_defaults:",
+        "    required: true",
+        "  nodes:",
+        ...nodeLines,
+      ])
+      expect(result.errors).toEqual([])
+      expect(result.valid).toBe(true)
+      expect(result.prepared?.nodes).toHaveLength(1)
+    }),
+  )
+})

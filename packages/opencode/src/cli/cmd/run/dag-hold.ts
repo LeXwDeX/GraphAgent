@@ -47,6 +47,7 @@
 // engine watchdog, and a visible hang is accepted over silent wake loss.
 
 import type { OpencodeClient } from "@opencode-ai/sdk/v2"
+import { parseWorkflowConfig } from "@/dag/dag"
 import { reportIdentity } from "@/dag/report-identity"
 import { isRecord } from "@/util/record"
 
@@ -155,13 +156,9 @@ export function createDagHold(
   }
 }
 
+// Match the runtime gate; invalid persisted configs cannot produce direct receipts.
 function finalResponseConfig(raw: string): boolean {
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    return isRecord(parsed) && parsed.result_protocol === "final_response"
-  } catch {
-    return false
-  }
+  return parseWorkflowConfig(raw)?.result_protocol === "final_response"
 }
 
 type ReportObservation = {

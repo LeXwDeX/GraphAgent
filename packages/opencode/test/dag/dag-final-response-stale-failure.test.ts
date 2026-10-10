@@ -310,4 +310,66 @@ describe("final-response failure freshness", () => {
       expect(value(yield* messages.receive(child))[0].state).toBe("queued")
     }),
   )
+
+  for (const arrival of ["before-check", "after-check", "none"] as const)
+    it.live(`recovery without a response snapshot preserves input arriving ${arrival}`, () =>
+      Effect.gen(function* () {
+        yield* seed()
+        const dag = yield* Dag.Service
+        const messages = yield* DagMessages.Service
+        let checks = 0
+        const database = yield* Database.Service
+        const observed = {
+          ...messages,
+          revisions: (caller: DagMessages.Caller) =>
+            messages.revisions(caller).pipe(
+              Effect.tap(() => {
+                checks++
+                return arrival === "after-check" && checks === 2
+                  ? accept().pipe(Effect.provideService(DagMessages.Service, messages), Effect.asVoid)
+                  : Effect.void
+              }),
+            ),
+        }
+        const config = { result_protocol: "final_response" as const, nodes: [{ id: "n" }] }
+        const result = yield* reconcileWorkflow(
+          workflowID,
+          () => Effect.succeed("completed"),
+          undefined,
+          config,
+          undefined,
+          undefined,
+          undefined,
+          () =>
+            Effect.gen(function* () {
+              if (arrival === "before-check") yield* accept()
+              return reply(MessageID.ascending(), "unassociated old result")
+            }).pipe(Effect.provideService(DagMessages.Service, messages)),
+        ).pipe(Effect.provideService(DagMessages.Service, observed))
+        if (arrival === "none") {
+          expect(result).toMatchObject({ reconciled: 1 })
+          expect((yield* dag.store.getNode(workflowID, "n"))?.status).toBe("failed")
+          expect(value(yield* messages.metadata(parent, workflowID, "n")).closedReason).toBe("exec_failed")
+          return
+        }
+        expect(result).toMatchObject({ reconciled: 0, continuations: ["n"] })
+        expect((yield* dag.store.getNode(workflowID, "n"))?.status).toBe("running")
+        expect(value(yield* messages.receive(child))[0].state).toBe("queued")
+        expect(value(yield* messages.metadata(parent, workflowID, "n")).closedReason).toBeUndefined()
+        const prompt = Layer.mock(SessionPrompt.Service, {
+          loop: () =>
+            Effect.gen(function* () {
+              const turn = MessageID.ascending()
+              yield* associate(turn)
+              return reply(turn, "fresh result")
+            }).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.provideService(DagMessages.Service, messages),
+            ),
+        })
+        yield* continueRecoveredMessageNode(workflowID, "n", config).pipe(Effect.provide(prompt))
+        expect(yield* dag.store.getNode(workflowID, "n")).toMatchObject({ status: "completed", output: "fresh result" })
+        expect(value(yield* messages.receive(child))[0].state).toBe("delivered")
+      }),
+    )
 })

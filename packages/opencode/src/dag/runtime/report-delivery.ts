@@ -85,6 +85,22 @@ function latestUser(history: readonly SessionV1.WithParts[]) {
 function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
   const user = latestUser(history)
   if (!user) return true
+  // Local commands store their ended response on the user message, without an assistant.
+  const command = user.parts.find(
+    (part) => part.type === "text" && ["memory", "trust", "goal", "subgoal"].includes(String(part.metadata?.command)),
+  )
+  if (
+    command &&
+    user.parts.some(
+      (part) =>
+        part.type === "text" &&
+        part.id !== command.id &&
+        !part.synthetic &&
+        part.metadata?.command === undefined &&
+        part.time?.end !== undefined,
+    )
+  )
+    return true
   const assistant = history
     .filter(
       (item) =>
