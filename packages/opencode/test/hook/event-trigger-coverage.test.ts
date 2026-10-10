@@ -38,7 +38,7 @@ describe("hook event trigger coverage", () => {
     expect(skill).toContain(`Events (${VALID_HOOK_EVENTS.size} total)`)
     expect(ConfigureHooksDescription).toContain(`the ${VALID_HOOK_EVENTS.size} supported events`)
     expect(create).toContain("Names using letters, digits or underscores — exact match (case-insensitive)")
-    expect(skill).toContain("names using letters, digits or underscores — exact match (case-insensitive)")
+    expect(skill).toContain("containing only letters, digits, underscores, and `|`")
     expect(migrate).toContain("Entries naming it are silently skipped")
     expect(skill).toContain("silently skipped")
   })
