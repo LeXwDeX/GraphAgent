@@ -32,7 +32,8 @@ Optional top-level trust controls:
   untrusted working directory.
 - `allowUntrusted: true` opts out of that gate only when declared in the global
   hooks file. Project/worktree values are ignored; a repository cannot grant
-  itself trust. With neither setting, there is no trust gate.
+  itself trust. With neither setting, there is no trust gate unless
+  `OPENCODE_HOOKS_REQUIRE_TRUST=1` enables it.
 
 Example:
 
@@ -78,14 +79,16 @@ tool names/argument keys for command hooks; see below.
 | `ElicitationResult`  | After that form flow resolves; `result` on accept or `cancelled` on decline/dismiss/timeout                                                                                                                             | none                |
 | `Notification`       | For current internal permission-ask and MCP-elicitation attention notifications; `message`, `title?`, `notification_type?`                                                                                              | `notification_type` |
 | `ConfigChange`       | When a watched `hooks.json` layer reloads (not arbitrary configuration changes); `config_path`, empty `session_id`                                                                                                      | none                |
-| `WorktreeCreate`     | After a worktree boots successfully; `path?`, `branch?`                                                                                                                                                                 | none                |
+| `WorktreeCreate`     | After `createFromInfo` returns; bootstrap is asynchronous and may still be running. A failed worktree reset can also return and fire this event; it does not certify readiness or success; `path?`, `branch?`           | none                |
 | `WorktreeRemove`     | Before registered-worktree cleanup, including a stale or missing path; it does not certify successful removal; `path?`, `branch?`                                                                                       | none                |
 | `InstructionsLoaded` | When instruction content is loaded; `path?`, `content?`                                                                                                                                                                 | none                |
 | `CwdChanged`         | When OpenCode switches into a newly booted worktree, not an arbitrary shell directory change; `old_cwd`, `new_cwd`, empty `session_id`                                                                                  | none                |
 | `FileChanged`        | After successful internal `write`, `edit`, `apply_patch`, `multiedit`, or `patch` tool operations; `path` (absolute), `change_type` (`add`, `change`, `delete`). It is not an external filesystem watcher.              | basename of `path`  |
 
-`matcher` supports case-insensitive exact names, pipe-separated names, `*`, or
-regex. Its target is event-specific: the five tool/permission events use the
+`matcher` supports `*`, case-insensitive exact names or pipe-separated lists
+containing only letters, digits, underscores, and `|`. Other strings are
+case-insensitive regexes; anchor them for an exact match (for example
+`^(foo-bar|baz)$`). Its target is event-specific: the five tool/permission events use the
 tool name; `SessionStart`, `SessionEnd`, `Setup`, `PreCompact`/`PostCompact`,
 `Notification`, `SubagentStart`/`SubagentStop`, and `FileChanged` use the
 target shown above. For `FileChanged`, match a basename such as `package.json`,
@@ -151,11 +154,13 @@ ignored. Plain-text exit-0 stdout is injected as context only for
 `UserPromptSubmit` and `SessionStart`.
 
 `inputFormat: "claude-code"` adapts command stdin and PreToolUse `updatedInput`
-for six known built-ins only: `bash`/`read`/`write`/`edit`/`grep`/`glob` become
+by tool ID: `bash`/`read`/`write`/`edit`/`grep`/`glob` become
 `Bash`/`Read`/`Write`/`Edit`/`Grep`/`Glob`; known argument keys such as
 `filePath`→`file_path`, edit's `oldString`→`old_string`, and grep's
-`include`→`glob` are translated. Other tools, including MCP/custom tools, pass
-through unchanged; emit native keys when rewriting those tools. This is naming
+`include`→`glob` are translated. Custom tools shadowing these IDs receive the
+same translation regardless of their origin. Tools outside this set, including
+MCP/custom tools with other IDs, pass through unchanged; emit native keys when
+rewriting those tools. This is naming
 compatibility, not full Claude Code behavior or output compatibility.
 
 `${CLAUDE_PLUGIN_ROOT}` expands to the directory containing the declaring
@@ -190,8 +195,11 @@ Supported `hookSpecificOutput` fields:
   override the actual triggering event.
 - `permissionDecision`: `allow`, `deny`, or `ask`; consumed by
   `PreToolUse`/`PermissionRequest`. Most restrictive wins (`deny` > `ask` >
-  `allow`). `ask` always asks the user; `permissionDecisionReason` supplies
-  its explanation. On `PreToolUse`, `ask` shows the proposed input, including
+  `allow`). `ask` forces a user dialog where available; the task-tool path
+  degrades it to deny. Headless `opencode run` automatically rejects requests,
+  or approves them with `--dangerously-skip-permissions`; neither obtains human
+  confirmation. `permissionDecisionReason` supplies its explanation.
+  On interactive `PreToolUse`, `ask` shows the proposed input, including
   any `updatedInput`. On a forced ask handled by `PermissionRequest`, `deny`
   may reject the request; `allow` is ignored and logged.
 - `updatedInput`: changes arguments before a `PreToolUse` tool runs. It cannot
@@ -282,7 +290,8 @@ callback stale. For task-tool `SubagentStop`, `session_id` is the parent and
 `agent_id` is the stopped child; an async rewake targets the parent session and
 does not resume that child.
 
-Completion feedback that can trigger a rewake is: exit code 2 stderr,
+Completion feedback that can trigger a rewake is: an `exitBlock` (command exit
+code 2 stderr or its fallback reason, or an HTTP non-2xx status failure),
 `systemMessage`, a `decision: "block"` with a `reason`,
 `hookSpecificOutput.additionalContext`, or non-JSON plain text on exit 0 for
 `UserPromptSubmit` / `SessionStart`. Permission decisions, `updatedInput`,
