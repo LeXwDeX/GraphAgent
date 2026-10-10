@@ -53,10 +53,17 @@ export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagS
   ].join("\n")
 }
 
-function reportText(node: DagStore.NodeRow, source?: SessionV1.WithParts, artifact?: ManagedOutputFileRef) {
-  if (artifact) return `${artifact.summary}\n\n[Complete report](${artifact.path})`
-  if (typeof node.output === "string") return node.output
-  if (isManagedOutputFileRef(node.output)) return `${node.output.summary}\n\n[Complete report](${node.output.path})`
+function reportText(
+  node: DagStore.NodeRow,
+  structured: boolean,
+  source?: SessionV1.WithParts,
+  artifact?: ManagedOutputFileRef,
+) {
+  if (!structured) {
+    if (artifact) return `${artifact.summary}\n\n[Complete report](${artifact.path})`
+    if (typeof node.output === "string") return node.output
+    if (isManagedOutputFileRef(node.output)) return `${node.output.summary}\n\n[Complete report](${node.output.path})`
+  }
   const final = finalAssistantText(source)
   if (final.ok) {
     const parsed = parseFinalResponse(final.text)
@@ -137,10 +144,11 @@ export function deliverReport(input: {
     const sessionID = SessionID.make(workflow.sessionId)
     const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
     const node = selectReportNode(config, nodes)
+    const structured = !!config.nodes.find((item) => item.id === node?.id)?.output_schema
     let artifact: ManagedOutputFileRef | undefined
     if (
       node &&
-      !config.nodes.find((item) => item.id === node.id)?.output_schema &&
+      !structured &&
       node.capturedOutput &&
       typeof node.capturedOutput === "object" &&
       "storage" in node.capturedOutput &&
@@ -159,7 +167,7 @@ export function deliverReport(input: {
       artifact = node.capturedOutput
     }
     const body = yield* boundReport(
-      node ? reportText(node, input.source, artifact) : resultIndex(workflow, nodes),
+      node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes),
       workflow,
       node,
     ).pipe(Effect.orDie)

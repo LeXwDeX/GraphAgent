@@ -334,6 +334,63 @@ for (const field of ["report", "summary"] as const) {
   })
 }
 
+for (const output of [
+  "false",
+  "",
+  false,
+  null,
+  0,
+  {
+    kind: "file_ref",
+    content_ref: "report",
+    path: "/tmp/schema-report.json",
+    size: 10,
+    sha256: "schema-value",
+    summary: "Not an artifact",
+    storage: "managed-v1",
+    source_path: "/tmp/source.json",
+    provenance: { workflow_id: "wf-1", node_id: "final", child_session_id: "ses_child", replan_attempt: 0 },
+    details: ["Preserve this field"],
+  },
+]) {
+  for (const withSource of [true, false]) {
+    it(`delivers complete schema JSON ${JSON.stringify(output)} ${withSource ? "with" : "without"} source text`, () => {
+      const raw = `  ${JSON.stringify(output, null, 2)}\n`
+      return fixture(
+        ({ database, deliver }) =>
+          Effect.gen(function* () {
+            expect(yield* deliver()).toBe(true)
+            const answer = (yield* database.db.select().from(PartTable))
+              .map((row) => row.data as SessionV1.TextPart)
+              .find((part) => part.metadata?.dag_delivery?.kind === "answer")!
+            expect(answer.text).toBe(withSource ? raw : JSON.stringify(output))
+            expect(JSON.parse(answer.text)).toEqual(output)
+          }),
+        {
+          output,
+          schema: { type: output === null ? "null" : typeof output === "number" ? "integer" : typeof output },
+          ...(withSource
+            ? {
+                source: {
+                  info: parentAnswer("msg_child_final", "msg_child_input"),
+                  parts: [
+                    {
+                      id: "prt_child" as never,
+                      sessionID: "ses_parent" as never,
+                      messageID: "msg_child_final" as never,
+                      type: "text" as const,
+                      text: raw,
+                    },
+                  ],
+                },
+              }
+            : {}),
+        },
+      )
+    })
+  }
+}
+
 for (const state of ["error", "unfinished", "wrong-parent", "dag-report"] as const) {
   it(`keeps a pending user request behind a newer ${state} assistant`, () =>
     fixture(({ database, sessions, deliver }) =>
