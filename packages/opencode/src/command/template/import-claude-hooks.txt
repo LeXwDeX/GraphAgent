@@ -6,6 +6,10 @@ description: Import hooks from Claude Code config to OpenCode hooks.json
 
 Migrate hooks from Claude Code's `.claude/settings.json` files to OpenCode's `hooks.json` format. Hooks are not loaded directly from `.claude/settings*.json`; use this command to migrate them. OpenCode can still load `.claude/skills` by default unless that compatibility loading is disabled.
 
+Load `configure-hooks` first for the current event, handler, input/output, and
+compatibility contracts. Infer approval already given by the user; present
+unapproved candidates for review without re-asking about approved ones.
+
 ## Process
 
 ### 1. Scan for Claude hooks
@@ -49,11 +53,19 @@ Ask the user for each hook:
 
 ### 3. Handle path migration
 
-When importing, fix any hardcoded `.claude/` paths:
+Resolve each script and its dependencies before rewriting paths. Writing a
+hook definition does not copy a Claude plugin or make an OpenCode destination
+exist. Keep a working source path, or copy the required assets into the chosen
+OpenCode location under the user's migration authorization and verify them.
 
-- Replace `${CLAUDE_PLUGIN_ROOT}` references that assume `.claude/` with `.opencode/`
-- Replace absolute paths like `~/.claude/plugins/...` with `~/.config/opencode/plugins/...`
-- Update `__sourceDir` stamps from `.claude/` to `.opencode/`
+`${CLAUDE_PLUGIN_ROOT}` is the directory containing the declaring hooks file.
+`${CLAUDE_PLUGIN_DATA}` is a data path under `${Global.Path.data}/hooks/`, with
+an identifier derived from that directory; it is not inside the source folder.
+The script may need to create its data directory. Preserve the placeholder
+syntax; verify script paths and dependency assets before rewriting them.
+Do not author `__sourceDir`: OpenCode stamps that metadata when loading the
+file. Never blindly replace `.claude/` with `.opencode/` and assume the script
+has moved.
 
 Example migration:
 ```json
@@ -79,7 +91,7 @@ Example migration:
   ]
 }
 ```
-`${CLAUDE_PLUGIN_ROOT}` is a runtime placeholder. OpenCode expands it from the hook's location. After migration to `.opencode/`, it points there.
+`${CLAUDE_PLUGIN_ROOT}` is a runtime placeholder. OpenCode expands it from the hook's location. After migration to `.opencode/`, it points there; this example therefore requires `validate.sh` and its dependencies to exist there.
 
 #### Command-envelope compatibility (`inputFormat`)
 
@@ -95,7 +107,7 @@ Other hook types receive no translation. For each imported `mcp` / `http` / `pro
 
 Approved hooks go to:
 
-- **Global scope** (from `~/.claude/settings.json`): `~/.config/opencode/hooks.json`
+- **Global scope** (from `~/.claude/settings.json`): `${Global.Path.config}/hooks.json` (the XDG config directory, commonly `$XDG_CONFIG_HOME/opencode`, usually `~/.config/opencode`)
 - **Project scope** (from `.claude/settings.json` or `.claude/settings.local.json`): `.opencode/hooks.json`
 
 Use top-level event keys. Do not wrap them in `{"hooks": {...}}`. Each event maps to matcher blocks with an optional `matcher` and a `hooks` array:
@@ -126,14 +138,14 @@ If the target file already exists, merge (append) the imported hooks rather than
 
 After migration, report:
 
-- Number of hooks imported (by scope: global/project)
+- Number of hooks imported (by destination scope: global/project)
 - Number of hooks skipped
 - Any hooks that were edited during migration
 - Number of command hooks tagged `inputFormat: "claude-code"`
 - For every imported non-command hook: a warning that stdin-envelope compatibility was not verified and needs manual evaluation
 - Deprecation warnings (if hooks were found in .opencode/settings.json)
-- Keep `.claude/settings*.json`, scripts, and skills in place during migration. After a successful migration and validation, you may remove specific confirmed-unused Claude hook configuration if you no longer need it. Do not recommend deleting the entire `.claude/` directory.
-- Imported hooks appear in the system prompt's **Active Hooks** block. It renders from live `hooks.json` state each turn, so no `AGENTS.md` update is needed. Visibility does not prove behavior. Trigger each hook and confirm its stdin and output before calling migration done.
+- Keep `.claude/settings*.json`, scripts, and skills in place during migration. Remove specific confirmed-unused Claude hook configuration only when the user explicitly requests removal. Do not recommend deleting the entire `.claude/` directory.
+- After the final write, wait at least the 2-second poll interval plus the 500-millisecond debounce before checking reload. The system prompt's **Active Hooks** block confirms loaded configuration only; it does not prove behavior. Trigger each hook and inspect its input/output before calling migration done when behavior validation is requested.
 
 ## Hooks.json Format Reference
 
@@ -154,7 +166,7 @@ Note: Claude Code's `TeammateIdle` event is not supported (no teammate concept i
 
 Each event maps to an array of **matcher blocks**. Each matcher block has:
 
-- `matcher`: optional — `"*"` (default, all tools), exact name (`"Bash"`), pipe list (`"Bash|Edit"`), or regex
+- `matcher`: optional — `"*"`, exact name, pipe list, or regex. It matches `tool_name` on tool/permission events and supported lifecycle targets (`SessionStart.source`, `SessionEnd.reason`, `Setup`/compaction `trigger`, `Notification.notification_type`, subagent `agent_type`, or `FileChanged` path basename). On events with no target, including `Stop`, a matcher is ignored and the group runs regardless; omit it.
 - `hooks`: array of hook entries
 
 Each hook entry has:
@@ -163,6 +175,14 @@ Each hook entry has:
 - `command` / `url` / `prompt`: the hook action (field depends on type — `command` for command/mcp, `url` for http, `prompt` for prompt/agent)
 - `timeout`: optional seconds (default 60)
 - `inputFormat`: optional, command hooks only — `"opencode"` (default) or `"claude-code"`. The latter maps envelope `tool_name`/`tool_input` toward Claude Code naming; see `configure-hooks` for the contract.
+- `async`: optional background execution flag. Claude Code has an analogous command-hook field; preserve it only after checking the source hook type and intended behavior against OpenCode's handler and timeout semantics.
+- `asyncRewake`: Claude Code also has this field, but its semantics differ. In Claude Code it implies asynchronous execution and wakes on exit code 2. OpenCode requires both `async: true` and `asyncRewake: true`; its completion callback can wake for exit-0 JSON `systemMessage` and other documented results. Do not blindly copy the field or assume implicit async behavior. During migration, inspect and explicitly adapt each source hook. If adding it during an edit, explain OpenCode's same-session, Stop-loop, and timeout limits in `configure-hooks`.
+
+Other supported OpenCode fields (such as `shell`, `statusMessage`, `once`,
+`if`, HTTP `headers` / `allowedEnvVars`, command `options`, and top-level
+`requireTrust` / `allowUntrusted`) are not implied by migration. See
+`configure-hooks` before adding them; respect their type, scope, and trust
+limits.
 
 Merge semantics: concat-append (hooks accumulate across layers and within a file, not replace).
 
@@ -172,3 +192,4 @@ Merge semantics: concat-append (hooks accumulate across layers and within a file
 - The `hooks` field in `.opencode/settings.json` is deprecated and ignored (deprecation warning logged).
 - All three `hooks.json` layers (global, project, worktree) are polled every ~2 seconds; edits take effect within a few seconds without a restart.
 - Hooks are merge-append, not override. Importing duplicate events will add to the list.
+- For every field and event's actual stdin fields, matcher targets, output effects, and `asyncRewake` limits, use the self-contained `configure-hooks` skill. Do not assume that accepted schema fields have the same behavior in OpenCode as in Claude Code.

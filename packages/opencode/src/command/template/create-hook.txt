@@ -12,9 +12,12 @@ Load the `configure-hooks` skill first. It defines the 26 events, 5 hook types, 
 
 ## Process
 
-### 1. Gather inputs interactively
+### 1. Resolve the requested configuration
 
-Ask the user for each field, one at a time:
+Infer every field the user already specified. Ask only for missing information
+that materially affects correct behavior; do not re-ask for supplied values or
+write authorization already given. Use `configure-hooks` for the full field,
+event-input, output-effect, trust, and async contracts.
 
 **Event** — choose from the `configure-hooks` skill's 26-event list. It names all 26 events:
 
@@ -44,7 +47,11 @@ Ask the user for each field, one at a time:
 - `http` → the endpoint URL
 - `prompt` / `agent` → the prompt / goal text
 
-**Matcher** (only for tool-bound events: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied`):
+**Matcher** — optional. The five tool/permission events match `tool_name`.
+Other supported matcher targets are `SessionStart` → `source`, `SessionEnd` →
+`reason`, `Setup` → `trigger`, `PreCompact` / `PostCompact` → `trigger`,
+`Notification` → `notification_type`, `SubagentStart` / `SubagentStop` →
+`agent_type`, and `FileChanged` → basename of `path`.
 
 - Empty / omitted / `*` — matches all tools
 - `Bash` — exact tool name
@@ -52,18 +59,31 @@ Ask the user for each field, one at a time:
 - Names using letters, digits or underscores — exact match (case-insensitive), optionally pipe-separated
 - Other strings — treated as a regex
 
-For non-tool events, omit the matcher entirely.
+For events without a matcher target (including `Stop`, `StopFailure`,
+`UserPromptSubmit`, task, elicitation, config, worktree, instruction, and cwd
+events), any matcher is ignored and every group runs; omit it for clarity.
 
-**Optional fields** — ask if the user wants to set any:
+**Optional fields** — apply specified requirements and defaults; ask only when
+a choice is necessary. Fields include `timeout` (positive seconds, default
+60), `statusMessage` (logged label, not UI progress), `once` (once per loaded
+entry/session), and `if` (tool/permission events only; ignored elsewhere).
+Command hooks may set `shell` (`bash`/`powershell`) and `inputFormat`
+(`opencode` by default, `claude-code` for an unchanged Claude Code stdin
+script). HTTP hooks may set `headers` and `allowedEnvVars`; command hooks may
+set `options`.
 
-- `timeout` — seconds before the hook is killed (default 60)
-- `statusMessage` — short label logged before the hook runs; it does not guarantee visible UI progress
-- `inputFormat` (command hooks only) — `"opencode"` (default) or `"claude-code"`. Offer `"claude-code"` only for an unchanged script written for Claude Code's hook stdin. Such scripts expect `Bash`/`Read`/`Grep`-style tool names and `file_path`-style keys. See the `configure-hooks` skill for the contract.
+For background work that should return completion feedback, set both
+`async: true` and `asyncRewake: true`. The running handler must finish before
+the same session can be rewoken; it is not an in-progress notification. Use a
+finite timeout (default 60 seconds) and make Stop hooks honor
+`stop_hook_active` and be idempotent. `asyncRewake` alone has no effect; see
+`configure-hooks` for which outputs cause a rewake and its limits.
 
-**Scope** — `project` or `global`:
+**Scope** — `project`, `global`, or `worktree`:
 
 - `project` → `.opencode/hooks.json` in the current project (hot-reloads in ~2s)
-- `global` → `~/.config/opencode/hooks.json` (hot-reloads in ~2s as well)
+- `global` → `${Global.Path.config}/hooks.json` (hot-reloads in ~2s as well; follows the XDG config directory, commonly `$XDG_CONFIG_HOME/opencode/hooks.json` and usually `~/.config/opencode/hooks.json`)
+- `worktree` → `<worktree>/.opencode/hooks.json` when the worktree is separate
 
 ### 2. Build the JSON entry
 
@@ -82,7 +102,7 @@ Build the entry in `hooks.json` format. Each event key maps to an array of match
 }
 ```
 
-For non-tool events, omit the `matcher` field:
+For an event without a matcher target, omit the `matcher` field:
 
 ```json
 {
@@ -96,20 +116,29 @@ For non-tool events, omit the `matcher` field:
 }
 ```
 
-### 3. Confirm with the user
+If `requireTrust` / `allowUntrusted` matters, it is a top-level setting, not a
+hook-entry field. Follow the trust rules in `configure-hooks`; project and
+worktree files cannot opt themselves out of a trust gate.
 
-Show the full JSON entry, including the event name, matcher block, and hook object. Ask for confirmation before writing. If the user requests changes, edit and show it again.
+### 3. Confirm with the user when needed
+
+Show the exact JSON addition and destination before writing when the user has
+not already authorized the write. If they clearly asked you to create and
+write the hook, proceed without asking them to confirm that action again. If
+they request changes, incorporate them and ask only about genuinely missing
+information.
 
 ### 4. Write to hooks.json (merge-append)
 
 Read the target `hooks.json` first:
 
 - **Project scope**: `${PROJECT_DIR}/.opencode/hooks.json`
-- **Global scope**: `~/.config/opencode/hooks.json`
+- **Global scope**: `${Global.Path.config}/hooks.json` (resolve using the XDG config directory)
+- **Worktree scope**: `${WORKTREE_DIR}/.opencode/hooks.json` (only when the active worktree differs from the project directory)
 
 Then:
 
-1. If the file does not exist, create it (create the `.opencode/` directory for project scope if needed).
+1. If the file does not exist, create it (create the relevant `.opencode/` directory for project or worktree scope if needed).
 2. If the file exists, parse it and **merge-append** the new entry:
    - If the event key already exists, append the new matcher block to the existing array (do NOT replace existing entries).
    - If the event key does not exist, add it with the new matcher block as the only element.
@@ -120,38 +149,46 @@ Never overwrite the entire file. Never delete existing hooks.
 
 ### 5. Verify the write
 
-After writing, re-read the file and JSON-parse it to confirm validity:
+After writing, re-read the file and JSON-parse it to confirm validity. If the
+write produced invalid JSON, repair the file while preserving existing entries,
+then re-read and parse again. Do not leave your own malformed write for the
+user to repair manually. If pre-existing corruption prevents a safe merge,
+describe the exact issue and preserve the existing content.
 
 - If the parse succeeds, report success.
-- If the parse fails, report the error and ask the user to check the file manually.
+- If the parse fails after repair, do not report success; explain what pre-existing or external corruption prevented a safe repair.
 
 ### 6. Report hot-reload semantics
 
 - **Project scope**: "The hook will hot-reload within ~2 seconds — it will be active on the next session turn."
-- **Global scope**: "The global hooks.json is polled every ~2 seconds too — the hook becomes active shortly after the write, no restart needed."
+- **Global scope**: "The global hooks.json is polled every ~2 seconds too — the hook becomes active shortly after the write, no restart needed." Resolve it from `${Global.Path.config}`, which follows the XDG config directory.
+- **Worktree scope**: the worktree file is polled too and becomes active shortly after the write.
 
-Point the user at the **Active Hooks** block in the system prompt (visible on the next turn for project-scoped hooks) to confirm the hook is live.
+After the final write, allow at least the 2-second poll interval plus the
+500-millisecond debounce before ending this command flow. Then, when available,
+inspect the **Active Hooks** block to confirm the configuration was loaded.
+That block does not prove the hook's behavior works; trigger it and inspect its
+input/output when behavior verification is requested.
 
 ## Example session
 
 ```
 User: /create-hook
-Agent: Which event should this hook fire on? (see the configure-hooks skill for all 26 events)
+Agent: Which event should this hook fire on? (asked only because it was not specified)
 User: PreToolUse
 Agent: What type of hook? command / mcp / http / prompt / agent
 User: command
 Agent: What shell command should run?
 User: ./scripts/check.sh
-Agent: Matcher (which tools should trigger this)? Empty = all tools.
+Agent: Which tools should trigger this? (asked only if relevant and not specified)
 User: Bash
-Agent: Project or global scope? (project hot-reloads in ~2s; global hot-reloads in ~2s too)
+Agent: Project or global scope? (asked only because scope was not specified)
 User: project
 
 Here is the entry I will write to .opencode/hooks.json:
 { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "./scripts/check.sh" }] }] }
-Proceed? (y/n)
-User: y
+The write proceeds under the user's existing authorization.
 
 ✓ Written to .opencode/hooks.json (merge-appended alongside existing hooks).
-The hook will hot-reload within ~2 seconds — it will be active on the next session turn.
+It will hot-reload shortly; the Active Hooks block confirms loaded configuration, not that behavior has been verified.
 ```
