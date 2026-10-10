@@ -172,6 +172,7 @@ export const layer = Layer.effect(
         const shown = hooks.slice(0, MAX)
         const lines = [
           "## Active Hooks",
+          "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
           ...shown.map((h) => `- ${h.event} [${h.scope}/${h.type}] ${h.descriptor}`),
         ]
         if (hooks.length > MAX) lines.push(`… and ${hooks.length - MAX} more (see hooks.json)`)

@@ -117,7 +117,7 @@ Issue/PR writes require existing user authorization. Declarations and previews g
 <!-- specgit:v2:start -->
 ## SpecGit 2
 
-Runtime: 2.5.0. Declaration: `.specgit.yaml` (v2, local configuration).
+Runtime: 2.6.1. Declaration: `.specgit.yaml` (v2, local configuration).
 
 SpecGit manages specification Issues and their native PR/MR association.
 Load the specgit-native skill for the full workflow and recovery steps.
@@ -155,4 +155,5 @@ Hooks and observation state belong to this project and its Git metadata.
 Installed hooks check local checkpoints. They are not a general file-write sandbox.
 
 Declared rules: `{"agent":{"close_issues_after_merge":false,"native_auto_merge":false},"issue_template":"builtin","language":"en","pr_template":"builtin","validation":{"bodies":true,"labels":"off","titles":true}}`
+<!-- specgit:v2:sha256 61c613d3ec6badd41e259150c96dbc6906278cc0b2b098f72d497abfbf8c4bb7 -->
 <!-- specgit:v2:end -->
