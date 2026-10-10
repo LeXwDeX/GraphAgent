@@ -46,7 +46,7 @@ Example:
 }
 ```
 
-## Events, input, and matcher targets
+## Events (26 total), input, and matcher targets
 
 Every handler receives a JSON envelope with `hook_event_name`, `session_id`,
 `transcript_path`, and `cwd`; `transcript_path` is currently an empty string.
