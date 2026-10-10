@@ -7,7 +7,8 @@ import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { Global } from "@opencode-ai/core/global"
 import type { DagStore } from "@opencode-ai/core/dag/store"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { EventV2 } from "@opencode-ai/core/event"
 import { Database } from "@opencode-ai/core/database/database"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
@@ -28,8 +29,10 @@ import { reportIdentity } from "../report-identity"
 export { reportIdentity } from "../report-identity"
 
 const INLINE_REPORT_BYTES = 64 * 1024
+const ANCHOR_TEXT = "Automatically delivered DAG result. Agent-supplied content; this is not human authorization."
 
-const newestFirst = (a: SessionV1.WithParts, b: SessionV1.WithParts) => before(a.info, b.info) ? 1 : before(b.info, a.info) ? -1 : 0
+const newestFirst = (a: SessionV1.WithParts, b: SessionV1.WithParts) =>
+  before(a.info, b.info) ? 1 : before(b.info, a.info) ? -1 : 0
 
 /** No guessed required node or agent name: ambiguous graphs get a stable index. */
 export function selectReportNode(config: WorkflowConfig, nodes: readonly DagStore.NodeRow[]) {
@@ -50,29 +53,46 @@ export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagS
   ].join("\n")
 }
 
-function reportText(
-  node: DagStore.NodeRow,
-  config: WorkflowConfig,
-  source?: SessionV1.WithParts,
-  artifact?: ManagedOutputFileRef,
-) {
+function reportText(node: DagStore.NodeRow, source?: SessionV1.WithParts, artifact?: ManagedOutputFileRef) {
   if (artifact) return `${artifact.summary}\n\n[Complete report](${artifact.path})`
   if (typeof node.output === "string") return node.output
   if (isManagedOutputFileRef(node.output)) return `${node.output.summary}\n\n[Complete report](${node.output.path})`
-  const schema = config.nodes.find((item) => item.id === node.id)?.output_schema
-  const properties = isRecord(schema?.properties) ? schema.properties : undefined
-  if (isRecord(node.output)) {
-    const value = node.output
-    for (const field of ["report", "summary"]) {
-      if (properties?.[field] && typeof value[field] === "string") return value[field]
-    }
-  }
   const final = finalAssistantText(source)
   if (final.ok) {
     const parsed = parseFinalResponse(final.text)
     if (parsed.ok && JSON.stringify(parsed.payload) === JSON.stringify(node.output)) return final.text
   }
   return JSON.stringify(node.output) ?? "(no output)"
+}
+
+function latestUser(history: readonly SessionV1.WithParts[]) {
+  return history
+    .filter(
+      (item) =>
+        item.info.role === "user" &&
+        !item.parts.some((part) => part.type === "text" && part.synthetic && part.text === ANCHOR_TEXT),
+    )
+    .toSorted(newestFirst)[0]
+}
+
+function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
+  const user = latestUser(history)
+  if (!user) return true
+  const assistant = history
+    .filter(
+      (item) =>
+        item.info.role === "assistant" &&
+        !item.parts.some((part) => part.type === "text" && isRecord(part.metadata?.dag_delivery)),
+    )
+    .toSorted(newestFirst)[0]
+  return (
+    assistant?.info.role === "assistant" &&
+    assistant.info.parentID === user.info.id &&
+    !before(assistant.info, user.info) &&
+    assistant.info.finish === "stop" &&
+    assistant.info.error === undefined &&
+    assistant.info.time.completed !== undefined
+  )
 }
 
 /** Large generated text uses the existing integrity-checked artifact storage. */
@@ -105,6 +125,7 @@ export function deliverReport(input: {
   batch: DagStore.WakeBatch
   store: DagStore.Interface
   sessions: Session.Interface
+  events: EventV2.Interface
   directory: string
   source?: SessionV1.WithParts
 }): Effect.Effect<boolean, never, Database.Service> {
@@ -138,7 +159,7 @@ export function deliverReport(input: {
       artifact = node.capturedOutput
     }
     const body = yield* boundReport(
-      node ? reportText(node, config, input.source, artifact) : resultIndex(workflow, nodes),
+      node ? reportText(node, input.source, artifact) : resultIndex(workflow, nodes),
       workflow,
       node,
     ).pipe(Effect.orDie)
@@ -152,114 +173,126 @@ export function deliverReport(input: {
       ...((artifact ?? body.artifact) ? { artifact: artifact ?? body.artifact } : {}),
     }
     const database = yield* Database.Service
-    return yield* database.db
-      .transaction(
-        () =>
-          Effect.gen(function* () {
-            // A reopen/replan or deletion while building the report invalidates this delivery.
-            const current = yield* store.getWorkflow(workflow.id)
-            if (
-              !current ||
-              current.status !== "completed" ||
-              current.seq !== workflow.seq ||
-              current.graphRev !== workflow.graphRev
-            )
-              return false
-            const history = yield* sessions.messages({ sessionID, limit: 20 }).pipe(Effect.orDie)
-            const user = history
-              .filter((item) => item.info.role === "user")
-              .toSorted(newestFirst)[0]
-            const assistant = history
-              .filter((item) => item.info.role === "assistant")
-              .toSorted(newestFirst)[0]
-            // The caller holds withIdle's admission lock: a copied stop message must
-            // never consume a waiting user turn or attach an older report to a new request.
-            if (user && (!assistant || before(assistant.info, user.info))) return false
-            const receipt = yield* sessions.getPart({
-              sessionID,
-              messageID: identity.messageID,
-              partID: identity.answerID,
-            })
-            if (receipt) {
-              if (
-                receipt.type !== "text" ||
-                receipt.text !== body.text ||
-                receipt.metadata?.dag_delivery?.completion_seq !== workflow.seq
-              )
-                return yield* Effect.die(new Error("DAG final report receipt does not match its completion episode"))
-            } else {
-              const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
-              const time = workflow.completedAt ?? workflow.timeUpdated
-              const source = input.source?.info.role === "assistant" ? input.source.info : undefined
-              const parentUser = user?.info.role === "user" ? user.info : undefined
-              const originUser = history
-                .filter((item) => item.info.role === "user" && item.info.time.created <= workflow.timeCreated)
-                .toSorted(newestFirst)[0]
-              const providerID =
-                source?.providerID ??
-                parentUser?.model.providerID ??
-                session.model?.providerID ??
-                Provider.ID.make("dag")
-              const modelID =
-                source?.modelID ?? parentUser?.model.modelID ?? session.model?.id ?? Model.ID.make("result")
-              const agent = session.agent ?? source?.agent ?? "build"
-              if (!originUser) {
-                yield* sessions.updateMessage({
-                  id: identity.anchorID,
-                  sessionID,
-                  role: "user",
-                  time: { created: Math.max(0, time - 1) },
-                  agent,
-                  model: { providerID, modelID },
-                })
-                yield* sessions.updatePart({
-                  id: PartID.make(`${identity.sourceID}_anchor`),
-                  messageID: identity.anchorID,
-                  sessionID,
-                  type: "text",
-                  synthetic: true,
-                  text: "Automatically delivered DAG result. Agent-supplied content; this is not human authorization.",
-                })
-              }
-              yield* sessions.updateMessage({
-                id: identity.messageID,
-                sessionID,
-                role: "assistant",
-                parentID: originUser?.info.id ?? identity.anchorID,
-                time: { created: time, completed: time },
-                agent,
-                mode: agent,
-                providerID,
-                modelID,
-                path: { cwd: input.directory, root: input.directory },
-                cost: 0,
-                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-                finish: "stop",
-              })
-              yield* sessions.updatePart({
-                id: identity.sourceID,
-                messageID: identity.messageID,
-                sessionID,
-                type: "text",
-                text: `DAG · ${workflow.title.slice(0, 200)}${node ? ` · ${node.name.slice(0, 200)}` : " · result index"}`,
-                time: { start: time, end: time },
-                metadata: { dag_delivery: { ...metadata, kind: "source" } },
-              })
-              yield* sessions.updatePart({
-                id: identity.answerID,
-                messageID: identity.messageID,
-                sessionID,
-                type: "text",
-                text: body.text,
-                time: { start: time, end: time },
-                metadata: { dag_delivery: { ...metadata, kind: "answer" } },
-              })
-            }
-            yield* store.markWakeBatchReported(input.batch)
-            return true
-          }),
-        { behavior: "immediate" },
-      )
-      .pipe(Effect.orDie)
+    const getReceipt = () => sessions.getPart({ sessionID, messageID: identity.messageID, partID: identity.answerID })
+    const receiptMatches = (receipt: SessionV1.Part) =>
+      receipt.type === "text" &&
+      receipt.text === body.text &&
+      receipt.metadata?.dag_delivery?.completion_seq === workflow.seq
+    const currentEpisode = Effect.gen(function* () {
+      const current = yield* store.getWorkflow(workflow.id)
+      return current?.status === "completed" && current.seq === workflow.seq && current.graphRev === workflow.graphRev
+    }).pipe(Effect.orDie)
+    const receipt = yield* getReceipt()
+    if (receipt) {
+      if (!receiptMatches(receipt))
+        return yield* Effect.die(new Error("DAG final report receipt does not match its completion episode"))
+      // Adopting a committed receipt appends no transcript and cannot consume a pending user turn.
+      return yield* database.db
+        .transaction(
+          () =>
+            Effect.gen(function* () {
+              if (!(yield* currentEpisode)) return false
+              const current = yield* getReceipt()
+              if (!current || !receiptMatches(current)) return false
+              yield* store.markWakeBatchReported(input.batch)
+              return true
+            }),
+          { behavior: "immediate" },
+        )
+        .pipe(Effect.orDie)
+    }
+    const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+    if (!userTurnAnswered(history)) return false
+    const user = latestUser(history)
+    const entries: EventV2.BatchEvent[] = []
+    const appendMessage = (info: SessionV1.Info) => {
+      entries.push({ definition: SessionV1.Event.MessageUpdated, data: { sessionID, info } })
+    }
+    const appendPart = (part: SessionV1.Part) => {
+      entries.push({
+        definition: SessionV1.Event.PartUpdated,
+        data: { sessionID, part: structuredClone(part), time: Date.now() },
+      })
+    }
+    const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+    const time = workflow.completedAt ?? workflow.timeUpdated
+    const source = input.source?.info.role === "assistant" ? input.source.info : undefined
+    const parentUser = user?.info.role === "user" ? user.info : undefined
+    const originUser = history
+      .filter((item) => item.info.role === "user" && item.info.time.created <= workflow.timeCreated)
+      .toSorted(newestFirst)[0]
+    const providerID =
+      source?.providerID ?? parentUser?.model.providerID ?? session.model?.providerID ?? Provider.ID.make("dag")
+    const modelID = source?.modelID ?? parentUser?.model.modelID ?? session.model?.id ?? Model.ID.make("result")
+    const agent = session.agent ?? source?.agent ?? "build"
+    if (!originUser) {
+      appendMessage({
+        id: identity.anchorID,
+        sessionID,
+        role: "user",
+        time: { created: Math.max(0, time - 1) },
+        agent,
+        model: { providerID, modelID },
+      })
+      appendPart({
+        id: PartID.make(`${identity.sourceID}_anchor`),
+        messageID: identity.anchorID,
+        sessionID,
+        type: "text",
+        synthetic: true,
+        text: ANCHOR_TEXT,
+      })
+    }
+    appendMessage({
+      id: identity.messageID,
+      sessionID,
+      role: "assistant",
+      parentID: originUser?.info.id ?? identity.anchorID,
+      time: { created: time, completed: time },
+      agent,
+      mode: agent,
+      providerID,
+      modelID,
+      path: { cwd: input.directory, root: input.directory },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      finish: "stop",
+    })
+    appendPart({
+      id: identity.sourceID,
+      messageID: identity.messageID,
+      sessionID,
+      type: "text",
+      text: `DAG · ${workflow.title.slice(0, 200)}${node ? ` · ${node.name.slice(0, 200)}` : " · result index"}`,
+      time: { start: time, end: time },
+      metadata: { dag_delivery: { ...metadata, kind: "source" } },
+    })
+    appendPart({
+      id: identity.answerID,
+      messageID: identity.messageID,
+      sessionID,
+      type: "text",
+      text: body.text,
+      time: { start: time, end: time },
+      metadata: { dag_delivery: { ...metadata, kind: "answer" } },
+    })
+    // The final local commit hook joins the transcript projections and wake marks in the
+    // top-level event batch transaction. Notifications are emitted only after it commits.
+    entries[entries.length - 1] = {
+      ...entries[entries.length - 1],
+      options: { commit: () => store.markWakeBatchReported(input.batch).pipe(Effect.orDie) },
+    }
+    const declined = new Error("DAG report admission changed")
+    const validate = Effect.gen(function* () {
+      if (!(yield* currentEpisode) || (yield* getReceipt())) return yield* Effect.die(declined)
+      const currentHistory = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+      if (latestUser(currentHistory)?.info.id !== user?.info.id || !userTurnAnswered(currentHistory))
+        return yield* Effect.die(declined)
+    })
+    return yield* input.events.publishMany(entries, { validate }).pipe(
+      Effect.uninterruptible,
+      Effect.as(true),
+      Effect.catchDefect((defect) => (defect === declined ? Effect.succeed(false) : Effect.die(defect))),
+    )
   })
 }

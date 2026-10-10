@@ -1807,6 +1807,7 @@ const serviceLayer = Layer.effect(
                         batch: reportBatch,
                         store,
                         sessions: sessionSvc,
+                        events,
                         directory: ctx.directory,
                         source,
                       }).pipe(

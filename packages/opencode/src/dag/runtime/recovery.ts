@@ -198,6 +198,10 @@ export function reconcileWorkflow(
               ? yield* messages.value.snapshotForTurn(caller, message.info.id)
               : undefined
           const snapshotID = frozen?.ok ? frozen.value?.id : undefined
+          if (message && Option.isSome(messages) && caller && !snapshotID) {
+            continuations.add(node.id)
+            continue
+          }
           let captured: FinalCaptureResult
           if (
             message &&
@@ -241,7 +245,10 @@ export function reconcileWorkflow(
                   ...attempt,
                   inputSnapshotID: captured.ok ? captured.snapshotID : undefined,
                 })
-              : dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", attempt),
+              : dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", {
+                  ...attempt,
+                  inputSnapshotID: snapshotID,
+                }),
           )
           if (completed) reconciled++
         } else if (nodeConfig?.output_schema) {
@@ -266,7 +273,7 @@ export function reconcileWorkflow(
             ? { projectID: workflow.projectId, directory: workflow.directory, sessionID: node.childSessionId }
             : undefined
           const frozen =
-            final?.ok && Option.isSome(messages) && caller && finalMessage
+            Option.isSome(messages) && caller && finalMessage
               ? yield* messages.value.snapshotForTurn(caller, finalMessage.info.id)
               : undefined
           const snapshotID = frozen?.ok ? frozen.value?.id : undefined
@@ -357,7 +364,15 @@ export function reconcileWorkflow(
                 : undefined,
           )
           if (settlement.kind === "fail") {
-            if (yield* settle(node.id, dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", attempt)))
+            if (
+              yield* settle(
+                node.id,
+                dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", {
+                  ...attempt,
+                  ...(workflowConfig?.result_protocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                }),
+              )
+            )
               reconciled++
           } else {
             const rawText = settlement.output
@@ -616,7 +631,10 @@ export function continueRecoveredMessageNode(
               ? recoveredSettlement(nodeConfig, all, captured.output, true)
               : ({ kind: "fail", reason: captured.reason } as const)
             if (settlement.kind === "fail")
-              return yield* dag.nodeFailed(dagID, nodeID, settlement.reason, "verdict_fail", attempt)
+              return yield* dag.nodeFailed(dagID, nodeID, settlement.reason, "verdict_fail", {
+                ...attempt,
+                inputSnapshotID: snapshotID,
+              })
             return yield* dag.nodeCompleted(dagID, nodeID, settlement.output, {
               ...attempt,
               inputSnapshotID: snapshotID,
@@ -640,7 +658,10 @@ export function continueRecoveredMessageNode(
           const final = finalAssistantText(result, true)
           const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
           if (settlement.kind === "fail")
-            return yield* dag.nodeFailed(dagID, nodeID, settlement.reason, "verdict_fail", attempt)
+            return yield* dag.nodeFailed(dagID, nodeID, settlement.reason, "verdict_fail", {
+              ...attempt,
+              ...(config?.result_protocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+            })
           const ref = yield* commitOutputFileRef(
             settlement.output,
             {

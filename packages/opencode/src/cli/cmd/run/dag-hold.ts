@@ -55,6 +55,8 @@ export type DagWorkflowSnapshot = {
   readonly status: string
   /** The completion episode still lacks its parent answer receipt. */
   readonly awaitingReport?: boolean
+  /** The receipt state could not be established and must be retried at startup. */
+  readonly receiptUnknown?: boolean
 }
 
 export type DagHoldDecision = "hold" | "break"
@@ -183,6 +185,17 @@ function answerWasEmitted(part: Parameters<DagHold["onText"]>[0]): string | unde
   return answerKey(part.sessionID, part.messageID, part.id, delivery.workflow_id, delivery.completion_seq)
 }
 
+function isNotFoundError(error: unknown): boolean {
+  return (
+    isRecord(error) && error.name === "NotFoundError" && isRecord(error.data) && typeof error.data.message === "string"
+  )
+}
+
+function responseStatus(response: unknown): number | undefined {
+  if (!isRecord(response) || typeof response.status !== "number") return undefined
+  return response.status
+}
+
 /** Poll implementation over the in-process SDK client (GET /dag/session/:id —
  * session-scoped, project-ownership enforced server-side). A completed final
  * response remains pending until its exact answer receipt is visible. */
@@ -191,21 +204,22 @@ export async function dagWorkflowsBySession(
   sessionID: string,
   verifiedReceipts: Set<string> = new Set(),
   observation?: ReportObservation,
+  signal?: AbortSignal,
 ): Promise<readonly DagWorkflowSnapshot[] | undefined> {
-  const response = await client.dag.bySession({ sessionID })
+  const response = await client.dag.bySession({ sessionID }, signal ? { signal } : undefined)
   if (response.error) return undefined
   return Promise.all(
     (response.data ?? []).map(async (workflow): Promise<DagWorkflowSnapshot> => {
       const basic = { id: workflow.id, status: workflow.status }
       if (workflow.status !== "completed" || !finalResponseConfig(workflow.config)) return basic
       if (typeof workflow.seq !== "number" || !Number.isSafeInteger(workflow.seq))
-        return { ...basic, awaitingReport: true }
+        return { ...basic, awaitingReport: true, receiptUnknown: true }
       const seq = workflow.seq
       if (typeof workflow.time_updated !== "number" || !Number.isFinite(workflow.time_updated))
-        return { ...basic, awaitingReport: true }
+        return { ...basic, awaitingReport: true, receiptUnknown: true }
       const completedAt = workflow.completed_at
       if (completedAt !== undefined && (typeof completedAt !== "number" || !Number.isFinite(completedAt)))
-        return { ...basic, awaitingReport: true }
+        return { ...basic, awaitingReport: true, receiptUnknown: true }
       const identity = reportIdentity({
         sessionId: sessionID,
         id: workflow.id,
@@ -220,7 +234,10 @@ export async function dagWorkflowsBySession(
         !observation.emitted.has(answerKey(sessionID, identity.messageID, identity.answerID, workflow.id, seq))
       if (verifiedReceipts.has(episode)) return { ...basic, awaitingReport: awaitingEmission() }
       try {
-        const receipt = await client.session.message({ sessionID, messageID: identity.messageID })
+        const receipt = await client.session.message(
+          { sessionID, messageID: identity.messageID },
+          signal ? { signal } : undefined,
+        )
         const found =
           !receipt.error &&
           receipt.data?.info.id === identity.messageID &&
@@ -235,9 +252,10 @@ export async function dagWorkflowsBySession(
             )
           })
         if (found) verifiedReceipts.add(episode)
-        return { ...basic, awaitingReport: !found || awaitingEmission() }
+        const missing = isNotFoundError(receipt.error) || responseStatus(receipt.response) === 404
+        return { ...basic, awaitingReport: !found || awaitingEmission(), receiptUnknown: !!receipt.error && !missing }
       } catch {
-        return { ...basic, awaitingReport: true }
+        return { ...basic, awaitingReport: true, receiptUnknown: true }
       }
     }),
   )
@@ -250,6 +268,37 @@ export function makeDagWorkflowPoll(client: OpencodeClient, sessionID: string): 
   return () => dagWorkflowsBySession(client, sessionID, verifiedReceipts)
 }
 
+const STARTUP_BASELINE_ATTEMPTS = 5
+const STARTUP_BASELINE_TIMEOUT_MS = 3_000
+const STARTUP_BASELINE_RETRY_DELAYS_MS = [100, 200, 400, 800] as const
+
+async function startupBaseline(client: OpencodeClient, sessionID: string): Promise<Set<string>> {
+  let lastFailure: unknown
+  for (let attempt = 0; attempt < STARTUP_BASELINE_ATTEMPTS; attempt++) {
+    const verifiedReceipts = new Set<string>()
+    try {
+      const snapshot = await dagWorkflowsBySession(
+        client,
+        sessionID,
+        verifiedReceipts,
+        undefined,
+        AbortSignal.timeout(STARTUP_BASELINE_TIMEOUT_MS),
+      )
+      if (snapshot && !snapshot.some((workflow) => workflow.receiptUnknown)) return verifiedReceipts
+      lastFailure = new Error(
+        snapshot ? "receipt state is temporarily unknown" : "workflow list is temporarily unavailable",
+      )
+    } catch (error) {
+      lastFailure = error
+    }
+    const delay = STARTUP_BASELINE_RETRY_DELAYS_MS[attempt]
+    if (delay !== undefined) await new Promise((resolve) => setTimeout(resolve, delay))
+  }
+  throw new Error(`Unable to establish the DAG startup baseline after ${STARTUP_BASELINE_ATTEMPTS} attempts`, {
+    cause: lastFailure,
+  })
+}
+
 /** Subscribe first, then await this baseline before starting the prompt. A
  * historic answer already present at startup need not be replayed by the
  * current stream; every later completion must both persist and be emitted. */
@@ -258,8 +307,7 @@ export async function createDagRunHold(
   sessionID: string,
   requestedMessageID?: string,
 ): Promise<DagHold> {
-  const verifiedReceipts = new Set<string>()
-  await dagWorkflowsBySession(client, sessionID, verifiedReceipts).catch(() => undefined)
+  const verifiedReceipts = await startupBaseline(client, sessionID)
   const baseline = new Set(verifiedReceipts)
   const emitted = new Set<string>()
   const poll = () => dagWorkflowsBySession(client, sessionID, verifiedReceipts, { baseline, emitted })

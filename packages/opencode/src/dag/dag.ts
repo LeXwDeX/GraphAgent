@@ -292,7 +292,23 @@ export function computeMergedConfig(
     .filter((n) => !cancelSet.has(n.id))
     .map((n) => (restartSet.has(n.id) || replaceSet.has(n.id) ? (fragmentById.get(n.id) ?? n) : n))
   const added = plan.add.map((id) => fragmentById.get(id)).filter((n): n is NodeConfig => n !== undefined)
-  return { ...current, nodes: [...surviving, ...added] }
+  return reconcileDeliveryNode({ ...current, nodes: [...surviving, ...added] }, current)
+}
+
+/** A prior final report stops being final when a mutation adds work after it.
+ * Existing explicit selections of non-leaf nodes retain their accepted meaning.
+ */
+function reconcileDeliveryNode(config: WorkflowConfig, previous: WorkflowConfig): WorkflowConfig {
+  const selected = config.delivery_node
+  const previouslyLeaf = !previous.nodes.some((node) => node.depends_on.includes(previous.delivery_node ?? ""))
+  if (
+    selected === undefined ||
+    (config.nodes.some((node) => node.id === selected) &&
+      (!previouslyLeaf || !config.nodes.some((node) => node.depends_on.includes(selected))))
+  )
+    return config
+  const { delivery_node: _deliveryNode, ...rest } = config
+  return rest
 }
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
@@ -1150,6 +1166,12 @@ export const layer = Layer.effect(
           ),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
+      const selected = config.delivery_node
+      const replacement = plan.replacements.find((node) => node.previous === selected)
+      plan.config = reconcileDeliveryNode(
+        { ...plan.config, ...(replacement ? { delivery_node: replacement.current } : {}) },
+        config,
+      )
       const addedIDs = new Set(plan.replacements.map((replacement) => replacement.current))
       const added = plan.config.nodes.filter((node) => addedIDs.has(node.id))
       const diagnostics = DagValidation.replanStructuralDiagnostics({
@@ -1372,12 +1394,17 @@ export const layer = Layer.effect(
           nodeID,
           attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
           failureReason: trigger,
+          snapshotID: attempt?.inputSnapshotID,
+          requireCurrentInput:
+            trigger === "verdict_fail" &&
+            (attempt?.inputSnapshotID !== undefined ||
+              parseWorkflowConfig(workflow.config)?.result_protocol === "final_response"),
           expectedAcceptedRevision: attempt?.expectedAcceptedRevision,
         },
         commit,
       )
       if (!guarded.ok) {
-        if (guarded.reason === "stale_input")
+        if (guarded.reason === "stale_input" || guarded.reason === "unassociated")
           yield* Effect.fail(new StaleMessageInputError({ dagID, nodeID, reason: guarded.reason }))
         yield* Effect.fail(new TerminalViolationError(nodeID, node.status, "failed"))
       }

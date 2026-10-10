@@ -398,6 +398,129 @@ describe("final-response answer receipt polling", () => {
     expect(reads).toBe(3)
   })
 
+  test("startup retries a failed workflow list before freezing the receipt baseline", async () => {
+    const old = completed("old-list", 13)
+    let listReads = 0
+    const client = {
+      dag: {
+        bySession: async () => {
+          listReads++
+          if (listReads === 1) return { error: { name: "InternalServerError", data: { message: "temporary" } } }
+          return { data: [old] }
+        },
+      },
+      session: { message: async () => answer(old) },
+    } as unknown as OpencodeClient
+
+    const hold = await DagHold.createDagRunHold(client, "parent")
+    expect(listReads).toBe(2)
+    await hold.onBusy()
+    expect(await hold.onIdle()).toBe("break")
+  })
+
+  test("startup retries an unknown receipt read and does not require the historical answer event", async () => {
+    const old = completed("old-receipt", 14)
+    let listReads = 0
+    let receiptReads = 0
+    const client = {
+      dag: {
+        bySession: async () => {
+          listReads++
+          return { data: [old] }
+        },
+      },
+      session: {
+        message: async () => {
+          receiptReads++
+          if (receiptReads === 1) throw new Error("temporary receipt read failure")
+          return answer(old)
+        },
+      },
+    } as unknown as OpencodeClient
+
+    const hold = await DagHold.createDagRunHold(client, "parent")
+    expect(listReads).toBe(2)
+    expect(receiptReads).toBe(2)
+    await hold.onBusy()
+    expect(await hold.onIdle()).toBe("break")
+  })
+
+  for (const missing of [
+    {
+      name: "NotFoundError",
+      response: () => ({
+        error: { name: "NotFoundError", data: { message: "Message not found" } },
+        response: { status: 404 },
+      }),
+    },
+    {
+      name: "successful lookup without a matching answer part",
+      response: (row: Row) => ({ data: { info: { id: identity(row).messageID }, parts: [] } }),
+    },
+  ]) {
+    test(`startup accepts a confirmed missing receipt from ${missing.name} and still requires a later emission`, async () => {
+      const old = completed("old-missing", 15)
+      const next = completed("new-after-missing", 16)
+      let row = old
+      const reads: string[] = []
+      const client = {
+        dag: { bySession: async () => ({ data: [row] }) },
+        session: {
+          message: async ({ messageID }: { messageID: string }) => {
+            reads.push(messageID)
+            return messageID === identity(old).messageID ? missing.response(old) : answer(next)
+          },
+        },
+      } as unknown as OpencodeClient
+
+      const hold = await DagHold.createDagRunHold(client, "parent")
+      expect(reads).toEqual([identity(old).messageID])
+      row = next
+      await hold.onBusy()
+      expect(await hold.onIdle()).toBe("hold")
+      hold.onText(answer(next).data.parts[0])
+      expect(await hold.onIdle()).toBe("break")
+      expect(reads).toEqual([identity(old).messageID, identity(next).messageID])
+    })
+  }
+
+  test("startup fails clearly after bounded retries when the workflow list stays unavailable", async () => {
+    let listReads = 0
+    const client = {
+      dag: {
+        bySession: async () => {
+          listReads++
+          return { error: { name: "InternalServerError", data: { message: "still unavailable" } } }
+        },
+      },
+      session: { message: async () => ({ data: {} }) },
+    } as unknown as OpencodeClient
+
+    await expect(DagHold.createDagRunHold(client, "parent")).rejects.toThrow(
+      "Unable to establish the DAG startup baseline after 5 attempts",
+    )
+    expect(listReads).toBe(5)
+  })
+
+  test("startup fails clearly after bounded retries when a receipt state stays unknown", async () => {
+    const old = completed("unknown-receipt", 17)
+    let receiptReads = 0
+    const client = {
+      dag: { bySession: async () => ({ data: [old] }) },
+      session: {
+        message: async () => {
+          receiptReads++
+          throw new Error("receipt endpoint unavailable")
+        },
+      },
+    } as unknown as OpencodeClient
+
+    await expect(DagHold.createDagRunHold(client, "parent")).rejects.toThrow(
+      "Unable to establish the DAG startup baseline after 5 attempts",
+    )
+    expect(receiptReads).toBe(5)
+  })
+
   test("an idle poll cannot exit before an already-persisted second answer is emitted", async () => {
     const old = completed("old", 20)
     const next = completed("next", 21)

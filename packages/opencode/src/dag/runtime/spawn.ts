@@ -704,7 +704,10 @@ export function spawnNode(
                         ...settlementAttempt,
                         inputSnapshotID: snapshotID,
                       })
-                    : dag.nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", settlementAttempt)
+                    : dag.nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", {
+                        ...settlementAttempt,
+                        inputSnapshotID: snapshotID,
+                      })
                 ).pipe(
                   Effect.catchIf(isTransitionRejection, () =>
                     Effect.logWarning("final-response settlement guard rejected — node already terminal"),
@@ -789,7 +792,10 @@ export function spawnNode(
                 const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
                 if (settlement.kind === "fail") {
                   yield* dag
-                    .nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", settlementAttempt)
+                    .nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", {
+                      ...settlementAttempt,
+                      ...(input.resultProtocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                    })
                     .pipe(
                       Effect.catchIf(isTransitionRejection, () =>
                         Effect.logWarning("nodeFailed (empty output) guard rejected — node already terminal"),
