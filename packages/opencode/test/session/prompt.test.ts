@@ -6537,6 +6537,74 @@ const withSettleWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =
       }),
   )
 
+for (const scenario of [
+  { apiID: "qwen-test", global: true, model: undefined, expected: true },
+  { apiID: "gpt-test", global: true, model: undefined, expected: false },
+  { apiID: "anthropic/Claude-test", global: true, model: undefined, expected: false },
+  { apiID: "qwen-test", global: false, model: true, expected: true },
+  { apiID: "qwen-test", global: true, model: false, expected: false },
+  { apiID: "gpt-test", global: false, model: true, expected: true },
+]) {
+  distillationIt.instance(
+    `per-model reasoning distillation ${scenario.apiID} global=${scenario.global} model=${scenario.model}`,
+    () =>
+      withSettleWindow(
+        "10000",
+        Effect.gen(function* () {
+          const { llm, dir } = yield* useServerConfig((url) => {
+            const config = providerCfg(url)
+            return {
+              ...config,
+              reasoningDistillation: { enabled: scenario.global },
+              provider: {
+                test: {
+                  ...config.provider.test,
+                  models: {
+                    "test-model": {
+                      ...config.provider.test.models["test-model"],
+                      id: scenario.apiID,
+                      reasoningDistillation: scenario.model === undefined ? undefined : { enabled: scenario.model },
+                    },
+                  },
+                },
+              },
+            }
+          })
+          yield* writeText(path.join(dir, "distillation-source.txt"), "source data")
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const chat = yield* sessions.create({
+            title: "Pinned",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          const calls: string[] = []
+          controlledOrganizer = organizedAs(calls)
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            noReply: true,
+            parts: [{ type: "text", text: "read and explain" }],
+          })
+          yield* llm.push(
+            reply()
+              .reason(longThought("tool-thinking"))
+              .tool("read", { filePath: path.join(dir, "distillation-source.txt") }, "read-source"),
+            reply().text("answer").stop(),
+          )
+          yield* prompt.loop({ sessionID: chat.id })
+          const sent = JSON.stringify((yield* llm.hits).at(-1)?.body)
+          expect(calls).toEqual(scenario.expected ? ["tool"] : [])
+          expect(sent).toContain(scenario.expected ? "adopted-tool" : "tool-thinking")
+          expect(sent).not.toContain(scenario.expected ? "tool-thinking" : "adopted-tool")
+          const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+          expect(parts.some((part) => part.type === "reasoning" && part.distillation !== undefined)).toBe(
+            scenario.expected,
+          )
+        }),
+      ),
+  )
+}
+
 distillationIt.instance("each step's reasoning is rewritten before its first resend", () =>
   withSettleWindow(
     "10000",

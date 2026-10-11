@@ -3,6 +3,7 @@ export * as ConfigProvider from "./provider"
 import { Schema } from "effect"
 import { ProviderV2 } from "../provider"
 import { ModelV2 } from "../model"
+import { ConfigReasoningDistillation } from "./reasoning-distillation"
 
 export class Request extends Schema.Class<Request>("ConfigV2.Provider.Request")({
   headers: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
@@ -59,6 +60,7 @@ class Model extends Schema.Class<Model>("ConfigV2.Model")({
   }).pipe(Schema.Array, Schema.optional),
   cost: Schema.Union([Cost, Cost.pipe(Schema.Array)]).pipe(Schema.optional),
   disabled: Schema.Boolean.pipe(Schema.optional),
+  reasoningDistillation: ConfigReasoningDistillation.Model.pipe(Schema.optional),
   limit: Limit.pipe(Schema.optional),
 }) {}
 

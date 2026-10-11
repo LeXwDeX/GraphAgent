@@ -29,9 +29,39 @@ adopts the result in the background. Review found:
 - Reasoning distillation in `packages/core` (organizer, adoption, scheduling, replay, editability), the opencode session
   host (`prompt.ts`, `processor.ts`, `llm.ts`, `reasoning-adoption.ts`), and an engine-owned reasoning carrier classifier
   in `packages/llm`.
-- No persisted-format change: `distillation` provenance, `providerMetadata` and the `reasoningDistillation` config keep
-  their shapes. The legacy `compatibility` config entry is still accepted and ignored.
-- No public HTTP/event shape change. No DB migration.
+- No reasoning-part or event format change: `distillation` provenance and `providerMetadata` keep their existing
+  shapes. The config schema adds an optional `reasoningDistillation.enabled` field on each provider model; v1 provider
+  model configuration preserves it when migrated. The legacy `compatibility` config entry is still accepted and
+  ignored.
+- The per-model switch adds an optional config HTTP field and matching SDK type. Public events and stored data are unchanged; no DB migration is needed.
+
+## Configuration
+
+The effective switch follows this order: the environment kill-switch disables rewriting; an explicit model-level
+`reasoningDistillation.enabled` value wins next; otherwise GPT and Claude model identifiers default to off, even when
+the global switch is on; then the global `reasoningDistillation.enabled` value applies; if none is set, rewriting
+defaults to on. GPT and Claude detection checks both catalog and API model identifiers, including namespace-delimited
+forms such as `openai/gpt-5` and `us.anthropic.claude-sonnet-4`.
+
+The per-model field contains only `enabled`. Organizer language remains global under
+`reasoningDistillation.language`. Existing canonical-content checks still protect opaque, signed, encrypted, and
+otherwise non-editable reasoning carriers regardless of the effective switch.
+
+The example below uses v2 `providers`. In a v1 `opencode.json`, use the singular `provider` key with the same model-level field.
+
+```jsonc
+{
+  "reasoningDistillation": { "enabled": true, "language": "en" },
+  "providers": {
+    "openai": {
+      "models": {
+        "gpt-5": { "reasoningDistillation": { "enabled": false } },
+        "gpt-5-mini": { "reasoningDistillation": { "enabled": true } },
+      },
+    },
+  },
+}
+```
 
 ## Approach
 

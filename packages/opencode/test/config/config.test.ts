@@ -2154,3 +2154,22 @@ for (const enabled of [true, false]) {
     }),
   )
 }
+
+for (const enabled of [true, false]) {
+  it.instance(`loads per-model reasoning distillation override ${enabled}`, () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* writeConfigEffect(test.directory, {
+        reasoningDistillation: { enabled: true },
+        provider: {
+          "test-provider": {
+            models: { "test-key": { reasoningDistillation: { enabled } } },
+          },
+        },
+      })
+      const config = yield* Config.use.get()
+      expect(config.reasoningDistillation?.enabled).toBe(true)
+      expect(config.provider?.["test-provider"]?.models?.["test-key"]?.reasoningDistillation?.enabled).toBe(enabled)
+    }),
+  )
+}

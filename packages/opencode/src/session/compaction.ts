@@ -172,10 +172,13 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const status = yield* SessionStatus.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
-    const reasoningDistillationEnabled = (cfg: ConfigV1.Info) =>
+    const reasoningDistillationEnabled = (cfg: ConfigV1.Info, model: Provider.Model) =>
       ConfigReasoningDistillation.resolveEnabled({
         disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
         enabled: cfg.reasoningDistillation?.enabled,
+        modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
+        modelID: model.id,
+        apiModelID: model.api.id,
       }).enabled
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
@@ -211,7 +214,7 @@ export const layer = Layer.effect(
       model: Provider.Model
     }) {
       const msgs = yield* MessageV2.toModelMessagesEffect(input.messages, input.model, {
-        reasoningDistillationEnabled: reasoningDistillationEnabled(yield* config.get()),
+        reasoningDistillationEnabled: reasoningDistillationEnabled(yield* config.get(), input.model),
       })
       return Token.estimate(JSON.stringify(msgs))
     })
@@ -367,16 +370,6 @@ export const layer = Layer.effect(
       const tailIndex = selected.tail_start_id
         ? history.findIndex((message) => message.info.id === selected.tail_start_id)
         : -1
-      const recent =
-        tailIndex < 0
-          ? ""
-          : JSON.stringify(
-              yield* MessageV2.toModelMessagesEffect(history.slice(tailIndex), model, {
-                stripMedia: true,
-                toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-                reasoningDistillationEnabled: reasoningDistillationEnabled(cfg),
-              }),
-            )
       const ctx = yield* InstanceState.context
       const template = {
         id: MessageID.ascending(),
@@ -408,6 +401,7 @@ export const layer = Layer.effect(
       let msg: SessionV1.Assistant = template
       let processor: SessionProcessor.Handle
       let result: SessionProcessor.Result
+      let recent = ""
       while (true) {
         const candidate = models[attempt]
         msg = {
@@ -422,8 +416,18 @@ export const layer = Layer.effect(
         const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, candidate, {
           stripMedia: true,
           toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-          reasoningDistillationEnabled: reasoningDistillationEnabled(cfg),
+          reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
         })
+        recent =
+          tailIndex < 0
+            ? ""
+            : JSON.stringify(
+                yield* MessageV2.toModelMessagesEffect(history.slice(tailIndex), candidate, {
+                  stripMedia: true,
+                  toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+                  reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
+                }),
+              )
         result = yield* processor.process({
           user: userMessage,
           agent,

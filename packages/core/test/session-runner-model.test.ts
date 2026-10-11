@@ -57,6 +57,8 @@ describe("SessionRunnerModel", () => {
           },
         }),
       )
+      expect(String(resolved.configID)).toBe("test-model")
+      expect(String(resolved.id)).toBe("api-test-model")
       expect(resolved.route.defaults.http?.body).toEqual({ custom_extension: { enabled: true } })
       const prepared = yield* LLMClient.prepare(
         LLM.request({ model: resolved, prompt: "Final answer", tools: [], toolChoice: "none" }),

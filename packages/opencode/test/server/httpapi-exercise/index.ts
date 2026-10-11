@@ -162,14 +162,47 @@ const scenarios: Scenario[] = [
   http.protected
     .patch("/config", "config.update")
     .mutating()
-    .at((ctx) => ({ path: "/config", headers: ctx.headers(), body: { username: "httpapi-local", maxToolCalls: 41 } }))
-    .json(
-      200,
-      (body) => {
-        object(body)
-        check(body.username === "httpapi-local", "local config update should return patched config")
-        check(body.maxToolCalls === 41, "local config update should return maxToolCalls")
+    .at((ctx) => ({
+      path: "/config",
+      headers: ctx.headers(),
+      body: {
+        username: "httpapi-local",
+        maxToolCalls: 41,
+        reasoningDistillation: { enabled: true },
+        provider: { "test-provider": { models: { "test-key": { reasoningDistillation: { enabled: false } } } } },
       },
+    }))
+    .jsonEffect(
+      200,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          object(body)
+          check(body.username === "httpapi-local", "local config update should return patched config")
+          check(body.maxToolCalls === 41, "local config update should return maxToolCalls")
+          object(body.reasoningDistillation)
+          check(body.reasoningDistillation.enabled === true, "global reasoning distillation should stay enabled")
+          object(body.provider)
+          object(body.provider["test-provider"])
+          object(body.provider["test-provider"].models)
+          object(body.provider["test-provider"].models["test-key"])
+          object(body.provider["test-provider"].models["test-key"].reasoningDistillation)
+          check(
+            body.provider["test-provider"].models["test-key"].reasoningDistillation.enabled === false,
+            "model reasoning distillation override should stay disabled",
+          )
+          const directory = ctx.directory
+          check(directory !== undefined, "config patch should run in a project directory")
+          const saved = JSON.parse(yield* Effect.promise(() => Bun.file(path.join(directory, "config.json")).text()))
+          object(saved.provider)
+          object(saved.provider["test-provider"])
+          object(saved.provider["test-provider"].models)
+          object(saved.provider["test-provider"].models["test-key"])
+          object(saved.provider["test-provider"].models["test-key"].reasoningDistillation)
+          check(
+            saved.provider["test-provider"].models["test-key"].reasoningDistillation.enabled === false,
+            "local config update should persist the per-model reasoning override",
+          )
+        }),
       "status",
     ),
   http.protected
@@ -2049,7 +2082,10 @@ const scenarios: Scenario[] = [
         check(pristine.agent_messages.queued === 1, "accepted input should be queued")
         check(pristine.agent_messages.delivered === 0, "acceptance must not claim delivery")
         check(pristine.agent_messages.undeliverable === 0, "live recipient should have no undeliverable input")
-        check(!JSON.stringify(body).includes("HTTP_MESSAGE_BODY_PRIVATE"), "node metadata must not expose message bodies")
+        check(
+          !JSON.stringify(body).includes("HTTP_MESSAGE_BODY_PRIVATE"),
+          "node metadata must not expose message bodies",
+        )
       }),
     ),
 
@@ -2556,7 +2592,9 @@ const main = Effect.gen(function* () {
 
   const leakedWorktrees = invokingWorktrees().filter((worktree) => !worktreesBefore.has(worktree))
   if (leakedWorktrees.length > 0)
-    return yield* Effect.fail(new Error(`exercise created worktrees on the invoking checkout: ${leakedWorktrees.join(", ")}`))
+    return yield* Effect.fail(
+      new Error(`exercise created worktrees on the invoking checkout: ${leakedWorktrees.join(", ")}`),
+    )
   if (results.some((result) => result.status === "fail"))
     return yield* Effect.fail(new Error("one or more scenarios failed"))
   if (options.failOnSkip && results.some((result) => result.status === "skip"))

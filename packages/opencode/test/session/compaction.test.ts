@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -1227,6 +1227,87 @@ describe("session.compaction.process", () => {
       }
     }),
   )
+
+  for (const family of ["gpt-5.2", "claude-sonnet-4.5"]) {
+    for (const enabled of [undefined, true]) {
+      itCompaction.instance(
+        `compaction fallback reshapes head and retained tail for ${family}, model override ${enabled}`,
+        () => {
+          const stub = llm()
+          const captured: string[] = []
+          let recent = ""
+          const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("qwen-small") }
+          const fallback = { ...small, id: ModelV2.ID.make(family) }
+          const provider = ProviderTest.fake({
+            getSmallModel: () => Effect.succeed(small),
+            getModel: () => Effect.succeed(fallback),
+          })
+          stub.push((input) => {
+            captured.push(JSON.stringify(input.messages))
+            return Stream.fail(new CompactionTimeoutError({ message: "try fallback model" }))
+          })
+          stub.push(reply("complete summary", (input) => captured.push(JSON.stringify(input.messages))))
+          const base = Schema.decodeUnknownSync(ConfigV1.Info)({
+            reasoningDistillation: { enabled: true },
+            provider: { test: { models: { [family]: { reasoningDistillation: { enabled } } } } },
+            compaction: { tail_turns: 1, preserve_recent_tokens: 10_000 },
+          }) as ConfigV1.Info
+          return Effect.gen(function* () {
+            const ssn = yield* SessionNs.Service
+            const instance = yield* TestInstance
+            const events = yield* EventV2Bridge.Service
+            const publish = events.publish.bind(events)
+            spyOn(events, "publish").mockImplementation((definition, data, options) => {
+              if (typeof data === "object" && data !== null && "recent" in data && typeof data.recent === "string")
+                recent = data.recent
+              return publish(definition, data, options)
+            })
+            const session = yield* ssn.create({})
+            for (const name of ["head", "tail"]) {
+              const user = yield* createUserMessage(session.id, `${name} turn`)
+              const assistant = yield* createAssistantMessage(session.id, user.id, instance.directory)
+              yield* ssn.updatePart({
+                id: PartID.ascending(),
+                messageID: assistant.id,
+                sessionID: session.id,
+                type: "reasoning",
+                text: `${name} distilled reasoning`,
+                time: { start: 1, end: 2 },
+                distillation: {
+                  originalText: `${name} original reasoning`,
+                  sourceFingerprint: `${name}-source`,
+                  version: 2,
+                },
+              })
+            }
+            yield* createSummaryCompaction(session.id)
+            const messages = yield* ssn.messages({ sessionID: session.id })
+            const result = yield* SessionCompaction.use.process({
+              parentID: messages.at(-1)!.info.id,
+              messages,
+              sessionID: session.id,
+              auto: false,
+            })
+            expect(result).toBe("continue")
+            expect(captured).toHaveLength(2)
+            expect(captured[0]).toContain("head distilled reasoning")
+            expect(captured[0]).not.toContain("head original reasoning")
+            expect(captured[1]).toContain(enabled ? "head distilled reasoning" : "head original reasoning")
+            expect(captured[1]).not.toContain(enabled ? "head original reasoning" : "head distilled reasoning")
+            expect(recent).toContain(enabled ? "tail distilled reasoning" : "tail original reasoning")
+            expect(recent).not.toContain(enabled ? "tail original reasoning" : "tail distilled reasoning")
+          }).pipe(
+            withCompaction({
+              llm: stub.layer,
+              provider,
+              config: TestConfig.layer({ get: () => Effect.succeed(base) }),
+            }),
+          )
+        },
+        { git: true },
+      )
+    }
+  }
 
   for (const outcome of [
     "success",

@@ -70,8 +70,11 @@ export type Error =
   | UnsupportedApiError
   | Integration.AuthorizationError
 
+/** Retain the configured key when the transport model uses an upstream alias. */
+export type ResolvedModel = Model & { readonly configID?: ModelV2.ID }
+
 export interface Interface {
-  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>
+  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<ResolvedModel, Error>
   /** `preferredVariant` is applied when the selected small model declares it, and ignored otherwise. */
   readonly resolveSmall: (
     providerID: ProviderV2.ID,
@@ -141,7 +144,7 @@ const apiName = (model: ModelV2.Info) =>
 export const fromCatalogModel = (
   model: ModelV2.Info,
   credential?: Credential.Value,
-): Effect.Effect<Model, UnsupportedApiError> => {
+): Effect.Effect<ResolvedModel, UnsupportedApiError> => {
   const resolved =
     credential?.metadata === undefined
       ? model
@@ -149,25 +152,32 @@ export const fromCatalogModel = (
           Object.assign(draft.request.body, credential.metadata)
         })
   const key = apiKey(resolved, credential)
+  const identify = (model: Model): ResolvedModel => Object.assign(model, { configID: resolved.id })
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai") {
     return Effect.succeed(
-      withDefaults(resolved, OpenAIResponses.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
-        .model({ id: resolved.api.id }),
+      identify(
+        withDefaults(resolved, OpenAIResponses.route)
+          .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
+          .model({ id: resolved.api.id }),
+      ),
     )
   }
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/anthropic") {
     return Effect.succeed(
-      withDefaults(resolved, AnthropicMessages.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.header("x-api-key", key) })
-        .model({ id: resolved.api.id }),
+      identify(
+        withDefaults(resolved, AnthropicMessages.route)
+          .with({ auth: key === undefined ? Auth.none : Auth.header("x-api-key", key) })
+          .model({ id: resolved.api.id }),
+      ),
     )
   }
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai-compatible" && resolved.api.url) {
     return Effect.succeed(
-      withDefaults(resolved, OpenAICompatibleChat.route)
-        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
-        .model({ id: resolved.api.id }),
+      identify(
+        withDefaults(resolved, OpenAICompatibleChat.route)
+          .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
+          .model({ id: resolved.api.id }),
+      ),
     )
   }
   return Effect.fail(
