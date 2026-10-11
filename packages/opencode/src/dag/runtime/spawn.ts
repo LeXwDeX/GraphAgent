@@ -38,6 +38,7 @@ import { SessionID, MessageID } from "@/session/schema"
 import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
+import type { ResultProtocol } from "../dag"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
@@ -46,7 +47,15 @@ import { isTransitionRejection, isNodeTerminalStatus } from "@opencode-ai/core/d
 import type { DagStore } from "@opencode-ai/core/dag/store"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { registerCaptureSlot, clearCaptureSlot, settleCapturedOutput, settlePlainTextOutput } from "./capture"
+import {
+  registerCaptureSlot,
+  clearCaptureSlot,
+  registerFinalResponseSession,
+  clearFinalResponseSession,
+  settleCapturedOutput,
+  settlePlainTextOutput,
+} from "./capture"
+import { captureFinalResponse, finalAssistantText } from "./final-response"
 import {
   commitOutputFileRef,
   ensureReportAreaGitignore,
@@ -73,6 +82,8 @@ export interface NodeSpawnInput {
   /** Verified completed dependency artifacts, scoped to this child session. */
   inputArtifacts?: ManagedOutputFileRef[]
   outputSchema?: Record<string, unknown>
+  /** Missing means the persisted submit_result protocol for direct legacy callers. */
+  resultProtocol?: ResultProtocol
   timeoutMs?: number
   reportToParent?: boolean
   reviewImplementationFingerprint?: string
@@ -597,6 +608,7 @@ export function spawnNode(
             childSessionID: childSession.id,
           } satisfies NodeExecutionAttempt
 
+          if (input.resultProtocol === "final_response") registerFinalResponseSession(childSession.id)
           if (input.outputSchema) registerCaptureSlot(childSession.id, input.outputSchema)
 
           // The prompt runs WITHOUT a timeout — the deadline watcher owns the
@@ -658,7 +670,50 @@ export function spawnNode(
                 )
                 return
               }
-              if (input.outputSchema) {
+              if (input.outputSchema && input.resultProtocol === "final_response") {
+                if (Option.isSome(messageService) && caller && !snapshotID)
+                  yield* new Dag.StaleMessageInputError({
+                    dagID: input.dagID,
+                    nodeID: input.nodeID,
+                    reason: "unassociated",
+                  })
+                const captured = yield* captureFinalResponse({
+                  store: dag.store,
+                  sessionID: childSession.id,
+                  message: result,
+                  snapshotID,
+                  caller,
+                  guard: {
+                    workflowID: input.dagID,
+                    nodeID: input.nodeID,
+                    attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
+                  },
+                })
+                if (!captured.ok && (captured.code === "stale_input" || captured.code === "unassociated"))
+                  yield* new Dag.StaleMessageInputError({
+                    dagID: input.dagID,
+                    nodeID: input.nodeID,
+                    reason: captured.code,
+                  })
+                const settlement = captured.ok
+                  ? settleCapturedOutput(captured.output, input.reviewImplementationFingerprint, "", true)
+                  : ({ kind: "fail", reason: captured.reason } as const)
+                yield* (
+                  settlement.kind === "complete"
+                    ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
+                        ...settlementAttempt,
+                        inputSnapshotID: snapshotID,
+                      })
+                    : dag.nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", {
+                        ...settlementAttempt,
+                        inputSnapshotID: snapshotID,
+                      })
+                ).pipe(
+                  Effect.catchIf(isTransitionRejection, () =>
+                    Effect.logWarning("final-response settlement guard rejected — node already terminal"),
+                  ),
+                )
+              } else if (input.outputSchema) {
                 const readSettlement = Effect.fn("DagRuntime.spawn.readSettlement")(function* () {
                   const updatedNode = yield* dag.store.getNode(input.dagID, input.nodeID).pipe(Effect.orDie)
                   if (
@@ -693,19 +748,22 @@ export function spawnNode(
                 if (verdict.settlement.kind === "fail" && verdict.neverCalled) {
                   if (!(yield* claimResubmission)) return
                   registerCaptureSlot(childSession.id, input.outputSchema)
-                  result = yield* promptSvc.prompt({
-                    messageID: MessageID.ascending(),
-                    sessionID: childSession.id,
-                    model,
-                    agent: agent.name,
-                    ...(input.variant ? { variant: input.variant } : {}),
-                    parts: [
-                      {
-                        type: "text",
-                        text: `You ended your turn without calling the submit_result tool, so this node recorded no structured output. Do not redo the work. If tools remain available, call submit_result with your full result matching the schema from your instructions. This follow-up retains your existing tool-call budget. If tools are disabled because that budget is exhausted, report the blocker in text; the node cannot succeed without a submitted result.`,
-                      },
-                    ],
-                  }, { continueToolBudget: true })
+                  result = yield* promptSvc.prompt(
+                    {
+                      messageID: MessageID.ascending(),
+                      sessionID: childSession.id,
+                      model,
+                      agent: agent.name,
+                      ...(input.variant ? { variant: input.variant } : {}),
+                      parts: [
+                        {
+                          type: "text",
+                          text: `You ended your turn without calling the submit_result tool, so this node recorded no structured output. Do not redo the work. If tools remain available, call submit_result with your full result matching the schema from your instructions. This follow-up retains your existing tool-call budget. If tools are disabled because that budget is exhausted, report the blocker in text; the node cannot succeed without a submitted result.`,
+                        },
+                      ],
+                    },
+                    { continueToolBudget: true },
+                  )
                   inputSnapshot =
                     Option.isSome(messageService) && caller
                       ? yield* messageService.value.snapshotForTurn(caller, result.info.id)
@@ -730,10 +788,14 @@ export function spawnNode(
                   ),
                 )
               } else {
-                const settlement = settlePlainTextOutput(result.parts.findLast((p) => p.type === "text")?.text)
+                const final = finalAssistantText(result, true)
+                const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
                 if (settlement.kind === "fail") {
                   yield* dag
-                    .nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", settlementAttempt)
+                    .nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", {
+                      ...settlementAttempt,
+                      ...(input.resultProtocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                    })
                     .pipe(
                       Effect.catchIf(isTransitionRejection, () =>
                         Effect.logWarning("nodeFailed (empty output) guard rejected — node already terminal"),
@@ -857,7 +919,12 @@ export function spawnNode(
               )
               break
             }
-            let nudge = !!(input.outputSchema && revisions?.ok && revisions.value.queued === 0)
+            let nudge = !!(
+              input.outputSchema &&
+              input.resultProtocol !== "final_response" &&
+              revisions?.ok &&
+              revisions.value.queued === 0
+            )
             if (nudge) {
               const admitted = yield* claimResubmission.pipe(
                 Effect.catchIf(isStaleMessageInput, () => Effect.succeed(undefined)),
@@ -888,7 +955,10 @@ export function spawnNode(
             // The prompt finished (or this fiber was interrupted) — the
             // deadline watcher has no further job.
             yield* Fiber.interrupt(watcherFiber).pipe(Effect.ignore)
-            if (childSessionID) clearCaptureSlot(childSessionID)
+            if (childSessionID) {
+              clearCaptureSlot(childSessionID)
+              clearFinalResponseSession(childSessionID)
+            }
           }),
         ),
         // The fiber can be interrupted between session creation and node

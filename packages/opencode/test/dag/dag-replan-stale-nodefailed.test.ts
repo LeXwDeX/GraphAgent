@@ -446,7 +446,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Replan stale",
-            config: { name: "replan-stale", nodes: [node("a", [], 500)] },
+            config: { name: "replan-stale", result_protocol: "submit_result", nodes: [node("a", [], 500)] },
           })
           const firstA = yield* takeWithin(childPrompts, "a did not start")
           expect(firstA.title).toBe("a")
@@ -585,7 +585,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Restart rewire",
-            config: { name: "restart-rewire", nodes: [node("a"), node("b", ["a"])] },
+            config: { name: "restart-rewire", result_protocol: "submit_result", nodes: [node("a"), node("b", ["a"])] },
           })
           const gateA = yield* takeWithin(childPrompts, "a did not start")
           expect(gateA.title).toBe("a")
@@ -641,7 +641,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Restart ready",
-            config: { name: "restart-ready", nodes: [node("a", [], 500)] },
+            config: { name: "restart-ready", result_protocol: "submit_result", nodes: [node("a", [], 500)] },
           })
           const firstA = yield* takeWithin(childPrompts, "a did not start")
           expect(firstA.title).toBe("a")

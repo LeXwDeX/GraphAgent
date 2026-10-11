@@ -263,7 +263,17 @@ function runWakeTest<A>(
       }).run().pipe(Effect.orDie)
       if (beforeInit) yield* beforeInit({ database })
       yield* loop.init()
-      return yield* test({ dag, loop, store, status, childPrompts, parentPrompts, parentSettled, workflow })
+      // This suite exercises the original parent wake contract. Its mocked
+      // sessions do not persist direct final-response receipts, so keep the
+      // workflow protocol explicit while preserving any case override.
+      const legacyDag: Dag.Interface = {
+        ...dag,
+        create: (input) => dag.create({
+          ...input,
+          config: { ...input.config, result_protocol: input.config.result_protocol ?? "submit_result" },
+        }),
+      }
+      return yield* test({ dag: legacyDag, loop, store, status, childPrompts, parentPrompts, parentSettled, workflow })
     }).pipe(
       Effect.provide(wakeLayer({ childPrompts, parentPrompts, parentSettled, agentPermissions })),
       Effect.provideService(InstanceRef, {
@@ -1607,7 +1617,7 @@ describe("DagLoop atomic wake integration", () => {
                 projectID: "project-1",
                 sessionID: "ses_parent",
                 title: "Restart wake",
-                config: { name: "restart-wake", nodes: [node("restart-node")] },
+                config: { name: "restart-wake", result_protocol: "submit_result", nodes: [node("restart-node")] },
               })
               const child = yield* takeWithin(q1.childPrompts, "restart node did not start")
               yield* Deferred.succeed(child.release, "done")

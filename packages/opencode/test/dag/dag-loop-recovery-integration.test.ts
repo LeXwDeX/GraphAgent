@@ -279,7 +279,7 @@ describe("DagLoop crash recovery integration", () => {
         Effect.gen(function* () {
           const dagID = yield* createRunningNode(dag, database, [
             node({ output_schema: { type: "object" } }),
-          ])
+          ], undefined, undefined, { result_protocol: "submit_result" })
           yield* store.setCapturedOutput("ses_child1", { summary: "done" })
 
           yield* loop.init()

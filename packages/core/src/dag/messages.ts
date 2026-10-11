@@ -81,7 +81,9 @@ export interface Guard {
   close?: boolean
   /** Conditional failure applies only to this accepted revision, checked in the settlement transaction. */
   expectedAcceptedRevision?: number
-  /** Failure/cancellation outranks pending input unless expectedAcceptedRevision makes it conditional. */
+  /** Response-derived failure must still own its original associated input snapshot. */
+  requireCurrentInput?: boolean
+  /** Failure/cancellation outranks pending input unless explicitly made conditional. */
   failureReason?: string
 }
 export interface Metadata {
@@ -673,10 +675,15 @@ export const layer = Layer.effect(
                       sql`SELECT * FROM agent_input_snapshot WHERE id = ${input.snapshotID} AND mailbox_id = ${box.id}`,
                     )
                   : undefined
-                if (!input.failureReason && box.revision > 0 && (!frozen || frozen.revision !== box.revision))
+                const checkSnapshot = !input.failureReason || input.requireCurrentInput === true
+                if (
+                  checkSnapshot &&
+                  ((!frozen && (box.revision > 0 || input.snapshotID !== undefined)) ||
+                    (frozen && frozen.revision !== box.revision))
+                )
                   return reject("stale_input")
-                if (!input.failureReason && frozen && !frozen.associated) return reject("unassociated")
-                if (!input.failureReason && frozen?.stop_reason && frozen.stop_reason !== "budget_exhausted")
+                if (checkSnapshot && frozen && !frozen.associated) return reject("unassociated")
+                if (checkSnapshot && frozen?.stop_reason && frozen.stop_reason !== "budget_exhausted")
                   return reject("stopped")
                 const claimed = yield* tx.get(
                   sql`UPDATE agent_mailbox SET closed_reason = ${input.close === false ? null : (input.failureReason ?? "completed")} WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING id`,

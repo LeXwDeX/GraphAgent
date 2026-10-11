@@ -22,10 +22,11 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
-import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
+import { createOpencodeClient, type OpencodeClient, type TextPart, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { DagHold } from "./run/dag-hold"
+import { MessageID } from "@/session/schema"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -658,6 +659,7 @@ export const RunCommand = effectCmd({
           process.exit(1)
         }
         const sessionID = sess.id
+        let dagHold: DagHold.DagHold | undefined
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -674,136 +676,155 @@ export const RunCommand = effectCmd({
           return false
         }
 
+        function renderText(part: TextPart) {
+          if (dagHold?.hasText(part)) return
+          if (!emit("text", { part })) {
+            const text = part.text.trim()
+            if (text) {
+              if (!process.stdout.isTTY) process.stdout.write(text + EOL)
+              else {
+                UI.empty()
+                UI.println(text)
+                UI.empty()
+              }
+            }
+          }
+          dagHold?.onText(part)
+        }
+
         // Consume one subscribed event stream for the active session and mirror it
         // to stdout/UI. `client` is passed explicitly because attach mode may
         // rebind the SDK to the session's directory after the subscription is
         // created, and replies issued from inside the loop must use that client.
-        async function loop(client: OpencodeClient, events: Awaited<ReturnType<typeof sdk.event.subscribe>>) {
+        async function loop(
+          client: OpencodeClient,
+          events: Awaited<ReturnType<typeof sdk.event.subscribe>>,
+          stop: () => void,
+        ) {
           const toggles = new Map<string, boolean>()
           let error: string | undefined
           // Issue 614: consumer-only DAG hold. Poll dag.bySession on the
           // busy/idle transitions of the target session and keep consuming
           // events while a session workflow may still owe a wake turn. Attach
           // mode keeps today's break-on-first-idle exit.
-          const dagHold = args.attach ? undefined : DagHold.createDagHold(() => DagHold.dagWorkflowsBySession(client, sessionID))
 
-          for await (const event of events.stream) {
-            if (
-              event.type === "message.updated" &&
-              event.properties.sessionID === sessionID &&
-              event.properties.info.role === "assistant" &&
-              args.format !== "json" &&
-              toggles.get("start") !== true
-            ) {
-              UI.empty()
-              UI.println(`> ${event.properties.info.agent} · ${event.properties.info.modelID}`)
-              UI.empty()
-              toggles.set("start", true)
-            }
-
-            if (event.type === "message.part.updated") {
-              const part = event.properties.part
-              if (part.sessionID !== sessionID) continue
-
-              if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
-                if (emit("tool_use", { part })) continue
-                if (part.state.status === "completed") {
-                  await tool(part)
-                  continue
-                }
-                await toolError(part)
-                UI.error(part.state.error)
-              }
-
+          try {
+            for await (const event of dagHold ? DagHold.pollEvents(events.stream, sessionID, stop) : events.stream) {
               if (
-                part.type === "tool" &&
-                part.tool === "task" &&
-                part.state.status === "running" &&
-                args.format !== "json"
+                event.type === "message.updated" &&
+                event.properties.sessionID === sessionID &&
+                event.properties.info.role === "user" &&
+                dagHold
+              )
+                dagHold.onUserMessage(event.properties.info.id)
+              if (
+                event.type === "message.updated" &&
+                event.properties.sessionID === sessionID &&
+                event.properties.info.role === "assistant" &&
+                args.format !== "json" &&
+                toggles.get("start") !== true
               ) {
-                if (toggles.get(part.id) === true) continue
-                await tool(part)
-                toggles.set(part.id, true)
-              }
-
-              if (part.type === "step-start") {
-                if (emit("step_start", { part })) continue
-              }
-
-              if (part.type === "step-finish") {
-                if (emit("step_finish", { part })) continue
-              }
-
-              if (part.type === "text" && part.time?.end) {
-                if (emit("text", { part })) continue
-                const text = part.text.trim()
-                if (!text) continue
-                if (!process.stdout.isTTY) {
-                  process.stdout.write(text + EOL)
-                  continue
-                }
                 UI.empty()
-                UI.println(text)
+                UI.println(`> ${event.properties.info.agent} · ${event.properties.info.modelID}`)
                 UI.empty()
+                toggles.set("start", true)
               }
 
-              if (part.type === "reasoning" && part.time?.end && thinking) {
-                if (emit("reasoning", { part })) continue
-                const text = part.text.trim()
-                if (!text) continue
-                const line = `Thinking: ${text}`
-                if (process.stdout.isTTY) {
-                  UI.empty()
-                  UI.println(`${UI.Style.TEXT_DIM}\u001b[3m${line}\u001b[0m${UI.Style.TEXT_NORMAL}`)
-                  UI.empty()
-                  continue
+              if (event.type === "message.part.updated") {
+                const part = event.properties.part
+                if (part.sessionID !== sessionID) continue
+
+                if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
+                  if (emit("tool_use", { part })) continue
+                  if (part.state.status === "completed") {
+                    await tool(part)
+                    continue
+                  }
+                  await toolError(part)
+                  UI.error(part.state.error)
                 }
-                process.stdout.write(line + EOL)
+
+                if (
+                  part.type === "tool" &&
+                  part.tool === "task" &&
+                  part.state.status === "running" &&
+                  args.format !== "json"
+                ) {
+                  if (toggles.get(part.id) === true) continue
+                  await tool(part)
+                  toggles.set(part.id, true)
+                }
+
+                if (part.type === "step-start") {
+                  if (emit("step_start", { part })) continue
+                }
+
+                if (part.type === "step-finish") {
+                  if (emit("step_finish", { part })) continue
+                }
+
+                if (part.type === "text" && part.time?.end) {
+                  renderText(part)
+                }
+
+                if (part.type === "reasoning" && part.time?.end && thinking) {
+                  if (emit("reasoning", { part })) continue
+                  const text = part.text.trim()
+                  if (!text) continue
+                  const line = `Thinking: ${text}`
+                  if (process.stdout.isTTY) {
+                    UI.empty()
+                    UI.println(`${UI.Style.TEXT_DIM}\u001b[3m${line}\u001b[0m${UI.Style.TEXT_NORMAL}`)
+                    UI.empty()
+                    continue
+                  }
+                  process.stdout.write(line + EOL)
+                }
+              }
+
+              if (event.type === "session.error") {
+                const props = event.properties
+                if (props.sessionID !== sessionID || !props.error) continue
+                let err = String(props.error.name)
+                if ("data" in props.error && props.error.data && "message" in props.error.data) {
+                  err = String(props.error.data.message)
+                }
+                error = error ? error + EOL + err : err
+                if (emit("error", { error: props.error })) continue
+                UI.error(err)
+              }
+
+              if (event.type === "session.status" && event.properties.sessionID === sessionID) {
+                if (event.properties.status.type === "busy") {
+                  await dagHold?.onBusy()
+                }
+                if (event.properties.status.type === "idle" && (await dagHold?.onIdle()) !== "hold") break
+              }
+
+              if (event.type === "permission.asked") {
+                const permission = event.properties
+                if (permission.sessionID !== sessionID) continue
+
+                if (args["dangerously-skip-permissions"]) {
+                  await client.permission.reply({
+                    requestID: permission.id,
+                    reply: "once",
+                  })
+                } else {
+                  UI.println(
+                    UI.Style.TEXT_WARNING_BOLD + "!",
+                    UI.Style.TEXT_NORMAL +
+                      `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
+                  )
+                  await client.permission.reply({
+                    requestID: permission.id,
+                    reply: "reject",
+                  })
+                }
               }
             }
-
-            if (event.type === "session.error") {
-              const props = event.properties
-              if (props.sessionID !== sessionID || !props.error) continue
-              let err = String(props.error.name)
-              if ("data" in props.error && props.error.data && "message" in props.error.data) {
-                err = String(props.error.data.message)
-              }
-              error = error ? error + EOL + err : err
-              if (emit("error", { error: props.error })) continue
-              UI.error(err)
-            }
-
-            if (event.type === "session.status" && event.properties.sessionID === sessionID) {
-              if (event.properties.status.type === "busy") {
-                await dagHold?.onBusy()
-              }
-              if (event.properties.status.type === "idle" && (await dagHold?.onIdle()) !== "hold") {
-                break
-              }
-            }
-
-            if (event.type === "permission.asked") {
-              const permission = event.properties
-              if (permission.sessionID !== sessionID) continue
-
-              if (args["dangerously-skip-permissions"]) {
-                await client.permission.reply({
-                  requestID: permission.id,
-                  reply: "once",
-                })
-              } else {
-                UI.println(
-                  UI.Style.TEXT_WARNING_BOLD + "!",
-                  UI.Style.TEXT_NORMAL +
-                    `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
-                )
-                await client.permission.reply({
-                  requestID: permission.id,
-                  reply: "reject",
-                })
-              }
-            }
+          } finally {
+            stop()
           }
           return error
         }
@@ -816,8 +837,13 @@ export const RunCommand = effectCmd({
         await share(client, sessionID)
 
         if (!interactive) {
-          const events = await client.event.subscribe()
-          const completed = loop(client, events).catch((e) => {
+          const subscription = new AbortController()
+          const events = await client.event.subscribe(undefined, { signal: subscription.signal })
+          const requestedMessageID = args.attach ? undefined : MessageID.ascending()
+          dagHold = args.attach
+            ? undefined
+            : await DagHold.createDagRunHold(client, sessionID, requestedMessageID, renderText)
+          const completed = loop(client, events, () => subscription.abort()).catch((e) => {
             console.error(e)
             process.exitCode = 1
           })
@@ -830,6 +856,7 @@ export const RunCommand = effectCmd({
           if (args.command) {
             const result = await client.session.command({
               sessionID,
+              messageID: requestedMessageID,
               agent,
               model: args.model,
               command: args.command,
@@ -848,6 +875,7 @@ export const RunCommand = effectCmd({
           const model = pick(args.model)
           const result = await client.session.prompt({
             sessionID,
+            messageID: requestedMessageID,
             agent,
             model,
             variant: args.variant,

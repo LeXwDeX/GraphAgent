@@ -228,7 +228,8 @@ export const NodeSchema = Schema.Struct({
   }),
   cancel: Schema.optional(Schema.Boolean).annotate({ description: "(replan only) Cancel this node" }),
   output_schema: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
-    description: "JSON Schema; child agent must call submit_result to submit structured output",
+    description:
+      "JSON Schema for the child's final JSON answer (historical submit_result workflows keep their tool protocol)",
   }),
   review: Schema.optional(
     Schema.Struct({
@@ -253,6 +254,14 @@ const NodeDefaults = Schema.Struct({
 })
 
 const GraphBudgetFields = {
+  result_protocol: Schema.optional(Schema.Literals(["final_response", "submit_result"])).annotate({
+    description:
+      "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
+  }),
+  delivery_node: Schema.optional(Schema.String).annotate({
+    description:
+      "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
+  }),
   max_concurrency: Schema.optional(Schema.Number).annotate({ description: "Max parallel nodes. Default: 5" }),
   max_node_replan_attempts: Schema.optional(Schema.Number).annotate({
     description: "Max replan restarts per node ID. Default: 5",
@@ -385,7 +394,11 @@ function driftHint(path: string, message: string) {
 
 export function schemaDiagnostics(error: unknown, basePath = ""): Diagnostic[] {
   const leaves: LeafIssue[] = []
-  collectLeafIssues(isRecord(error) && error.issue !== undefined ? error.issue : error, basePath ? [basePath] : [], leaves)
+  collectLeafIssues(
+    isRecord(error) && error.issue !== undefined ? error.issue : error,
+    basePath ? [basePath] : [],
+    leaves,
+  )
   if (leaves.length === 0) {
     return [diagnostic({ code: DIAGNOSTIC_CODES.schemaInvalid, path: basePath || "$", message: String(error) })]
   }
@@ -437,8 +450,7 @@ export function replanEnvelopeDiagnostic(value: unknown): Diagnostic | undefined
 // ============================================================================
 
 export type BlockSource =
-  | { objective: string; blocks: readonly DagBlocks.WorkflowBlock[] }
-  | { nodes: readonly NodeSpec[] }
+  { objective: string; blocks: readonly DagBlocks.WorkflowBlock[] } | { nodes: readonly NodeSpec[] }
 
 export function compileBlockSource(
   source: BlockSource,
@@ -531,6 +543,7 @@ export function templateBindingErrors(nodes: readonly NodeConfig[]): string[] {
 
 export interface StructuralInput {
   nodes: readonly NodeConfig[]
+  delivery_node?: string
   mode?: ExecutionMode
   max_total_nodes?: number
   /** Nodes already registered in a live workflow; counts toward the ceiling. */
@@ -751,11 +764,11 @@ export function checkpointGateDiagnostics(
           code: DIAGNOSTIC_CODES.dagInvalid,
           path: `nodes[${dependent.id}].condition`,
           message:
-            `reporting checkpoint "${checkpoint.id}" has dependent "${dependent.id}" that is not gated on its output`
-            + ` — the engine spawns "${dependent.id}" as soon as "${checkpoint.id}" completes, so the checkpoint verdict cannot be acted on first`,
+            `reporting checkpoint "${checkpoint.id}" has dependent "${dependent.id}" that is not gated on its output` +
+            ` — the engine spawns "${dependent.id}" as soon as "${checkpoint.id}" completes, so the checkpoint verdict cannot be acted on first`,
           hint:
-            `Gate "${dependent.id}" with condition: "${checkpoint.id}.output.<field> == ..." (e.g. on its verdict) and declare output_schema on "${checkpoint.id}" so the gate reads a schema-validated verdict,`
-            + ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally`,
+            `Gate "${dependent.id}" with condition: "${checkpoint.id}.output.<field> == ..." (e.g. on its verdict) and declare output_schema on "${checkpoint.id}" so the gate reads a schema-validated verdict,` +
+            ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally`,
         }),
       )
     // DAG-01: a checkpoint whose output a gate reads must declare
@@ -773,11 +786,11 @@ export function checkpointGateDiagnostics(
               code: DIAGNOSTIC_CODES.dagInvalid,
               path: `nodes[${checkpoint.id}].output_schema`,
               message:
-                `reporting checkpoint "${checkpoint.id}" is gated on its output but declares no output_schema`
-                + ` — without a schema the child may complete with prose that resolves no fields, leaving the gate permanently false and silently skipping the gated subtree`,
+                `reporting checkpoint "${checkpoint.id}" is gated on its output but declares no output_schema` +
+                ` — without a schema the child may complete with prose that resolves no fields, leaving the gate permanently false and silently skipping the gated subtree`,
               hint:
-                `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),`
-                + ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally`,
+                `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),` +
+                ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally`,
             }),
           ]
         : []
@@ -948,8 +961,22 @@ function outputSchemaKeywordDiagnostics(nodes: readonly NodeConfig[]): Diagnosti
  * decide how to surface the diagnostics (tool output vs. create rejection). */
 export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
   const duplicates = duplicateNodeIds(input.nodes)
-  const review = reviewLifecycleDiagnostics({ mode: input.mode, nodes: input.nodes, node_defaults: input.node_defaults })
+  const review = reviewLifecycleDiagnostics({
+    mode: input.mode,
+    nodes: input.nodes,
+    node_defaults: input.node_defaults,
+  })
   return sortDiagnostics([
+    ...(input.delivery_node !== undefined && !input.nodes.some((node) => node.id === input.delivery_node)
+      ? [
+          diagnostic({
+            severity: "error",
+            code: "schema.invalid",
+            path: "config.delivery_node",
+            message: `delivery_node "${input.delivery_node}" does not exist in the graph`,
+          }),
+        ]
+      : []),
     ...tagLegacyClass(duplicateIdDiagnostics(duplicates), 0),
     ...tagLegacyClass(danglingDependencyDiagnostics(input.nodes, input.known_node_ids), 1),
     ...tagLegacyClass(inputMappingDiagnostics(input.nodes), 1),
@@ -1191,6 +1218,7 @@ export function validatePostCompile(input: {
   profile: Profile
   config: {
     mode?: ExecutionMode
+    delivery_node?: string
     max_total_nodes?: number
     node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
   }
@@ -1210,6 +1238,7 @@ export function validatePostCompile(input: {
         ? []
         : structuralDiagnostics({
             nodes: input.nodes,
+            delivery_node: input.config.delivery_node,
             mode: input.config.mode,
             max_total_nodes: input.config.max_total_nodes,
             node_defaults: input.config.node_defaults,

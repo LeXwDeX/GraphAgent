@@ -29,6 +29,7 @@ import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { Hash } from "@opencode-ai/core/util/hash"
+import { Database } from "@opencode-ai/core/database/database"
 import { DagLocation } from "../location"
 import { WorkflowRuntime, toSchedulingNodes } from "@opencode-ai/core/dag/core/scheduling"
 import {
@@ -37,7 +38,7 @@ import {
   isWorkflowTerminalStatus,
   isTerminalWorkflowStatusValue,
 } from "@opencode-ai/core/dag/core/types"
-import { Dag, type WorkflowConfig, parseWorkflowConfig } from "../dag"
+import { Dag, type WorkflowConfig, parseWorkflowConfig, resultProtocol } from "../dag"
 import { projectBriefForNode } from "../admission"
 import {
   reviewImplementationFingerprint,
@@ -62,11 +63,13 @@ import {
   continueRecoveredMessageNode,
   makeSessionStatusChecker,
   makeLastAssistantTextReader,
+  makeLastAssistantMessageReader,
 } from "./recovery"
 import { Checkpoint } from "./checkpoint"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
 import { makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
+import { deliverReport, selectReportNode } from "./report-delivery"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
@@ -151,6 +154,7 @@ const serviceLayer = Layer.effect(
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const statusSvc = yield* SessionStatus.Service
     const automation = yield* SessionAutomationLease.Service
+    const database = yield* Database.Service
 
     const state = yield* InstanceState.make(
       Effect.fn("DagLoop.state")(function* (ctx) {
@@ -521,7 +525,16 @@ const serviceLayer = Layer.effect(
             if (nodeConfig?.output_schema) {
               promptParts.push({
                 type: "text",
-                text: `\n\n[OUTPUT CONTRACT — this node's success depends on it] You MUST call the submit_result tool with a JSON payload matching this schema before ending your turn:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nPut your full summary inside the payload. Do not repeat the payload in your message text. Writing the payload in message text does NOT count as submitting: if you end your turn without a successful submit_result call, this node FAILS and no structured result is accepted. File changes and other side effects are not rolled back; inspect them before retrying. After submit_result succeeds, end your turn without restating the result.`,
+                text:
+                  resultProtocol(entry.config) === "final_response"
+                    ? `\n\n[OUTPUT CONTRACT] End with exactly one JSON value matching this schema:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nUse your final assistant answer only: no Markdown fence or surrounding prose. The runtime validates and captures it automatically. Do not send the final result through agent.send. File changes and other side effects are not rolled back if validation fails.`
+                    : `\n\n[OUTPUT CONTRACT — this node's success depends on it] You MUST call the submit_result tool with a JSON payload matching this schema before ending your turn:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nPut your full summary inside the payload. Do not repeat the payload in your message text. Writing the payload in message text does NOT count as submitting: if you end your turn without a successful submit_result call, this node FAILS and no structured result is accepted. File changes and other side effects are not rolled back; inspect them before retrying. After submit_result succeeds, end your turn without restating the result.`,
+              })
+            }
+            if (resultProtocol(entry.config) === "final_response" && !nodeConfig?.output_schema) {
+              promptParts.push({
+                type: "text",
+                text: "\n\n[FINAL ANSWER] End with your complete final answer. It is captured automatically; do not also report it through agent.send. Use agent.send for questions, decisions and collaboration.",
               })
             }
 
@@ -546,6 +559,7 @@ const serviceLayer = Layer.effect(
               inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
               promptParts,
               outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
+              resultProtocol: resultProtocol(entry.config),
               timeoutMs: nodeConfig?.worker_config?.timeout_ms,
               reportToParent: nodeConfig?.report_to_parent,
               reviewImplementationFingerprint: nodeConfig
@@ -628,6 +642,7 @@ const serviceLayer = Layer.effect(
         // #345: schemaless recovered nodes settle with the child's last
         // assistant text, mirroring the live spawn path.
         const lastAssistantText = makeLastAssistantTextReader(sessionSvc)
+        const lastAssistantMessage = makeLastAssistantMessageReader(sessionSvc)
 
         // Best-effort abort of a durable child session, independent of whether
         // a local wrapper fiber still exists.  Used at every replacement,
@@ -777,6 +792,7 @@ const serviceLayer = Layer.effect(
               lastAssistantText,
               ctx.directory,
               makeArtifactSourceAuthorizer(sessionSvc, agentSvc, ctx.worktree, permissionSvc),
+              lastAssistantMessage,
             ).pipe(Effect.provideService(Dag.Service, dag), (self) =>
               messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self,
             )
@@ -1642,6 +1658,11 @@ const serviceLayer = Layer.effect(
           } satisfies DagStore.WakeBatch
           return {
             batch,
+            completedReports: boundaryWorkflows.filter(
+              (workflow) =>
+                workflow.status === "completed" &&
+                resultProtocol(parseWorkflowConfig(workflow.config)) === "final_response",
+            ),
             actionableDagIDs: new Set(
               boundaryWorkflows
                 .filter((workflow) => !isWorkflowTerminalStatus(workflow.status as never))
@@ -1685,7 +1706,7 @@ const serviceLayer = Layer.effect(
             const deliveredUnresponsiveDagIDs = new Set<string>()
             for (;;) {
               const plan = yield* readWakeBatch(sessionID)
-              const batch = plan.batch
+              let batch = plan.batch
               const hasUnreported = batch.nodes.length > 0 || batch.workflows.length > 0
 
               if (!hasUnreported) {
@@ -1744,6 +1765,69 @@ const serviceLayer = Layer.effect(
               }
 
               if ((yield* statusSvc.get(SessionID.make(sessionID))).type !== "idle") return
+
+              // Completed final-response workflows display their result without a model turn.
+              // Other decisions in the same snapshot take precedence; their wake excludes
+              // these completed reports so they cannot invite a duplicate summary.
+              const completedIDs = new Set(plan.completedReports.map((workflow) => workflow.id))
+              const decisions = {
+                nodes: batch.nodes.filter((node) => !completedIDs.has(node.workflowId)),
+                workflows: batch.workflows.filter((workflow) => !completedIDs.has(workflow.id)),
+              } satisfies DagStore.WakeBatch
+              if (
+                plan.completedReports.length > 0 &&
+                decisions.nodes.length === 0 &&
+                decisions.workflows.length === 0
+              ) {
+                for (const workflow of plan.completedReports) {
+                  const reportBatch = {
+                    nodes: batch.nodes.filter((node) => node.workflowId === workflow.id),
+                    workflows: batch.workflows.filter((row) => row.id === workflow.id),
+                  }
+                  if (reportBatch.nodes.length === 0 && reportBatch.workflows.length === 0) continue
+                  yield* automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id })
+                  const lease = Option.getOrUndefined(
+                    yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }),
+                  )
+                  if (!lease) return
+                  const config = parseWorkflowConfig(workflow.config)
+                  const reportNodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+                  const node =
+                    (config ? selectReportNode(config, reportNodes) : undefined) ??
+                    reportNodes.find((node) => node.status === "completed")
+                  const source = node?.childSessionId
+                    ? yield* lastAssistantMessage(node.childSessionId).pipe(Effect.orDie)
+                    : undefined
+                  const delivered = yield* automation.use(
+                    lease,
+                    promptSvc.withIdle(
+                      SessionID.make(sessionID),
+                      deliverReport({
+                        workflow,
+                        batch: reportBatch,
+                        store,
+                        sessions: sessionSvc,
+                        events,
+                        directory: ctx.directory,
+                        source,
+                      }).pipe(
+                        Effect.provideService(Database.Service, database),
+                        Effect.tap((didDeliver) =>
+                          didDeliver
+                            ? statusSvc
+                                .set(SessionID.make(sessionID), { type: "busy" })
+                                .pipe(Effect.ensuring(statusSvc.set(SessionID.make(sessionID), { type: "idle" })))
+                            : Effect.void,
+                        ),
+                      ),
+                    ),
+                  )
+                  if (Option.isNone(delivered) || Option.isNone(delivered.value) || !delivered.value.value) return
+                  yield* automation.unregister(SessionID.make(sessionID), { kind: "dag", id: workflow.id })
+                }
+                continue
+              }
+              if (completedIDs.size > 0) batch = decisions
 
               const wakeIdentity = wakeBatchIdentity(sessionID, batch)
               const durableReceipt =
@@ -2317,6 +2401,7 @@ const serviceLayer = Layer.effect(
 export const layer = serviceLayer.pipe(Layer.provide(SessionAutomationLease.defaultLayer))
 
 export const defaultLayer = layer.pipe(
+  Layer.provide(Database.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(DagStore.defaultLayer),
   Layer.provide(DagMessages.defaultLayer),
@@ -2329,6 +2414,7 @@ export const defaultLayer = layer.pipe(
 )
 
 export const node = LayerNode.make(layer, [
+  Database.node,
   EventV2Bridge.node,
   DagStore.node,
   DagMessages.node,

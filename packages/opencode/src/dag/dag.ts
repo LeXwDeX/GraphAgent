@@ -136,8 +136,17 @@ interface NormalizedNodeConfig extends NodeConfig {
   required: boolean
 }
 
+export type ResultProtocol = "final_response" | "submit_result"
+
+/** Missing on historical persisted workflows means the original tool protocol. */
+export function resultProtocol(config: Pick<WorkflowConfig, "result_protocol"> | undefined): ResultProtocol {
+  return config?.result_protocol ?? "submit_result"
+}
+
 export interface WorkflowConfig {
   name: string
+  result_protocol?: ResultProtocol
+  delivery_node?: string
   mode?: ExecutionMode
   admission?: AdmissionRecord
   max_concurrency?: number
@@ -248,6 +257,7 @@ function normalizeWorkflowConfig(config: WorkflowConfig): WorkflowConfig & { nod
   const defaults = normalizeNodeDefaults(config.node_defaults)
   return {
     ...config,
+    result_protocol: config.result_protocol ?? "final_response",
     mode: config.mode ?? "standard",
     max_concurrency: config.max_concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
     max_node_replan_attempts: config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
@@ -282,7 +292,23 @@ export function computeMergedConfig(
     .filter((n) => !cancelSet.has(n.id))
     .map((n) => (restartSet.has(n.id) || replaceSet.has(n.id) ? (fragmentById.get(n.id) ?? n) : n))
   const added = plan.add.map((id) => fragmentById.get(id)).filter((n): n is NodeConfig => n !== undefined)
-  return { ...current, nodes: [...surviving, ...added] }
+  return reconcileDeliveryNode({ ...current, nodes: [...surviving, ...added] }, current)
+}
+
+/** A prior final report stops being final when a mutation adds work after it.
+ * Existing explicit selections of non-leaf nodes retain their accepted meaning.
+ */
+function reconcileDeliveryNode(config: WorkflowConfig, previous: WorkflowConfig): WorkflowConfig {
+  const selected = config.delivery_node
+  const previouslyLeaf = !previous.nodes.some((node) => node.depends_on.includes(previous.delivery_node ?? ""))
+  if (
+    selected === undefined ||
+    (config.nodes.some((node) => node.id === selected) &&
+      (!previouslyLeaf || !config.nodes.some((node) => node.depends_on.includes(selected))))
+  )
+    return config
+  const { delivery_node: _deliveryNode, ...rest } = config
+  return rest
 }
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
@@ -292,6 +318,13 @@ export function parseWorkflowConfig(raw: string): WorkflowConfig | undefined {
   if (Option.isNone(parsed)) return undefined
   const candidate: unknown = parsed.value
   if (!isRecord(candidate)) return undefined
+  if (
+    candidate.result_protocol !== undefined &&
+    candidate.result_protocol !== "final_response" &&
+    candidate.result_protocol !== "submit_result"
+  )
+    return undefined
+  if (candidate.delivery_node !== undefined && typeof candidate.delivery_node !== "string") return undefined
   // Guard the invariants every caller relies on (config.nodes.map, node.id,
   // depends_on iteration) instead of trusting the persisted row blindly. Kept
   // structural rather than a full strict schema: rejecting a legacy row that
@@ -508,6 +541,7 @@ export const layer = Layer.effect(
       // before any event publication.
       const structural = DagValidation.structuralDiagnostics({
         nodes: config.nodes,
+        delivery_node: config.delivery_node,
         mode: config.mode,
         max_total_nodes: config.max_total_nodes,
       })
@@ -828,7 +862,9 @@ export const layer = Layer.effect(
       // create/replan parity the spec requires: one authority, two entry points
       // that differ only in scoping (fragment + rerun-only vs whole-graph).
       const maxReplanAttempts = wfConfig.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts
-      const terminalNodeIds = new Set(nodes.filter((n) => isNodeTerminalStatus(n.status as NodeStatus)).map((n) => n.id))
+      const terminalNodeIds = new Set(
+        nodes.filter((n) => isNodeTerminalStatus(n.status as NodeStatus)).map((n) => n.id),
+      )
       const merged = computeMergedConfig(wfConfig, normalizedFragment, plan)
       const replanDiagnostics = DagValidation.replanStructuralDiagnostics({
         fragmentNodes: normalizedFragment.nodes,
@@ -1130,6 +1166,12 @@ export const layer = Layer.effect(
           ),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
+      const selected = config.delivery_node
+      const replacement = plan.replacements.find((node) => node.previous === selected)
+      plan.config = reconcileDeliveryNode(
+        { ...plan.config, ...(replacement ? { delivery_node: replacement.current } : {}) },
+        config,
+      )
       const addedIDs = new Set(plan.replacements.map((replacement) => replacement.current))
       const added = plan.config.nodes.filter((node) => addedIDs.has(node.id))
       const diagnostics = DagValidation.replanStructuralDiagnostics({
@@ -1352,12 +1394,17 @@ export const layer = Layer.effect(
           nodeID,
           attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
           failureReason: trigger,
+          snapshotID: attempt?.inputSnapshotID,
+          requireCurrentInput:
+            trigger === "verdict_fail" &&
+            (attempt?.inputSnapshotID !== undefined ||
+              parseWorkflowConfig(workflow.config)?.result_protocol === "final_response"),
           expectedAcceptedRevision: attempt?.expectedAcceptedRevision,
         },
         commit,
       )
       if (!guarded.ok) {
-        if (guarded.reason === "stale_input")
+        if (guarded.reason === "stale_input" || guarded.reason === "unassociated")
           yield* Effect.fail(new StaleMessageInputError({ dagID, nodeID, reason: guarded.reason }))
         yield* Effect.fail(new TerminalViolationError(nodeID, node.status, "failed"))
       }

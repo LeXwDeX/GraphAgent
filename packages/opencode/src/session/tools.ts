@@ -8,6 +8,7 @@ import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
+import { isFinalResponseSession } from "@/dag/runtime/capture"
 import { MemorySearch } from "@/tool/memory-search"
 import { Truncate } from "@/tool/truncate"
 
@@ -99,7 +100,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     providerID: input.model.providerID,
     agent: input.agent,
   }
-  const registryItems = yield* registry.registrations(registryContext)
+  const registryItems = (yield* registry.registrations(registryContext)).filter(
+    (registration) => !(registration.definition.id === "submit_result" && isFinalResponseSession(input.session.id)),
+  )
   const mcpItems = yield* mcp.tools()
   const hasMcpResourceServer = Object.values(yield* mcp.clients()).some(
     (client) => !!client.getServerCapabilities()?.resources,
@@ -126,6 +129,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
   for (const key of Object.keys(mcpItems).toSorted()) {
+    if (key === "submit_result" && isFinalResponseSession(input.session.id)) continue
     effectiveSources.set(key, { sourceKind: "mcp", registrationID: `mcp:${key}` })
   }
   const activeRegistrations = [...effectiveSources.entries()]
@@ -688,6 +692,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   }
 
   for (const [key, item] of Object.entries(mcpItems)) {
+    if (key === "submit_result" && isFinalResponseSession(input.session.id)) continue
     const execute = item.execute
     if (!execute) continue
 

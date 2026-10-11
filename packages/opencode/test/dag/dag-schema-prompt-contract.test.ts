@@ -174,6 +174,31 @@ function promptText(input: SessionPrompt.PromptInput) {
 }
 
 describe("DAG schema prompt contract (issue #386)", () => {
+  it("new workflows request one final JSON value and capture it automatically", async () => {
+    await Effect.runPromise(
+      runContractTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Final response schema contract",
+            config: { name: "final-response-contract", nodes: [schemaNode()] },
+          })
+          const gate = yield* Queue.take(childPrompts)
+          const prompt = promptText(gate.input)
+          expect(prompt).toContain("exactly one JSON value")
+          expect(prompt).not.toContain("submit_result")
+          yield* Deferred.succeed(gate.release, '{"summary":"Captured from final answer."}')
+          const row = yield* pollWithTimeout(
+            store.getNode(dagID, "report").pipe(Effect.map((node) => node?.status === "completed" ? node : undefined)),
+            "new protocol did not complete from final JSON",
+          )
+          expect(row.output).toEqual({ summary: "Captured from final answer." })
+        }),
+      ),
+    )
+  })
+
   it("schema instruction tells the child the payload is the single authoritative report", async () => {
     await Effect.runPromise(
       runContractTest(({ dag, childPrompts }) =>
@@ -182,7 +207,7 @@ describe("DAG schema prompt contract (issue #386)", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Schema prompt contract",
-            config: { name: "schema-prompt-contract", nodes: [schemaNode()] },
+            config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
           })
           const gate = yield* Queue.take(childPrompts)
           const prompt = promptText(gate.input)
@@ -217,7 +242,7 @@ describe("DAG schema prompt contract (issue #386)", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Schema prompt contract",
-            config: { name: "schema-prompt-contract", nodes: [schemaNode()] },
+            config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
           })
           const gate = yield* Queue.take(childPrompts)
           const payload = { summary: "Delivered through submit_result only." }
@@ -257,7 +282,7 @@ describe("DAG schema prompt contract (issue #386)", () => {
               projectID: "project-1",
               sessionID: "ses_parent",
               title: "Nudge completes",
-              config: { name: "schema-prompt-contract", nodes: [schemaNode()] },
+              config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
             })
             // First turn: full analysis in prose, no submit_result call.
             const first = yield* Queue.take(childPrompts)
@@ -291,7 +316,7 @@ describe("DAG schema prompt contract (issue #386)", () => {
               projectID: "project-1",
               sessionID: "ses_parent",
               title: "Nudge exhausted",
-              config: { name: "schema-prompt-contract", nodes: [schemaNode()] },
+              config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
             })
             const first = yield* Queue.take(childPrompts)
             yield* Deferred.succeed(first.release, "Prose only, no submission.")

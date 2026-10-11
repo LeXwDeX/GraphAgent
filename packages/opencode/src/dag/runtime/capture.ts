@@ -20,6 +20,21 @@ type CaptureSlot = { schema: Record<string, unknown>; generation: number; pendin
 const schemas = new Map<string, CaptureSlot>()
 let generation = 0
 const snapshots = new Map<string, string>()
+// A child session owns its protocol. This is registered before prompting and
+// removed with the execution fiber, so unrelated sessions keep their tools.
+const finalResponseSessions = new Set<string>()
+
+export function registerFinalResponseSession(sessionID: string): void {
+  finalResponseSessions.add(sessionID)
+}
+
+export function isFinalResponseSession(sessionID: string): boolean {
+  return finalResponseSessions.has(sessionID)
+}
+
+export function clearFinalResponseSession(sessionID: string): void {
+  finalResponseSessions.delete(sessionID)
+}
 
 export function setCaptureSnapshot(sessionID: string, snapshotID: string): void {
   snapshots.set(sessionID, snapshotID)

@@ -364,7 +364,7 @@ describe("DagLoop final wake delivery re-triggers the goal (GOAL-FP-01-02)", () 
             projectID: PROJECT_ID,
             sessionID: PARENT_SESSION,
             title: "wake retrigger",
-            config: { name: "wake-retrigger", nodes: [node("implement")] },
+            config: { name: "wake-retrigger", result_protocol: "submit_result", nodes: [node("implement")] },
           })
 
           // Adoption (WorkflowStarted) registered the dag lease for the parent.
@@ -443,7 +443,7 @@ describe("DagLoop wake delivery — a mark failure retry must not re-inject the 
               projectID: PROJECT_ID,
               sessionID: PARENT_SESSION,
               title: "mark failure retry",
-              config: { name: "mark-fail", nodes: [node("implement")] },
+              config: { name: "mark-fail", result_protocol: "submit_result", nodes: [node("implement")] },
             })
 
             const child = yield* takeWithin(childPrompts, "implement did not start")

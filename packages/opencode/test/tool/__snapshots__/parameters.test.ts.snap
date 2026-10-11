@@ -1041,6 +1041,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       },
                       "type": "array",
                     },
+                    "delivery_node": {
+                      "description": "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
+                      "type": "string",
+                    },
                     "max_concurrency": {
                       "description": "Max parallel nodes. Default: 5",
                       "type": "number",
@@ -1081,6 +1085,14 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       "description": "Injected into every generated child prompt; required for blocks",
                       "type": "string",
                     },
+                    "result_protocol": {
+                      "description": "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
+                      "enum": [
+                        "final_response",
+                        "submit_result",
+                      ],
+                      "type": "string",
+                    },
                   },
                   "required": [
                     "name",
@@ -1091,6 +1103,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                 },
                 {
                   "properties": {
+                    "delivery_node": {
+                      "description": "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
+                      "type": "string",
+                    },
                     "max_concurrency": {
                       "description": "Max parallel nodes. Default: 5",
                       "type": "number",
@@ -1162,7 +1178,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "type": "string",
                           },
                           "output_schema": {
-                            "description": "JSON Schema; child agent must call submit_result to submit structured output",
+                            "description": "JSON Schema for the child's final JSON answer (historical submit_result workflows keep their tool protocol)",
                             "type": "object",
                           },
                           "prompt_template": {
@@ -1258,6 +1274,14 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                         "type": "object",
                       },
                       "type": "array",
+                    },
+                    "result_protocol": {
+                      "description": "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
+                      "enum": [
+                        "final_response",
+                        "submit_result",
+                      ],
+                      "type": "string",
                     },
                   },
                   "required": [

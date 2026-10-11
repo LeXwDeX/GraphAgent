@@ -185,7 +185,7 @@ const scenario = (mode: "none" | "expire" | "defect") =>
           projectID: "project-1",
           sessionID: "ses_parent",
           title: "First",
-          config: { name: "first", nodes: [node("a")] },
+          config: { name: "first", result_protocol: "submit_result", nodes: [node("a")] },
         })
         const childA = yield* takeReal(childPrompts)
         expect(childA).toBeDefined()
@@ -208,7 +208,7 @@ const scenario = (mode: "none" | "expire" | "defect") =>
           projectID: "project-1",
           sessionID: "ses_parent",
           title: "Second",
-          config: { name: "second", nodes: [node("b")] },
+          config: { name: "second", result_protocol: "submit_result", nodes: [node("b")] },
         })
         const childB = yield* takeReal(childPrompts)
         expect(childB).toBeDefined()

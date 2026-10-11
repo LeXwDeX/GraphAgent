@@ -60,6 +60,7 @@ const wakeCompleted = bodyIncludes("[DAG Workflow completed]")
 const chainSpec = `title: cli-hold-chain
 config:
   name: cli-hold-chain
+  result_protocol: submit_result
   nodes:
     - id: first
       name: first
@@ -80,6 +81,7 @@ config:
 const singleSpec = `title: cli-hold-single
 config:
   name: cli-hold-single
+  result_protocol: submit_result
   nodes:
     - id: only
       name: only
@@ -89,6 +91,117 @@ config:
         inline: "EARLY-SINGLE marker: do the work."
       report_to_parent: true
 `
+
+const parentPlanMarker = "DAG_FINAL_RESPONSE_PARENT_PLAN"
+const childFinalMarker = "DAG_FINAL_RESPONSE_CHILD"
+const childFinalText = "DAG_FINAL_RESPONSE_RAW_ONCE_52AF"
+const parentPlanText = "The implementation plan is ready."
+const finalResponseSpec = `title: cli-final-response
+config:
+  name: cli-final-response
+  result_protocol: final_response
+  delivery_node: final
+  max_concurrency: 1
+  nodes:
+    - id: final
+      name: final
+      worker_type: general
+      depends_on: []
+      report_to_parent: false
+      prompt_template:
+        inline: "${childFinalMarker}: return the requested final response."
+`
+const multiParentMarker = "DAG_MULTI_FINAL_RESPONSE_PARENT"
+const multiPlanText = "Both workflow plans are ready."
+const multiFinals = [
+  { name: "alpha", marker: "DAG_MULTI_FINAL_ALPHA", answer: "DAG_MULTI_FINAL_ALPHA_RAW_03A1" },
+  { name: "beta", marker: "DAG_MULTI_FINAL_BETA", answer: "DAG_MULTI_FINAL_BETA_RAW_94BC" },
+] as const
+const mixedParentMarker = "DAG_MIXED_FINAL_RESPONSE_PARENT"
+const mixedPlanText = "The workflows are underway."
+const mixedDecisionText = "The checkpoint remains paused pending human approval."
+const mixedFinalMarker = "DAG_MIXED_FINAL_REPORT"
+const mixedFinalAnswer = "DAG_MIXED_FINAL_REPORT_RAW_779D"
+const policyGuideMarker = "blocks: compose explore/plan/prototype/debug/coding/verify/review/synthesize blocks"
+const mixedFinalSpec = `title: cli-mixed-final-report
+config:
+  name: cli-mixed-final-report
+  result_protocol: final_response
+  delivery_node: final
+  max_concurrency: 1
+  nodes:
+    - id: final
+      name: final
+      worker_type: general
+      depends_on: []
+      report_to_parent: false
+      prompt_template:
+        inline: "${mixedFinalMarker}: return the final report."
+`
+const mixedDecisionSpec = `title: cli-mixed-decision
+config:
+  name: cli-mixed-decision
+  result_protocol: submit_result
+  nodes:
+    - id: gate
+      name: gate
+      worker_type: general
+      depends_on: []
+      report_to_parent: true
+      output_schema:
+        type: object
+        properties:
+          verdict:
+            type: string
+            enum: [replan]
+        required: [verdict]
+        additionalProperties: false
+      prompt_template:
+        inline: "MIXED-DECISION-GATE: return the replan verdict."
+    - id: waiting
+      name: waiting
+      worker_type: general
+      depends_on: [gate]
+      condition: 'gate.output.verdict == "replan"'
+      prompt_template:
+        inline: "MIXED-DECISION-WAITING: this node should remain paused."
+`
+
+function finalResponseSpecFor(name: string, marker: string) {
+  return `title: cli-multi-final-${name}
+config:
+  name: cli-multi-final-${name}
+  result_protocol: final_response
+  delivery_node: final
+  max_concurrency: 1
+  nodes:
+    - id: final
+      name: final
+      worker_type: general
+      depends_on: []
+      report_to_parent: false
+      prompt_template:
+        inline: "${marker}: return the final report."
+`
+}
+
+function emittedText(
+  result: RunResult,
+  opencode: { parseJsonEvents(stdout: string): Array<Record<string, unknown>> },
+  format: "default" | "json",
+) {
+  if (format === "default") return result.stdout.trimEnd().split("\n")
+  return opencode
+    .parseJsonEvents(result.stdout)
+    .filter((event) => event.type === "text")
+    .map((event) => event.part)
+    .map((part) => {
+      if (!part || typeof part !== "object" || !("text" in part) || typeof part.text !== "string") {
+        throw new Error("JSON run emitted a text event without a text part")
+      }
+      return part.text
+    })
+}
 
 // Required node declaring an output_schema the child never satisfies (the
 // auto-reply never calls submit_result): deterministic verdict_fail bound.
@@ -119,6 +232,7 @@ config:
 const checkpointSpec = `title: cli-hold-checkpoint
 config:
   name: cli-hold-checkpoint
+  result_protocol: submit_result
   nodes:
     - id: gate
       name: gate
@@ -149,6 +263,179 @@ function writeSpec(home: string, name: string, content: string) {
 }
 
 describe("opencode run DAG hold (issue 614)", () => {
+  for (const format of ["default", "json"] as const) {
+    cliIt.concurrent(
+      `prints the final_response delivery node exactly once and exits (${format})`,
+      ({ home, llm, opencode, target }) =>
+        Effect.gen(function* () {
+          const spec = path.join(home, "wf-final-response.yaml")
+          yield* writeSpec(home, "wf-final-response.yaml", finalResponseSpec)
+          yield* llm.pushMatch(
+            bodyIncludes(parentPlanMarker),
+            reply()
+              .tool("workflow", { params: { action: "start", spec_path: spec } })
+              .item(),
+          )
+          yield* llm.pushMatch(bodyIncludes(parentPlanMarker), reply().text(parentPlanText).stop().item())
+          yield* llm.pushMatch(bodyIncludes(childFinalMarker), reply().text(childFinalText).stop().item())
+
+          const result = yield* opencode.run(`${parentPlanMarker}: start the workflow and report the plan`, {
+            format,
+            extraArgs: SKIP_PERMISSIONS,
+          })
+          opencode.expectExit(result, 0)
+          expect(result.target).toEqual(target)
+
+          if (format === "default") {
+            const lines = result.stdout.trimEnd().split("\n")
+            expect(lines.filter((line) => line === parentPlanText)).toHaveLength(1)
+            expect(lines.filter((line) => line === childFinalText)).toHaveLength(1)
+            expect(lines.at(-1)).toBe(childFinalText)
+          } else {
+            const events = opencode.parseJsonEvents(result.stdout)
+            const text = events
+              .filter((event) => event.type === "text")
+              .map((event) => event.part)
+              .map((part) => {
+                if (!part || typeof part !== "object" || !("text" in part) || typeof part.text !== "string") {
+                  throw new Error("JSON run emitted a text event without a text part")
+                }
+                return part.text
+              })
+            expect(text.filter((value) => value === parentPlanText)).toHaveLength(1)
+            expect(text.filter((value) => value === childFinalText)).toHaveLength(1)
+            expect(text.at(-1)).toBe(childFinalText)
+          }
+
+          const requests = (yield* llm.inputs).filter(
+            (request) => !JSON.stringify(request).includes("Generate a title for this conversation"),
+          )
+          const parentRequests = requests.filter((request) => JSON.stringify(request).includes(parentPlanMarker))
+          expect(parentRequests).toHaveLength(2)
+          expect(requests.some((request) => JSON.stringify(request).includes(childFinalText))).toBe(false)
+          expect(requests.some((request) => JSON.stringify(request).includes("[DAG Workflow completed]"))).toBe(false)
+        }),
+      180_000,
+    )
+  }
+
+  for (const format of ["default", "json"] as const) {
+    cliIt.concurrent(
+      `waits for both completed final_response workflows and emits each answer once (${format})`,
+      ({ home, llm, opencode }) =>
+        Effect.gen(function* () {
+          const specs = multiFinals.map((workflow) => ({
+            ...workflow,
+            path: path.join(home, `wf-multi-final-${workflow.name}.yaml`),
+          }))
+          for (const workflow of specs) {
+            yield* writeSpec(home, path.basename(workflow.path), finalResponseSpecFor(workflow.name, workflow.marker))
+            yield* llm.pushMatch(
+              bodyIncludes(multiParentMarker),
+              reply()
+                .tool("workflow", { params: { action: "start", spec_path: workflow.path } })
+                .item(),
+            )
+          }
+          yield* llm.pushMatch(bodyIncludes(multiParentMarker), reply().text(multiPlanText).stop().item())
+          for (const workflow of specs) {
+            yield* llm.pushMatch(bodyIncludes(workflow.marker), reply().text(workflow.answer).stop().item())
+          }
+
+          const result = yield* opencode.run(`${multiParentMarker}: start both workflows`, {
+            format,
+            extraArgs: SKIP_PERMISSIONS,
+          })
+          opencode.expectExit(result, 0)
+          const text = emittedText(result, opencode, format)
+          expect(text.filter((value) => value === multiPlanText)).toHaveLength(1)
+          for (const workflow of specs) expect(text.filter((value) => value === workflow.answer)).toHaveLength(1)
+          expect(new Set<string>(specs.map((workflow) => workflow.answer)).has(text.at(-1) ?? "")).toBe(true)
+
+          const requests = (yield* llm.inputs).filter(
+            (request) => !JSON.stringify(request).includes("Generate a title for this conversation"),
+          )
+          expect(requests.filter((request) => JSON.stringify(request).includes(multiParentMarker))).toHaveLength(3)
+          for (const workflow of specs) {
+            expect(requests.some((request) => JSON.stringify(request).includes(workflow.answer))).toBe(false)
+          }
+          expect(requests.some((request) => JSON.stringify(request).includes("[DAG Workflow completed]"))).toBe(false)
+        }),
+      180_000,
+    )
+  }
+
+  cliIt.concurrent(
+    "finishes the parent decision turn and then emits the completed mixed-batch report once",
+    ({ home, llm, opencode }) =>
+      Effect.gen(function* () {
+        const finalPath = path.join(home, "wf-mixed-final.yaml")
+        const decisionPath = path.join(home, "wf-mixed-decision.yaml")
+        yield* writeSpec(home, path.basename(finalPath), mixedFinalSpec)
+        yield* writeSpec(home, path.basename(decisionPath), mixedDecisionSpec)
+        yield* llm.pushMatch(
+          bodyIncludes(mixedParentMarker),
+          reply()
+            .tool("workflow", { params: { action: "start", spec_path: finalPath } })
+            .item(),
+        )
+        yield* llm.pushMatch(
+          bodyIncludes(mixedParentMarker),
+          reply()
+            .tool("workflow", { params: { action: "start", spec_path: decisionPath } })
+            .item(),
+        )
+        yield* llm.pushMatch((hit) => {
+          const body = JSON.stringify(hit.body)
+          return body.includes(mixedParentMarker) && !body.includes("[DAG Node Result")
+        }, reply().text(mixedPlanText).stop().item())
+        yield* llm.pushMatch(
+          bodyIncludes("[DAG Node Result"),
+          reply()
+            .tool("workflow", { params: { action: "guide" } })
+            .item(),
+        )
+        let releaseFinal = () => {}
+        const finalRelease = new Promise<void>((resolve) => {
+          releaseFinal = resolve
+        })
+        yield* llm.pushMatch((hit) => {
+          const body = JSON.stringify(hit.body)
+          if (!body.includes(policyGuideMarker)) return false
+          releaseFinal()
+          return true
+        }, reply().text(mixedDecisionText).stop().item())
+        yield* llm.pushMatch(
+          bodyIncludes(mixedFinalMarker),
+          reply().wait(finalRelease).text(mixedFinalAnswer).stop().item(),
+        )
+        yield* llm.pushMatch(
+          bodyIncludes("MIXED-DECISION-GATE"),
+          reply()
+            .tool("submit_result", { payload: { verdict: "replan" } })
+            .item(),
+        )
+
+        const result = yield* opencode.run(`${mixedParentMarker}: start report and checkpoint workflows`, {
+          extraArgs: SKIP_PERMISSIONS,
+        })
+        opencode.expectExit(result, 0)
+        const lines = emittedText(result, opencode, "default")
+        expect(lines.filter((line) => line === mixedPlanText)).toHaveLength(1)
+        expect(lines).toContain(mixedDecisionText)
+        expect(lines.filter((line) => line === mixedFinalAnswer)).toHaveLength(1)
+        expect(lines.at(-1)).toBe(mixedFinalAnswer)
+
+        const requests = (yield* llm.inputs).filter(
+          (request) => !JSON.stringify(request).includes("Generate a title for this conversation"),
+        )
+        expect(requests.some((request) => JSON.stringify(request).includes("[DAG Node Result"))).toBe(true)
+        expect(requests.some((request) => JSON.stringify(request).includes(mixedFinalAnswer))).toBe(false)
+        expect(requests.some((request) => JSON.stringify(request).includes("[DAG Workflow completed]"))).toBe(false)
+      }),
+    180_000,
+  )
+
   cliIt.concurrent(
     "no-DAG single-turn prompt exits with the exact reply",
     ({ llm, opencode, target }) =>
@@ -203,10 +490,7 @@ describe("opencode run DAG hold (issue 614)", () => {
           release = resolve
         })
         yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
-        yield* llm.pushMatch(
-          bodyIncludes("EARLY-TOKEN"),
-          reply().wait(released).text("turn one done").stop().item(),
-        )
+        yield* llm.pushMatch(bodyIncludes("EARLY-TOKEN"), reply().wait(released).text("turn one done").stop().item())
         yield* llm.pushMatch(wakeCompleted, reply().text("wake handled").stop().item())
 
         const run = yield* opencode.startRun("EARLY-TOKEN start the single node workflow", {
@@ -270,7 +554,9 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
         yield* llm.pushMatch(
           bodyIncludes("ADOPT-GATE"),
-          reply().tool("submit_result", { payload: { verdict: "replan" } }).item(),
+          reply()
+            .tool("submit_result", { payload: { verdict: "replan" } })
+            .item(),
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Node Result"), reply().text("checkpoint seen").stop().item())
 

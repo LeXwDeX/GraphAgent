@@ -1100,7 +1100,7 @@ describe("DagLoop timeout escalation", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Completion wake after escalation",
-            config: { name: "f2b", nodes: [node("a", [], 300)] },
+            config: { name: "f2b", result_protocol: "submit_result", nodes: [node("a", [], 300)] },
           })
           const gate = yield* takeWithin(childPrompts, "a did not start")
           const escalated = yield* pollWithTimeout(
