@@ -3,7 +3,7 @@ import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
-import { withoutInternalHeaders } from "@/plugin/openai/ws-pool"
+import { isTitleHeaderConsumer, withoutInternalHeaders } from "@/plugin/openai/ws-pool"
 import { asSchema, type ModelMessage, type Tool } from "ai"
 import { Cause, Effect, FiberSet, Queue } from "effect"
 import * as Stream from "effect/Stream"
@@ -111,7 +111,9 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     const transformInput = ContextFolding.copyModelMessages(input.messages) ?? input.messages
     const transformedMessages = ProviderTransform.message(transformInput, input.model, input.providerOptions ?? {})
     const headers = { ...providerHeaders(input.provider.options.headers), ...input.headers }
-    const model = fetch
+    // Only registered OpenCode transports consume and strip the title routing marker.
+    const consumesTitle = isTitleHeaderConsumer(fetch)
+    const model = consumesTitle
       ? input.model
       : { ...input.model, headers: withoutInternalHeaders({ headers: input.model.headers })?.headers ?? {} }
     const canonical = LLMRequest.update(
@@ -126,9 +128,8 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
         topK: input.topK,
         maxOutputTokens: input.maxOutputTokens,
         providerOptions: ProviderTransform.providerOptions(input.model, input.providerOptions ?? {}),
-        // The OAuth fetch override consumes and strips the title routing marker.
-        // Direct native HTTP has no transport wrapper to remove internal headers.
-        headers: fetch ? headers : withoutInternalHeaders({ headers })?.headers,
+        // Direct native HTTP and ordinary custom fetches have no wrapper to remove internal headers.
+        headers: consumesTitle ? headers : withoutInternalHeaders({ headers })?.headers,
       }),
       { tools: toDefinitions(tools) },
     )

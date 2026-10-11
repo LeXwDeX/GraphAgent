@@ -294,6 +294,50 @@ describe("session.llm-native.request", () => {
     }),
   )
 
+  it.effect("strips internal title routing headers before an ordinary OAuth provider fetch", () =>
+    Effect.gen(function* () {
+      const captures: Headers[] = []
+      const ordinaryFetch = Object.assign(
+        async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+          captures.push((input instanceof Request ? input : new Request(input, init)).headers)
+          return responsesStream([
+            { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+          ])
+        },
+        { preconnect: globalThis.fetch.preconnect },
+      )
+      const llmClient = yield* LLMClient.Service
+      const model: Provider.Model = { ...baseModel, headers: { ...baseModel.headers, "X-OPENCODE-TITLE": "true" } }
+      const native = yield* LLMNativeRuntime.stream({
+        model,
+        provider: {
+          ...providerInfo,
+          options: {
+            apiKey: OAUTH_DUMMY_KEY,
+            experimentalWebSockets: true,
+            headers: { "X-Opencode-Title": "true", "x-provider": "provider-header" },
+            fetch: ordinaryFetch,
+          },
+        },
+        auth: { type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000 },
+        llmClient,
+        messages: [{ role: "user", content: "hello" }],
+        tools: {},
+        headers: { [TITLE_HEADER]: "true", "x-session-affinity": "title-session" },
+        abort: new AbortController().signal,
+      })
+      if (native.type !== "supported") throw new Error(native.reason)
+      yield* native.stream.pipe(Stream.runDrain)
+      expect(OpenAIWebSocketPool.isTitleHeaderConsumer(ordinaryFetch)).toBe(false)
+      expect(captures).toHaveLength(1)
+      expect(captures[0]?.has(TITLE_HEADER)).toBe(false)
+      expect(captures[0]?.get("x-provider")).toBe("provider-header")
+      expect(captures[0]?.get("x-model")).toBe("model-header")
+      expect(captures[0]?.get("x-session-affinity")).toBe("title-session")
+      expect(model.headers["X-OPENCODE-TITLE"]).toBe("true")
+    }),
+  )
+
   it.effect("strips internal title routing headers from direct native HTTP requests", () =>
     Effect.gen(function* () {
       const llmClient = yield* LLMClient.Service
