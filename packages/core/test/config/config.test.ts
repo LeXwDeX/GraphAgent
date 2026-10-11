@@ -53,6 +53,29 @@ const provider = {
 }
 
 describe("Config", () => {
+  it.effect("validates the optional provider WebSocket setting without changing key configuration", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownSync(ConfigV1.Info)
+      for (const experimentalWebSockets of [undefined, false, true]) {
+        const config = decode({
+          provider: {
+            relay: {
+              npm: "@ai-sdk/openai",
+              options: {
+                apiKey: "{env:TEST_RELAY_KEY}",
+                baseURL: "https://relay.example/v1",
+                ...(experimentalWebSockets === undefined ? {} : { experimentalWebSockets }),
+              },
+            },
+          },
+        })
+        expect(config.provider?.relay.options?.experimentalWebSockets).toBe(experimentalWebSockets)
+        expect(config.provider?.relay.options?.apiKey).toBe("{env:TEST_RELAY_KEY}")
+      }
+      expect(() => decode({ provider: { relay: { options: { experimentalWebSockets: "true" } } } })).toThrow()
+    }),
+  )
+
   it.effect("preserves optional tool budgets across config layers and v1 migration", () =>
     Effect.sync(() => {
       const decodeCurrent = Schema.decodeUnknownSync(Config.Info)

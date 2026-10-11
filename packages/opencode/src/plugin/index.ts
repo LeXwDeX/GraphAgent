@@ -72,17 +72,20 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Plugin") {}
 
-export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel?: string }) {
-  return input.enabled || ["local", "dev", "beta"].includes(input.channel ?? InstallationChannel)
+export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel?: string; configured?: boolean }) {
+  return input.configured ?? (input.enabled || ["local", "dev", "beta"].includes(input.channel ?? InstallationChannel))
 }
 
 // Built-in plugins that are directly imported (not installed from npm)
-function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
+function internalPlugins(flags: RuntimeFlags.Info, experimentalWebSockets?: boolean): PluginInstance[] {
   return [
     // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
     (input) =>
       CodexAuthPlugin(input, {
-        experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
+        experimentalWebSockets: experimentalWebSocketsEnabled({
+          enabled: flags.experimentalWebSockets,
+          configured: experimentalWebSockets,
+        }),
       }),
     CopilotAuthPlugin,
     GitlabAuthPlugin,
@@ -204,7 +207,9 @@ export const layer = Layer.effect(
           $: typeof Bun === "undefined" ? undefined : Bun.$,
         }
 
-        for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
+        for (const plugin of flags.disableDefaultPlugins
+          ? []
+          : internalPlugins(flags, cfg.provider?.openai?.options?.experimentalWebSockets)) {
           const init = yield* Effect.tryPromise({
             try: () => plugin(input),
             catch: errorMessage,

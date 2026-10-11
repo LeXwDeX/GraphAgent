@@ -1,6 +1,27 @@
 # OpenAI Responses WebSocket
 
-Enabled by default on `local`, `dev`, and `beta`. On `latest` and `prod`, set `OPENCODE_EXPERIMENTAL_WEBSOCKETS=true`.
+For the built-in `openai` provider, enabled by default on `local`, `dev`, and `beta`. On `latest` and `prod`, set `OPENCODE_EXPERIMENTAL_WEBSOCKETS=true` or explicitly configure the provider option below. An explicit boolean overrides those defaults for `openai`.
+
+## Provider Configuration
+
+Custom providers using `@ai-sdk/openai` default to HTTP. Add `experimentalWebSockets: true` to the existing provider's `options` to select the same WebSocket transport, retry budget, and HTTP/SSE fallback. Keep the provider ID, API key reference, base URL, and model configuration unchanged:
+
+```jsonc
+{
+  "provider": {
+    "local-proxy-openai": {
+      "npm": "@ai-sdk/openai",
+      "options": {
+        "baseURL": "{env:LOCAL_PROXY_URL}",
+        "apiKey": "{env:LOCAL_PROXY_API_KEY}",
+        "experimentalWebSockets": true,
+      },
+    },
+  },
+}
+```
+
+Set the option to `false` to use HTTP. It applies to the existing AI SDK's streamed Responses requests, not Chat Completions. The experimental native LLM runtime is unchanged. This option does not alter error handling: upstream API errors are still returned to the caller, rather than always replaying the request over HTTP.
 
 ## Flow
 

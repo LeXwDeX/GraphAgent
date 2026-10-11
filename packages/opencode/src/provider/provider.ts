@@ -18,7 +18,7 @@ import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Effect, Layer, Context, Schema, Types } from "effect"
+import { Effect, Layer, Context, Schema, Stream, Types } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectPromise } from "@/effect/promise"
@@ -31,6 +31,9 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { OpenAIWebSocketPool } from "@/plugin/openai/ws-pool"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
 
@@ -1177,6 +1180,10 @@ interface State {
   providers: Record<ProviderV2.ID, Info>
   catalog: Record<ProviderV2.ID, Info>
   sdk: Map<string, BundledSDK>
+  websocketFetches: {
+    fetches: Map<string, ReturnType<typeof OpenAIWebSocketPool.createWebSocketFetch>>
+    closed: boolean
+  }
   modelLoaders: Record<string, CustomModelLoader>
   varsLoaders: Record<string, CustomVarsLoader>
 }
@@ -1342,8 +1349,9 @@ export const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const modelsDevSvc = yield* ModelsDev.Service
     const runtimeFlags = yield* RuntimeFlags.Service
+    const events = yield* EventV2Bridge.Service
 
-    const state = yield* InstanceState.make<State>(() =>
+    const state = yield* InstanceState.make<State>((ctx) =>
       Effect.gen(function* () {
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
@@ -1360,6 +1368,10 @@ export const layer = Layer.effect(
           [providerID: string]: CustomVarsLoader
         } = {}
         const sdk = new Map<string, BundledSDK>()
+        const websocketFetches = {
+          fetches: new Map<string, ReturnType<typeof OpenAIWebSocketPool.createWebSocketFetch>>(),
+          closed: false,
+        }
         const discoveryLoaders: {
           [providerID: string]: CustomDiscoverModels
         } = {}
@@ -1657,11 +1669,37 @@ export const layer = Layer.effect(
           }
         }
 
+        if (
+          Object.values(providers).some(
+            (provider) =>
+              provider.options.experimentalWebSockets === true &&
+              Object.values(provider.models).some((model) => model.api.npm === "@ai-sdk/openai"),
+          )
+        ) {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              websocketFetches.closed = true
+              for (const websocketFetch of websocketFetches.fetches.values()) websocketFetch.close()
+            }),
+          )
+          yield* events.subscribe(SessionV1.Event.Deleted).pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                if (event.location?.directory !== ctx.directory) return
+                for (const websocketFetch of websocketFetches.fetches.values())
+                  websocketFetch.remove(event.data.sessionID)
+              }),
+            ),
+            Effect.forkScoped({ startImmediately: true }),
+          )
+        }
+
         return {
           models: languages,
           providers,
           catalog,
           sdk,
+          websocketFetches,
           modelLoaders,
           varsLoaders,
         }
@@ -1733,6 +1771,20 @@ export const layer = Layer.effect(
         )
         const existing = s.sdk.get(key)
         if (existing) return existing
+
+        if (
+          options.experimentalWebSockets === true &&
+          model.api.npm === "@ai-sdk/openai" &&
+          (model.providerID !== ProviderV2.ID.openai || !options.fetch)
+        ) {
+          let websocketFetch = s.websocketFetches.fetches.get(key)
+          if (!websocketFetch) {
+            websocketFetch = OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: options.fetch ?? fetch })
+            if (s.websocketFetches.closed) websocketFetch.close()
+            else s.websocketFetches.fetches.set(key, websocketFetch)
+          }
+          options.fetch = websocketFetch
+        }
 
         const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"]
@@ -1993,6 +2045,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
+    Layer.provide(EventV2Bridge.defaultLayer),
   ),
 )
 
@@ -2022,6 +2075,7 @@ export const node = LayerNode.make(layer, [
   Plugin.node,
   ModelsDev.node,
   RuntimeFlags.node,
+  EventV2Bridge.node,
 ])
 
 export * as Provider from "./provider"
