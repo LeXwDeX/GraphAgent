@@ -72,18 +72,28 @@ function providerConfig(
   }
 }
 
-for (const configuredMarkers of [false, true]) {
+for (const [providerID, configuredMarkers] of [
+  ["openai", false],
+  ["openai", true],
+  ["relay", false],
+  ["relay", true],
+] as const) {
   plainTransport.live(
-    `plain OpenAI custom fetch strips title routing headers with configured markers=${configuredMarkers}`,
+    `${providerID} plugin fetch keeps HTTP priority and strips title routing headers with configured markers=${configuredMarkers}`,
     () =>
       Effect.gen(function* () {
         const received: Headers[] = []
+        let upgrades = 0
         const server = yield* Effect.acquireRelease(
           Effect.sync(() =>
             Bun.serve({
               hostname: "127.0.0.1",
               port: 0,
               fetch(request) {
+                if (request.headers.get("upgrade") === "websocket") {
+                  upgrades++
+                  return new Response(null, { status: 400 })
+                }
                 received.push(request.headers)
                 return new Response(sse, { headers: { "content-type": "text/event-stream" } })
               },
@@ -94,9 +104,9 @@ for (const configuredMarkers of [false, true]) {
         yield* Effect.gen(function* () {
           const provider = yield* Provider.Service
           const plugin = yield* Plugin.Service
-          const model = yield* provider.getModel(ProviderV2.ID.openai, ModelV2.ID.make("test-model"))
+          const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
           const language = yield* provider.getLanguage(model)
-          const info = yield* provider.getProvider(ProviderV2.ID.openai)
+          const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
           const session = yield* Session.use.create({})
           const flags = yield* RuntimeFlags.Service
           for (const agent of ["build", "title"]) {
@@ -129,6 +139,7 @@ for (const configuredMarkers of [false, true]) {
             })
             expect(yield* Effect.promise(() => result.text)).toBe("ok")
           }
+          expect(upgrades).toBe(0)
           expect(received).toHaveLength(2)
           for (const headers of received) {
             expect(headers.has(TITLE_HEADER)).toBe(false)
@@ -147,17 +158,17 @@ for (const configuredMarkers of [false, true]) {
                 await Bun.write(
                   file,
                   `export default async () => ({ config(cfg) {
-                cfg.provider.openai.options.fetch = async (input, init) => {
+                cfg.provider[${JSON.stringify(providerID)}].options.fetch = async (input, init) => {
                   const headers = new Headers(init?.headers)
                   headers.set("x-custom-fetch", "preserved")
                   return globalThis.fetch(input, { ...init, headers })
                 }
               } })`,
                 )
-                const config = providerConfig(new URL("/v1", server.url).toString(), true, "openai")
-                const provider = config.provider?.openai
+                const config = providerConfig(new URL("/v1", server.url).toString(), true, providerID)
+                const provider = config.provider?.[providerID]
                 const model = provider?.models?.["test-model"]
-                if (!provider || !model) throw new Error("Expected configured OpenAI model")
+                if (!provider || !model) throw new Error("Expected configured provider model")
                 provider.options = {
                   ...provider.options,
                   headers: { "x-provider": "preserved", ...(configuredMarkers ? { "X-Opencode-Title": "true" } : {}) },

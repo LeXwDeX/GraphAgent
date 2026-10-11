@@ -1772,14 +1772,12 @@ export const layer = Layer.effect(
         const existing = s.sdk.get(key)
         if (existing) return existing
 
-        if (
-          options.experimentalWebSockets === true &&
-          model.api.npm === "@ai-sdk/openai" &&
-          (model.providerID !== ProviderV2.ID.openai || !options.fetch)
-        ) {
+        // A plugin fetch owns the transport (URL rewrites, auth, routing) and cannot perform a
+        // WebSocket upgrade, so it keeps priority and the provider stays on HTTP.
+        if (options.experimentalWebSockets === true && model.api.npm === "@ai-sdk/openai" && !options.fetch) {
           let websocketFetch = s.websocketFetches.fetches.get(key)
           if (!websocketFetch) {
-            websocketFetch = OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: options.fetch ?? fetch })
+            websocketFetch = OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
             if (s.websocketFetches.closed) websocketFetch.close()
             else s.websocketFetches.fetches.set(key, websocketFetch)
           }
