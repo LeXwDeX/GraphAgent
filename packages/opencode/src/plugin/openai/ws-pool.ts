@@ -16,7 +16,8 @@ export interface CreateWebSocketFetchOptions {
 
 interface PoolEntry {
   socket?: WebSocket
-  controller?: AbortController
+  controller: AbortController
+  httpActive: number
   connectedAt?: number
   lastUsedAt: number
   busy: boolean
@@ -72,21 +73,26 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     }
     const key = `${sessionID}:conversation`
 
-    const entry = pool.get(key) ?? { lastUsedAt: Date.now(), busy: false, fallback: false, streamFailures: 0 }
+    const entry = pool.get(key) ?? {
+      controller: new AbortController(),
+      httpActive: 0,
+      lastUsedAt: Date.now(),
+      busy: false,
+      fallback: false,
+      streamFailures: 0,
+    }
     pool.set(key, entry)
 
     if (entry.fallback) {
-      return httpFetch(input, httpInit)
+      return httpFallback(entry, input, httpInit)
     }
     if (entry.busy) {
-      return httpFetch(input, httpInit)
+      return httpFallback(entry, input, httpInit)
     }
 
     entry.busy = true
     entry.lastUsedAt = Date.now()
-    const controller = new AbortController()
-    entry.controller = controller
-    const signal = init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
+    const signal = init?.signal ? AbortSignal.any([init.signal, entry.controller.signal]) : entry.controller.signal
     try {
       entry.socket = await socket(
         entry,
@@ -151,7 +157,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
         })
       }
       if (!entry.fallback) return response
-      return httpFetch(input, httpInit)
+      return httpFallback(entry, input, httpInit)
     } catch (error) {
       entry.busy = false
       entry.lastUsedAt = Date.now()
@@ -165,12 +171,87 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
 
       recordStreamFailure(entry)
       invalidate(entry)
-      if (entry.fallback) return httpFetch(input, httpInit)
+      if (entry.fallback) return httpFallback(entry, input, httpInit)
       return failedResponse(
         new ProviderError.ResponseStreamError(error instanceof Error ? error.message : String(error), {
           cause: error,
         }),
       )
+    }
+  }
+
+  async function httpFallback(entry: PoolEntry, input: RequestInfo | URL, init?: RequestInit) {
+    const signal = init?.signal ? AbortSignal.any([init.signal, entry.controller.signal]) : entry.controller.signal
+    signal.throwIfAborted()
+    entry.httpActive++
+    let released = false
+    let removeAbortListener = () => {}
+    function release() {
+      if (released) return
+      released = true
+      removeAbortListener()
+      entry.httpActive--
+      entry.lastUsedAt = Date.now()
+    }
+    try {
+      const response = await httpFetch(input, { ...init, signal })
+      if (!response.body) {
+        release()
+        return response
+      }
+      const reader = response.body.getReader()
+      let readerReleased = false
+      function releaseReader() {
+        if (readerReleased) return
+        readerReleased = true
+        reader.releaseLock()
+      }
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            function onAbort() {
+              const error = signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError")
+              release()
+              controller.error(error)
+              void reader
+                .cancel(error)
+                .catch(() => {})
+                .finally(releaseReader)
+            }
+            signal.addEventListener("abort", onAbort, { once: true })
+            removeAbortListener = () => signal.removeEventListener("abort", onAbort)
+            if (signal.aborted) onAbort()
+          },
+          async pull(controller) {
+            try {
+              const chunk = await reader.read()
+              if (released) return
+              if (chunk.done) {
+                release()
+                releaseReader()
+                controller.close()
+              } else controller.enqueue(chunk.value)
+            } catch (error) {
+              if (released) return
+              release()
+              releaseReader()
+              controller.error(error)
+            }
+          },
+          async cancel(reason) {
+            release()
+            try {
+              await reader.cancel(reason)
+            } finally {
+              releaseReader()
+            }
+          },
+        }),
+        { status: response.status, statusText: response.statusText, headers: response.headers },
+      )
+    } catch (error) {
+      release()
+      throw error
     }
   }
 
@@ -183,7 +264,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   function prune() {
     const now = Date.now()
     for (const [key, entry] of pool) {
-      if (entry.busy) continue
+      if (entry.busy || entry.httpActive > 0) continue
       if (entry.fallback) continue
       if (now - entry.lastUsedAt < idleTimeout) continue
       invalidate(entry)
@@ -196,7 +277,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     closed = true
     clearInterval(pruneTimer)
     for (const entry of pool.values()) {
-      entry.controller?.abort(new DOMException("WebSocket pool closed", "AbortError"))
+      entry.controller.abort(new DOMException("WebSocket pool closed", "AbortError"))
       invalidate(entry)
     }
     pool.clear()
@@ -206,7 +287,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     const key = `${sessionID}:conversation`
     const entry = pool.get(key)
     if (!entry) return
-    entry.controller?.abort(new DOMException("WebSocket session removed", "AbortError"))
+    entry.controller.abort(new DOMException("WebSocket session removed", "AbortError"))
     invalidate(entry)
     pool.delete(key)
   }

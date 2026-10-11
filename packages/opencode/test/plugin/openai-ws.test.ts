@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
-import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http"
+import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http"
 import net, { type AddressInfo, type Socket } from "node:net"
 import WebSocket, { WebSocketServer } from "ws"
 import { APICallError } from "ai"
@@ -797,6 +797,227 @@ describe("plugin.openai.ws-pool", () => {
     })
   }
 
+  for (const mode of ["sticky", "setup failure", "stream failure", "busy"] as const) {
+    for (const phase of ["headers", "body"] as const) {
+      for (const cleanup of ["close", "remove"] as const) {
+        test(`${cleanup} cancels ${mode} HTTP fallback while waiting for ${phase}`, async () => {
+          await using http = await createControlledHttpServer()
+          await using ws =
+            mode === "busy" || mode === "stream failure"
+              ? await createWebSocketServer((socket) => {
+                  socket.once("message", () => {
+                    if (mode === "busy")
+                      socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "ws" }))
+                    else socket.close(1001, "failed")
+                  })
+                })
+              : await createRejectingWebSocketServer(() => {})
+          const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url, streamRetries: 0 })
+          try {
+            let wsFailure: Promise<Error> | undefined
+            if (mode === "sticky") {
+              const prime = transport(http.url, streamRequest())
+              await waitFor(() => http.requests.length === 1, "priming HTTP fallback did not start")
+              http.requests[0].response.end("prime")
+              expect(await (await prime).text()).toBe("prime")
+            } else if (mode === "busy") {
+              const response = await transport(http.url, streamRequest())
+              wsFailure = readTextError(response.text())
+            }
+            const previous = http.requests.length
+            const pending = transport(http.url, streamRequest())
+            const failure = readTextError(pending.then((response) => response.text()))
+            await waitFor(() => http.requests.length === previous + 1, "HTTP fallback did not start")
+            const request = http.requests[previous]
+            if (phase === "body") {
+              request.response.writeHead(200, { "content-type": "text/event-stream" })
+              request.response.write("data: partial\n\n")
+              await pending
+            }
+
+            if (cleanup === "close") transport.close()
+            else transport.remove("session-1")
+            expect(await failure).toMatchObject({ name: "AbortError" })
+            if (wsFailure) expect(await wsFailure).toMatchObject({ name: "AbortError" })
+            await waitFor(() => request.closed, "HTTP connection remained open after cleanup")
+            expect(http.requests).toHaveLength(previous + 1)
+            expect(ws.httpRequests).toHaveLength(0)
+          } finally {
+            transport.close()
+          }
+        })
+      }
+    }
+  }
+
+  test("caller abort cancels one busy HTTP fallback without stopping sibling HTTP or websocket work", async () => {
+    await using http = await createControlledHttpServer()
+    await using ws = await createWebSocketServer((socket) => {
+      socket.once("message", () => socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "ws" })))
+    })
+    const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url })
+    try {
+      const websocket = await transport(http.url, streamRequest())
+      const wsFailure = readTextError(websocket.text())
+      const caller = new AbortController()
+      const canceled = readTextError(
+        transport(http.url, streamRequest({}, caller.signal)).then((response) => response.text()),
+      )
+      const sibling = transport(http.url, streamRequest())
+      await waitFor(() => http.requests.length === 2, "concurrent HTTP fallbacks did not start")
+      caller.abort(new DOMException("caller stopped", "AbortError"))
+      expect(await canceled).toMatchObject({ name: "AbortError", message: "caller stopped" })
+      await waitFor(() => http.requests[0].closed, "caller-aborted HTTP was not closed")
+      expect(http.requests[1].closed).toBe(false)
+      http.requests[1].response.end("sibling")
+      expect(await (await sibling).text()).toBe("sibling")
+      expect(ws.httpRequests).toHaveLength(0)
+      transport.remove("session-1")
+      expect(await wsFailure).toMatchObject({ name: "AbortError", message: "WebSocket session removed" })
+    } finally {
+      transport.close()
+    }
+  })
+
+  test("keeps HTTP fallback owned across later websocket calls and isolates removed session entries", async () => {
+    await using http = await createControlledHttpServer()
+    const sockets: WebSocket[] = []
+    await using ws = await createWebSocketServer((socket, request) => {
+      sockets.push(socket)
+      socket.on("message", () => {
+        const event =
+          request.headers["session-id"] === "session-2" || sockets.length > 1
+            ? { type: "response.completed", response: { id: "fresh" } }
+            : { type: "response.output_text.delta", delta: "ws" }
+        socket.send(JSON.stringify(event))
+      })
+    })
+    const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url })
+    try {
+      const first = await transport(http.url, streamRequest())
+      const firstText = first.text()
+      const pendingHttp = transport(http.url, streamRequest())
+      const httpFailure = readTextError(pendingHttp.then((response) => response.text()))
+      await waitFor(() => http.requests.length === 1, "busy HTTP fallback did not start")
+      http.requests[0].response.writeHead(200, { "content-type": "text/event-stream" })
+      http.requests[0].response.write("data: partial\n\n")
+      await pendingHttp
+      sockets[0].send(JSON.stringify({ type: "response.completed", response: { id: "first" } }))
+      expect(await firstText).toContain("data: [DONE]")
+      const nextWs = await transport(http.url, streamRequest())
+      const wsFailure = readTextError(nextWs.text())
+      const other = await transport(http.url, streamRequest({ "session-id": "session-2" }))
+      expect(await other.text()).toContain("data: [DONE]")
+
+      transport.remove("session-1")
+      const fresh = transport(http.url, streamRequest())
+      expect(await httpFailure).toMatchObject({ name: "AbortError" })
+      expect(await wsFailure).toMatchObject({ name: "AbortError" })
+      expect(await (await fresh).text()).toContain("data: [DONE]")
+      const reused = await transport(http.url, streamRequest({ "session-id": "session-2" }))
+      expect(await reused.text()).toContain("data: [DONE]")
+      await waitFor(() => http.requests[0].closed, "old HTTP stream was not closed")
+      expect(http.requests).toHaveLength(1)
+      expect(sockets).toHaveLength(3)
+    } finally {
+      transport.close()
+    }
+  })
+
+  for (const completion of ["finish", "fail", "cancel", "caller abort"] as const) {
+    test(`idle prune waits for active HTTP fallback and resumes after body ${completion}`, async () => {
+      await using http = await createControlledHttpServer()
+      let closed = 0
+      let socket: WebSocket | undefined
+      await using ws = await createWebSocketServer((next) => {
+        socket = next
+        next.once("close", () => closed++)
+        next.once("message", () => next.send(JSON.stringify({ type: "response.output_text.delta", delta: "ws" })))
+      })
+      const idleTimeout = 200
+      const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url, idleTimeout })
+      try {
+        const caller = new AbortController()
+        const websocket = await transport(http.url, streamRequest())
+        const text = websocket.text()
+        const pending = transport(http.url, streamRequest({}, caller.signal))
+        await waitFor(() => http.requests.length === 1, "busy HTTP fallback did not start")
+        http.requests[0].response.writeHead(202, "Accepted", {
+          "content-type": "text/event-stream",
+          "x-regression": "preserved",
+        })
+        http.requests[0].response.write("data: partial\n\n")
+        const response = await pending
+        expect(response.status).toBe(202)
+        expect(response.statusText).toBe("Accepted")
+        expect(response.headers.get("content-type")).toBe("text/event-stream")
+        expect(response.headers.get("x-regression")).toBe("preserved")
+        socket!.send(JSON.stringify({ type: "response.completed", response: { id: "done" } }))
+        expect(await text).toContain("data: [DONE]")
+        await Bun.sleep(idleTimeout * 3)
+        expect(closed).toBe(0)
+        if (completion === "finish") {
+          const reader = response.body!.getReader()
+          const decoder = new TextDecoder()
+          expect(decoder.decode((await reader.read()).value)).toBe("data: partial\n\n")
+          http.requests[0].response.write("data: second\n\n")
+          expect(decoder.decode((await reader.read()).value)).toBe("data: second\n\n")
+          http.requests[0].response.end("data: [DONE]\n\n")
+          expect(decoder.decode((await reader.read()).value)).toBe("data: [DONE]\n\n")
+          expect((await reader.read()).done).toBe(true)
+          reader.releaseLock()
+        } else if (completion === "fail") {
+          const failure = readTextError(response.text())
+          http.requests[0].response.destroy()
+          expect(await failure).toBeInstanceOf(Error)
+        } else if (completion === "cancel") {
+          await response.body!.cancel("finished reading")
+        } else {
+          caller.abort(new DOMException("caller stopped", "AbortError"))
+          expect(await readTextError(response.text())).toMatchObject({ name: "AbortError" })
+        }
+        await waitFor(() => closed === 1, "completed or canceled HTTP fallback prevented idle pruning")
+        expect(http.requests).toHaveLength(1)
+        expect(ws.httpRequests).toHaveLength(0)
+      } finally {
+        transport.close()
+      }
+    })
+  }
+
+  test("a rejected HTTP fallback releases idle ownership without retrying the request", async () => {
+    await using http = await createControlledHttpServer()
+    let closed = 0
+    let socket: WebSocket | undefined
+    await using ws = await createWebSocketServer((next) => {
+      socket = next
+      next.once("close", () => closed++)
+      next.once("message", () => next.send(JSON.stringify({ type: "response.output_text.delta", delta: "ws" })))
+    })
+    const idleTimeout = 200
+    const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url, idleTimeout })
+    try {
+      const websocket = await transport(http.url, streamRequest())
+      const text = websocket.text()
+      const caller = new AbortController()
+      const failure = readTextError(
+        transport(http.url, streamRequest({}, caller.signal)).then((response) => response.text()),
+      )
+      await waitFor(() => http.requests.length === 1, "busy HTTP fallback did not start")
+      socket!.send(JSON.stringify({ type: "response.completed", response: { id: "done" } }))
+      expect(await text).toContain("data: [DONE]")
+      await Bun.sleep(idleTimeout * 3)
+      expect(closed).toBe(0)
+      caller.abort(new DOMException("caller stopped", "AbortError"))
+      expect(await failure).toMatchObject({ name: "AbortError" })
+      await waitFor(() => closed === 1, "rejected HTTP fallback prevented idle pruning")
+      expect(http.requests).toHaveLength(1)
+      expect(ws.httpRequests).toHaveLength(0)
+    } finally {
+      transport.close()
+    }
+  })
+
   test("retries unexpected closes before first event then falls back to HTTP", async () => {
     let connections = 0
     await using server = await createWebSocketServer((socket) => {
@@ -1002,6 +1223,31 @@ async function createHttpServer() {
     httpRequests,
     url: `http://127.0.0.1:${address.port}/v1/responses`,
     async [Symbol.asyncDispose]() {
+      await closeHttpServer(server)
+    },
+  }
+}
+
+async function createControlledHttpServer() {
+  const requests: Array<{ response: ServerResponse; closed: boolean }> = []
+  const sockets = new Set<Socket>()
+  const server = createServer((_request, response) => {
+    const entry = { response, closed: false }
+    requests.push(entry)
+    response.once("close", () => (entry.closed = true))
+  })
+  server.on("connection", (socket) => {
+    sockets.add(socket)
+    socket.once("close", () => sockets.delete(socket))
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("Expected HTTP server port")
+  return {
+    url: `http://127.0.0.1:${address.port}/v1/responses`,
+    requests,
+    async [Symbol.asyncDispose]() {
+      for (const socket of sockets) socket.destroy()
       await closeHttpServer(server)
     },
   }
