@@ -895,7 +895,7 @@ describe("plugin.openai.ws-pool", () => {
             return error
           })
           const caller = new AbortController()
-          const request = new Request(http.url, { signal: caller.signal })
+          const request = new Request(http.url, { signal: caller.signal, headers: { [TITLE_HEADER]: "true" } })
           const init = streamRequest()
           if (supplied === "missing") delete init.signal
           const pending = transport(request, init)
@@ -937,7 +937,7 @@ describe("plugin.openai.ws-pool", () => {
         const wsFailure = readTextError(websocket.text())
         const inputCaller = new AbortController()
         const initCaller = new AbortController()
-        const request = new Request(http.url, { signal: inputCaller.signal })
+        const request = new Request(http.url, { signal: inputCaller.signal, headers: { [TITLE_HEADER]: "true" } })
         const pending = transport(request, {
           ...streamRequest(),
           signal: override === "null" ? null : initCaller.signal,

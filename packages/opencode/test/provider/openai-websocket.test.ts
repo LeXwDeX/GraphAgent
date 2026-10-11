@@ -1,4 +1,4 @@
-import { expect } from "bun:test"
+import { expect, spyOn } from "bun:test"
 import { streamText } from "ai"
 import { pathToFileURL } from "node:url"
 import { ConfigProvider, Effect, Layer } from "effect"
@@ -176,6 +176,115 @@ for (const configuredMarkers of [false, true]) {
       }),
   )
 }
+
+plainTransport.live("custom fetch rebuilding Request preserves empty and title-only header overrides", () =>
+  Effect.gen(function* () {
+    const received: { headers: Headers; body: string }[] = []
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          async fetch(request) {
+            received.push({ headers: request.headers, body: await request.text() })
+            return new Response("ok")
+          },
+        }),
+      ),
+      (server) => Effect.sync(() => server.stop(true)),
+    )
+    yield* Effect.gen(function* () {
+      const provider = yield* Provider.Service
+      const model = yield* provider.getModel(ProviderV2.ID.make("request-rebuild"), ModelV2.ID.make("test-model"))
+      const language = yield* provider.getLanguage(model)
+      const timers = yield* Effect.acquireRelease(
+        Effect.sync(() => ({
+          start: spyOn(globalThis, "setTimeout"),
+          clear: spyOn(globalThis, "clearTimeout"),
+        })),
+        (timers) =>
+          Effect.sync(() => {
+            timers.start.mockRestore()
+            timers.clear.mockRestore()
+          }),
+      )
+      const result = yield* Effect.promise(() => language.doGenerate({ prompt: [] }))
+      expect(result.content).toEqual([{ type: "text", text: "ok" }])
+      expect(received).toHaveLength(6)
+      for (const request of received) {
+        expect(request.headers.has(TITLE_HEADER)).toBe(false)
+        expect(request.headers.has("authorization")).toBe(false)
+        expect(request.headers.has("x-private")).toBe(false)
+        expect(request.body).toBe("retained-body")
+      }
+      const headerTimers = timers.start.mock.calls.flatMap((args, index) => {
+        const result = timers.start.mock.results[index]
+        return args[1] === 60_123 && result.type === "return" ? [result.value] : []
+      })
+      expect(headerTimers).toHaveLength(8)
+      for (const timer of headerTimers) expect(timers.clear).toHaveBeenCalledWith(timer)
+    }).pipe(
+      withTmpdirInstance({
+        init: (directory) =>
+          Effect.promise(async () => {
+            const sdk = `${directory}/request-sdk.ts`
+            await Bun.write(
+              sdk,
+              `export function createSDK(options) {
+          return { languageModel(modelId) {
+            return { specificationVersion: "v3", provider: "request-rebuild", modelId, supportedUrls: {},
+              async doGenerate() {
+                for (const marker of [false, true]) for (const form of ["record", "headers", "tuples"]) {
+                  const input = new Request(options.baseURL, { method: "POST", body: "retained-body",
+                    headers: { authorization: "Bearer synthetic-original", "x-private": "synthetic-private", "x-opencode-title": "original-marker" } });
+                  const override = marker ? { "X-Opencode-Title": "true" } : {};
+                  const headers = form === "record" ? override : form === "headers" ? new Headers(override) : Object.entries(override);
+                  await (await options.fetch(input, { headers })).text();
+                }
+                const used = new Request(options.baseURL, { method: "POST", body: "used-body",
+                  headers: { "x-opencode-title": "true" } });
+                await used.text();
+                const prepareError = await options.fetch(used, { headers: {} }).catch(error => error);
+                if (!(prepareError instanceof TypeError)) throw new Error("Expected used Request preparation to fail");
+                const customError = await options.fetch(new Request(options.baseURL, { method: "POST", body: "retained-body",
+                  headers: { "x-opencode-title": "true" } }), { headers: { "x-fixture-throw": "true" } }).catch(error => error);
+                if (customError?.message !== "synthetic custom fetch failure") throw new Error("Expected synchronous custom fetch failure");
+                return { content: [{type: "text", text: "ok"}], finishReason: {unified: "stop", raw: "stop"},
+                  usage: {inputTokens: {total: 1}, outputTokens: {total: 1}}, warnings: [] };
+              }
+            };
+          } };
+        }`,
+            )
+            const plugin = `${directory}/rebuilding-fetch.ts`
+            await Bun.write(
+              plugin,
+              `export default async () => ({ config(cfg) {
+          cfg.provider["request-rebuild"].options.fetch = (input, init) => {
+            if (new Headers(init?.headers).has("x-fixture-throw")) throw new Error("synthetic custom fetch failure");
+            return globalThis.fetch(new Request(input, init));
+          };
+        } })`,
+            )
+            await Bun.write(
+              `${directory}/opencode.json`,
+              JSON.stringify({
+                enabled_providers: ["request-rebuild"],
+                plugin: [pathToFileURL(plugin).href],
+                provider: {
+                  "request-rebuild": {
+                    npm: pathToFileURL(sdk).href,
+                    options: { baseURL: server.url.toString(), apiKey: "synthetic", headerTimeout: 60_123 },
+                    models: { "test-model": { name: "Request transport", limit: { context: 10000, output: 1000 } } },
+                  },
+                },
+              }),
+            )
+          }),
+      }),
+    )
+  }),
+)
 
 for (const [providerID, disableDefaultPlugins] of [
   ["relay", false],

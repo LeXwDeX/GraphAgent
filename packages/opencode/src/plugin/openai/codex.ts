@@ -443,10 +443,11 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
             }
 
             const currentAuth = await getAuth()
-            if (currentAuth.type !== "oauth")
-              return websocketFetch
-                ? websocketFetch(requestInput, init)
-                : fetch(requestInput, OpenAIWebSocketPool.withoutInternalRequestHeaders(requestInput, init ?? {}))
+            if (currentAuth.type !== "oauth") {
+              if (websocketFetch) return websocketFetch(requestInput, init)
+              const request = OpenAIWebSocketPool.withoutInternalRequestHeaders(requestInput, init ?? {})
+              return fetch(request.input, request.init)
+            }
 
             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
 

@@ -59,10 +59,13 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     if (closed) throw new DOMException("WebSocket pool closed", "AbortError")
     const url = input instanceof URL ? input.toString() : typeof input === "string" ? input : input.url
     const internalHeaders = OpenAIWebSocket.normalizeHeaders(init?.headers)
-    const httpInit = withoutInternalRequestHeaders(input, init ?? {})
+    const httpInit = withoutInternalHeaders({
+      ...init,
+      headers: init?.headers === undefined && input instanceof Request ? input.headers : init?.headers,
+    })
 
     if (init?.method !== "POST" || !new URL(url).pathname.endsWith("/responses")) {
-      return httpFetch(input, httpInit)
+      return fetchHTTP(input, httpInit)
     }
 
     const body = (() => {
@@ -74,14 +77,14 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
         return undefined
       }
     })()
-    if (!body?.stream) return httpFetch(input, httpInit)
+    if (!body?.stream) return fetchHTTP(input, httpInit)
     if (internalHeaders[TITLE_HEADER] === "true") {
-      return httpFetch(input, httpInit)
+      return fetchHTTP(input, httpInit)
     }
 
     const sessionID = internalHeaders["x-session-affinity"] ?? internalHeaders["session-id"]
     if (!sessionID) {
-      return httpFetch(input, httpInit)
+      return fetchHTTP(input, httpInit)
     }
     const key = `${sessionID}:conversation`
 
@@ -192,6 +195,11 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     }
   }
 
+  function fetchHTTP(input: RequestInfo | URL, init?: RequestInit) {
+    const request = withoutInternalRequestHeaders(input, init ?? {})
+    return httpFetch(request.input, request.init)
+  }
+
   async function httpFallback(entry: PoolEntry, input: RequestInfo | URL, init?: RequestInit) {
     const signal = requestSignal(entry, input, init)
     signal.throwIfAborted()
@@ -206,7 +214,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
       entry.lastUsedAt = Date.now()
     }
     try {
-      const response = await httpFetch(input, { ...init, signal })
+      const response = await fetchHTTP(input, { ...init, signal })
       if (!response.body) {
         release()
         return response
@@ -387,12 +395,31 @@ export function withoutInternalHeaders<T extends { headers?: HeadersInit }>(init
   }
 }
 
-export function withoutInternalRequestHeaders<T extends { headers?: HeadersInit }>(
+export function withoutInternalRequestHeaders<T extends RequestInit>(
   input: RequestInfo | URL,
   init: T,
-): T {
+): { input: RequestInfo | URL; init: T } {
   const headers = init.headers === undefined && input instanceof Request ? input.headers : init.headers
-  return withoutInternalHeaders({ ...init, headers }) ?? init
+  const cleaned = withoutInternalHeaders({ ...init, headers }) ?? init
+  if (!(input instanceof Request)) return { input, init: cleaned }
+  const effective = new Headers(cleaned.headers)
+  if (
+    !input.headers.has(TITLE_HEADER) &&
+    !(init.headers !== undefined && effective.keys().next().done && !input.headers.keys().next().done)
+  ) {
+    return { input, init: cleaned }
+  }
+
+  // Bun can inherit Request headers when init.headers is empty. Protect the
+  // Request itself, retaining native body sources and redirect replay semantics.
+  const signal = init.signal === undefined ? input.signal : init.signal
+  signal?.throwIfAborted()
+  // The transport applies an explicit body once. Preparing it here can consume
+  // a Request-backed stream before a custom fetch reconstructs the Request.
+  const request = new Request(input, cleaned.body === undefined ? cleaned : { ...cleaned, body: null })
+  for (const key of Array.from(request.headers.keys())) request.headers.delete(key)
+  effective.forEach((value, key) => request.headers.append(key, value))
+  return { input: request, init: cleaned }
 }
 
 export * as OpenAIWebSocketPool from "./ws-pool"
