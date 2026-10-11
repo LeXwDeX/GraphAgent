@@ -14,6 +14,7 @@ import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
+import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
 import { mergeDeep } from "remeda"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
@@ -132,7 +133,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     },
   )
 
-  const { headers } = yield* input.plugin.trigger(
+  const { headers }: { headers: Record<string, string> } = yield* input.plugin.trigger(
     "chat.headers",
     {
       sessionID: input.sessionID,
@@ -145,6 +146,14 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       headers: {},
     },
   )
+  // Configured transports also need title isolation when default plugins are disabled.
+  if (
+    input.agent.name === "title" &&
+    input.model.api.npm === "@ai-sdk/openai" &&
+    input.provider.options.experimentalWebSockets === true
+  ) {
+    headers[TITLE_HEADER] = "true"
+  }
 
   const tools = resolveTools(input)
   // Codex parity: OpenAI Responses-family providers hardcode `strict: false`

@@ -1,28 +1,31 @@
 import { expect } from "bun:test"
 import { streamText } from "ai"
-import { Effect, Layer } from "effect"
+import { ConfigProvider, Effect, Layer } from "effect"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
 import { Env } from "@/env"
 import { Plugin } from "@/plugin"
 import { Session } from "@/session/session"
 import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
+import { LLMRequestPrep } from "@/session/llm/request"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstancesEffect, provideTmpdirInstance } from "../fixture/fixture"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 
-const it = testEffect(
-  Layer.mergeAll(
-    Provider.defaultLayer,
-    Env.defaultLayer,
-    Plugin.defaultLayer,
-    Session.defaultLayer,
-    CrossSpawnSpawner.defaultLayer,
-  ),
+const layer = Layer.mergeAll(
+  Provider.defaultLayer,
+  Env.defaultLayer,
+  Plugin.defaultLayer,
+  Session.defaultLayer,
+  CrossSpawnSpawner.defaultLayer,
+  RuntimeFlags.defaultLayer,
 )
+const it = testEffect(layer)
 
 const events = [
   { type: "response.created", response: { id: "resp_test", model: "test-model", created_at: 0 } },
@@ -63,119 +66,155 @@ function providerConfig(
   }
 }
 
-for (const providerID of ["relay", "openai"]) {
+for (const [providerID, disableDefaultPlugins] of [
+  ["relay", false],
+  ["openai", false],
+  ["relay", true],
+  ["openai", true],
+] as const) {
+  const transport = testEffect(
+    layer.pipe(
+      Layer.provide(
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_DISABLE_DEFAULT_PLUGINS: disableDefaultPlugins })),
+      ),
+    ),
+  )
   for (const configured of [undefined, false, true]) {
     if (providerID === "openai" && configured === undefined) continue
-    it.live(`${providerID} transport with experimentalWebSockets=${configured}`, () =>
-      Effect.gen(function* () {
-        yield* Effect.acquireRelease(
-          Effect.sync(() => {
-            const previous = process.env.OPENCODE_AUTH_CONTENT
-            process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ openai: { type: "api", key: "test-provider-key" } })
-            return previous
-          }),
-          (previous) =>
+    transport.live(
+      `${providerID} transport with experimentalWebSockets=${configured}, disabled plugins=${disableDefaultPlugins}`,
+      () =>
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(
             Effect.sync(() => {
-              if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
-              else process.env.OPENCODE_AUTH_CONTENT = previous
+              const previous = process.env.OPENCODE_AUTH_CONTENT
+              process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ openai: { type: "api", key: "test-provider-key" } })
+              return previous
             }),
-        )
-        let upgrades = 0
-        let posts = 0
-        let closed = 0
-        const closeEvents = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
-        const server = yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            Bun.serve({
-              hostname: "127.0.0.1",
-              port: 0,
-              websocket: {
-                close() {
-                  closeEvents[closed++]?.resolve()
+            (previous) =>
+              Effect.sync(() => {
+                if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+                else process.env.OPENCODE_AUTH_CONTENT = previous
+              }),
+          )
+          let upgrades = 0
+          let posts = 0
+          let closed = 0
+          const closeEvents = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+          const server = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              Bun.serve({
+                hostname: "127.0.0.1",
+                port: 0,
+                websocket: {
+                  close() {
+                    closeEvents[closed++]?.resolve()
+                  },
+                  message(socket, message) {
+                    const body = JSON.parse(String(message))
+                    expect(body.type).toBe("response.create")
+                    expect(body.experimentalWebSockets).toBeUndefined()
+                    for (const event of events) socket.send(JSON.stringify(event))
+                  },
                 },
-                message(socket, message) {
-                  const body = JSON.parse(String(message))
-                  expect(body.type).toBe("response.create")
-                  expect(body.experimentalWebSockets).toBeUndefined()
-                  for (const event of events) socket.send(JSON.stringify(event))
+                async fetch(request, server): Promise<Response | undefined> {
+                  expect(request.headers.get("authorization")).toBe("Bearer test-provider-key")
+                  expect(new URL(request.url).pathname).toBe("/v1/responses")
+                  expect(request.headers.has(TITLE_HEADER)).toBe(false)
+                  if (request.headers.get("upgrade") === "websocket") {
+                    upgrades++
+                    expect(request.headers.get("openai-beta")).toBe("responses_websockets=2026-02-06")
+                    if (server.upgrade(request)) return undefined
+                    return new Response(null, { status: 400 })
+                  }
+                  posts++
+                  expect(request.method).toBe("POST")
+                  expect((await request.json()).experimentalWebSockets).toBeUndefined()
+                  return new Response(sse, { headers: { "content-type": "text/event-stream" } })
                 },
-              },
-              async fetch(request, server): Promise<Response | undefined> {
-                expect(request.headers.get("authorization")).toBe("Bearer test-provider-key")
-                expect(new URL(request.url).pathname).toBe("/v1/responses")
-                expect(request.headers.has(TITLE_HEADER)).toBe(false)
-                if (request.headers.get("upgrade") === "websocket") {
-                  upgrades++
-                  expect(request.headers.get("openai-beta")).toBe("responses_websockets=2026-02-06")
-                  if (server.upgrade(request)) return undefined
-                  return new Response(null, { status: 400 })
-                }
-                posts++
-                expect(request.method).toBe("POST")
-                expect((await request.json()).experimentalWebSockets).toBeUndefined()
-                return new Response(sse, { headers: { "content-type": "text/event-stream" } })
-              },
-            }),
-          ),
-          (server) => Effect.sync(() => server.stop(true)),
-        )
+              }),
+            ),
+            (server) => Effect.sync(() => server.stop(true)),
+          )
 
-        yield* provideTmpdirInstance(
-          () =>
-            Effect.gen(function* () {
-              const provider = yield* Provider.Service
-              const plugin = yield* Plugin.Service
-              const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
-              const language = yield* provider.getLanguage(model)
-              const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
-              const session = yield* Session.use.create({})
-              for (const title of [false, false, true]) {
-                const input = { model, provider: info, sessionID: session.id, agent: title ? "title" : "build" }
-                const { headers } = yield* plugin.trigger("chat.headers", input, { headers: {} })
-                if (providerID === "relay") {
-                  expect(headers).toEqual(configured === true && title ? { [TITLE_HEADER]: "true" } : {})
-                  const params = yield* plugin.trigger("chat.params", input, { maxOutputTokens: 1000 })
-                  expect(params.maxOutputTokens).toBe(1000)
+          yield* provideTmpdirInstance(
+            () =>
+              Effect.gen(function* () {
+                const provider = yield* Provider.Service
+                const plugin = yield* Plugin.Service
+                const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
+                const language = yield* provider.getLanguage(model)
+                const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
+                const session = yield* Session.use.create({})
+                const flags = yield* RuntimeFlags.Service
+                expect(flags.disableDefaultPlugins).toBe(disableDefaultPlugins)
+                if (disableDefaultPlugins) expect(yield* plugin.list()).toHaveLength(0)
+                for (const title of [false, false, true]) {
+                  const agent = title ? "title" : "build"
+                  const input = { model, provider: info, sessionID: session.id, agent }
+                  const { headers } = yield* LLMRequestPrep.prepare({
+                    ...input,
+                    agent: { name: agent, mode: "primary", permission: [], options: {} },
+                    user: {
+                      id: SessionV1.MessageID.make("msg_test"),
+                      sessionID: session.id,
+                      role: "user",
+                      time: { created: 0 },
+                      agent,
+                      model: { providerID: model.providerID, modelID: model.id },
+                    },
+                    auth: undefined,
+                    plugin,
+                    flags,
+                    isWorkflow: false,
+                    messages: [{ role: "user", content: "hello" }],
+                    system: [],
+                    tools: {},
+                  })
+                  expect(new Headers(headers).get(TITLE_HEADER)).toBe(configured === true && title ? "true" : null)
+                  if (providerID === "relay") {
+                    const params = yield* plugin.trigger("chat.params", input, { maxOutputTokens: 1000 })
+                    expect(params.maxOutputTokens).toBe(1000)
+                  }
+                  const result = streamText({
+                    model: language,
+                    messages: [{ role: "user", content: "hello" }],
+                    headers: {
+                      "x-session-affinity": session.id,
+                      ...headers,
+                    },
+                    maxRetries: 0,
+                  })
+                  expect(yield* Effect.promise(() => result.text)).toBe("ok")
                 }
+                expect(upgrades).toBe(configured === true ? 1 : 0)
+                expect(posts).toBe(configured === true ? 1 : 3)
+                if (configured !== true) return
+
+                yield* Session.use.remove(session.id)
+                yield* awaitWithTimeout(
+                  Effect.promise(() => closeEvents[0].promise),
+                  "session deletion must close its WS",
+                )
+                const next = yield* Session.use.create({})
                 const result = streamText({
                   model: language,
                   messages: [{ role: "user", content: "hello" }],
-                  headers: {
-                    "x-session-affinity": session.id,
-                    ...headers,
-                  },
+                  headers: { "x-session-affinity": next.id },
                   maxRetries: 0,
                 })
                 expect(yield* Effect.promise(() => result.text)).toBe("ok")
-              }
-              expect(upgrades).toBe(configured === true ? 1 : 0)
-              expect(posts).toBe(configured === true ? 1 : 3)
-              if (configured !== true) return
-
-              yield* Session.use.remove(session.id)
-              yield* awaitWithTimeout(
-                Effect.promise(() => closeEvents[0].promise),
-                "session deletion must close its WS",
-              )
-              const next = yield* Session.use.create({})
-              const result = streamText({
-                model: language,
-                messages: [{ role: "user", content: "hello" }],
-                headers: { "x-session-affinity": next.id },
-                maxRetries: 0,
-              })
-              expect(yield* Effect.promise(() => result.text)).toBe("ok")
-              expect(upgrades).toBe(2)
-              yield* disposeAllInstancesEffect
-              yield* awaitWithTimeout(
-                Effect.promise(() => closeEvents[1].promise),
-                "instance disposal must close its WS",
-              )
-              expect(closed).toBe(2)
-            }),
-          { config: providerConfig(new URL("/v1", server.url).toString(), configured, providerID) },
-        )
-      }),
+                expect(upgrades).toBe(2)
+                yield* disposeAllInstancesEffect
+                yield* awaitWithTimeout(
+                  Effect.promise(() => closeEvents[1].promise),
+                  "instance disposal must close its WS",
+                )
+                expect(closed).toBe(2)
+              }),
+            { config: providerConfig(new URL("/v1", server.url).toString(), configured, providerID) },
+          )
+        }),
     )
   }
 }
