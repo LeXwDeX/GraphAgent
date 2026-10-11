@@ -41,7 +41,7 @@ Set the option to `false` to use HTTP. It applies to the existing AI SDK's strea
 
 ## Retries
 
-- Retry WebSocket stream/setup failures up to 5 times, then use HTTP for that session until the pool entry is idle-pruned.
+- Retry WebSocket stream/setup failures up to 5 times, then use HTTP for that session until session deletion or instance disposal.
 - `websocket_connection_limit_reached` consumes the same retry budget and HTTP fallback.
 - If a WebSocket fails after its first event, fail it as retryable rather than replaying partial output in transport.
 - Abort or cancel closes the socket.
