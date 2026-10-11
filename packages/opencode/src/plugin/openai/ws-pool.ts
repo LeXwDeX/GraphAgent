@@ -16,6 +16,7 @@ export interface CreateWebSocketFetchOptions {
 
 interface PoolEntry {
   socket?: WebSocket
+  controller?: AbortController
   connectedAt?: number
   lastUsedAt: number
   busy: boolean
@@ -31,6 +32,7 @@ const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
 export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   const httpFetch = options?.httpFetch ?? globalThis.fetch
   const pool = new Map<string, PoolEntry>()
+  let closed = false
   const connectTimeout = options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
   const maxConnectionAge = options?.maxConnectionAge ?? DEFAULT_MAX_CONNECTION_AGE
@@ -41,6 +43,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   }
 
   async function websocketFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    if (closed) throw new DOMException("WebSocket pool closed", "AbortError")
     const url = input instanceof URL ? input.toString() : typeof input === "string" ? input : input.url
     const internalHeaders = OpenAIWebSocket.normalizeHeaders(init?.headers)
     const httpInit = withoutInternalHeaders(init)
@@ -81,6 +84,9 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
 
     entry.busy = true
     entry.lastUsedAt = Date.now()
+    const controller = new AbortController()
+    entry.controller = controller
+    const signal = init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
     try {
       entry.socket = await socket(
         entry,
@@ -88,8 +94,9 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
         OpenAIWebSocket.normalizeHeaders(httpInit?.headers),
         connectTimeout,
         maxConnectionAge,
-        init?.signal,
+        signal,
       )
+      signal.throwIfAborted()
       let resolveFirstEvent: (event: boolean | OpenAIWebSocket.WrappedError) => void = () => {}
       let rejectFirstEvent: (error: Error) => void = () => {}
       const firstEvent = new Promise<boolean | OpenAIWebSocket.WrappedError>((resolve, reject) => {
@@ -100,7 +107,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
         socket: entry.socket,
         body,
         idleTimeout,
-        signal: init?.signal ?? undefined,
+        signal,
         onFirstEvent: (error) => resolveFirstEvent(error ?? true),
         onTerminal: (event) => {
           entry.busy = false
@@ -132,6 +139,10 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
         },
       })
       const first = await firstEvent
+      signal.throwIfAborted()
+      if (closed || pool.get(key) !== entry) {
+        throw new DOMException(closed ? "WebSocket pool closed" : "WebSocket session removed", "AbortError")
+      }
       if (first !== false) {
         if (first === true || first.status < 200 || first.status > 599) return response
         return new Response(first.body, {
@@ -144,10 +155,12 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     } catch (error) {
       entry.busy = false
       entry.lastUsedAt = Date.now()
-      if (OpenAIWebSocket.isAbortError(error)) {
+      if (signal.aborted || OpenAIWebSocket.isAbortError(error)) {
         entry.streamFailures = 0
         invalidate(entry)
-        throw error
+        throw OpenAIWebSocket.isAbortError(error)
+          ? error
+          : new DOMException(error instanceof Error ? error.message : "Aborted", "AbortError")
       }
 
       recordStreamFailure(entry)
@@ -179,8 +192,13 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   }
 
   function close() {
+    if (closed) return
+    closed = true
     clearInterval(pruneTimer)
-    for (const entry of pool.values()) invalidate(entry)
+    for (const entry of pool.values()) {
+      entry.controller?.abort(new DOMException("WebSocket pool closed", "AbortError"))
+      invalidate(entry)
+    }
     pool.clear()
   }
 
@@ -188,6 +206,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     const key = `${sessionID}:conversation`
     const entry = pool.get(key)
     if (!entry) return
+    entry.controller?.abort(new DOMException("WebSocket session removed", "AbortError"))
     invalidate(entry)
     pool.delete(key)
   }
@@ -237,6 +256,8 @@ async function socket(
     timeout: connectTimeout,
     signal: signal ?? undefined,
   })
+  // Cleanup may run after the handshake resolves but before this continuation.
+  entry.socket = next
   entry.connectedAt = Date.now()
   return next
 }

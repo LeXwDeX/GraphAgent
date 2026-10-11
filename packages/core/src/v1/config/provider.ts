@@ -86,6 +86,10 @@ export const Info = Schema.Struct({
       Schema.Struct({
         apiKey: Schema.optional(Schema.String),
         baseURL: Schema.optional(Schema.String),
+        experimentalWebSockets: Schema.optional(Schema.Boolean).annotate({
+          description:
+            "Use the existing AI SDK WebSocket transport for streamed OpenAI Responses requests, with its HTTP/SSE fallback. Custom providers default to HTTP.",
+        }),
         enterpriseUrl: Schema.optional(Schema.String).annotate({
           description: "GitHub Enterprise URL for copilot authentication",
         }),

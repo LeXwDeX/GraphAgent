@@ -6,6 +6,7 @@ import { Effect, Fiber, Layer, Stream } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { LLMNative } from "@/session/llm/native-request"
 import { LLMNativeRuntime } from "@/session/llm/native-runtime"
+import { OpenAIWebSocketPool, TITLE_HEADER } from "@/plugin/openai/ws-pool"
 import type { Provider } from "@/provider/provider"
 
 import { OAUTH_DUMMY_KEY } from "@/auth"
@@ -151,6 +152,108 @@ const expectOpenAIResponsesRequest = (input: {
   })
 
 describe("session.llm-native.request", () => {
+  it.live("preserves OAuth title HTTP routing and removes the marker before upstream", () =>
+    Effect.gen(function* () {
+      let upgrades = 0
+      const headers: Headers[] = []
+      const server = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request) {
+              headers.push(request.headers)
+              if (request.headers.get("upgrade") === "websocket") {
+                upgrades++
+                return new Response(null, { status: 400 })
+              }
+              return responsesStream([
+                { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+              ])
+            },
+          }),
+        ),
+        (server) => Effect.sync(() => server.stop(true)),
+      )
+      const transport = yield* Effect.acquireRelease(
+        Effect.sync(() => OpenAIWebSocketPool.createWebSocketFetch()),
+        (transport) => Effect.sync(() => transport.close()),
+      )
+      const llmClient = yield* LLMClient.Service
+      const native = yield* LLMNativeRuntime.stream({
+        model: baseModel,
+        provider: {
+          ...providerInfo,
+          options: { apiKey: OAUTH_DUMMY_KEY, baseURL: new URL("/v1", server.url).toString(), fetch: transport },
+        },
+        auth: { type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000 },
+        llmClient,
+        messages: [{ role: "user", content: "hello" }],
+        tools: {},
+        headers: { [TITLE_HEADER]: "true", "x-session-affinity": "title-session" },
+        abort: new AbortController().signal,
+      })
+      if (native.type !== "supported") throw new Error(native.reason)
+      yield* native.stream.pipe(Stream.runDrain)
+      expect(upgrades).toBe(0)
+      expect(headers).toHaveLength(1)
+      expect(headers[0]?.has(TITLE_HEADER)).toBe(false)
+    }),
+  )
+
+  it.effect("strips internal title routing headers from direct native HTTP requests", () =>
+    Effect.gen(function* () {
+      const llmClient = yield* LLMClient.Service
+      const model: Provider.Model = {
+        ...baseModel,
+        providerID: ProviderV2.ID.make("relay"),
+        headers: { ...baseModel.headers, "X-OPENCODE-TITLE": "true" },
+      }
+      const native = yield* LLMNativeRuntime.stream({
+        model,
+        provider: {
+          ...providerInfo,
+          id: ProviderV2.ID.make("relay"),
+          options: {
+            ...providerInfo.options,
+            experimentalWebSockets: true,
+            headers: { "X-Opencode-Title": "true", "x-provider": "provider-header" },
+          },
+        },
+        auth: undefined,
+        llmClient,
+        messages: [{ role: "user", content: "hello" }],
+        tools: {},
+        headers: { [TITLE_HEADER]: "true", "x-session-affinity": "title-session" },
+        abort: new AbortController().signal,
+      })
+      if (native.type !== "supported") throw new Error(native.reason)
+      const captures: Headers[] = []
+      yield* native.stream.pipe(
+        Stream.runDrain,
+        Effect.provideService(
+          FetchHttpClient.Fetch,
+          Object.assign(
+            async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+              captures.push((input instanceof Request ? input : new Request(input, init)).headers)
+              return responsesStream([
+                { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+              ])
+            },
+            { preconnect: globalThis.fetch.preconnect },
+          ),
+        ),
+      )
+      expect(captures).toHaveLength(1)
+      expect(captures[0]?.has(TITLE_HEADER)).toBe(false)
+      expect(captures[0]?.get("x-provider")).toBe("provider-header")
+      expect(captures[0]?.get("x-model")).toBe("model-header")
+      expect(captures[0]?.get("x-session-affinity")).toBe("title-session")
+      expect(captures[0]?.get("authorization")).toBe("Bearer test-openai-key")
+      expect(model.headers["X-OPENCODE-TITLE"]).toBe("true")
+    }),
+  )
+
   for (const purpose of ["conversation", "compaction"] as const) {
     it.effect(`native ${purpose} applies its own timeout retry policy`, () =>
       Effect.gen(function* () {

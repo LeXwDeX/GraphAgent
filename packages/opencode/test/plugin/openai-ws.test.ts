@@ -291,7 +291,7 @@ describe("plugin.openai.ws-pool", () => {
     const first = await fetch(server.url, streamRequest())
     const firstText = first.text()
     fetch.remove("session-1")
-    expect((await readTextError(firstText)).message).toContain("WebSocket closed before response.completed")
+    expect(await readTextError(firstText)).toMatchObject({ name: "AbortError", message: "WebSocket session removed" })
 
     const second = await fetch(server.url, streamRequest())
 
@@ -708,6 +708,95 @@ describe("plugin.openai.ws-pool", () => {
     fetch.close()
   })
 
+  for (const cleanup of ["close", "remove"] as const) {
+    test(`cancels a pending websocket handshake on ${cleanup} without HTTP replay`, async () => {
+      await using server = await createDelayedWebSocketServer()
+      const fetch = OpenAIWebSocketPool.createWebSocketFetch({ url: server.url, streamRetries: 0 })
+      try {
+        const first = readTextError(fetch(server.url, streamRequest()).then((response) => response.text()))
+        await waitFor(() => server.pending.has("session-1"), "websocket handshake did not start")
+
+        if (cleanup === "close") fetch.close()
+        else fetch.remove("session-1")
+
+        expect(await first).toMatchObject({ name: "AbortError" })
+        await waitFor(() => server.sockets.size === 0, "pending socket was not closed")
+        server.release("session-1")
+        expect(server.messages).toEqual([])
+        expect(server.httpRequests).toHaveLength(0)
+        if (cleanup === "close") {
+          expect(
+            await readTextError(fetch(server.url, streamRequest()).then((response) => response.text())),
+          ).toMatchObject({
+            name: "AbortError",
+            message: "WebSocket pool closed",
+          })
+          expect(server.pending.size).toBe(0)
+          expect(server.httpRequests).toHaveLength(0)
+        }
+      } finally {
+        fetch.close()
+      }
+    })
+  }
+
+  test("keeps another session and a fresh entry usable after removing a pending handshake", async () => {
+    await using server = await createDelayedWebSocketServer()
+    const fetch = OpenAIWebSocketPool.createWebSocketFetch({ url: server.url, streamRetries: 0 })
+    try {
+      const other = fetch(server.url, streamRequest({ "session-id": "session-2" }))
+      await waitFor(() => server.pending.has("session-2"), "other session did not start connecting")
+      server.release("session-2")
+      expect(await (await other).text()).toContain("data: [DONE]")
+
+      const first = readTextError(fetch(server.url, streamRequest()).then((response) => response.text()))
+      await waitFor(() => server.pending.has("session-1"), "removed session did not start connecting")
+      fetch.remove("session-1")
+      server.release("session-1")
+      const fresh = fetch(server.url, streamRequest())
+      expect(await first).toMatchObject({ name: "AbortError" })
+      await waitFor(() => server.pending.has("session-1"), "fresh session entry did not start connecting")
+      await waitFor(() => server.sockets.size === 2, "removed session retained its pending socket")
+
+      const reused = await fetch(server.url, streamRequest({ "session-id": "session-2" }))
+      expect(await reused.text()).toContain("data: [DONE]")
+      server.release("session-1")
+      expect(await (await fresh).text()).toContain("data: [DONE]")
+      expect(server.messages).toEqual(["session-2", "session-2", "session-1"])
+      expect(server.httpRequests).toHaveLength(0)
+    } finally {
+      fetch.close()
+    }
+    await waitFor(() => server.sockets.size === 0, "remaining sockets were not closed")
+  })
+
+  for (const firstEvent of [false, true]) {
+    test(`pool close cancels active websocket work ${firstEvent ? "after" : "before"} its first event`, async () => {
+      let requests = 0
+      let closed = 0
+      await using server = await createWebSocketServer((socket) => {
+        socket.once("close", () => closed++)
+        socket.once("message", () => {
+          requests++
+          if (firstEvent) socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "started" }))
+        })
+      })
+      const fetch = OpenAIWebSocketPool.createWebSocketFetch({ url: server.url, streamRetries: 0 })
+      try {
+        const response = fetch(server.url, streamRequest())
+        const failure = readTextError(response.then((result) => result.text()))
+        await waitFor(() => requests === 1, "websocket request was not sent")
+        if (firstEvent) await response
+        fetch.close()
+        expect(await failure).toMatchObject({ name: "AbortError", message: "WebSocket pool closed" })
+        await waitFor(() => closed === 1, "active websocket was not closed")
+        expect(server.httpRequests).toHaveLength(0)
+      } finally {
+        fetch.close()
+      }
+    })
+  }
+
   test("retries unexpected closes before first event then falls back to HTTP", async () => {
     let connections = 0
     await using server = await createWebSocketServer((socket) => {
@@ -857,6 +946,46 @@ async function createRejectingWebSocketServer(onAttempt: () => void) {
     },
   })
   return websocketServerHandle(server, http)
+}
+
+async function createDelayedWebSocketServer() {
+  const http = await createHttpServer()
+  const sockets = new Set<Socket>()
+  const pending = new Map<string, (accepted: boolean) => void>()
+  const messages: string[] = []
+  http.server.on("connection", (socket) => {
+    sockets.add(socket)
+    socket.once("close", () => sockets.delete(socket))
+  })
+  const server = new WebSocketServer({
+    server: http.server,
+    verifyClient(info, callback) {
+      pending.set(String(info.req.headers["session-id"]), callback)
+    },
+  })
+  server.on("connection", (socket, request) => {
+    socket.on("message", () => {
+      messages.push(String(request.headers["session-id"]))
+      socket.send(JSON.stringify({ type: "response.completed", response: { id: "resp_test" } }))
+    })
+  })
+  return {
+    ...websocketServerHandle(server, http),
+    sockets,
+    pending,
+    messages,
+    release(sessionID: string) {
+      const accept = pending.get(sessionID)
+      pending.delete(sessionID)
+      accept?.(true)
+    },
+    async [Symbol.asyncDispose]() {
+      for (const socket of sockets) socket.destroy()
+      for (const socket of server.clients) socket.terminate()
+      server.close()
+      await closeHttpServer(http.server)
+    },
+  }
 }
 
 async function createHttpServer() {
