@@ -85,6 +85,18 @@ function latestUser(history: readonly SessionV1.WithParts[]) {
 function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
   const user = latestUser(history)
   if (!user) return true
+  // Historical goal dispatch failures have no command metadata or assistant.
+  if (
+    user.parts.some(
+      (part) =>
+        part.type === "text" &&
+        part.synthetic &&
+        part.ignored &&
+        part.time?.end !== undefined &&
+        ["goal", "subgoal"].some((command) => part.text === `⚠️ /${command} 执行失败，请检查日志。`),
+    )
+  )
+    return true
   // Local commands store their ended response on the user message, without an assistant.
   const command = user.parts.find(
     (part) => part.type === "text" && ["memory", "trust", "goal", "subgoal"].includes(String(part.metadata?.command)),
@@ -158,6 +170,15 @@ export function deliverReport(input: {
     if (workflow.status !== "completed" || config?.result_protocol !== "final_response") return false
     const identity = reportIdentity(workflow)
     const sessionID = SessionID.make(workflow.sessionId)
+    const getReceipt = () => sessions.getPart({ sessionID, messageID: identity.messageID, partID: identity.answerID })
+    const currentEpisode = Effect.gen(function* () {
+      const current = yield* store.getWorkflow(workflow.id)
+      return current?.status === "completed" && current.seq === workflow.seq && current.graphRev === workflow.graphRev
+    }).pipe(Effect.orDie)
+    if (!(yield* currentEpisode)) return false
+    const receipt = yield* getReceipt()
+    const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+    if (!receipt && !userTurnAnswered(history)) return false
     const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
     const node = selectReportNode(config, nodes)
     const structured = !!config.nodes.find((item) => item.id === node?.id)?.output_schema
@@ -197,16 +218,10 @@ export function deliverReport(input: {
       ...((artifact ?? body.artifact) ? { artifact: artifact ?? body.artifact } : {}),
     }
     const database = yield* Database.Service
-    const getReceipt = () => sessions.getPart({ sessionID, messageID: identity.messageID, partID: identity.answerID })
     const receiptMatches = (receipt: SessionV1.Part) =>
       receipt.type === "text" &&
       receipt.text === body.text &&
       receipt.metadata?.dag_delivery?.completion_seq === workflow.seq
-    const currentEpisode = Effect.gen(function* () {
-      const current = yield* store.getWorkflow(workflow.id)
-      return current?.status === "completed" && current.seq === workflow.seq && current.graphRev === workflow.graphRev
-    }).pipe(Effect.orDie)
-    const receipt = yield* getReceipt()
     if (receipt) {
       if (!receiptMatches(receipt))
         return yield* Effect.die(new Error("DAG final report receipt does not match its completion episode"))
@@ -225,8 +240,6 @@ export function deliverReport(input: {
         )
         .pipe(Effect.orDie)
     }
-    const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-    if (!userTurnAnswered(history)) return false
     const user = latestUser(history)
     const entries: EventV2.BatchEvent[] = []
     const appendMessage = (info: SessionV1.Info) => {

@@ -26,8 +26,8 @@
 //
 // Break on idle iff ALL hold:
 //   1. poll(now) shows no workflow in {pending, running}
-//   2. busyActive === false (active work seen this turn means a wake is owed
-//      even if the poll is already quiescent)
+//   2. busyActive === false, or every workflow has a delivered final report
+//      (legacy workflows still require their wake turn)
 //   3. every id in poll(now) was already known (a first-seen workflow id means
 //      a wake for it may still be in flight — covers workflows that
 //      terminalize within turn one and chained DAGs started during a wake turn)
@@ -43,10 +43,10 @@
 // completed workflow's answer from the parent transcript.
 // Paused and stepping workflows are not active statuses, so they never hold the
 // loop open by themselves — the CLI exits as it does today once quiescent and
-// known. There is no timer and no reconnect: an engine stall is bounded by the
-// engine watchdog, and a visible hang is accepted over silent wake loss.
+// known. Idle polling also covers receipts committed by another process whose
+// events do not reach this subscription. Engine stalls remain watchdog-bounded.
 
-import type { OpencodeClient } from "@opencode-ai/sdk/v2"
+import type { Event, OpencodeClient, TextPart } from "@opencode-ai/sdk/v2"
 import { parseWorkflowConfig } from "@/dag/dag"
 import { reportIdentity } from "@/dag/report-identity"
 import { isRecord } from "@/util/record"
@@ -105,13 +105,54 @@ export function applyDagHoldSnapshot(state: DagHoldState, snapshot: readonly Dag
   const active = snapshot.some((workflow) => isDagActiveStatus(workflow.status))
   const awaitingReport = snapshot.some((workflow) => workflow.awaitingReport === true)
   const known = snapshot.every((workflow) => state.busyIds.has(workflow.id))
-  const decision: DagHoldDecision = !active && !state.busyActive && known && !awaitingReport ? "break" : "hold"
+  const delivered = snapshot.length > 0 && snapshot.every((workflow) => workflow.awaitingReport === false)
+  const decision: DagHoldDecision =
+    !active && (!state.busyActive || delivered) && known && !awaitingReport ? "break" : "hold"
   state.inTurn = false
   foldSnapshot(state, snapshot)
   return decision
 }
 
 export type DagHoldPoll = () => Promise<readonly DagWorkflowSnapshot[] | undefined>
+
+/** Keep one event read in flight while idle polls observe cross-process delivery. */
+export async function* pollEvents(
+  events: AsyncIterable<Event>,
+  sessionID: string,
+  stop: () => void,
+  interval = 1_000,
+): AsyncGenerator<Event> {
+  const iterator = events[Symbol.asyncIterator]()
+  let pending: ReturnType<typeof iterator.next> | undefined
+  let idle = false
+  try {
+    while (true) {
+      pending ??= iterator.next()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const next: IteratorResult<Event> | undefined = idle
+        ? await Promise.race([
+            pending,
+            new Promise<undefined>((resolve) => {
+              timer = setTimeout(() => resolve(undefined), interval)
+            }),
+          ]).finally(() => clearTimeout(timer))
+        : await pending
+      if (!next) {
+        yield { id: "dag-hold-poll", type: "session.status", properties: { sessionID, status: { type: "idle" } } }
+        continue
+      }
+      pending = undefined
+      if (next.done) break
+      const event: Event = next.value
+      if (event.type === "session.status" && event.properties.sessionID === sessionID)
+        idle = event.properties.status.type === "idle"
+      yield event
+    }
+  } finally {
+    stop()
+    await iterator.return?.()
+  }
+}
 
 export type DagHold = {
   /** session.status=busy for the target session: sample the workflow snapshot
@@ -128,6 +169,7 @@ export type DagHold = {
     text?: string
     metadata?: Record<string, unknown>
   }) => void
+  readonly hasText: (part: Parameters<DagHold["onText"]>[0]) => boolean
   /** The current command/prompt user message entered this event stream. */
   readonly onUserMessage: (messageID: string) => void
 }
@@ -136,6 +178,7 @@ export function createDagHold(
   poll: DagHoldPoll,
   onText: DagHold["onText"] = () => {},
   requestedMessageID?: string,
+  hasText: DagHold["hasText"] = () => false,
 ): DagHold {
   const state = initialDagHoldState()
   let requestObserved = requestedMessageID === undefined
@@ -150,6 +193,7 @@ export function createDagHold(
       return requestObserved ? decision : "hold"
     },
     onText,
+    hasText,
     onUserMessage: (messageID) => {
       if (messageID === requestedMessageID) requestObserved = true
     },
@@ -164,22 +208,37 @@ function finalResponseConfig(raw: string): boolean {
 type ReportObservation = {
   readonly baseline: ReadonlySet<string>
   readonly emitted: ReadonlySet<string>
+  readonly render?: (part: TextPart) => void
 }
 
 function episodeKey(sessionID: string, workflowID: string, seq: number): string {
   return JSON.stringify([sessionID, workflowID, seq])
 }
 
-function answerKey(sessionID: string, messageID: string, partID: string, workflowID: string, seq: number): string {
-  return JSON.stringify([sessionID, messageID, partID, workflowID, seq])
+function answerKey(
+  sessionID: string,
+  messageID: string,
+  partID: string,
+  workflowID: string,
+  seq: number,
+  kind = "answer",
+): string {
+  return JSON.stringify([sessionID, messageID, partID, workflowID, seq, kind])
 }
 
-function answerWasEmitted(part: Parameters<DagHold["onText"]>[0]): string | undefined {
+function reportWasEmitted(part: Parameters<DagHold["onText"]>[0]): string | undefined {
   if (!isRecord(part.metadata)) return undefined
   const delivery = part.metadata.dag_delivery
-  if (!isRecord(delivery) || delivery.kind !== "answer") return undefined
+  if (!isRecord(delivery) || (delivery.kind !== "answer" && delivery.kind !== "source")) return undefined
   if (typeof delivery.workflow_id !== "string" || typeof delivery.completion_seq !== "number") return undefined
-  return answerKey(part.sessionID, part.messageID, part.id, delivery.workflow_id, delivery.completion_seq)
+  return answerKey(
+    part.sessionID,
+    part.messageID,
+    part.id,
+    delivery.workflow_id,
+    delivery.completion_seq,
+    delivery.kind,
+  )
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -229,26 +288,41 @@ export async function dagWorkflowsBySession(
         observation !== undefined &&
         !observation.baseline.has(episode) &&
         !observation.emitted.has(answerKey(sessionID, identity.messageID, identity.answerID, workflow.id, seq))
-      if (verifiedReceipts.has(episode)) return { ...basic, awaitingReport: awaitingEmission() }
+      if (verifiedReceipts.has(episode) && (!awaitingEmission() || !observation?.render))
+        return { ...basic, awaitingReport: awaitingEmission() }
       try {
         const receipt = await client.session.message(
           { sessionID, messageID: identity.messageID },
           signal ? { signal } : undefined,
         )
-        const found =
-          !receipt.error &&
-          receipt.data?.info.id === identity.messageID &&
-          receipt.data.parts.some((part) => {
-            if (part.type !== "text" || part.id !== identity.answerID || !isRecord(part.metadata)) return false
-            const delivery = part.metadata.dag_delivery
-            return (
-              isRecord(delivery) &&
-              delivery.workflow_id === workflow.id &&
-              delivery.completion_seq === seq &&
-              delivery.kind === "answer"
-            )
-          })
+        const answer =
+          !receipt.error && receipt.data?.info.id === identity.messageID
+            ? receipt.data.parts.find((part): part is TextPart => {
+                if (part.type !== "text" || part.id !== identity.answerID || !isRecord(part.metadata)) return false
+                const delivery = part.metadata.dag_delivery
+                return (
+                  isRecord(delivery) &&
+                  delivery.workflow_id === workflow.id &&
+                  delivery.completion_seq === seq &&
+                  delivery.kind === "answer"
+                )
+              })
+            : undefined
+        const found = answer !== undefined
         if (found) verifiedReceipts.add(episode)
+        if (answer && awaitingEmission() && observation?.render) {
+          const source = receipt.data?.parts.find(
+            (part): part is TextPart =>
+              part.type === "text" &&
+              part.id === identity.sourceID &&
+              isRecord(part.metadata?.dag_delivery) &&
+              part.metadata.dag_delivery.workflow_id === workflow.id &&
+              part.metadata.dag_delivery.completion_seq === seq &&
+              part.metadata.dag_delivery.kind === "source",
+          )
+          if (source) observation.render(source)
+          observation.render(answer)
+        }
         const missing = isNotFoundError(receipt.error) || responseStatus(receipt.response) === 404
         return { ...basic, awaitingReport: !found || awaitingEmission(), receiptUnknown: !!receipt.error && !missing }
       } catch {
@@ -303,18 +377,35 @@ export async function createDagRunHold(
   client: OpencodeClient,
   sessionID: string,
   requestedMessageID?: string,
+  render?: (part: TextPart) => void,
 ): Promise<DagHold> {
   const verifiedReceipts = await startupBaseline(client, sessionID)
   const baseline = new Set(verifiedReceipts)
   const emitted = new Set<string>()
-  const poll = () => dagWorkflowsBySession(client, sessionID, verifiedReceipts, { baseline, emitted })
+  const poll = () =>
+    dagWorkflowsBySession(client, sessionID, verifiedReceipts, {
+      baseline,
+      emitted,
+      render: render
+        ? (part) => {
+            const key = reportWasEmitted(part)
+            if (!key || emitted.has(key)) return
+            render(part)
+            emitted.add(key)
+          }
+        : undefined,
+    })
   return createDagHold(
     poll,
     (part) => {
-      const key = answerWasEmitted(part)
+      const key = reportWasEmitted(part)
       if (key) emitted.add(key)
     },
     requestedMessageID,
+    (part) => {
+      const key = reportWasEmitted(part)
+      return key !== undefined && emitted.has(key)
+    },
   )
 }
 

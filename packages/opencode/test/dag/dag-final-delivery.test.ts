@@ -2,7 +2,8 @@
 import { expect, it } from "bun:test"
 import { Deferred, Effect, Layer, Stream } from "effect"
 import { eq } from "drizzle-orm"
-import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { readFile, writeFile, mkdtemp, rm, readdir } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Database } from "@opencode-ai/core/database/database"
@@ -12,7 +13,9 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionTable, MessageTable, PartTable } from "@opencode-ai/core/session/sql"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2 } from "@opencode-ai/core/event"
+import { Global } from "@opencode-ai/core/global"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { Hash } from "@opencode-ai/core/util/hash"
 import type { Session } from "@/session/session"
 import { deliverReport, reportIdentity, selectReportNode } from "@/dag/runtime/report-delivery"
 import { commitOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
@@ -479,6 +482,92 @@ for (const command of ["memory", "trust", "goal", "subgoal"])
       }),
     ))
 
+for (const command of ["goal", "subgoal"])
+  it(`delivers behind a historical /${command} dispatch failure persisted without metadata or assistant`, () =>
+    fixture(({ database, store, sessions, deliver }) =>
+      Effect.gen(function* () {
+        yield* sessions.updateMessage({
+          id: "msg_historic" as never,
+          sessionID: "ses_parent" as never,
+          role: "user",
+          time: { created: 50 },
+          agent: "build",
+          model: { providerID: "test" as never, modelID: "test" as never },
+        })
+        yield* sessions.updatePart({
+          id: "prt_historic" as never,
+          messageID: "msg_historic" as never,
+          sessionID: "ses_parent" as never,
+          type: "text",
+          text: `⚠️ /${command} 执行失败，请检查日志。`,
+          synthetic: true,
+          ignored: true,
+          time: { start: 50, end: 50 },
+        })
+        expect(yield* deliver()).toBe(true)
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+        expect(
+          (yield* database.db.select().from(PartTable)).filter(
+            (part) => (part.data as SessionV1.TextPart).metadata?.dag_delivery?.kind === "answer",
+          ),
+        ).toHaveLength(1)
+      }),
+    ))
+
+for (const variant of [
+  { name: "lookalike ordinary", text: "⚠️ /goal 执行失败", ignored: true, synthetic: true, ended: true },
+  {
+    name: "lookalike unfinished",
+    text: "⚠️ /goal 执行失败，请检查日志。",
+    ignored: true,
+    synthetic: true,
+    ended: false,
+  },
+  {
+    name: "lookalike nonignored",
+    text: "⚠️ /goal 执行失败，请检查日志。",
+    ignored: false,
+    synthetic: true,
+    ended: true,
+  },
+  {
+    name: "lookalike nonsynthetic",
+    text: "⚠️ /goal 执行失败，请检查日志。",
+    ignored: true,
+    synthetic: false,
+    ended: true,
+  },
+])
+  it(`keeps a pending user request behind a ${variant.name} failure part`, () =>
+    fixture(({ database, sessions, deliver }) =>
+      Effect.gen(function* () {
+        yield* sessions.updateMessage({
+          id: "msg_lookalike" as never,
+          sessionID: "ses_parent" as never,
+          role: "user",
+          time: { created: 50 },
+          agent: "build",
+          model: { providerID: "test" as never, modelID: "test" as never },
+        })
+        yield* sessions.updatePart({
+          id: "prt_lookalike" as never,
+          messageID: "msg_lookalike" as never,
+          sessionID: "ses_parent" as never,
+          type: "text",
+          text: variant.text,
+          ...(variant.synthetic ? { synthetic: true } : {}),
+          ...(variant.ignored ? { ignored: true } : {}),
+          time: variant.ended ? { start: 50, end: 50 } : { start: 50 },
+        })
+        expect(yield* deliver()).toBe(false)
+        expect(yield* database.db.select().from(PartTable)).toHaveLength(1)
+        const answer = parentAnswer("msg_real_answer", "msg_lookalike")
+        answer.time = { created: 70, completed: 70 }
+        yield* sessions.updateMessage(answer)
+        expect(yield* deliver()).toBe(true)
+      }),
+    ))
+
 for (const state of ["unfinished", "synthetic", "same-part", "model-command"] as const)
   it(`does not treat a ${state} command response as an answered user turn`, () =>
     fixture(({ sessions, deliver }) =>
@@ -698,6 +787,85 @@ it("stores an oversized answer as a verified artifact with bounded parent text",
       const artifact = receipt.metadata!.dag_delivery.artifact
       yield* verifyOutputFileRef(artifact)
       expect(yield* Effect.promise(() => readFile(artifact.path, "utf8"))).toBe(text)
+    }),
+  ))
+
+it("writes no filesystem artifact for oversized output while a user request is pending, then delivers it after an answer", () =>
+  fixture(({ database, sessions, deliver }) =>
+    Effect.gen(function* () {
+      const text = `${randomUUID()} unique oversized report\n${"large report\n".repeat(6000)}`
+      const digest = Hash.sha256(Buffer.from(text))
+      yield* database.db
+        .update(WorkflowNodeTable)
+        .set({ output: text })
+        .where(eq(WorkflowNodeTable.workflow_id, "wf-1"))
+        .run()
+      yield* sessions.updateMessage({
+        id: "msg_pending" as never,
+        sessionID: "ses_parent" as never,
+        role: "user",
+        time: { created: 50 },
+        agent: "build",
+        model: { providerID: "test" as never, modelID: "test" as never },
+      })
+      const deliveryDirectory = path.join(Global.Path.data, "workflow-artifacts", "delivery")
+      const objectDirectory = path.join(Global.Path.data, "workflow-artifacts", "objects", digest.slice(0, 2), digest)
+      const listDelivery = Effect.promise(() =>
+        readdir(deliveryDirectory).then(
+          () => true,
+          () => false,
+        ),
+      )
+      const objectExists = Effect.promise(() =>
+        readdir(objectDirectory).then(
+          () => true,
+          () => false,
+        ),
+      )
+      const before = yield* listDelivery
+      expect(yield* deliver()).toBe(false)
+      expect(yield* listDelivery).toBe(before)
+      expect(yield* objectExists).toBe(false)
+      const answer = parentAnswer("msg_real_answer", "msg_pending")
+      answer.time = { created: 70, completed: 70 }
+      yield* sessions.updateMessage(answer)
+      expect(yield* deliver()).toBe(true)
+      const receipt = (yield* database.db.select().from(PartTable))
+        .map((row) => row.data as SessionV1.TextPart)
+        .find((part) => part.metadata?.dag_delivery?.kind === "answer")!
+      expect(receipt.text.length).toBeLessThan(2000)
+      const artifact = receipt.metadata!.dag_delivery.artifact
+      yield* verifyOutputFileRef(artifact)
+      expect(yield* Effect.promise(() => readFile(artifact.path, "utf8"))).toBe(text)
+      yield* Effect.promise(() => rm(path.dirname(artifact.path), { recursive: true, force: true }))
+    }),
+  ))
+
+it("writes no filesystem artifact for oversized output behind a stale completion episode", () =>
+  fixture(({ database, deliver }) =>
+    Effect.gen(function* () {
+      const text = `${randomUUID()} unique stale report\n${"large report\n".repeat(6000)}`
+      const digest = Hash.sha256(Buffer.from(text))
+      yield* database.db
+        .update(WorkflowNodeTable)
+        .set({ output: text })
+        .where(eq(WorkflowNodeTable.workflow_id, "wf-1"))
+        .run()
+      yield* database.db
+        .update(WorkflowTable)
+        .set({ status: "running", seq: 8, graph_rev: 3 })
+        .where(eq(WorkflowTable.id, "wf-1"))
+        .run()
+      const objectDirectory = path.join(Global.Path.data, "workflow-artifacts", "objects", digest.slice(0, 2), digest)
+      expect(yield* deliver()).toBe(false)
+      expect(
+        yield* Effect.promise(() =>
+          readdir(objectDirectory).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      ).toBe(false)
     }),
   ))
 

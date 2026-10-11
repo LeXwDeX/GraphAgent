@@ -4,7 +4,7 @@
 // wrapper: each row is one CLI run's poll sequence with the expected idle
 // decisions. Real-CLI lifecycle coverage lives in run-dag-hold-process.test.ts.
 import { describe, expect, test } from "bun:test"
-import type { OpencodeClient } from "@opencode-ai/sdk/v2"
+import type { Event, OpencodeClient } from "@opencode-ai/sdk/v2"
 import { reportIdentity } from "@/dag/report-identity"
 import { DagHold } from "../../../src/cli/cmd/run/dag-hold"
 
@@ -42,7 +42,7 @@ function drive(steps: readonly Step[]): Promise<DagHold.DagHoldDecision[]> {
   })()
 }
 
-const wf = (id: string, status: string, awaitingReport = false): DagHold.DagWorkflowSnapshot => ({
+const wf = (id: string, status: string, awaitingReport?: boolean): DagHold.DagWorkflowSnapshot => ({
   id,
   status,
   awaitingReport,
@@ -632,4 +632,111 @@ describe("final-response answer receipt polling", () => {
     fails = false
     expect(await hold.onIdle()).toBe("break")
   })
+
+  test("renders a cross-process receipt without an answer event and suppresses later duplicate events", async () => {
+    const row = completed("external", 41)
+    let current = { ...row, status: "running" }
+    const receipt = answer(row)
+    receipt.data.parts.unshift({
+      ...receipt.data.parts[0],
+      id: identity(row).sourceID,
+      text: "report source",
+      metadata: { dag_delivery: { workflow_id: row.id, completion_seq: row.seq, kind: "source" } },
+    })
+    const client = {
+      dag: { bySession: async () => ({ data: [current] }) },
+      session: { message: async () => receipt },
+    } as unknown as OpencodeClient
+    const rendered: string[] = []
+    const hold = await DagHold.createDagRunHold(client, "parent", undefined, (part) => rendered.push(part.text))
+    await hold.onBusy()
+    expect(await hold.onIdle()).toBe("hold")
+    current = row
+    // No onText call or busy event: only the shared database changes.
+    expect(await hold.onIdle()).toBe("break")
+    expect(rendered).toEqual(["report source", "report"])
+    const lateEvent = answer(row).data.parts[0]
+    expect(hold.hasText(lateEvent)).toBe(true)
+    expect(hold.hasText(receipt.data.parts[0])).toBe(true)
+    if (!hold.hasText(lateEvent)) rendered.push(lateEvent.text)
+    expect(await hold.onIdle()).toBe("break")
+    expect(rendered).toEqual(["report source", "report"])
+  })
+
+  test("retries a receipt whose renderer failed instead of treating it as printed", async () => {
+    const row = completed("retry-render", 42)
+    let rows: Row[] = []
+    let attempts = 0
+    const client = {
+      dag: { bySession: async () => ({ data: rows }) },
+      session: { message: async () => answer(row) },
+    } as unknown as OpencodeClient
+    const hold = await DagHold.createDagRunHold(client, "parent", undefined, () => {
+      if (++attempts === 1) throw new Error("stdout temporarily unavailable")
+    })
+    rows = [row]
+    await hold.onBusy()
+    expect(hold.hasText(answer(row).data.parts[0])).toBe(false)
+    expect(await hold.onIdle()).toBe("break")
+    expect(attempts).toBe(2)
+    expect(hold.hasText(answer(row).data.parts[0])).toBe(true)
+  })
+
+  test("does not replay baseline receipts or an answer already consumed from the stream", async () => {
+    const old = completed("history", 43)
+    const next = completed("stream-first", 44)
+    let rows = [old]
+    const client = {
+      dag: { bySession: async () => ({ data: rows }) },
+      session: {
+        message: async ({ messageID }: { messageID: string }) =>
+          answer(messageID === identity(old).messageID ? old : next),
+      },
+    } as unknown as OpencodeClient
+    const rendered: string[] = []
+    const hold = await DagHold.createDagRunHold(client, "parent", undefined, (part) => rendered.push(part.text))
+    rows = [old, next]
+    hold.onText(answer(next).data.parts[0])
+    await hold.onBusy()
+    expect(await hold.onIdle()).toBe("break")
+    expect(rendered).toEqual([])
+  })
+})
+
+test("idle polling keeps one event read pending and closes it on exit", async () => {
+  const waiting = Promise.withResolvers<IteratorResult<Event>>()
+  let reads = 0
+  let closed = 0
+  const events: AsyncIterable<Event> = {
+    [Symbol.asyncIterator]: () => ({
+      next: async () => {
+        if (++reads === 1)
+          return {
+            done: false,
+            value: {
+              id: "evt_idle",
+              type: "session.status",
+              properties: { sessionID: "parent", status: { type: "idle" } },
+            },
+          }
+        return waiting.promise
+      },
+      return: async () => {
+        closed++
+        return { done: true, value: undefined }
+      },
+    }),
+  }
+  let polls = 0
+  for await (const event of DagHold.pollEvents(
+    events,
+    "parent",
+    () => waiting.resolve({ done: true, value: undefined }),
+    5,
+  )) {
+    expect(event.type).toBe("session.status")
+    if (++polls === 3) break
+  }
+  expect(reads).toBe(2)
+  expect(closed).toBe(1)
 })
