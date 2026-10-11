@@ -879,6 +879,119 @@ describe("plugin.openai.ws-pool", () => {
     }
   })
 
+  for (const phase of ["headers", "body"] as const) {
+    for (const supplied of ["missing", "undefined"] as const) {
+      test(`inherits Request.signal during HTTP ${phase} when init.signal is ${supplied}`, async () => {
+        await using http = await createControlledHttpServer()
+        await using ws = await createWebSocketServer((socket) => {
+          socket.once("message", () => socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "ws" })))
+        })
+        const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url })
+        try {
+          const websocket = await transport(http.url, streamRequest())
+          let wsCanceled = false
+          const wsFailure = readTextError(websocket.text()).then((error) => {
+            wsCanceled = true
+            return error
+          })
+          const caller = new AbortController()
+          const request = new Request(http.url, { signal: caller.signal })
+          const init = streamRequest()
+          if (supplied === "missing") delete init.signal
+          const pending = transport(request, init)
+          let canceled = false
+          const failure = readTextError(pending.then((response) => response.text())).then((error) => {
+            canceled = true
+            return error
+          })
+          await waitFor(() => http.requests.length === 1, "Request HTTP fallback did not start")
+          if (phase === "body") {
+            http.requests[0].response.writeHead(200, { "content-type": "text/event-stream" })
+            http.requests[0].response.write("data: partial\n\n")
+            await pending
+          }
+          caller.abort(new DOMException("Request stopped", "AbortError"))
+          await waitFor(() => canceled, "Request.signal cancellation was dropped")
+          expect(await failure).toMatchObject({ name: "AbortError", message: "Request stopped" })
+          await waitFor(() => http.requests[0].closed, "Request HTTP connection did not close")
+          expect(wsCanceled).toBe(false)
+          transport.remove("session-1")
+          expect(await wsFailure).toMatchObject({ name: "AbortError", message: "WebSocket session removed" })
+          expect(http.requests).toHaveLength(1)
+        } finally {
+          transport.close()
+        }
+      })
+    }
+  }
+
+  for (const override of ["signal", "null"] as const) {
+    test(`init.signal ${override} overrides Request.signal while entry cleanup remains active`, async () => {
+      await using http = await createControlledHttpServer()
+      await using ws = await createWebSocketServer((socket) => {
+        socket.once("message", () => socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "ws" })))
+      })
+      const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url })
+      try {
+        const websocket = await transport(http.url, streamRequest())
+        const wsFailure = readTextError(websocket.text())
+        const inputCaller = new AbortController()
+        const initCaller = new AbortController()
+        const request = new Request(http.url, { signal: inputCaller.signal })
+        const pending = transport(request, {
+          ...streamRequest(),
+          signal: override === "null" ? null : initCaller.signal,
+        })
+        await waitFor(() => http.requests.length === 1, "Request HTTP fallback did not start")
+        http.requests[0].response.writeHead(200, { "content-type": "text/event-stream" })
+        http.requests[0].response.write("data: partial\n\n")
+        const response = await pending
+        const reader = response.body!.getReader()
+        inputCaller.abort(new DOMException("ignored Request signal", "AbortError"))
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: partial\n\n")
+        http.requests[0].response.write("data: still active\n\n")
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: still active\n\n")
+        const failure = readTextError(reader.read().then(() => "unexpected stream completion"))
+        if (override === "signal") initCaller.abort(new DOMException("init stopped", "AbortError"))
+        else transport.remove("session-1")
+        expect(await failure).toMatchObject({ name: "AbortError" })
+        reader.releaseLock()
+        await waitFor(() => http.requests[0].closed, "overridden Request HTTP connection did not close")
+        if (override === "signal") transport.remove("session-1")
+        expect(await wsFailure).toMatchObject({ name: "AbortError", message: "WebSocket session removed" })
+        expect(http.requests).toHaveLength(1)
+      } finally {
+        transport.close()
+      }
+    })
+  }
+
+  test("Request.signal cancels a pending owned websocket handshake", async () => {
+    await using ws = await createDelayedWebSocketServer()
+    const transport = OpenAIWebSocketPool.createWebSocketFetch({ url: ws.url, streamRetries: 0 })
+    try {
+      const caller = new AbortController()
+      const request = new Request(ws.url, { signal: caller.signal })
+      let canceled = false
+      const failure = readTextError(transport(request, streamRequest()).then((response) => response.text())).then(
+        (error) => {
+          canceled = true
+          return error
+        },
+      )
+      await waitFor(() => ws.pending.has("session-1"), "Request websocket did not start connecting")
+      caller.abort(new DOMException("Request stopped", "AbortError"))
+      await waitFor(() => canceled, "Request websocket cancellation was dropped")
+      expect(await failure).toMatchObject({ name: "AbortError", message: "Request stopped" })
+      await waitFor(() => ws.sockets.size === 0, "Request websocket handshake was not closed")
+      ws.release("session-1")
+      expect(ws.messages).toEqual([])
+      expect(ws.httpRequests).toHaveLength(0)
+    } finally {
+      transport.close()
+    }
+  })
+
   test("keeps HTTP fallback owned across later websocket calls and isolates removed session entries", async () => {
     await using http = await createControlledHttpServer()
     const sockets: WebSocket[] = []

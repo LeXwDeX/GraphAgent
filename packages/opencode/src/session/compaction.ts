@@ -353,11 +353,7 @@ export const layer = Layer.effect(
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
-      const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
-        cfg,
-        model,
-      })
+      const filteredHistory = history.filter((_, index) => !hidden.has(index))
       // Allow plugins to inject context or replace compaction prompt.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
@@ -365,11 +361,6 @@ export const layer = Layer.effect(
         { context: memoryContext, prompt: undefined },
       )
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
-      const msgs = structuredClone(selected.head)
-      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const tailIndex = selected.tail_start_id
-        ? history.findIndex((message) => message.info.id === selected.tail_start_id)
-        : -1
       const ctx = yield* InstanceState.context
       const template = {
         id: MessageID.ascending(),
@@ -402,8 +393,15 @@ export const layer = Layer.effect(
       let processor: SessionProcessor.Handle
       let result: SessionProcessor.Result
       let recent = ""
+      let selected: { head: SessionV1.WithParts[]; tail_start_id: MessageID | undefined }
       while (true) {
         const candidate = models[attempt]
+        selected = yield* select({ messages: filteredHistory, cfg, model: candidate })
+        const msgs = structuredClone(selected.head)
+        yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+        const tailIndex = selected.tail_start_id
+          ? history.findIndex((message) => message.info.id === selected.tail_start_id)
+          : -1
         msg = {
           ...template,
           id: MessageID.ascending(),
@@ -478,7 +476,7 @@ export const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      if (result === "continue" && compactionPart && compactionPart.tail_start_id !== selected.tail_start_id) {
         yield* session.updatePart({
           ...compactionPart,
           tail_start_id: selected.tail_start_id,

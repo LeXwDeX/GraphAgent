@@ -92,7 +92,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
 
     entry.busy = true
     entry.lastUsedAt = Date.now()
-    const signal = init?.signal ? AbortSignal.any([init.signal, entry.controller.signal]) : entry.controller.signal
+    const signal = requestSignal(entry, input, init)
     try {
       entry.socket = await socket(
         entry,
@@ -181,7 +181,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   }
 
   async function httpFallback(entry: PoolEntry, input: RequestInfo | URL, init?: RequestInit) {
-    const signal = init?.signal ? AbortSignal.any([init.signal, entry.controller.signal]) : entry.controller.signal
+    const signal = requestSignal(entry, input, init)
     signal.throwIfAborted()
     entry.httpActive++
     let released = false
@@ -293,6 +293,11 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   }
 
   return Object.assign(websocketFetch, { close, remove })
+}
+
+function requestSignal(entry: PoolEntry, input: RequestInfo | URL, init?: RequestInit) {
+  const caller = init?.signal !== undefined ? init.signal : input instanceof Request ? input.signal : undefined
+  return caller ? AbortSignal.any([caller, entry.controller.signal]) : entry.controller.signal
 }
 
 function connectionLimitError(event: Record<string, unknown>) {
