@@ -21,7 +21,7 @@ Custom providers using `@ai-sdk/openai` default to HTTP. Add `experimentalWebSoc
 }
 ```
 
-Set the option to `false` to use HTTP. It applies to the existing AI SDK's streamed Responses requests, not Chat Completions. The experimental native LLM runtime is unchanged. This option does not alter error handling: upstream API errors are still returned to the caller, rather than always replaying the request over HTTP.
+Set the option to `false` to use HTTP. When a plugin supplies a custom `fetch` for the provider, that fetch keeps priority and the provider stays on HTTP, because the WebSocket handshake cannot pass through a fetch function. It applies to the existing AI SDK's streamed Responses requests, not Chat Completions. The experimental native LLM runtime is unchanged. This option does not alter error handling: upstream API errors are still returned to the caller, rather than always replaying the request over HTTP.
 
 ## Flow
 
