@@ -29,6 +29,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { EventV2Bridge } from "@/event-v2-bridge"
 
 const originalEnv = new Map<string, string | undefined>()
 
@@ -73,6 +74,7 @@ const providerLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
     Layer.provide(Plugin.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.layer(flags)),
+    Layer.provide(EventV2Bridge.defaultLayer),
   )
 
 const list = Provider.use.list()
@@ -108,6 +110,7 @@ const aggregatorProviderLayer = Provider.layer.pipe(
   Layer.provide(Plugin.defaultLayer),
   Layer.provide(emptyModelCatalogLayer),
   Layer.provide(RuntimeFlags.layer({})),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 const aggregator = testEffect(
   Layer.mergeAll(aggregatorProviderLayer, Env.defaultLayer, Plugin.defaultLayer, emptyModelCatalogLayer),

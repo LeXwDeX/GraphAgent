@@ -1885,6 +1885,7 @@ export type ProviderConfig = {
   options?: {
     apiKey?: string
     baseURL?: string
+    experimentalWebSockets?: boolean
     enterpriseUrl?: string
     setCacheKey?: boolean
     /**
