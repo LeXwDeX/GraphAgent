@@ -40,7 +40,7 @@ already-loaded config until then.
 | Scope                         | Path                                                                                                                      |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Project config                | `./opencode.json`, `./opencode.jsonc`, or `.opencode/opencode.json` (opencode walks up from the cwd to the worktree root) |
-| Global config                 | `~/.config/opencode/opencode.json` or `~/.config/opencode/opencode.jsonc` (NOT `~/.opencode/`) |
+| Global config                 | `~/.config/opencode/opencode.json` or `~/.config/opencode/opencode.jsonc` (NOT `~/.opencode/`)                            |
 | Project agents                | `.opencode/agent/<name>.md` or `.opencode/agents/<name>.md`                                                               |
 | Global agents                 | `~/.config/opencode/agent(s)/<name>.md`                                                                                   |
 | Project commands              | `.opencode/command/<name>.md` or `.opencode/commands/<name>.md`                                                           |
@@ -342,19 +342,44 @@ export default (async ({ client, project, directory, $ }) => {
 }) satisfies Plugin
 ```
 
-Hook surface (mutate `output` in place; return `void`):
+These are JavaScript plugin callbacks. For lifecycle handlers configured in
+`hooks.json` (command, MCP, HTTP, prompt or agent), including background polling
+that resumes an idle conversation, load the `configure-hooks` skill. Its event
+names, output protocol and `async` / `asyncRewake` fields belong to that system;
+they are not fields to add to the plugin callback object below.
 
-- `event(input)`: every bus event
-- `config(cfg)`: once on init with the merged config
-- `chat.message`, `chat.params`, `chat.headers`
-- `tool.execute.before`, `tool.execute.after`
-- `tool.definition`
-- `command.execute.before`
-- `shell.env`
-- `permission.ask`
-- `experimental.chat.messages.transform`, `experimental.chat.system.transform`,
-  `experimental.session.compacting`, `experimental.compaction.autocontinue`,
-  `experimental.text.complete`
+Legacy JavaScript plugin callbacks dispatched through `Plugin.trigger` are
+awaited sequentially. The `event({ event })` observer is fire-and-forget:
+bus delivery does not await it, and callbacks or later events can overlap.
+Callbacks with an
+`output` argument mutate that object in place and resolve to `void`; returning
+a replacement object does not apply it. Their inputs use JavaScript field
+names such as `sessionID`, unlike lifecycle command stdin.
+
+| Callback                               | Capability and output                                                                                                                           |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `event({ event })`                     | Observe published bus events asynchronously without delaying bus delivery; no decision output or sequential-await guarantee.                    |
+| `config(cfg)`                          | Mutate the merged configuration during plugin initialization.                                                                                   |
+| `dispose()`                            | Release plugin-owned resources when the plugin instance is disposed; this is not the end of every assistant turn.                               |
+| `chat.message`                         | Receive session/agent/model/message identity and mutate `output.message` / `output.parts` for an incoming message.                              |
+| `chat.params`                          | Adjust `temperature`, `topP`, `topK`, `maxOutputTokens`, and provider `options` before a model request.                                         |
+| `chat.headers`                         | Mutate `output.headers` for a model request.                                                                                                    |
+| `tool.execute.before`                  | Receive tool/session/call identity and mutate `output.args` before execution.                                                                   |
+| `tool.execute.after`                   | Receive identity and arguments, then mutate result `title`, `output`, and `metadata`.                                                           |
+| `tool.definition`                      | Mutate a tool's model-facing `description` and `parameters`; preserve the object-rooted parameter schema.                                       |
+| `command.execute.before`               | Mutate prompt `parts` in the LLM command-template path; directly dispatched commands can bypass this path.                                      |
+| `shell.env`                            | Receive `cwd` and optional session/call identity; add or change `output.env` when a shell environment is assembled.                             |
+| `experimental.chat.messages.transform` | Mutate the model-bound `output.messages` array.                                                                                                 |
+| `experimental.chat.system.transform`   | Receive model and optional session identity; mutate `output.system` strings.                                                                    |
+| `experimental.provider.small_model`    | Provide `output.model` when small-model selection needs a fallback; a usable configured `small_model` takes precedence and skips this callback. |
+| `experimental.session.compacting`      | Add `output.context` or replace the compaction prompt with `output.prompt`.                                                                     |
+| `experimental.compaction.autocontinue` | Set `output.enabled` to control the synthetic continuation after successful compaction.                                                         |
+| `experimental.text.complete`           | Mutate `output.text` when an assistant text part completes.                                                                                     |
+
+`permission.ask` remains in the legacy TypeScript interface, but the current
+runtime has no dispatch callsite. Do not use it to implement permission
+interception; configure permission rules or the supported lifecycle
+`PreToolUse` / `PermissionRequest` contracts instead.
 
 Special object-shaped (not callbacks): `tool: { my_tool: { ... } }`,
 `auth: { ... }`, `provider: { ... }`.

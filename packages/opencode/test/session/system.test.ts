@@ -152,15 +152,14 @@ describe("session.system", () => {
         { event: "PreToolUse", scope: "project", type: "command", descriptor: "echo hi", matcher: "Bash" },
         { event: "Stop", scope: "global", type: "http", descriptor: "https://example.com/stop" },
       ]
-      const output = yield* prompt.hooks().pipe(
-          Effect.provide(
-            Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) }),
-          ),
-        )
+      const output = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) })))
 
       expect(output).toEqual([
         [
           "## Active Hooks",
+          "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
           "- PreToolUse [project/command] echo hi",
           "- Stop [global/http] https://example.com/stop",
         ].join("\n"),
@@ -171,11 +170,9 @@ describe("session.system", () => {
   it.effect("hooks block is empty when SettingsHook list is empty", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
-      const output = yield* prompt.hooks().pipe(
-        Effect.provide(
-          Layer.mock(SettingsHook.Service, { list: () => Effect.succeed([]) }),
-        ),
-      )
+      const output = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed([]) })))
 
       expect(output).toEqual([])
     }),
@@ -200,11 +197,9 @@ describe("session.system", () => {
         type: "command" as const,
         descriptor: `cmd-${i}`,
       }))
-      const output = yield* prompt.hooks().pipe(
-        Effect.provide(
-          Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) }),
-        ),
-      )
+      const output = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) })))
 
       const block = output[0]
       expect(block).toContain("## Active Hooks")

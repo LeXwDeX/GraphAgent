@@ -132,7 +132,7 @@ export const layer = Layer.effect(
       }
       commands[Default.CREATE_HOOK] = {
         name: Default.CREATE_HOOK,
-        description: "Create a new hook interactively and write it to hooks.json",
+        description: "Create lifecycle hooks, including background polling that resumes an idle conversation",
         source: "command",
         template: PROMPT_CREATE_HOOK,
         subtask: true,
