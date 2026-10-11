@@ -13,6 +13,7 @@ import { OAUTH_DUMMY_KEY } from "@/auth"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { engineOrganizerCall } from "@opencode-ai/core/session/reasoning-distillation"
 
 const baseModel: Provider.Model = {
   id: ModelV2.ID.make("gpt-5-mini"),
@@ -152,6 +153,98 @@ const expectOpenAIResponsesRequest = (input: {
   })
 
 describe("session.llm-native.request", () => {
+  it.live("streams the OAuth organizer through its provider fetch override from first frame to completion", () =>
+    Effect.gen(function* () {
+      let directRequests = 0
+      const sentinel = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch() {
+              directRequests++
+              return new Response("organizer must use the OAuth fetch override", { status: 500 })
+            },
+          }),
+        ),
+        (server) => Effect.sync(() => server.stop(true)),
+      )
+      const captures: Array<{ url: string; body: unknown }> = []
+      const firstFrame = Promise.withResolvers<void>()
+      let starts = 0
+      let completed = false
+      const customFetch = Object.assign(
+        async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+          const request = input instanceof Request ? input : new Request(input, init)
+          captures.push({ url: request.url, body: await request.clone().json() })
+          const encoder = new TextEncoder()
+          let created = false
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                const send = (event: unknown) =>
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+                if (!created) {
+                  created = true
+                  send({ type: "response.created", response: { id: "resp_organizer" } })
+                  return
+                }
+                await firstFrame.promise
+                expect(starts).toBe(1)
+                send({
+                  type: "response.output_text.delta",
+                  item_id: "msg_1",
+                  delta: "confirmed decision uses safe path",
+                })
+                send({
+                  type: "response.completed",
+                  response: { usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25 } },
+                })
+                completed = true
+                controller.close()
+              },
+            }),
+            { headers: { "Content-Type": "text/event-stream" } },
+          )
+        },
+        { preconnect: () => undefined },
+      ) satisfies typeof fetch
+      const llmClient = yield* LLMClient.Service
+      const engine = LLMNativeRuntime.organizerClient({
+        model: baseModel,
+        provider: {
+          ...providerInfo,
+          options: { apiKey: OAUTH_DUMMY_KEY, baseURL: new URL("/v1", sentinel.url).toString(), fetch: customFetch },
+        },
+        auth: { type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000 },
+        llmClient,
+      })
+      if (engine.type !== "supported") throw new Error(engine.reason)
+      const result = yield* Effect.promise(() =>
+        engineOrganizerCall({
+          llm: engine.llm,
+          model: engine.model,
+          effort: "low",
+          timeoutMs: 1_000,
+          onResponseStarted: () => {
+            starts++
+            expect(completed).toBe(false)
+            firstFrame.resolve()
+          },
+        })({ prompt: "organize" }),
+      )
+      expect(result).toEqual({ text: "confirmed decision uses safe path", usageTokens: 25, finishReason: "stop" })
+      expect(starts).toBe(1)
+      expect(completed).toBe(true)
+      expect(captures).toHaveLength(1)
+      expect(captures[0]).toMatchObject({
+        url: new URL("/v1/responses", sentinel.url).toString(),
+        body: { stream: true },
+      })
+      expect(directRequests).toBe(0)
+    }),
+  )
+
   it.live("preserves OAuth title HTTP routing and removes the marker before upstream", () =>
     Effect.gen(function* () {
       let upgrades = 0
