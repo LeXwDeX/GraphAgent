@@ -1814,12 +1814,15 @@ export const layer = Layer.effect(
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
           }
-          const res = await fetchFn(
-            input,
-            OpenAIWebSocketPool.isTitleHeaderConsumer(fetchFn)
-              ? fetchInit
-              : OpenAIWebSocketPool.withoutInternalRequestHeaders(input, fetchInit),
-          ).finally(() => headerTimeoutCtl?.clear())
+          let res: Response
+          try {
+            const request = OpenAIWebSocketPool.isTitleHeaderConsumer(fetchFn)
+              ? { input, init: fetchInit }
+              : OpenAIWebSocketPool.withoutInternalRequestHeaders(input, fetchInit)
+            res = await fetchFn(request.input, request.init)
+          } finally {
+            headerTimeoutCtl?.clear()
+          }
 
           if (!chunkAbortCtl) return res
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)
