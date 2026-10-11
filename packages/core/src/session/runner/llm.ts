@@ -180,15 +180,26 @@ export const layer = Layer.effect(
       return yield* store.context(sessionID)
     })
 
-    const reasoningRewriteEnabled = Effect.suspend(() => config.entries()).pipe(
-      Effect.map(
-        (entries) =>
-          ConfigReasoningDistillation.resolveEnabled({
-            disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
-            enabled: Config.latest(entries, "reasoningDistillation")?.enabled,
-          }).enabled,
-      ),
-    )
+    const reasoningRewriteEnabled = (model: SessionRunnerModel.ResolvedModel) =>
+      Effect.suspend(() => config.entries()).pipe(
+        Effect.map(
+          (entries) =>
+            ConfigReasoningDistillation.resolveEnabled({
+              disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
+              enabled: Config.latest(entries, "reasoningDistillation")?.enabled,
+              modelEnabled: entries
+                .filter((entry): entry is Config.Document => entry.type === "document")
+                .map(
+                  (entry) =>
+                    entry.info.providers?.[model.provider]?.models?.[model.configID ?? model.id]?.reasoningDistillation
+                      ?.enabled,
+                )
+                .findLast((enabled) => enabled !== undefined),
+              modelID: model.configID ?? model.id,
+              apiModelID: model.id,
+            }).enabled,
+        ),
+      )
 
     // Start rewriting a reasoning part as soon as it ends, overlapping the rest of the step and its tools. The next
     // provider request of the session settles these jobs first (see runTurnAttempt).
@@ -196,13 +207,20 @@ export const layer = Layer.effect(
       sessionID: SessionSchema.ID
       messageID: SessionMessage.ID
       reasoningID: string
-      provider: string
+      model: SessionRunnerModel.ResolvedModel
     }) {
+      const source = yield* store.message(input.messageID)
+      const reasoning =
+        source?.sessionID === input.sessionID && source.message.type === "assistant"
+          ? source.message.content.find((part) => part.id === input.reasoningID && part.type === "reasoning")
+          : undefined
+      if (reasoning?.type !== "reasoning") return
       yield* rewrites.submit({
         sessionID: input.sessionID,
         key: JSON.stringify([input.messageID, input.reasoningID]),
-        enabled: reasoningRewriteEnabled,
-        run: (canAdopt) =>
+        inputCharacters: reasoning.text.length,
+        enabled: reasoningRewriteEnabled(input.model),
+        run: (canAdopt, onResponseStarted) =>
           Effect.gen(function* () {
             const stored = yield* store.message(input.messageID)
             const parts =
@@ -228,24 +246,26 @@ export const layer = Layer.effect(
             const auxiliaryModel = yield* models
               // A declared no-reasoning variant keeps the organizer fast; otherwise it requests low effort.
               .resolveSmall(
-                ProviderV2.ID.make(input.provider),
+                ProviderV2.ID.make(input.model.provider),
                 Config.latest(entries, "small_model"),
                 ModelV2.VariantID.make("none"),
               )
               .pipe(Effect.catch(() => Effect.succeed(undefined)))
             const outcome = yield* runReasoningRewrite({
+              onResponseStarted,
               budget: rewriteBudget,
               sessionID: input.sessionID,
               slot: { messageID: input.messageID, partID: part.id, text: part.text },
               language: ConfigReasoningDistillation.resolveLanguage(Config.latest(entries, "reasoningDistillation")),
               call: auxiliaryModel
-                ? (signal) =>
+                ? (signal, onResponseStarted) =>
                     engineOrganizerCall({
                       llm,
                       model: auxiliaryModel,
                       effort: declaresNoReasoning(auxiliaryModel) ? "default" : "low",
                       timeoutMs: Flag.OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS,
                       signal,
+                      onResponseStarted,
                     })
                 : undefined,
               adopt: (replacement) =>
@@ -490,10 +510,7 @@ export const layer = Layer.effect(
       const toolsDisabled = isLastStep || budgetExhausted
       const toolMaterialization = toolsDisabled ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
-      const reasoningEnabled = ConfigReasoningDistillation.resolveEnabled({
-        disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
-        enabled: Config.latest(yield* config.entries(), "reasoningDistillation")?.enabled,
-      }).enabled
+      const reasoningEnabled = yield* reasoningRewriteEnabled(model)
       const conversion = toLLMMessagesWithBindings(context, model, { reasoningDistillationEnabled: reasoningEnabled })
       const expectedMessages = [
         ...conversion.messages,
@@ -575,7 +592,7 @@ export const layer = Layer.effect(
                 sessionID: session.id,
                 messageID: yield* publisher.startAssistant(),
                 reasoningID: event.id,
-                provider: model.provider,
+                model,
               })
               return
             }

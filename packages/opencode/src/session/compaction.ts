@@ -172,10 +172,13 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const status = yield* SessionStatus.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
-    const reasoningDistillationEnabled = (cfg: ConfigV1.Info) =>
+    const reasoningDistillationEnabled = (cfg: ConfigV1.Info, model: Provider.Model) =>
       ConfigReasoningDistillation.resolveEnabled({
         disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
         enabled: cfg.reasoningDistillation?.enabled,
+        modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
+        modelID: model.id,
+        apiModelID: model.api.id,
       }).enabled
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
@@ -211,7 +214,7 @@ export const layer = Layer.effect(
       model: Provider.Model
     }) {
       const msgs = yield* MessageV2.toModelMessagesEffect(input.messages, input.model, {
-        reasoningDistillationEnabled: reasoningDistillationEnabled(yield* config.get()),
+        reasoningDistillationEnabled: reasoningDistillationEnabled(yield* config.get(), input.model),
       })
       return Token.estimate(JSON.stringify(msgs))
     })
@@ -350,11 +353,7 @@ export const layer = Layer.effect(
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
-      const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
-        cfg,
-        model,
-      })
+      const filteredHistory = history.filter((_, index) => !hidden.has(index))
       // Allow plugins to inject context or replace compaction prompt.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
@@ -362,21 +361,6 @@ export const layer = Layer.effect(
         { context: memoryContext, prompt: undefined },
       )
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
-      const msgs = structuredClone(selected.head)
-      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const tailIndex = selected.tail_start_id
-        ? history.findIndex((message) => message.info.id === selected.tail_start_id)
-        : -1
-      const recent =
-        tailIndex < 0
-          ? ""
-          : JSON.stringify(
-              yield* MessageV2.toModelMessagesEffect(history.slice(tailIndex), model, {
-                stripMedia: true,
-                toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-                reasoningDistillationEnabled: reasoningDistillationEnabled(cfg),
-              }),
-            )
       const ctx = yield* InstanceState.context
       const template = {
         id: MessageID.ascending(),
@@ -408,8 +392,16 @@ export const layer = Layer.effect(
       let msg: SessionV1.Assistant = template
       let processor: SessionProcessor.Handle
       let result: SessionProcessor.Result
+      let recent = ""
+      let selected: { head: SessionV1.WithParts[]; tail_start_id: MessageID | undefined }
       while (true) {
         const candidate = models[attempt]
+        selected = yield* select({ messages: filteredHistory, cfg, model: candidate })
+        const msgs = structuredClone(selected.head)
+        yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+        const tailIndex = selected.tail_start_id
+          ? history.findIndex((message) => message.info.id === selected.tail_start_id)
+          : -1
         msg = {
           ...template,
           id: MessageID.ascending(),
@@ -422,8 +414,18 @@ export const layer = Layer.effect(
         const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, candidate, {
           stripMedia: true,
           toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-          reasoningDistillationEnabled: reasoningDistillationEnabled(cfg),
+          reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
         })
+        recent =
+          tailIndex < 0
+            ? ""
+            : JSON.stringify(
+                yield* MessageV2.toModelMessagesEffect(history.slice(tailIndex), candidate, {
+                  stripMedia: true,
+                  toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+                  reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
+                }),
+              )
         result = yield* processor.process({
           user: userMessage,
           agent,
@@ -474,7 +476,7 @@ export const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      if (result === "continue" && compactionPart && compactionPart.tail_start_id !== selected.tail_start_id) {
         yield* session.updatePart({
           ...compactionPart,
           tail_start_id: selected.tail_start_id,

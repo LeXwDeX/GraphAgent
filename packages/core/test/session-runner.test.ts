@@ -64,6 +64,8 @@ const questions = QuestionV2.layer.pipe(Layer.provide(EventV2.defaultLayer))
 const requests: LLMRequest[] = []
 let maxToolCalls: number | undefined
 let reasoningConfig: ConfigReasoningDistillation.Info | undefined
+let modelReasoningConfig: Config.Info["providers"]
+let extraConfigEntries: Config.Entry[] = []
 let auxiliary: LLMClientShape["generate"] | undefined
 const prepareDistillation = (request: LLMRequest) =>
   request.model.route.body.from(request).pipe(
@@ -96,6 +98,12 @@ const client = Layer.succeed(
     prepare: ((request: LLMRequest) =>
       reasoningConfig ? prepareDistillation(request) : Effect.die("unused")) as LLMClientShape["prepare"],
     stream: ((request: LLMRequest) => {
+      if (request.metadata?.feature === "reasoning-distillation")
+        return Stream.unwrap(
+          (auxiliary ? auxiliary(request) : Effect.die("unused")).pipe(
+            Effect.map((response) => Stream.fromIterable(response.events)),
+          ),
+        )
       requests.push(request)
       if (responseStream) {
         const stream = responseStream
@@ -179,7 +187,7 @@ const echo = Layer.effectDiscard(
   ),
 ).pipe(Layer.provide(registry))
 let modelResolveHook = Effect.void
-let currentModel = model
+let currentModel: SessionRunnerModel.ResolvedModel = model
 const models = SessionRunnerModel.layerWith(
   (session) => modelResolveHook.pipe(Effect.as(session.model?.id === "replacement" ? replacementModel : currentModel)),
   () => Effect.succeed(Model.make({ id: "small-distillation", provider: "fake", route: OpenAIChat.route })),
@@ -245,6 +253,7 @@ const config = Layer.succeed(
           type: "document",
           info: new Config.Info({
             reasoningDistillation: reasoningConfig,
+            providers: modelReasoningConfig,
             maxToolCalls,
             compaction: new ConfigCompaction.Info({
               buffer: 3_000,
@@ -252,6 +261,7 @@ const config = Layer.succeed(
             }),
           }),
         }),
+        ...extraConfigEntries,
       ]),
   }),
 )
@@ -340,6 +350,8 @@ const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   response = []
   reasoningConfig = undefined
+  modelReasoningConfig = undefined
+  extraConfigEntries = []
   maxToolCalls = undefined
   auxiliary = undefined
   systemBaseline = "Initial context"
@@ -3532,6 +3544,79 @@ const withSettleWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =
         else process.env.OPENCODE_REASONING_DISTILLATION_SETTLE_MS = previous
       }),
   )
+
+for (const scenario of [
+  { id: "gpt-test", global: true, enabled: undefined, expected: false },
+  { id: "anthropic/claude-test", global: true, enabled: undefined, expected: false },
+  { id: "qwen-test", global: false, enabled: true, expected: true },
+  { id: "qwen-test", global: true, enabled: false, expected: false },
+  { id: "gpt-test", global: false, enabled: true, expected: true },
+]) {
+  it.effect(`Core runner model distillation ${scenario.id} global=${scenario.global} model=${scenario.enabled}`, () =>
+    withSettleWindow(
+      "5000",
+      Effect.gen(function* () {
+        yield* setup
+        currentModel = Object.assign(Model.make({ id: scenario.id, provider: "fake", route: OpenAIChat.route }), {
+          configID: ModelV2.ID.make("friendly-alias"),
+        })
+        reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: scenario.global })
+        modelReasoningConfig = Schema.decodeUnknownSync(Config.Info)({
+          providers: {
+            fake: {
+              models: {
+                "friendly-alias": {
+                  reasoningDistillation: scenario.enabled === undefined ? undefined : { enabled: scenario.enabled },
+                },
+              },
+            },
+          },
+        }).providers
+        // A later config document editing another property/model must not erase the lower-level model switch.
+        extraConfigEntries = [
+          new Config.Document({
+            type: "document",
+            info: Schema.decodeUnknownSync(Config.Info)({
+              providers: {
+                fake: {
+                  models: {
+                    "friendly-alias": { name: "Display name" },
+                    unrelated: { reasoningDistillation: { enabled: !scenario.enabled } },
+                  },
+                },
+              },
+            }),
+          }),
+        ]
+        const organized: string[] = []
+        auxiliary = (request) =>
+          Effect.sync(() => {
+            organized.push(String(request.model.id))
+            return auxiliaryResponse("adopted-model-reasoning")
+          })
+        const session = yield* SessionV2.Service
+        requests.length = 0
+        yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "first" }), resume: false })
+        responses = [reasoningStep("r-1", false), []]
+        yield* session.resume(sessionID)
+        expect(requests).toHaveLength(2)
+        const sent = JSON.stringify(requests[1].messages)
+        expect(organized).toHaveLength(scenario.expected ? 1 : 0)
+        expect(sent).toContain(scenario.expected ? "adopted-model-reasoning" : "original-r-1")
+        expect(sent).not.toContain(scenario.expected ? "original-r-1" : "adopted-model-reasoning")
+        if (!scenario.expected) return
+        // A new request to a default-off model must restore the original stored source.
+        currentModel = Model.make({ id: "gpt-other", provider: "fake", route: OpenAIChat.route })
+        responses = [[]]
+        yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
+        yield* session.resume(sessionID)
+        const switched = JSON.stringify(requests.at(-1)?.messages)
+        expect(switched).toContain("original-r-1")
+        expect(switched).not.toContain("adopted-model-reasoning")
+      }),
+    ),
+  )
+}
 
 it.effect("Core runner rewrites each step's reasoning before its first resend", () =>
   withSettleWindow(

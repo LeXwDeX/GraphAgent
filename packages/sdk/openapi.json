@@ -20699,6 +20699,9 @@
                   "type": "string",
                   "enum": ["alpha", "beta", "deprecated", "active"]
                 },
+                "reasoningDistillation": {
+                  "$ref": "#/components/schemas/ConfigV2ModelReasoningDistillation"
+                },
                 "provider": {
                   "type": "object",
                   "properties": {
@@ -26467,6 +26470,15 @@
           }
         },
         "required": ["path"],
+        "additionalProperties": false
+      },
+      "ConfigV2ModelReasoningDistillation": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
         "additionalProperties": false
       },
       "PolicyEffect": {

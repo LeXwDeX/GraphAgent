@@ -1937,6 +1937,7 @@ export type ProviderConfig = {
       }
       experimental?: boolean
       status?: "alpha" | "beta" | "deprecated" | "active"
+      reasoningDistillation?: ConfigV2ModelReasoningDistillation
       provider?: {
         npm?: string
         api?: string
@@ -3915,6 +3916,10 @@ export type ConfigV2ReferenceLocal = {
   path: string
   description?: string
   hidden?: boolean
+}
+
+export type ConfigV2ModelReasoningDistillation = {
+  enabled?: boolean
 }
 
 export type ConfigV2ReasoningDistillationCompatibility = {

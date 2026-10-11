@@ -29,9 +29,39 @@ adopts the result in the background. Review found:
 - Reasoning distillation in `packages/core` (organizer, adoption, scheduling, replay, editability), the opencode session
   host (`prompt.ts`, `processor.ts`, `llm.ts`, `reasoning-adoption.ts`), and an engine-owned reasoning carrier classifier
   in `packages/llm`.
-- No persisted-format change: `distillation` provenance, `providerMetadata` and the `reasoningDistillation` config keep
-  their shapes. The legacy `compatibility` config entry is still accepted and ignored.
-- No public HTTP/event shape change. No DB migration.
+- No reasoning-part or event format change: `distillation` provenance and `providerMetadata` keep their existing
+  shapes. The config schema adds an optional `reasoningDistillation.enabled` field on each provider model; v1 provider
+  model configuration preserves it when migrated. The legacy `compatibility` config entry is still accepted and
+  ignored.
+- The per-model switch adds an optional config HTTP field and matching SDK type. Public events and stored data are unchanged; no DB migration is needed.
+
+## Configuration
+
+The effective switch follows this order: the environment kill-switch disables rewriting; an explicit model-level
+`reasoningDistillation.enabled` value wins next; otherwise GPT and Claude model identifiers default to off, even when
+the global switch is on; then the global `reasoningDistillation.enabled` value applies; if none is set, rewriting
+defaults to on. GPT and Claude detection checks both catalog and API model identifiers, including namespace-delimited
+forms such as `openai/gpt-5` and `us.anthropic.claude-sonnet-4`.
+
+The per-model field contains only `enabled`. Organizer language remains global under
+`reasoningDistillation.language`. Existing canonical-content checks still protect opaque, signed, encrypted, and
+otherwise non-editable reasoning carriers regardless of the effective switch.
+
+The example below uses v2 `providers`. In a v1 `opencode.json`, use the singular `provider` key with the same model-level field.
+
+```jsonc
+{
+  "reasoningDistillation": { "enabled": true, "language": "en" },
+  "providers": {
+    "openai": {
+      "models": {
+        "gpt-5": { "reasoningDistillation": { "enabled": false } },
+        "gpt-5-mini": { "reasoningDistillation": { "enabled": true } },
+      },
+    },
+  },
+}
+```
 
 ## Approach
 
@@ -45,11 +75,18 @@ adopts the result in the background. Review found:
    Budget: per-session token ceiling counted from reported usage, or estimated from prompt and output when the provider
    omits usage; no per-session call cap; consecutive transport failures still pause the session.
 3. **Rewrite before first resend.** A job starts as soon as a reasoning part ends (`reasoning-end`), overlapping the rest of
-   the step and its tool execution. Before each provider request a session `settle` waits for in-flight jobs up to
-   `OPENCODE_REASONING_DISTILLATION_SETTLE_MS` (default 3000), then seals and interrupts the remainder. A sealed job can
-   never adopt, so a part is rewritten before its first resend or never; adoption is validated per part (session not
-   reverted, part unchanged, not sealed) instead of rejecting the whole turn on continuation. All-noise replacements keep
-   an empty reasoning part so the provider field stays present.
+   the step and its tool execution. At each send barrier, calculate the response-start window from only source text
+   belonging to organizer jobs that have not started responding, measured with UTF-16 `String.length`:
+   `min(15000, max(3000, ceil(chars / 4000) * 3000))` ms. `OPENCODE_REASONING_DISTILLATION_SETTLE_MS` overrides this
+   when set to a non-negative safe integer, including zero; unset or invalid values use the adaptive window. When the
+   window expires, seal and interrupt only jobs that have not started responding. A started organizer stream is not
+   limited by this window, even when it is zero. Once the organizer begins returning SSE, consume its stream through
+   completion, validate its result, and replace the same reasoning part; persist the adoption before the next main-model
+   request. `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` is a no-progress timeout: it does not cap a healthy stream
+   that continues to make progress. A source is never replaced after it has been resent. A sealed job can never adopt;
+   adoption is validated per part (session not reverted, part unchanged, not sealed) instead of rejecting the whole turn
+   on continuation. Tool execution still overlaps organizer calls. All-noise replacements keep an empty reasoning part
+   so the provider field stays present.
 4. **Engine-owned carrier classification.** `@opencode-ai/llm` exports `ReasoningCarrier.classify(metadata)`, declaring for
    each provider namespace which keys are opaque (signatures, encrypted payloads, item references) and which are
    plaintext mirrors. Core editability uses it; the duplicated key sniffers are removed.

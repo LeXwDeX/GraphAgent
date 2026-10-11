@@ -281,15 +281,19 @@ export const layer = Layer.effect(
         return { scheduler, budget }
       }),
     )
-    const reasoningDistillationEnabled = config.get().pipe(
-      Effect.map(
-        (cfg) =>
-          ConfigReasoningDistillation.resolveEnabled({
-            disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
-            enabled: cfg.reasoningDistillation?.enabled,
-          }).enabled,
-      ),
-    )
+    const reasoningDistillationEnabled = (model: Provider.Model) =>
+      config.get().pipe(
+        Effect.map(
+          (cfg) =>
+            ConfigReasoningDistillation.resolveEnabled({
+              disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
+              enabled: cfg.reasoningDistillation?.enabled,
+              modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
+              modelID: model.id,
+              apiModelID: model.api.id,
+            }).enabled,
+        ),
+      )
     const database = yield* Database.Service
     // Start rewriting a reasoning part as soon as it ends, overlapping the rest of the step and its tools. The next
     // provider request of the session settles these jobs first (see the loop below).
@@ -302,8 +306,9 @@ export const layer = Layer.effect(
         scheduler.submit({
           sessionID: input.sessionID,
           key: input.part.id,
-          enabled: reasoningDistillationEnabled,
-          run: (canAdopt) =>
+          inputCharacters: input.part.text.length,
+          enabled: reasoningDistillationEnabled(input.model),
+          run: (canAdopt, onResponseStarted) =>
             Effect.gen(function* () {
               // Organize the persisted part: adoption compares against exactly what is stored.
               const part = yield* sessions.getPart({
@@ -328,6 +333,7 @@ export const layer = Layer.effect(
               const cfg = yield* config.get()
               const organizer = yield* llm.organizer({ model: input.model })
               const outcome = yield* runReasoningRewrite({
+                onResponseStarted,
                 budget,
                 sessionID: input.sessionID,
                 slot: { messageID: part.messageID, partID: part.id, text: part.text },
@@ -675,7 +681,7 @@ export const layer = Layer.effect(
       const msgs = onlySubtasks
         ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
         : yield* MessageV2.toModelMessagesEffect(context, mdl, {
-            reasoningDistillationEnabled: yield* reasoningDistillationEnabled,
+            reasoningDistillationEnabled: yield* reasoningDistillationEnabled(mdl),
           })
       const text = yield* llm
         .stream({
@@ -2302,7 +2308,7 @@ export const layer = Layer.effect(
                   JSON.stringify(
                     yield* MessageV2.toModelMessagesEffect(estimateMessages, model, {
                       stripMedia: true,
-                      reasoningDistillationEnabled: yield* reasoningDistillationEnabled,
+                      reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
                     }),
                   ),
                 )
@@ -2513,7 +2519,7 @@ export const layer = Layer.effect(
                 sys.hooks(),
                 sys.memory({ sessionID, messages: msgs, main: !session.parentID }),
                 MessageV2.toModelMessagesEffect(msgs, model, {
-                  reasoningDistillationEnabled: yield* reasoningDistillationEnabled,
+                  reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
                 }),
                 MessageV2.contextFoldingHistory({ messages: msgs, ledger: toolSources }),
               ],

@@ -963,7 +963,7 @@ const organizerConfig = (options: { none?: boolean; small?: string } = {}): Part
   }
 }
 
-const organizeOnce = (prompt: string, signal = new AbortController().signal) =>
+const organizeOnce = (prompt: string, signal = new AbortController().signal, onResponseStarted?: () => void) =>
   Effect.gen(function* () {
     const model = yield* Provider.use.getModel(
       ProviderV2.ID.make("custom-provider"),
@@ -973,7 +973,10 @@ const organizeOnce = (prompt: string, signal = new AbortController().signal) =>
     if (!organizer) return { organizer, output: undefined, error: undefined }
     const result = yield* Effect.promise(() =>
       organizer
-        .call(signal)({ prompt })
+        .call(
+          signal,
+          onResponseStarted,
+        )({ prompt })
         .then(
           (output) => ({ output, error: undefined }),
           (error: unknown) => ({ output: undefined, error }),
@@ -2118,6 +2121,58 @@ describe("session.llm.stream", () => {
         }),
       { config: () => organizerConfig({ none }) },
     )
+
+  it.instance(
+    "the reasoning organizer starts on the first upstream frame before normalized text",
+    () =>
+      Effect.gen(function* () {
+        let starts = 0
+        const request = deferred<Capture>()
+        const encoder = new TextEncoder()
+        state.queue.push({
+          path: "/chat/completions",
+          resolve: request.resolve,
+          response: () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                async start(controller) {
+                  const send = (value: unknown) =>
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(value)}\n\n`))
+                  send({ id: "organizer-stream", choices: [{ delta: { role: "assistant" } }] })
+                  await Bun.sleep(40)
+                  // The role-only response frame precedes any normalized engine text/reasoning event.
+                  expect(starts).toBe(1)
+                  for (const text of ["confirmed ", "decision ", "uses ", "safe ", "path"]) {
+                    send({ id: "organizer-stream", choices: [{ delta: { content: text } }] })
+                    await Bun.sleep(40)
+                  }
+                  send({ id: "organizer-stream", choices: [{ delta: {}, finish_reason: "stop" }] })
+                  send({
+                    id: "organizer-stream",
+                    choices: [],
+                    usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+                  })
+                  controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+                  controller.close()
+                },
+              }),
+              { headers: { "Content-Type": "text/event-stream" } },
+            ),
+        })
+        const before = Date.now()
+        const result = yield* organizeOnce("整理以下思考", undefined, () => starts++)
+        expect(Date.now() - before).toBeGreaterThan(150)
+        expect(result.error).toBeUndefined()
+        expect(result.output).toEqual({
+          text: "confirmed decision uses safe path",
+          usageTokens: 25,
+          finishReason: "stop",
+        })
+        expect(starts).toBe(1)
+        expect((yield* Effect.promise(() => request.promise)).body.stream).toBe(true)
+      }),
+    { config: () => organizerConfig() },
+  )
 
   it.instance(
     "the reasoning organizer never retries a failed call",

@@ -152,6 +152,25 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("preserves per-model reasoning distillation overrides through v1 migration", () =>
+    Effect.sync(() => {
+      const decodeCurrent = Schema.decodeUnknownSync(Config.Info)
+      const decodeV1 = Schema.decodeUnknownSync(ConfigV1.Info)
+      for (const enabled of [true, false]) {
+        const v1 = decodeV1({
+          snapshot: false,
+          provider: { openai: { models: { "gpt-5": { reasoningDistillation: { enabled } } } } },
+        })
+        const migrated = decodeCurrent(ConfigMigrateV1.migrate(v1))
+        expect(migrated.providers?.openai?.models?.["gpt-5"]?.reasoningDistillation?.enabled).toBe(enabled)
+        const current = decodeCurrent({
+          providers: { openai: { models: { "gpt-5": { reasoningDistillation: { enabled } } } } },
+        })
+        expect(current.providers?.openai?.models?.["gpt-5"]?.reasoningDistillation?.enabled).toBe(enabled)
+      }
+    }),
+  )
+
   it.effect("migrates arbitrary v1 configuration into valid v2 configuration", () =>
     Effect.sync(() => {
       FastCheck.assert(

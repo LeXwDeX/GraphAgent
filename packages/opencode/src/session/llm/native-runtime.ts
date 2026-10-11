@@ -242,6 +242,7 @@ export function organizerClient(
         ...input.llmClient,
         generate: (request) =>
           input.llmClient.generate(request).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch)),
+        stream: (request) => input.llmClient.stream(request).pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)),
       }
     : input.llmClient
   return { type: "supported", llm, model }

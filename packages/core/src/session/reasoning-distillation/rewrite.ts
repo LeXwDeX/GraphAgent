@@ -82,7 +82,8 @@ export const runReasoningRewrite = <A>(input: {
   sessionID: string
   slot: OrganizeSlot
   language: OrganizeLanguage
-  call: ((signal: AbortSignal) => OrganizeCall) | undefined
+  call: ((signal: AbortSignal, onResponseStarted?: () => void) => OrganizeCall) | undefined
+  onResponseStarted?: () => void
   adopt: (replacement: ReasoningReplacement) => Effect.Effect<A | undefined>
 }): Effect.Effect<RewriteOutcome<A>> =>
   Effect.gen(function* () {
@@ -115,7 +116,11 @@ export const runReasoningRewrite = <A>(input: {
     controller.signal.addEventListener("abort", () => (aborted = true), { once: true })
     const organized = yield* Effect.promise((signal) => {
       signal.addEventListener("abort", () => controller.abort(), { once: true })
-      return organizeReasoning({ slot: input.slot, callModel: call(controller.signal), language: input.language })
+      return organizeReasoning({
+        slot: input.slot,
+        callModel: call(controller.signal, input.onResponseStarted),
+        language: input.language,
+      })
     }).pipe(Effect.onInterrupt(() => Effect.sync(() => controller.abort())))
     if (organized.called)
       input.budget.record(input.sessionID, {

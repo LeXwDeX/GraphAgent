@@ -2,6 +2,7 @@ export * as ConfigProviderV1 from "./provider"
 
 import { Schema } from "effect"
 import { PositiveInt } from "../../schema"
+import { ConfigReasoningDistillation } from "../../config/reasoning-distillation"
 
 export const ModelStatus = Schema.Literals(["alpha", "beta", "deprecated", "active"])
 
@@ -55,6 +56,7 @@ export const Model = Schema.Struct({
   ),
   experimental: Schema.optional(Schema.Boolean),
   status: Schema.optional(ModelStatus),
+  reasoningDistillation: Schema.optional(ConfigReasoningDistillation.Model),
   provider: Schema.optional(
     Schema.Struct({ npm: Schema.optional(Schema.String), api: Schema.optional(Schema.String) }),
   ),

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -1227,6 +1227,124 @@ describe("session.compaction.process", () => {
       }
     }),
   )
+
+  for (const family of ["gpt-5.2", "claude-sonnet-4.5"]) {
+    for (const enabled of [undefined, true]) {
+      for (const suffix of [false, true]) {
+        itCompaction.instance(
+          `compaction fallback reselects head and retained tail for ${family}, model override ${enabled}, suffix ${suffix}`,
+          () => {
+            const stub = llm()
+            const captured: string[] = []
+            let recent = ""
+            const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("qwen-small") }
+            const fallback = { ...small, id: ModelV2.ID.make(family) }
+            const provider = ProviderTest.fake({
+              getSmallModel: () => Effect.succeed(small),
+              getModel: () => Effect.succeed(fallback),
+            })
+            stub.push((input) => {
+              captured.push(JSON.stringify(input.messages))
+              return Stream.fail(new CompactionTimeoutError({ message: "try fallback model" }))
+            })
+            stub.push(reply("complete summary", (input) => captured.push(JSON.stringify(input.messages))))
+            const base = Schema.decodeUnknownSync(ConfigV1.Info)({
+              reasoningDistillation: { enabled: true },
+              provider: { test: { models: { [family]: { reasoningDistillation: { enabled } } } } },
+              compaction: { tail_turns: 1, preserve_recent_tokens: 300 },
+            }) as ConfigV1.Info
+            return Effect.gen(function* () {
+              const ssn = yield* SessionNs.Service
+              const instance = yield* TestInstance
+              const events = yield* EventV2Bridge.Service
+              const publish = events.publish.bind(events)
+              spyOn(events, "publish").mockImplementation((definition, data, options) => {
+                if (typeof data === "object" && data !== null && "recent" in data && typeof data.recent === "string")
+                  recent = data.recent
+                return publish(definition, data, options)
+              })
+              const session = yield* ssn.create({})
+              let tailID: MessageID | undefined
+              let suffixID: MessageID | undefined
+              for (const name of ["head", "tail"]) {
+                const user = yield* createUserMessage(session.id, `${name} turn`)
+                if (name === "tail") tailID = user.id
+                const assistant = yield* createAssistantMessage(session.id, user.id, instance.directory)
+                yield* ssn.updatePart({
+                  id: PartID.ascending(),
+                  messageID: assistant.id,
+                  sessionID: session.id,
+                  type: "reasoning",
+                  text: `${name} distilled reasoning`,
+                  time: { start: 1, end: 2 },
+                  distillation: {
+                    originalText: `${name} original reasoning${name === "tail" ? "x".repeat(4_000) : ""}`,
+                    sourceFingerprint: `${name}-source`,
+                    version: 2,
+                  },
+                })
+                if (name === "tail" && suffix) {
+                  const keep = yield* createAssistantMessage(session.id, user.id, instance.directory)
+                  suffixID = keep.id
+                  yield* ssn.updatePart({
+                    id: PartID.ascending(),
+                    messageID: keep.id,
+                    sessionID: session.id,
+                    type: "text",
+                    text: "retained tiny suffix",
+                  })
+                }
+              }
+              yield* createSummaryCompaction(session.id)
+              const messages = yield* ssn.messages({ sessionID: session.id })
+              const marker = messages.at(-1)!.parts.find((part) => part.type === "compaction")
+              if (!marker || marker.type !== "compaction") throw new Error("Expected compaction marker")
+              yield* ssn.updatePart({ ...marker, tail_start_id: tailID })
+              marker.tail_start_id = tailID
+              const result = yield* SessionCompaction.use.process({
+                parentID: messages.at(-1)!.info.id,
+                messages,
+                sessionID: session.id,
+                auto: false,
+              })
+              expect(result).toBe("continue")
+              expect(captured).toHaveLength(2)
+              const part = yield* readCompactionPart(session.id)
+              expect(part?.type).toBe("compaction")
+              expect(part?.tail_start_id).toBe(enabled ? tailID : suffixID)
+              expect(captured[0]).toContain("head distilled reasoning")
+              expect(captured[0]).not.toContain("head original reasoning")
+              expect(captured[1]).toContain(enabled ? "head distilled reasoning" : "head original reasoning")
+              expect(captured[1]).not.toContain(enabled ? "head original reasoning" : "head distilled reasoning")
+              if (enabled) {
+                expect(captured[1]).not.toContain("tail distilled reasoning")
+                expect(recent).toContain("tail distilled reasoning")
+                expect(recent).not.toContain("tail original reasoning")
+              } else {
+                expect(captured[1]).toContain(`tail original reasoning${"x".repeat(4_000)}`)
+                expect(recent).not.toContain("tail original reasoning")
+                if (suffix) {
+                  expect(captured[1]).not.toContain("retained tiny suffix")
+                  expect(recent).toContain("retained tiny suffix")
+                } else expect(recent).toBe("")
+              }
+              expect(Token.estimate(recent)).toBeLessThanOrEqual(300)
+              const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+              expect(retained.some((message) => message.info.id === tailID)).toBe(enabled === true)
+              if (suffixID) expect(retained.some((message) => message.info.id === suffixID)).toBe(true)
+            }).pipe(
+              withCompaction({
+                llm: stub.layer,
+                provider,
+                config: TestConfig.layer({ get: () => Effect.succeed(base) }),
+              }),
+            )
+          },
+          { git: true },
+        )
+      }
+    }
+  }
 
   for (const outcome of [
     "success",
