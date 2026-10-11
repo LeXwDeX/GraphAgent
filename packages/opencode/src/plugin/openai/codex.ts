@@ -427,9 +427,9 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
             }>
           | undefined
 
-        return {
+        const loaded = {
           apiKey: OAUTH_DUMMY_KEY,
-          async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
+          async fetch(this: void, requestInput: RequestInfo | URL, init?: RequestInit) {
             if (init?.headers) {
               if (init.headers instanceof Headers) {
                 init.headers.delete("authorization")
@@ -444,7 +444,9 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
 
             const currentAuth = await getAuth()
             if (currentAuth.type !== "oauth")
-              return websocketFetch ? websocketFetch(requestInput, init) : fetch(requestInput, init)
+              return websocketFetch
+                ? websocketFetch(requestInput, init)
+                : fetch(requestInput, OpenAIWebSocketPool.withoutInternalRequestHeaders(requestInput, init ?? {}))
 
             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
 
@@ -514,6 +516,8 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
             return fetch(url, OpenAIWebSocketPool.withoutInternalHeaders(requestInit))
           },
         }
+        OpenAIWebSocketPool.registerTitleHeaderConsumer(loaded.fetch)
+        return loaded
       },
       methods: [
         {

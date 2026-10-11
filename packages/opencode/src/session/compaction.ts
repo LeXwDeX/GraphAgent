@@ -223,19 +223,24 @@ export const layer = Layer.effect(
       messages: SessionV1.WithParts[]
       cfg: ConfigV1.Info
       model: Provider.Model
+      conversationModel: Provider.Model
     }) {
       const limit = input.cfg.compaction?.tail_turns ?? DEFAULT_TAIL_TURNS
       if (limit <= 0) return { head: input.messages, tail_start_id: undefined }
-      const budget = preserveRecentBudget({ cfg: input.cfg, model: input.model })
+      const models = input.model === input.conversationModel ? [input.model] : [input.model, input.conversationModel]
+      const budget = Math.min(...models.map((model) => preserveRecentBudget({ cfg: input.cfg, model })))
+      const estimateTail = (part: { messages: SessionV1.WithParts[] }) =>
+        Effect.forEach(models, (model) => estimate({ messages: part.messages, model }), { concurrency: 1 }).pipe(
+          Effect.map((sizes) => Math.max(...sizes)),
+        )
       const all = turns(input.messages)
       if (!all.length) return { head: input.messages, tail_start_id: undefined }
       const recent = all.slice(-limit)
       const sizes = yield* Effect.forEach(
         recent,
         (turn) =>
-          estimate({
+          estimateTail({
             messages: input.messages.slice(turn.start, turn.end),
-            model: input.model,
           }),
         { concurrency: 1 },
       )
@@ -256,7 +261,7 @@ export const layer = Layer.effect(
           turn,
           model: input.model,
           budget: remaining,
-          estimate,
+          estimate: estimateTail,
         })
         if (split) keep = split
         else if (!keep) {
@@ -396,7 +401,7 @@ export const layer = Layer.effect(
       let selected: { head: SessionV1.WithParts[]; tail_start_id: MessageID | undefined }
       while (true) {
         const candidate = models[attempt]
-        selected = yield* select({ messages: filteredHistory, cfg, model: candidate })
+        selected = yield* select({ messages: filteredHistory, cfg, model: candidate, conversationModel })
         const msgs = structuredClone(selected.head)
         yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
         const tailIndex = selected.tail_start_id

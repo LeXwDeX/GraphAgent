@@ -1,5 +1,6 @@
 import { expect } from "bun:test"
 import { streamText } from "ai"
+import { pathToFileURL } from "node:url"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -14,7 +15,7 @@ import { Session } from "@/session/session"
 import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { disposeAllInstancesEffect, provideTmpdirInstance } from "../fixture/fixture"
+import { disposeAllInstancesEffect, provideTmpdirInstance, withTmpdirInstance } from "../fixture/fixture"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 const layer = Layer.mergeAll(
@@ -26,6 +27,11 @@ const layer = Layer.mergeAll(
   RuntimeFlags.defaultLayer,
 )
 const it = testEffect(layer)
+const plainTransport = testEffect(
+  layer.pipe(
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_DISABLE_DEFAULT_PLUGINS: true }))),
+  ),
+)
 
 const events = [
   { type: "response.created", response: { id: "resp_test", model: "test-model", created_at: 0 } },
@@ -64,6 +70,111 @@ function providerConfig(
       },
     },
   }
+}
+
+for (const configuredMarkers of [false, true]) {
+  plainTransport.live(
+    `plain OpenAI custom fetch strips title routing headers with configured markers=${configuredMarkers}`,
+    () =>
+      Effect.gen(function* () {
+        const received: Headers[] = []
+        const server = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Bun.serve({
+              hostname: "127.0.0.1",
+              port: 0,
+              fetch(request) {
+                received.push(request.headers)
+                return new Response(sse, { headers: { "content-type": "text/event-stream" } })
+              },
+            }),
+          ),
+          (server) => Effect.sync(() => server.stop(true)),
+        )
+        yield* Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const plugin = yield* Plugin.Service
+          const model = yield* provider.getModel(ProviderV2.ID.openai, ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const info = yield* provider.getProvider(ProviderV2.ID.openai)
+          const session = yield* Session.use.create({})
+          const flags = yield* RuntimeFlags.Service
+          for (const agent of ["build", "title"]) {
+            const { headers } = yield* LLMRequestPrep.prepare({
+              model,
+              provider: info,
+              sessionID: session.id,
+              agent: { name: agent, mode: "primary", permission: [], options: {} },
+              user: {
+                id: SessionV1.MessageID.make("msg_test"),
+                sessionID: session.id,
+                role: "user",
+                time: { created: 0 },
+                agent,
+                model: { providerID: model.providerID, modelID: model.id },
+              },
+              auth: undefined,
+              plugin,
+              flags,
+              isWorkflow: false,
+              messages: [{ role: "user", content: "hello" }],
+              system: [],
+              tools: {},
+            })
+            const result = streamText({
+              model: language,
+              prompt: "hello",
+              headers: { ...headers, "x-session-affinity": session.id, "x-ordinary": "preserved" },
+              maxRetries: 0,
+            })
+            expect(yield* Effect.promise(() => result.text)).toBe("ok")
+          }
+          expect(received).toHaveLength(2)
+          for (const headers of received) {
+            expect(headers.has(TITLE_HEADER)).toBe(false)
+            expect(headers.get("x-custom-fetch")).toBe("preserved")
+            expect(headers.get("x-ordinary")).toBe("preserved")
+            expect(headers.get("x-provider")).toBe("preserved")
+            expect(headers.get("x-model")).toBe("preserved")
+            expect(headers.get("x-session-affinity")).toBe(session.id)
+            expect(headers.get("authorization")).toBe("Bearer test-provider-key")
+          }
+        }).pipe(
+          withTmpdirInstance({
+            init: (directory) =>
+              Effect.promise(async () => {
+                const file = `${directory}/custom-fetch.ts`
+                await Bun.write(
+                  file,
+                  `export default async () => ({ config(cfg) {
+                cfg.provider.openai.options.fetch = async (input, init) => {
+                  const headers = new Headers(init?.headers)
+                  headers.set("x-custom-fetch", "preserved")
+                  return globalThis.fetch(input, { ...init, headers })
+                }
+              } })`,
+                )
+                const config = providerConfig(new URL("/v1", server.url).toString(), true, "openai")
+                const provider = config.provider?.openai
+                const model = provider?.models?.["test-model"]
+                if (!provider || !model) throw new Error("Expected configured OpenAI model")
+                provider.options = {
+                  ...provider.options,
+                  headers: { "x-provider": "preserved", ...(configuredMarkers ? { "X-Opencode-Title": "true" } : {}) },
+                }
+                model.headers = { "x-model": "preserved", ...(configuredMarkers ? { "X-OPENCODE-TITLE": "true" } : {}) }
+                await Bun.write(
+                  `${directory}/opencode.json`,
+                  JSON.stringify({
+                    ...config,
+                    plugin: [pathToFileURL(file).href],
+                  }),
+                )
+              }),
+          }),
+        )
+      }),
+  )
 }
 
 for (const [providerID, disableDefaultPlugins] of [

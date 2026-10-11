@@ -4,6 +4,18 @@ import { isRecord } from "@/util/record"
 import { OpenAIWebSocket } from "./ws"
 
 export const TITLE_HEADER = "x-opencode-title"
+const titleHeaderConsumers = new WeakSet<object>()
+
+export function registerTitleHeaderConsumer<
+  T extends (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+>(fetch: T): T {
+  titleHeaderConsumers.add(fetch)
+  return fetch
+}
+
+export function isTitleHeaderConsumer(fetch: unknown) {
+  return typeof fetch === "function" && titleHeaderConsumers.has(fetch)
+}
 
 export interface CreateWebSocketFetchOptions {
   httpFetch?: typeof globalThis.fetch
@@ -47,7 +59,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     if (closed) throw new DOMException("WebSocket pool closed", "AbortError")
     const url = input instanceof URL ? input.toString() : typeof input === "string" ? input : input.url
     const internalHeaders = OpenAIWebSocket.normalizeHeaders(init?.headers)
-    const httpInit = withoutInternalHeaders(init)
+    const httpInit = withoutInternalRequestHeaders(input, init ?? {})
 
     if (init?.method !== "POST" || !new URL(url).pathname.endsWith("/responses")) {
       return httpFetch(input, httpInit)
@@ -292,7 +304,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     pool.delete(key)
   }
 
-  return Object.assign(websocketFetch, { close, remove })
+  return registerTitleHeaderConsumer(Object.assign(websocketFetch, { close, remove }))
 }
 
 function requestSignal(entry: PoolEntry, input: RequestInfo | URL, init?: RequestInit) {
@@ -373,6 +385,14 @@ export function withoutInternalHeaders<T extends { headers?: HeadersInit }>(init
     ...init,
     headers: Object.fromEntries(Object.entries(init.headers).filter(([key]) => key.toLowerCase() !== TITLE_HEADER)),
   }
+}
+
+export function withoutInternalRequestHeaders<T extends { headers?: HeadersInit }>(
+  input: RequestInfo | URL,
+  init: T,
+): T {
+  const headers = init.headers === undefined && input instanceof Request ? input.headers : init.headers
+  return withoutInternalHeaders({ ...init, headers }) ?? init
 }
 
 export * as OpenAIWebSocketPool from "./ws-pool"

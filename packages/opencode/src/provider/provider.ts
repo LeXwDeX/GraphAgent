@@ -1809,11 +1809,17 @@ export const layer = Layer.effect(
           const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
           if (combined) opts.signal = combined
 
-          const res = await fetchFn(input, {
+          const fetchInit = {
             ...opts,
             // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
             timeout: false,
-          }).finally(() => headerTimeoutCtl?.clear())
+          }
+          const res = await fetchFn(
+            input,
+            OpenAIWebSocketPool.isTitleHeaderConsumer(fetchFn)
+              ? fetchInit
+              : OpenAIWebSocketPool.withoutInternalRequestHeaders(input, fetchInit),
+          ).finally(() => headerTimeoutCtl?.clear())
 
           if (!chunkAbortCtl) return res
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)
