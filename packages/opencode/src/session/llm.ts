@@ -6,7 +6,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
-import { generateText, streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
+import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
 import { type LLMEvent } from "@opencode-ai/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
@@ -42,6 +42,92 @@ import {
   type OrganizeCall,
 } from "@opencode-ai/core/session/reasoning-distillation"
 import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
+
+/** Provider-SDK organizer transport; the timeout measures response start and idle gaps. */
+export const sdkOrganizerCall =
+  (input: {
+    model: Parameters<typeof wrapLanguageModel>[0]["model"]
+    maxOutputTokens: number
+    effort: "none" | "low"
+    timeoutMs: number
+    signal: AbortSignal
+    onResponseStarted?: () => void
+  }): OrganizeCall =>
+  async ({ prompt }) => {
+    const idle = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    let started = false
+    const reset = () => {
+      clearTimeout(timer)
+      timer = setTimeout(
+        () => idle.abort(new DOMException("Organizer response timed out", "TimeoutError")),
+        input.timeoutMs,
+      )
+    }
+    reset()
+    try {
+      const result = streamText({
+        model: wrapLanguageModel({
+          model: input.model,
+          middleware: {
+            specificationVersion: "v3",
+            wrapStream: async ({ doStream }) => {
+              const result = await doStream()
+              return {
+                ...result,
+                stream: result.stream.pipeThrough(
+                  new TransformStream({
+                    transform(chunk, controller) {
+                      // Providers can synthesize starts/metadata from headers. Raw frames or response content
+                      // prove the upstream stream has started; synthetic chunks cannot extend its deadline.
+                      if (
+                        chunk.type === "raw" ||
+                        chunk.type === "text-delta" ||
+                        chunk.type === "reasoning-delta" ||
+                        chunk.type === "source" ||
+                        chunk.type === "file" ||
+                        chunk.type === "tool-input-delta" ||
+                        chunk.type === "tool-call" ||
+                        chunk.type === "tool-result"
+                      ) {
+                        reset()
+                        if (!started) {
+                          started = true
+                          input.onResponseStarted?.()
+                        }
+                      }
+                      controller.enqueue(chunk)
+                    },
+                  }),
+                ),
+              }
+            },
+          },
+        }),
+        prompt,
+        temperature: 0,
+        maxOutputTokens: input.maxOutputTokens,
+        maxRetries: 0,
+        includeRawChunks: true,
+        // Errors are returned to the rewrite caller through fullStream below.
+        onError: () => {},
+        providerOptions: { openaiCompatible: { reasoningEffort: input.effort } },
+        abortSignal: AbortSignal.any([input.signal, idle.signal]),
+      })
+      for await (const chunk of result.fullStream) {
+        if (chunk.type === "error") throw chunk.error
+        if (chunk.type === "abort") throw input.signal.reason ?? idle.signal.reason ?? new Error("Organizer aborted")
+      }
+      const [text, totalUsage, finishReason] = await Promise.all([result.text, result.totalUsage, result.finishReason])
+      return {
+        text,
+        usageTokens: typeof totalUsage?.totalTokens === "number" ? totalUsage.totalTokens : undefined,
+        finishReason,
+      }
+    } finally {
+      clearTimeout(timer!)
+    }
+  }
 
 export function strictJSON(text: string): unknown {
   // Models sometimes wrap JSON in a markdown fence despite "output JSON only"
@@ -81,7 +167,7 @@ export type StreamRequest = StreamInput & {
 export type Organizer = Readonly<{
   transport: "engine" | "ai-sdk"
   model: string
-  call: (signal: AbortSignal) => OrganizeCall
+  call: (signal: AbortSignal, onResponseStarted?: () => void) => OrganizeCall
 }>
 
 export interface Interface {
@@ -554,36 +640,26 @@ const live: Layer.Layer<
         return {
           transport: "engine" as const,
           model: `${selected.providerID}/${selected.id}`,
-          call: (signal: AbortSignal) =>
-            engineOrganizerCall({ llm: engine.llm, model: engine.model, effort, timeoutMs, signal }),
+          call: (signal: AbortSignal, onResponseStarted?: () => void) =>
+            engineOrganizerCall({ llm: engine.llm, model: engine.model, effort, timeoutMs, signal, onResponseStarted }),
         }
       // Packages the engine does not route keep a provider-SDK fallback, isolated to this one call.
       const language = yield* provider.getLanguage(selected)
       return {
         transport: "ai-sdk" as const,
         model: `${selected.providerID}/${selected.id}`,
-        call:
-          (signal: AbortSignal): OrganizeCall =>
-          async ({ prompt }) => {
-            const result = await generateText({
-              model: language,
-              prompt,
-              temperature: 0,
-              maxOutputTokens: ProviderTransform.maxOutputTokens(
-                selected,
-                ReasoningDistillationPolicy.tokens.maxOutputTokens,
-              ),
-              maxRetries: 0,
-              providerOptions: { openaiCompatible: { reasoningEffort: effort } },
-              abortSignal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
-            })
-            return {
-              text: result.text,
-              usageTokens:
-                typeof result.totalUsage?.totalTokens === "number" ? result.totalUsage.totalTokens : undefined,
-              finishReason: result.finishReason,
-            }
-          },
+        call: (signal: AbortSignal, onResponseStarted?: () => void): OrganizeCall =>
+          sdkOrganizerCall({
+            model: language,
+            maxOutputTokens: ProviderTransform.maxOutputTokens(
+              selected,
+              ReasoningDistillationPolicy.tokens.maxOutputTokens,
+            ),
+            effort,
+            timeoutMs,
+            signal,
+            onResponseStarted,
+          }),
       }
     })
     // An unavailable provider or credential skips the rewrite; it never falls back to the main model.

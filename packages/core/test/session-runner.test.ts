@@ -98,6 +98,12 @@ const client = Layer.succeed(
     prepare: ((request: LLMRequest) =>
       reasoningConfig ? prepareDistillation(request) : Effect.die("unused")) as LLMClientShape["prepare"],
     stream: ((request: LLMRequest) => {
+      if (request.metadata?.feature === "reasoning-distillation")
+        return Stream.unwrap(
+          (auxiliary ? auxiliary(request) : Effect.die("unused")).pipe(
+            Effect.map((response) => Stream.fromIterable(response.events)),
+          ),
+        )
       requests.push(request)
       if (responseStream) {
         const stream = responseStream

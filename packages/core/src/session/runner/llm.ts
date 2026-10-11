@@ -209,11 +209,18 @@ export const layer = Layer.effect(
       reasoningID: string
       model: SessionRunnerModel.ResolvedModel
     }) {
+      const source = yield* store.message(input.messageID)
+      const reasoning =
+        source?.sessionID === input.sessionID && source.message.type === "assistant"
+          ? source.message.content.find((part) => part.id === input.reasoningID && part.type === "reasoning")
+          : undefined
+      if (reasoning?.type !== "reasoning") return
       yield* rewrites.submit({
         sessionID: input.sessionID,
         key: JSON.stringify([input.messageID, input.reasoningID]),
+        inputCharacters: reasoning.text.length,
         enabled: reasoningRewriteEnabled(input.model),
-        run: (canAdopt) =>
+        run: (canAdopt, onResponseStarted) =>
           Effect.gen(function* () {
             const stored = yield* store.message(input.messageID)
             const parts =
@@ -245,18 +252,20 @@ export const layer = Layer.effect(
               )
               .pipe(Effect.catch(() => Effect.succeed(undefined)))
             const outcome = yield* runReasoningRewrite({
+              onResponseStarted,
               budget: rewriteBudget,
               sessionID: input.sessionID,
               slot: { messageID: input.messageID, partID: part.id, text: part.text },
               language: ConfigReasoningDistillation.resolveLanguage(Config.latest(entries, "reasoningDistillation")),
               call: auxiliaryModel
-                ? (signal) =>
+                ? (signal, onResponseStarted) =>
                     engineOrganizerCall({
                       llm,
                       model: auxiliaryModel,
                       effort: declaresNoReasoning(auxiliaryModel) ? "default" : "low",
                       timeoutMs: Flag.OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS,
                       signal,
+                      onResponseStarted,
                     })
                 : undefined,
               adopt: (replacement) =>

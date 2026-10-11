@@ -1,6 +1,6 @@
-import { LLM, LLMResponse, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
+import { LLM, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
 import { RequestExecutor } from "@opencode-ai/llm/route"
-import { Duration, Effect } from "effect"
+import { Duration, Effect, Stream } from "effect"
 import type { OrganizeCall } from "./organize"
 import { ReasoningDistillationPolicy } from "./policy"
 
@@ -45,11 +45,29 @@ export const engineOrganizerCall = (input: {
   effort: OrganizerEffort
   timeoutMs: number
   signal?: AbortSignal
+  onResponseStarted?: () => void
 }): OrganizeCall => {
   const effort = input.effort === "default" ? undefined : input.effort
   return async ({ prompt }) => {
+    let started = false
+    const transport = input.model.route.transport
+    const route = input.model.route.with({
+      transport: {
+        ...transport,
+        frames: (prepared, request, runtime) =>
+          transport.frames(prepared, request, runtime).pipe(
+            Stream.tap(() =>
+              Effect.sync(() => {
+                if (started) return
+                started = true
+                input.onResponseStarted?.()
+              }),
+            ),
+          ),
+      },
+    })
     const request = LLM.request({
-      model: input.model,
+      model: Model.update(input.model, { route }),
       prompt,
       tools: [],
       toolChoice: "none",
@@ -61,10 +79,12 @@ export const engineOrganizerCall = (input: {
       },
       metadata: { purpose: "auxiliary", feature: "reasoning-distillation" },
     })
-    const response = await Effect.runPromise(
-      input.llm.generate(request).pipe(Effect.provideService(RequestExecutor.MaxRetries, 0)),
+    const events = await Effect.runPromise(
+      input.llm.stream(request).pipe(Stream.runCollect, Effect.provideService(RequestExecutor.MaxRetries, 0)),
       input.signal ? { signal: input.signal } : undefined,
     )
+    const response = LLMResponse.fromEvents(events)
+    if (!response) throw new Error("Organizer stream ended without a complete response")
     return {
       text: LLMResponse.text(response),
       usageTokens: LLMResponse.usage(response)?.totalTokens,

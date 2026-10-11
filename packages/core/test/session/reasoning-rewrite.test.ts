@@ -1,9 +1,10 @@
 import { describe, expect } from "bun:test"
 import { LLMEvent, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
-import { RequestExecutor } from "@opencode-ai/llm/route"
+import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
-import { Deferred, Duration, Effect, Fiber, Stream } from "effect"
+import { Deferred, Duration, Effect, Fiber, Layer, Stream } from "effect"
+import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import {
   declaresNoReasoning,
   engineOrganizerCall,
@@ -46,14 +47,76 @@ const response = (text: string, totalTokens?: number) => {
 
 const client = (generate: LLMClientShape["generate"]): LLMClientShape => ({
   prepare: (() => Effect.die("unused")) as LLMClientShape["prepare"],
-  stream: () => Stream.empty,
-  generate,
+  stream: (request) =>
+    Stream.unwrap(generate(request).pipe(Effect.map((response) => Stream.fromIterable(response.events)))),
+  generate: () => Effect.die("organizer must stream"),
 })
 
 const fixed = (text: string | undefined, usageTokens?: number) => (): OrganizeCall => async () =>
   text === undefined ? undefined : { text, usageTokens, finishReason: "stop" }
 
 describe("engine organizer transport", () => {
+  it.live("starts on an upstream frame and lets an active response outlast the idle timeout", () => {
+    let starts = 0
+    const encoder = new TextEncoder()
+    const http = Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.sync(() =>
+          HttpClientResponse.fromWeb(
+            request,
+            new Response(
+              new ReadableStream<Uint8Array>({
+                async start(controller) {
+                  const send = (value: unknown) =>
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(value)}\n\n`))
+                  send({ id: "organizer-stream", choices: [{ delta: { role: "assistant" } }] })
+                  await Bun.sleep(40)
+                  expect(starts).toBe(1)
+                  for (const text of ["confirmed ", "decision ", "uses ", "safe ", "path"]) {
+                    send({ id: "organizer-stream", choices: [{ delta: { content: text } }] })
+                    await Bun.sleep(40)
+                  }
+                  send({ id: "organizer-stream", choices: [{ delta: {}, finish_reason: "stop" }] })
+                  send({
+                    id: "organizer-stream",
+                    choices: [],
+                    usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 },
+                  })
+                  controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+                  controller.close()
+                },
+              }),
+              { headers: { "Content-Type": "text/event-stream" } },
+            ),
+          ),
+        ),
+      ),
+    )
+    return Effect.gen(function* () {
+      const llm = yield* LLMClient.Service
+      const before = Date.now()
+      const result = yield* Effect.promise(() =>
+        engineOrganizerCall({
+          llm,
+          model,
+          effort: "low",
+          timeoutMs: 150,
+          onResponseStarted: () => starts++,
+        })({ prompt: "organize" }),
+      )
+      expect(Date.now() - before).toBeGreaterThan(150)
+      expect(result).toEqual({ text: "confirmed decision uses safe path", usageTokens: 25, finishReason: "stop" })
+      expect(starts).toBe(1)
+    }).pipe(
+      Effect.provide(
+        LLMClient.layer.pipe(
+          Layer.provide(Layer.mergeAll(RequestExecutor.layer.pipe(Layer.provide(http)), WebSocketExecutor.layer)),
+        ),
+      ),
+    )
+  })
+
   it.effect("sends one tool-less request with low effort and no automatic retries", () =>
     Effect.gen(function* () {
       const requests: LLMRequest[] = []

@@ -6949,3 +6949,61 @@ for (const maxToolCalls of [1, 0] as const) {
     }),
   )
 }
+
+distillationIt.instance("a started organizer stream finishes before resend even with a zero start window", () =>
+  withSettleWindow(
+    "0",
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        reasoningDistillation: { enabled: true },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const started = yield* Deferred.make<void>()
+      let complete: ((value: { text: string; finishReason: "stop" }) => void) | undefined
+      let signal: AbortSignal | undefined
+      controlledOrganizer = () =>
+        Effect.succeed({
+          transport: "engine" as const,
+          model: "test/small",
+          call: (abort, onResponseStarted) => () => {
+            signal = abort
+            onResponseStarted?.()
+            Deferred.doneUnsafe(started, Effect.void)
+            return new Promise((resolve) => {
+              complete = resolve
+            })
+          },
+        })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "think" }],
+      })
+      yield* llm.push(reply().reason(longThought("final-thinking")).text("answer").stop())
+      yield* prompt.loop({ sessionID: chat.id })
+      yield* awaitWithTimeout(Deferred.await(started), "organizer stream did not start")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "continue" }],
+      })
+      yield* llm.text("next answer")
+      const next = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* Effect.sleep("80 millis")
+      expect((yield* llm.hits).length).toBe(1)
+      expect(signal?.aborted).toBe(false)
+      complete!({ text: "adopted-final", finishReason: "stop" })
+      yield* Fiber.join(next)
+      const sent = JSON.stringify((yield* llm.hits).at(-1)?.body)
+      expect(sent).toContain("adopted-final")
+      expect(sent).not.toContain("final-thinking")
+      const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+      expect(parts.find((part) => part.type === "reasoning")).toMatchObject({ text: "adopted-final" })
+    }),
+  ),
+)

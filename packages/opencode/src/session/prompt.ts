@@ -306,8 +306,9 @@ export const layer = Layer.effect(
         scheduler.submit({
           sessionID: input.sessionID,
           key: input.part.id,
+          inputCharacters: input.part.text.length,
           enabled: reasoningDistillationEnabled(input.model),
-          run: (canAdopt) =>
+          run: (canAdopt, onResponseStarted) =>
             Effect.gen(function* () {
               // Organize the persisted part: adoption compares against exactly what is stored.
               const part = yield* sessions.getPart({
@@ -332,6 +333,7 @@ export const layer = Layer.effect(
               const cfg = yield* config.get()
               const organizer = yield* llm.organizer({ model: input.model })
               const outcome = yield* runReasoningRewrite({
+                onResponseStarted,
                 budget,
                 sessionID: input.sessionID,
                 slot: { messageID: part.messageID, partID: part.id, text: part.text },
