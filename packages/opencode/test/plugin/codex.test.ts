@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { $ } from "bun"
+import { createOpencodeClient } from "@opencode-ai/sdk"
 import {
   CodexAuthPlugin,
   parseJwtClaims,
@@ -7,6 +9,7 @@ import {
   renderOAuthError,
   type IdTokenClaims,
 } from "../../src/plugin/openai/codex"
+import { TITLE_HEADER } from "../../src/plugin/openai/ws-pool"
 
 function createTestJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")
@@ -245,6 +248,66 @@ describe("plugin.codex", () => {
       { authorization: "Bearer access-new", accountId: "acc-123" },
     ])
   })
+
+  for (const form of ["record", "headers", "tuples", "request", "request override"] as const) {
+    test(`strips title markers after OAuth changes to API auth with ${form}`, async () => {
+      const received: Headers[] = []
+      const bodies: string[] = []
+      using server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          received.push(request.headers)
+          bodies.push(await request.text())
+          return new Response("{}")
+        },
+      })
+      let oauth = true
+      const hooks = await CodexAuthPlugin(
+        {
+          client: createOpencodeClient({ baseUrl: server.url.origin }),
+          project: { id: "title-marker-test", worktree: "", time: { created: 0 } },
+          directory: "",
+          worktree: "",
+          experimental_workspace: { register() {} },
+          serverUrl: server.url,
+          $,
+        },
+        { experimentalWebSockets: false },
+      )
+      const loaded = await hooks.auth!.loader!(
+        async () =>
+          oauth
+            ? { type: "oauth", refresh: "test", access: "test", expires: Date.now() + 60_000 }
+            : { type: "api", key: "test" },
+        { id: "openai", name: "OpenAI", source: "api", env: [], options: {}, models: {} },
+      )
+      oauth = false
+      const headers = { "X-Opencode-Title": "true", "x-ordinary": "preserved", "x-session-affinity": "session-1" }
+      const input = form.startsWith("request")
+        ? new Request(server.url, { method: "POST", headers, body: "{}" })
+        : server.url
+      const init: RequestInit | undefined =
+        form === "request"
+          ? undefined
+          : form === "request override"
+            ? { headers: { "x-ordinary": "overridden", "x-session-affinity": "session-2" } }
+            : {
+                method: "POST",
+                body: "{}",
+                headers:
+                  form === "headers" ? new Headers(headers) : form === "tuples" ? Object.entries(headers) : headers,
+              }
+      const response = await loaded.fetch!(input, init)
+      expect(await response.text()).toBe("{}")
+      expect(received).toHaveLength(1)
+      expect(received[0]?.has(TITLE_HEADER)).toBe(false)
+      expect(received[0]?.get("x-ordinary")).toBe(form === "request override" ? "overridden" : "preserved")
+      expect(received[0]?.get("x-session-affinity")).toBe(form === "request override" ? "session-2" : "session-1")
+      expect(bodies).toEqual(["{}"])
+      await hooks.dispose?.()
+    })
+  }
 })
 
 async function waitFor(predicate: () => boolean) {

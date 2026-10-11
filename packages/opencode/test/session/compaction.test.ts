@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-distillation"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1227,6 +1228,148 @@ describe("session.compaction.process", () => {
       }
     }),
   )
+
+  for (const family of ["gpt-5.2", "claude-sonnet-4.5"]) {
+    for (const enabled of [undefined, false, true]) {
+      for (const suffix of [false, true]) {
+        itCompaction.instance(
+          `successful small-model compaction fits the resumed conversation policy for ${family}, override ${enabled}, suffix ${suffix}`,
+          () => {
+            const stub = llm()
+            const captured: string[] = []
+            const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("qwen-small") }
+            const main = { ...createModel({ context: 8_192, output: 1_000 }), id: ModelV2.ID.make(family) }
+            const provider = ProviderTest.fake({
+              getSmallModel: () => Effect.succeed(small),
+              getModel: () => Effect.succeed(main),
+            })
+            stub.push(reply("complete summary", (input) => captured.push(JSON.stringify(input.messages))))
+            const base: ConfigV1.Info = {
+              reasoningDistillation: { enabled: true },
+              provider: { test: { models: { [family]: { reasoningDistillation: { enabled } } } } },
+              compaction: { tail_turns: 1, preserve_recent_tokens: 300 },
+            }
+            return Effect.gen(function* () {
+              const ssn = yield* SessionNs.Service
+              const instance = yield* TestInstance
+              const session = yield* ssn.create({})
+              yield* createUserMessage(session.id, "earlier context")
+              const tail = yield* createUserMessage(session.id, "recent turn")
+              const assistant = yield* createAssistantMessage(session.id, tail.id, instance.directory)
+              yield* ssn.updatePart({
+                id: PartID.ascending(),
+                messageID: assistant.id,
+                sessionID: session.id,
+                type: "reasoning",
+                text: "short distilled reasoning",
+                time: { start: 1, end: 2 },
+                distillation: {
+                  originalText: `original reasoning ${"x".repeat(60_000)}`,
+                  sourceFingerprint: "tail-source",
+                  version: 2,
+                },
+              })
+              let suffixID: MessageID | undefined
+              if (suffix) {
+                const keep = yield* createAssistantMessage(session.id, tail.id, instance.directory)
+                suffixID = keep.id
+                yield* ssn.updatePart({
+                  id: PartID.ascending(),
+                  messageID: keep.id,
+                  sessionID: session.id,
+                  type: "text",
+                  text: "retained tiny suffix",
+                })
+              }
+              yield* createSummaryCompaction(session.id)
+              const messages = yield* ssn.messages({ sessionID: session.id })
+              const marker = messages.at(-1)!.parts.find((part) => part.type === "compaction")
+              if (!marker || marker.type !== "compaction") throw new Error("Expected compaction marker")
+              yield* ssn.updatePart({ ...marker, tail_start_id: tail.id })
+              marker.tail_start_id = tail.id
+              expect(
+                yield* SessionCompaction.use.process({
+                  parentID: messages.at(-1)!.info.id,
+                  messages,
+                  sessionID: session.id,
+                  auto: false,
+                }),
+              ).toBe("continue")
+              expect(captured).toHaveLength(1)
+              expect(captured[0]).not.toContain("original reasoning")
+              const part = yield* readCompactionPart(session.id)
+              expect(part?.tail_start_id).toBe(enabled ? tail.id : suffixID)
+              const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+              expect(retained.some((message) => message.info.id === tail.id)).toBe(enabled === true)
+              if (suffixID) expect(retained.some((message) => message.info.id === suffixID)).toBe(true)
+              const wire = yield* MessageV2.toModelMessagesEffect(retained, main, {
+                stripMedia: true,
+                reasoningDistillationEnabled: ConfigReasoningDistillation.resolveEnabled({
+                  disabledByEnvironment: false,
+                  enabled: true,
+                  modelEnabled: enabled,
+                  modelID: main.id,
+                }).enabled,
+              })
+              expect(JSON.stringify(wire)).not.toContain("original reasoning")
+              expect(Token.estimate(JSON.stringify(wire))).toBeLessThanOrEqual(300)
+              expect(
+                yield* SessionCompaction.use.isOverflow({
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                  model: main,
+                  estimatedInputTokens: Token.estimate(JSON.stringify(wire)),
+                  threshold: "model",
+                }),
+              ).toBe(false)
+            }).pipe(
+              withCompaction({
+                llm: stub.layer,
+                provider,
+                config: TestConfig.layer({ get: () => Effect.succeed(base) }),
+              }),
+            )
+          },
+          { git: true },
+        )
+      }
+    }
+  }
+
+  for (const narrow of ["conversation", "summarizer"]) {
+    itCompaction.instance(
+      `successful small-model compaction uses the smaller default budget for the resumed conversation, narrow ${narrow}`,
+      () => {
+        const stub = llm()
+        const small = createModel({ context: narrow === "summarizer" ? 8_192 : 100_000, output: 1_000 })
+        const main = createModel({ context: narrow === "conversation" ? 8_192 : 100_000, output: 1_000 })
+        const provider = ProviderTest.fake({
+          getSmallModel: () => Effect.succeed({ ...small, id: ModelV2.ID.make("small") }),
+          getModel: () => Effect.succeed(main),
+        })
+        stub.push(reply("complete summary"))
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          yield* createUserMessage(session.id, "earlier context")
+          const tail = yield* createUserMessage(session.id, "x".repeat(20_000))
+          yield* createSummaryCompaction(session.id)
+          const messages = yield* ssn.messages({ sessionID: session.id })
+          expect(
+            yield* SessionCompaction.use.process({
+              parentID: messages.at(-1)!.info.id,
+              messages,
+              sessionID: session.id,
+              auto: false,
+            }),
+          ).toBe("continue")
+          expect((yield* readCompactionPart(session.id))?.tail_start_id).toBeUndefined()
+          const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+          expect(retained.some((message) => message.info.id === tail.id)).toBe(false)
+        }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ tail_turns: 1 }) }))
+      },
+      { git: true },
+    )
+  }
 
   for (const family of ["gpt-5.2", "claude-sonnet-4.5"]) {
     for (const enabled of [undefined, true]) {
