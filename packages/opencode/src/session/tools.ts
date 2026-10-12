@@ -921,6 +921,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   }
 
   registrationGeneration = yield* sourceLedger.activate(
+    input.session.id,
     activeRegistrations,
     materializationSignature(input.model, tools),
   )
