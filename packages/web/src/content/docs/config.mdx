@@ -368,7 +368,7 @@ You can configure the providers and models you want to use in your OpenCode conf
 
 The `small_model` option configures a separate model for lightweight tasks like title generation. By default, OpenCode tries to use a cheaper model if one is available from your provider, otherwise it falls back to your main model.
 
-Provider options can include `timeout`, `chunkTimeout`, and `setCacheKey`:
+Provider options can include `timeout`, `headerTimeout`, `chunkTimeout`, and `setCacheKey`:
 
 ```json title="opencode.json"
 {
@@ -377,6 +377,7 @@ Provider options can include `timeout`, `chunkTimeout`, and `setCacheKey`:
     "anthropic": {
       "options": {
         "timeout": 600000,
+        "headerTimeout": 15000,
         "chunkTimeout": 30000,
         "setCacheKey": true
       }
@@ -386,8 +387,28 @@ Provider options can include `timeout`, `chunkTimeout`, and `setCacheKey`:
 ```
 
 - `timeout` - Request timeout in milliseconds (default: 300000). Set to `false` to disable.
+- `headerTimeout` - Timeout in milliseconds to wait for response headers. Provider integrations may set a default; the built-in `openai` provider uses 10000. Set to `false` to disable.
 - `chunkTimeout` - Timeout in milliseconds between streamed response chunks. If no chunk arrives in time, the request is aborted.
 - `setCacheKey` - Ensure a cache key is always set for designated provider.
+
+Providers using `@ai-sdk/openai` can also set `experimentalWebSockets` to send streamed Responses requests over a WebSocket, with HTTP/SSE fallback:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "my-openai-proxy": {
+      "npm": "@ai-sdk/openai",
+      "options": {
+        "baseURL": "https://proxy.example.com/v1",
+        "experimentalWebSockets": true
+      }
+    }
+  }
+}
+```
+
+- `experimentalWebSockets` - Use WebSockets for streamed Responses requests. Custom providers default to HTTP. The built-in `openai` provider enables it by default on `local`, `dev`, and `beta` builds; on `latest` and `prod`, set this option or `OPENCODE_EXPERIMENTAL_WEBSOCKETS=true`. An explicit `true` or `false` overrides those defaults. Chat Completions requests always use HTTP, and a provider whose plugin supplies its own `fetch` stays on HTTP.
 
 You can also configure [local models](/docs/models#local). [Learn more](/docs/models).
 

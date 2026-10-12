@@ -253,6 +253,15 @@
         }
       }
     },
+    "ConfigV2.Model.ReasoningDistillation": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "ProviderConfig": {
       "type": "object",
       "properties": {
@@ -294,6 +303,10 @@
             },
             "baseURL": {
               "type": "string"
+            },
+            "experimentalWebSockets": {
+              "type": "boolean",
+              "description": "Use the existing AI SDK WebSocket transport for streamed OpenAI Responses requests, with its HTTP/SSE fallback. Custom providers default to HTTP."
             },
             "enterpriseUrl": {
               "type": "string",
@@ -506,6 +519,9 @@
                   "active"
                 ]
               },
+              "reasoningDistillation": {
+                "$ref": "#/$defs/ConfigV2.Model.ReasoningDistillation"
+              },
               "provider": {
                 "type": "object",
                 "properties": {
@@ -584,6 +600,15 @@
           "type": "integer",
           "maximum": 9007199254740991,
           "description": "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "legacy",
+            "modern"
+          ],
+          "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
         }
       },
       "required": [
@@ -664,6 +689,15 @@
           "type": "integer",
           "maximum": 9007199254740991,
           "description": "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "legacy",
+            "modern"
+          ],
+          "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
         }
       },
       "required": [
@@ -717,6 +751,68 @@
       },
       "additionalProperties": false
     },
+    "ConfigV2.ReasoningDistillationCompatibility": {
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "providerModelVariant": {
+          "type": "string"
+        },
+        "endpointIdentity": {
+          "type": "string"
+        },
+        "adapterVersion": {
+          "type": "string"
+        },
+        "optionsFingerprint": {
+          "type": "string"
+        },
+        "transportVerified": {
+          "type": "boolean"
+        },
+        "upstreamVerified": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "runtime",
+        "protocol",
+        "providerModelVariant",
+        "endpointIdentity",
+        "adapterVersion",
+        "optionsFingerprint",
+        "transportVerified",
+        "upstreamVerified"
+      ],
+      "additionalProperties": false
+    },
+    "ConfigV2.ReasoningDistillation": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "language": {
+          "type": "string",
+          "enum": [
+            "zh",
+            "en"
+          ]
+        },
+        "compatibility": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfigV2.ReasoningDistillationCompatibility"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Policy.Effect": {
       "type": "string",
       "enum": [
@@ -761,6 +857,19 @@
         "$schema": {
           "type": "string",
           "description": "JSON schema reference for configuration validation"
+        },
+        "maxToolCalls": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            },
+            {
+              "maximum": 9007199254740991,
+              "description": "Maximum tool execution attempts per input-driven model run; 0 means unlimited (default); each parallel tool call counts separately"
+            }
+          ],
+          "maximum": 9007199254740991
         },
         "shell": {
           "type": "string",
@@ -954,6 +1063,12 @@
         "default_agent": {
           "type": "string",
           "description": "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid."
+        },
+        "question_timeout": {
+          "exclusiveMinimum": 0,
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "description": "Seconds to wait for a question response before the agent continues independently (default: 60)"
         },
         "username": {
           "type": "string",
@@ -1202,9 +1317,13 @@
               "type": "boolean",
               "description": "Enable automatic compaction when context is full (default: true)"
             },
+            "dynamic": {
+              "type": "boolean",
+              "description": "Fold strictly duplicate older tool outputs only in prepared model requests (default: true). Stored history is unchanged; this is independent from automatic or manual full compaction."
+            },
             "prune": {
               "type": "boolean",
-              "description": "Enable pruning of old tool outputs (default: false)"
+              "description": "@deprecated Compatibility alias for 'dynamic'. Used only when 'dynamic' is omitted; it no longer marks or clears stored tool output."
             },
             "tail_turns": {
               "minimum": 0,
@@ -1223,9 +1342,18 @@
               "type": "integer",
               "maximum": 9007199254740991,
               "description": "Token buffer for compaction. Leaves enough window to avoid overflow during compaction."
+            },
+            "max_context_tokens": {
+              "exclusiveMinimum": 0,
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "description": "Trigger automatic full compaction once the previous response reaches this token count (default: 250000), even when the model has a larger context window. The model's smaller usable limit still takes precedence."
             }
           },
           "additionalProperties": false
+        },
+        "reasoningDistillation": {
+          "$ref": "#/$defs/ConfigV2.ReasoningDistillation"
         },
         "experimental": {
           "type": "object",
