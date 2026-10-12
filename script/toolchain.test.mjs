@@ -149,6 +149,8 @@ void test("CI installs the central Node pin before evidence or repository script
     const jobs = workflow.split(/\n    steps:\n/).slice(1)
     assert.ok(jobs.length > 0)
     for (const job of jobs) {
+      // Jobs without a checkout (the unit aggregate) run no repository scripts.
+      if (!job.includes("uses: actions/checkout@")) continue
       const steps = job.split(/\n      - name: /).slice(1)
       const node = steps.findIndex((step) => step.includes("uses: ./.github/actions/setup-node"))
       const evidence = steps.findIndex((step) => step.includes("uses: ./.github/actions/verified-content"))

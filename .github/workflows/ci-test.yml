@@ -3,14 +3,17 @@
 # ----------------------------------------------------------------------------
 # Purpose : Run unit + Playwright e2e tests across Linux & Windows
 # Trigger : Push to `main`, PRs targeting `main`, manual dispatch
-# Jobs    : unit  — `bun turbo test` + config_assistant Go tests on linux
-#                    only (windows dropped — see
-#                    unit-tests matrix comment; free windows-latest runners
-#                    can't fit the suite in a reasonable CI budget)
-#           e2e   — Playwright chromium on linux + windows (matrix)
+# Jobs    : unit-workspace — workspace tests except opencode, Go, VS Code,
+#                            and generated-code checks (linux)
+#           unit-opencode  — opencode tests in 4 parallel shards (linux)
+#           unit-httpapi   — HttpAPI exerciser gates (linux)
+#           unit-tests     — "Unit Tests (linux)" aggregate required check
+#           e2e            — Playwright chromium on linux + windows (matrix)
 # Gate    : The full unit, HttpAPI, generated-code and Linux/Windows E2E
 #           suite runs on every PR targeting `main` before merge, and on
 #           every push to `main`. Required status checks retain their names.
+#           A push whose tree equals a verified merged PR head reuses that
+#           PR's per-job results instead of rerunning them.
 # Notes   : `cancel-in-progress: false` — every main push gets a full run
 #           No trigger on feat/* or fix/* (frequent changes).
 # Runners : All events use GitHub-hosted Ubuntu and Windows runners.
@@ -43,21 +46,14 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
-  unit-tests:
-    name: Unit Tests (${{ matrix.settings.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - name: linux
-            host: ubuntu-latest
-          # windows dropped: this fork runs on free windows-latest runners
-          # (not the paid Blacksmith 4vCPU hosts upstream uses), and the
-          # opencode:test suite (3048 tests, many spawning real CLI
-          # subprocesses) doesn't fit the standard runner's slower
-          # process-spawn/IO within a reasonable CI budget. E2E Tests
-          # (windows) is unaffected and still covers the platform.
-    runs-on: ${{ matrix.settings.host }}
+  # The Linux unit gate runs as parallel jobs. "Unit Tests (linux)" below is
+  # the required status check; it succeeds only when every split job does.
+  # Windows unit tests stay dropped: free windows-latest runners can't fit the
+  # opencode suite (many tests spawn real CLI subprocesses) in a reasonable
+  # budget, and E2E Tests (windows) still covers the platform.
+  unit-workspace:
+    name: Unit Tests (workspace)
+    runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
@@ -77,12 +73,12 @@ jobs:
         id: evidence
         uses: ./.github/actions/verified-content
         with:
-          check: unit
-          job-name: Unit Tests (${{ matrix.settings.name }})
-          runner-label: ${{ matrix.settings.host }}
+          check: unit-workspace
+          job-name: Unit Tests (workspace)
+          runner-label: ubuntu-latest
 
       - name: Setup Go
-        if: steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')
+        if: steps.evidence.outputs.reused != 'true'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: config_assistant/go.mod
@@ -98,7 +94,7 @@ jobs:
           save-cache: false
 
       - name: Verify Go toolchain
-        if: steps.evidence.outputs.reused != 'true' && runner.os == 'Linux'
+        if: steps.evidence.outputs.reused != 'true'
         run: node script/toolchain.mjs check --go
 
       - name: Configure Git Identity
@@ -107,58 +103,38 @@ jobs:
           git config --global user.email "bot@opencode.ai"
           git config --global user.name "opencode"
 
-      - name: Ensure ripgrep prerequisite
+      - name: Setup ripgrep
         if: steps.evidence.outputs.reused != 'true'
-        # tool.glob tests hit ripgrep; without the system binary, binary.ts
-        # downloads rg from GitHub releases every run (temp XDG per preload),
-        # gambling on network stability — ECONNRESET fails the test.
-        run: |
-          if command -v rg >/dev/null 2>&1; then
-            exit 0
-          fi
-          sudo apt-get update && sudo apt-get install -y ripgrep
+        uses: ./.github/actions/setup-ripgrep
 
       - name: Cache Turbo
         if: steps.evidence.outputs.reused != 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: node_modules/.cache/turbo
+          # Turbo 2 writes its local cache to .turbo/cache at the repository root.
+          path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('turbo.json', '**/package.json') }}-${{ github.sha }}
           restore-keys: |
             turbo-${{ runner.os }}-${{ hashFiles('turbo.json', '**/package.json') }}-
             turbo-${{ runner.os }}-
 
-      - name: Run context-folding lifecycle preflight
-        if: steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')
-        working-directory: packages/opencode
-        timeout-minutes: 3
-        run: |
-          bun test --timeout 30000 --only-failures test/session/prompt.test.ts \
-            --test-name-pattern '^(runs builtin read/grep/glob settlement through stored history into the next (AI SDK|Native) request|automatically compacts (AI SDK|Native) folded history at the token threshold|recovers (AI SDK|Native) overflow through an unprojected summary and a continued turn|terminates (AI SDK|Native) overflow when the full compaction request is also rejected)$'
-
-      - name: Run unit tests
+      - name: Run workspace unit tests
         if: steps.evidence.outputs.reused != 'true'
-        # opencode:test alone (244 files / 3048 tests, many spawning real CLI
-        # subprocesses via cliIt) measured at 803s / 13m24s locally, and this
-        # job has been seen at 16-17m in CI. turbo buffers a concurrent
-        # task's output until it completes, so the step is silent the whole
-        # time it runs — that silence can look like a hang but isn't one.
-        # 20m was never sized against real data; give it margin above the
-        # measured baseline instead of racing it.
-        # Hosted runners execute workspace tasks one at a time. This avoids
-        # CPU contention between builds and tests timing out 250ms Node workers.
-        timeout-minutes: 35
-        run: GITHUB_ACTIONS=false bun turbo test --concurrency=1
+        # opencode:test runs in the sharded job below. Hosted runners execute
+        # workspace tasks one at a time to avoid CPU contention between builds
+        # and tests timing out 250ms Node workers.
+        timeout-minutes: 20
+        run: GITHUB_ACTIONS=false bun turbo test --concurrency=1 --filter='!opencode'
         env:
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
 
       - name: Run config assistant tests
-        if: steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')
+        if: steps.evidence.outputs.reused != 'true'
         working-directory: config_assistant
         run: go test ./...
 
       - name: Run VS Code connection tests
-        if: steps.evidence.outputs.reused != 'true' && runner.os == 'Linux'
+        if: steps.evidence.outputs.reused != 'true'
         working-directory: sdks/vscode
         timeout-minutes: 5
         run: |
@@ -166,17 +142,151 @@ jobs:
           bun run test:unit
 
       - name: Check generated client
-        if: steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')
+        if: steps.evidence.outputs.reused != 'true'
         working-directory: packages/client
         run: bun run check:generated
 
       - name: Check generated SDK
-        if: steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')
+        if: steps.evidence.outputs.reused != 'true'
         working-directory: packages/sdk/js
         run: bun run check:generated
 
+      - name: Record successful verification
+        if: success() && steps.evidence.outputs.reused != 'true'
+        uses: ./.github/actions/record-verification
+        with:
+          check: unit-workspace
+          key: ${{ steps.evidence.outputs.key }}
+          path: ${{ steps.evidence.outputs.path }}
+          job-name: Unit Tests (workspace)
+
+  unit-opencode:
+    name: Unit Tests (opencode ${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup GitHub CLI
+        uses: ./.github/actions/setup-gh
+
+      - name: Check previously verified content
+        id: evidence
+        uses: ./.github/actions/verified-content
+        with:
+          check: unit-opencode-${{ matrix.shard }}
+          job-name: Unit Tests (opencode ${{ matrix.shard }}/4)
+          runner-label: ubuntu-latest
+
+      - name: Setup Bun
+        if: steps.evidence.outputs.reused != 'true'
+        uses: ./.github/actions/setup-bun
+        with:
+          save-cache: false
+
+      - name: Configure Git Identity
+        if: steps.evidence.outputs.reused != 'true'
+        run: |
+          git config --global user.email "bot@opencode.ai"
+          git config --global user.name "opencode"
+
+      - name: Setup ripgrep
+        if: steps.evidence.outputs.reused != 'true'
+        uses: ./.github/actions/setup-ripgrep
+
+      - name: Build opencode test dependencies
+        if: steps.evidence.outputs.reused != 'true'
+        # Mirrors opencode#test's ^build dependency in turbo.json.
+        run: GITHUB_ACTIONS=false bun turbo run build --filter='opencode^...'
+
+      - name: Run context-folding lifecycle preflight
+        if: steps.evidence.outputs.reused != 'true' && matrix.shard == 1
+        working-directory: packages/opencode
+        timeout-minutes: 3
+        run: |
+          bun test --timeout 30000 --only-failures test/session/prompt.test.ts \
+            --test-name-pattern '^(runs builtin read/grep/glob settlement through stored history into the next (AI SDK|Native) request|automatically compacts (AI SDK|Native) folded history at the token threshold|recovers (AI SDK|Native) overflow through an unprojected summary and a continued turn|terminates (AI SDK|Native) overflow when the full compaction request is also rejected)$'
+
+      - name: Run opencode unit test shard
+        if: steps.evidence.outputs.reused != 'true'
+        working-directory: packages/opencode
+        # --shard splits the suite's files into disjoint subsets; --timings
+        # balances them by the recorded per-file durations. Refresh
+        # test/ci-timings.json with --update-timings when shards drift apart.
+        timeout-minutes: 20
+        run: GITHUB_ACTIONS=false bun test --timeout 30000 --only-failures --shard=${{ matrix.shard }}/4 --timings=test/ci-timings.json
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+
+      - name: Record successful verification
+        if: success() && steps.evidence.outputs.reused != 'true'
+        uses: ./.github/actions/record-verification
+        with:
+          check: unit-opencode-${{ matrix.shard }}
+          key: ${{ steps.evidence.outputs.key }}
+          path: ${{ steps.evidence.outputs.path }}
+          job-name: Unit Tests (opencode ${{ matrix.shard }}/4)
+
+  unit-httpapi:
+    name: Unit Tests (HttpAPI)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup GitHub CLI
+        uses: ./.github/actions/setup-gh
+
+      - name: Check previously verified content
+        id: evidence
+        uses: ./.github/actions/verified-content
+        with:
+          check: unit-httpapi
+          job-name: Unit Tests (HttpAPI)
+          runner-label: ubuntu-latest
+
+      - name: Setup Bun
+        if: steps.evidence.outputs.reused != 'true'
+        uses: ./.github/actions/setup-bun
+        with:
+          save-cache: false
+
+      - name: Configure Git Identity
+        if: steps.evidence.outputs.reused != 'true'
+        run: |
+          git config --global user.email "bot@opencode.ai"
+          git config --global user.name "opencode"
+
+      - name: Setup ripgrep
+        if: steps.evidence.outputs.reused != 'true'
+        uses: ./.github/actions/setup-ripgrep
+
+      - name: Build opencode test dependencies
+        if: steps.evidence.outputs.reused != 'true'
+        run: GITHUB_ACTIONS=false bun turbo run build --filter='opencode^...'
+
       - name: Run HttpAPI Exerciser Gates
-        if: steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')
+        if: steps.evidence.outputs.reused != 'true'
         working-directory: packages/opencode
         # The exerciser aggregates its report and prints it in one flush, so
         # this step is silent while it runs. A latent uninterruptible hang
@@ -198,9 +308,36 @@ jobs:
         if: success() && steps.evidence.outputs.reused != 'true'
         uses: ./.github/actions/record-verification
         with:
+          check: unit-httpapi
           key: ${{ steps.evidence.outputs.key }}
           path: ${{ steps.evidence.outputs.path }}
-          job-name: Unit Tests (${{ matrix.settings.name }})
+          job-name: Unit Tests (HttpAPI)
+
+  unit-tests:
+    name: Unit Tests (linux)
+    # Aggregate required check: no checkout, no repository code, no token.
+    needs: [unit-workspace, unit-opencode, unit-httpapi]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every unit gate
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          count=0
+          for result in $RESULTS; do
+            count=$((count + 1))
+            if [ "$result" != "success" ]; then
+              echo "::error::A unit gate finished with result: $result"
+              exit 1
+            fi
+          done
+          if [ "$count" -ne 3 ]; then
+            echo "::error::Expected 3 unit gate results, found $count"
+            exit 1
+          fi
+          echo "All unit gates passed."
 
   e2e-tests:
     name: E2E Tests (${{ matrix.settings.name }})
@@ -308,6 +445,7 @@ jobs:
         if: success() && steps.evidence.outputs.reused != 'true'
         uses: ./.github/actions/record-verification
         with:
+          check: e2e
           key: ${{ steps.evidence.outputs.key }}
           path: ${{ steps.evidence.outputs.path }}
           job-name: E2E Tests (${{ matrix.settings.name }})

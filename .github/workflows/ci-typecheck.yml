@@ -87,6 +87,7 @@ jobs:
         if: success() && steps.evidence.outputs.reused != 'true'
         uses: ./.github/actions/record-verification
         with:
+          check: typecheck
           key: ${{ steps.evidence.outputs.key }}
           path: ${{ steps.evidence.outputs.path }}
           job-name: Typecheck

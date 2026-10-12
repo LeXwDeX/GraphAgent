@@ -17,12 +17,17 @@ const namedSteps = (source, name) => {
   return steps
 }
 
+// The aggregate "Unit Tests (linux)" job only reads its needs' results; it has
+// no checkout or evidence of its own.
+const aggregate = (file) => file.slice(file.indexOf("\n  unit-tests:"), file.indexOf("\n  e2e-tests:"))
+
 await test("active CI routes use GitHub-hosted runners and evidence labels", () => {
   for (const file of ["ci-typecheck.yml", "ci-test.yml"]) {
     const lines = workflow(file).split("\n")
     const routes = lines.filter((line) => line.trimStart().startsWith("runs-on:"))
     const labels = lines.filter((line) => line.trimStart().startsWith("runner-label:"))
-    assert.equal(labels.length, routes.length, `${file}: one evidence label per route`)
+    const aggregates = file === "ci-test.yml" ? 1 : 0
+    assert.equal(labels.length, routes.length - aggregates, `${file}: one evidence label per verifying route`)
     assert(!lines.some((line) => line.includes("self-hosted")), `${file}: self-hosted route remains`)
     assert(!lines.some((line) => line.includes("TRUSTED")), `${file}: trusted-event routing remains`)
   }
@@ -41,7 +46,7 @@ await test("the test matrix keeps names and OS keys while routing to its hosted 
     "runner-label: \${{ matrix.settings.host }}",
     "host: ubuntu-latest",
     "host: windows-latest",
-    "name: Unit Tests (${{ matrix.settings.name }})",
+    "name: Unit Tests (linux)",
     "name: E2E Tests (${{ matrix.settings.name }})",
   ])
     assert(file.includes(line), line)
@@ -58,15 +63,28 @@ await test("every main PR runs the full Linux unit and Linux/Windows E2E gates",
   }
 
   const file = workflow("ci-test.yml")
-  const unit = file.slice(file.indexOf("\n  unit-tests:"), file.indexOf("\n  e2e-tests:"))
+  const unit = file.slice(file.indexOf("\n  unit-workspace:"), file.indexOf("\n  e2e-tests:"))
   const e2e = file.slice(file.indexOf("\n  e2e-tests:"))
-  assert(unit.includes("name: Unit Tests (${{ matrix.settings.name }})"), "Linux unit status check")
   for (const step of [
-    "GITHUB_ACTIONS=false bun turbo test --concurrency=1",
+    "GITHUB_ACTIONS=false bun turbo test --concurrency=1 --filter='!opencode'",
     "go test ./...",
+    "shard: [1, 2, 3, 4]",
+    "--shard=${{ matrix.shard }}/4 --timings=test/ci-timings.json",
     "bun run test:httpapi:ci",
   ])
     assert(unit.includes(step), `unit gate: ${step}`)
+  for (const job of ["unit-workspace", "unit-opencode", "unit-httpapi"]) {
+    const header = file.slice(file.indexOf(`\n  ${job}:`)).split("\n    steps:")[0]
+    assert(!/^    if:/m.test(header), `${job} must run on every triggered event`)
+  }
+
+  const required = aggregate(file)
+  assert(required.includes("name: Unit Tests (linux)"), "Linux unit status check")
+  assert(required.includes("needs: [unit-workspace, unit-opencode, unit-httpapi]"), "aggregate covers every unit gate")
+  assert(required.includes("if: always()"), "aggregate reports failed or cancelled gates")
+  assert(required.includes('if [ "$result" != "success" ]; then'), "aggregate requires success")
+  assert(required.includes('if [ "$count" -ne 3 ]; then'), "aggregate requires every result")
+  assert(!required.includes("actions/checkout"), "aggregate must not check out repository code")
   assert(!/^    if:/m.test(e2e.slice(0, e2e.indexOf("    strategy:"))), "E2E job must run on every triggered PR")
   for (const name of ["linux", "windows"]) assert(e2e.includes(`- name: ${name}\n`), `${name} E2E matrix entry`)
   assert(e2e.includes("run: bun --cwd packages/app test:e2e:local"), "Playwright E2E gate")
@@ -74,8 +92,10 @@ await test("every main PR runs the full Linux unit and Linux/Windows E2E gates",
 
 await test("hosted Linux jobs install missing prerequisites and Playwright dependencies", () => {
   const file = workflow("ci-test.yml")
-  assert(file.includes("if command -v rg >/dev/null 2>&1; then"), "ripgrep prerequisite check")
-  assert(file.includes("sudo apt-get update && sudo apt-get install -y ripgrep"), "hosted ripgrep install")
+  const ripgrep = repositoryFile(".github/actions/setup-ripgrep/action.yml")
+  assert(ripgrep.includes("if command -v rg >/dev/null 2>&1; then"), "ripgrep prerequisite check")
+  assert(ripgrep.includes("sudo apt-get update && sudo apt-get install -y ripgrep"), "hosted ripgrep install")
+  assert.equal(file.split("uses: ./.github/actions/setup-ripgrep").length - 1, 3, "every Linux unit gate has ripgrep")
   assert(!file.includes("RUNNER_ENVIRONMENT"), "self-hosted prerequisite branch remains")
   assert(
     file.includes("steps.evidence.outputs.reused != 'true' && (runner.os == 'Linux')"),
@@ -207,8 +227,8 @@ await test("jobs that check out repository content bootstrap gh before evidence 
   const evidenceSteps = [...tests.matchAll(/uses: \.\/\.github\/actions\/verified-content/g)].map(
     (match) => match.index,
   )
-  assert.equal(testBootstraps.length, 2, "unit/e2e bootstrap count")
-  assert.equal(evidenceSteps.length, 2, "unit/e2e evidence count")
+  assert.equal(testBootstraps.length, 4, "unit/e2e bootstrap count")
+  assert.equal(evidenceSteps.length, 4, "unit/e2e evidence count")
   for (let index = 0; index < testBootstraps.length; index++)
     assert(testBootstraps[index] < evidenceSteps[index], `test job ${index + 1} bootstraps gh after evidence`)
 })

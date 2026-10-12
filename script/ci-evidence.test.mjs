@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { verifyEvidence } from "./ci-evidence.mjs"
+import { locateMergedPullRequest, verifyEvidence } from "./ci-evidence.mjs"
 
 const head = "a".repeat(40)
 const base = "b".repeat(40)
@@ -166,4 +166,82 @@ test("expired or unexpectedly large artifacts fall back to full verification", (
   e.artifact.expired = false
   e.artifact.size_in_bytes = 10001
   assert.equal(verifyEvidence(e.locator, e.expected, e.source), false)
+})
+
+const merge = "c".repeat(40)
+function merged() {
+  const expected = evidence().expected
+  const runs = [{ id: 40, run_attempt: 1, head_sha: head, event: "pull_request", path: expected.workflow }]
+  const jobs = { "40:1": [{ name: expected.job, status: "completed", conclusion: "success" }] }
+  const artifacts = { 40: [{ id: 41, name: `${expected.artifactPrefix}-1`, expired: false }] }
+  const source = {
+    commit: (sha) => {
+      assert.equal(sha, merge)
+      return { parents: [{ sha: base }, { sha: head }] }
+    },
+    runs: (sha) => {
+      assert.equal(sha, head)
+      return runs
+    },
+    jobs: (run, attempt) => jobs[`${run}:${attempt}`] ?? [],
+    artifacts: (run) => artifacts[run] ?? [],
+  }
+  return { expected, runs, jobs, artifacts, source }
+}
+
+void test("a merge commit locates its merged PR head's successful run", () => {
+  const m = merged()
+  assert.deepEqual(locateMergedPullRequest(merge, m.expected, m.source), {
+    run: 40,
+    attempt: 1,
+    job: m.expected.job,
+    artifact: 41,
+  })
+})
+
+void test("a non-merge commit has no merged pull request evidence", () => {
+  const m = merged()
+  m.source.commit = () => ({ parents: [{ sha: base }] })
+  assert.equal(locateMergedPullRequest(merge, m.expected, m.source), undefined)
+})
+
+void test("runs from other events, workflows, or heads are skipped", () => {
+  for (const change of [{ event: "push" }, { path: ".github/workflows/other.yml" }, { head_sha: base }]) {
+    const m = merged()
+    Object.assign(m.runs[0], change)
+    assert.equal(locateMergedPullRequest(merge, m.expected, m.source), undefined, JSON.stringify(change))
+  }
+})
+
+for (const conclusion of ["failure", "cancelled", "skipped"]) {
+  void test(`a ${conclusion} PR job is not proposed as evidence`, () => {
+    const m = merged()
+    m.jobs["40:1"][0].conclusion = conclusion
+    assert.equal(locateMergedPullRequest(merge, m.expected, m.source), undefined)
+  })
+}
+
+void test("a missing, expired, or ambiguous proof artifact is not proposed", () => {
+  const m = merged()
+  m.artifacts[40] = []
+  assert.equal(locateMergedPullRequest(merge, m.expected, m.source), undefined)
+  m.artifacts[40] = [{ id: 41, name: `${m.expected.artifactPrefix}-1`, expired: true }]
+  assert.equal(locateMergedPullRequest(merge, m.expected, m.source), undefined)
+  m.artifacts[40] = [
+    { id: 41, name: `${m.expected.artifactPrefix}-1`, expired: false },
+    { id: 42, name: `${m.expected.artifactPrefix}-1`, expired: false },
+  ]
+  assert.equal(locateMergedPullRequest(merge, m.expected, m.source), undefined)
+})
+
+void test("an earlier successful attempt is used when a rerun attempt lacks the job", () => {
+  const m = merged()
+  m.runs[0].run_attempt = 2
+  m.artifacts[40] = [{ id: 43, name: `${m.expected.artifactPrefix}-1`, expired: false }]
+  assert.deepEqual(locateMergedPullRequest(merge, m.expected, m.source), {
+    run: 40,
+    attempt: 1,
+    job: m.expected.job,
+    artifact: 43,
+  })
 })
