@@ -36,12 +36,11 @@ test("opens the comment editor for a line number range", async ({ page }) => {
   await expectAppVisible(start)
   await expectAppVisible(end)
 
-  const from = await start.boundingBox()
-  const to = await end.boundingBox()
-  if (!from || !to) throw new Error("Missing line number bounds")
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+  // hover() re-resolves the cells and waits for them to be stable, so a diff
+  // re-render between the visibility check and the drag cannot drop the geometry.
+  await start.hover()
   await page.mouse.down()
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
+  await end.hover()
   await page.mouse.up()
 
   await expect(review.getByRole("textbox")).toBeVisible()
