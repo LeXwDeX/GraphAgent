@@ -1068,6 +1068,7 @@
     "tree-sitter-bash",
   ],
   "patchedDependencies": {
+    "@ai-sdk/anthropic@3.0.125": "patches/@ai-sdk%2Fanthropic@3.0.125.patch",
     "@tanstack/solid-virtual@3.13.28": "patches/@tanstack%2Fsolid-virtual@3.13.28.patch",
     "@ff-labs/fff-bun@0.9.6": "patches/@ff-labs%2Ffff-bun@0.9.6.patch",
     "@pierre/trees@1.0.0-beta.4": "patches/@pierre%2Ftrees@1.0.0-beta.4.patch",
