@@ -19,7 +19,8 @@ test("config_assistant embeds the current generated config schema", async () => 
     })
     expect(result.stderr.toString()).toBe("")
     expect(result.exitCode).toBe(0)
-    expect(await Bun.file(embedded).text()).toBe(await Bun.file(generated).text())
+    // Compare parsed JSON so CRLF checkouts (core.autocrlf) still match the LF generator output.
+    expect(await Bun.file(embedded).json()).toEqual(await Bun.file(generated).json())
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
