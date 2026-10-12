@@ -114,7 +114,7 @@ const conversation = (options?: { truncated?: boolean; providerExecuted?: boolea
 
 const registerPair = (ledger: Ledger, sourceKind: "host-builtin" | "custom" | "mcp" | "provider" = "host-builtin") =>
   Effect.gen(function* () {
-    const generation = yield* ledger.activate([{ sourceKind, registrationID: `${sourceKind}:read` }])
+    const generation = yield* ledger.activate(sessionID, [{ sourceKind, registrationID: `${sourceKind}:read` }])
     yield* ledger.record(identity({ messageID: "msg_source", callID: "call_source", sourceKind, generation }))
     yield* ledger.record(identity({ messageID: "msg_witness", callID: "call_witness", sourceKind, generation }))
     return generation
@@ -126,10 +126,10 @@ describe("session tool-source ledger", () => {
       const ledger = yield* ToolSourceLedger.Service
       const builtin = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
       const custom = [{ sourceKind: "custom" as const, registrationID: "custom:read" }]
-      const firstBuiltin = yield* ledger.activate(builtin)
+      const firstBuiltin = yield* ledger.activate(sessionID, builtin)
       yield* ledger.record(identity({ messageID: "msg_existing", callID: "call_existing", generation: firstBuiltin }))
 
-      const repeatedBuiltin = yield* ledger.activate(builtin)
+      const repeatedBuiltin = yield* ledger.activate(sessionID, builtin)
       expect(repeatedBuiltin).toBe(firstBuiltin)
       expect(
         yield* ledger.lookup({
@@ -140,8 +140,8 @@ describe("session tool-source ledger", () => {
         }),
       ).toBeDefined()
 
-      const customGeneration = yield* ledger.activate(custom)
-      const returnedBuiltin = yield* ledger.activate(builtin)
+      const customGeneration = yield* ledger.activate(sessionID, custom)
+      const returnedBuiltin = yield* ledger.activate(sessionID, builtin)
       expect(returnedBuiltin).not.toBe(firstBuiltin)
       expect(returnedBuiltin).not.toBe(customGeneration)
 
@@ -172,9 +172,9 @@ describe("session tool-source ledger", () => {
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service
       const registrations = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
-      const firstModel = yield* ledger.activate(registrations, "provider:model-a:schema-a")
-      const secondModel = yield* ledger.activate(registrations, "provider:model-b:schema-b")
-      const returnedModel = yield* ledger.activate(registrations, "provider:model-a:schema-a")
+      const firstModel = yield* ledger.activate(sessionID, registrations, "provider:model-a:schema-a")
+      const secondModel = yield* ledger.activate(sessionID, registrations, "provider:model-b:schema-b")
+      const returnedModel = yield* ledger.activate(sessionID, registrations, "provider:model-a:schema-a")
 
       expect(returnedModel).not.toBe(firstModel)
       expect(returnedModel).not.toBe(secondModel)
@@ -210,7 +210,7 @@ describe("session tool-source ledger", () => {
   it.instance("isolates session records and invalidates old registration generations", () =>
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service
-      const first = yield* ledger.activate([{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
+      const first = yield* ledger.activate(sessionID, [{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
       yield* ledger.record(identity({ messageID: "msg_source", callID: "call_source", generation: first }))
       expect(
         yield* ledger.lookup({
@@ -229,7 +229,7 @@ describe("session tool-source ledger", () => {
         }),
       ).toBeUndefined()
 
-      const second = yield* ledger.activate([{ sourceKind: "custom", registrationID: "custom:read" }])
+      const second = yield* ledger.activate(sessionID, [{ sourceKind: "custom", registrationID: "custom:read" }])
       expect(second).not.toBe(first)
       expect(
         yield* ledger.lookup({
@@ -253,6 +253,7 @@ describe("session tool-source ledger", () => {
         identity({ messageID: "msg_source", callID: "call_source", sourceKind: "custom", generation: second }),
       )
       const rematerialized = yield* ledger.activate(
+        sessionID,
         [{ sourceKind: "custom", registrationID: "custom:read" }],
         "provider:model-b:schema-b",
       )
@@ -285,13 +286,143 @@ describe("session tool-source ledger", () => {
     }),
   )
 
+  it.instance("keeps another session's provenance when a subagent materializes a different tool set", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      yield* registerPair(ledger)
+      const parentGeneration = yield* ledger.activate(sessionID, [
+        { sourceKind: "host-builtin", registrationID: "host-builtin:read" },
+      ])
+
+      // A child session in the same directory uses another model and a narrower tool set.
+      const child = yield* ledger.activate(
+        "ses_child",
+        [{ sourceKind: "host-builtin", registrationID: "host-builtin:read" }],
+        "provider:child-model:schema-child",
+      )
+      expect(child).not.toBe(parentGeneration)
+      yield* ledger.record({
+        ...identity({ messageID: "msg_child", callID: "call_child", generation: child }),
+        sessionID: "ses_child",
+      })
+
+      // The parent's next turn rematerializes its own unchanged tool set.
+      const resumed = yield* ledger.activate(sessionID, [
+        { sourceKind: "host-builtin", registrationID: "host-builtin:read" },
+      ])
+      expect(resumed).toBe(parentGeneration)
+      const result = yield* MessageV2.contextFoldingHistory({ messages: conversation(), ledger })
+      expect(result.duplicatePlan.replacements).toEqual([
+        {
+          source: { messageID: "msg_source", partID: "prt_source", callID: "call_source" },
+          witness: { messageID: "msg_witness", partID: "prt_witness", callID: "call_witness" },
+        },
+      ])
+      expect(
+        yield* ledger.lookup({
+          sessionID: "ses_child",
+          assistantMessageID: "msg_child",
+          callID: "call_child",
+          toolName: "read",
+        }),
+      ).toBeDefined()
+
+      // A changed set for the parent still invalidates the parent's older identities only.
+      yield* ledger.activate(sessionID, [{ sourceKind: "custom", registrationID: "custom:read" }])
+      expect(
+        yield* ledger.lookup({ sessionID, assistantMessageID: "msg_source", callID: "call_source", toolName: "read" }),
+      ).toBeUndefined()
+      expect(
+        yield* ledger.lookup({
+          sessionID: "ses_child",
+          assistantMessageID: "msg_child",
+          callID: "call_child",
+          toolName: "read",
+        }),
+      ).toBeDefined()
+    }),
+  )
+
+  it.instance("bounds tracked sessions and drops the evicted session's evidence", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      const registrations = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
+      const first = yield* ledger.activate("ses_evicted", registrations)
+      yield* ledger.record({
+        ...identity({ messageID: "msg_evicted", callID: "call_evicted", generation: first }),
+        sessionID: "ses_evicted",
+      })
+      for (let index = 0; index < 1_024; index++) yield* ledger.activate(`ses_fill_${index}`, registrations)
+      expect(
+        yield* ledger.lookup({
+          sessionID: "ses_evicted",
+          assistantMessageID: "msg_evicted",
+          callID: "call_evicted",
+          toolName: "read",
+        }),
+      ).toBeUndefined()
+      const again = yield* ledger.activate("ses_evicted", registrations)
+      expect(again).not.toBe(first)
+      yield* ledger.record({
+        ...identity({ messageID: "msg_evicted", callID: "call_evicted", generation: first }),
+        sessionID: "ses_evicted",
+      })
+      expect(
+        yield* ledger.lookup({
+          sessionID: "ses_evicted",
+          assistantMessageID: "msg_evicted",
+          callID: "call_evicted",
+          toolName: "read",
+        }),
+      ).toBeUndefined()
+    }),
+  )
+
+  it.instance("refreshes an unchanged session so the least recently active session is evicted first", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      const registrations = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
+      const kept = yield* ledger.activate("ses_kept", registrations)
+      yield* ledger.record({
+        ...identity({ messageID: "msg_kept", callID: "call_kept", generation: kept }),
+        sessionID: "ses_kept",
+      })
+      const dropped = yield* ledger.activate("ses_dropped", registrations)
+      yield* ledger.record({
+        ...identity({ messageID: "msg_dropped", callID: "call_dropped", generation: dropped }),
+        sessionID: "ses_dropped",
+      })
+      for (let index = 0; index < 1_022; index++) yield* ledger.activate(`ses_fill_${index}`, registrations)
+      // The tracked set is full. Reactivating the oldest unchanged session refreshes its recency.
+      expect(yield* ledger.activate("ses_kept", registrations)).toBe(kept)
+      yield* ledger.activate("ses_new", registrations)
+
+      expect(
+        yield* ledger.lookup({
+          sessionID: "ses_kept",
+          assistantMessageID: "msg_kept",
+          callID: "call_kept",
+          toolName: "read",
+        }),
+      ).toMatchObject({ registrationGeneration: kept })
+      expect(
+        yield* ledger.lookup({
+          sessionID: "ses_dropped",
+          assistantMessageID: "msg_dropped",
+          callID: "call_dropped",
+          toolName: "read",
+        }),
+      ).toBeUndefined()
+    }),
+  )
+
   it.instance("creates a new provenance generation after an instance reload", () =>
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service
       const current = yield* TestInstance
-      const first = yield* ledger.activate([{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
+      const first = yield* ledger.activate(sessionID, [{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
       yield* reloadInstance({ directory: current.directory })
-      const second = yield* ledger.activate([{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
+      const second = yield* ledger.activate(sessionID, [{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
       expect(second).not.toBe(first)
     }),
   )
@@ -299,7 +430,9 @@ describe("session tool-source ledger", () => {
   it.instance("keeps the identity ledger bounded", () =>
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service
-      const generation = yield* ledger.activate([{ sourceKind: "host-builtin", registrationID: "builtin:read" }])
+      const generation = yield* ledger.activate(sessionID, [
+        { sourceKind: "host-builtin", registrationID: "builtin:read" },
+      ])
       for (let index = 0; index <= 4_096; index++) {
         yield* ledger.record(identity({ messageID: `msg_${index}`, callID: `call_${index}`, generation }))
       }

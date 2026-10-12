@@ -5,6 +5,7 @@ import { Context, Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 
 const MAX_IDENTITIES = 4_096
+const MAX_SESSIONS = 1_024
 
 export type Registration = Readonly<{
   sourceKind: ToolSourceKind
@@ -15,10 +16,16 @@ export type RecordInput = Omit<ToolSourceIdentity, "registrationGeneration">
 
 export interface Interface {
   /**
-   * Activates the exact materialized registration set for the current instance.
-   * A changed set invalidates every older identity before the new generation is returned.
+   * Activates the exact materialized registration set for one session's provider turn.
+   * A changed set invalidates every older identity of that session before the new generation is returned.
+   * Other sessions in the same instance (for example subagents with another model or tool set) keep their
+   * own generation and evidence.
    */
-  readonly activate: (registrations: readonly Registration[], materialization?: string) => Effect.Effect<string>
+  readonly activate: (
+    sessionID: string,
+    registrations: readonly Registration[],
+    materialization?: string,
+  ) => Effect.Effect<string>
   readonly record: (input: RecordInput & { registrationGeneration: string }) => Effect.Effect<void>
   readonly lookup: (input: {
     sessionID: string
@@ -38,12 +45,18 @@ export const unavailable: Interface = {
   clearSession: () => Effect.void,
 }
 
+type SessionGeneration = {
+  readonly signature: string
+  readonly generation: string
+}
+
 type State = {
   readonly nonce: string
   readonly identities: Map<string, ToolSourceIdentity>
+  /** Active generation per session, in least-recently-activated order. */
+  readonly sessions: Map<string, SessionGeneration>
+  /** Instance-wide and monotonic, so an A-B-A switch in any session never reuses a generation. */
   revision: number
-  signature?: string
-  generation?: string
 }
 
 const part = (value: string) => `${value.length}:${value}`
@@ -63,36 +76,56 @@ export const layer: Layer.Layer<Service> = Layer.effect(
         const value: State = {
           nonce: crypto.randomUUID(),
           identities: new Map(),
+          sessions: new Map(),
           revision: 0,
         }
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             value.identities.clear()
-            value.signature = undefined
-            value.generation = undefined
+            value.sessions.clear()
           }),
         )
         return value
       }),
     )
 
+    const dropSession = (current: State, sessionID: string) => {
+      for (const [identityKey, identity] of current.identities) {
+        if (identity.sessionID === sessionID) current.identities.delete(identityKey)
+      }
+      current.sessions.delete(sessionID)
+    }
+
     const activate: Interface["activate"] = Effect.fn("ToolSourceLedger.activate")(
-      function* (registrations, materialization) {
+      function* (sessionID, registrations, materialization) {
         const current = yield* InstanceState.get(state)
         const next = signature(registrations, materialization)
-        if (current.signature !== next || !current.generation) {
-          current.identities.clear()
-          current.revision++
-          current.signature = next
-          current.generation = Hash.sha256(`${part(current.nonce)}${part(String(current.revision))}${part(next)}`)
+        const active = current.sessions.get(sessionID)
+        if (active && active.signature === next) {
+          // Keep the most recently active sessions when the session bound is reached.
+          current.sessions.delete(sessionID)
+          current.sessions.set(sessionID, active)
+          return active.generation
         }
-        return current.generation
+        dropSession(current, sessionID)
+        current.revision++
+        const generation = Hash.sha256(
+          `${part(current.nonce)}${part(String(current.revision))}${part(sessionID)}${part(next)}`,
+        )
+        current.sessions.set(sessionID, { signature: next, generation })
+        while (current.sessions.size > MAX_SESSIONS) {
+          const oldest = current.sessions.keys().next().value
+          if (oldest === undefined) break
+          dropSession(current, oldest)
+        }
+        return generation
       },
     )
 
     const record: Interface["record"] = Effect.fn("ToolSourceLedger.record")(function* (input) {
       const current = yield* InstanceState.get(state)
-      if (!current.generation || input.registrationGeneration !== current.generation) return
+      const active = current.sessions.get(input.sessionID)
+      if (!active || input.registrationGeneration !== active.generation) return
       const identity: ToolSourceIdentity = { ...input }
       const identityKey = key(identity)
       current.identities.delete(identityKey)
@@ -107,15 +140,13 @@ export const layer: Layer.Layer<Service> = Layer.effect(
     const lookup: Interface["lookup"] = Effect.fn("ToolSourceLedger.lookup")(function* (input) {
       const current = yield* InstanceState.get(state)
       const identity = current.identities.get(key(input))
-      if (!identity || identity.registrationGeneration !== current.generation) return undefined
+      const active = current.sessions.get(input.sessionID)
+      if (!identity || !active || identity.registrationGeneration !== active.generation) return undefined
       return { ...identity }
     })
 
     const clearSession: Interface["clearSession"] = Effect.fn("ToolSourceLedger.clearSession")(function* (sessionID) {
-      const current = yield* InstanceState.get(state)
-      for (const [identityKey, identity] of current.identities) {
-        if (identity.sessionID === sessionID) current.identities.delete(identityKey)
-      }
+      dropSession(yield* InstanceState.get(state), sessionID)
     })
 
     return Service.of({ activate, record, lookup, clearSession })
