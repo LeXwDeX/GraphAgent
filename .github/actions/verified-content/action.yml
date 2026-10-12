@@ -35,7 +35,7 @@ runs:
         FINGERPRINT: ${{ steps.content.outputs.fingerprint }}
         DAY: ${{ steps.content.outputs.day }}
       run: |
-        echo "value=verified-v4-${RUNNER_OS}-${RUNNER_ARCH}-${DAY}-${CHECK}-${FINGERPRINT}" >> "$GITHUB_OUTPUT"
+        echo "value=verified-v5-${RUNNER_OS}-${RUNNER_ARCH}-${DAY}-${CHECK}-${FINGERPRINT}" >> "$GITHUB_OUTPUT"
         echo "path=${RUNNER_TEMP}/verified-${CHECK}.txt" >> "$GITHUB_OUTPUT"
     - name: Restore successful verification
       id: restore
@@ -44,12 +44,27 @@ runs:
       with:
         path: ${{ steps.key.outputs.path }}
         key: ${{ steps.key.outputs.value }}
-    - name: Verify the source job and product content
-      id: verify
-      if: steps.restore.outputs.cache-hit == 'true'
+    - name: Locate merged pull request verification
+      id: locate
+      # PR-scoped caches are invisible to push runs on main; propose the merged
+      # PR head's run instead. The verify step below still checks it in full.
+      if: github.event_name == 'push' && steps.restore.outputs.cache-hit != 'true'
       shell: bash
       env:
         EVIDENCE: ${{ steps.key.outputs.path }}
+        CHECK: ${{ inputs.check }}
+        CHECK_JOB: ${{ inputs.job-name }}
+        CHECK_RUNNER: ${{ inputs.runner-label }}
+        PRODUCT_FINGERPRINT: ${{ steps.content.outputs.fingerprint }}
+        GH_TOKEN: ${{ github.token }}
+      run: node script/ci-evidence.mjs locate
+    - name: Verify the source job and product content
+      id: verify
+      if: steps.restore.outputs.cache-hit == 'true' || steps.locate.outputs.located == 'true'
+      shell: bash
+      env:
+        EVIDENCE: ${{ steps.key.outputs.path }}
+        CHECK: ${{ inputs.check }}
         CHECK_JOB: ${{ inputs.job-name }}
         CHECK_RUNNER: ${{ inputs.runner-label }}
         PRODUCT_FINGERPRINT: ${{ steps.content.outputs.fingerprint }}

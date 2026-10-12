@@ -1,6 +1,9 @@
 name: Record successful verification
 description: Save evidence after every verification step in the caller has succeeded
 inputs:
+  check:
+    description: Stable job identifier from verified-content, distinguishing matrix jobs that share a job id
+    required: true
   key:
     description: Exact evidence key from verified-content
     required: true
@@ -22,7 +25,7 @@ runs:
       id: proof
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: ci-verification-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+        name: ci-verification-${{ github.job }}-${{ inputs.check }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
         path: ${{ inputs.path }}.artifact/verification.json
         retention-days: 2
         if-no-files-found: error
