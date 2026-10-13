@@ -390,17 +390,26 @@ describe("session.llm.ai-sdk adapter", () => {
     expect(stepFinish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
   })
 
-  test("reports suppressed file activity even when the stream has no finish", async () => {
-    const state = LLMAISDK.adapterState()
-    const activities: string[] = []
-    const events = await Effect.runPromise(
-      LLMAISDK.toLLMEvents(state, uncheckedAdapterEvent({ type: "file", file: "x.png" }), (activity) =>
-        activities.push(activity),
-      ),
-    )
-    expect(events).toEqual([])
-    expect(activities).toEqual(["suppressed"])
-    expect(state.suppressedActivity).toBe(true)
+  test("classifies suppressed chunks for retry safety even when the stream has no finish", async () => {
+    const chunks = [
+      { type: "source", activity: "observational" },
+      { type: "file", activity: "observational" },
+      { type: "abort", activity: "suppressed" },
+      { type: "tool-approval-request", activity: "suppressed" },
+      { type: "tool-output-denied", activity: "suppressed" },
+    ] as const
+    for (const chunk of chunks) {
+      const state = LLMAISDK.adapterState()
+      const activities: string[] = []
+      const events = await Effect.runPromise(
+        LLMAISDK.toLLMEvents(state, uncheckedAdapterEvent({ type: chunk.type }), (activity) =>
+          activities.push(activity),
+        ),
+      )
+      expect(events).toEqual([])
+      expect(activities).toEqual([chunk.activity])
+      expect(state.suppressedActivity).toBe(true)
+    }
   })
 
   test("plain stop finish metadata stays clean without suppressed activity", async () => {

@@ -77,6 +77,28 @@ const failureText = (exit: Exit.Exit<unknown, unknown>): string => {
 }
 
 describe("Ripgrep", () => {
+  itFaulted.live("retains the built-in abort error reason", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        spawnFault = () => Effect.never
+      }),
+      () =>
+        Effect.gen(function* () {
+          const controller = new AbortController()
+          controller.abort(new Error("search cancelled by caller"))
+          const exit = yield* Effect.exit(
+            (yield* Ripgrep.Service).glob({ cwd: ".", pattern: "*", limit: 10, signal: controller.signal }),
+          )
+          expect(exit._tag).toBe("Failure")
+          expect(failureText(exit)).toContain("search cancelled by caller")
+        }),
+      () =>
+        Effect.sync(() => {
+          spawnFault = undefined
+        }),
+    ),
+  )
+
   it.live("keeps ignored files out of catch-all find results", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

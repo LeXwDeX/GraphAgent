@@ -26,7 +26,7 @@ describe("CommandPlugin.Plugin", () => {
       expect(content).toContain("Small edits, bounded debugging, and read-only questions")
       expect(content).toContain("coordination cost")
       expect(content).toContain("Explicit user instructions take precedence")
-      expect(content).toContain("No routing checklist or explanation is needed for routine direct work")
+      expect(content).toContain("No routing checklist is needed for routine direct work")
     }),
   )
 
@@ -194,9 +194,9 @@ describe("CommandPlugin.Plugin", () => {
       ].forEach((domain) => expect(CommandPlugin.WorkflowContent).toContain(domain))
       expect(CommandPlugin.WorkflowContent).toContain("`lite` and `full` are reference shapes, not mandatory tiers")
       expect(CommandPlugin.WorkflowContent).toContain("upstream executable dependencies")
-      expect(CommandPlugin.WorkflowContent).toContain("single matching custom workflow")
+      expect(CommandPlugin.WorkflowContent).toMatch(/Retarget a\s+matching custom workflow to the task/)
       expect(CommandPlugin.WorkflowContent).toContain("rather than concatenating whole workflows")
-      expect(CommandPlugin.WorkflowContent).toContain("automatically requires a full graph")
+      expect(CommandPlugin.WorkflowContent).toMatch(/never\s+requires a full graph or a fixed reviewer count/)
       expect(CommandPlugin.WorkflowContent).toContain("Verdict Disposal Contract")
       expect(CommandPlugin.WorkflowContent).toContain("Do not pause or replan a completed workflow")
     }),
@@ -314,7 +314,9 @@ describe("CommandPlugin.Plugin", () => {
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("Either tier's claims need evidence")
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("whether execution failure should stop the workflow")
       // Tier placement is the mechanical lever (config.ts tierModel): required/review prefer advanced.
-      expect(CommandPlugin.OrchestrationPolicyContent).toContain("`review`/`review-*` workers prefer the advanced model tier")
+      expect(CommandPlugin.OrchestrationPolicyContent).toContain(
+        "`review`/`review-*` workers prefer the advanced model tier",
+      )
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("## Choosing Depth")
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("not to meet a phase count")
       expect(CommandPlugin.WorkflowFactsContent).toContain("not minimum phases")

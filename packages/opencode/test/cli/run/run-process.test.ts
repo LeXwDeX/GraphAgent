@@ -8,6 +8,18 @@ import { Effect } from "effect"
 import { reply } from "../../lib/llm-server"
 import { cliIt } from "../../lib/cli-process"
 
+function expectRetriedToolContinuation(inputs: Record<string, unknown>[], partial: string) {
+  const requests = inputs.filter((input) => !JSON.stringify(input).includes("Generate a title for this conversation"))
+  expect(requests).toHaveLength(3)
+  expect(requests[2]?.messages).toEqual(requests[1]?.messages)
+  expect(requests[1]?.messages).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ role: "assistant", content: partial }),
+      expect.objectContaining({ role: "tool", content: "tool" }),
+    ]),
+  )
+}
+
 describe("opencode run (non-interactive subprocess)", () => {
   // Happy path: prompt completes, output reaches stdout, process exits 0.
   // If this fails, all the others likely will too — debug here first.
@@ -84,24 +96,32 @@ describe("opencode run (non-interactive subprocess)", () => {
     60_000,
   )
 
-  // The test provider's SSE error item is interpreted by the SDK as an unknown
-  // finish, not a fatal provider/session error. Lock that distinction in so it
-  // is not accidentally used as the failure compatibility oracle.
+  // The tool completes in the first request. The next request's SSE error
+  // becomes an empty unknown finish, so that tool-free request retries. Its
+  // input must retain the completed tool result without executing it again.
   cliIt.concurrent(
-    "unknown stream finish preserves partial output and exits 0",
-    ({ llm, opencode }) =>
+    "unknown stream finish recovers after a completed tool and preserves partial output",
+    ({ home, llm, opencode }) =>
       Effect.gen(function* () {
         yield* llm.push(
           reply().text("partial response").tool("bash", {
-            command: "printf tool",
+            command: "printf x >> tool-count; printf tool",
+            workdir: home,
             description: "Print deterministic output",
           }),
         )
         yield* llm.fail("upstream provider exploded mid-stream")
-        const result = yield* opencode.run("trigger midstream error", { timeoutMs: 120_000 })
+        yield* llm.text("recovered response")
+        const result = yield* opencode.run("trigger midstream error", {
+          timeoutMs: 120_000,
+          extraArgs: ["--dangerously-skip-permissions"],
+        })
         expect(result.exitCode).toBe(0)
-        expect(result.stdout).toBe("partial response\n")
+        expect(result.stdout).toBe("partial response\nrecovered response\n")
         expect(result.stderr).not.toContain("upstream provider exploded mid-stream")
+        expectRetriedToolContinuation(yield* llm.inputs, "partial response")
+        expect(yield* Effect.promise(() => Bun.file(`${home}/tool-count`).text())).toBe("x")
+        expect(yield* llm.pending).toBe(0)
       }),
     180_000,
   )
@@ -216,17 +236,22 @@ describe("opencode run (non-interactive subprocess)", () => {
   )
 
   cliIt.concurrent(
-    "--format json records partial output for an unknown stream finish",
-    ({ llm, opencode }) =>
+    "--format json records recovery after an unknown stream finish without replaying the completed tool",
+    ({ home, llm, opencode }) =>
       Effect.gen(function* () {
         yield* llm.push(
           reply().text("partial json").tool("bash", {
-            command: "printf tool",
+            command: "printf x >> tool-count; printf tool",
+            workdir: home,
             description: "Print deterministic output",
           }),
         )
         yield* llm.fail("provider failed")
-        const result = yield* opencode.run("fail after output", { format: "json" })
+        yield* llm.text("recovered json")
+        const result = yield* opencode.run("fail after output", {
+          format: "json",
+          extraArgs: ["--dangerously-skip-permissions"],
+        })
 
         const events = opencode.parseJsonEvents(result.stdout)
         expect(result.exitCode).toBe(0)
@@ -237,9 +262,20 @@ describe("opencode run (non-interactive subprocess)", () => {
           "step_finish",
           "step_start",
           "step_finish",
+          "step_start",
+          "text",
+          "step_finish",
         ])
         expect(events[1]?.part).toEqual(expect.objectContaining({ type: "text", text: "partial json" }))
-        expect(events.at(-1)?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "unknown" }))
+        expect(events[2]?.part).toEqual(
+          expect.objectContaining({ type: "tool", state: expect.objectContaining({ status: "completed" }) }),
+        )
+        expect(events[5]?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "unknown" }))
+        expect(events[7]?.part).toEqual(expect.objectContaining({ type: "text", text: "recovered json" }))
+        expect(events.at(-1)?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "stop" }))
+        expectRetriedToolContinuation(yield* llm.inputs, "partial json")
+        expect(yield* Effect.promise(() => Bun.file(`${home}/tool-count`).text())).toBe("x")
+        expect(yield* llm.pending).toBe(0)
       }),
     180_000,
   )

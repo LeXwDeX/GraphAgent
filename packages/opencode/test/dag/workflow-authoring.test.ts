@@ -302,6 +302,42 @@ describe("WorkflowAuthoring action-specific recovery hints (#775)", () => {
   // The exact envelope sentence validation.ts attaches to every extend hint.
   const EXTEND_ENVELOPE = 'or { "nodes": [...] }'
 
+  it.effect("nested fields never receive envelope-level relocation hints", () =>
+    Effect.gen(function* () {
+      for (const action of ["start", "extend", "replan"] as const) {
+        const graph = {
+          name: "nested",
+          objective: "Inspect nesting",
+          blocks: [{ id: "a", kind: "coding", name: "wrong" }],
+        }
+        const value =
+          action === "start"
+            ? { config: graph }
+            : action === "replan"
+              ? { fragment: graph }
+              : { objective: graph.objective, blocks: graph.blocks }
+        const result = yield* WorkflowAuthoring.make().prepare({
+          action,
+          source: { kind: "inline", value },
+          profile: "portable",
+        })
+        expect(result.valid).toBe(false)
+        const errors = result.errors.filter((error) => error.path.endsWith('["blocks"][0]["name"]'))
+        expect(errors.length).toBeGreaterThan(0)
+        for (const error of errors) {
+          expect(error.hint).toContain('Did you mean "id"?')
+          expect(error.hint).not.toContain('"name" belongs')
+        }
+      }
+      const result = yield* prepareInline("extend", { nodes: [{ ...node, name: 42 }] })
+      expect(result.valid).toBe(false)
+      const error = result.errors.find((error) => error.path.endsWith('["nodes"][0]["name"]'))
+      expect(error).toBeDefined()
+      expect(error!.hint).not.toContain('"name" belongs')
+      expect(error!.hint).not.toContain('Did you mean "blocks')
+    }),
+  )
+
   it.effect("an invalid start envelope passed to extend is steered by the extend envelope, not start fields", () =>
     Effect.gen(function* () {
       const result = yield* prepareInline("extend", {
@@ -351,10 +387,11 @@ describe("WorkflowAuthoring action-specific recovery hints (#775)", () => {
         source: {
           kind: "inline",
           value: {
+            objective: "misplaced",
             config: {
               name: "start-envelope",
               objective: "Objective placement probe.",
-              blocks: [{ id: "a", kind: "coding", objective: "misplaced" }],
+              blocks: [{ id: "a", kind: "coding" }],
             },
           },
         },

@@ -106,7 +106,7 @@ const describeExecutionFailure = (cause: unknown): string => {
     if (typeof record.pathOrDescriptor === "string" && record.pathOrDescriptor) parts.push(record.pathOrDescriptor)
     if (parts.length > 0) return `ripgrep execution failed (${parts.join("; ")})`
   }
-  if (cause instanceof Error && cause.message) return `ripgrep execution failed (${cause.message})`
+  if (cause instanceof globalThis.Error && cause.message) return `ripgrep execution failed (${cause.message})`
   return "ripgrep execution failed"
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, spyOn } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs/promises"
 import os from "os"
@@ -11,6 +11,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionID } from "@/session/schema"
+import * as Log from "@/util/log"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 
 // ── Test layer ──────────────────────────────────────────────────
@@ -42,6 +43,27 @@ const writeSettingsTo = (hooksJson: object) => (dir: string) =>
   )
 
 const tmp = (name: string) => path.join(os.tmpdir(), `opencode-test-${name}`)
+
+const observeDiscardedCallback = (sessionID: string) =>
+  Effect.gen(function* () {
+    let discarded = false
+    const original = Log.Default.debug.bind(Log.Default)
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        spyOn(Log.Default, "debug").mockImplementation((message, meta) => {
+          if (message === "async Stop callback discarded: chain invalidated" && meta?.sessionID === sessionID) {
+            discarded = true
+          }
+          original(message, meta)
+        }),
+      ),
+      (spy) => Effect.sync(() => spy.mockRestore()),
+    )
+    return pollWithTimeout(
+      Effect.sync(() => (discarded ? true : undefined)),
+      "pending hook callback was never discarded",
+    )
+  })
 
 describe("hook-async-rewake", () => {
   // ── 4.1: Async hook does not block the trigger ───────────────
@@ -378,6 +400,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
         const hook = yield* SettingsHook.Service
         const hooks = yield* SessionHooks.Service
         const sessionID = SessionID.make(`ses-stale-${event}-${boundary}`)
+        const discarded = yield* observeDiscardedCallback(sessionID)
         yield* hooks.add(sessionID, {
           event,
           once: true,
@@ -417,7 +440,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
           ),
           "pending hook did not complete",
         )
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)))
+        yield* discarded
         expect(rewakeCalls).toEqual([])
         yield* Effect.promise(() => Promise.all([fs.rm(release), fs.rm(completed)]))
       }),
@@ -438,6 +461,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
       const hook = yield* SettingsHook.Service
       const hooks = yield* SessionHooks.Service
       const sessionID = SessionID.make(`ses-cancel-${event}`)
+      const discarded = yield* observeDiscardedCallback(sessionID)
       yield* hooks.add(sessionID, {
         event,
         once: true,
@@ -467,7 +491,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
         ),
         "pending hook did not complete",
       )
-      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)))
+      yield* discarded
       expect(rewakeCalls).toEqual([])
       yield* Effect.promise(() => Promise.all([fs.rm(release), fs.rm(completed)]))
     }),
@@ -480,6 +504,7 @@ it.instance("session cancel invalidation is per-session — other pending callba
     const hook = yield* SettingsHook.Service
     const hooks = yield* SessionHooks.Service
     const a = SessionID.make("ses-cancel-iso-a")
+    const discarded = yield* observeDiscardedCallback(a)
     const b = SessionID.make("ses-cancel-iso-b")
     const releaseA = tmp(`cancel-iso-a-${crypto.randomUUID()}`)
     const releaseB = tmp(`cancel-iso-b-${crypto.randomUUID()}`)
@@ -523,7 +548,11 @@ it.instance("session cancel invalidation is per-session — other pending callba
       ),
       "session A callback did not complete",
     )
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)))
+    yield* discarded
+    yield* pollWithTimeout(
+      Effect.sync(() => (rewakeCalls.some((call) => call.sessionID === b) ? true : undefined)),
+      "session B callback never rewake",
+    )
     expect(rewakeCalls).toHaveLength(1)
     expect(rewakeCalls[0].sessionID).toBe(b)
     yield* Effect.promise(() =>
@@ -538,6 +567,7 @@ it.instance("a fresh Stop trigger after cancel establishes a new valid chain", (
     const hook = yield* SettingsHook.Service
     const hooks = yield* SessionHooks.Service
     const sessionID = SessionID.make("ses-cancel-fresh")
+    const discarded = yield* observeDiscardedCallback(sessionID)
     const releaseOld = tmp(`cancel-fresh-old-${crypto.randomUUID()}`)
     const releaseNew = tmp(`cancel-fresh-new-${crypto.randomUUID()}`)
     const cmd = (release: string, body: string) =>
@@ -587,7 +617,7 @@ it.instance("a fresh Stop trigger after cancel establishes a new valid chain", (
       ),
       "stale callback did not complete",
     )
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 100)))
+    yield* discarded
     expect(rewakeCalls).toEqual([])
     yield* Effect.promise(() => fs.writeFile(releaseNew, "go"))
     yield* pollWithTimeout(

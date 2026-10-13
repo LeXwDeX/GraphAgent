@@ -437,13 +437,20 @@ const ACTION_FIELD_DRIFT: Record<string, Record<SchemaAction, string>> = {
 }
 
 function driftHint(path: string, message: string, action: SchemaAction = "start") {
+  // Match the offending leaf, never an ancestor such as "blocks" or
+  // "config". Only document/graph envelopes can relocate action fields.
+  const field = path.match(/\["([^"\\]+)"\]$/)?.[1]
+  const envelope = /^(?:\["(?:config|fragment)"\])?\["[^"\\]+"\]$/.test(path)
+  if (/\["blocks"\]\[\d+\]\["name"\]$/.test(path)) {
+    return `Did you mean "id"? A block's identifier belongs on that block; expected ${ACTION_ENVELOPES[action]}`
+  }
   for (const [wrong, right] of Object.entries(FIELD_DRIFT_HINTS)) {
-    if (message.includes(`"${wrong}"`) || path.includes(`["${wrong}"]`)) {
+    if (field === wrong || ((path === "$" || !path) && message.includes(`"${wrong}"`))) {
       return `Did you mean "${right}"? Every block field is one of id, kind, depends_on, instruction, worker_type, worker_config, required, report_to_parent; ${OBJECTIVE_LOCATION[action]}; expected ${ACTION_ENVELOPES[action]}`
     }
   }
   for (const [field, where] of Object.entries(ACTION_FIELD_DRIFT)) {
-    if (message.includes(`"${field}"`) || path.includes(`["${field}"]`)) {
+    if (envelope && path.endsWith(`["${field}"]`)) {
       return `"${field}" belongs in ${where[action]}; expected ${ACTION_ENVELOPES[action]}`
     }
   }

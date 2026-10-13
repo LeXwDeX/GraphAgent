@@ -7,7 +7,7 @@ import { eq } from "drizzle-orm"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { Cause, Clock, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
@@ -149,7 +149,8 @@ const replacements = [
  * `{ fail }` entry makes the stream fail with that error, exercising the
  * recognized API-error retry path before later empty/content scripts.
  */
-type Script = LLMEvent[] | { fail: LLMEvent } | { activity: "tool-executed" | "suppressed"; events: LLMEvent[] }
+type Script =
+  LLMEvent[] | { fail: LLMEvent } | { activity: "tool-executed" | "suppressed" | "observational"; events: LLMEvent[] }
 function scripted(scripts: Script[]) {
   let calls = 0
   const service = Layer.succeed(
@@ -303,6 +304,22 @@ verifyNoRetry("session.processor preserves suppressed activity when there is no 
   activity: "suppressed",
   events: [LLMEvent.stepStart({ index: 0 })],
 })
+
+verifyRetry("session.processor retries a network failure after suppressed provider activity", {
+  activity: "observational",
+  events: [LLMEvent.stepStart({ index: 0 }), networkError],
+})
+
+verifyNoRetry("session.processor does not replay after suppressed approval or abort activity", {
+  activity: "suppressed",
+  events: [LLMEvent.stepStart({ index: 0 }), networkError],
+})
+
+verifyNoRetry("session.processor treats unclassified suppressed metadata as retry-blocking", [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.stepFinish({ index: 0, reason: "unknown", providerMetadata: { opencode: { suppressedActivity: true } } }),
+  networkError,
+])
 
 verifyNoRetry("session.processor does not replay a tool that executed before its stream event arrived", {
   activity: "tool-executed",
@@ -1004,10 +1021,13 @@ alternatingExhaustion.it.effect(
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
-        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
-        yield* Effect.yieldNow
-        yield* TestClock.adjust("10 minutes")
-        expect(yield* Fiber.join(run)).toBe("stop")
+        const clock = yield* TestClock.testClockWith(Effect.succeed)
+        // Let each actual retry sleep advance virtual time at its registration
+        // point. A large one-shot adjustment can overtake async persistence.
+        const result = yield* handle
+          .process(input(chat.id, parent, mdl))
+          .pipe(Effect.provideService(Clock.Clock, { ...clock, sleep: (duration) => clock.adjust(duration) }))
+        expect(result).toBe("stop")
         expect(alternatingExhaustion.count()).toBe(6)
         expect(handle.message.error?.name).toBe("APIError")
         if (handle.message.error && "data" in handle.message.error) {

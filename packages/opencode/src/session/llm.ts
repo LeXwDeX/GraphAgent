@@ -159,7 +159,7 @@ export type StreamInput = {
   purpose?: RequestPurpose
   contextFolding?: ContextFoldingHistorySnapshot
   /** In-process safety signal for activity that can precede or outlive stream events. */
-  onAttemptActivity?: (activity: "tool-executed" | "suppressed") => void
+  onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
 }
 
 export type StreamRequest = StreamInput & {

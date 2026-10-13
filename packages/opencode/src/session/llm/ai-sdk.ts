@@ -126,7 +126,7 @@ function isMissingFinishReason(error: unknown) {
 export function toLLMEvents(
   state: ReturnType<typeof adapterState>,
   event: AISDKEvent,
-  onAttemptActivity?: (activity: "tool-executed" | "suppressed") => void,
+  onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void,
 ): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
   switch (event.type) {
     case "start":
@@ -340,9 +340,15 @@ export function toLLMEvents(
         })
       return Effect.fail(event.error)
 
-    case "abort":
     case "source":
     case "file":
+      return Effect.sync(() => {
+        state.suppressedActivity = true
+        onAttemptActivity?.("observational")
+        return []
+      })
+
+    case "abort":
     case "tool-output-denied":
     case "tool-approval-request":
       // Not session-visible, but the attempt was not empty: mark the stream

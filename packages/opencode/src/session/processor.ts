@@ -131,6 +131,8 @@ interface ProcessorContext extends Input {
    * attempt is never treated as an empty response.
    */
   attemptSuppressedActivity: boolean
+  /** Suppressed abort/approval/denial or unknown activity forbids replay. */
+  attemptRetryBlockingSuppressedActivity: boolean
 }
 
 type StreamEvent = LLMEvent
@@ -203,6 +205,7 @@ export const layer = Layer.effect(
         attemptReasoningParts: new Map(),
         attemptToolActivity: false,
         attemptSuppressedActivity: false,
+        attemptRetryBlockingSuppressedActivity: false,
       }
       const mirrorAssistant = flags.experimentalEventSystem && !input.assistantMessage.summary
       let aborted = false
@@ -837,10 +840,12 @@ export const layer = Layer.effect(
             }
             ctx.assistantMessage.finish = value.reason
             ctx.attemptFinish = value.reason
-            ctx.attemptSuppressedActivity ||=
+            const suppressed =
               isRecord(value.providerMetadata) &&
               isRecord(value.providerMetadata.opencode) &&
               value.providerMetadata.opencode.suppressedActivity === true
+            if (suppressed && !ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
+            ctx.attemptSuppressedActivity ||= suppressed
             ctx.assistantMessage.cost += usage.cost
             ctx.assistantMessage.tokens = usage.tokens
             yield* session.updatePart({
@@ -973,6 +978,7 @@ export const layer = Layer.effect(
               isRecord(value.providerMetadata.opencode) &&
               value.providerMetadata.opencode.suppressedActivity === true
             ) {
+              if (!ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
               ctx.attemptSuppressedActivity = true
             }
             return
@@ -1234,6 +1240,7 @@ export const layer = Layer.effect(
             ctx.attemptReasoningParts = new Map()
             ctx.attemptToolActivity = false
             ctx.attemptSuppressedActivity = false
+            ctx.attemptRetryBlockingSuppressedActivity = false
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
             const source = llm.stream({
@@ -1241,7 +1248,10 @@ export const layer = Layer.effect(
               onAttemptActivity: (activity) => {
                 if (generation !== attemptGeneration) return
                 if (activity === "tool-executed") ctx.anyToolCalled = true
-                else ctx.attemptSuppressedActivity = true
+                else {
+                  ctx.attemptSuppressedActivity = true
+                  if (activity !== "observational") ctx.attemptRetryBlockingSuppressedActivity = true
+                }
                 streamInput.onAttemptActivity?.(activity)
               },
             })
@@ -1340,7 +1350,7 @@ export const layer = Layer.effect(
                   !ctx.needsCompaction &&
                   !ctx.anyToolCalled &&
                   ctx.pendingToolExecutions.size === 0 &&
-                  !ctx.attemptSuppressedActivity,
+                  !ctx.attemptRetryBlockingSuppressedActivity,
                 // Compaction timeouts immediately advance the model ladder, without retry backoff.
                 parse: (error) =>
                   IncompleteResponseError.isInstance(error)
