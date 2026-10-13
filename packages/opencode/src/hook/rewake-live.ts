@@ -27,10 +27,16 @@ export const liveLayer = Layer.succeed(
         const sessionPrompt = Option.getOrUndefined(yield* Effect.serviceOption(SessionPrompt.Service))
         if (!sessionPrompt) return
         yield* sessionPrompt
-          .prompt({
-            sessionID: SessionID.make(input.sessionID),
-            parts: [{ type: "text", text: input.text }],
-          })
+          .prompt(
+            {
+              sessionID: SessionID.make(input.sessionID),
+              parts: [{ type: "text", text: input.text }],
+            },
+            // Forward the stop-chain token: admission and the run path
+            // re-validate it, refusing callbacks whose chain was invalidated
+            // by a session cancel after their completion check.
+            { stopChainToken: input.stopChain },
+          )
           .pipe(
             Effect.catch((error) =>
               Effect.logWarning("hook rewake prompt failed", {

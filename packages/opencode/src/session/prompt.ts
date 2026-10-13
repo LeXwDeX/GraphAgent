@@ -154,6 +154,14 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 export interface AdmissionOptions {
   /** Internal follow-ups retain the current input's tool budget. */
   readonly continueToolBudget?: boolean
+  /**
+   * Opaque SettingsHook stop-chain token riding on an async Stop-hook rewake.
+   * When set, admission re-validates the chain before commit and the run path
+   * re-validates before runLoop, refusing callbacks whose chain was
+   * invalidated by a session cancel after their completion check. Only the
+   * hook rewake paths set this; plain user prompts never do.
+   */
+  readonly stopChainToken?: unknown
 }
 
 export interface Interface {
@@ -381,8 +389,8 @@ export const layer = Layer.effect(
     const rawSettingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const rewake = Context.make(
       HookRewake.Service,
-      HookRewake.bind(({ sessionID, text }) =>
-        prompt({ sessionID, parts: [{ type: "text", text }] }, { continueToolBudget: true }),
+      HookRewake.bind(({ sessionID, text, stopChain }) =>
+        prompt({ sessionID, parts: [{ type: "text", text }] }, { continueToolBudget: true, stopChainToken: stopChain }),
       ),
     )
     const settingsHook: SettingsHook.Interface | undefined = rawSettingsHook && {
@@ -593,6 +601,16 @@ export const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
+      // A user abort invalidates any pending async Stop-hook rewake chain;
+      // otherwise a callback completing afterwards would silently restart the
+      // cancelled session. Lock-free on purpose: admission can block for a
+      // long time inside the prompt lock (hook gates), so cancel must always
+      // make progress. Stale rewakes are fenced in admitPrompt (pre-commit
+      // and post-commit) and again on the run path before runLoop.
+      // Invalidation failure must never block the cancel itself.
+      if (settingsHook?.invalidateStopRewakeChain) {
+        yield* settingsHook.invalidateStopRewakeChain(sessionID).pipe(Effect.ignore)
+      }
       // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
       // working on the goal", not just "stop this turn". Without this, the idle
       // event after cancel re-enters afterIdle, shouldPreempt returns false (the
@@ -1814,6 +1832,29 @@ export const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
+    // Re-validates the stop-chain token carried by an async Stop-hook rewake.
+    // Returns false when the chain was invalidated (session cancel, newer user
+    // prompt, SessionEnd) after the callback's own completion check; the
+    // committed message parts are then marked ignored so nothing stale stays
+    // model-visible, and the caller must not run the turn. No-op for plain
+    // prompts and non-Stop async rewakes (no token).
+    const fenceStopRewake = Effect.fn("SessionPrompt.fenceStopRewake")(function* (
+      sessionID: SessionID,
+      options: AdmissionOptions | undefined,
+      message: SessionV1.WithParts,
+    ) {
+      if (!settingsHook?.validateStopRewakeChain || options?.stopChainToken === undefined) return true
+      if (yield* settingsHook.validateStopRewakeChain(sessionID, options.stopChainToken)) return true
+      yield* Effect.logWarning("stop-chain rewake discarded after commit", { "session.id": sessionID })
+      for (const part of message.parts) {
+        if (part.type === "text" && !part.ignored) {
+          yield* sessions.updatePart({ ...part, ignored: true } satisfies SessionV1.TextPart)
+        }
+      }
+      yield* sessions.touch(sessionID)
+      return false
+    })
+
     const admitPrompt = Effect.fn("SessionPrompt.admitPrompt")(function* (
       input: PromptInput,
       persistAdmission?: Effect.Effect<void>,
@@ -1831,6 +1872,32 @@ export const layer = Layer.effect(
       let hookResult: TriggerResult | undefined
       const promptText = input.parts.map((p: any) => (p.type === "text" ? p.text : "")).join("\n")
       const isRewake = promptText.startsWith(HOOK_REWAKE_SENTINEL)
+      // Refuse a stale stop-chain rewake before anything is committed. Cancel
+      // stays lock-free; the post-commit fence below covers cancels that land
+      // while admission is suspended inside plugin callbacks.
+      if (settingsHook?.validateStopRewakeChain && isRewake && options?.stopChainToken !== undefined) {
+        const chainValid = yield* settingsHook.validateStopRewakeChain(input.sessionID, options.stopChainToken)
+        if (!chainValid) {
+          yield* Effect.logWarning("stop-chain rewake discarded before admission", { "session.id": input.sessionID })
+          // Record the discard in the transcript (`ignored` keeps it out of
+          // model input) so the refusal is observable, then stop without work.
+          const message = yield* createUserMessage(
+            {
+              ...input,
+              parts: [
+                {
+                  type: "text",
+                  text: "[Hook stopped] async hook result discarded (session cancelled or superseded)",
+                  ignored: true,
+                },
+              ],
+            },
+            persistAdmission,
+          )
+          yield* sessions.touch(input.sessionID)
+          return { message, run: false as const }
+        }
+      }
       if (settingsHook && !isRewake) {
         hookResult = yield* settingsHook
           .trigger(
@@ -1865,6 +1932,15 @@ export const layer = Layer.effect(
 
       const message = yield* createUserMessage(input, persistAdmission)
       yield* sessions.touch(input.sessionID)
+
+      // The chain was validated before admission, but cancel can land while
+      // the plugin callbacks above suspend. A committed stale rewake is
+      // stripped from model input (parts ignored) and never starts a run.
+      if (isRewake && options?.stopChainToken !== undefined) {
+        if (!(yield* fenceStopRewake(input.sessionID, options, message))) {
+          return { message, run: false as const }
+        }
+      }
 
       if (hookResult) {
         // Land UserPromptSubmit systemMessages (logged always; injected as synthetic
@@ -1926,10 +2002,18 @@ export const layer = Layer.effect(
           if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
           const admitted = yield* admitPrompt(input, undefined, options)
           if (!admitted.run) return Effect.succeed(admitted.message)
+          // The runner registers before this fence runs: a cancel landing
+          // after a passing fence interrupts the registered runner instead of
+          // racing a finished check, so a stale rewake can never start a turn.
           return yield* state.ensureRunningHandle(
             input.sessionID,
             lastAssistant(input.sessionID),
-            runLoop(input.sessionID),
+            Effect.gen(function* () {
+              if (!(yield* fenceStopRewake(input.sessionID, options, admitted.message))) {
+                return admitted.message
+              }
+              return yield* runLoop(input.sessionID)
+            }),
           )
         }),
       )
@@ -1967,6 +2051,11 @@ export const layer = Layer.effect(
                 const admitted = yield* Deferred.await(admission)
                 if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
                 if (!admitted.value.run) return admitted.value.message
+                // Same runner-first ordering as prompt(): a cancel landing
+                // after a passing fence interrupts the registered runner.
+                if (!(yield* fenceStopRewake(input.sessionID, options, admitted.value.message))) {
+                  return admitted.value.message
+                }
                 return yield* runLoop(input.sessionID)
               }).pipe(Effect.orDie),
             )

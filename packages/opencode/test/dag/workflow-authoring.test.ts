@@ -60,7 +60,15 @@ describe("WorkflowAuthoring source-to-graph seam", () => {
           source: {
             kind: "yaml",
             source: "drift.yaml",
-            content: ["config:", "  name: drift", "  objective: Timeout drift probe.", "  blocks:", "    - id: a", "      kind: coding", `      ${wrong}`].join("\n"),
+            content: [
+              "config:",
+              "  name: drift",
+              "  objective: Timeout drift probe.",
+              "  blocks:",
+              "    - id: a",
+              "      kind: coding",
+              `      ${wrong}`,
+            ].join("\n"),
           },
           profile: "portable",
         })
@@ -93,35 +101,6 @@ describe("WorkflowAuthoring source-to-graph seam", () => {
       })
       expect(result.valid).toBe(false)
       expect(result.errors.some((e) => e.code === DagValidation.DIAGNOSTIC_CODES.schemaInvalid)).toBe(true)
-    }),
-  )
-
-  it.effect("keeps every block-guide YAML envelope executable", () =>
-    Effect.gen(function* () {
-      const guide = CommandPlugin.WorkflowBlocksContent
-      const example = (heading: string) => {
-        const section = guide.slice(guide.indexOf(`### ${heading}`))
-        const match = section.match(/```yaml\n([\s\S]*?)```/)
-        expect(match?.[1]).toBeDefined()
-        return match?.[1] ?? ""
-      }
-      const authoring = WorkflowAuthoring.make()
-      const inputs = [
-        { action: "start" as const, content: example("Start file") },
-        { action: "extend" as const, content: example("Extend file") },
-        { action: "replan" as const, content: example("Replan file") },
-      ]
-
-      for (const input of inputs) {
-        const result = yield* authoring.prepare({
-          action: input.action,
-          source: { kind: "yaml", source: `${input.action}.yaml`, content: input.content },
-          profile: "portable",
-        })
-        expect(result.errors).toEqual([])
-        expect(result.valid).toBe(true)
-        expect(result.prepared?.nodes.length).toBeGreaterThan(0)
-      }
     }),
   )
 
@@ -312,6 +291,142 @@ describe("WorkflowAuthoring source-to-graph seam", () => {
   )
 })
 
+describe("WorkflowAuthoring action-specific recovery hints (#775)", () => {
+  const prepareInline = (action: "extend" | "replan", value: unknown) =>
+    WorkflowAuthoring.make().prepare({
+      action,
+      source: { kind: "inline", value },
+      profile: "portable",
+    })
+
+  // The exact envelope sentence validation.ts attaches to every extend hint.
+  const EXTEND_ENVELOPE = 'or { "nodes": [...] }'
+
+  it.effect("an invalid start envelope passed to extend is steered by the extend envelope, not start fields", () =>
+    Effect.gen(function* () {
+      const result = yield* prepareInline("extend", {
+        title: "Implement session recovery",
+        config: {
+          name: "implement-session-recovery",
+          objective: "Implement session recovery with focused tests.",
+          blocks: [{ id: "map", kind: "explore" }],
+        },
+      })
+      expect(result.valid).toBe(false)
+      expect(result.prepared).toBeUndefined()
+      expect(result.errors.length).toBeGreaterThan(0)
+      for (const error of result.errors) {
+        expect(error.hint).not.toContain('Did you mean "config"')
+        expect(error.hint).not.toContain("config.objective")
+        expect(error.hint).not.toContain("objective lives inside config")
+        expect(error.hint).not.toContain("name+objective+blocks")
+        expect(error.hint).toContain(EXTEND_ENVELOPE)
+      }
+    }),
+  )
+
+  it.effect("extraneous graph fields on extend are rejected without recommending name or graph budgets", () =>
+    Effect.gen(function* () {
+      const result = yield* prepareInline("extend", {
+        name: "extend-with-start-fields",
+        objective: "Extend the workflow.",
+        blocks: [{ id: "extra", kind: "explore" }],
+        max_concurrency: 5,
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors.length).toBeGreaterThan(0)
+      for (const error of result.errors) {
+        expect(error.hint).not.toContain('Did you mean "max_concurrency"')
+        expect(error.hint).not.toContain("name+objective+blocks")
+        expect(error.hint).not.toContain("config.objective")
+        expect(error.hint).toContain(EXTEND_ENVELOPE)
+      }
+    }),
+  )
+
+  it.effect("start keeps its config-envelope hints (no regression)", () =>
+    Effect.gen(function* () {
+      const result = yield* WorkflowAuthoring.make().prepare({
+        action: "start",
+        source: {
+          kind: "inline",
+          value: {
+            config: {
+              name: "start-envelope",
+              objective: "Objective placement probe.",
+              blocks: [{ id: "a", kind: "coding", objective: "misplaced" }],
+            },
+          },
+        },
+        profile: "portable",
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors.some((e) => e.hint.includes("config.objective"))).toBe(true)
+      expect(result.errors.some((e) => e.hint.includes("objective lives inside config"))).toBe(true)
+    }),
+  )
+
+  it.effect("a replan fragment carrying start-only fields points at the fragment envelope", () =>
+    Effect.gen(function* () {
+      const result = yield* prepareInline("replan", {
+        fragment: {
+          title: "Replacement wave",
+          name: "replan-envelope",
+          nodes: [
+            {
+              id: "work",
+              name: "work",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "Do the work" },
+            },
+          ],
+        },
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors.length).toBeGreaterThan(0)
+      for (const error of result.errors) {
+        expect(error.hint).not.toContain('Did you mean "config"')
+        expect(error.hint).not.toContain("config.objective")
+        expect(error.hint).toContain('"fragment"')
+      }
+    }),
+  )
+
+  it.effect("keeps every block-guide YAML envelope executable, including added extend examples", () =>
+    Effect.gen(function* () {
+      const guide = CommandPlugin.WorkflowBlocksContent
+      const examples = (heading: string) => {
+        const section = guide.slice(guide.indexOf(`### ${heading}`))
+        const next = section.indexOf("\n### ", 1)
+        const scoped = next === -1 ? section : section.slice(0, next)
+        const matches = [...scoped.matchAll(/```yaml\n([\s\S]*?)```/g)]
+        expect(matches.length).toBeGreaterThan(0)
+        return matches.map((match) => match[1] ?? "")
+      }
+      const authoring = WorkflowAuthoring.make()
+      const inputs = [
+        { action: "start" as const, contents: examples("Start file") },
+        { action: "extend" as const, contents: examples("Extend file") },
+        { action: "replan" as const, contents: examples("Replan file") },
+      ]
+
+      for (const input of inputs) {
+        for (const content of input.contents) {
+          const result = yield* authoring.prepare({
+            action: input.action,
+            source: { kind: "yaml", source: `${input.action}.yaml`, content },
+            profile: "portable",
+          })
+          expect(result.errors).toEqual([])
+          expect(result.valid).toBe(true)
+          expect(result.prepared?.nodes.length).toBeGreaterThan(0)
+        }
+      }
+    }),
+  )
+})
+
 describe("WorkflowAuthoring replan envelope (P0-B)", () => {
   const replanPrepare = (content: string[]) =>
     WorkflowAuthoring.make().prepare({
@@ -332,7 +447,9 @@ describe("WorkflowAuthoring replan envelope (P0-B)", () => {
     Effect.gen(function* () {
       const result = yield* replanPrepare(["name: rebuild", "nodes:", ...nodeLines])
       expect(result.valid).toBe(false)
-      const envelope = result.errors.find((error) => error.message.includes('missing required top-level key "fragment"'))
+      const envelope = result.errors.find((error) =>
+        error.message.includes('missing required top-level key "fragment"'),
+      )
       expect(envelope).toBeDefined()
       expect(envelope?.code).toBe(DagValidation.DIAGNOSTIC_CODES.replanEnvelopeMissing)
       expect(envelope?.path).toBe("$")
@@ -343,18 +460,33 @@ describe("WorkflowAuthoring replan envelope (P0-B)", () => {
 
   it.effect('audit #2: a top-level config (start envelope) is told replan requires "fragment"', () =>
     Effect.gen(function* () {
-      const result = yield* replanPrepare(["config:", "  name: rebuild", "  nodes:", ...nodeLines.map((line) => `  ${line}`)])
+      const result = yield* replanPrepare([
+        "config:",
+        "  name: rebuild",
+        "  nodes:",
+        ...nodeLines.map((line) => `  ${line}`),
+      ])
       expect(result.valid).toBe(false)
-      const envelope = result.errors.find((error) => error.message.includes('missing required top-level key "fragment"'))
+      const envelope = result.errors.find((error) =>
+        error.message.includes('missing required top-level key "fragment"'),
+      )
       expect(envelope?.hint).toContain('"config" is the start envelope; replan requires "fragment".')
     }),
   )
 
   it.effect("a top-level blocks graph is told to move name/objective/blocks under fragment", () =>
     Effect.gen(function* () {
-      const result = yield* replanPrepare(["name: rebuild", "objective: Rebuild the thing.", "blocks:", "  - id: a", "    kind: coding"])
+      const result = yield* replanPrepare([
+        "name: rebuild",
+        "objective: Rebuild the thing.",
+        "blocks:",
+        "  - id: a",
+        "    kind: coding",
+      ])
       expect(result.valid).toBe(false)
-      const envelope = result.errors.find((error) => error.message.includes('missing required top-level key "fragment"'))
+      const envelope = result.errors.find((error) =>
+        error.message.includes('missing required top-level key "fragment"'),
+      )
       expect(envelope?.hint).toContain('Move "name", "objective", and "blocks" under "fragment".')
     }),
   )

@@ -4,7 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { tool } from "ai"
-import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
@@ -284,7 +284,6 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
-        const database = yield* Database.Service
         const { processors, session, provider } = yield* boot()
 
         yield* llm.text("hello")
@@ -418,7 +417,6 @@ it.live("session.processor effect tests stop after token overflow requests compa
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
-        const database = yield* Database.Service
         const { processors, session, provider } = yield* boot()
 
         yield* llm.text("after", { usage: { input: 100, output: 0 } })
@@ -465,7 +463,6 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
-        const database = yield* Database.Service
         const { processors, session, provider } = yield* boot()
 
         yield* llm.push(reply().reason("think").text("done").stop())
@@ -711,7 +708,7 @@ it.live("session.processor effect tests publish retry status updates", () =>
         const events = yield* EventV2Bridge.Service
 
         yield* llm.error(503, { error: "boom" })
-        yield* llm.text("")
+        yield* llm.text("recovered")
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "retry")
@@ -720,7 +717,8 @@ it.live("session.processor effect tests publish retry status updates", () =>
         const states: number[] = []
         const off = yield* events.listen((evt) => {
           if (evt.type !== SessionStatus.Event.Status.type) return Effect.void
-          const data = evt.data as typeof SessionStatus.Event.Status.data.Type
+          if (!Schema.is(SessionStatus.Event.Status.data)(evt.data)) return Effect.void
+          const data = evt.data
           if (data.sessionID === chat.id && data.status.type === "retry") states.push(data.status.attempt)
           return Effect.void
         })
@@ -1152,6 +1150,226 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
   ),
 )
 
+it.live("session.processor effect tests retry an incomplete tool response and execute the tool once", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        let executed = 0
+        const { processors, session, provider } = yield* boot()
+
+        // Attempt 1: tool input starts but the stream ends without a finish reason.
+        yield* llm.push(reply().pendingTool("lookup", { query: "x" }).item())
+        // Attempt 2 (retry): the complete tool call followed by a normal finish.
+        yield* llm.push(reply().tool("lookup", { query: "x" }).stop().item())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "incomplete tool")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "run the lookup" }],
+          tools: {
+            lookup: tool({
+              description: "Pending lookup",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async () => {
+                executed += 1
+                return { title: "Lookup", output: "ok", metadata: {} }
+              },
+            }),
+          },
+        })
+
+        expect(result).toBe("continue")
+        expect(yield* llm.calls).toBe(2)
+        expect(executed).toBe(1)
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const calls = parts.filter((part): part is SessionV1.ToolPart => part.type === "tool")
+        expect(calls).toHaveLength(2)
+        // Both attempts reuse call_1: the failed rejected-input placeholder
+        // keeps its terminal error (the SDK's InvalidToolInputError message,
+        // never an executed repair artifact), the retried call settles into
+        // its own part.
+        expect(calls[0]?.state.status).toBe("error")
+        if (calls[0]?.state.status === "error") {
+          expect(calls[0].state.error).toContain("Invalid input for tool")
+          expect(calls[0].state.error).not.toContain("unavailable tool")
+        }
+        expect(calls[1]?.state.status).toBe("completed")
+        if (calls[1]?.state.status === "completed") {
+          expect(calls[1].state.input).toEqual({ query: "x" })
+          expect(calls[1].state.output).toBe("ok")
+          expect(calls[1].state.metadata?.interrupted).toBeUndefined()
+        }
+        expect(msg.error).toBeUndefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests keep the lowercase repair path for unknown tool names", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        let executed = 0
+        const { processors, session, provider } = yield* boot()
+        // The model calls "LOOKUP" with valid JSON: a NoSuchToolError that the
+        // lowercase repair still fixes. Must execute once and never retry.
+        yield* llm.push(reply().tool("LOOKUP", { query: "x" }).stop().item())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "uppercase tool name")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "run the lookup" }],
+          tools: {
+            lookup: tool({
+              description: "Lookup",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async () => {
+                executed += 1
+                return { title: "Lookup", output: "ok", metadata: {} }
+              },
+            }),
+          },
+        })
+
+        expect(result).toBe("continue")
+        expect(yield* llm.calls).toBe(1)
+        expect(executed).toBe(1)
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const calls = parts.filter((part): part is SessionV1.ToolPart => part.type === "tool")
+        expect(calls).toHaveLength(1)
+        expect(calls[0]?.state.status).toBe("completed")
+        if (calls[0]?.state.status === "completed") {
+          expect(calls[0].state.input).toEqual({ query: "x" })
+          expect(calls[0].state.output).toBe("ok")
+        }
+        expect(msg.error).toBeUndefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests never execute the repair artifact for unknown tool names", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        let executed = 0
+        let invalidExecuted = 0
+        const { processors, session, provider } = yield* boot()
+        // A fully unknown tool name: the repair artifact renames the call to
+        // the reserved "invalid" tool name, but that name is excluded from
+        // activeTools, so the SDK's parse fails with NoSuchToolError and the
+        // emitted invalid tool-call error is never executed. The model still
+        // sees the error text and the request is never auto-retried.
+        yield* llm.push(reply().tool("no_such_tool", { query: "x" }).stop().item())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "unknown tool name")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "run the lookup" }],
+          tools: {
+            lookup: tool({
+              description: "Lookup",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async () => {
+                executed += 1
+                return { title: "Lookup", output: "ok", metadata: {} }
+              },
+            }),
+            invalid: tool({
+              description: "Do not use",
+              inputSchema: z.object({ tool: z.string(), error: z.string() }),
+              execute: async (input) => {
+                invalidExecuted += 1
+                return {
+                  title: "Invalid Tool",
+                  output: `The arguments provided to the tool are invalid: ${input.error}`,
+                  metadata: {},
+                }
+              },
+            }),
+          },
+        })
+
+        expect(result).toBe("continue")
+        expect(yield* llm.calls).toBe(1)
+        expect(executed).toBe(0)
+        expect(invalidExecuted).toBe(0)
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const calls = parts.filter((part): part is SessionV1.ToolPart => part.type === "tool")
+        expect(calls).toHaveLength(1)
+        expect(calls[0]?.state.status).toBe("error")
+        if (calls[0]?.state.status === "error") {
+          expect(calls[0].state.error).toContain("unavailable tool 'invalid'")
+        }
+        expect(msg.error).toBeUndefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests record aborted errors and idle state", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
@@ -1296,8 +1514,7 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
         const settlements: Array<typeof SessionEvent.Tool.Failed.Type> = []
         const off = yield* events.listen((event) => {
-          if (event.type === SessionEvent.Tool.Failed.type)
-            settlements.push(event as typeof SessionEvent.Tool.Failed.Type)
+          if (Schema.is(SessionEvent.Tool.Failed)(event)) settlements.push(event)
           return Effect.void
         })
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })

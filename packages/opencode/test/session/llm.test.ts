@@ -3,13 +3,14 @@ import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import path from "path"
-import { InvalidResponseDataError, tool, type ModelMessage } from "ai"
+import { InvalidResponseDataError, InvalidToolInputError, tool, type ModelMessage } from "ai"
 import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import z from "zod"
 import { LLM, strictJSON } from "../../src/session/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
+import { LLMEvent } from "@opencode-ai/llm"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -348,6 +349,71 @@ describe("session.llm.ai-sdk adapter", () => {
     ).toEqual([])
   })
 
+  test("marks suppressed file activity on synthesized finish metadata", async () => {
+    const providerMeta = { anthropic: { cacheWrite: 1 } }
+    const events = await adapt([
+      { type: "start-step", request: {}, warnings: [] },
+      uncheckedAdapterEvent({ type: "file", file: "x.png", providerMetadata: providerMeta }),
+      uncheckedAdapterEvent({
+        type: "finish-step",
+        finishReason: "stop",
+        rawFinishReason: "stop",
+        providerMetadata: providerMeta,
+      }),
+      uncheckedAdapterEvent({ type: "finish", finishReason: "stop", rawFinishReason: "stop" }),
+    ])
+
+    expect(events).toHaveLength(3)
+    expect(events[1]).toMatchObject({ type: "step-finish", reason: "stop" })
+    const stepFinish = events[1]
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
+    // Provider keys already present are preserved, not overwritten.
+    expect(stepFinish.providerMetadata?.anthropic).toEqual({ cacheWrite: 1 })
+    const finish = events[2]
+    if (finish?.type !== "finish") throw new Error("expected finish")
+    expect(finish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
+  })
+
+  test("marks suppressed abort and approval activity on synthesized finish metadata", async () => {
+    const events = await adapt([
+      { type: "start-step", request: {}, warnings: [] },
+      uncheckedAdapterEvent({ type: "abort" }),
+      uncheckedAdapterEvent({ type: "tool-approval-request", id: "approval-1" }),
+      uncheckedAdapterEvent({ type: "tool-output-denied", id: "call-1" }),
+      uncheckedAdapterEvent({ type: "finish-step", finishReason: "stop", rawFinishReason: "stop" }),
+    ])
+
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.type).toBe("step-finish")
+    expect(stepFinish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
+  })
+
+  test("reports suppressed file activity even when the stream has no finish", async () => {
+    const state = LLMAISDK.adapterState()
+    const activities: string[] = []
+    const events = await Effect.runPromise(
+      LLMAISDK.toLLMEvents(state, uncheckedAdapterEvent({ type: "file", file: "x.png" }), (activity) =>
+        activities.push(activity),
+      ),
+    )
+    expect(events).toEqual([])
+    expect(activities).toEqual(["suppressed"])
+    expect(state.suppressedActivity).toBe(true)
+  })
+
+  test("plain stop finish metadata stays clean without suppressed activity", async () => {
+    const events = await adapt([
+      { type: "start-step", request: {}, warnings: [] },
+      uncheckedAdapterEvent({ type: "finish-step", finishReason: "stop", rawFinishReason: "stop" }),
+    ])
+
+    const stepFinish = events.at(-1)
+    if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
+    expect(stepFinish.providerMetadata).toBeUndefined()
+  })
+
   test("preserves tool-error cause", async () => {
     const error = new PermissionV1.RejectedError()
     const events = await Effect.runPromise(
@@ -604,6 +670,87 @@ describe("session.llm.ai-sdk adapter", () => {
     expect(events[1]).toMatchObject({ type: "step-finish", providerMetadata: { anthropic: {} } })
     if (events[1].type !== "step-finish") throw new Error("expected step-finish")
     expect(events[1].providerMetadata?.copilot).toBeUndefined()
+  })
+
+  test("wraps rejected tool input errors with ToolInputRejectedError", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-9",
+        toolName: "lookup",
+        input: '{"que',
+        dynamic: true,
+        invalid: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: '{"que', cause: new Error("bad json") }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-error",
+        toolCallId: "call-9",
+        toolName: "lookup",
+        error: "Invalid input for tool lookup: bad json",
+        dynamic: true,
+      }),
+    ])
+
+    expect(events).toHaveLength(2)
+    expect(events[0]).toMatchObject({ type: "tool-call", id: "call-9", name: "lookup" })
+    const toolError = events[1]
+    expect(toolError.type).toBe("tool-error")
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.error).toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+    if (toolError.error instanceof LLMAISDK.ToolInputRejectedError) {
+      expect(toolError.error.message).toBe("Invalid input for tool lookup: bad json")
+      expect(toolError.error.cause).toBe("Invalid input for tool lookup: bad json")
+    }
+  })
+
+  test("keeps provider-executed invalid tool errors unwrapped", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-call",
+        toolCallId: "call-8",
+        toolName: "lookup",
+        input: '{"que',
+        dynamic: true,
+        invalid: true,
+        providerExecuted: true,
+        error: new InvalidToolInputError({ toolName: "lookup", toolInput: '{"que', cause: new Error("bad json") }),
+      }),
+      uncheckedAdapterEvent({
+        type: "tool-error",
+        toolCallId: "call-8",
+        toolName: "lookup",
+        error: "Invalid input for tool lookup: bad json",
+        dynamic: true,
+      }),
+    ])
+
+    const toolError = events[1]
+    expect(toolError.type).toBe("tool-error")
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.error).not.toBeInstanceOf(LLMAISDK.ToolInputRejectedError)
+  })
+
+  test("keeps tool errors without a matching invalid tool-call unwrapped", async () => {
+    const events = await adapt([
+      uncheckedAdapterEvent({
+        type: "tool-error",
+        toolCallId: "call-7",
+        toolName: "lookup",
+        error: "boom",
+      }),
+    ])
+
+    const toolError = events[0]
+    expect(toolError.type).toBe("tool-error")
+    if (toolError.type !== "tool-error") throw new Error("expected tool-error")
+    expect(toolError.error).toBe("boom")
+  })
+
+  test("LLMEvent.toolError preserves a sentinel error instance in-process", () => {
+    const sentinel = new LLMAISDK.ToolInputRejectedError("rejected", { cause: new Error("bad json") })
+    const event = LLMEvent.toolError({ id: "call-1", name: "lookup", message: "rejected", error: sentinel })
+    expect(event.error).toBe(sentinel)
   })
 })
 
@@ -1128,7 +1275,8 @@ describe("session.llm.stream", () => {
     "sends the parent session header for opencode providers",
     () =>
       Effect.gen(function* () {
-        const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+        // Validates the fixture exists for this provider/model before the stream runs.
+        loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
         const request = waitRequest(
           "/chat/completions",
           new Response(createChatStream("Hello"), {
@@ -2517,6 +2665,7 @@ describe("session.llm.stream", () => {
         ]
         let captured: Record<string, unknown> | undefined
         let executed: unknown
+        const activityOrder: string[] = []
         const executor = Layer.succeed(
           RequestExecutor.Service,
           RequestExecutor.Service.of({
@@ -2550,6 +2699,7 @@ describe("session.llm.stream", () => {
           sessionID,
           model: resolved,
           agent,
+          onAttemptActivity: (activity) => activityOrder.push(activity),
           system: [],
           messages: [{ role: "user", content: "Use lookup" }],
           tools: {
@@ -2557,6 +2707,7 @@ describe("session.llm.stream", () => {
               description: "Lookup data",
               inputSchema: z.object({ query: z.string() }),
               execute: async (args, options) => {
+                activityOrder.push("execute")
                 executed = { args, toolCallId: options.toolCallId }
                 return { output: "looked up" }
               },
@@ -2581,6 +2732,7 @@ describe("session.llm.stream", () => {
           },
         ])
         expect(executed).toEqual({ args: { query: "weather" }, toolCallId: "call-injected-tool" })
+        expect(activityOrder).toEqual(["tool-executed", "execute"])
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
   )

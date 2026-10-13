@@ -5,6 +5,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./glob.txt"
+import { describeSearchPathFailure } from "./search-path"
 import * as Tool from "./tool"
 
 export const Parameters = Schema.Struct({
@@ -37,8 +38,19 @@ export const GlobTool = Tool.define(
 
           let search = params.path ?? ins.directory
           search = path.isAbsolute(search) ? search : path.resolve(ins.directory, search)
-          const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
-          if (info?.type === "File") {
+          const statFailure = (error: unknown) =>
+            Effect.fail(
+              new Error(
+                describeSearchPathFailure(
+                  search,
+                  error,
+                  undefined,
+                  "Check the nearest existing parent directory or correct the path.",
+                ),
+              ),
+            )
+          const info = yield* fs.stat(search).pipe(Effect.catch((error) => statFailure(error)))
+          if (info.type === "File") {
             throw new Error(`glob path must be a directory: ${search}`)
           }
           yield* assertExternalDirectoryEffect(ctx, search, {

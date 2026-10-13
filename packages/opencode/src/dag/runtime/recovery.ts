@@ -33,6 +33,7 @@ import type { DagStore } from "@opencode-ai/core/dag/store"
 import { isTransitionRejection } from "@opencode-ai/core/dag/core/types"
 import { reviewImplementationFingerprint } from "../review-lifecycle"
 import { resolveInputMapping } from "./eval"
+import { childFailureReason } from "./child-failure-reason"
 import {
   settleCapturedOutput,
   settlePlainTextOutput,
@@ -449,13 +450,24 @@ export function reconcileWorkflow(
           }
         }
       } else if (sessionStatus === "failed") {
-        if (
-          yield* settle(
-            node.id,
-            dag.nodeFailed(dagID, node.id, "child session failed (recovered)", "exec_failed", attempt),
-          )
+        // Diagnostic read failures retain the generic reason; interruption propagates.
+        const lastMessage = lastAssistantMessage
+          ? yield* lastAssistantMessage(node.childSessionId).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.logWarning(
+                      "DAG recovery could not read the child assistant message for the failure reason",
+                      { dagID, nodeID: node.id, childSessionID: node.childSessionId, cause },
+                    ).pipe(Effect.as(undefined)),
+              ),
+            )
+          : undefined
+        const reason = childFailureReason(
+          "child session failed (recovered)",
+          lastMessage?.info.role === "assistant" ? lastMessage.info.error : undefined,
         )
-          reconciled++
+        if (yield* settle(node.id, dag.nodeFailed(dagID, node.id, reason, "exec_failed", attempt))) reconciled++
       } else {
         if (cancelSession) {
           yield* cancelSession(node.childSessionId).pipe(

@@ -163,7 +163,7 @@ config:
       name: explore
       worker_type: explore
       depends_on: []
-      prompt_template: { inline: "Explore the auth module and report findings."}
+      prompt_template: { inline: "Explore the auth module and report findings." }
       required: true
 
     - id: gate
@@ -563,8 +563,10 @@ Pass `spec_path`, then retarget generic objectives and block instructions in
 the parent, write the edited result to YAML, and start that file by path.
 
 **draft** — Render a structured graph `config` (same fields as the start
-file's `config`) into a validated YAML spec and return its `spec_path`; no
-workflow is created. Preferred over hand-writing YAML: the parameter schema
+file's `config`) into a validated YAML START spec and return its `spec_path`; no
+workflow is created. The draft is a start document only: it is not a valid
+extend or replan file, because those actions decode their own envelopes.
+Preferred over hand-writing YAML: the parameter schema
 rejects unknown fields, eliminating serialization drift. When validation fails
 the file is still on disk — fix it by calling draft again with corrected
 fields, then start the returned `spec_path`.
@@ -586,8 +588,12 @@ per-error paths, never a workflow ID.
 new nodes are immediately eligible for scheduling if their dependencies are
 met. It also accepts a genuinely additive wave after a reporting leaf
 checkpoint naturally completed the current graph; an early
-`control(complete)` workflow remains terminal. Put the new nodes under `nodes`
-in a YAML file, then call
+`control(complete)` workflow remains terminal. The extend file carries its
+graph at the top level — either `{ objective, blocks: [...] }` (block route)
+or `{ nodes: [...] }` (low-level route), never both. It has no `config`,
+`title`, `name`, or `fragment` wrapper and no graph budgets or
+`node_defaults`: those belong to the start document and cannot change during
+an extension. Then call
 `{ action: "extend", workflow_id: "dag_...", spec_path: "extend.yaml" }`.
 
 **status** — Read durable state for one workflow and all its nodes. Pass `workflow_id`. Use it when the user asks for current state, or once before a decision that needs fresh state, such as replan or control. Do not poll just to wait; node reports and terminal outcomes wake the parent automatically.
@@ -605,17 +611,19 @@ omitted content from its preview.
 - `resume` — Resume scheduling. A successful replan or extend auto-resumes a paused workflow. Resume manually only if its output says automatic resume raced with another control operation and the workflow is still paused.
 - `cancel` — cancel the entire workflow
 - `recover` — Retry selected `node_ids` and their downstream closure under the same workflow ID. Pass `expected_graph_rev` from `status`. The action is rejected for stale revisions, unavailable reusable artifacts, or exhausted attempt/node budgets. Pause a live workflow first. Cancellation requires `resume_cancelled: true`. The response lists old-to-new attempt IDs and reused/preserved/superseded sets. Unrelated pending work stays unchanged; rows the workflow termination itself skipped or aborted (`workflow_failed` / `workflow_cancelled`) get new attempts automatically.
-- `replan` — Put `fragment: { ... }` with graph fields and node definitions in YAML, then pass `spec_path`. Set `restart: true` or `cancel: true` for running nodes. Pending nodes missing from the fragment are cancelled. Replan is valid while paused. Safest order: pause, write the file, then replan. Success resumes the workflow automatically. Resume manually only if output says automatic resume raced with another control operation and the workflow is still paused. A validation rejection does not itself fail or cancel the workflow. The tool attempts to park it paused; inspect the reported actual state. If it is paused, fix the field named by the diagnostic and replan. If automatic pause failed and it is still running, explicitly pause or settle it before ending the turn. For terminal or unknown state, inspect status and use the applicable recovery path. Do not cancel the whole graph merely because validation rejected a fragment.
+- `replan` — Put `fragment: { ... }` wrapping the graph — `name` plus
+  `objective` and `blocks` (block route), or `nodes` (low-level route) — in
+  YAML, then pass `spec_path`. Set `restart: true` or `cancel: true` for running nodes. Pending nodes missing from the fragment are cancelled. Replan is valid while paused. Safest order: pause, write the file, then replan. Success resumes the workflow automatically. Resume manually only if output says automatic resume raced with another control operation and the workflow is still paused. A validation rejection does not itself fail or cancel the workflow. The tool attempts to park it paused; inspect the reported actual state. If it is paused, fix the field named by the diagnostic and replan. If automatic pause failed and it is still running, explicitly pause or settle it before ending the turn. For terminal or unknown state, inspect status and use the applicable recovery path. Do not cancel the whole graph merely because validation rejected a fragment.
 - `extend_timeout` — Give a RUNNING node with a pending formal timeout escalation already delivered to the parent more time without a replan. Pass `node_id` and a fresh `timeout_ms`; the new deadline starts now. The node keeps its child session and attempt. No replan is consumed and the graph is unchanged. The deadline watcher updates to the new deadline. The action is refused without a pending formal escalation (`no_escalation`) or before its wake is delivered (`escalation_undelivered`). An elapsed deadline alone does not authorize an extension. Prefer this over replan for timeout escalation. Use replan only if the graph must also change.
 - `complete` — early-complete: remaining pending nodes are skipped (non-violation)
 - `step` — Advance exactly one ready node, selected by lexicographic node ID, then wait. Use it for controlled debugging or staged verification of a critical path. Unlike `pause`, it advances one node and waits again. A second `step` is rejected while that node is running. Use `resume` to restore full-speed scheduling. Lexicographic selection keeps the order deterministic.
 
 ### Workflow result delivery
 
-| Field | Required | Description |
-| ----- | -------- | ----------- |
-| `result_protocol` | no | `final_response` by default for newly created workflows. With `output_schema`, the node's final assistant answer must be one JSON value matching the schema; without a schema, the complete final answer is captured as text. Historical workflows without this field keep `submit_result` behavior. |
-| `delivery_node` | no | Node whose completed output is copied once into the parent assistant message. A composable-block workflow with exactly one leaf `synthesize` block selects it automatically. When no unique delivery node is configured, completion provides a deterministic index of available results. |
+| Field             | Required | Description                                                                                                                                                                                                                                                                                          |
+| ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `result_protocol` | no       | `final_response` by default for newly created workflows. With `output_schema`, the node's final assistant answer must be one JSON value matching the schema; without a schema, the complete final answer is captured as text. Historical workflows without this field keep `submit_result` behavior. |
+| `delivery_node`   | no       | Node whose completed output is copied once into the parent assistant message. A composable-block workflow with exactly one leaf `synthesize` block selects it automatically. When no unique delivery node is configured, completion provides a deterministic index of available results.             |
 
 With `final_response`, the child must not report its final result again through `agent.send`. Use `agent.send` for clarification, decisions, and collaboration. A failed, paused, timed-out, or otherwise actionable workflow still follows its normal wake and control path.
 
@@ -633,7 +641,7 @@ With `final_response`, the child must not report its final result again through 
 | `input_mapping`    | no       | Map upstream node outputs into template variables                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `report_to_parent` | no       | If true, the parent agent is woken when this node completes or fails. The workflow's terminal status always wakes the parent regardless of this flag                                                                                                                                                                                                                                                                                                     |
 | `worker_config`    | no       | `{ timeout_ms }` — bounds the node from admission to completion (defaults to 10 minutes if omitted); queue wait counts toward the budget, an expired queued node fails without spawning, and a running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing                                                                                                                                         |
-| `output_schema`    | no       | JSON Schema for the node result. Under `final_response`, the complete final answer must be exactly one JSON value matching the schema. Under legacy `submit_result`, the child must submit the value through that tool or the node fails                                                                                                                                                                                                                      |
+| `output_schema`    | no       | JSON Schema for the node result. Under `final_response`, the complete final answer must be exactly one JSON value matching the schema. Under legacy `submit_result`, the child must submit the value through that tool or the node fails                                                                                                                                                                                                                 |
 | `restart`          | no       | (replan only) Re-spawn this running node with new prompt                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `cancel`           | no       | (replan only) Cancel this node                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `review`           | no       | (deep review workers) `{ phase: "design" \| "diff" }`; a `diff` review must also declare `implementation_node_id` / `verification_node_id` and wire them: transitive review→verification→implementation dependencies, `input_mapping` for the diff artifact + fingerprint + verification output, a PASS-gated `condition`, and a `verdict`+`implementation_fingerprint` `output_schema`. Authoring rejects violations in deep mode and warns in standard |

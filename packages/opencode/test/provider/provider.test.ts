@@ -1397,6 +1397,190 @@ test("models.dev normalization fills required response fields", () => {
   expect(model.release_date).toBe("")
 })
 
+// Issue 764: configured long-context pricing (cost.context_over_200k) and inherited
+// tier metadata must survive custom/configured model resolution.
+
+const longContextCatalog = {
+  "catalog-provider": {
+    id: "catalog-provider",
+    name: "Catalog Provider",
+    env: [],
+    api: "https://catalog.example.com/v1",
+    models: {
+      "long-context-model": {
+        id: "long-context-model",
+        name: "Long Context Model",
+        family: "lc",
+        release_date: "2026-01-01",
+        attachment: false,
+        reasoning: true,
+        temperature: true,
+        tool_call: true,
+        cost: {
+          input: 10,
+          output: 50,
+          cache_read: 1,
+          cache_write: 2,
+          tiers: [{ input: 30, output: 90, cache_read: 4, cache_write: 8, tier: { type: "context", size: 300_000 } }],
+          context_over_200k: { input: 20, output: 75, cache_read: 3 },
+        },
+        limit: { context: 400_000, output: 64_000 },
+      },
+    },
+  },
+} as unknown as Record<string, ModelsDev.Provider>
+
+const longContextCatalogLayer = Layer.succeed(
+  ModelsDev.Service,
+  ModelsDev.Service.of({
+    get: () => Effect.succeed(longContextCatalog),
+    refresh: () => Effect.void,
+  }),
+)
+
+const cataloged = testEffect(
+  Layer.mergeAll(
+    Provider.layer.pipe(
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(Env.defaultLayer),
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Auth.defaultLayer),
+      Layer.provide(Plugin.defaultLayer),
+      Layer.provide(longContextCatalogLayer),
+      Layer.provide(RuntimeFlags.layer({})),
+      Layer.provide(EventV2Bridge.defaultLayer),
+    ),
+    Env.defaultLayer,
+    Plugin.defaultLayer,
+    longContextCatalogLayer,
+  ),
+)
+
+const expectedLongContextTiers: NonNullable<Provider.Model["cost"]["tiers"]> = [
+  { input: 30, output: 90, cache: { read: 4, write: 8 }, tier: { type: "context", size: 300_000 } },
+]
+
+cataloged.instance(
+  "configured model without cost inherits catalog tiers and over-200k pricing",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("catalog-provider")].models["long-context-model"]
+    expect(model.name).toBe("Renamed Long Context")
+    expect(model.cost.input).toBe(10)
+    expect(model.cost.output).toBe(50)
+    expect(model.cost.cache).toEqual({ read: 1, write: 2 })
+    expect(model.cost.tiers).toEqual(expectedLongContextTiers)
+    expect(model.cost.experimentalOver200K).toEqual({
+      input: 20,
+      output: 75,
+      cache: { read: 3, write: 0 },
+    })
+  }),
+  {
+    config: {
+      provider: {
+        "catalog-provider": {
+          options: { apiKey: "test-key" },
+          models: { "long-context-model": { name: "Renamed Long Context" } },
+        },
+      },
+    },
+  },
+)
+
+cataloged.instance(
+  "configured context_over_200k overrides catalog legacy rate and preserves inherited tiers",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("catalog-provider")].models["long-context-model"]
+    expect(model.cost.input).toBe(999)
+    expect(model.cost.output).toBe(888)
+    expect(model.cost.cache).toEqual({ read: 1, write: 2 })
+    expect(model.cost.tiers).toEqual(expectedLongContextTiers)
+    expect(model.cost.experimentalOver200K).toEqual({
+      input: 40,
+      output: 90,
+      cache: { read: 0, write: 0 },
+    })
+  }),
+  {
+    config: {
+      provider: {
+        "catalog-provider": {
+          options: { apiKey: "test-key" },
+          models: {
+            "long-context-model": {
+              cost: { input: 999, output: 888, context_over_200k: { input: 40, output: 90 } },
+            },
+          },
+        },
+      },
+    },
+  },
+)
+
+const longContextCustomConfig = {
+  provider: {
+    "long-context-custom": {
+      name: "Long Context Custom",
+      npm: "@ai-sdk/openai-compatible",
+      env: [],
+      models: {
+        astra: {
+          name: "Astra",
+          tool_call: true,
+          limit: { context: 400_000, output: 64_000 },
+          cost: {
+            input: 10,
+            output: 50,
+            cache_read: 1,
+            cache_write: 2,
+            context_over_200k: { input: 20, output: 75, cache_read: 3 },
+          },
+        },
+        flat: {
+          name: "Flat",
+          tool_call: true,
+          limit: { context: 400_000, output: 64_000 },
+          cost: { input: 10, output: 50 },
+        },
+      },
+      options: { apiKey: "test-key" },
+    },
+  },
+}
+
+it.instance(
+  "custom model resolves configured context_over_200k into runtime over-200k pricing",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("long-context-custom")].models["astra"]
+    expect(model.cost.input).toBe(10)
+    expect(model.cost.output).toBe(50)
+    expect(model.cost.cache).toEqual({ read: 1, write: 2 })
+    expect(model.cost.experimentalOver200K).toEqual({
+      input: 20,
+      output: 75,
+      cache: { read: 3, write: 0 },
+    })
+    expect(model.cost.tiers).toBeUndefined()
+  }),
+  { config: longContextCustomConfig },
+)
+
+it.instance(
+  "custom model without long-context pricing keeps base-rate-only cost metadata",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("long-context-custom")].models["flat"]
+    expect(model.cost.input).toBe(10)
+    expect(model.cost.output).toBe(50)
+    expect(model.cost.experimentalOver200K).toBeUndefined()
+    expect(model.cost.tiers).toBeUndefined()
+  }),
+  { config: longContextCustomConfig },
+)
+
 it.instance("model variants are generated for reasoning models", () =>
   Effect.gen(function* () {
     yield* set("ANTHROPIC_API_KEY", "test-api-key")

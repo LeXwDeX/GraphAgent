@@ -42,6 +42,7 @@ import type { ResultProtocol } from "../dag"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
+import { childFailureReason } from "./child-failure-reason"
 import { InstanceRef } from "@/effect/instance-ref"
 import { isTransitionRejection, isNodeTerminalStatus } from "@opencode-ai/core/dag/core/types"
 import type { DagStore } from "@opencode-ai/core/dag/store"
@@ -660,11 +661,21 @@ export function spawnNode(
                 : undefined
             const snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
             const settled = yield* Effect.gen(function* () {
-              if (result.info.role !== "assistant" || result.info.error) {
+              if (result.info.role !== "assistant") {
                 yield* dag.nodeFailed(
                   input.dagID,
                   input.nodeID,
                   "child model turn stopped before a successful result",
+                  "exec_failed",
+                  settlementAttempt,
+                )
+                return
+              }
+              if (result.info.error) {
+                yield* dag.nodeFailed(
+                  input.dagID,
+                  input.nodeID,
+                  childFailureReason("child model turn stopped before a successful result", result.info.error),
                   "exec_failed",
                   settlementAttempt,
                 )

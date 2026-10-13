@@ -5,6 +5,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
+import { describeSearchPathFailure } from "./search-path"
 import * as Tool from "./tool"
 
 export const Parameters = Schema.Struct({
@@ -16,6 +17,9 @@ export const Parameters = Schema.Struct({
     description: 'File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")',
   }),
 })
+
+const searchPathFailure = (searchPath: string, error: unknown, requested?: string) =>
+  Effect.fail(new Error(describeSearchPathFailure(searchPath, error, requested)))
 
 export const GrepTool = Tool.define(
   "grep",
@@ -57,9 +61,15 @@ export const GrepTool = Tool.define(
             kind: requestedInfo?.type === "Directory" ? "directory" : "file",
           })
 
-          const search = FSUtil.resolve(requested)
-          const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
-          if (!info) return yield* Effect.fail(new Error(`Cannot access search path: ${search}`))
+          // Best-effort realpath; when the path itself is the failure, the
+          // classified stat below reports the actual category for the requested path.
+          let search = requested
+          try {
+            search = FSUtil.resolve(requested)
+          } catch {
+            search = requested
+          }
+          const info = yield* fs.stat(search).pipe(Effect.catch((error) => searchPathFailure(search, error, requested)))
           const cwd = info.type === "Directory" ? search : path.dirname(search)
           const result = yield* ripgrep.grep({
             cwd,

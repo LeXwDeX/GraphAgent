@@ -366,7 +366,8 @@ function collectLeafIssues(issue: unknown, path: readonly string[], out: LeafIss
 // High-frequency authoring drift: fields the model reaches for from
 // neighboring vocabularies, mapped to the field that exists. The decode leaf
 // only carries the tag ("UnexpectedKey"); the offending field name lives in
-// the diagnostic path, so both are matched.
+// the diagnostic path, so both are matched. Block-level vocabulary means the
+// same thing for every action.
 const FIELD_DRIFT_HINTS: Record<string, string> = {
   worker: "worker_type",
   workers: "worker_type",
@@ -376,23 +377,80 @@ const FIELD_DRIFT_HINTS: Record<string, string> = {
   timeout_ms: "worker_config: { timeout_ms }",
   prompt: "instruction",
   task: "instruction",
-  objective: "config.objective",
-  graph: "config",
-  spec: "config",
   nodes: "blocks (or vice versa — exactly one graph source)",
   blocks: "nodes (or vice versa — exactly one graph source)",
 }
 
-function driftHint(path: string, message: string) {
-  for (const [wrong, right] of Object.entries(FIELD_DRIFT_HINTS)) {
-    if (message.includes(`"${wrong}"`) || path.includes(`["${wrong}"]`)) {
-      return `Did you mean "${right}"? Every block field is one of id, kind, depends_on, instruction, worker_type, worker_config, required, report_to_parent; objective lives inside config`
-    }
-  }
-  return "Fix the field shape; blocks graphs need name+objective+blocks, nodes graphs need name+nodes"
+/** The authoring action whose envelope a decoded document must satisfy.
+ * Hints describe the selected action's own contract; a start-shaped answer
+ * steered an extend retry into a second rejection (issue #775). */
+export type SchemaAction = "start" | "extend" | "replan"
+
+/** The exact document shape each action decodes. Every envelope-level hint
+ * ends with this sentence so a retry is keyed off the action's own contract. */
+const ACTION_ENVELOPES: Record<SchemaAction, string> = {
+  start: "a start document: { title?, mode?, admission?, config: { name, objective + blocks | nodes } }",
+  extend:
+    'an extend document: { "objective": "...", "blocks": [...] } or { "nodes": [...] } at the top level — no "config", "title", "name", "fragment", or graph-budget fields',
+  replan: 'a replan document: { "fragment": { name, objective + blocks | nodes } }',
 }
 
-export function schemaDiagnostics(error: unknown, basePath = ""): Diagnostic[] {
+/** Where the graph's objective lives for the selected action; appended to the
+ * block-field drift sentence, which is otherwise action-independent. */
+const OBJECTIVE_LOCATION: Record<SchemaAction, string> = {
+  start: "objective lives inside config",
+  extend: "extend takes objective at the top level",
+  replan: 'the graph lives inside "fragment"',
+}
+
+/** Graph-envelope vocabulary whose right answer depends on the action being
+ * decoded. The generic table above intentionally omits these keys: their
+ * start-shaped answers were wrong for extend and replan. */
+const ACTION_FIELD_DRIFT: Record<string, Record<SchemaAction, string>> = {
+  objective: {
+    start: 'config ("config.objective"; objective lives inside config)',
+    extend: 'the extend document\'s top level, next to "blocks"',
+    replan: 'the "fragment" graph',
+  },
+  graph: { start: "config", extend: "the extend document's top level", replan: 'the "fragment" graph' },
+  spec: { start: "config", extend: "the extend document's top level", replan: 'the "fragment" graph' },
+  config: {
+    start: "config",
+    extend: "the start document only (extend has no config wrapper)",
+    replan: 'the start document only (replan wraps the graph in "fragment")',
+  },
+  title: {
+    start: "the start document's top level",
+    extend: "the start document only (an extend file has no title)",
+    replan: 'the start document only (a replan file has only "fragment")',
+  },
+  fragment: {
+    start: 'the replan document only (start wraps the graph in "config")',
+    extend: "the replan document only (extend has no fragment wrapper)",
+    replan: 'the replan document\'s "fragment" envelope',
+  },
+  name: {
+    start: 'the graph ("config.name")',
+    extend: "nowhere in extend (the document is exactly { objective, blocks } or { nodes })",
+    replan: 'the "fragment" graph ("fragment.name")',
+  },
+}
+
+function driftHint(path: string, message: string, action: SchemaAction = "start") {
+  for (const [wrong, right] of Object.entries(FIELD_DRIFT_HINTS)) {
+    if (message.includes(`"${wrong}"`) || path.includes(`["${wrong}"]`)) {
+      return `Did you mean "${right}"? Every block field is one of id, kind, depends_on, instruction, worker_type, worker_config, required, report_to_parent; ${OBJECTIVE_LOCATION[action]}; expected ${ACTION_ENVELOPES[action]}`
+    }
+  }
+  for (const [field, where] of Object.entries(ACTION_FIELD_DRIFT)) {
+    if (message.includes(`"${field}"`) || path.includes(`["${field}"]`)) {
+      return `"${field}" belongs in ${where[action]}; expected ${ACTION_ENVELOPES[action]}`
+    }
+  }
+  return `Fix the field shape; expected ${ACTION_ENVELOPES[action]}`
+}
+
+export function schemaDiagnostics(error: unknown, basePath = "", action: SchemaAction = "start"): Diagnostic[] {
   const leaves: LeafIssue[] = []
   collectLeafIssues(
     isRecord(error) && error.issue !== undefined ? error.issue : error,
@@ -408,7 +466,7 @@ export function schemaDiagnostics(error: unknown, basePath = ""): Diagnostic[] {
         code: DIAGNOSTIC_CODES.schemaInvalid,
         path: leaf.path,
         message: leaf.message,
-        hint: driftHint(leaf.path, leaf.message),
+        hint: driftHint(leaf.path, leaf.message, action),
       }),
     ),
   )

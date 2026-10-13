@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Result, Schema } from "effect"
+import { CommandPlugin } from "@opencode-ai/core/plugin/command"
 import { Parameters } from "../../src/tool/workflow"
 import { DagBlocks } from "../../src/dag/blocks"
 
@@ -116,16 +117,18 @@ describe("worktree-lifecycle regression fixtures", () => {
   test("model-facing graph actions require a YAML source path", () => {
     const spec = worktreeLifecycleStartInput.spec
 
-    expect(decode({ params: { action: "start", spec_path: "workflow.yaml" }})).toBe(true)
-    expect(decode({ params: { action: "start", spec }})).toBe(false)
-    expect(decode({ params: { action: "extend", workflow_id: "dag_2x9k4m", spec_path: "extend.yaml" }})).toBe(true)
-    expect(decode({ params: { action: "extend", workflow_id: "dag_2x9k4m", spec }})).toBe(false)
+    expect(decode({ params: { action: "start", spec_path: "workflow.yaml" } })).toBe(true)
+    expect(decode({ params: { action: "start", spec } })).toBe(false)
+    expect(decode({ params: { action: "extend", workflow_id: "dag_2x9k4m", spec_path: "extend.yaml" } })).toBe(true)
+    expect(decode({ params: { action: "extend", workflow_id: "dag_2x9k4m", spec } })).toBe(false)
     expect(
-      decode({ params: { action: "control", operation: "replan", workflow_id: "dag_2x9k4m", spec_path: "replan.yaml" }}),
+      decode({
+        params: { action: "control", operation: "replan", workflow_id: "dag_2x9k4m", spec_path: "replan.yaml" },
+      }),
     ).toBe(true)
-    expect(decode({ params: { action: "control", operation: "replan", workflow_id: "dag_2x9k4m", spec }})).toBe(false)
-    expect(decode({ params: { action: "validate", spec_path: "workflow.yaml", profile: "environment" }})).toBe(true)
-    expect(decode({ params: { action: "validate", spec, profile: "environment" }})).toBe(false)
+    expect(decode({ params: { action: "control", operation: "replan", workflow_id: "dag_2x9k4m", spec } })).toBe(false)
+    expect(decode({ params: { action: "validate", spec_path: "workflow.yaml", profile: "environment" } })).toBe(true)
+    expect(decode({ params: { action: "validate", spec, profile: "environment" } })).toBe(false)
   })
 
   test("decision brief route compiles under the block compiler", () => {
@@ -154,9 +157,7 @@ describe("worktree-lifecycle regression fixtures", () => {
     // The diff review binds to the aggregator's post-merge fingerprint.
     expect(reviewDecision?.review?.implementation_node_id).toBe("review--aggregate")
     expect(reviewDecision?.review?.verification_node_id).toBe("verify")
-    expect(reviewDecision?.input_mapping?.["implementation_fingerprint"]).toBe(
-      "review--aggregate.output.fingerprint",
-    )
+    expect(reviewDecision?.input_mapping?.["implementation_fingerprint"]).toBe("review--aggregate.output.fingerprint")
   })
 
   test("accepted start carries only its YAML path while the authored fixture keeps complete blocks", () => {
@@ -190,18 +191,18 @@ describe("worktree-lifecycle regression fixtures", () => {
   })
 
   test("start without any graph source is rejected", () => {
-    expect(decode({ params: { action: "start" }})).toBe(false)
+    expect(decode({ params: { action: "start" } })).toBe(false)
   })
 
   test("validate rejects control and result fields it does not own", () => {
     const spec_path = "workflow.yaml"
-    expect(decode({ params: { action: "validate", spec_path, workflow_id: "dag_2x9k4m" }})).toBe(false)
-    expect(decode({ params: { action: "validate", spec_path, node_id: "verify" }})).toBe(false)
-    expect(decode({ params: { action: "validate", spec_path, operation: "cancel" }})).toBe(false)
-    expect(decode({ params: { action: "validate", spec_path, cursor: "", limit: 500 }})).toBe(false)
+    expect(decode({ params: { action: "validate", spec_path, workflow_id: "dag_2x9k4m" } })).toBe(false)
+    expect(decode({ params: { action: "validate", spec_path, node_id: "verify" } })).toBe(false)
+    expect(decode({ params: { action: "validate", spec_path, operation: "cancel" } })).toBe(false)
+    expect(decode({ params: { action: "validate", spec_path, cursor: "", limit: 500 } })).toBe(false)
     // The validate action itself stays clean with its file source.
-    expect(decode({ params: { action: "validate", spec_path, profile: "portable" }})).toBe(true)
-    expect(decode({ params: { action: "validate", spec_path: "saved-route", profile: "environment" }})).toBe(true)
+    expect(decode({ params: { action: "validate", spec_path, profile: "portable" } })).toBe(true)
+    expect(decode({ params: { action: "validate", spec_path: "saved-route", profile: "environment" } })).toBe(true)
   })
 
   test("model-facing start rejects inline admission objects entirely", () => {
@@ -226,9 +227,55 @@ describe("worktree-lifecycle regression fixtures", () => {
       acknowledged_risks: ["unresolved rollout"],
     }
     const spec = { ...worktreeLifecycleStartInput.spec, mode: "deep", admission: cleanAdmission }
-    expect(decode({ params: { action: "start", spec }})).toBe(false)
+    expect(decode({ params: { action: "start", spec } })).toBe(false)
     for (const field of ["protocol_version", "state", "fingerprint"]) {
-      expect(decode({ params: { action: "start", spec: { ...spec, admission: { ...cleanAdmission, [field]: "x" } } }})).toBe(false)
+      expect(
+        decode({ params: { action: "start", spec: { ...spec, admission: { ...cleanAdmission, [field]: "x" } } } }),
+      ).toBe(false)
     }
+  })
+})
+
+// Issue #775: draft is a start-only authoring path, and the model-facing
+// guidance must not drift from the action-specific envelopes the authoring
+// layer decodes (start=config, extend=top-level objective+blocks or nodes,
+// replan=fragment).
+describe("workflow tool authoring guidance (#775)", () => {
+  const draft = (config: unknown) => ({ params: { action: "draft", config } })
+
+  test("draft accepts both graph shapes through the start config envelope", () => {
+    const blocksConfig = {
+      name: "draft-blocks",
+      objective: "Draft the block route.",
+      blocks: [block({ id: "a", kind: "coding" })],
+    }
+    const nodesConfig = {
+      name: "draft-nodes",
+      nodes: [{ id: "a", name: "a", worker_type: "general", depends_on: [], prompt_template: { inline: "Do it" } }],
+    }
+    expect(decode(draft(blocksConfig))).toBe(true)
+    expect(decode(draft(nodesConfig))).toBe(true)
+    // A top-level objective is not a draft field — the config envelope is the
+    // only graph carrier at this boundary.
+    expect(decode({ params: { action: "draft", objective: "top level" } })).toBe(false)
+  })
+
+  test("tool description and guides state the start-only draft contract and the exact action envelopes", () => {
+    const routing = CommandPlugin.WorkflowContent
+    expect(routing).toContain("start document only")
+    expect(routing).toContain("{ objective, blocks }")
+    expect(routing).toContain("`fragment`")
+    // The extended start-envelope statement stays intact for the drift hints.
+    expect(routing).toContain("`objective` lives INSIDE `config`")
+
+    const interfaceGuide = CommandPlugin.WorkflowFactsContent
+    expect(interfaceGuide).toContain("The draft is a start document only")
+    expect(interfaceGuide).toContain("either `{ objective, blocks: [...] }` (block route)")
+    expect(interfaceGuide).toContain("or `{ nodes: [...] }` (low-level route)")
+
+    const blocksGuide = CommandPlugin.WorkflowBlocksContent
+    expect(blocksGuide).toContain("or `nodes` for the low-level route")
+    expect(blocksGuide).toContain("graph budgets")
+    expect(blocksGuide).toContain("never both")
   })
 })
