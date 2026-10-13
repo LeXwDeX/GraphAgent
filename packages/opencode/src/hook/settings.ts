@@ -1457,6 +1457,22 @@ export interface Interface {
    * files. Empty when no hooks.json layer defines any hook.
    */
   readonly list: () => Effect.Effect<ReadonlyArray<HookSummary>>
+  /**
+   * Invalidate the pending Stop/SubagentStop/StopFailure rewake chain for a
+   * session. SessionPrompt.cancel calls this so a user abort is not overridden
+   * by a callback that completes afterwards and rewakes a fresh turn. Optional
+   * so partial test mocks stay valid; the real layer always provides it.
+   */
+  readonly invalidateStopRewakeChain?: (sessionID: SessionID | string) => Effect.Effect<void>
+  /**
+   * Re-validate a stop-chain token captured at Stop-trigger time. Returns
+   * false when the chain has since been invalidated or replaced (session
+   * cancel, newer user prompt, SessionEnd, instance dispose). Admission and
+   * the run path re-check with this, because invalidation can land after the
+   * callback's own completion check. Optional so partial test mocks stay
+   * valid; the real layer always provides it.
+   */
+  readonly validateStopRewakeChain?: (sessionID: SessionID | string, token: unknown) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SettingsHook") {}
@@ -2082,8 +2098,12 @@ export const layer = Layer.effect(
       }
 
       if (stopChain) {
-        // A newer non-hook prompt or SessionEnd invalidates pending Stop callbacks.
-        if (state.stopRewakeChains.get(sessionID) !== stopChain) return
+        // A newer non-hook prompt, SessionEnd, or session cancel invalidates
+        // pending Stop callbacks.
+        if (state.stopRewakeChains.get(sessionID) !== stopChain) {
+          log.debug("async Stop callback discarded: chain invalidated", { sessionID, event })
+          return
+        }
         if (stopChain.count >= MAX_STOP_CONTINUATIONS) {
           log.warn("async Stop hook continuation limit reached", { sessionID, limit: MAX_STOP_CONTINUATIONS })
           return
@@ -2093,7 +2113,10 @@ export const layer = Layer.effect(
       }
 
       const text = buildRewakePrompt(entry, event, parts.join("\n"))
-      yield* hookRewake.rewake({ sessionID: SessionID.make(sessionID), text }).pipe(
+      // The token rides along so SessionPrompt can re-check validity at the
+      // real admission point — cancel can invalidate after this completion
+      // check but before the rewake lands.
+      yield* hookRewake.rewake({ sessionID: SessionID.make(sessionID), text, stopChain }).pipe(
         Effect.catchDefect((defect) => {
           log.warn("async hook rewake defect swallowed", {
             command: commandText(entry).slice(0, 80),
@@ -2420,7 +2443,28 @@ export const layer = Layer.effect(
       return s.hooksList
     })
 
-    return Service.of({ trigger, list })
+    // A pending Stop/SubagentStop/StopFailure rewake chain dies with the
+    // user's cancel intent. `stopRewakeChains` holds one chain object per
+    // session while callbacks are in flight; identity comparison is monotonic
+    // across abort/prompt cycles: after invalidation, a later Stop trigger
+    // creates a new chain object, so an old token cannot match that chain.
+    const invalidateStopRewakeChain = Effect.fn("SettingsHook.invalidateStopRewakeChain")(function* (
+      sessionID: SessionID | string,
+    ) {
+      const s = yield* InstanceState.get(state)
+      const deleted = s.stopRewakeChains.delete(sessionID)
+      if (deleted) log.info("stop rewake chain invalidated", { sessionID })
+    })
+
+    const validateStopRewakeChain = Effect.fn("SettingsHook.validateStopRewakeChain")(function* (
+      sessionID: SessionID | string,
+      token: unknown,
+    ) {
+      const s = yield* InstanceState.get(state)
+      return s.stopRewakeChains.get(sessionID) === token
+    })
+
+    return Service.of({ trigger, list, invalidateStopRewakeChain, validateStopRewakeChain })
   }),
 )
 

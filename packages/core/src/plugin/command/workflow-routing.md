@@ -19,8 +19,8 @@ expected benefit and coordination cost, not a task-category rule.
 
 These are examples, not thresholds. File count, module boundaries, CI/release,
 or the word "review" alone do not require a DAG. Risk can justify stronger
-verification without adding agents. No routing checklist or explanation is
-needed for routine direct work.
+verification without adding agents. No routing checklist is needed for routine
+direct work.
 
 Explicit user instructions take precedence: one agent, direct work, or no DAG
 means no delegation; an explicit DAG request calls for an appropriately scoped
@@ -37,7 +37,7 @@ only the user can make. For an unresolved product or architecture decision
 that changes authorized scope or acceptance, a concise **Workflow Brief** with
 a recommendation and alternatives can support one combined confirmation.
 Already confirmed requirements do not need another approval ceremony. Children
-report scope questions to the parent rather than independently expanding scope.
+report scope questions to the parent, never expanding scope alone.
 
 ## Optional references
 
@@ -59,12 +59,12 @@ Match references to the requested outcome, for example:
 `lite` and `full` are reference shapes, not mandatory tiers. Uncertainty,
 irreversibility, public contracts, concurrency, persistence, authorization, or
 upstream executable dependencies can warrant more evidence. Choose the checks
-that address the actual risk; neither a risk label nor a non-`ACCEPT` verdict
-automatically requires a full graph or a fixed number of reviewers.
+that address the actual risk; a risk label or non-`ACCEPT` verdict alone never
+requires a full graph or a fixed reviewer count.
 
 A primary reference often keeps the objective clear. Borrow secondary checks
-where they add evidence, rather than concatenating whole workflows. Retarget
-even a single matching custom workflow to the task. Related work can usually
+where they add evidence, rather than concatenating whole workflows. Retarget a
+matching custom workflow to the task. Related work can usually
 reuse the existing workflow and valid results; the Verdict Disposal Contract
 describes follow-up options. Do not pause or replan a completed workflow.
 
@@ -73,16 +73,19 @@ describes follow-up options. Do not pause or replan a completed workflow.
 Use only phases that contribute to the result. A saved reference is not a
 checklist to complete: omit redundant exploration, reviews, or synthesis and
 reuse evidence already available. Start a saved `spec_path` unchanged only when
-its target and acceptance match. Load `guide(topic="blocks")` for block contracts
-or `guide(topic="patterns")` when cross-domain examples help. Low-level nodes
-are available for fields blocks cannot express.
+its target and acceptance match. Load `guide(topic="blocks")` for block
+contracts, `guide(topic="patterns")` for cross-domain examples; low-level
+nodes cover fields blocks cannot express.
 
 Prefer `workflow(action="draft")` over hand-writing YAML: pass the structured
 `config` (same fields as the YAML below) and the tool renders and validates the
 spec file, returning the `spec_path` to start. Field-name drift is impossible
 because the parameter schema rejects unknown fields. Hand-write YAML only for
-features draft does not carry (admission, custom bindings). The exact start
-shape, for that fallback and for reading draft output:
+features draft does not carry (admission, custom bindings). Draft writes this
+start document only — an extend file takes a top-level `{ objective, blocks }`
+or `{ nodes }` graph, and a replan file wraps the graph in `fragment`; the
+blocks guide owns their exact shape. The start shape, for that fallback and
+for reading draft output:
 
 ```yaml
 title: Implement session recovery
@@ -106,16 +109,14 @@ Top level is `title`/`mode`/`admission` (optional) and `config` (required);
 `kind` (required), `depends_on`, `instruction`, `worker_type`, `worker_config`,
 `required`, `report_to_parent` — never `worker`, `prompt`, or `agent`.
 
-A `report_to_parent` node with dependents is a reporting checkpoint: gate each
-dependent on its output via `condition`, keep it a reporting leaf, or drop
-`report_to_parent`.
+A `report_to_parent` node with dependents is a reporting checkpoint: gate
+dependents on its output via `condition`, keep it a leaf, or drop the flag.
 
 Validate the authored `spec_path` before start; validation creates no workflow.
 Resolve blocking diagnostics rather than bypassing validation. A successful
 start returns the exact workflow ID, not proof of node execution. Checkpoint
-wakes let the parent act without polling merely to wait. The parent may handle
-non-overlapping work or wait for those results; do not duplicate active child
-work or claim an unstarted graph is running.
+wakes let the parent act without polling merely to wait. Do not duplicate
+active child work or claim an unstarted graph is running.
 
 ## Progressive guidance
 

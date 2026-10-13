@@ -89,6 +89,27 @@ const failure = (message: string, cause?: unknown) => new Error({ message, cause
 const isInvalidPattern = (stderr: string) =>
   stderr.includes("regex parse error") || stderr.includes("error parsing regex")
 
+/**
+ * Builds the message for a failed ripgrep execution. Platform errors (for
+ * example a missing working directory) are not JavaScript Error instances;
+ * their normalized reason carries the category, syscall, and path, which must
+ * stay visible instead of collapsing into a generic failure.
+ */
+const describeExecutionFailure = (cause: unknown): string => {
+  const reason = (cause as { reason?: unknown } | undefined)?.reason
+  if (reason && typeof reason === "object" && "_tag" in reason) {
+    const record = reason as { _tag?: unknown; description?: unknown; syscall?: unknown; pathOrDescriptor?: unknown }
+    const parts: string[] = []
+    if (typeof record.description === "string" && record.description) parts.push(record.description)
+    if (typeof record._tag === "string") parts.push(record._tag)
+    if (typeof record.syscall === "string") parts.push(record.syscall)
+    if (typeof record.pathOrDescriptor === "string" && record.pathOrDescriptor) parts.push(record.pathOrDescriptor)
+    if (parts.length > 0) return `ripgrep execution failed (${parts.join("; ")})`
+  }
+  if (cause instanceof globalThis.Error && cause.message) return `ripgrep execution failed (${cause.message})`
+  return "ripgrep execution failed"
+}
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -128,7 +149,7 @@ export const layer = Layer.effect(
             Effect.map((chunk) => [...chunk]),
           )
           const truncated = rows.length > input.limit
-          if (truncated) return { items: rows.slice(0, input.limit), truncated, partial: false }
+          if (truncated) return { items: rows.slice(0, input.limit), truncated, partial: false, stderr: "" }
 
           const code = yield* handle.exitCode
           const stderr = yield* Fiber.join(stderrFiber)
@@ -138,7 +159,7 @@ export const layer = Layer.effect(
           if (code !== 0 && code !== 1 && code !== 2) {
             return yield* failure(stderr.trim() || `ripgrep failed with code ${code}`)
           }
-          return { items: code === 1 ? [] : rows, truncated: false, partial: code === 2 }
+          return { items: code === 1 ? [] : rows, truncated: false, partial: code === 2, stderr }
         }),
       )
       const abortable = input.signal ? program.pipe(Effect.raceFirst(waitForAbort(input.signal))) : program
@@ -146,7 +167,7 @@ export const layer = Layer.effect(
         Effect.mapError((cause) =>
           cause instanceof Error || cause instanceof InvalidPatternError
             ? cause
-            : failure("ripgrep execution failed", cause),
+            : failure(describeExecutionFailure(cause), cause),
         ),
       )
     }
@@ -174,14 +195,24 @@ export const layer = Layer.effect(
                 .replaceAll("\\", "/"),
             ),
         }).pipe(
-          Effect.map((result) =>
-            result.items.map((relative) =>
-              Entry.make({
-                path: RelativePath.make(relative),
-                type: "file",
-              }),
-            ),
-          ),
+          Effect.flatMap((result) => {
+            // Exit code 2 means ripgrep hit traversal errors (for example an
+            // unreadable directory). Those failures must stay visible instead
+            // of becoming a misleading empty or partial-success result, even
+            // when some paths were already listed. Limit truncation above is
+            // an intentional partial result and is unaffected.
+            if (result.partial) {
+              return Effect.fail(failure(result.stderr.trim() || "ripgrep reported traversal errors"))
+            }
+            return Effect.succeed(
+              result.items.map((relative) =>
+                Entry.make({
+                  path: RelativePath.make(relative),
+                  type: "file",
+                }),
+              ),
+            )
+          }),
           Effect.catchTag("Ripgrep.InvalidPatternError", (cause) => Effect.fail(failure(cause.message, cause))),
         ),
       find: (input) =>
@@ -222,7 +253,6 @@ export const layer = Layer.effect(
             "--no-config",
             "--json",
             "--hidden",
-            "--no-messages",
             ...(input.include ? [`--glob=${input.include}`] : []),
             "--glob=!**/.git/**",
             "--",
@@ -251,31 +281,41 @@ export const layer = Layer.effect(
               }),
             ),
         }).pipe(
-          Effect.map((result) =>
-            result.items.map((match) => {
-              const relative = match.path.text
-                .replace(/^(?:\.[\\/])+/u, "")
-                .replace(/^[\\/]+/u, "")
-                .replaceAll("\\", "/")
-              return Match.make({
-                entry: Entry.make({
-                  path: RelativePath.make(relative),
-                  type: "file",
-                }),
-                line: match.line_number,
-                offset: match.absolute_offset,
-                text:
-                  match.lines.text.length > 2_000
-                    ? match.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
-                    : match.lines.text,
-                submatches: match.submatches.map((submatch) => ({
-                  text: submatch.match.text,
-                  start: submatch.start,
-                  end: submatch.end,
-                })),
-              })
-            }),
-          ),
+          Effect.flatMap((result) => {
+            // Exit code 2 means ripgrep hit traversal/read errors (for example
+            // unreadable files). Those failures must stay visible instead of
+            // becoming a misleading successful or no-match result, even when
+            // some matches were already found. Limit truncation above is an
+            // intentional partial result and is unaffected.
+            if (result.partial) {
+              return Effect.fail(failure(result.stderr.trim() || "ripgrep reported traversal errors"))
+            }
+            return Effect.succeed(
+              result.items.map((match) => {
+                const relative = match.path.text
+                  .replace(/^(?:\.[\\/])+/u, "")
+                  .replace(/^[\\/]+/u, "")
+                  .replaceAll("\\", "/")
+                return Match.make({
+                  entry: Entry.make({
+                    path: RelativePath.make(relative),
+                    type: "file",
+                  }),
+                  line: match.line_number,
+                  offset: match.absolute_offset,
+                  text:
+                    match.lines.text.length > 2_000
+                      ? match.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
+                      : match.lines.text,
+                  submatches: match.submatches.map((submatch) => ({
+                    text: submatch.match.text,
+                    start: submatch.start,
+                    end: submatch.end,
+                  })),
+                })
+              }),
+            )
+          }),
         ),
     })
   }),

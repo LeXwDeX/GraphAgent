@@ -272,6 +272,33 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
+  test("retries incomplete response protocol failures", () => {
+    const error = new SessionRetry.IncompleteResponseError({
+      message: "The model response ended before the tool call was complete",
+    }).toObject()
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "The model response ended before the tool call was complete",
+    })
+  })
+
+  test("retries empty response protocol failures", () => {
+    const error = new SessionRetry.EmptyResponseError({
+      message: SessionRetry.EMPTY_RESPONSE_MESSAGE,
+    }).toObject()
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: SessionRetry.EMPTY_RESPONSE_MESSAGE,
+    })
+  })
+
+  test("retries abnormal reasoning-only response protocol failures", () => {
+    const error = new SessionRetry.IncompleteReasoningResponseError({
+      message: SessionRetry.INCOMPLETE_REASONING_RESPONSE_MESSAGE,
+    }).toObject()
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: SessionRetry.INCOMPLETE_REASONING_RESPONSE_MESSAGE,
+    })
+  })
+
   test("retries 500 errors even when isRetryable is false", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({

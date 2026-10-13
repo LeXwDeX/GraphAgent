@@ -3,9 +3,26 @@ import { Effect, Schema } from "effect"
 import { InvalidResponseDataError, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
 import { ProviderError } from "@/provider/error"
+import { isRecord } from "@/util/record"
 
 type Result = Awaited<ReturnType<typeof streamText>>
 type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
+
+/**
+ * Marks a tool error that the AI SDK produced because it rejected a tool
+ * call's input before any execution was possible (unparsable or
+ * schema-mismatched arguments). The adapter wraps such tool errors with this
+ * class so the session processor can classify them by instance instead of
+ * matching message text. Only meaningful in-process: persisted or decoded
+ * events keep the message and cause but lose the class identity, which makes
+ * consumers treat the error conservatively (as a real execution outcome).
+ */
+export class ToolInputRejectedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "ToolInputRejectedError"
+  }
+}
 
 export function adapterState() {
   return {
@@ -17,7 +34,34 @@ export function adapterState() {
     toolNames: {} as Record<string, string>,
     copilotTotalNanoAiu: undefined as number | undefined,
     missingFinishReason: false,
+    /**
+     * A suppressed (non-session-visible) AI SDK chunk — file, source, abort,
+     * tool-approval-request, tool-output-denied — was seen in this stream.
+     * Conveyed as a reserved internal flag on the synthesized step-finish and
+     * finish providerMetadata (`opencode.suppressedActivity`) so consumers can
+     * distinguish this activity from a completely empty response without a
+     * public event variant.
+     */
+    suppressedActivity: false,
+    /** Call IDs whose tool-call the SDK marked invalid (unexecuted input rejection). */
+    invalidToolCalls: new Set<string>(),
   }
+}
+
+/**
+ * Reserved metadata key marking that this stream carried non-empty provider
+ * activity the adapter does not surface as session-visible events. Merged
+ * into the step-finish/finish providerMetadata without disturbing provider
+ * keys already present.
+ */
+const SUPPRESSED_ACTIVITY_METADATA = { suppressedActivity: true }
+
+function withSuppressedActivity(
+  metadata: ProviderMetadata | undefined,
+  suppressed: boolean,
+): ProviderMetadata | undefined {
+  if (!suppressed) return metadata
+  return { ...metadata, opencode: { ...metadata?.opencode, ...SUPPRESSED_ACTIVITY_METADATA } }
 }
 
 function finishReason(value: string | undefined): FinishReason {
@@ -31,15 +75,13 @@ function providerMetadata(value: unknown): ProviderMetadata | undefined {
 
 // Temporary AI SDK bridge: Copilot billing survives only in raw provider chunks here.
 // Move this extraction into @opencode-ai/llm when Copilot is handled by the native runtime.
-function copilotTotalNanoAiu(value: unknown) {
-  if (!value || typeof value !== "object") return
-  const raw = value as Record<string, unknown>
-  const response =
-    raw.response && typeof raw.response === "object" ? (raw.response as Record<string, unknown>) : undefined
-  const usage = raw.copilot_usage ?? response?.copilot_usage
-  if (!usage || typeof usage !== "object") return
-  const total = (usage as Record<string, unknown>).total_nano_aiu
-  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return
+function copilotTotalNanoAiu(value: unknown): number | undefined {
+  if (!isRecord(value)) return undefined
+  const response = isRecord(value.response) ? value.response : undefined
+  const usage = value.copilot_usage ?? response?.copilot_usage
+  if (!isRecord(usage)) return undefined
+  const total = usage.total_nano_aiu
+  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return undefined
   return total
 }
 
@@ -84,6 +126,7 @@ function isMissingFinishReason(error: unknown) {
 export function toLLMEvents(
   state: ReturnType<typeof adapterState>,
   event: AISDKEvent,
+  onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void,
 ): Effect.Effect<ReadonlyArray<LLMEvent>, unknown> {
   switch (event.type) {
     case "start":
@@ -113,18 +156,22 @@ export function toLLMEvents(
             index: state.step++,
             reason: state.missingFinishReason ? "unknown" : finishReason(event.finishReason),
             usage: usage(event.usage),
-            providerMetadata: metadata,
+            providerMetadata: withSuppressedActivity(metadata, state.suppressedActivity),
           }),
         ]
       })
 
     case "finish":
       return Effect.sync(() => {
+        const suppressed = state.suppressedActivity
         const events = [
           LLMEvent.finish({
             reason: state.missingFinishReason ? "unknown" : finishReason(event.finishReason),
             usage: usage(event.totalUsage),
-            providerMetadata: "providerMetadata" in event ? providerMetadata(event.providerMetadata) : undefined,
+            providerMetadata: withSuppressedActivity(
+              "providerMetadata" in event ? providerMetadata(event.providerMetadata) : undefined,
+              suppressed,
+            ),
           }),
         ]
         // Reset so the adapter can be reused for a follow-up stream without leaking
@@ -230,6 +277,14 @@ export function toLLMEvents(
     case "tool-call":
       return Effect.sync(() => {
         state.toolNames[event.toolCallId] = event.toolName
+        // The SDK marks a tool call whose input failed to parse. When the
+        // provider did not execute it, nothing can run for this ID, so its
+        // tool-error is an input rejection rather than an execution outcome.
+        // Track the ID so the matching tool-error can be wrapped; the set is
+        // per stream (adapterState) and only widened by exactly this shape.
+        if (event.invalid === true && event.providerExecuted !== true) {
+          state.invalidToolCalls.add(event.toolCallId)
+        }
         return [
           LLMEvent.toolCall({
             id: event.toolCallId,
@@ -260,12 +315,18 @@ export function toLLMEvents(
       return Effect.sync(() => {
         const name = state.toolNames[event.toolCallId] ?? ("toolName" in event ? event.toolName : "unknown")
         delete state.toolNames[event.toolCallId]
+        const message = errorMessage(event.error)
+        // A tracked call ID means this error is the SDK's rejection of an
+        // unparseable tool call, not a real execution failure: wrap it so the
+        // processor can tell the two apart. Stale IDs (no matching invalid
+        // tool-call) keep the plain error and are treated conservatively.
+        const rejected = state.invalidToolCalls.delete(event.toolCallId)
         return [
           LLMEvent.toolError({
             id: event.toolCallId,
             name,
-            message: errorMessage(event.error),
-            error: event.error,
+            message,
+            error: rejected ? new ToolInputRejectedError(message, { cause: event.error }) : event.error,
             providerMetadata: providerMetadata(event.providerMetadata),
           }),
         ]
@@ -279,12 +340,25 @@ export function toLLMEvents(
         })
       return Effect.fail(event.error)
 
-    case "abort":
     case "source":
     case "file":
+      return Effect.sync(() => {
+        state.suppressedActivity = true
+        onAttemptActivity?.("observational")
+        return []
+      })
+
+    case "abort":
     case "tool-output-denied":
     case "tool-approval-request":
-      return Effect.succeed([])
+      // Not session-visible, but the attempt was not empty: mark the stream
+      // so the synthesized finish metadata can disqualify the empty-response
+      // gate. Provider keys already in metadata are never overwritten.
+      return Effect.sync(() => {
+        state.suppressedActivity = true
+        onAttemptActivity?.("suppressed")
+        return []
+      })
 
     case "raw":
       return Effect.sync(() => {

@@ -47,6 +47,48 @@ describe("toLLMMessages", () => {
     expect(messages.map((message) => message.id)).toEqual([id("text"), id("reasoning")])
   })
 
+  test("never replays failed-attempt reasoning or encrypted distillation metadata", () => {
+    const assistant = SessionMessage.Assistant.make({
+      id: id("failed-reasoning"),
+      type: "assistant",
+      agent: "build",
+      model: { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") },
+      content: [
+        SessionMessage.AssistantReasoning.make({
+          type: "reasoning",
+          id: "failed-reasoning-1",
+          text: "",
+          providerMetadata: { opencode: { failedAttempt: true } },
+          distillation: {
+            version: 2,
+            originalText: "private reasoning",
+            sourceFingerprint: "test-fingerprint",
+            originalMetadata: { openai: { reasoningEncryptedContent: "encrypted-state" } },
+          },
+        }),
+        SessionMessage.AssistantText.make({ type: "text", id: "answer", text: "done" }),
+      ],
+      time: { created, completed: created },
+    })
+    const nextUser = SessionMessage.User.make({
+      id: id("next-user"),
+      type: "user",
+      text: "continue",
+      files: [],
+      agents: [],
+      time: { created },
+    })
+
+    for (const enabled of [false, true]) {
+      const messages = toLLMMessages([assistant, nextUser], model, { reasoningDistillationEnabled: enabled })
+      expect(messages).toHaveLength(2)
+      expect(messages[0]?.content).toEqual([{ type: "text", text: "done" }])
+      expect(messages[1]?.role).toBe("user")
+      expect(JSON.stringify(messages)).not.toContain("encrypted-state")
+      expect(JSON.stringify(messages)).not.toContain("private reasoning")
+    }
+  })
+
   test("maps every top-level V2 Session message type", () => {
     const file = FileAttachment.make({ uri: "data:image/png;base64,aGVsbG8=", mime: "image/png", name: "hello.png" })
     const messages = toLLMMessages(

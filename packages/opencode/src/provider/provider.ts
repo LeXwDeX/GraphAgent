@@ -1501,14 +1501,30 @@ export const layer = Layer.effect(
                     ? { field: "reasoning_content" }
                     : false),
               },
-              cost: {
-                input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
-                output: model?.cost?.output ?? existingModel?.cost?.output ?? 0,
-                cache: {
-                  read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
-                  write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
-                },
-              },
+              cost: iife((): Model["cost"] => {
+                const parsed: Model["cost"] = {
+                  input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
+                  output: model?.cost?.output ?? existingModel?.cost?.output ?? 0,
+                  cache: {
+                    read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
+                    write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
+                  },
+                }
+                if (existingModel?.cost?.tiers) parsed.tiers = existingModel.cost.tiers
+                if (model?.cost?.context_over_200k) {
+                  parsed.experimentalOver200K = {
+                    input: model.cost.context_over_200k.input,
+                    output: model.cost.context_over_200k.output,
+                    cache: {
+                      read: model.cost.context_over_200k.cache_read ?? 0,
+                      write: model.cost.context_over_200k.cache_write ?? 0,
+                    },
+                  }
+                } else if (existingModel?.cost?.experimentalOver200K) {
+                  parsed.experimentalOver200K = existingModel.cost.experimentalOver200K
+                }
+                return parsed
+              }),
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {
                 context: model.limit?.context ?? existingModel?.limit?.context ?? 0,

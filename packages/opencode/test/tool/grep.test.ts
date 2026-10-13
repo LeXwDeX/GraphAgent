@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { Cause, Effect, Layer } from "effect"
+import * as PlatformError from "effect/PlatformError"
 import { GrepTool } from "../../src/tool/grep"
 import { provideInstance, testInstanceStoreLayer, TestInstance } from "../fixture/fixture"
 import { SessionID, MessageID } from "../../src/session/schema"
@@ -42,6 +43,47 @@ const ctx = {
 }
 
 const root = path.join(__dirname, "../..")
+
+/**
+ * Builds a filesystem layer that fails stat() on one exact target path.
+ * Deterministic and portable across privileged CI users because it never
+ * relies on OS-level chmod.
+ */
+const statFaultLayer = (target: string, fault: () => Effect.Effect<never, PlatformError.PlatformError>) =>
+  Effect.map(FSUtil.Service, (fs) =>
+    Layer.succeed(FSUtil.Service, {
+      ...fs,
+      stat: (p: string) => (p === target ? fault() : fs.stat(p)),
+    }),
+  )
+
+const statDenial = (target: string) =>
+  PlatformError.systemError({
+    _tag: "PermissionDenied",
+    module: "FileSystem",
+    method: "stat",
+    pathOrDescriptor: target,
+    syscall: "stat",
+    cause: new Error("simulated EACCES: Permission denied"),
+  })
+
+const statUnknown = (target: string) =>
+  PlatformError.systemError({
+    _tag: "Unknown",
+    module: "FileSystem",
+    method: "stat",
+    pathOrDescriptor: target,
+    syscall: "stat",
+    description: "simulated storage failure",
+    cause: new Error("simulated storage failure"),
+  })
+
+const failingGrep = (params: { pattern: string; path: string }, next?: Partial<typeof ctx>) =>
+  Effect.gen(function* () {
+    const info = yield* GrepTool
+    const grep = yield* info.init()
+    return yield* grep.execute(params, { ...ctx, ...next })
+  })
 
 describe("tool.grep", () => {
   rooted.live("basic search", () =>
@@ -139,7 +181,7 @@ describe("tool.grep", () => {
     }),
   )
 
-  it.instance("fails an unavailable search path without searching its siblings", () =>
+  it.instance("identifies a missing absolute search path with a discovery hint", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const missing = path.join(test.directory, "missing.txt")
@@ -148,7 +190,124 @@ describe("tool.grep", () => {
       const grep = yield* info.init()
       const result = yield* Effect.exit(grep.execute({ pattern: "needle", path: missing }, ctx))
       expect(result._tag).toBe("Failure")
-      if (result._tag === "Failure") expect(Cause.pretty(result.cause)).toContain(`Cannot access search path: ${missing}`)
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain(`Search path does not exist: ${missing}`)
+        expect(text).toContain("Verify the path with Glob")
+        expect(text).not.toContain("permission")
+      }
+    }),
+  )
+
+  it.instance("reports a missing relative search path with the resolved location", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const resolved = path.join(test.directory, "config")
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* Effect.exit(grep.execute({ pattern: "needle", path: "config" }, ctx))
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain(`Search path does not exist: ${resolved}`)
+        expect(text).toContain("Verify the path with Glob")
+      }
+    }),
+  )
+
+  it.instance("reports a filesystem permission denial distinctly from a policy rejection", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const faultFS = yield* statFaultLayer(test.directory, () => Effect.fail(statDenial(test.directory)))
+      const result = yield* Effect.exit(
+        failingGrep({ pattern: "needle", path: test.directory }).pipe(Effect.provide(faultFS)),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain(`Filesystem permission denied for search path: ${test.directory}`)
+        expect(text).toContain("not an OpenCode permission policy rejection")
+        expect(text).not.toContain("does not exist")
+      }
+    }),
+  )
+
+  it.instance("keeps an unclassified stat failure carrying its actual cause", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const faultFS = yield* statFaultLayer(test.directory, () => Effect.fail(statUnknown(test.directory)))
+      const result = yield* Effect.exit(
+        failingGrep({ pattern: "needle", path: test.directory }).pipe(Effect.provide(faultFS)),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain(`Cannot access search path: ${test.directory}`)
+        expect(text).toContain("simulated storage failure")
+        expect(text).not.toContain("Filesystem permission denied")
+        expect(text).not.toContain("does not exist")
+      }
+    }),
+  )
+
+  it.instance("reports an invalid path component distinctly", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "real.txt")
+      yield* Effect.promise(() => Bun.write(file, "needle"))
+      const invalid = path.join(file, "child.txt")
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* Effect.exit(grep.execute({ pattern: "needle", path: invalid }, ctx))
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain(`Invalid search path: ${invalid}`)
+        expect(text).not.toContain("does not exist")
+        expect(text).not.toContain("Filesystem permission denied")
+      }
+    }),
+  )
+
+  it.instance("keeps permission policy rejection separate from filesystem errors", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const result = yield* Effect.exit(
+        failingGrep(
+          { pattern: "needle", path: test.directory },
+          {
+            ask: () => Effect.die(new Error("User declined the grep permission request")),
+          },
+        ),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain("User declined the grep permission request")
+        expect(text).not.toContain("Filesystem permission denied")
+        expect(text).not.toContain("does not exist")
+      }
+    }),
+  )
+
+  it.instance("keeps traversal failures visible after a successful stat", () =>
+    Effect.gen(function* () {
+      if (process.platform === "win32") return
+      if (process.getuid?.() === 0) return
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "readable.txt"), "needle"))
+      const locked = path.join(test.directory, "locked.txt")
+      yield* Effect.promise(() => Bun.write(locked, "needle"))
+      yield* Effect.promise(() => fs.chmod(locked, 0o000))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* Effect.exit(grep.execute({ pattern: "needle", path: test.directory }, ctx))
+      yield* Effect.promise(() => fs.chmod(locked, 0o644))
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        const text = Cause.pretty(result.cause)
+        expect(text).toContain("Permission denied")
+      }
     }),
   )
 

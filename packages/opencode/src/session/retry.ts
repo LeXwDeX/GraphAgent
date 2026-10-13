@@ -1,7 +1,6 @@
-import type { NamedError } from "@opencode-ai/core/util/error"
+import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Clock, Duration, Effect, Schedule } from "effect"
-import { MessageV2 } from "./message-v2"
+import { Cause, Clock, Duration, Effect, Schedule, Schema } from "effect"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
 
@@ -10,6 +9,37 @@ export type Err = ReturnType<NamedError["toObject"]>
 export const GO_UPSELL_MESSAGE = "Free usage exceeded, subscribe to Go"
 export const GO_UPSELL_URL = "https://opencode.ai/go"
 export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {})
+
+/**
+ * A model response that ended before an unfinished tool call became
+ * executable (unknown/missing finish reason). Classified by the retry policy
+ * only when no tool in the failed request has executed or may have executed;
+ * the processor owns that admission gate.
+ */
+export const IncompleteResponseError = NamedError.create("IncompleteResponseError", {
+  message: Schema.String,
+})
+
+export const INCOMPLETE_RESPONSE_MESSAGE = "The model response ended before the tool call was complete"
+
+/**
+ * A normal-conversation attempt that produced no substantive output at all:
+ * no text, no reasoning, no tool activity — only bookkeeping signals with an
+ * unknown, missing, or plain stop finish. The processor raises it inside the
+ * retry boundary; the policy retries it like any other protocol failure.
+ */
+export const EmptyResponseError = NamedError.create("EmptyResponseError", {
+  message: Schema.String,
+})
+
+export const EMPTY_RESPONSE_MESSAGE = "The model returned an empty response with no content or tool activity"
+
+/** An abnormally ended reasoning-only attempt without an answer or tool activity. */
+export const IncompleteReasoningResponseError = NamedError.create("IncompleteReasoningResponseError", {
+  message: Schema.String,
+})
+
+export const INCOMPLETE_REASONING_RESPONSE_MESSAGE = "The model response ended after reasoning without an answer"
 
 export type Retryable = {
   message: string
@@ -85,6 +115,15 @@ function exponential(attempt: number, random: number) {
 export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+  if (IncompleteResponseError.isInstance(error)) {
+    return { message: error.data.message }
+  }
+  if (EmptyResponseError.isInstance(error)) {
+    return { message: error.data.message }
+  }
+  if (IncompleteReasoningResponseError.isInstance(error)) {
+    return { message: error.data.message }
+  }
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
@@ -94,7 +133,8 @@ export function retryable(error: Err, provider: string) {
       !(status !== undefined && status >= 500) &&
       !matchesRetryableMessage(error.data.message) &&
       !matchesRetryableMessage(error.data.responseBody)
-    ) return undefined
+    )
+      return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
       return {
         message: GO_UPSELL_MESSAGE,
@@ -159,7 +199,7 @@ function matchesRetryableMessage(value: unknown) {
 
 function str(value: unknown) {
   if (value === undefined || value === null) return ""
-  return String(value)
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : ""
 }
 
 function num(value: unknown) {
@@ -182,10 +222,13 @@ function parseJSON(value: unknown) {
 export function policy(opts: {
   provider: string
   parse: (error: unknown) => Err
+  /** Attempt-local safety gate, checked for every failure before classification. */
+  shouldRetry?: (error: unknown) => boolean
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
+      if (opts.shouldRetry?.(meta.input) === false) return Cause.done(meta.attempt)
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)

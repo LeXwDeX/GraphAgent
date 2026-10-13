@@ -50,8 +50,12 @@ config:
 
 ### Extend file
 
-An extend file contains exactly `objective` and `blocks`. It has no `config`,
-`name`, or `fragment` wrapper.
+An extend file takes its graph at the top level — required `objective` plus
+`blocks` for the block route, or `nodes` for the low-level route, never both.
+It has no `config`, `title`, `name`, or `fragment` wrapper and carries no
+graph budgets (`max_concurrency`, `max_node_replan_attempts`,
+`max_total_nodes`) or `node_defaults`: those belong to the start document and
+cannot be changed by an extension.
 
 ```yaml
 objective: Add regression coverage for the newly confirmed recovery edge case.
@@ -62,6 +66,16 @@ blocks:
   - id: recovery-verify
     kind: verify
     depends_on: [recovery-fix]
+```
+
+```yaml
+nodes:
+  - id: recovery-reprobe
+    name: recovery-reprobe
+    worker_type: general
+    depends_on: []
+    prompt_template:
+      inline: "Re-run the confirmed edge case and report PASS or FAIL with evidence."
 ```
 
 ### Replan file

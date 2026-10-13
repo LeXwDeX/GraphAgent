@@ -18,6 +18,7 @@ import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Plugin } from "@/plugin"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -66,6 +67,40 @@ const lsp = Layer.succeed(
   }),
 )
 
+// Plugin mock with per-session "chat.message" parking gates. Tests park a
+// gate for a session; the trigger for that session then signals "entered"
+// once the admission reaches the plugin callback and waits on the gate's
+// promise before returning, letting the test cancel mid-admission
+// deterministically. Sessions without a gate pass straight through.
+interface ChatMessageGate {
+  entered: boolean
+  open: () => void
+}
+const chatMessageGates = new Map<string, ChatMessageGate>()
+const pluginMock = Layer.suspend(() =>
+  Layer.succeed(
+    Plugin.Service,
+    Plugin.Service.of({
+      trigger: ((_name: string, input: { sessionID?: string }, output: unknown) => {
+        const gate = input?.sessionID ? chatMessageGates.get(input.sessionID) : undefined
+        if (!gate) return Effect.succeed(output as never)
+        const wait = new Promise<void>((resolve) => {
+          gate.entered = true
+          gate.open = resolve
+        })
+        return Effect.promise(() => wait.then(() => output as never))
+      }) as Plugin.Interface["trigger"],
+      list: () => Effect.succeed([]),
+      contextFoldingCompatibility: () =>
+        Effect.succeed({
+          knownExternalDcp: "unknown",
+          migrationNotice: "not-applicable",
+        } as const),
+      init: () => Effect.void,
+    }),
+  ),
+)
+
 const root = LayerNode.group([
   SessionPrompt.node,
   SessionHooks.node,
@@ -82,6 +117,7 @@ const it = testEffect(
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
       LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
+      LayerNode.replace(Plugin.node, pluginMock),
     ],
   }),
 )
@@ -186,6 +222,317 @@ it.live("async hooks re-enter the real session after their caller has completed"
           message.parts.some((part) => part.type === "text" && part.text.includes("Async hook completed")),
         ),
       ).toBe(true)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("cancelled session discards a completing async Stop hook callback", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Cancel discards stop callback", permission: [] })
+      const release = path.join(dir, "release")
+      const completed = path.join(dir, "completed")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      yield* hooks.add(session.id, {
+        event: "Stop",
+        once: true,
+        hooks: [
+          {
+            type: "command",
+            async: true,
+            asyncRewake: true,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"result after cancel"}'; touch ${quote(completed)}`,
+          },
+        ],
+      })
+      yield* llm.text("first answer")
+      yield* llm.text("must never be consumed after cancel")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "do work" }] })
+      // The turn is over and the async Stop hook is parked on the release file.
+      expect(yield* llm.calls).toBe(1)
+      // User aborts the (idle) session: a callback completing afterwards must
+      // not silently restart the session the user just cancelled.
+      yield* prompt.cancel(session.id)
+      yield* Effect.promise(() => fs.writeFile(release, "go"))
+      yield* pollWithTimeout(
+        Effect.promise(async () => {
+          try {
+            return (await fs.access(completed).then(
+              () => true,
+              () => false,
+            ))
+              ? true
+              : undefined
+          } catch {
+            return undefined
+          }
+        }),
+        "async Stop callback never completed",
+      )
+      // Give a (wrong) rewake ample time to admit a new turn.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
+      expect(yield* llm.calls).toBe(1)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("cancel parked inside chat.message admission strips a stale stop-chain rewake", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Fence stale rewake", permission: [] })
+      const release = path.join(dir, "release")
+      const completed = path.join(dir, "completed")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      yield* hooks.add(session.id, {
+        event: "Stop",
+        once: true,
+        hooks: [
+          {
+            type: "command",
+            async: true,
+            asyncRewake: true,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"stale verdict"}'; touch ${quote(completed)}`,
+          },
+        ],
+      })
+      yield* llm.text("first answer")
+      yield* llm.text("must never be consumed by a stale rewake")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "do work" }] })
+      // The turn is over; the async Stop callback is parked on the release file.
+      expect(yield* llm.calls).toBe(1)
+
+      // Park the rewake admission inside createUserMessage (plugin.trigger
+      // "chat.message") BEFORE commit: the pre-admission chain check has
+      // already passed at this point, so only a post-commit fence can stop it.
+      const gate: ChatMessageGate = { entered: false, open: () => {} }
+      chatMessageGates.set(session.id, gate)
+      try {
+        yield* Effect.promise(() => fs.writeFile(release, "go"))
+        yield* pollWithTimeout(
+          Effect.promise(() =>
+            fs.access(completed).then(
+              () => true,
+              () => undefined,
+            ),
+          ),
+          "async Stop callback never completed",
+        )
+        yield* pollWithTimeout(
+          Effect.sync(() => (gate.entered ? (true as const) : undefined)),
+          "rewake admission never reached chat.message",
+        )
+        // Cancel lands while admission is parked in the plugin callback.
+        yield* prompt.cancel(session.id)
+        gate.open()
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
+        // The stale rewake must not consume a model call.
+        expect(yield* llm.calls).toBe(1)
+        // Its committed message must be stripped from model input.
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        const rewake = messages.find((message) =>
+          message.parts.some(
+            (part) =>
+              part.type === "text" && part.text.includes("Async hook completed") && message.info.role === "user",
+          ),
+        )
+        expect(rewake).toBeDefined()
+        for (const part of rewake!.parts) {
+          if (part.type !== "text") continue
+          expect(part.ignored).toBe(true)
+        }
+      } finally {
+        chatMessageGates.delete(session.id)
+      }
+      yield* hooks.clear(session.id)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("cancel invalidates a stop-chain rewake queued behind a busy turn", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Cancel queued rewake", permission: [] })
+      const release = path.join(dir, "release")
+      const completed = path.join(dir, "completed")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      yield* hooks.add(session.id, {
+        event: "Stop",
+        once: true,
+        hooks: [
+          {
+            type: "command",
+            async: true,
+            asyncRewake: true,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"queued stale verdict"}'; touch ${quote(completed)}`,
+          },
+        ],
+      })
+      yield* llm.text("first answer")
+      let openTurn!: () => void
+      const turnGate = new Promise<void>((resolve) => {
+        openTurn = resolve
+      })
+      yield* llm.hold("turn two answer", turnGate)
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "turn one" }] })
+      expect(yield* llm.calls).toBe(1)
+      // Turn two parks on the model gate: the runner is busy and the prompt
+      // lock is held, so the rewake below queues behind it.
+      const running = yield* prompt
+        .prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "turn two" }] })
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        llm.calls.pipe(Effect.map((calls) => (calls === 2 ? true : undefined))),
+        "turn two never reached the model",
+      )
+      // Complete the stale Stop callback: its rewake waits on the prompt lock.
+      yield* Effect.promise(() => fs.writeFile(release, "go"))
+      yield* pollWithTimeout(
+        Effect.promise(() =>
+          fs.access(completed).then(
+            () => true,
+            () => undefined,
+          ),
+        ),
+        "stale callback never completed",
+      )
+      // Cancel invalidates the chain and interrupts the busy turn; when the
+      // queued rewake finally admits, its chain check must refuse it.
+      yield* prompt.cancel(session.id)
+      openTurn()
+      yield* Fiber.join(running).pipe(Effect.ignore)
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
+      expect(yield* llm.calls).toBe(2)
+      // No stale rewake text ever reached a model request.
+      const inputs = yield* llm.inputs
+      expect(JSON.stringify(inputs).includes("Async hook completed")).toBe(false)
+      yield* hooks.clear(session.id)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("a fresh prompt after cancel re-establishes a working Stop rewake chain", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Rewake survives cancel", permission: [] })
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      const addStopHook = (release: string, body: string) =>
+        hooks.add(session.id, {
+          event: "Stop",
+          once: true,
+          hooks: [
+            {
+              type: "command",
+              async: true,
+              asyncRewake: true,
+              command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' ${quote(body)}; touch ${quote(`${release}.completed`)}`,
+            },
+          ],
+        })
+      const releaseA = path.join(dir, "release-a")
+      const releaseB = path.join(dir, "release-b")
+      // Turn 1 with a pending Stop callback, then cancel: the callback dies.
+      yield* addStopHook(releaseA, '{"systemMessage":"stale after cancel"}')
+      yield* llm.text("first answer")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "turn one" }] })
+      expect(yield* llm.calls).toBe(1)
+      yield* prompt.cancel(session.id)
+      yield* Effect.promise(() => fs.writeFile(releaseA, "go"))
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
+      expect(yield* llm.calls).toBe(1)
+      // A fresh prompt + fresh Stop callback must still rewake normally.
+      yield* addStopHook(releaseB, '{"systemMessage":"fresh verdict"}')
+      yield* llm.text("second answer")
+      yield* llm.text("fresh rewake answer")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "turn two" }] })
+      expect(yield* llm.calls).toBe(2)
+      yield* Effect.promise(() => fs.writeFile(releaseB, "go"))
+      yield* pollWithTimeout(
+        Effect.promise(async () => {
+          try {
+            return (await fs.access(`${releaseB}.completed`).then(
+              () => true,
+              () => false,
+            ))
+              ? true
+              : undefined
+          } catch {
+            return undefined
+          }
+        }),
+        "fresh Stop callback never completed",
+      )
+      yield* pollWithTimeout(
+        llm.calls.pipe(Effect.map((calls) => (calls === 3 ? true : undefined))),
+        "fresh Stop callback did not rewake a new turn",
+      )
+      yield* hooks.clear(session.id)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("cancelling one session leaves another session's Stop rewake intact", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const sessionA = yield* sessions.create({ title: "Cancelled neighbour", permission: [] })
+      const sessionB = yield* sessions.create({ title: "Independent neighbour", permission: [] })
+      const releaseA = path.join(dir, "release-a")
+      const releaseB = path.join(dir, "release-b")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      const addStopHook = (sessionID: typeof sessionA.id, release: string, body: string) =>
+        hooks.add(sessionID, {
+          event: "Stop",
+          once: true,
+          hooks: [
+            {
+              type: "command",
+              async: true,
+              asyncRewake: true,
+              command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' ${quote(body)}`,
+            },
+          ],
+        })
+      yield* addStopHook(sessionA.id, releaseA, '{"systemMessage":"neighbour A verdict"}')
+      yield* addStopHook(sessionB.id, releaseB, '{"systemMessage":"neighbour B verdict"}')
+      yield* llm.text("a1")
+      yield* prompt.prompt({ sessionID: sessionA.id, agent: "build", parts: [{ type: "text", text: "a turn" }] })
+      yield* llm.text("b1")
+      yield* prompt.prompt({ sessionID: sessionB.id, agent: "build", parts: [{ type: "text", text: "b turn" }] })
+      expect(yield* llm.calls).toBe(2)
+      yield* prompt.cancel(sessionA.id)
+      yield* Effect.promise(() => Promise.all([fs.writeFile(releaseA, "go"), fs.writeFile(releaseB, "go")]))
+      yield* pollWithTimeout(
+        llm.calls.pipe(Effect.map((calls) => (calls === 3 ? true : undefined))),
+        "session B Stop callback did not rewake a new turn",
+      )
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
+      // Still exactly one rewake (B's): A's was invalidated, not deferred.
+      expect(yield* llm.calls).toBe(3)
+      const messagesA = yield* sessions.messages({ sessionID: sessionA.id })
+      expect(messagesA.every((m) => m.parts.every((p) => !(p.type === "text" && p.text.includes("neighbour A"))))).toBe(
+        true,
+      )
+      yield* hooks.clear(sessionA.id)
+      yield* hooks.clear(sessionB.id)
     }),
     { git: true, config: providerCfg },
   ),

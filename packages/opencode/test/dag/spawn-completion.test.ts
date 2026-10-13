@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test"
 import { Effect, Layer, Semaphore, Fiber } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionPrompt } from "@/session/prompt"
-import { MessageID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -280,6 +282,86 @@ describe("spawnNode completion bridge", () => {
     expect(failed!.reason).not.toContain("Cause([Die(")
 
     expect(findEvent(events, "nodeCompleted")).toBeUndefined()
+  })
+
+  // Issue #777: the live path must keep the durable assistant error identity
+  // in the failure reason; the trigger stays "exec_failed" and the role check
+  // precedes the error check so non-assistant results keep the plain reason.
+  function replyWith(error: SessionV1.Assistant["error"]): SessionV1.WithParts {
+    const info: SessionV1.Assistant = {
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: MessageID.ascending(),
+      sessionID: SessionID.make("ses_child"),
+      mode: "build",
+      agent: "build",
+      cost: 0,
+      path: { cwd: "/tmp", root: "/tmp" },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ModelV2.ID.make("test-model"),
+      providerID: ProviderV2.ID.make("test"),
+      time: { created: Date.now() },
+      error,
+    }
+    return { info, parts: [] }
+  }
+
+  it("keeps a persisted abort identity in the live NodeFailed reason", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    await runSpawn(
+      dagLayer,
+      makePromptLayer(
+        replyWith({ name: "MessageAbortedError", data: { message: "Aborted" } } satisfies SessionV1.Assistant["error"]),
+      ),
+    )
+
+    const failed = findEvent(events, "nodeFailed")
+    expect(failed).toBeDefined()
+    expect(failed!.trigger).toBe("exec_failed")
+    expect(failed!.reason).toContain("child model turn stopped before a successful result")
+    expect(failed!.reason).toContain("(MessageAbortedError)")
+    expect(failed!.reason).toContain("interrupted")
+    expect(failed!.reason).toContain("source unknown")
+    expect(failed!.reason).toContain("checking side effects")
+    expect(findEvent(events, "nodeCompleted")).toBeUndefined()
+  })
+
+  it("keeps a genuine failure identity in the live NodeFailed reason", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    await runSpawn(
+      dagLayer,
+      makePromptLayer(
+        replyWith({ name: "UnknownError", data: { message: "provider exploded" } } satisfies SessionV1.Assistant["error"]),
+      ),
+    )
+
+    const failed = findEvent(events, "nodeFailed")
+    expect(failed).toBeDefined()
+    expect(failed!.trigger).toBe("exec_failed")
+    expect(failed!.reason).toBe("child model turn stopped before a successful result (UnknownError)")
+    expect(failed!.reason).not.toContain("interrupted")
+  })
+
+  it("keeps the plain live reason for a non-assistant prompt result", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const base = reply("")
+    const nonAssistant: SessionV1.WithParts = {
+      info: {
+        id: base.info.id,
+        sessionID: base.info.sessionID,
+        role: "user",
+        time: { created: base.info.time.created },
+        agent: "build",
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+      },
+      parts: [],
+    }
+    await runSpawn(dagLayer, makePromptLayer(nonAssistant))
+
+    const failed = findEvent(events, "nodeFailed")
+    expect(failed).toBeDefined()
+    expect(failed!.reason).toBe("child model turn stopped before a successful result")
+    expect(failed!.trigger).toBe("exec_failed")
   })
 
   it("publishes exactly one terminal event per node", async () => {

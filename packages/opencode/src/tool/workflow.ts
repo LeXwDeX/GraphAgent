@@ -83,11 +83,20 @@ const ControlOther = Schema.Struct({
 })
 const ControlRecover = Schema.Struct({
   action: Schema.Literal("control"),
-  operation: Schema.Literal("recover").annotate({ description: "Retry selected nodes and affected descendants in the same workflow, retaining valid completed work and prior attempts" }),
+  operation: Schema.Literal("recover").annotate({
+    description:
+      "Retry selected nodes and affected descendants in the same workflow, retaining valid completed work and prior attempts",
+  }),
   workflow_id: Dag.ID,
-  node_ids: Schema.Array(Dag.NodeID).check(Schema.isMinLength(1)).annotate({ description: "Current node IDs to retry; their downstream closure is invalidated automatically" }),
-  expected_graph_rev: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({ description: "Exact graph_rev from workflow status; stale recovery requests are rejected" }),
-  resume_cancelled: Schema.optional(Schema.Boolean).annotate({ description: "Set true only for an explicitly requested recovery of a cancelled workflow" }),
+  node_ids: Schema.Array(Dag.NodeID)
+    .check(Schema.isMinLength(1))
+    .annotate({ description: "Current node IDs to retry; their downstream closure is invalidated automatically" }),
+  expected_graph_rev: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+    description: "Exact graph_rev from workflow status; stale recovery requests are rejected",
+  }),
+  resume_cancelled: Schema.optional(Schema.Boolean).annotate({
+    description: "Set true only for an explicitly requested recovery of a cancelled workflow",
+  }),
 })
 const ControlExtendTimeout = Schema.Struct({
   action: Schema.Literal("control"),
@@ -98,7 +107,8 @@ const ControlExtendTimeout = Schema.Struct({
   workflow_id: Dag.ID.annotate({ description: "Target workflow ID" }),
   node_id: Dag.NodeID.annotate({ description: "Running node whose deadline to extend" }),
   timeout_ms: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 86_400_000 })).annotate({
-    description: "Fresh execution timeout in milliseconds applied from now (same semantics as worker_config.timeout_ms); min 1s, max 24h per extension",
+    description:
+      "Fresh execution timeout in milliseconds applied from now (same semantics as worker_config.timeout_ms); min 1s, max 24h per extension",
   }),
 })
 const Status = Schema.Struct({
@@ -135,12 +145,12 @@ const Guide = Schema.Struct({
 const Draft = Schema.Struct({
   action: Schema.Literal("draft").annotate({
     description:
-      'Render a structured graph into a validated YAML spec file and return its spec_path — no workflow is created. Preferred over hand-writing YAML: field names are schema-checked here, eliminating serialization drift',
+      "Render a structured graph into a validated YAML START spec file and return its spec_path — no workflow is created, and the file is a start document: it is not a valid extend or replan file (those actions take their own envelopes, see the blocks guide). Preferred over hand-writing YAML: field names are schema-checked here, eliminating serialization drift",
   }),
   title: Schema.optional(Schema.String).annotate({ description: "Optional workflow title" }),
   config: DagValidation.WorkflowGraphSchema.annotate({
     description:
-      'Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...] } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. Fields are exhaustive — no others exist',
+      "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...] } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. Fields are exhaustive — no others exist. This is the start file's config envelope only",
   }),
 })
 const ValidationProfile = Schema.optional(Schema.Literals(["portable", "environment"])).annotate({
@@ -218,30 +228,33 @@ export const WorkflowTool = Tool.define<
       return workflow
     })
 
-    const parkRejectedWorkflow = (workflowID: Dag.ID) => Effect.gen(function* () {
-      const pauseExit = yield* dag.pause(workflowID).pipe(Effect.exit)
-      if (Exit.isFailure(pauseExit) && Cause.hasInterrupts(pauseExit.cause))
-        return yield* Effect.interrupt
-      if (Exit.isSuccess(pauseExit))
-        return "Workflow state: paused (durably parked). A corrected mutation can resume it."
-      const readExit = yield* dag.store.getWorkflow(workflowID).pipe(Effect.exit)
-      if (Exit.isFailure(readExit) && Cause.hasInterrupts(readExit.cause))
-        return yield* Effect.interrupt
-      const actualStatus = Exit.isSuccess(readExit) ? readExit.value?.status ?? "missing" : "unknown"
-      return actualStatus === "paused"
-        ? "Workflow state: paused (already parked). A corrected mutation can resume it."
-        : `Workflow state: ${actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${String(Cause.squash(pauseExit.cause))}`
-    })
+    const parkRejectedWorkflow = (workflowID: Dag.ID) =>
+      Effect.gen(function* () {
+        const pauseExit = yield* dag.pause(workflowID).pipe(Effect.exit)
+        if (Exit.isFailure(pauseExit) && Cause.hasInterrupts(pauseExit.cause)) return yield* Effect.interrupt
+        if (Exit.isSuccess(pauseExit))
+          return "Workflow state: paused (durably parked). A corrected mutation can resume it."
+        const readExit = yield* dag.store.getWorkflow(workflowID).pipe(Effect.exit)
+        if (Exit.isFailure(readExit) && Cause.hasInterrupts(readExit.cause)) return yield* Effect.interrupt
+        const actualStatus = Exit.isSuccess(readExit) ? (readExit.value?.status ?? "missing") : "unknown"
+        return actualStatus === "paused"
+          ? "Workflow state: paused (already parked). A corrected mutation can resume it."
+          : `Workflow state: ${actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${String(Cause.squash(pauseExit.cause))}`
+      })
 
     const runRecoverableMutation = <A>(workflowID: Dag.ID, mutation: Effect.Effect<A, Error>) =>
-      mutation.pipe(Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause)
-          ? Effect.failCause(cause)
-          : Effect.gen(function* () {
-              const workflowState = yield* parkRejectedWorkflow(workflowID)
-              return yield* Effect.die(new Error(`${String(Cause.squash(cause))}\n${workflowState}\n${WORKFLOW_RECOVERY.instruction}`))
-            }),
-      ))
+      mutation.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.failCause(cause)
+            : Effect.gen(function* () {
+                const workflowState = yield* parkRejectedWorkflow(workflowID)
+                return yield* Effect.die(
+                  new Error(`${String(Cause.squash(cause))}\n${workflowState}\n${WORKFLOW_RECOVERY.instruction}`),
+                )
+              }),
+        ),
+      )
 
     const rejectDiagnostics = (diagnostics: Diagnostic[], context: string, parkWorkflowID?: Dag.ID) => {
       // P1-F: a missing replan envelope is a deterministic, self-correcting
@@ -302,7 +315,7 @@ export const WorkflowTool = Tool.define<
       formatValidationError: (error) =>
         [
           `Workflow call rejected by the action schema: ${error instanceof Error ? error.message : String(error)}`,
-          'The call takes a single { params } object: params { action, ...action-owned fields } where each action owns only its own fields: start {spec_path}; extend {workflow_id, spec_path}; control(replan) {workflow_id, operation, spec_path}; other control operations {workflow_id, operation}; status {workflow_id}; result {workflow_id, node_id, cursor?, limit?}; list {}; read {spec_path}; guide {topic?}; draft {title?, config}; validate {spec_path, profile?}. Put graph content in draft (structured, schema-checked) or a .yaml/.yml file; session/project identity is never a parameter.',
+          "The call takes a single { params } object: params { action, ...action-owned fields } where each action owns only its own fields: start {spec_path}; extend {workflow_id, spec_path}; control(replan) {workflow_id, operation, spec_path}; other control operations {workflow_id, operation}; status {workflow_id}; result {workflow_id, node_id, cursor?, limit?}; list {}; read {spec_path}; guide {topic?}; draft {title?, config}; validate {spec_path, profile?}. Put graph content in draft (structured, schema-checked) or a .yaml/.yml file; session/project identity is never a parameter.",
         ].join("\n"),
       execute: (call: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
@@ -377,7 +390,8 @@ export const WorkflowTool = Tool.define<
                 output: [
                   `spec_path: ${specPath}`,
                   `nodes: ${result.nodes.length}`,
-                  'Next: workflow(action="start", spec_path) — or extend the file first for low-level fields, then start.',
+                  "This draft is a start document only — an extend or control(replan) mutation needs its own file envelope (extend: top-level { objective, blocks } or { nodes }; replan: fragment).",
+                  'Next: workflow(action="start", spec_path) — or edit the file first for low-level fields, then start.',
                 ].join("\n"),
                 metadata: {},
               }
@@ -492,9 +506,7 @@ export const WorkflowTool = Tool.define<
               // A completed graph can still carry an unresolved review verdict
               // (REJECT checkpoint, issue #294); surface it explicitly instead
               // of burying it in a terminal reason string.
-              const unresolvedReviews = config
-                ? DagReviewLifecycle.unresolvedReviewOutcomes(config, nodes)
-                : []
+              const unresolvedReviews = config ? DagReviewLifecycle.unresolvedReviewOutcomes(config, nodes) : []
               return {
                 title: `Workflow status: ${workflow.title}`,
                 output: JSON.stringify(
@@ -568,12 +580,14 @@ export const WorkflowTool = Tool.define<
                       summary: node.capturedOutput.summary,
                       size: node.capturedOutput.size,
                       sha256: node.capturedOutput.sha256,
-                      ...(isManagedOutputFileRef(node.capturedOutput) ? {
-                        storage: node.capturedOutput.storage,
-                        source_path: node.capturedOutput.source_path,
-                        provenance: node.capturedOutput.provenance,
-                        artifact_status: node.status === "completed" ? "committed" : "checkpoint",
-                      } : {}),
+                      ...(isManagedOutputFileRef(node.capturedOutput)
+                        ? {
+                            storage: node.capturedOutput.storage,
+                            source_path: node.capturedOutput.source_path,
+                            provenance: node.capturedOutput.provenance,
+                            artifact_status: node.status === "completed" ? "committed" : "checkpoint",
+                          }
+                        : {}),
                       truncated: false,
                       next_cursor: null,
                     },
@@ -715,7 +729,8 @@ export const WorkflowTool = Tool.define<
                 known_dependencies: knownDependencies,
                 node_defaults: workflowDefaults,
               })
-              if (!result.valid || !result.prepared) return yield* rejectDiagnostics(result.errors, "Workflow extend", params.workflow_id)
+              if (!result.valid || !result.prepared)
+                return yield* rejectDiagnostics(result.errors, "Workflow extend", params.workflow_id)
               const r = yield* runRecoverableMutation(
                 params.workflow_id,
                 withTerminalRecovery(
@@ -736,7 +751,10 @@ export const WorkflowTool = Tool.define<
                     Effect.map(() => true),
                     Effect.catch((error) =>
                       Effect.gen(function* () {
-                        yield* Effect.logWarning("Workflow resume after extend failed", { wfId: params.workflow_id, error })
+                        yield* Effect.logWarning("Workflow resume after extend failed", {
+                          wfId: params.workflow_id,
+                          error,
+                        })
                         return false
                       }),
                     ),
@@ -757,24 +775,30 @@ export const WorkflowTool = Tool.define<
               const wfId = params.workflow_id
               const workflow = yield* requireOwnedWorkflow(wfId, ctx.sessionID)
               if (params.operation === "recover") {
-                const result = yield* dag.recover(wfId, {
-                  nodeIDs: params.node_ids,
-                  expectedGraphRev: params.expected_graph_rev,
-                  resumeCancelled: params.resume_cancelled,
-                }).pipe(Effect.orDie)
+                const result = yield* dag
+                  .recover(wfId, {
+                    nodeIDs: params.node_ids,
+                    expectedGraphRev: params.expected_graph_rev,
+                    resumeCancelled: params.resume_cancelled,
+                  })
+                  .pipe(Effect.orDie)
                 return {
                   title: `Workflow recovered: ${result.replacements.length} new attempts`,
-                  output: JSON.stringify({
-                    workflow_id: wfId,
-                    action: "recover",
-                    status: "running",
-                    graph_rev: result.graphRev,
-                    replacements: result.replacements,
-                    reused: result.reused,
-                    preserved: result.preserved,
-                    superseded: result.superseded,
-                    note: "Prior attempts remain readable with workflow result. New attempts must inspect existing workspace changes and prior child sessions before repeating side effects.",
-                  }, null, 2),
+                  output: JSON.stringify(
+                    {
+                      workflow_id: wfId,
+                      action: "recover",
+                      status: "running",
+                      graph_rev: result.graphRev,
+                      replacements: result.replacements,
+                      reused: result.reused,
+                      preserved: result.preserved,
+                      superseded: result.superseded,
+                      note: "Prior attempts remain readable with workflow result. New attempts must inspect existing workspace changes and prior child sessions before repeating side effects.",
+                    },
+                    null,
+                    2,
+                  ),
                   metadata: { workflowId: wfId, graphRev: result.graphRev } as Metadata,
                 }
               }
@@ -792,7 +816,8 @@ export const WorkflowTool = Tool.define<
                   known_dependencies: knownDependencies,
                   node_defaults: workflowDefaults,
                 })
-                if (!result.valid || !result.prepared) return yield* rejectDiagnostics(result.errors, "Workflow replan", wfId)
+                if (!result.valid || !result.prepared)
+                  return yield* rejectDiagnostics(result.errors, "Workflow replan", wfId)
                 // The graph raced to terminal while the fragment was being
                 // composed (the pause-first protocol was skipped). Surface
                 // the recovery options instead of a bare iron-law rejection.

@@ -6,7 +6,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
-import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
+import { InvalidToolInputError, streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
 import { type LLMEvent } from "@opencode-ai/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
@@ -158,6 +158,8 @@ export type StreamInput = {
   toolChoice?: "auto" | "required" | "none"
   purpose?: RequestPurpose
   contextFolding?: ContextFoldingHistorySnapshot
+  /** In-process safety signal for activity that can precede or outlive stream events. */
+  onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
 }
 
 export type StreamRequest = StreamInput & {
@@ -274,10 +276,14 @@ const live: Layer.Layer<
               {
                 ...item,
                 execute: (...args) => {
+                  // A failed stream closes its request scope. Refuse any SDK
+                  // callback that arrives after that scope has been aborted.
+                  if (input.abort.aborted) throw new DOMException("Aborted", "AbortError")
                   const admission = admitToolCall(args[1].toolCallId)
                   if (!admission.allowed) throw new Error(ToolBudget.exhaustedMessage(toolBudget.max))
                   if (admission.executed) throw new Error(`Duplicate tool call: ${args[1].toolCallId}`)
                   admission.executed = true
+                  input.onAttemptActivity?.("tool-executed")
                   return execute(...args)
                 },
               } satisfies Tool,
@@ -499,6 +505,14 @@ const live: Layer.Layer<
           // Copilot returns the authoritative billed amount only in provider-specific response fields.
           includeRawChunks: input.model.providerID.includes("github-copilot"),
           async experimental_repairToolCall(failed) {
+            // Invalid tool *input* (a known tool whose arguments failed to
+            // parse) is not repairable by renaming: returning null keeps the
+            // original tool and error so the SDK emits an unexecuted invalid
+            // tool-call. The lowercase-name repair below stays for unknown
+            // tool names only.
+            if (InvalidToolInputError.isInstance(failed.error)) {
+              return null
+            }
             const lower = failed.toolCall.toolName.toLowerCase()
             if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
               return {
@@ -615,7 +629,7 @@ const live: Layer.Layer<
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event, input.onAttemptActivity)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
               Stream.tap(result.observeToolCall),
             )

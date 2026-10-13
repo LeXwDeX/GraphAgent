@@ -10,18 +10,23 @@
  * via `Effect.serviceOption` and degrades gracefully (log.warn + skip) when it
  * is absent. A no-op layer would risk masking the live one if both were ever
  * wired into the same graph.
+ *
+ * `stopChain` is an opaque SettingsHook stop-chain token. When present, the
+ * live implementation forwards it to SessionPrompt admission so a callback
+ * whose chain was invalidated by a session cancel is refused at the actual
+ * admission point, not just at callback completion.
  */
 import { Context, Effect } from "effect"
 import { SessionID } from "@/session/schema"
 
 export interface Interface {
-  readonly rewake: (input: { sessionID: SessionID; text: string }) => Effect.Effect<void>
+  readonly rewake: (input: { sessionID: SessionID; text: string; stopChain?: unknown }) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/HookRewake") {}
 
 export function bind(
-  submit: (input: { sessionID: SessionID; text: string }) => Effect.Effect<unknown, unknown>,
+  submit: (input: { sessionID: SessionID; text: string; stopChain?: unknown }) => Effect.Effect<unknown, unknown>,
 ): Interface {
   return {
     rewake: (input) =>

@@ -106,6 +106,10 @@ const assistant = (
   const content = message.content.flatMap((item): ContentPart[] => {
     if (item.type === "text") return [{ type: "text", text: item.text }]
     if (item.type === "reasoning") {
+      // The session processor scrubs reasoning from a failed attempt with an
+      // existing Reasoning.Ended event. Skip it before distillation can restore
+      // an earlier encrypted payload into a later model request.
+      if (item.providerMetadata?.opencode?.failedAttempt === true) return []
       const replay = reasoningForReplay({
         text: item.text,
         metadata: item.providerMetadata,

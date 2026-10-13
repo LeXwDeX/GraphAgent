@@ -965,7 +965,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
-              "description": "Render a structured graph into a validated YAML spec file and return its spec_path — no workflow is created. Preferred over hand-writing YAML: field names are schema-checked here, eliminating serialization drift",
+              "description": "Render a structured graph into a validated YAML START spec file and return its spec_path — no workflow is created, and the file is a start document: it is not a valid extend or replan file (those actions take their own envelopes, see the blocks guide). Preferred over hand-writing YAML: field names are schema-checked here, eliminating serialization drift",
               "enum": [
                 "draft",
               ],
@@ -1291,7 +1291,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                   "type": "object",
                 },
               ],
-              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...] } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. Fields are exhaustive — no others exist",
+              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...] } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. Fields are exhaustive — no others exist. This is the start file's config envelope only",
             },
             "title": {
               "description": "Optional workflow title",
