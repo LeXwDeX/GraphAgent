@@ -442,9 +442,6 @@ export const dict = {
 
   "toast.session.listFailed.title": "無法載入 {{project}} 的工作階段",
 
-  "toast.update.title": "有可用更新",
-  "toast.update.description": "OpenCode 有新版本 ({{version}}) 可安裝。",
-  "toast.update.action.installRestart": "安裝並重新啟動",
   "toast.update.action.notYet": "稍後",
 
   "error.page.title": "出了點問題",
@@ -453,9 +450,6 @@ export const dict = {
   "error.page.action.restart": "重新啟動",
   "error.page.action.report": "回報錯誤",
   "error.page.action.reported": "已回報錯誤",
-  "error.page.action.checking": "檢查中...",
-  "error.page.action.checkUpdates": "檢查更新",
-  "error.page.action.updateTo": "更新到 {{version}}",
   "error.page.report.prefix": "請將此錯誤回報給 OpenCode 團隊",
   "error.page.report.discord": "在 Discord 上",
   "error.page.version": "版本: {{version}}",
@@ -620,7 +614,6 @@ export const dict = {
 
   "settings.general.section.appearance": "外觀",
   "settings.general.section.notifications": "系統通知",
-  "settings.general.section.updates": "更新",
   "settings.general.section.sounds": "音效",
   "settings.general.section.feed": "資訊流",
   "settings.general.section.display": "顯示",
@@ -656,15 +649,6 @@ export const dict = {
 
   "settings.general.row.releaseNotes.title": "發行說明",
   "settings.general.row.releaseNotes.description": "更新後顯示「新功能」彈出視窗",
-
-  "settings.updates.row.startup.title": "啟動時檢查更新",
-  "settings.updates.row.startup.description": "在 OpenCode 啟動時自動檢查更新",
-  "settings.updates.row.check.title": "檢查更新",
-  "settings.updates.row.check.description": "手動檢查更新並在有更新時安裝",
-  "settings.updates.action.checkNow": "立即檢查",
-  "settings.updates.action.checking": "檢查中...",
-  "settings.updates.toast.latest.title": "已是最新版本",
-  "settings.updates.toast.latest.description": "你正在使用最新版本的 OpenCode。",
 
   "sound.option.none": "無",
   "sound.option.alert01": "警報 01",

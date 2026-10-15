@@ -289,10 +289,6 @@ export const TuiThreadCommand = cmd({
         return
       }
 
-      setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
-      }, 1000).unref?.()
-
       try {
         const { Effect } = await import("effect")
         const { run } = await import("../tui/layer")

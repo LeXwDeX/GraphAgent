@@ -1542,6 +1542,30 @@ describe("memory turn-scoped retrieval", () => {
     { git: true },
   )
 
+  recall.it.instance(
+    "interrupting foreground prepare cancels its matcher without caching late output",
+    () =>
+      Effect.gen(function* () {
+        recall.reset()
+        const started = yield* Deferred.make<void>()
+        const cancelled = yield* Deferred.make<void>()
+        recall.state.matcher = () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined)
+            return yield* Effect.never
+          }).pipe(Effect.onInterrupt(() => Deferred.succeed(cancelled, undefined)))
+        const memory = yield* Memory.Service
+        const sessionID = SessionID.make("ses_memory_prepare_cancel")
+        const messages = [user(MessageID.ascending(), sessionID, "first real user input")]
+        const pending = yield* memory.prepare({ sessionID, messages }).pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* Fiber.interrupt(pending)
+        yield* awaitWithTimeout(Deferred.await(cancelled), "memory matcher was not interrupted")
+        expect(yield* memory.context(sessionID)).toEqual([])
+      }),
+    { git: true },
+  )
+
   // MEM-01 follow-up (acceptance): same discipline for the prepare
   // first-turn (shouldMatch) branch — the bounded matcher moved out of the
   // fence/lock, so a parked first-turn matcher cannot starve the fence.
@@ -1621,13 +1645,21 @@ describe("memory turn-scoped retrieval", () => {
         // parked-forever awaiter or a wedged key fails the bounded waits.
         const coalesced = yield* memory.search({ sessionID, messages, query: "易碎查询" }).pipe(Effect.forkChild)
         const failingResult = yield* awaitWithTimeout(Fiber.join(failing), "failing query hung")
-        const coalescedResult = yield* awaitWithTimeout(Fiber.join(coalesced), "coalesced awaiter hung on the failing run")
+        const coalescedResult = yield* awaitWithTimeout(
+          Fiber.join(coalesced),
+          "coalesced awaiter hung on the failing run",
+        )
         expect(failingResult).toEqual({ status: "failed" })
         expect(["failed", "attached", "empty"]).toContain(coalescedResult.status)
         // The (session,key) is NOT wedged: the next identical query resolves
         // within the bounded window (fresh run or cached reuse from the
         // coalesced fiber's successful re-run — either proves liveness).
-        expect(yield* awaitWithTimeout(memory.search({ sessionID, messages, query: "易碎查询" }), "later identical query wedged on the leaked in-flight entry")).toMatchObject({
+        expect(
+          yield* awaitWithTimeout(
+            memory.search({ sessionID, messages, query: "易碎查询" }),
+            "later identical query wedged on the leaked in-flight entry",
+          ),
+        ).toMatchObject({
           status: "attached",
         })
       }),
@@ -1663,7 +1695,12 @@ describe("memory turn-scoped retrieval", () => {
         // resolves within the bounded window instead of parking forever
         // (empty: the query text matches no topic — liveness is the point).
         yield* Deferred.succeed(release, undefined)
-        expect(yield* awaitWithTimeout(memory.search({ sessionID, messages, query: "可中断查询" }), "later identical query wedged on the entry leaked by the interrupted read")).toMatchObject({
+        expect(
+          yield* awaitWithTimeout(
+            memory.search({ sessionID, messages, query: "可中断查询" }),
+            "later identical query wedged on the entry leaked by the interrupted read",
+          ),
+        ).toMatchObject({
           status: "empty",
         })
       }),
@@ -2252,7 +2289,12 @@ function statusFixture() {
     list: () =>
       Effect.succeed(
         state.available
-          ? { [replacement.providerID]: ProviderTest.info({ id: replacement.providerID, models: { [replacement.id]: replacement } }) }
+          ? {
+              [replacement.providerID]: ProviderTest.info({
+                id: replacement.providerID,
+                models: { [replacement.id]: replacement },
+              }),
+            }
           : {},
       ),
     getModel: (providerID, modelID) =>
@@ -2282,8 +2324,7 @@ function statusFixture() {
             }),
         }),
         Layer.mock(MemoryConfig.Service, {
-          load: (directory) =>
-            Effect.succeed({ config: state.config, path: directory, level: "project" as const }),
+          load: (directory) => Effect.succeed({ config: state.config, path: directory, level: "project" as const }),
           loadGlobal: () => Effect.succeed(undefined),
           writeGlobal: () => Effect.succeed(true),
           writeProject: () => Effect.void,

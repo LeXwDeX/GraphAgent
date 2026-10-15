@@ -1,3 +1,4 @@
+import type { PromptInfo } from "../prompt/history"
 import type {
   Message,
   Agent,
@@ -102,9 +103,13 @@ export const {
       }
       config: Config
       session: Session[]
+      failed_submission: { [sessionID: string]: PromptInfo | undefined }
+      submission_attempt: { [sessionID: string]: string | undefined }
+      pending_submission: { [sessionID: string]: string | undefined }
       session_status: {
         [sessionID: string]: SessionStatus
       }
+      session_load_errors: { [sessionID: string]: string[] }
       session_diff: {
         [sessionID: string]: SnapshotFileDiff[]
       }
@@ -152,7 +157,11 @@ export const {
       provider: [],
       provider_default: {},
       session: [],
+      failed_submission: {},
+      submission_attempt: {},
+      pending_submission: {},
       session_status: {},
+      session_load_errors: {},
       session_diff: {},
       todo: {},
       goal: {},
@@ -170,9 +179,19 @@ export const {
     const project = useProject()
     const sdk = useSDK()
 
+    let disposed = false
+    let bootstrapAttempt = 0
+    const submissionAccepted = new Map<string, () => void>()
+    const ancillaryAttempts = new Map<string, object>()
+    const ancillaryRevision = new Map<string, number>()
+    const changedAncillary = (sessionID: string, kind: string) => {
+      const key = `${sessionID}:${kind}`
+      ancillaryRevision.set(key, (ancillaryRevision.get(key) ?? 0) + 1)
+      setStore("session_load_errors", sessionID, (errors = []) => errors.filter((item) => item !== kind))
+    }
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
-    const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string> }>()
+    const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string>; session: boolean }>()
     const touchMessage = (sessionID: string, messageID: string) => {
       hydratingSessions.get(sessionID)?.messages.add(messageID)
     }
@@ -290,14 +309,17 @@ export const {
         }
 
         case "todo.updated":
+          changedAncillary(event.properties.sessionID, "todo")
           setStore("todo", event.properties.sessionID, event.properties.todos)
           break
 
         case "goal.updated":
+          changedAncillary(event.properties.sessionID, "goal")
           setStore("goal", event.properties.sessionID, event.properties.goal)
           break
 
         case "goal.cleared":
+          changedAncillary(event.properties.sessionID, "goal")
           setStore("goal", event.properties.sessionID, undefined)
           break
 
@@ -314,10 +336,13 @@ export const {
           break
 
         case "session.diff":
+          changedAncillary(event.properties.sessionID, "session_diff")
           setStore("session_diff", event.properties.sessionID, event.properties.diff)
           break
 
         case "session.deleted": {
+          ancillaryAttempts.delete(event.properties.info.id)
+          fullSyncedSessions.delete(event.properties.info.id)
           const result = search(store.session, event.properties.info.id, (s) => s.id)
           if (result.found) {
             setStore(
@@ -330,6 +355,8 @@ export const {
           break
         }
         case "session.updated": {
+          const hydration = hydratingSessions.get(event.properties.info.id)
+          if (hydration) hydration.session = true
           const result = search(store.session, event.properties.info.id, (s) => s.id)
           if (result.found) {
             setStore("session", result.index, reconcile(event.properties.info))
@@ -366,6 +393,13 @@ export const {
         }
 
         case "message.updated": {
+          const accepted = submissionAccepted.get(event.properties.info.id)
+          if (accepted) {
+            submissionAccepted.delete(event.properties.info.id)
+            accepted()
+          }
+          if (store.pending_submission[event.properties.info.sessionID] === event.properties.info.id)
+            setStore("pending_submission", event.properties.info.sessionID, undefined)
           touchMessage(event.properties.info.sessionID, event.properties.info.id)
           const messages = store.message[event.properties.info.sessionID]
           if (!messages) {
@@ -497,6 +531,7 @@ export const {
     const args = useArgs()
 
     async function bootstrap(input: { fatal?: boolean } = {}) {
+      const attempt = ++bootstrapAttempt
       const fatal = input.fatal ?? true
       const workspace = project.workspace.current()
       const projectPromise = project.sync()
@@ -525,10 +560,10 @@ export const {
         ...(args.continue ? [sessionListPromise] : []),
       ])
         .then(async () => {
+          if (disposed || attempt !== bootstrapAttempt) return undefined
           const providersResponse = providersPromise.then((x) => x.data!)
           const providerListResponse = providerListPromise.then((x) => x.data!)
           const capabilitiesResponse = capabilitiesPromise
-          const consoleStateResponse = consoleStatePromise
           const agentsResponse = agentsPromise.then((x) => x.data ?? [])
           const configResponse = configPromise.then((x) => x.data!)
           const sessionListResponse = args.continue ? sessionListPromise : undefined
@@ -537,7 +572,6 @@ export const {
             providersResponse,
             providerListResponse,
             capabilitiesResponse,
-            consoleStateResponse,
             agentsResponse,
             configResponse,
             ...(sessionListResponse ? [sessionListResponse] : []),
@@ -545,17 +579,15 @@ export const {
             const providers = responses[0]
             const providerList = responses[1]
             const capabilities = responses[2]
-            const consoleState = responses[3]
-            const agents = responses[4]
-            const config = responses[5]
-            const sessions = responses[6]
+            const agents = responses[3]
+            const config = responses[4]
+            const sessions = responses[5]
 
             batch(() => {
               setStore("provider", reconcile(providers.providers))
               setStore("provider_default", reconcile(providers.default))
               setStore("provider_next", reconcile(providerList))
               setStore("capabilities", "experimentalBackgroundSubagents", capabilities?.backgroundSubagents === true)
-              setStore("console_state", reconcile(consoleState))
               setStore("agent", reconcile(agents))
               setStore("config", reconcile(config))
               if (sessions !== undefined) setStore("session", reconcile(sessions))
@@ -563,11 +595,14 @@ export const {
           })
         })
         .then(() => {
+          if (disposed || attempt !== bootstrapAttempt) return
           if (store.status !== "complete") setStore("status", "partial")
           // non-blocking
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
-            consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
+            consoleStatePromise.then((consoleState) => {
+              if (!disposed && attempt === bootstrapAttempt) setStore("console_state", reconcile(consoleState))
+            }),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
             sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
@@ -601,6 +636,7 @@ export const {
           })
         })
         .catch(async (e) => {
+          if (disposed || attempt !== bootstrapAttempt) return
           TuiLog.write("error", "tui bootstrap failed", {
             error: e instanceof Error ? e.message : String(e),
             name: e instanceof Error ? e.name : undefined,
@@ -676,10 +712,21 @@ export const {
     })
 
     onCleanup(() => {
+      disposed = true
+      ancillaryAttempts.clear()
+      submissionAccepted.clear()
       unsubscribeReconnect()
     })
 
     const result = {
+      submission: {
+        onAccepted(messageID: string, callback: () => void) {
+          submissionAccepted.set(messageID, callback)
+          return () => {
+            submissionAccepted.delete(messageID)
+          }
+        },
+      },
       data: store,
       set: setStore,
       get status() {
@@ -719,23 +766,60 @@ export const {
           if (fullSyncedSessions.has(sessionID)) return
           const syncing = syncingSessions.get(sessionID)
           if (syncing) return syncing
-          const tracker = { messages: new Set<string>(), parts: new Set<string>() }
+          const tracker = { messages: new Set<string>(), parts: new Set<string>(), session: false }
           hydratingSessions.set(sessionID, tracker)
           const task = (async () => {
-            const [session, messages, todo, diff, goal] = await Promise.all([
+            const attempt = {}
+            ancillaryAttempts.set(sessionID, attempt)
+            const load = <T,>(
+              kind: "todo" | "session_diff" | "goal",
+              request: Promise<{ data?: T }>,
+              apply: (value: T | undefined) => void,
+            ) => {
+              const key = `${sessionID}:${kind}`
+              const revision = ancillaryRevision.get(key) ?? 0
+              void request
+                .then((response) => {
+                  if (
+                    disposed ||
+                    ancillaryAttempts.get(sessionID) !== attempt ||
+                    (ancillaryRevision.get(key) ?? 0) !== revision
+                  )
+                    return
+                  setStore("session_load_errors", sessionID, (errors = []) => errors.filter((item) => item !== kind))
+                  apply(response.data)
+                })
+                .catch((error) => {
+                  if (
+                    disposed ||
+                    ancillaryAttempts.get(sessionID) !== attempt ||
+                    (ancillaryRevision.get(key) ?? 0) !== revision
+                  )
+                    return
+                  setStore("session_load_errors", sessionID, (errors = []) => [
+                    ...errors.filter((item) => item !== kind),
+                    kind,
+                  ])
+                  TuiLog.write("error", `Loading session ${kind} failed`, { sessionID, error: String(error) })
+                })
+            }
+            load("todo", sdk.client.session.todo({ sessionID }, { throwOnError: true }), (value) =>
+              setStore("todo", sessionID, value ?? []),
+            )
+            load("session_diff", sdk.client.session.diff({ sessionID }, { throwOnError: true }), (value) =>
+              setStore("session_diff", sessionID, value ?? []),
+            )
+            load("goal", sdk.client.session.goal({ sessionID }), (value) => setStore("goal", sessionID, value))
+            const [session, messages] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
               sdk.client.session.messages({ sessionID, limit: 100 }),
-              sdk.client.session.todo({ sessionID }),
-              sdk.client.session.diff({ sessionID }),
-              sdk.client.session.goal({ sessionID }).catch(() => ({ data: undefined })),
             ])
+            if (disposed || ancillaryAttempts.get(sessionID) !== attempt) return
             setStore(
               produce((draft) => {
                 const match = search(draft.session, sessionID, (s) => s.id)
-                if (match.found) draft.session[match.index] = session.data!
-                if (!match.found) draft.session.splice(match.index, 0, session.data!)
-                draft.todo[sessionID] = todo.data ?? []
-                draft.goal[sessionID] = goal.data ?? undefined
+                if (match.found && !tracker.session) draft.session[match.index] = session.data
+                if (!match.found && !tracker.session) draft.session.splice(match.index, 0, session.data)
                 const currentMessages = draft.message[sessionID] ?? []
                 const infos = (messages.data ?? []).flatMap((message) => {
                   if (!tracker.messages.has(message.info.id)) return [message.info]
@@ -779,7 +863,6 @@ export const {
                 }
                 for (const message of removed) delete draft.part[message.id]
                 draft.message[sessionID] = visible
-                draft.session_diff[sessionID] = diff.data ?? []
               }),
             )
             fullSyncedSessions.add(sessionID)

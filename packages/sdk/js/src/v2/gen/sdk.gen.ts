@@ -1371,9 +1371,9 @@ export class Global extends HeyApiClient {
   }
 
   /**
-   * Upgrade opencode
+   * Built-in updates disabled
    *
-   * Upgrade opencode to the specified version or latest if not specified.
+   * Legacy compatibility endpoint. Returns HTTP 400 with success false and an error explaining that built-in application updates are disabled. No installation is attempted.
    */
   public upgrade<ThrowOnError extends boolean = false>(
     parameters?: {

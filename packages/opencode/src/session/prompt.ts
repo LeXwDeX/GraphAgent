@@ -2132,6 +2132,31 @@ export const layer = Layer.effect(
         // (the latest assistant info) shadows it inside the step body.
         const getLastAssistant = lastAssistant
 
+        // Runs in the owning request fiber: interruption stops preparation before the next model request.
+        // Finalizers only emit timings, so an old attempt cannot overwrite its replacement's status.
+        const prepare = <A, E, R>(stage: "memory" | "reasoning" | "tools", effect: Effect.Effect<A, E, R>) =>
+          Effect.gen(function* () {
+            const startedAt = Date.now()
+            const started = performance.now()
+            yield* status.set(sessionID, { type: "busy", preparation: { stage, startedAt } })
+            const value = yield* effect.pipe(
+              Effect.onExit((exit) =>
+                Effect.logDebug("session preparation", {
+                  "session.id": sessionID,
+                  stage,
+                  durationMs: performance.now() - started,
+                  outcome: Exit.isSuccess(exit)
+                    ? "completed"
+                    : Cause.hasInterrupts(exit.cause)
+                      ? "cancelled"
+                      : "failed",
+                }),
+              ),
+            )
+            yield* status.set(sessionID, { type: "busy" })
+            return value
+          })
+
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
@@ -2348,8 +2373,11 @@ export const layer = Layer.effect(
           step++
           // Send barrier: adopt finished reasoning rewrites before this step builds its request; seal the rest so a
           // part is rewritten before its first resend or never.
-          const adoptedRefs = yield* InstanceState.useEffect(rewriteState, ({ scheduler }) =>
-            scheduler.settle(sessionID),
+          const adoptedRefs = yield* prepare(
+            "reasoning",
+            InstanceState.useEffect(rewriteState, ({ scheduler }) =>
+              scheduler.settle(sessionID).pipe(Effect.onInterrupt(() => scheduler.cancel(sessionID))),
+            ),
           )
           msgs = yield* withStoredReasoning(sessionID, msgs, adoptedRefs)
           if (step === 1)
@@ -2556,22 +2584,25 @@ export const layer = Layer.effect(
 
             const tools = toolsDisabled
               ? {}
-              : yield* SessionTools.resolve({
-                  agent,
-                  session,
-                  model,
-                  processor: handle,
-                  bypassAgentCheck,
-                  messages: msgs,
-                  promptOps,
-                  hooks: settingsHook,
-                  sourceLedger: toolSources,
-                }).pipe(
-                  Effect.provideService(Plugin.Service, plugin),
-                  Effect.provideService(Permission.Service, permission),
-                  Effect.provideService(ToolRegistry.Service, registry),
-                  Effect.provideService(MCP.Service, mcp),
-                  Effect.provideService(Truncate.Service, truncate),
+              : yield* prepare(
+                  "tools",
+                  SessionTools.resolve({
+                    agent,
+                    session,
+                    model,
+                    processor: handle,
+                    bypassAgentCheck,
+                    messages: msgs,
+                    promptOps,
+                    hooks: settingsHook,
+                    sourceLedger: toolSources,
+                  }).pipe(
+                    Effect.provideService(Plugin.Service, plugin),
+                    Effect.provideService(Permission.Service, permission),
+                    Effect.provideService(ToolRegistry.Service, registry),
+                    Effect.provideService(MCP.Service, mcp),
+                    Effect.provideService(Truncate.Service, truncate),
+                  ),
                 )
 
             if (!toolsDisabled && lastUser.format?.type === "json_schema") {
@@ -2606,7 +2637,7 @@ export const layer = Layer.effect(
                 sys.mcp(agent, session.permission),
                 sys.goal(sessionID),
                 sys.hooks(),
-                sys.memory({ sessionID, messages: msgs, main: !session.parentID }),
+                prepare("memory", sys.memory({ sessionID, messages: msgs, main: !session.parentID })),
                 MessageV2.toModelMessagesEffect(msgs, model, {
                   reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
                 }),
@@ -2673,7 +2704,20 @@ export const layer = Layer.effect(
               if (endpoint.ok && endpoint.value.endpoint.kind === "node")
                 setCaptureSnapshot(sessionID, agentSnapshot.id)
             }
-            const result = yield* handle.process(processInput)
+            const modelStarted = performance.now()
+            const result = yield* handle.process(processInput).pipe(
+              Effect.onExit((exit) =>
+                Effect.logDebug("session model request", {
+                  "session.id": sessionID,
+                  durationMs: performance.now() - modelStarted,
+                  outcome: Exit.isSuccess(exit)
+                    ? "completed"
+                    : Cause.hasInterrupts(exit.cause)
+                      ? "cancelled"
+                      : "failed",
+                }),
+              ),
+            )
             if (result === "stop" || handle.message.error) {
               agentInputBlocked = true
               const reason = handle.message.error ? "model_error" : "turn_blocked"

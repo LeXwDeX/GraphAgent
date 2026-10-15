@@ -119,11 +119,11 @@ Refresh only owned, unedited blocks and assets; preserve manual text and other t
 <!-- specgit:v2:start -->
 ## SpecGit 2
 
-Runtime: 2.8.0. Declaration: `.specgit.yaml` (v2, local configuration).
+Runtime: 2.11.1. Declaration: `.specgit.yaml` (v2, local configuration).
 
 Load specgit-native Skill for new tasks and existing PR/MR CI/review repair.
 The Skill holds the workflow and recovery steps; the binary is optional, not a waiver of project guard/checkpoint constraints.
-Use native gh/glab proactively within authorization; follow the Skill for read-only environment discovery and verification.
+Use native gh/glab proactively within authorization. GitHub free/paid plans, account type and repository visibility, and GitLab Community/commercial tiers are context, not proof of project/identity capability; report plan limits, permission failures and unknown causes separately; 403/404 alone cannot decide. See Skill.
 Milestone is optional; Issue holds the specification and work ledger; PR/MR integrates changes, not a version; Release needs separate authorization.
 When using the shared CLI, its installed `specgit --help` and `specgit --schema` are the contract.
 Before tracked product edits, inspect duplicate work and select a complete relevant Issue: Why / Scope / Approach / Acceptance.
@@ -133,8 +133,9 @@ Declarations, `--dry-run` previews and Hook notices grant no permission.
 GitHub/GitLab owns CI, review, protection and actual merge.
 Finish against the user's goal: review, repair or tracking reports verified results and limits.
 Platform delivery requires native readback of the intended target merge and closure of every associated Issue that should close.
-For missing capabilities or a SpecGit defect, follow the Skill's recovery steps.
+After updates, run status/doctor, read generated Skill/guidance and repeat dry-runs; init dry-run reports planned paths, not per-path changed state. Follow Skill recovery for blockers.
+For an authorized refresh, let the CLI replace edited text in assets/complete unique blocks with verified ownership; preserve outside bytes/config/checkpoints/hooks. Unknown ownership or damaged/duplicate markers conflict. Do not handwrite, restore old blocks or add manual backups; use CLI recovery. Uninstall/rollback preserves later edits.
 
 Declared rules: `{"agent":{"close_issues_after_merge":false,"native_auto_merge":false},"issue_template":"builtin","language":"en","pr_template":"builtin","validation":{"bodies":true,"labels":"off","titles":true}}`
-<!-- specgit:v2:sha256 4266cc98fcaaa6fc846afd95e6527a9ea674854c4909d32786e01a57386c41b6 -->
+<!-- specgit:v2:sha256 83d9e203fc2c267d9460f9f8040faaa2153c0a0d4b2ffc01c6e3318f35c79974 -->
 <!-- specgit:v2:end -->

@@ -244,26 +244,6 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
     void ensureFatalErrorRecorded().catch(() => undefined)
   })
 
-  async function checkForUpdates() {
-    const state = await platform.updater?.check()
-    setStore("actionError", state?.status === "error" ? state.message : undefined)
-  }
-
-  async function installUpdate() {
-    await platform.updater
-      ?.install()
-      .then(() => setStore("actionError", undefined))
-      .catch((err) => {
-        setStore("actionError", formatError(err, language.t))
-      })
-  }
-
-  const updateVersion = () => {
-    const state = platform.updater?.state()
-    if (state?.status !== "ready") return
-    return state.version
-  }
-
   async function exportDebugLogs() {
     const exportLogs = platform.exportDebugLogs
     if (!exportLogs) return
@@ -317,29 +297,6 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
                 </Button>
               )
             }}
-          </Show>
-          <Show when={platform.updater}>
-            <Show
-              when={updateVersion()}
-              fallback={
-                <Button
-                  size="large"
-                  variant="ghost"
-                  onClick={checkForUpdates}
-                  disabled={["checking", "downloading", "installing"].includes(platform.updater?.state().status ?? "")}
-                >
-                  {platform.updater?.state().status === "checking"
-                    ? language.t("error.page.action.checking")
-                    : language.t("error.page.action.checkUpdates")}
-                </Button>
-              }
-            >
-              {(version) => (
-                <Button size="large" onClick={installUpdate}>
-                  {language.t("error.page.action.updateTo", { version: version() })}
-                </Button>
-              )}
-            </Show>
           </Show>
         </div>
         <Show when={store.actionError}>

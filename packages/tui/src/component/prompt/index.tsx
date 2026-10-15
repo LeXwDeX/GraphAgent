@@ -15,6 +15,7 @@ import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { Identifier } from "@opencode-ai/core/id/id"
 import { tint, useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
@@ -158,6 +159,36 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
+  const [sending, setSending] = createSignal(false)
+  const [failedSubmission, setFailedSubmission] = createSignal<PromptInfo>()
+  createEffect(() => {
+    const failed = sync.data.failed_submission[props.sessionID ?? ""]
+    if (failed) setFailedSubmission(failed)
+  })
+  let submissionAttempt = 0
+  let disposed = false
+  onCleanup(() => {
+    disposed = true
+    submissionAttempt++
+  })
+  const [stopping, setStopping] = createSignal<{ sessionID: string; token: number; messageID?: string }>()
+  let cancelAttempt = 0
+  createEffect(() => {
+    const pending = stopping()
+    if (
+      pending &&
+      (pending.sessionID !== props.sessionID ||
+        status().type === "idle" ||
+        sync.data.message[pending.sessionID]?.findLast((message) => message.role === "user")?.id !== pending.messageID)
+    ) {
+      cancelAttempt++
+      setStopping(undefined)
+    }
+  })
+  const preparation = createMemo(() => {
+    const current = status()
+    return current.type === "busy" ? current.preparation : undefined
+  })
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
@@ -337,6 +368,24 @@ export function Prompt(props: PromptProps) {
   const promptCommands = createMemo(() =>
     [
       {
+        title: "Restore failed prompt",
+        name: "prompt.restore_failed",
+        category: "Prompt",
+        enabled: Boolean(failedSubmission()),
+        run: () => {
+          const failed = failedSubmission()
+          if (!failed) return
+          if (store.prompt.input || store.prompt.parts.length) stash.push(unwrap(store.prompt))
+          input.setText(failed.input)
+          setStore("prompt", structuredClone(unwrap(failed)))
+          setStore("mode", failed.mode ?? "normal")
+          restoreExtmarksFromParts(failed.parts)
+          setFailedSubmission(undefined)
+          if (props.sessionID) sync.set("failed_submission", props.sessionID, undefined)
+          dialog.clear()
+        },
+      },
+      {
         title: "Clear prompt",
         name: "prompt.clear",
         category: "Prompt",
@@ -421,8 +470,22 @@ export function Prompt(props: PromptProps) {
           if (store.interrupt >= 2) {
             if (interruptTimer) clearTimeout(interruptTimer)
             interruptTimer = undefined
-            void sdk.client.session.abort({
-              sessionID: props.sessionID,
+            if (stopping()?.sessionID === props.sessionID) return
+            const sessionID = props.sessionID
+            const token = ++cancelAttempt
+            setStopping({
+              sessionID,
+              token,
+              messageID: sync.data.message[sessionID]?.findLast((message) => message.role === "user")?.id,
+            })
+            void sdk.client.session.abort({ sessionID }, { throwOnError: true }).catch((error) => {
+              if (disposed || token !== cancelAttempt || props.sessionID !== sessionID) return
+              setStopping(undefined)
+              toast.show({
+                title: "Failed to stop session",
+                message: errorMessage(error) + " · Press esc twice to retry",
+                variant: "error",
+              })
             })
             setStore("interrupt", 0)
           }
@@ -601,6 +664,7 @@ export function Prompt(props: PromptProps) {
       input.blur()
     },
     set(prompt) {
+      draftRevision++
       input.setText(prompt.input)
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
@@ -935,6 +999,7 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  let draftRevision = 0
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -947,6 +1012,10 @@ export function Prompt(props: PromptProps) {
     submitting = true
     try {
       return await submitInner()
+    } catch (error) {
+      setSending(false)
+      toast.show({ title: "Failed to send prompt", message: errorMessage(error), variant: "error" })
+      return false
     } finally {
       submitting = false
     }
@@ -973,7 +1042,7 @@ export function Prompt(props: PromptProps) {
       void exit()
       return true
     }
-    const selectedModel = local.model.current()
+    const selectedModel = structuredClone(unwrap(local.model.current()))
     if (!selectedModel) {
       void promptModelWarning()
       return false
@@ -994,60 +1063,25 @@ export function Prompt(props: PromptProps) {
       return false
     }
 
-    const variant = local.model.variant.current()
-    let sessionID = props.sessionID
-    let finishMoveProgress = false
-    if (sessionID == null) {
-      const selectedWorkspace = workspace.selection()
-      const workspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
-
-      const directory = await move.getDirectory(store.prompt.input)
-      if (move.pending() && !directory) return false
-      finishMoveProgress = Boolean(move.progress())
-
-      const res = await sdk.client.session.create({
-        directory,
-        workspace: workspaceID,
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          id: selectedModel.modelID,
-          variant,
-        },
-      })
-
-      if (res.error) {
-        if (finishMoveProgress) move.finishSubmit()
-        TuiLog.write("error", "Creating a session failed", res.error)
-
-        toast.show({
-          title: "Creating a session failed",
-          message: errorMessage(res.error),
-          variant: "error",
-        })
-
-        return true
-      }
-
-      sessionID = res.data.id
-    }
-
+    const submittedRevision = draftRevision
+    const submitted = structuredClone(unwrap(store.prompt))
     const inputText = expandTrackedPastedText(
-      store.prompt.input,
+      submitted.input,
       input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
         const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        const part = partIndex === undefined ? undefined : submitted.parts[partIndex]
         if (part?.type !== "text") return []
         return [{ start: extmark.start, end: extmark.end, text: part.text }]
       }),
     )
 
     // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+    const nonTextParts = submitted.parts.filter((part) => part.type !== "text")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
-    const editorSelection = editorContext()
+    const editorSelection = structuredClone(unwrap(editorContext()))
+    const selectionKey = editorSelectionKey(editorSelection)
     const editorParts =
       editorSelection && editor.labelState() === "pending"
         ? [
@@ -1065,18 +1099,122 @@ export function Prompt(props: PromptProps) {
           ]
         : []
 
-    if (store.mode === "shell") {
-      move.startSubmit()
-      void sdk.client.session.shell({
-        sessionID,
+    const originalSessionID = props.sessionID
+    const draftUnchanged = () =>
+      draftRevision === submittedRevision &&
+      store.prompt.input === submitted.input &&
+      JSON.stringify(unwrap(store.prompt.parts)) === JSON.stringify(submitted.parts)
+    const messageID = Identifier.ascending("message")
+    let accepted = false
+    const attempt = ++submissionAttempt
+    cancelAttempt++
+    setStopping(undefined)
+    const previousFailure = failedSubmission()
+    if (previousFailure) stash.push(unwrap(previousFailure))
+    setFailedSubmission(undefined)
+    if (originalSessionID) sync.set("failed_submission", originalSessionID, undefined)
+    setSending(true)
+    const markEditorAccepted = () => {
+      if (editorParts.length > 0 && editorSelectionKey(editorContext()) === selectionKey) editor.markSelectionSent()
+    }
+    const clearPending = () => {
+      if (sessionID && sync.data.pending_submission[sessionID] === messageID)
+        sync.set("pending_submission", sessionID, undefined)
+      if (attempt === submissionAttempt) setSending(false)
+    }
+    const failed = (error: unknown) => {
+      const acknowledged =
+        accepted ||
+        sync.data.message[sessionID ?? ""]?.some((message) => message.id === messageID) ||
+        (sessionID &&
+          sync.data.submission_attempt[sessionID] === messageID &&
+          sync.data.pending_submission[sessionID] === undefined)
+      clearPending()
+      if (acknowledged) return
+      if (attempt !== submissionAttempt || disposed) {
+        stash.push(submitted)
+        if (sessionID && sync.data.submission_attempt[sessionID] === messageID)
+          sync.set("failed_submission", sessionID, { ...submitted, mode: currentMode })
+        toast.show({
+          title: "Failed to send prompt",
+          message: errorMessage(error) + " · Failed input saved in prompt stash",
+          variant: "error",
+        })
+        return
+      }
+      setSending(false)
+      setFailedSubmission({ ...submitted, mode: currentMode })
+      if (!store.prompt.input && store.prompt.parts.length === 0 && props.sessionID === originalSessionID) {
+        input.setText(submitted.input)
+        setStore("prompt", structuredClone(submitted))
+        restoreExtmarksFromParts(submitted.parts)
+        setStore("mode", currentMode)
+        setFailedSubmission(undefined)
+      }
+      toast.show({ title: "Failed to send prompt", message: errorMessage(error), variant: "error" })
+    }
+    const variant = local.model.variant.current()
+    let sessionID = props.sessionID
+    let finishMoveProgress = false
+    if (sessionID == null) {
+      const selectedWorkspace = workspace.selection()
+      const workspaceID = selectedWorkspace?.type === "existing" ? selectedWorkspace.workspaceID : undefined
+
+      const directory = await move.getDirectory(submitted.input)
+      if (move.pending() && !directory) {
+        setSending(false)
+        return false
+      }
+      finishMoveProgress = Boolean(move.progress())
+
+      const res = await sdk.client.session.create({
+        directory,
+        workspace: workspaceID,
         agent: agent.name,
         model: {
           providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
+          id: selectedModel.modelID,
+          variant,
         },
-        command: inputText,
       })
-      setStore("mode", "normal")
+
+      if (res.error) {
+        failed(res.error)
+        if (finishMoveProgress) move.finishSubmit()
+        TuiLog.write("error", "Creating a session failed", res.error)
+
+        toast.show({
+          title: "Creating a session failed",
+          message: errorMessage(res.error),
+          variant: "error",
+        })
+
+        return true
+      }
+
+      sessionID = res.data.id
+    }
+
+    if (currentMode === "shell") {
+      move.startSubmit()
+      void sdk.client.session
+        .shell(
+          {
+            sessionID,
+            agent: agent.name,
+            model: {
+              providerID: selectedModel.providerID,
+              modelID: selectedModel.modelID,
+            },
+            command: inputText,
+          },
+          { throwOnError: true },
+        )
+        .then(() => {
+          if (attempt === submissionAttempt) setSending(false)
+        })
+        .catch(failed)
+      if (draftUnchanged()) setStore("mode", "normal")
     } else if (
       inputText.startsWith("/") &&
       sync.data.command.some((x) => x.name === inputText.split("\n")[0].split(" ")[0].slice(1))
@@ -1089,22 +1227,38 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      void sdk.client.session.command({
-        sessionID,
-        command: command.slice(1),
-        arguments: args,
-        agent: agent.name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        variant,
-        parts: nonTextParts.filter((x) => x.type === "file"),
-      })
+      void sdk.client.session
+        .command(
+          {
+            sessionID,
+            command: command.slice(1),
+            arguments: args,
+            agent: agent.name,
+            model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+            variant,
+            parts: nonTextParts.filter((x) => x.type === "file"),
+          },
+          { throwOnError: true },
+        )
+        .then(() => {
+          if (attempt === submissionAttempt) setSending(false)
+        })
+        .catch(failed)
     } else {
       move.startSubmit()
+      const releaseAcknowledgement = sync.submission.onAccepted(messageID, () => {
+        accepted = true
+        markEditorAccepted()
+        clearPending()
+      })
+      sync.set("submission_attempt", sessionID, messageID)
+      sync.set("pending_submission", sessionID, messageID)
       sdk.client.session
         .prompt(
           {
             sessionID,
             ...selectedModel,
+            messageID,
             agent: agent.name,
             model: selectedModel,
             variant,
@@ -1119,38 +1273,39 @@ export function Prompt(props: PromptProps) {
           },
           { throwOnError: true },
         )
-        .catch((error) => {
-          toast.show({
-            title: "Failed to send prompt",
-            message: errorMessage(error),
-            variant: "error",
-          })
+        .then(() => {
+          accepted = true
+          markEditorAccepted()
+          clearPending()
         })
-      if (editorParts.length > 0) editor.markSelectionSent()
+        .catch(failed)
+        .finally(releaseAcknowledgement)
     }
+    if (disposed || props.sessionID !== originalSessionID) return true
     history.append({
-      ...store.prompt,
+      ...submitted,
       mode: currentMode,
     })
-    input.extmarks.clear()
-    setStore("prompt", {
-      input: "",
-      parts: [],
-    })
-    setStore("extmarkToPartIndex", new Map())
+    if (draftUnchanged()) {
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+    }
     props.onSubmit?.()
 
     // temporary hack to make sure the message is sent
-    if (!props.sessionID) {
+    if (!originalSessionID && props.sessionID === originalSessionID && !disposed) {
       if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
       setTimeout(() => {
-        route.navigate({
-          type: "session",
-          sessionID,
-        })
+        if (!disposed && props.sessionID === originalSessionID)
+          route.navigate({
+            type: "session",
+            sessionID,
+            prompt: structuredClone(unwrap(store.prompt)),
+          })
       }, 50)
     }
-    input.clear()
     if (finishMoveProgress) move.finishSubmit()
     return true
   }
@@ -1384,6 +1539,7 @@ export function Prompt(props: PromptProps) {
               minHeight={1}
               maxHeight={maxHeight()}
               onContentChange={() => {
+                draftRevision++
                 const value = input.plainText
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
@@ -1516,6 +1672,21 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Switch>
+            <Match when={stopping()}>
+              <text paddingLeft={1} fg={theme.textMuted}>
+                Stopping…
+              </text>
+            </Match>
+            <Match when={sending() || sync.data.pending_submission[props.sessionID ?? ""]}>
+              <text paddingLeft={1} fg={theme.textMuted}>
+                Sending prompt…
+              </text>
+            </Match>
+            <Match when={failedSubmission()}>
+              <text paddingLeft={1} fg={theme.error}>
+                Prompt not sent · restore failed prompt from commands to retry
+              </text>
+            </Match>
             <Match when={status().type !== "idle"}>
               <box
                 flexDirection="row"
@@ -1530,6 +1701,19 @@ export function Prompt(props: PromptProps) {
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>
+                    <Show when={preparation()}>
+                      {(phase) => (
+                        <text fg={theme.textMuted}>
+                          {
+                            {
+                              memory: "Preparing memory…",
+                              reasoning: "Preparing reasoning…",
+                              tools: "Preparing tools…",
+                            }[phase().stage]
+                          }
+                        </text>
+                      )}
+                    </Show>
                     {(() => {
                       const retry = createMemo(() => {
                         const s = status()
@@ -1595,6 +1779,15 @@ export function Prompt(props: PromptProps) {
                   </span>
                 </text>
               </box>
+            </Match>
+            <Match when={sync.data.session_load_errors[props.sessionID ?? ""]?.length}>
+              <text paddingLeft={1} fg={theme.textMuted}>
+                Some session details could not load (
+                {sync.data.session_load_errors[props.sessionID ?? ""]
+                  ?.map((kind) => (kind === "session_diff" ? "diff" : kind === "todo" ? "tasks" : kind))
+                  .join(", ")}
+                )
+              </text>
             </Match>
             <Match when={workspace.notice()}>
               {(notice) => (

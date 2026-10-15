@@ -51,7 +51,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
     .pipe(Schema.optional)
     .annotate({
       description:
-        "Notify when a new fork version is available on GitHub releases. Automatic updates are disabled; set to false to disable the notification",
+        "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored",
     }),
   share: Schema.Literals(["manual", "auto", "disabled"]).pipe(Schema.optional).annotate({
     description: "Control whether sessions may be shared manually, automatically, or not at all",
