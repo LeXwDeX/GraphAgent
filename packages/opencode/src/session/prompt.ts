@@ -1,3 +1,4 @@
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import {
   assessCanonicalReasoning,
@@ -600,6 +601,7 @@ export const layer = Layer.effect(
     })
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
+      yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       // A user abort invalidates any pending async Stop-hook rewake chain;
       // otherwise a callback completing afterwards would silently restart the

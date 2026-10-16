@@ -7270,49 +7270,87 @@ for (const output of ["thinking", "text-only"] as const)
         ),
     )
 
-thinkingPrefixIt.instance("does not reinsert Claude thinking after a different provider SDK and back", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig((url) => {
-      const config = providerCfg(url)
-      return {
-        ...config,
-        provider: {
-          test: {
-            ...config.provider.test,
-            npm: "@ai-sdk/anthropic",
-            models: {
-              "test-model": { ...config.provider.test.models["test-model"], id: "claude-fable-5-1", reasoning: true },
-            },
-          },
-          other: config.provider.test,
-        },
-      }
-    })
-    const sessions = yield* Session.Service
-    const prompt = yield* SessionPrompt.Service
-    const session = yield* sessions.create({ title: "Provider switch replay fixture" })
-    yield* llm.push(thinkingPrefixReply("before-provider-switch"))
-    const first = yield* prompt.prompt({
-      sessionID: session.id,
-      model: ref,
-      parts: [{ type: "text", text: "fixture first" }],
-    })
-    yield* llm.push(reply().text("other answer").stop())
-    yield* prompt.prompt({
-      sessionID: session.id,
-      model: { providerID: ProviderV2.ID.make("other"), modelID: ref.modelID },
-      parts: [{ type: "text", text: "other provider" }],
-    })
-    const stored = yield* sessions.messages({ sessionID: session.id })
-    expect(
-      stored.find((message) => message.info.id === first.info.id)?.parts.find((part) => part.type === "reasoning")
-        ?.metadata?.opencode?.thinkingReplay?.invalidated,
-    ).toBe(true)
-    yield* llm.push(thinkingPrefixReply("after-provider-switch"))
-    yield* prompt.prompt({ sessionID: session.id, model: ref, parts: [{ type: "text", text: "back to Claude" }] })
-    expect(JSON.stringify((yield* llm.hits).at(-1)!.body.messages)).not.toContain("before-provider-switch")
-  }),
-)
+for (const [runtime, runner] of [
+  ["sdk", thinkingPrefixIt],
+  ["native", nativeThinkingPrefixIt],
+] as const)
+  for (const interleaved of [false, true])
+    runner.instance(
+      `does not reinsert Claude thinking after a different provider SDK and back (${runtime}, ${interleaved ? "interleaved DeepSeek" : "plain"})`,
+      () =>
+        Effect.gen(function* () {
+          const { llm } = yield* useServerConfig((url) => {
+            const config = providerCfg(url)
+            return {
+              ...config,
+              provider: {
+                test: {
+                  ...config.provider.test,
+                  npm: "@ai-sdk/anthropic",
+                  models: {
+                    "test-model": {
+                      ...config.provider.test.models["test-model"],
+                      id: "claude-fable-5-1",
+                      reasoning: true,
+                    },
+                  },
+                },
+                other: interleaved
+                  ? {
+                      ...config.provider.test,
+                      models: {
+                        "test-model": {
+                          ...config.provider.test.models["test-model"],
+                          id: "deepseek-r1",
+                          interleaved: { field: "reasoning_content" as const },
+                        },
+                      },
+                    }
+                  : config.provider.test,
+              },
+            }
+          })
+          const sessions = yield* Session.Service
+          const prompt = yield* SessionPrompt.Service
+          const session = yield* sessions.create({ title: "Provider switch replay fixture" })
+          yield* llm.push(thinkingPrefixReply("before-provider-switch"))
+          const first = yield* prompt.prompt({
+            sessionID: session.id,
+            model: ref,
+            parts: [{ type: "text", text: "fixture first" }],
+          })
+          yield* llm.push(reply().text("other answer").stop())
+          const switched = yield* prompt.prompt({
+            sessionID: session.id,
+            model: { providerID: ProviderV2.ID.make("other"), modelID: ref.modelID },
+            parts: [{ type: "text", text: "other provider" }],
+          })
+          if (switched.info.role !== "assistant") throw new Error("Missing switched assistant")
+          expect(switched.info.error).toBeUndefined()
+          expect((yield* llm.hits).at(-1)!.body.model).toBe(interleaved ? "deepseek-r1" : "test-model")
+          expect(JSON.stringify((yield* llm.hits).at(-1)!.body.messages)).not.toContain("before-provider-switch")
+          yield* llm.push(thinkingPrefixReply("after-provider-switch"))
+          yield* prompt.prompt({ sessionID: session.id, model: ref, parts: [{ type: "text", text: "back to Claude" }] })
+          expect(JSON.stringify((yield* llm.hits).at(-1)!.body.messages)).not.toContain("before-provider-switch")
+          const stored = yield* sessions.messages({ sessionID: session.id })
+          expect(
+            stored.find((message) => message.info.id === first.info.id)?.parts.find((part) => part.type === "reasoning")
+              ?.metadata?.opencode?.thinkingReplay?.invalidated,
+          ).toBe(true)
+          const expected = structuredClone(first.parts)
+          for (const item of expected)
+            if (item.type === "reasoning") item.metadata!.opencode.thinkingReplay.invalidated = true
+          expect(stored.find((message) => message.info.id === first.info.id)?.parts).toEqual(expected)
+          const wire = JSON.stringify((yield* llm.hits).map((hit) => hit.body))
+          expect(wire).not.toContain("thinkingReplay")
+          expect(wire).not.toContain("sourceOrigins")
+          for (const item of first.parts.filter((part) => part.type === "reasoning")) {
+            const id = item.metadata?.opencode?.thinkingReplay?.block
+            if (typeof id !== "string") throw new Error("Missing fixture origin")
+            expect(wire).not.toContain(id)
+          }
+        }),
+    )
 
 for (const change of ["tools", "history"] as const) {
   const tools: Record<string, AITool> = {}

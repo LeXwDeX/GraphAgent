@@ -170,3 +170,27 @@ test("tracks installed SDK wire changes from inline system toolChanges", async (
   const replay = ThinkingReplay.project({ messages: [...prompt, { role: "assistant", content: [thinking] }] })
   expect(replay.invalidated).toEqual([ThinkingReplay.origin(thinking.providerMetadata)!.block])
 })
+
+test("settles known carriers removed before the final projection without rechecking a source prefix", () => {
+  const initial = ThinkingReplay.project({ messages: [user] })
+  const thinking = signed(initial, "removed-by-projection")
+  const source = [user, { role: "assistant", content: [thinking, { type: "text", text: "answer" }] }]
+  const sourceOrigins = ThinkingReplay.replayOrigins(source)
+  const expected = ThinkingReplay.origin(thinking.providerMetadata)!.block
+  expect(sourceOrigins).toEqual([expected])
+  expect(ThinkingReplay.project({ messages: source, sourceOrigins }).invalidated).toEqual([])
+  const folded = [user, { role: "assistant", content: [{ type: "text", text: "answer" }] }]
+  const final = ThinkingReplay.project({ messages: folded, sourceOrigins })
+  expect(final.invalidated).toEqual([expected])
+  expect(final.messages).toEqual(folded)
+  expect(final.diagnostic).toMatchObject({ removedBeforeProjection: 1, newlyInvalidated: 1 })
+  expect(JSON.stringify(final.messages)).not.toContain(expected)
+})
+
+test("origin inventories ignore unknown legacy and durable tombstones", () => {
+  const initial = ThinkingReplay.project({ messages: [user] })
+  const thinking = signed(initial, "already-settled")
+  const legacy = { type: "reasoning", text: "", providerMetadata: { anthropic: { signature: "legacy" } } }
+  const marked = { ...thinking, providerMetadata: ThinkingReplay.invalidate(thinking.providerMetadata) }
+  expect(ThinkingReplay.replayOrigins([user, { role: "assistant", content: [legacy, marked] }])).toEqual([])
+})

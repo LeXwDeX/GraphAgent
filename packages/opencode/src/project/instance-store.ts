@@ -1,3 +1,4 @@
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { GlobalBus } from "@/bus/global"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -92,9 +93,21 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       )
 
     const disposeContext = Effect.fn("InstanceStore.disposeContext")(function* (ctx: InstanceContext) {
+      yield* Logging.backgroundDebug("lifecycle.instance.dispose", {
+        source: "instance.disposeContext",
+        phase: "started",
+        directory: ctx.directory,
+        projectID: ctx.project.id,
+      })
       yield* Effect.logInfo("disposing instance", { directory: ctx.directory })
       yield* Effect.promise(() => runDisposers(ctx.directory))
       yield* emitDisposed({ directory: ctx.directory, project: ctx.project.id })
+      yield* Logging.backgroundDebug("lifecycle.instance.dispose", {
+        source: "instance.disposeContext",
+        phase: "completed",
+        directory: ctx.directory,
+        projectID: ctx.project.id,
+      })
     })
 
     const disposeEntry = Effect.fnUntraced(function* (directory: string, entry: Entry, ctx: InstanceContext) {
@@ -131,6 +144,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           const entry: Entry = { deferred: Deferred.makeUnsafe<InstanceContext>() }
           cache.set(directory, entry)
           yield* Effect.gen(function* () {
+            yield* Logging.backgroundDebug("lifecycle.instance.reload", { source: "instance.reload", directory })
             yield* Effect.logInfo("reloading instance", { directory: directory })
             if (previous) {
               yield* Deferred.await(previous.deferred).pipe(Effect.ignore)
@@ -164,6 +178,10 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     })
 
     const disposeAllOnce = Effect.fnUntraced(function* () {
+      yield* Logging.backgroundDebug("lifecycle.instance.disposeAll", {
+        source: "instance.disposeAll",
+        instanceCount: cache.size,
+      })
       yield* Effect.logInfo("disposing all instances")
       yield* Effect.forEach(
         [...cache.entries()],

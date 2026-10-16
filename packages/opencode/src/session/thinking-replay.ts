@@ -72,6 +72,21 @@ function carrier(value: unknown) {
   return undefined
 }
 
+/** Snapshot identities before a transform can remove signed carriers. This does not compare prefixes. */
+export function replayOrigins(messages: readonly unknown[]): string[] {
+  const result = new Set<string>()
+  for (const message of messages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) continue
+    for (const part of message.content) {
+      if (!isRecord(part) || part.type !== "reasoning") continue
+      const value = metadata(part)
+      const saved = origin(value)
+      if (saved && !saved.invalidated && carrier(value)) result.add(saved.block)
+    }
+  }
+  return [...result]
+}
+
 function clean(value: unknown): unknown {
   if (value === undefined) return undefined
   if (value instanceof Uint8Array) return { bytes: Buffer.from(value).toString("base64") }
@@ -154,6 +169,7 @@ export function project<T>(input: {
   system?: readonly unknown[]
   tools?: readonly unknown[]
   context?: unknown
+  sourceOrigins?: readonly string[]
 }) {
   let prefix = hash({
     version: 1,
@@ -162,7 +178,24 @@ export function project<T>(input: {
   })
   let previous: string | undefined
   let gap = false
-  const invalidated = new Set<string>()
+  const surviving = new Set(replayOrigins(input.messages))
+  const removed = (input.sourceOrigins ?? []).filter((id) => !surviving.has(id))
+  const invalidated = new Set(removed)
+  const diagnostic = {
+    removedBeforeProjection: invalidated.size,
+    carriers: 0,
+    knownOrigins: 0,
+    unknownLegacy: 0,
+    retained: 0,
+    alreadyInvalidated: 0,
+    prefixChanged: 0,
+    chainChanged: 0,
+    blockChanged: 0,
+    compactionInvalidated: 0,
+    unknownAfterGap: 0,
+    newlyInvalidated: 0,
+  }
+
   const append = (role: string, part: Record<string, unknown>) => {
     const value = canonical(part)
     if (value !== undefined) prefix = hash({ prefix, role: role === "tool" ? "user" : role, content: value })
@@ -193,6 +226,9 @@ export function project<T>(input: {
       const identity = part.type === "reasoning" && typeof part.text === "string" ? block(part.text, value) : undefined
       if (identity) {
         const saved = origin(value)
+        diagnostic.carriers++
+        if (saved) diagnostic.knownOrigins++
+        else diagnostic.unknownLegacy++
         const mismatch =
           saved &&
           (saved.forceInvalidation ||
@@ -201,9 +237,17 @@ export function project<T>(input: {
             (previous !== undefined && saved.previous !== previous))
         if (saved?.invalidated || mismatch || (!saved && gap)) {
           gap = true
+          if (saved?.invalidated) diagnostic.alreadyInvalidated++
+          else if (saved) {
+            if (saved.forceInvalidation) diagnostic.compactionInvalidated++
+            if (saved.prefix !== prefix) diagnostic.prefixChanged++
+            if (saved.block !== identity) diagnostic.blockChanged++
+            if (previous !== undefined && saved.previous !== previous) diagnostic.chainChanged++
+          } else diagnostic.unknownAfterGap++
           if (saved && !saved.invalidated) invalidated.add(saved.block)
           continue
         }
+        diagnostic.retained++
         previous = identity
         gap = false
       } else append(message.role, part)
@@ -272,7 +316,49 @@ export function project<T>(input: {
     }
     return event
   }
-  return { messages, invalidated: [...invalidated], bind }
+  diagnostic.newlyInvalidated = invalidated.size
+  return { messages, invalidated: [...invalidated], diagnostic, bind }
+}
+
+/** Static, bounded diagnostics only. Never return error bodies, messages, headers, or opaque signatures. */
+export function errorDiagnostic(error: unknown): {
+  classification: string
+  status?: number
+  upstreamRequestID?: string
+} {
+  try {
+    let current = error
+    const seen = new Set<unknown>()
+    let status: number | undefined
+    let upstreamRequestID: string | undefined
+    let signature = false
+    let prefix = false
+    for (let depth = 0; depth < 8 && isRecord(current) && !seen.has(current); depth++) {
+      seen.add(current)
+      const http = isRecord(current.http) ? current.http : undefined
+      const response = http && isRecord(http.response) ? http.response : undefined
+      const code = current.statusCode ?? response?.status
+      if (typeof code === "number" && Number.isInteger(code) && code >= 100 && code <= 599) status = code
+      const headers = isRecord(current.responseHeaders) ? current.responseHeaders : undefined
+      const id =
+        http?.requestId ?? headers?.["request-id"] ?? headers?.["x-request-id"] ?? headers?.["x-amzn-requestid"]
+      if (typeof id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(id)) upstreamRequestID = id
+      for (const value of [current.message, current.responseBody, http?.body]) {
+        if (typeof value !== "string") continue
+        const text = value.slice(0, 16_384).toLowerCase()
+        prefix ||= text.includes("bound to a different conversation") || text.includes("prefix mismatch")
+        signature ||= text.includes("signature")
+      }
+      current = current.cause ?? current.reason ?? current.error
+    }
+    return {
+      classification: prefix ? "conversation_prefix_binding" : signature ? "signature_other" : "other",
+      status,
+      upstreamRequestID,
+    }
+  } catch {
+    return { classification: "unavailable" }
+  }
 }
 
 export * as ThinkingReplay from "./thinking-replay"

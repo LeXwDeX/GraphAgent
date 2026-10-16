@@ -1,3 +1,4 @@
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -51,13 +52,23 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make(
       Effect.fn("SessionRunState.state")(function* () {
         const scope = yield* Scope.Scope
+        const directory = yield* InstanceState.directory
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
-            yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {
-              concurrency: "unbounded",
-              discard: true,
-            })
+            yield* Effect.forEach(
+              runners.entries(),
+              ([sessionID, runner]) =>
+                Logging.backgroundDebug("lifecycle.session.cancel", {
+                  source: "instance.scope.finalizer",
+                  directory,
+                  sessionID,
+                }).pipe(Effect.andThen(runner.cancel)),
+              {
+                concurrency: "unbounded",
+                discard: true,
+              },
+            )
             runners.clear()
           }),
         )

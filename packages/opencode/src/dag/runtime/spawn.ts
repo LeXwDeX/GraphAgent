@@ -30,6 +30,7 @@
  * (Level 2) is a documented boundary — see eval.ts.
  */
 
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { Effect, Semaphore, Scope, Fiber, Option, Clock, Cause, Exit } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { Agent } from "@/agent/agent"
@@ -978,7 +979,16 @@ export function spawnNode(
         // session yet, so the caller's abortChild cannot reach it — cancel
         // the child here.
         Effect.onInterrupt(() =>
-          childSessionID ? promptSvc.cancel(SessionID.make(childSessionID)).pipe(Effect.ignore) : Effect.void,
+          Effect.gen(function* () {
+            yield* Logging.backgroundDebug("lifecycle.dag.execution.interrupted", {
+              source: "dag.spawn.onInterrupt",
+              workflowID: input.dagID,
+              nodeID: input.nodeID,
+              replanAttempts: input.node.replanAttempts,
+              childSessionID,
+            })
+            if (childSessionID) yield* promptSvc.cancel(SessionID.make(childSessionID)).pipe(Effect.ignore)
+          }),
         ),
         Effect.catchCause((cause) =>
           Effect.gen(function* () {

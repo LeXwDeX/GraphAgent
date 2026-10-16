@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { Logging } from "@opencode-ai/core/observability/logging"
 import type { Auth } from "@/auth"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -41,6 +43,7 @@ export type StreamResult =
   | { readonly type: "unsupported"; readonly reason: string }
 
 type StreamInput = {
+  readonly sessionID?: string
   readonly model: Provider.Model
   readonly provider: Provider.Info
   readonly auth: Auth.Info | undefined
@@ -109,6 +112,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     // — if a field ever needs to differ between the two surfaces, the
     // translation belongs here, not split across both packages.
     const tools = nativeTools(input.tools, input)
+    const sourceOrigins = ThinkingReplay.replayOrigins(input.messages)
     const sourceMessages = ContextFolding.copyModelMessages(input.messages)
     const transformInput = ContextFolding.copyModelMessages(input.messages) ?? input.messages
     const transformedMessages = ProviderTransform.message(transformInput, input.model, input.providerOptions ?? {})
@@ -167,8 +171,21 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
       projection?.applied === true
         ? LLMRequest.update(canonical, { messages: projection.request.messages as typeof canonical.messages })
         : canonical
+    // Match SDK stream scope; executor retries and relay hops are not individually observed here.
+    const diagnostic = {
+      clientOperationID: randomUUID(),
+      scope: "llm-stream",
+      runtime: "native",
+      sessionID: input.sessionID,
+      providerID: input.model.providerID,
+      modelID: input.model.id,
+      apiModelID: input.model.api.id,
+      sdk: input.model.api.npm,
+      upstreamIdentity: "unobservable",
+    }
     const thinking = ThinkingReplay.project({
       messages: request.messages,
+      sourceOrigins,
       system: request.system,
       tools: request.tools,
       context: { provider: input.model.providerID, model: input.model.api.id, sdk: input.model.api.npm },
@@ -181,6 +198,11 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
       }
       request = LLMRequest.update(request, { messages: thinking.messages })
     }
+    yield* Logging.backgroundDebug("thinking replay projection", {
+      ...diagnostic,
+      projectionSeq: 1,
+      ...thinking.diagnostic,
+    })
     const stream = Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
@@ -229,6 +251,22 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
       contextFoldingPlan: projection?.plan,
       stream: (fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream).pipe(
         Stream.map((event) => thinking?.bind(event) ?? event),
+        Stream.tap((event) =>
+          event.type === "provider-error"
+            ? Logging.backgroundDebug("thinking replay error", {
+                ...diagnostic,
+                errorChannel: "provider-event",
+                ...ThinkingReplay.errorDiagnostic(event),
+              })
+            : Effect.void,
+        ),
+        Stream.tapError((error) =>
+          Logging.backgroundDebug("thinking replay error", {
+            ...diagnostic,
+            errorChannel: "typed-failure",
+            ...ThinkingReplay.errorDiagnostic(error),
+          }),
+        ),
       ),
     }
   })

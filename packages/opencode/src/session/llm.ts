@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { llmClient } from "@opencode-ai/core/effect/layer-node-platform"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -440,6 +442,7 @@ const live: Layer.Layer<
           abort: input.abort,
           contextFolding: folding,
           onThinkingInvalidated: input.onThinkingInvalidated,
+          sessionID: input.sessionID,
         })
         if (native.type === "supported") {
           yield* Effect.logInfo(
@@ -485,6 +488,19 @@ const live: Layer.Layer<
         "llm.provider": input.model.providerID,
         "llm.model": input.model.id,
       })
+      // One stream may contain multiple projections/tool rounds; errors never guess a projection or HTTP attempt.
+      const diagnostic = {
+        clientOperationID: randomUUID(),
+        scope: "llm-stream",
+        runtime: "ai-sdk",
+        sessionID: input.sessionID,
+        providerID: input.model.providerID,
+        modelID: input.model.id,
+        apiModelID: input.model.api.id,
+        sdk: input.model.api.npm,
+        upstreamIdentity: "unobservable",
+      }
+      let projectionSeq = 0
       let thinking: ReturnType<typeof ThinkingReplay.project> | undefined
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
@@ -497,14 +513,10 @@ const live: Layer.Layer<
           allowSystemInMessages: true,
           onError(error) {
             bridge.fork(
-              Effect.logError("stream error", {
-                providerID: input.model.providerID,
-                modelID: input.model.id,
-                "session.id": input.sessionID,
-                small: (input.small ?? false).toString(),
-                agent: input.agent.name,
-                mode: input.agent.mode,
-                error,
+              Logging.backgroundDebug("thinking replay error", {
+                ...diagnostic,
+                errorChannel: "sdk-onError",
+                ...ThinkingReplay.errorDiagnostic(error.error),
               }),
             )
           },
@@ -554,6 +566,7 @@ const live: Layer.Layer<
                 specificationVersion: "v3" as const,
                 async transformParams(args) {
                   if (args.type === "stream") {
+                    const sourceOrigins = ThinkingReplay.replayOrigins(args.params.prompt)
                     const sourceMessages = ContextFolding.copyModelMessages(args.params.prompt)
                     const transformed = ProviderTransform.message(
                       args.params.prompt,
@@ -598,6 +611,7 @@ const live: Layer.Layer<
                     {
                       const replay = ThinkingReplay.project({
                         messages: outbound,
+                        sourceOrigins,
                         tools: args.params.tools,
                         context: {
                           provider: input.model.providerID,
@@ -611,6 +625,13 @@ const live: Layer.Layer<
                           throw new Error("Thinking replay invalidation requires durable settlement")
                         await bridge.promise(input.onThinkingInvalidated(replay.invalidated))
                       }
+                      await bridge.promise(
+                        Logging.backgroundDebug("thinking replay projection", {
+                          ...diagnostic,
+                          projectionSeq: ++projectionSeq,
+                          ...replay.diagnostic,
+                        }),
+                      )
                       outbound = replay.messages
                     }
                     // @ts-expect-error
