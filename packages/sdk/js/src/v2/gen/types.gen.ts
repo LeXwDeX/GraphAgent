@@ -1919,6 +1919,16 @@ export type ProviderConfig = {
         output: number
         cache_read?: number
         cache_write?: number
+        tiers?: Array<{
+          input: number
+          output: number
+          cache_read?: number
+          cache_write?: number
+          tier: {
+            type: "context"
+            size: number
+          }
+        }>
         context_over_200k?: {
           input: number
           output: number

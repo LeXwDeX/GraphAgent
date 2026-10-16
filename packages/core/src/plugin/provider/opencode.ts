@@ -218,18 +218,30 @@ function remoteCost(input: NonNullable<(typeof ConfigProviderV1.Model.Type)["cos
     output: input.output,
     cache: { read: input.cache_read ?? 0, write: input.cache_write ?? 0 },
   }
-  if (!input.context_over_200k) return [base]
   return [
     base,
-    {
-      tier: { type: "context" as const, size: 200_000 },
-      input: input.context_over_200k.input,
-      output: input.context_over_200k.output,
+    ...(input.tiers?.map((item) => ({
+      tier: item.tier,
+      input: item.input,
+      output: item.output,
       cache: {
-        read: input.context_over_200k.cache_read ?? 0,
-        write: input.context_over_200k.cache_write ?? 0,
+        read: item.cache_read ?? 0,
+        write: item.cache_write ?? 0,
       },
-    },
+    })) ?? []),
+    ...(input.context_over_200k
+      ? [
+          {
+            tier: { type: "context" as const, size: 200_000 },
+            input: input.context_over_200k.input,
+            output: input.context_over_200k.output,
+            cache: {
+              read: input.context_over_200k.cache_read ?? 0,
+              write: input.context_over_200k.cache_write ?? 0,
+            },
+          },
+        ]
+      : []),
   ]
 }
 

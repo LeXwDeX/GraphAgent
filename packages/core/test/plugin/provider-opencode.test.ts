@@ -114,6 +114,33 @@ describe("OpencodePlugin", () => {
                           cost: { input: 1, output: 2, cache_read: 0.1 },
                           limit: { context: 1000, output: 100 },
                         },
+                        tiered: {
+                          name: "Tiered",
+                          cost: {
+                            input: 1,
+                            output: 2,
+                            tiers: [
+                              { input: 6, output: 12, tier: { type: "context", size: 500_000 } },
+                              {
+                                input: 3,
+                                output: 6,
+                                cache_read: 0.3,
+                                cache_write: 0.6,
+                                tier: { type: "context", size: 272_000 },
+                              },
+                            ],
+                          },
+                        },
+                        "tiered-legacy": {
+                          name: "Tiered Legacy",
+                          cost: {
+                            input: 1,
+                            output: 2,
+                            cache_write: 0.2,
+                            tiers: [{ input: 3, output: 6, tier: { type: "context", size: 272_000 } }],
+                            context_over_200k: { input: 4, output: 8, cache_read: 0.4 },
+                          },
+                        },
                         disabled: { name: "Disabled", status: "deprecated" },
                       },
                     },
@@ -171,6 +198,22 @@ describe("OpencodePlugin", () => {
               headers: {},
               body: { temperature: 0.2 },
             },
+          ])
+          // Issue 780: remote general context tiers survive with or without legacy pricing;
+          // omitted cache rates default to zero.
+          expect(
+            required(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("tiered"))).cost,
+          ).toEqual([
+            { input: 1, output: 2, cache: { read: 0, write: 0 } },
+            { tier: { type: "context", size: 500_000 }, input: 6, output: 12, cache: { read: 0, write: 0 } },
+            { tier: { type: "context", size: 272_000 }, input: 3, output: 6, cache: { read: 0.3, write: 0.6 } },
+          ])
+          expect(
+            required(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("tiered-legacy"))).cost,
+          ).toEqual([
+            { input: 1, output: 2, cache: { read: 0, write: 0.2 } },
+            { tier: { type: "context", size: 272_000 }, input: 3, output: 6, cache: { read: 0, write: 0 } },
+            { tier: { type: "context", size: 200_000 }, input: 4, output: 8, cache: { read: 0.4, write: 0 } },
           ])
           expect(
             required(yield* catalog.model.get(ProviderV2.ID.make("remote"), ModelV2.ID.make("disabled"))).enabled,

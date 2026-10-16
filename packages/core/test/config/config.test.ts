@@ -171,6 +171,77 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("preserves explicit v1 context pricing tiers through decoding and migration", () =>
+    Effect.sync(() => {
+      const decodeV1 = Schema.decodeUnknownSync(ConfigV1.Info)
+      const tiers = [
+        { input: 60, output: 180, tier: { type: "context" as const, size: 500_000 } },
+        { input: 20, output: 75, cache_read: 2, cache_write: 4, tier: { type: "context" as const, size: 272_000 } },
+      ]
+      const v1 = decodeV1({
+        snapshot: false,
+        provider: {
+          custom: {
+            models: {
+              astra: {
+                cost: {
+                  input: 10,
+                  output: 50,
+                  cache_read: 1,
+                  tiers,
+                  context_over_200k: { input: 15, output: 60 },
+                },
+              },
+            },
+          },
+        },
+      })
+      expect(v1.provider?.custom?.models?.astra?.cost?.tiers).toEqual(tiers)
+
+      const migrated = ConfigMigrateV1.migrate(v1)
+      const expected = [
+        { input: 10, output: 50, cache: { read: 1, write: undefined } },
+        {
+          tier: { type: "context", size: 500_000 },
+          input: 60,
+          output: 180,
+          cache: { read: undefined, write: undefined },
+        },
+        { tier: { type: "context", size: 272_000 }, input: 20, output: 75, cache: { read: 2, write: 4 } },
+        {
+          tier: { type: "context", size: 200_000 },
+          input: 15,
+          output: 60,
+          cache: { read: undefined, write: undefined },
+        },
+      ]
+      expect(migrated.providers?.custom?.models?.astra?.cost).toEqual(expected)
+      const current = Schema.decodeUnknownSync(Config.Info)(migrated)
+      const cost = current.providers?.custom?.models?.astra?.cost
+      expect(Array.isArray(cost) ? cost.map((item) => item.tier?.size) : undefined).toEqual([
+        undefined,
+        500_000,
+        272_000,
+        200_000,
+      ])
+
+      const malformed = [
+        { input: 20, output: 75, tier: { type: "context", size: 0 } },
+        { input: 20, output: 75, tier: { type: "context", size: -1 } },
+        { input: 20, output: 75, tier: { type: "context", size: 272_000.5 } },
+        { input: 20, output: 75, tier: { type: "tokens", size: 272_000 } },
+        { input: 20, output: 75 },
+        { input: 20, tier: { type: "context", size: 272_000 } },
+        { input: Number.NaN, output: 75, tier: { type: "context", size: 272_000 } },
+      ]
+      for (const tier of malformed) {
+        expect(() =>
+          decodeV1({ provider: { custom: { models: { astra: { cost: { input: 10, output: 50, tiers: [tier] } } } } } }),
+        ).toThrow()
+      }
+    }),
+  )
+
   it.effect("migrates arbitrary v1 configuration into valid v2 configuration", () =>
     Effect.sync(() => {
       FastCheck.assert(

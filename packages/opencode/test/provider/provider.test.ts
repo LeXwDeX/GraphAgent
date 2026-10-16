@@ -1488,15 +1488,18 @@ cataloged.instance(
   },
 )
 
+// Issue 780: an explicit cost object replaces the catalog price schedule. Omitted general or
+// legacy tiers are not inherited (they would otherwise override the configured rates above
+// their catalog thresholds). Omitted base cache rates keep the existing catalog fallback.
 cataloged.instance(
-  "configured context_over_200k overrides catalog legacy rate and preserves inherited tiers",
+  "configured context_over_200k overrides catalog legacy rate without inheriting catalog tiers",
   Effect.gen(function* () {
     const providers = yield* list
     const model = providers[ProviderV2.ID.make("catalog-provider")].models["long-context-model"]
     expect(model.cost.input).toBe(999)
     expect(model.cost.output).toBe(888)
     expect(model.cost.cache).toEqual({ read: 1, write: 2 })
-    expect(model.cost.tiers).toEqual(expectedLongContextTiers)
+    expect(model.cost.tiers).toBeUndefined()
     expect(model.cost.experimentalOver200K).toEqual({
       input: 40,
       output: 90,
@@ -1511,6 +1514,63 @@ cataloged.instance(
           models: {
             "long-context-model": {
               cost: { input: 999, output: 888, context_over_200k: { input: 40, output: 90 } },
+            },
+          },
+        },
+      },
+    },
+  },
+)
+
+cataloged.instance(
+  "configured flat cost override drops inherited catalog general and legacy tiers",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("catalog-provider")].models["long-context-model"]
+    expect(model.cost.input).toBe(12)
+    expect(model.cost.output).toBe(60)
+    expect(model.cost.cache).toEqual({ read: 1, write: 2 })
+    expect(model.cost.tiers).toBeUndefined()
+    expect(model.cost.experimentalOver200K).toBeUndefined()
+  }),
+  {
+    config: {
+      provider: {
+        "catalog-provider": {
+          options: { apiKey: "test-key" },
+          models: { "long-context-model": { cost: { input: 12, output: 60 } } },
+        },
+      },
+    },
+  },
+)
+
+cataloged.instance(
+  "configured tiered cost override replaces catalog tiers with configured tiers",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("catalog-provider")].models["long-context-model"]
+    expect(model.cost.input).toBe(12)
+    expect(model.cost.output).toBe(60)
+    expect(model.cost.cache).toEqual({ read: 0.5, write: 2 })
+    expect(model.cost.tiers).toEqual([
+      { input: 24, output: 120, cache: { read: 1.5, write: 0 }, tier: { type: "context", size: 272_000 } },
+    ])
+    expect(model.cost.experimentalOver200K).toBeUndefined()
+  }),
+  {
+    config: {
+      provider: {
+        "catalog-provider": {
+          options: { apiKey: "test-key" },
+          models: {
+            "long-context-model": {
+              cost: {
+                input: 12,
+                output: 60,
+                cache_read: 0.5,
+                tiers: [{ input: 24, output: 120, cache_read: 1.5, tier: { type: "context", size: 272_000 } }],
+              },
             },
           },
         },

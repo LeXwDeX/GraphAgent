@@ -169,7 +169,20 @@ const scenarios: Scenario[] = [
         username: "httpapi-local",
         maxToolCalls: 41,
         reasoningDistillation: { enabled: true },
-        provider: { "test-provider": { models: { "test-key": { reasoningDistillation: { enabled: false } } } } },
+        provider: {
+          "test-provider": {
+            models: {
+              "test-key": {
+                reasoningDistillation: { enabled: false },
+                cost: {
+                  input: 10,
+                  output: 50,
+                  tiers: [{ input: 20, output: 75, tier: { type: "context", size: 272_000 } }],
+                },
+              },
+            },
+          },
+        },
       },
     }))
     .jsonEffect(
@@ -190,6 +203,13 @@ const scenarios: Scenario[] = [
             body.provider["test-provider"].models["test-key"].reasoningDistillation.enabled === false,
             "model reasoning distillation override should stay disabled",
           )
+          const cost = body.provider["test-provider"].models["test-key"].cost
+          object(cost)
+          check(
+            JSON.stringify(cost.tiers) ===
+              JSON.stringify([{ input: 20, output: 75, tier: { type: "context", size: 272_000 } }]),
+            "local config update should return configured context pricing tiers",
+          )
           const directory = ctx.directory
           check(directory !== undefined, "config patch should run in a project directory")
           const saved = JSON.parse(yield* Effect.promise(() => Bun.file(path.join(directory, "config.json")).text()))
@@ -201,6 +221,12 @@ const scenarios: Scenario[] = [
           check(
             saved.provider["test-provider"].models["test-key"].reasoningDistillation.enabled === false,
             "local config update should persist the per-model reasoning override",
+          )
+          object(saved.provider["test-provider"].models["test-key"].cost)
+          check(
+            JSON.stringify(saved.provider["test-provider"].models["test-key"].cost.tiers) ===
+              JSON.stringify(cost.tiers),
+            "local config update should persist configured context pricing tiers",
           )
         }),
       "status",
