@@ -427,6 +427,53 @@
                   "cache_write": {
                     "type": "number"
                   },
+                  "tiers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number"
+                        },
+                        "output": {
+                          "type": "number"
+                        },
+                        "cache_read": {
+                          "type": "number"
+                        },
+                        "cache_write": {
+                          "type": "number"
+                        },
+                        "tier": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "context"
+                              ]
+                            },
+                            "size": {
+                              "exclusiveMinimum": 0,
+                              "type": "integer",
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "size"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "input",
+                        "output",
+                        "tier"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
                   "context_over_200k": {
                     "type": "object",
                     "properties": {

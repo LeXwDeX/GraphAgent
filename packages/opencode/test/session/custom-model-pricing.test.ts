@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { Effect, Layer } from "effect"
 import { Usage } from "@opencode-ai/llm"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Session as SessionNs } from "@/session/session"
+import { Provider } from "@/provider/provider"
+import { Env } from "../../src/env"
+import { Plugin } from "../../src/plugin/index"
+import { testEffect } from "../lib/effect"
 
 // Deterministic resolved-model fixtures matching the runtime ProviderCost shape that
 // custom/configured models resolve to (Issue 764). Base rates 10/50 per million,
@@ -105,4 +111,155 @@ describe("session.getUsage long-context pricing for resolved custom models", () 
     })
     expect(result.cost).toBeCloseTo((200_001 * 10 + 10_000 * 50) / 1_000_000, 8)
   })
+})
+
+// Issue 780: configured general context tiers must survive real Config -> Provider loading
+// and drive Session.getUsage with arbitrary thresholds (e.g. 272k), not only the legacy 200k rate.
+const tieredConfig = {
+  provider: {
+    "tiered-custom": {
+      name: "Tiered Custom",
+      npm: "@ai-sdk/openai-compatible",
+      env: [],
+      options: { apiKey: "test-key" },
+      models: {
+        tiered: {
+          name: "Tiered",
+          tool_call: true,
+          limit: { context: 1_000_000, output: 64_000 },
+          cost: {
+            input: 10,
+            output: 50,
+            cache_read: 1,
+            cache_write: 2,
+            // Intentionally unordered: the highest matching threshold must win.
+            tiers: [
+              {
+                input: 60,
+                output: 180,
+                cache_read: 6,
+                cache_write: 12,
+                tier: { type: "context" as const, size: 500_000 },
+              },
+              {
+                input: 20,
+                output: 75,
+                cache_read: 3,
+                cache_write: 4,
+                tier: { type: "context" as const, size: 272_000 },
+              },
+            ],
+          },
+        },
+        "tier-no-cache": {
+          name: "Tier Without Cache Rates",
+          tool_call: true,
+          limit: { context: 1_000_000, output: 64_000 },
+          cost: {
+            input: 10,
+            output: 50,
+            cache_read: 1,
+            cache_write: 2,
+            tiers: [{ input: 20, output: 75, tier: { type: "context" as const, size: 272_000 } }],
+          },
+        },
+        legacy: {
+          name: "Legacy",
+          tool_call: true,
+          limit: { context: 400_000, output: 64_000 },
+          cost: { input: 10, output: 50, context_over_200k: { input: 15, output: 60 } },
+        },
+      },
+    },
+  },
+}
+
+const loaded = testEffect(Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer))
+
+const loadModel = (id: string) =>
+  Effect.gen(function* () {
+    const providers = yield* Provider.use.list()
+    const item = providers[ProviderV2.ID.make("tiered-custom")]?.models[id]
+    expect(item).toBeDefined()
+    return item
+  })
+
+describe("session.getUsage with configured general context tiers loaded through Config", () => {
+  loaded.instance(
+    "configured 272k tier is loaded and selected only above the threshold",
+    Effect.gen(function* () {
+      const loadedModel = yield* loadModel("tiered")
+      expect(loadedModel.cost.tiers).toHaveLength(2)
+      const cost = (inputTokens: number) =>
+        SessionNs.getUsage({ model: loadedModel, usage: usage({ inputTokens }) }).cost
+
+      expect(cost(271_999)).toBeCloseTo((271_999 * 10) / 1_000_000, 8)
+      expect(cost(272_000)).toBeCloseTo((272_000 * 10) / 1_000_000, 8)
+      expect(cost(272_001)).toBeCloseTo((272_001 * 20) / 1_000_000, 8)
+      // Multiple unordered tiers: the highest matching threshold wins.
+      expect(cost(500_000)).toBeCloseTo((500_000 * 20) / 1_000_000, 8)
+      expect(cost(500_001)).toBeCloseTo((500_001 * 60) / 1_000_000, 8)
+    }),
+    { config: tieredConfig },
+  )
+
+  loaded.instance(
+    "cache tokens count toward the configured threshold and reasoning is charged once",
+    Effect.gen(function* () {
+      const loadedModel = yield* loadModel("tiered")
+      const run = (inputTokens: number) =>
+        SessionNs.getUsage({
+          model: loadedModel,
+          usage: usage({
+            inputTokens,
+            outputTokens: 10_000,
+            reasoningTokens: 4_000,
+            cacheReadInputTokens: 200_000,
+            cacheWriteInputTokens: 50_000,
+            totalTokens: inputTokens + 10_000,
+          }),
+        })
+
+      const above = run(272_001)
+      expect(above.tokens.input).toBe(22_001)
+      expect(above.tokens.output).toBe(6_000)
+      expect(above.tokens.reasoning).toBe(4_000)
+      // 22_001*20 + 6_000*75 + 4_000*75 + 200_000*3 + 50_000*4
+      expect(above.cost).toBeCloseTo(1.99002, 8)
+
+      // 21_999*10 + 6_000*50 + 4_000*50 + 200_000*1 + 50_000*2
+      expect(run(271_999).cost).toBeCloseTo(1.01999, 8)
+    }),
+    { config: tieredConfig },
+  )
+
+  loaded.instance(
+    "configured tier without cache rates charges cached tokens at zero within that tier",
+    Effect.gen(function* () {
+      const loadedModel = yield* loadModel("tier-no-cache")
+      expect(loadedModel.cost.cache).toEqual({ read: 1, write: 2 })
+      expect(loadedModel.cost.tiers).toEqual([
+        { input: 20, output: 75, cache: { read: 0, write: 0 }, tier: { type: "context", size: 272_000 } },
+      ])
+      const result = SessionNs.getUsage({
+        model: loadedModel,
+        usage: usage({ inputTokens: 300_000, cacheReadInputTokens: 100_000, totalTokens: 300_000 }),
+      })
+      expect(result.cost).toBeCloseTo((200_000 * 20) / 1_000_000, 8)
+    }),
+    { config: tieredConfig },
+  )
+
+  loaded.instance(
+    "legacy context_over_200k keeps its 200k boundary",
+    Effect.gen(function* () {
+      const loadedModel = yield* loadModel("legacy")
+      expect(loadedModel.cost.tiers).toBeUndefined()
+      const cost = (inputTokens: number) =>
+        SessionNs.getUsage({ model: loadedModel, usage: usage({ inputTokens }) }).cost
+      expect(cost(200_000)).toBeCloseTo(2, 8)
+      expect(cost(200_001)).toBeCloseTo((200_001 * 15) / 1_000_000, 8)
+    }),
+    { config: tieredConfig },
+  )
 })

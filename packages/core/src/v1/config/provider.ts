@@ -6,6 +6,21 @@ import { ConfigReasoningDistillation } from "../../config/reasoning-distillation
 
 export const ModelStatus = Schema.Literals(["alpha", "beta", "deprecated", "active"])
 
+// Same shape as the models.dev cost tier. A tier applies when the request's normalized
+// input tokens (including cache reads/writes) exceed `tier.size`; the largest matching tier wins.
+// At runtime a matching `tiers` entry takes precedence over legacy `context_over_200k`. Cache
+// rates omitted inside a tier are charged as 0 (same as models.dev and `context_over_200k`).
+export const CostTier = Schema.Struct({
+  input: Schema.Finite,
+  output: Schema.Finite,
+  cache_read: Schema.optional(Schema.Finite),
+  cache_write: Schema.optional(Schema.Finite),
+  tier: Schema.Struct({
+    type: Schema.Literal("context"),
+    size: PositiveInt,
+  }),
+})
+
 export const Model = Schema.Struct({
   id: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
@@ -29,6 +44,7 @@ export const Model = Schema.Struct({
       output: Schema.Finite,
       cache_read: Schema.optional(Schema.Finite),
       cache_write: Schema.optional(Schema.Finite),
+      tiers: Schema.optional(Schema.mutable(Schema.Array(CostTier))),
       context_over_200k: Schema.optional(
         Schema.Struct({
           input: Schema.Finite,
