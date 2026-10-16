@@ -1855,6 +1855,27 @@ export const layer = Layer.effect(
       return false
     })
 
+    // SessionStart(source: "resume"): fires once, on the first prompt admission of a top-level
+    // session this instance did not create (SessionShare.create marks created sessions as
+    // started) that already has earlier messages — e.g. a session reopened after a restart.
+    // Empty sessions and child sessions never fire. Returns the contexts to inject; hook failures
+    // never fail the prompt. No hook configured → trigger short-circuits, so cost is one Set lookup
+    // plus a one-row message read per session per instance.
+    const resumeContexts = Effect.fn("SessionPrompt.resumeContexts")(function* (target: {
+      id: SessionID
+      parentID?: SessionID
+    }) {
+      if (!startContext || !settingsHook || target.parentID) return [] as string[]
+      if (!(yield* startContext.claimResume(target.id))) return [] as string[]
+      const prior = yield* sessions.messages({ sessionID: target.id, limit: 1 }).pipe(Effect.orDie)
+      if (prior.length === 0) return [] as string[]
+      const result = yield* settingsHook
+        .trigger({ event: "SessionStart", source: "resume" }, { sessionID: target.id, transcriptPath: "" })
+        .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+      yield* SettingsHook.landSystemMessages(result, { sessionID: target.id })
+      return (result.additionalContexts ?? []).filter((ctx) => ctx.length > 0)
+    })
+
     const admitPrompt = Effect.fn("SessionPrompt.admitPrompt")(function* (
       input: PromptInput,
       persistAdmission?: Effect.Effect<void>,
@@ -1930,6 +1951,10 @@ export const layer = Layer.effect(
         return { message, run: false as const }
       }
 
+      // Evaluated before the prompt is persisted so "earlier messages" excludes this turn.
+      // Rewake prompts are internal re-entries into a live session and never claim resume.
+      const resumeTexts = isRewake ? [] : yield* resumeContexts(session)
+
       const message = yield* createUserMessage(input, persistAdmission)
       yield* sessions.touch(input.sessionID)
 
@@ -1965,7 +1990,7 @@ export const layer = Layer.effect(
         startContextTexts = [...(yield* startContext.consume(input.sessionID))]
       }
 
-      for (const ctx of [...startContextTexts, ...hookAdditionalContexts]) {
+      for (const ctx of [...resumeTexts, ...startContextTexts, ...hookAdditionalContexts]) {
         yield* sessions.updatePart({
           id: PartID.ascending(),
           messageID: message.info.id,
@@ -3034,6 +3059,9 @@ export const layer = Layer.effect(
         if (dispatchResult?.type === "kick" && input.command === "goal") {
           const m = yield* currentModel(input.sessionID)
           const agentName = input.agent ?? (yield* agents.defaultAgent())
+          // Resume is decided before the command message exists ("earlier messages" excludes it)
+          // and outside the uninterruptible commit so a slow hook stays cancellable.
+          const goalResumeTexts = yield* resumeContexts(yield* sessions.get(input.sessionID).pipe(Effect.orDie))
           // Persist the input and register its budget before any snapshot can
           // claim it. Run the model only after releasing the admission lock.
           yield* promptLocks.withLock(input.sessionID)(
@@ -3075,7 +3103,7 @@ export const layer = Layer.effect(
               yield* goal?.markTurnDriven(input.sessionID)
               // Drain SessionStart hook contexts before loop
               if (startContext) {
-                const contexts = yield* startContext.consume(input.sessionID)
+                const contexts = [...goalResumeTexts, ...(yield* startContext.consume(input.sessionID))]
                 for (const ctx of contexts) {
                   yield* sessions.updatePart({
                     id: PartID.ascending(),

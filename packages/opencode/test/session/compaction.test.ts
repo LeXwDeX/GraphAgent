@@ -41,6 +41,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Memory } from "@/memory/memory"
 import { SettingsHook } from "@/hook/settings"
+import { HookStartContext } from "@/hook/start-context"
 import { CompactionTimeoutError } from "../../src/session/compaction-timeout"
 
 const summary = Layer.succeed(
@@ -272,6 +273,7 @@ type CompactionProcessOptions = {
   config?: Layer.Layer<Config.Service>
   memory?: Layer.Layer<Memory.Service>
   settingsHook?: Layer.Layer<SettingsHook.Service>
+  startContext?: Layer.Layer<HookStartContext.Service>
 }
 
 function withCompaction(options?: CompactionProcessOptions) {
@@ -291,7 +293,12 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     : layer(options?.result ?? "continue")
   const compaction = SessionCompaction.layer.pipe(
     Layer.provide(processor),
-    Layer.provideMerge(Layer.mergeAll(options?.memory ?? Layer.empty, options?.settingsHook ?? Layer.empty)),
+    Layer.provideMerge(Layer.mergeAll(
+        options?.memory ?? Layer.empty,
+        options?.settingsHook ?? Layer.empty,
+        options?.startContext ?? Layer.empty,
+      ),
+    ),
   )
   return Layer.mergeAll(compaction, processor, events, status).pipe(
     Layer.provide(SessionNs.defaultLayer),
@@ -1162,6 +1169,181 @@ describe("session.compaction.process", () => {
         ),
       ).toBe(false)
     }).pipe(withCompaction({ plugin: autocontinue(false) })),
+  )
+
+  // SessionStart(source: "compact") — Claude Code parity: contexts returned by the hook
+  // are re-injected after the summary, on the follow-up user message when one exists
+  // and through the HookStartContext queue otherwise.
+  function sessionStartHook(sources: string[], contexts: string[] = ["compact-ctx"]) {
+    return Layer.mock(SettingsHook.Service, {
+      trigger: (payload) =>
+        Effect.sync(() => {
+          if (payload.event !== "SessionStart") return { additionalContexts: [], systemMessages: [] }
+          sources.push(payload.source)
+          return { additionalContexts: contexts, systemMessages: [] }
+        }),
+      list: () => Effect.succeed([]),
+    })
+  }
+
+  // Recording stand-in for the HookStartContext queue; compaction only ever calls `append`.
+  function recordingStartContext(queued: string[]) {
+    return Layer.succeed(
+      HookStartContext.Service,
+      HookStartContext.Service.of({
+        append: (_sessionID, ctx) => Effect.sync(() => void queued.push(ctx)),
+        consume: () => Effect.succeed([]),
+        markStarted: () => Effect.void,
+        claimResume: () => Effect.succeed(false),
+      }),
+    )
+  }
+
+  const syntheticTexts = (message: SessionV1.WithParts | undefined) =>
+    message?.parts.flatMap((part) => (part.type === "text" && part.synthetic ? [part.text] : [])) ?? []
+
+  itCompaction.instance(
+    "fires SessionStart compact and attaches contexts to the auto-continue message",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        expect(result).toBe("continue")
+        expect(sources).toEqual(["compact"])
+        expect(last?.info.role).toBe("user")
+        expect(syntheticTexts(last)).toEqual([expect.stringContaining("Continue if you have next steps"), "compact-ctx"])
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "attaches SessionStart compact contexts to the overflow replay message",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "root")
+        yield* createUserMessage(session.id, "replayed")
+        const msg = yield* createUserMessage(session.id, "current")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+          overflow: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        expect(sources).toEqual(["compact"])
+        expect(last?.info.role).toBe("user")
+        expect(syntheticTexts(last)).toEqual(["compact-ctx"])
+        expect(last?.parts.some((part) => part.type === "text" && part.text === "replayed")).toBe(true)
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "queues SessionStart compact contexts for the next prompt when no follow-up message exists",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+
+        expect(sources).toEqual(["compact"])
+        expect(queued).toEqual(["compact-ctx"])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources, ["compact-ctx", ""]),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not fire SessionStart compact for child sessions",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const parent = yield* ssn.create({})
+        const child = yield* ssn.create({ parentID: parent.id })
+        const msg = yield* createUserMessage(child.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: child.id })
+
+        yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: child.id,
+          auto: true,
+        })
+
+        expect(sources).toEqual([])
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
   )
 
   it.instance(

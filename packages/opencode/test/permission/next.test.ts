@@ -29,6 +29,8 @@ const noopStartContext = Layer.succeed(
   HookStartContext.Service.of({
     append: () => Effect.void,
     consume: () => Effect.succeed([]),
+    markStarted: () => Effect.void,
+    claimResume: () => Effect.succeed(false),
   }),
 )
 

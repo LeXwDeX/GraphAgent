@@ -8,6 +8,18 @@ export interface Interface {
   readonly append: (sessionID: SessionID, ctx: string) => Effect.Effect<void>
   /** Drain and return all pending start-contexts for a session. Idempotent — second call returns []. */
   readonly consume: (sessionID: SessionID) => Effect.Effect<readonly string[]>
+  /**
+   * Record that SessionStart already fired for this session in this instance (startup, via
+   * SessionShare.create), so its first prompt admission is not mistaken for a resume.
+   */
+  readonly markStarted: (sessionID: SessionID) => Effect.Effect<void>
+  /**
+   * Claim the one-time `resume` SessionStart for a session. Returns true exactly once per
+   * session per instance, and only for sessions this instance has not seen (not marked started):
+   * i.e. sessions created before this process/instance started. The caller still decides whether
+   * the session has prior messages. Subsequent calls return false.
+   */
+  readonly claimResume: (sessionID: SessionID) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/HookStartContext") {}
@@ -17,6 +29,12 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const state = yield* InstanceState.make(
       Effect.fn("HookStartContext.state")(() => Effect.succeed(new Map<SessionID, string[]>())),
+    )
+    // Sessions whose SessionStart lifecycle was already handled in this instance (startup fired
+    // or resume claimed). Owned by InstanceState, so it is released with the instance. One id per
+    // session touched in the instance's lifetime; deleted sessions are not pruned individually.
+    const seen = yield* InstanceState.make(
+      Effect.fn("HookStartContext.seen")(() => Effect.succeed(new Set<SessionID>())),
     )
 
     const append = Effect.fn("HookStartContext.append")(function* (sessionID: SessionID, ctx: string) {
@@ -33,7 +51,18 @@ export const layer = Layer.effect(
       return arr as readonly string[]
     })
 
-    return Service.of({ append, consume })
+    const markStarted = Effect.fn("HookStartContext.markStarted")(function* (sessionID: SessionID) {
+      ;(yield* InstanceState.get(seen)).add(sessionID)
+    })
+
+    const claimResume = Effect.fn("HookStartContext.claimResume")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(seen)
+      if (data.has(sessionID)) return false
+      data.add(sessionID)
+      return true
+    })
+
+    return Service.of({ append, consume, markStarted, claimResume })
   }),
 )
 
