@@ -357,14 +357,8 @@ export const layer: Layer.Layer<
     // outside the fence/lock so a long reasoning call cannot wedge or leak it.
     // The update callback's result is passed through, so a commit like
     // markMatched can hand the caller the post-commit topics to render.
-    const applyUpdate = <A>(
-      projectID: ProjectV2.ID,
-      update: (topics: MemorySchema.Topic[]) => MemoryStore.Update<A>,
-    ) =>
-      fence.withLiveIdentity(
-        projectID,
-        lock.withProject(projectID)(store.updateTopics(projectID, update)),
-      )
+    const applyUpdate = <A>(projectID: ProjectV2.ID, update: (topics: MemorySchema.Topic[]) => MemoryStore.Update<A>) =>
+      fence.withLiveIdentity(projectID, lock.withProject(projectID)(store.updateTopics(projectID, update)))
 
     // Model-only half of maintenance: evidence → inspect match → maintenance
     // proposal. Performs no persistence; callers own admission and the commit.
@@ -421,7 +415,10 @@ export const layer: Layer.Layer<
         // snapshot it saw; a topic deleted since then must not resurrect.
         const live = new Set(topics.map((topic) => topic.id))
         return {
-          applied: MemoryStore.markMatched(topics, topicIDs.filter((id) => live.has(id))),
+          applied: MemoryStore.markMatched(
+            topics,
+            topicIDs.filter((id) => live.has(id)),
+          ),
           result: undefined,
         }
       })
@@ -492,9 +489,7 @@ export const layer: Layer.Layer<
         Effect.uninterruptible(
           Effect.gen(function* () {
             const reserved = yield* Ref.modify(maintenanceInFlight, (set) =>
-              set.has(input.projectID)
-                ? ([false, set] as const)
-                : ([true, new Set(set).add(input.projectID)] as const),
+              set.has(input.projectID) ? ([false, set] as const) : ([true, new Set(set).add(input.projectID)] as const),
             )
             if (!reserved) return
             yield* job.pipe(
@@ -587,7 +582,9 @@ export const layer: Layer.Layer<
 
     const prepare: Interface["prepare"] = Effect.fn("Memory.prepare")((input) =>
       prepareUnsafe(input).pipe(
-        Effect.catchCause((cause) => Effect.logWarning("MEMORY prepare failed", { cause })),
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.logWarning("MEMORY prepare failed", { cause }),
+        ),
       ),
     )
 
@@ -846,16 +843,16 @@ export const layer: Layer.Layer<
         // Non-empty AGENTS.md is the durable artifact /init leaves behind.
         // FSUtil rides MemoryConfig's layer (optional access keeps this layer
         // lightweight — a missing wire degrades to no-heal, not a crash).
-        const healed = yield* Effect
-          .serviceOption(FSUtil.Service)
-          .pipe(
-            Effect.flatMap((option) =>
-              Option.isSome(option)
-                ? option.value.readFileStringSafe(agentsMd).pipe(Effect.map((content) => (content?.trim().length ?? 0) > 0))
-                : Effect.succeed(false),
-            ),
-            Effect.catch(() => Effect.succeed(false)),
-          )
+        const healed = yield* Effect.serviceOption(FSUtil.Service).pipe(
+          Effect.flatMap((option) =>
+            Option.isSome(option)
+              ? option.value
+                  .readFileStringSafe(agentsMd)
+                  .pipe(Effect.map((content) => (content?.trim().length ?? 0) > 0))
+              : Effect.succeed(false),
+          ),
+          Effect.catch(() => Effect.succeed(false)),
+        )
         if (healed) {
           yield* project.setInitialized(current.id)
         } else {

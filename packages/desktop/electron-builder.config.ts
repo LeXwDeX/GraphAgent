@@ -39,6 +39,8 @@ const APP_IDS = {
 } as const
 
 const getBase = (appId: string): Configuration => ({
+  // Releases distribute installer artifacts manually; never infer an updater feed from CI credentials.
+  publish: null,
   artifactName: "opencode-desktop-${os}-${arch}.${ext}",
   directories: {
     output: "dist",
@@ -88,7 +90,6 @@ const getBase = (appId: string): Configuration => ({
       sign: signWindows,
     },
     target: ["nsis"],
-    verifyUpdateCodeSignature: false,
   },
   nsis: {
     oneClick: true,
@@ -130,7 +131,6 @@ function getConfig() {
         appId,
         productName: "OpenCode Beta",
         protocols: { name: "OpenCode Beta", schemes: ["opencode"] },
-        publish: { provider: "github", owner: "anomalyco", repo: "opencode-beta", channel: "latest" },
         rpm: { packageName: "opencode-beta" },
       }
     }
@@ -140,7 +140,6 @@ function getConfig() {
         appId,
         productName: "OpenCode",
         protocols: { name: "OpenCode", schemes: ["opencode"] },
-        publish: { provider: "github", owner: "anomalyco", repo: "opencode", channel: "latest" },
         deb: { fpm: [legacyDesktopEntryFpm] },
         rpm: { packageName: "opencode", fpm: [legacyDesktopEntryFpm] },
       }

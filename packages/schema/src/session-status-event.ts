@@ -27,6 +27,12 @@ export const Info = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("busy"),
+    preparation: Schema.optional(
+      Schema.Struct({
+        stage: Schema.Literals(["memory", "reasoning", "tools"]),
+        startedAt: NonNegativeInt,
+      }),
+    ),
   }),
 ]).annotate({ identifier: "SessionStatus" })
 export type Info = Schema.Schema.Type<typeof Info>

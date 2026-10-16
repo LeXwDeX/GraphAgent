@@ -446,9 +446,6 @@ export const dict = {
 
   "toast.session.listFailed.title": "Neuspjelo učitavanje sesija za {{project}}",
 
-  "toast.update.title": "Dostupno ažuriranje",
-  "toast.update.description": "Nova verzija OpenCode-a ({{version}}) je dostupna za instalaciju.",
-  "toast.update.action.installRestart": "Instaliraj i restartuj",
   "toast.update.action.notYet": "Ne još",
 
   "error.page.title": "Nešto je pošlo po zlu",
@@ -457,9 +454,6 @@ export const dict = {
   "error.page.action.restart": "Restartuj",
   "error.page.action.report": "Prijavi grešku",
   "error.page.action.reported": "Greška prijavljena",
-  "error.page.action.checking": "Provjera...",
-  "error.page.action.checkUpdates": "Provjeri ažuriranja",
-  "error.page.action.updateTo": "Ažuriraj na {{version}}",
   "error.page.report.prefix": "Molimo prijavi ovu grešku OpenCode timu",
   "error.page.report.discord": "na Discordu",
   "error.page.version": "Verzija: {{version}}",
@@ -631,7 +625,6 @@ export const dict = {
 
   "settings.general.section.appearance": "Izgled",
   "settings.general.section.notifications": "Sistemske obavijesti",
-  "settings.general.section.updates": "Ažuriranja",
   "settings.general.section.sounds": "Zvučni efekti",
   "settings.general.section.feed": "Feed",
   "settings.general.section.display": "Prikaz",
@@ -671,14 +664,6 @@ export const dict = {
   "settings.general.row.releaseNotes.title": "Bilješke o izdanju",
   "settings.general.row.releaseNotes.description": 'Prikaži iskačuće prozore "Šta je novo" nakon ažuriranja',
 
-  "settings.updates.row.startup.title": "Provjeri ažuriranja pri pokretanju",
-  "settings.updates.row.startup.description": "Automatski provjerava ažuriranja kada se OpenCode pokrene",
-  "settings.updates.row.check.title": "Provjeri ažuriranja",
-  "settings.updates.row.check.description": "Ručno provjeri ažuriranja i instaliraj ako su dostupna",
-  "settings.updates.action.checkNow": "Provjeri sada",
-  "settings.updates.action.checking": "Provjera...",
-  "settings.updates.toast.latest.title": "Sve je ažurno",
-  "settings.updates.toast.latest.description": "Koristiš najnoviju verziju OpenCode-a.",
   "sound.option.none": "Nijedan",
   "sound.option.alert01": "Upozorenje 01",
   "sound.option.alert02": "Upozorenje 02",

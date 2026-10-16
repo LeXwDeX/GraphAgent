@@ -127,8 +127,9 @@ export const GlobalApi = HttpApi.make("global").add(
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "global.upgrade",
-          summary: "Upgrade opencode",
-          description: "Upgrade opencode to the specified version or latest if not specified.",
+          summary: "Built-in updates disabled",
+          description:
+            "Legacy compatibility endpoint. Returns HTTP 400 with success false and an error explaining that built-in application updates are disabled. No installation is attempted.",
         }),
       ),
     )

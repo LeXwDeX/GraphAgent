@@ -393,6 +393,8 @@ All upstream capabilities (multi-provider, built-in LSP, client/server architect
 
 Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
 
+Built-in application updating is disabled across CLI, TUI, web, and Desktop. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `opencode upgrade` and `POST /global/upgrade` report that updates are disabled.
+
 Release acceptance enforces two distinct integrity boundaries:
 
 - **Archive integrity (before extraction)**: the `oc` installer verifies the release `SHA256SUMS` entry before unpacking and refuses to extract on mismatch. If upstream serves no `SHA256SUMS`, it installs with a warning (GitHub HTTPS transport only).

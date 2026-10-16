@@ -1,8 +1,9 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, mock } from "bun:test"
 import { Effect, Layer, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Installation } from "../../src/installation"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { AppProcess } from "@opencode-ai/core/process"
 import { testEffect } from "../lib/effect"
 
@@ -55,86 +56,40 @@ function testLayer(
   return Installation.layer.pipe(Layer.provide(mockHttpClient(httpHandler)), Layer.provide(appProcess))
 }
 
-describe("installation", () => {
-  describe("latest", () => {
-    const urls: string[] = []
-    testEffect(
-      testLayer((request) => {
-        urls.push(request.url)
-        return jsonResponse({ tag_name: "graphagent-v1.2.3" })
-      }),
-    ).effect("reads release version from the fork GitHub releases", () =>
-      Effect.gen(function* () {
-        const result = yield* Installation.use.latest()
-        expect(result).toBe("1.2.3")
-        expect(urls).toContain("https://api.github.com/repos/LeXwDeX/OpenCode-GraphAgent/releases/latest")
-      }),
-    )
+describe("retired application updating", () => {
+  const http = mock(() => jsonResponse({ tag_name: "graphagent-v99.0.0" }))
+  const spawn = mock(() => "")
+  const it = testEffect(testLayer(http, spawn))
 
-    testEffect(testLayer(() => jsonResponse({ tag_name: "graphagent-v4.0.0-beta.1" }))).effect(
-      "strips the graphagent-v prefix from release tags",
-      () =>
-        Effect.gen(function* () {
-          const result = yield* Installation.use.latest()
-          expect(result).toBe("4.0.0-beta.1")
-        }),
-    )
-  })
+  it.effect("compatibility version accessors do not check releases or start processes", () =>
+    Effect.gen(function* () {
+      http.mockClear()
+      spawn.mockClear()
+      expect(yield* Installation.use.latest()).toBe(InstallationVersion)
+      const service = yield* Installation.Service
+      expect(yield* service.info()).toEqual({ version: InstallationVersion, latest: InstallationVersion })
+      expect(http).not.toHaveBeenCalled()
+      expect(spawn).not.toHaveBeenCalled()
+    }),
+  )
 
-  describe("upgrade", () => {
-    testEffect(
-      testLayer(
-        () => jsonResponse({}),
-        (cmd) => {
-          if (cmd === "npm") return { code: 1, stderr: "token=secret command output" }
-          return ""
-        },
-      ),
-    ).effect("returns sanitized typed errors for failed package upgrades", () =>
-      Effect.gen(function* () {
-        const error = yield* Effect.flip(Installation.use.upgrade("npm", "9.9.9"))
+  it.effect("rejects every legacy install method without network or process side effects", () =>
+    Effect.gen(function* () {
+      http.mockClear()
+      spawn.mockClear()
+      for (const method of ["curl", "npm", "yarn", "pnpm", "bun", "brew", "scoop", "choco", "unknown"] as const) {
+        const error = yield* Effect.flip(Installation.use.upgrade(method, "99.0.0"))
         expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
-        expect(error.stderr).toBe("Upgrade failed for npm (exit code 1).")
-        expect(error.message).toBe(error.stderr)
-        expect(error.stderr).not.toContain("secret")
-        expect(error.stderr).not.toContain("command output")
-      }),
-    )
+        expect(error.stderr).toBe(Installation.UPDATES_DISABLED)
+      }
+      expect(http).not.toHaveBeenCalled()
+      expect(spawn).not.toHaveBeenCalled()
+    }),
+  )
 
-    testEffect(
-      testLayer(
-        () => new Response("install script with token=secret", { status: 200 }),
-        (cmd, args) => {
-          if (cmd === "bash" && args[0] === "--version") return "GNU bash"
-          if (cmd === "bash" || cmd === "sh") return { code: 1, stderr: "script output with token=secret" }
-          return ""
-        },
-      ),
-    ).effect("returns sanitized typed errors when the curl install script fails", () =>
-      Effect.gen(function* () {
-        const error = yield* Effect.flip(Installation.use.upgrade("curl", "9.9.9"))
-        expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
-        expect(error.stderr).toBe("Upgrade failed for curl (exit code 1).")
-        expect(error.message).toBe(error.stderr)
-        expect(error.stderr).not.toContain("secret")
-        expect(error.stderr).not.toContain("script output")
-      }),
-    )
-
-    testEffect(
-      testLayer(
-        () => new Response("install script", { status: 200 }),
-        (cmd, args) => {
-          if (cmd === "bash" && args[0] === "--version") return { code: 1, stderr: "missing" }
-          if (cmd === "bash") return { code: 1, stderr: "should not execute installer with bash" }
-          if (cmd === "sh") return "ok"
-          return ""
-        },
-      ),
-    ).effect("falls back to sh when bash is unavailable during curl upgrade", () =>
-      Effect.gen(function* () {
-        yield* Installation.use.upgrade("curl", "9.9.9")
-      }),
-    )
-  })
+  it.effect("preserves installation detection for uninstall", () =>
+    Effect.gen(function* () {
+      expect(["curl", "unknown"]).toContain(yield* Installation.use.method())
+    }),
+  )
 })

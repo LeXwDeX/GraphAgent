@@ -20,6 +20,10 @@ for (const channel of channels) {
     if (previous === undefined) delete process.env.OPENCODE_CHANNEL
     else process.env.OPENCODE_CHANNEL = previous
 
+    expect(config.publish).toBeNull()
+    expect(config.mac?.target).toEqual(["dmg", "zip"])
+    expect(config.win?.target).toEqual(["nsis"])
+    expect(config.linux?.target).toEqual(["AppImage", "deb", "rpm"])
     expect(config.appId).toBe(channel.appId)
     expect(config.extraMetadata?.desktopName).toBe(`${channel.appId}.desktop`)
     expect(config.linux?.executableName).toBe(channel.appId)

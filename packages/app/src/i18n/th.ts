@@ -444,9 +444,6 @@ export const dict = {
 
   "toast.session.listFailed.title": "ไม่สามารถโหลดเซสชันสำหรับ {{project}}",
 
-  "toast.update.title": "มีการอัปเดต",
-  "toast.update.description": "เวอร์ชันใหม่ของ OpenCode ({{version}}) พร้อมใช้งานสำหรับติดตั้ง",
-  "toast.update.action.installRestart": "ติดตั้งและรีสตาร์ท",
   "toast.update.action.notYet": "ยังไม่",
 
   "error.page.title": "เกิดข้อผิดพลาด",
@@ -455,9 +452,6 @@ export const dict = {
   "error.page.action.restart": "รีสตาร์ท",
   "error.page.action.report": "รายงานข้อผิดพลาด",
   "error.page.action.reported": "รายงานข้อผิดพลาดแล้ว",
-  "error.page.action.checking": "กำลังตรวจสอบ...",
-  "error.page.action.checkUpdates": "ตรวจสอบการอัปเดต",
-  "error.page.action.updateTo": "อัปเดตเป็น {{version}}",
   "error.page.report.prefix": "โปรดรายงานข้อผิดพลาดนี้ให้ทีม OpenCode",
   "error.page.report.discord": "บน Discord",
   "error.page.version": "เวอร์ชัน: {{version}}",
@@ -625,7 +619,6 @@ export const dict = {
 
   "settings.general.section.appearance": "รูปลักษณ์",
   "settings.general.section.notifications": "การแจ้งเตือนระบบ",
-  "settings.general.section.updates": "การอัปเดต",
   "settings.general.section.sounds": "เสียงเอฟเฟกต์",
   "settings.general.section.feed": "ฟีด",
   "settings.general.section.display": "การแสดงผล",
@@ -661,15 +654,6 @@ export const dict = {
 
   "settings.general.row.releaseNotes.title": "บันทึกการอัปเดต",
   "settings.general.row.releaseNotes.description": "แสดงป๊อปอัพ What's New หลังจากอัปเดต",
-
-  "settings.updates.row.startup.title": "ตรวจสอบการอัปเดตเมื่อเริ่มต้น",
-  "settings.updates.row.startup.description": "ตรวจสอบการอัปเดตโดยอัตโนมัติเมื่อ OpenCode เปิดใช้งาน",
-  "settings.updates.row.check.title": "ตรวจสอบการอัปเดต",
-  "settings.updates.row.check.description": "ตรวจสอบการอัปเดตด้วยตนเองและติดตั้งหากมี",
-  "settings.updates.action.checkNow": "ตรวจสอบทันที",
-  "settings.updates.action.checking": "กำลังตรวจสอบ...",
-  "settings.updates.toast.latest.title": "คุณเป็นเวอร์ชันล่าสุดแล้ว",
-  "settings.updates.toast.latest.description": "คุณกำลังใช้งาน OpenCode เวอร์ชันล่าสุด",
 
   "sound.option.none": "ไม่มี",
   "sound.option.alert01": "เสียงเตือน 01",

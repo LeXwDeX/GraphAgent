@@ -98,6 +98,46 @@ test("brackets navigate diff hunks", async () => {
   }
 })
 
+test("large additions preserve file and hunk navigation, review actions and resize", async () => {
+  const viewer = await renderDiffViewer([
+    {
+      file: "a-large.ts",
+      additions: 7500,
+      deletions: 0,
+      status: "added",
+      patch: `--- /dev/null\n+++ b/a-large.ts\n@@ -0,0 +1,7500 @@\n${Array.from({ length: 7500 }, (_, i) => `+large${i + 1}`).join("\n")}`,
+    },
+    {
+      file: "z-small.ts",
+      additions: 1,
+      deletions: 1,
+      status: "modified",
+      patch: "--- a/z-small.ts\n+++ b/z-small.ts\n@@ -1 +1 @@\n-old\n+small final",
+    },
+  ])
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("large1"))
+    const scroll = findScrollBox(viewer.app.renderer.root)!
+    scroll.scrollTo(1_000_000)
+    await viewer.app.waitForFrame((frame) => frame.includes("small final"))
+    expect(viewer.runCommand("diff.previous_file").ok).toBe(true)
+    await viewer.app.waitForFrame((frame) => frame.includes("large1"))
+    expect(viewer.runCommand("diff.mark_reviewed").ok).toBe(true)
+    await viewer.app.renderOnce()
+    expect(viewer.runCommand("diff.toggle_view").ok).toBe(true)
+    viewer.app.resize(160, 20)
+    await viewer.app.waitForFrame((frame) => frame.includes("large1"))
+    expect(viewer.runCommand("diff.next_hunk").ok).toBe(true)
+    await viewer.app.renderOnce()
+    expect(viewer.runCommand("diff.next_hunk").ok).toBe(true)
+    await viewer.app.waitForFrame((frame) => frame.includes("small final"))
+    expect(viewer.runCommand("diff.close").ok).toBe(true)
+    expect(viewer.current()).toEqual(startRoute)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
 async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: TuiRouteCurrent) {
   const commands = new Map<
     string,
@@ -107,10 +147,11 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
   let renderDiff: TuiRouteDefinition["render"] | undefined
   let vcsDiffInput: unknown
   let sessionDiffInput: unknown
+  let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
   const config = createTuiResolvedConfig()
   function Harness() {
     const renderer = useRenderer()
-    const keymap = createDefaultOpenTuiKeymap(renderer)
+    keymap = createDefaultOpenTuiKeymap(renderer)
     const registerLayer = keymap.registerLayer.bind(keymap)
     keymap.registerLayer = (layer) => {
       layer.commands?.forEach((command) => commands.set(command.name, command))
@@ -177,6 +218,7 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
   return {
     app,
     commands,
+    runCommand: (name: string) => keymap.runCommand(name),
     current: () => current,
     vcsDiffInput: () => vcsDiffInput,
     sessionDiffInput: () => sessionDiffInput,
