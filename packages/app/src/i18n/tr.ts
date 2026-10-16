@@ -449,9 +449,6 @@ export const dict = {
 
   "toast.session.listFailed.title": "{{project}} için oturumlar yüklenemedi",
 
-  "toast.update.title": "Güncelleme mevcut",
-  "toast.update.description": "OpenCode'un yeni bir sürümü ({{version}}) yüklemeye hazır.",
-  "toast.update.action.installRestart": "Yükle ve yeniden başlat",
   "toast.update.action.notYet": "Şimdi değil",
 
   "error.page.title": "Bir şeyler yanlış gitti",
@@ -460,9 +457,6 @@ export const dict = {
   "error.page.action.restart": "Yeniden Başlat",
   "error.page.action.report": "Hatayı Bildir",
   "error.page.action.reported": "Hata Bildirildi",
-  "error.page.action.checking": "Kontrol ediliyor...",
-  "error.page.action.checkUpdates": "Güncellemeleri kontrol et",
-  "error.page.action.updateTo": "{{version}} sürümüne güncelle",
   "error.page.report.prefix": "Lütfen bu hatayı OpenCode ekibine bildirin",
   "error.page.report.discord": "Discord üzerinden",
   "error.page.version": "Sürüm: {{version}}",
@@ -637,7 +631,6 @@ export const dict = {
 
   "settings.general.section.appearance": "Görünüm",
   "settings.general.section.notifications": "Sistem bildirimleri",
-  "settings.general.section.updates": "Güncellemeler",
   "settings.general.section.sounds": "Ses efektleri",
   "settings.general.section.feed": "Akış",
   "settings.general.section.display": "Ekran",
@@ -679,15 +672,6 @@ export const dict = {
 
   "settings.general.row.releaseNotes.title": "Sürüm notları",
   "settings.general.row.releaseNotes.description": "Güncellemelerden sonra Yenilikler bildirimlerini göster",
-
-  "settings.updates.row.startup.title": "Başlangıçta güncellemeleri kontrol et",
-  "settings.updates.row.startup.description": "OpenCode başladığında otomatik güncelleme kontrolü yap",
-  "settings.updates.row.check.title": "Güncellemeleri kontrol et",
-  "settings.updates.row.check.description": "Elle güncelleme kontrolü yap ve varsa yükle",
-  "settings.updates.action.checkNow": "Şimdi kontrol et",
-  "settings.updates.action.checking": "Kontrol ediliyor...",
-  "settings.updates.toast.latest.title": "Güncelsiniz",
-  "settings.updates.toast.latest.description": "OpenCode'un en son sürümünü kullanıyorsunuz.",
 
   "sound.option.none": "Yok",
   "sound.option.alert01": "Uyarı 01",

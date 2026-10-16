@@ -63,6 +63,56 @@ afterEach(async () => {
 })
 
 describe("v2 pty HttpApi", () => {
+  testPty("connect preflight validates scope and consumes a valid ticket before missing-session lookup", async () => {
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    const send = (route: string, init: RequestInit = {}) => request(route, tmp.path, init)
+    const base = "/api/pty"
+    const created = await send(base, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "/bin/cat" }),
+    })
+    expect(created.status).toBe(200)
+    const info = Schema.decodeUnknownSync(Location.response(Pty.Info))(await created.json()).data
+    try {
+      const token = await send(`${base}/${info.id}/connect-token`, {
+        method: "POST",
+        headers: { "x-opencode-ticket": "1" },
+      })
+      expect(token.status).toBe(200)
+      const ticket = Schema.decodeUnknownSync(Location.response(PtyTicket.ConnectToken))(await token.json()).data.ticket
+      for (const suffix of ["", `?ticket=${ticket}`]) {
+        expect(
+          (await send(`${base}/${info.id}/connect${suffix}`, { headers: { origin: "https://forbidden.example" } }))
+            .status,
+        ).toBe(403)
+      }
+      expect((await send(`${base}/pty_wrong_scope/connect?ticket=${ticket}`)).status).toBe(403)
+      expect((await send(`${base}/${info.id}/connect?ticket=invalid`)).status).toBe(403)
+      expect((await send(`${base}/${info.id}`, { method: "DELETE" })).status).toBe(204)
+      // A valid scoped ticket is consumed even if the session disappeared after issuance.
+      expect((await send(`${base}/${info.id}/connect?ticket=${ticket}&cursor=-1`)).status).toBe(404)
+      expect((await send(`${base}/${info.id}/connect?ticket=${ticket}&cursor=-1`)).status).toBe(403)
+      expect((await send(`${base}/${info.id}/connect?cursor=-1`)).status).toBe(404)
+    } finally {
+      await send(`${base}/${info.id}`, { method: "DELETE" })
+    }
+  })
+
+  test("connect preflight hides missing sessions from forbidden origins and invalid supplied tickets", async () => {
+    await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
+    for (const suffix of ["", "?ticket=invalid", "?ticket="]) {
+      const forbidden = await request(`/api/pty/pty_missing/connect${suffix}`, tmp.path, {
+        headers: { origin: "https://forbidden.example" },
+      })
+      expect(forbidden.status).toBe(403)
+    }
+    for (const ticket of ["invalid", ""]) {
+      const invalid = await request(`/api/pty/pty_missing/connect?ticket=${ticket}`, tmp.path)
+      expect(invalid.status).toBe(403)
+    }
+  })
+
   testPty("serves location-wrapped PTY routes and retains exited sessions", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
 

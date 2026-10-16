@@ -123,14 +123,14 @@ function errorTool(parts: SessionV1.Part[]) {
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
 }
 
-function makeMcp(instructions: MCP.ServerInstructions[] = [], tools: Record<string, AITool> = {}) {
+function makeMcp(instructions: MCP.ServerInstructions[] = [], tools: Record<string, AITool> = {}, ready = Effect.void) {
   return Layer.succeed(
     MCP.Service,
     MCP.Service.of({
       status: () => Effect.succeed({}),
       clients: () => Effect.succeed({}),
       instructions: () => Effect.succeed(instructions),
-      tools: () => Effect.succeed(tools),
+      tools: () => ready.pipe(Effect.as(tools)),
       prompts: () => Effect.succeed({}),
       resources: () => Effect.succeed({}),
       resourceTemplates: () => Effect.succeed({}),
@@ -273,9 +273,11 @@ type PromptLayerOptions = {
   organizer?: LLM.Interface["organizer"]
   mcpInstructions?: MCP.ServerInstructions[]
   mcpTools?: Record<string, AITool>
+  toolsReady?: Effect.Effect<void>
   processor?: "blocking"
   goal?: boolean
   goalLayer?: Layer.Layer<Goal.Service>
+  memoryPrepare?: Memory.Interface["prepare"]
   memoryContext?: string[]
   agentLayer?: Layer.Layer<AgentSvc.Service>
   ripgrepLayer?: Layer.Layer<Ripgrep.Service>
@@ -295,7 +297,7 @@ function makePrompt(input?: PromptLayerOptions) {
       : (input?.goalLayer ?? Goal.defaultLayer)
   const memoryLayer = Layer.mock(Memory.Service, {
     init: () => Effect.void,
-    prepare: () => Effect.void,
+    prepare: input?.memoryPrepare ?? (() => Effect.void),
     context: () => Effect.succeed(input?.memoryContext ?? []),
     checkpoint: () => Effect.succeed(input?.memoryContext ?? []),
     setEnabled: (enabled) => Effect.succeed(enabled ? ("Memory on" as const) : ("Memory off" as const)),
@@ -337,7 +339,7 @@ function makePrompt(input?: PromptLayerOptions) {
     Config.defaultLayer,
     ProviderSvc.defaultLayer,
     lsp,
-    makeMcp(input?.mcpInstructions, input?.mcpTools),
+    makeMcp(input?.mcpInstructions, input?.mcpTools, input?.toolsReady),
     FSUtil.defaultLayer,
     BackgroundJob.defaultLayer,
     status,
@@ -7007,3 +7009,111 @@ distillationIt.instance("a started organizer stream finishes before resend even 
     }),
   ),
 )
+
+for (const stage of ["memory", "tools"] as const) {
+  const delayedPreparation = testEffect(
+    makeHttp(stage === "memory" ? { memoryPrepare: () => Effect.never } : { toolsReady: Effect.never }),
+  )
+  delayedPreparation.instance(`cancel during foreground ${stage} preparation prevents a model request`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, chat } = yield* boot()
+      yield* user(chat.id, "prepare without sending")
+      const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      const status = yield* SessionStatus.Service
+      const preparation = yield* pollWithTimeout(
+        status
+          .get(chat.id)
+          .pipe(
+            Effect.map((value) =>
+              value.type === "busy" && value.preparation?.stage === stage ? value.preparation : undefined,
+            ),
+          ),
+        `${stage} preparation was not observable`,
+      )
+      expect(preparation.startedAt).toBeGreaterThan(0)
+      expect(preparation.startedAt).toBeLessThanOrEqual(Date.now())
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(run)
+      expect((yield* status.get(chat.id)).type).toBe("idle")
+      expect(yield* llm.hits).toHaveLength(0)
+    }),
+  )
+}
+
+distillationIt.instance("cancelling a foreground reasoning barrier seals late organizer results", () =>
+  withSettleWindow(
+    "0",
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        reasoningDistillation: { enabled: true },
+      }))
+      const { prompt, sessions, chat } = yield* boot()
+      const started = yield* Deferred.make<void>()
+      let complete: ((value: { text: string; finishReason: "stop" }) => void) | undefined
+      let signal: AbortSignal | undefined
+      controlledOrganizer = () =>
+        Effect.succeed({
+          transport: "engine" as const,
+          model: "test/small",
+          call: (abort, onResponseStarted) => () => {
+            signal = abort
+            onResponseStarted?.()
+            Deferred.doneUnsafe(started, Effect.void)
+            return new Promise((resolve) => {
+              complete = resolve
+            })
+          },
+        })
+      yield* user(chat.id, "think")
+      yield* llm.push(reply().reason(longThought("final-thinking")).text("answer").stop())
+      yield* prompt.loop({ sessionID: chat.id })
+      yield* awaitWithTimeout(Deferred.await(started), "organizer stream did not start")
+      yield* user(chat.id, "continue")
+      const next = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      const status = yield* SessionStatus.Service
+      yield* pollWithTimeout(
+        status
+          .get(chat.id)
+          .pipe(
+            Effect.map((value) =>
+              value.type === "busy" && value.preparation?.stage === "reasoning" ? true : undefined,
+            ),
+          ),
+        "reasoning preparation was not observable",
+      )
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(next)
+      yield* pollWithTimeout(
+        Effect.sync(() => signal?.aborted || undefined),
+        "organizer was not cancelled",
+      )
+      complete!({ text: "late-stale-rewrite", finishReason: "stop" })
+      yield* llm.text("replacement answer")
+      yield* prompt.loop({ sessionID: chat.id })
+      expect((yield* llm.hits).length).toBe(2)
+      const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+      expect(parts.some((part) => part.type === "reasoning" && part.text === "late-stale-rewrite")).toBe(false)
+      expect((yield* status.get(chat.id)).type).toBe("idle")
+    }),
+  ),
+)
+
+for (const mode of ["failure", "timeout"] as const) {
+  const readiness =
+    mode === "failure"
+      ? Effect.die(new Error("tool readiness fixture failed"))
+      : Effect.never.pipe(Effect.timeout("1 millis"), Effect.orDie)
+  const failedPreparation = testEffect(makeHttp({ toolsReady: readiness }))
+  failedPreparation.instance(`foreground preparation ${mode} returns to idle without starting a model`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, chat } = yield* boot()
+      yield* user(chat.id, "prepare without sending")
+      yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.exit)
+      expect((yield* (yield* SessionStatus.Service).get(chat.id)).type).toBe("idle")
+      expect(yield* llm.hits).toHaveLength(0)
+    }),
+  )
+}

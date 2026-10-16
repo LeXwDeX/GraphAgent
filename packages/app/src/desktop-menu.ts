@@ -1,7 +1,6 @@
 export type DesktopMenuPlatform = "macos" | "windows"
 
 export type DesktopMenuAction =
-  | "app.checkForUpdates"
   | "app.relaunch"
   | "edit.undo"
   | "edit.redo"
@@ -50,7 +49,6 @@ export type DesktopMenuItem = {
   role?: DesktopMenuRole
   href?: string
   accelerator?: Partial<Record<DesktopMenuPlatform, string>>
-  enabled?: "updater"
   platforms?: DesktopMenuPlatform[]
 }
 
@@ -76,7 +74,6 @@ export const DESKTOP_MENU: DesktopMenu[] = [
     platforms: ["macos"],
     items: [
       { type: "item", role: "about" },
-      { type: "item", label: "Check for Updates...", action: "app.checkForUpdates", enabled: "updater" },
       { type: "item", label: "Settings", command: "settings.open", accelerator: { macos: "Cmd+," } },
       { type: "item", label: "Reload Webview", action: "view.reload" },
       { type: "item", label: "Restart", action: "app.relaunch" },

@@ -54,13 +54,7 @@ const v2TitlebarHeight = 36
 const minTitlebarZoom = 0.25
 const windowsControlsBaseWidth = 138 // 3 native Windows caption buttons at 46px each.
 
-export type TitlebarUpdate = {
-  version: () => string | undefined
-  installing: () => boolean
-  install: () => void
-}
-
-export function Titlebar(props: { update?: TitlebarUpdate }) {
+export function Titlebar() {
   const layout = useLayout()
   const platform = usePlatform()
   const command = useCommand()
@@ -119,22 +113,6 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
   const canForward = createMemo(() => history.index < history.stack.length - 1)
   const hasProjects = createMemo(() => layout.projects.list().length > 0)
   const nav = createMemo(() => (useV2Titlebar() ? settings.general.showNavigation() : true))
-  const updateState = createMemo<TitlebarUpdatePillState>(() => {
-    const installing = props.update?.installing() ?? false
-    const version = props.update?.version()
-    return {
-      visible: version !== undefined || installing,
-      installing,
-      label: "Update",
-      ariaLabel: language.t("toast.update.action.installRestart"),
-      title: version ? `Update ${version}` : undefined,
-      onInstall: () => props.update?.install(),
-    }
-  })
-  const v2RightState = createMemo<TitlebarV2RightState>(() => ({
-    update: updateState(),
-  }))
-
   const back = () => {
     const next = backPath(history)
     if (!next) return
@@ -481,7 +459,7 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                     />
                   </TooltipV2>
                 </Show>
-                <TitlebarV2Right state={v2RightState()} />
+                <TitlebarV2Right />
                 <Show when={windows() && !electronWindows()}>
                   <div data-tauri-decorum-tb class="flex flex-row" />
                 </Show>
@@ -649,55 +627,10 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
   )
 }
 
-type TitlebarUpdatePillState = {
-  visible: boolean
-  installing: boolean
-  label: string
-  ariaLabel: string
-  title?: string
-  onInstall: () => void
-}
-
-type TitlebarV2RightState = {
-  update: TitlebarUpdatePillState
-}
-
-function TitlebarV2Right(props: { state: TitlebarV2RightState }) {
+function TitlebarV2Right() {
   return (
     <div class="relative z-20 flex shrink-0 items-center justify-end gap-0 overflow-visible">
-      <Show when={props.state.update.visible}>
-        <TitlebarUpdateIconButton state={props.state.update} />
-      </Show>
       <div id="opencode-titlebar-right" class="flex shrink-0 items-center justify-end gap-0" />
-    </div>
-  )
-}
-
-function TitlebarUpdateIconButton(props: { state: TitlebarUpdatePillState }) {
-  return (
-    <div class="group relative mr-3 h-5 w-5 shrink-0 rounded-full bg-v2-background-bg-deep transition-[width] duration-150 ease-out hover:z-30 hover:w-[68px] focus-within:z-30 focus-within:w-[68px] motion-reduce:transition-none">
-      <button
-        type="button"
-        class="absolute right-0 top-0 z-10 flex h-5 w-5 items-center justify-end overflow-hidden rounded-full bg-v2-icon-icon-accent/20 text-v2-icon-icon-accent transition-[width,background-color] duration-150 ease-out group-hover:w-[68px] group-hover:bg-[color-mix(in_srgb,var(--v2-icon-icon-accent)_20%,var(--v2-background-bg-deep))] group-focus-within:w-[68px] group-focus-within:bg-[color-mix(in_srgb,var(--v2-icon-icon-accent)_20%,var(--v2-background-bg-deep))] focus-visible:outline-none disabled:opacity-60 motion-reduce:transition-none"
-        onClick={props.state.onInstall}
-        disabled={props.state.installing}
-        aria-busy={props.state.installing}
-        aria-label={props.state.ariaLabel}
-      >
-        <span class="shrink-0 ml-[8px] mr-px text-[11px] text-v2-text-text-accent [font-weight:530] opacity-0 translate-x-2 motion-safe:transition-all duration-150 ease-out group-hover:opacity-100 group-hover:translate-x-0 group-focus-within:opacity-100 group-focus-within:translate-x-0 motion-reduce:translate-x-0">
-          Update
-        </span>
-        <span class="flex size-5 shrink-0 items-center justify-center">
-          <Show
-            when={!props.state.installing}
-            fallback={<span data-slot="titlebar-update-loader" aria-hidden="true" />}
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-              <path d="M7 11V3M3.5 7.63128L7 11L10.5 7.63128" stroke="currentColor" />
-            </svg>
-          </Show>
-        </span>
-      </button>
     </div>
   )
 }

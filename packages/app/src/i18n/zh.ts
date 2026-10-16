@@ -449,9 +449,6 @@ export const dict = {
   "toast.session.unshare.failed.title": "取消分享失败",
   "toast.session.unshare.failed.description": "取消分享会话时发生错误",
   "toast.session.listFailed.title": "无法加载 {{project}} 的会话",
-  "toast.update.title": "有可用更新",
-  "toast.update.description": "OpenCode 有新版本 ({{version}}) 可安装。",
-  "toast.update.action.installRestart": "安装并重启",
   "toast.update.action.notYet": "稍后",
 
   "error.page.title": "出了点问题",
@@ -460,9 +457,6 @@ export const dict = {
   "error.page.action.restart": "重启",
   "error.page.action.report": "上报错误",
   "error.page.action.reported": "错误已上报",
-  "error.page.action.checking": "检查中...",
-  "error.page.action.checkUpdates": "检查更新",
-  "error.page.action.updateTo": "更新到 {{version}}",
   "error.page.report.prefix": "请将此错误报告给 OpenCode 团队",
   "error.page.report.discord": "在 Discord 上",
   "error.page.version": "版本：{{version}}",
@@ -638,7 +632,6 @@ export const dict = {
 
   "settings.general.section.appearance": "外观",
   "settings.general.section.notifications": "系统通知",
-  "settings.general.section.updates": "更新",
   "settings.general.section.sounds": "音效",
   "settings.general.section.feed": "动态",
   "settings.general.section.display": "显示",
@@ -671,15 +664,6 @@ export const dict = {
   "settings.general.row.wayland.tooltip": "在混合刷新率显示器的 Linux 系统上，原生 Wayland 可能更稳定。",
   "settings.general.row.releaseNotes.title": "发行说明",
   "settings.general.row.releaseNotes.description": "更新后显示“新功能”弹窗",
-
-  "settings.updates.row.startup.title": "启动时检查更新",
-  "settings.updates.row.startup.description": "在 OpenCode 启动时自动检查更新",
-  "settings.updates.row.check.title": "检查更新",
-  "settings.updates.row.check.description": "手动检查更新并在有更新时安装",
-  "settings.updates.action.checkNow": "立即检查",
-  "settings.updates.action.checking": "正在检查...",
-  "settings.updates.toast.latest.title": "已是最新版本",
-  "settings.updates.toast.latest.description": "你正在使用最新版本的 OpenCode。",
 
   "sound.option.none": "无",
   "sound.option.alert01": "警报 01",

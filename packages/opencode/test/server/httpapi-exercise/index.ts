@@ -560,6 +560,20 @@ const scenarios: Scenario[] = [
     .get("/pty/{ptyID}/connect", "pty.connect")
     .at((ctx) => ({ path: route("/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
     .status(404, undefined, "none"),
+  http.protected
+    .get("/pty/{ptyID}/connect", "pty.connect.preflight")
+    .at((ctx) => ({
+      path: route("/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }) + "?ticket=invalid",
+      headers: ctx.headers(),
+    }))
+    .status(403, undefined, "none"),
+  http.protected
+    .get("/api/pty/{ptyID}/connect", "v2.pty.connect.preflight")
+    .at((ctx) => ({
+      path: route("/api/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }) + "?ticket=invalid",
+      headers: ctx.headers(),
+    }))
+    .status(403, undefined, "none"),
   http.protected.get("/experimental/console", "experimental.console.get").json(),
   http.protected.get("/experimental/console/orgs", "experimental.console.listOrgs").json(),
   http.protected
@@ -1922,8 +1936,12 @@ const scenarios: Scenario[] = [
     .post("/global/upgrade", "global.upgrade")
     .global()
     .probe({ path: "/global/upgrade", body: { target: 1 } })
-    .at(() => ({ path: "/global/upgrade", body: { target: 1 } }))
-    .status(400),
+    .at(() => ({ path: "/global/upgrade", body: { target: "99.0.0" } }))
+    .json(400, (body) => {
+      object(body)
+      check(body.success === false, "built-in updates must be disabled")
+      check(typeof body.error === "string" && body.error.includes("disabled"), "disabled update explanation is required")
+    }),
 
   // ── DAG workflow routes ──────────────────────────────────────────────
   // Happy-path scenarios with a real workflow fixture (pays down "only 404 tested" debt)

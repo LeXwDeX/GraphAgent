@@ -14,11 +14,10 @@ import {
   useCommand,
   useWslServers,
 } from "@opencode-ai/app"
-import type { UpdaterState } from "@opencode-ai/app/updater"
 import * as Sentry from "@sentry/solid"
 import type { AsyncStorage } from "@solid-primitives/storage"
 import { MemoryRouter } from "@solidjs/router"
-import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createResource, onCleanup, onMount, Show } from "solid-js"
 import { render } from "solid-js/web"
 import pkg from "../../package.json"
 import { initI18n, t } from "./i18n"
@@ -58,9 +57,6 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 }
 
 void initI18n()
-
-const [updaterState, setUpdaterState] = createSignal<UpdaterState>({ status: "disabled" })
-void window.api.updater.subscribe(setUpdaterState)
 
 const deepLinkEvent = "opencode:deep-link"
 
@@ -194,12 +190,6 @@ const createPlatform = (): Platform => {
     },
 
     storage,
-
-    updater: {
-      state: updaterState,
-      check: () => window.api.updater.check(),
-      install: () => window.api.updater.install(),
-    },
 
     exportDebugLogs: () => window.api.exportDebugLogs(),
 

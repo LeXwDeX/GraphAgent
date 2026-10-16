@@ -324,6 +324,8 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 
 预构建 CLI 二进制（Linux / macOS / Windows，附 SHA256SUMS）发布在 [releases 页面](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases)。正式版从 `main` 构建；`oc` 安装器负责选择并安装版本。
 
+CLI、TUI、网页和 Desktop 均已停用内置应用更新。请通过安装器或 release 产物手动安装新版本。旧的 `autoupdate` 配置仍可读取，但不再生效；`opencode upgrade` 和 `POST /global/upgrade` 会明确返回更新已停用。
+
 发布验收维护两条相互独立的完整性边界：
 
 - **归档完整性（解包前）**：`oc` 安装器在解包前校验 release 的 `SHA256SUMS` 条目，不匹配则拒绝解包。若上游未提供 `SHA256SUMS`，则告警后继续安装（仅依赖 GitHub HTTPS 传输安全）。

@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.2",
-  "_lint_ratchet_note": "Ratchet lowered to 4750 after the reasoning-rewrite refactor removed the dead native-wire distillation pipeline and fixed the warnings on every touched line (4738 local, 0 errors). Previously lowered to 4850 after DAG-LOC-01: the new execution-location guards (dag/location.ts authority, DagLoop guard replacements, GoalLoop idle guard) and the dag-location-guards probe harness carry no net new warnings \u2014 the probe harness's `as never` fixture shims are file-scoped suppressed (mirrors dag-loop-guards.test.ts idiom), and two pre-existing `directory: process.cwd() as never` session-seed casts in dag-wake-integration/dag-adoption-step-races were replaced with plain strings (session.directory accepts them). CI lints ~3 extra install/platform-generated artifacts on an identical tree, adding ~10 same-category type-aware warnings (~4841 CI vs ~4831 local, 0 errors) \u2014 NOT new code warnings; 4850 keeps a small margin over the projected CI count. When you fix existing warnings locally, lower --max-warnings to match so the gate keeps tightening. See .oxlintrc.json header for the ratchet contract.",
+  "_lint_ratchet_note": "Ratchet lowered to 4735 for TUI responsiveness and updater retirement (4723 local, 0 errors), retaining the established roughly 10-warning CI artifact margin. Previously lowered to 4750 after the reasoning-rewrite refactor removed the dead native-wire distillation pipeline and fixed the warnings on every touched line (4738 local, 0 errors). Previously lowered to 4850 after DAG-LOC-01: the new execution-location guards (dag/location.ts authority, DagLoop guard replacements, GoalLoop idle guard) and the dag-location-guards probe harness carry no net new warnings \u2014 the probe harness's `as never` fixture shims are file-scoped suppressed (mirrors dag-loop-guards.test.ts idiom), and two pre-existing `directory: process.cwd() as never` session-seed casts in dag-wake-integration/dag-adoption-step-races were replaced with plain strings (session.directory accepts them). CI lints ~3 extra install/platform-generated artifacts on an identical tree, adding ~10 same-category type-aware warnings (~4841 CI vs ~4831 local, 0 errors) \u2014 NOT new code warnings; 4850 keeps a small margin over the projected CI count. When you fix existing warnings locally, lower --max-warnings to match so the gate keeps tightening. See .oxlintrc.json header for the ratchet contract.",
   "scripts": {
     "dev": "bun run --cwd packages/opencode --conditions=browser src/index.ts",
     "dev:desktop": "bun --cwd packages/desktop dev",
@@ -13,7 +13,7 @@
     "dev:console": "ulimit -n 10240 2>/dev/null; bun run --cwd packages/console/app dev",
     "dev:stats": "bun sst shell --stage=production -- bun run --cwd packages/stats/app dev",
     "dev:storybook": "bun --cwd packages/storybook storybook",
-    "lint": "oxlint --max-warnings=4750",
+    "lint": "oxlint --max-warnings=4735",
     "typecheck": "bun turbo typecheck",
     "upgrade-opentui": "bun run script/upgrade-opentui.ts",
     "postinstall": "bun run --cwd packages/core fix-node-pty",

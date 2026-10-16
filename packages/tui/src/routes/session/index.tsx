@@ -35,6 +35,7 @@ import {
   type SyntaxStyle,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
+import { PatchDiff } from "../../component/patch-diff"
 import type {
   AssistantMessage,
   Message,
@@ -174,6 +175,7 @@ const context = createContext<{
   showDetails: () => boolean
   showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
+  scroll: () => ScrollBoxRenderable | undefined
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
@@ -1189,6 +1191,7 @@ export function Session() {
           showDetails,
           showGenericToolOutput,
           diffWrapMode,
+          scroll: () => scroll,
           providers,
           sync,
           tui: tuiConfig,
@@ -2403,7 +2406,8 @@ function Edit(props: ToolProps) {
       <Match when={stringValue(props.metadata.diff) !== undefined}>
         <BlockTool title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
           <box paddingLeft={1}>
-            <diff
+            <PatchDiff
+              scroll={ctx.scroll}
               diff={diffContent()}
               view={view()}
               filetype={ft()}
@@ -2451,7 +2455,8 @@ function ApplyPatch(props: ToolProps) {
   function Diff(p: { diff: string; filePath: string }) {
     return (
       <box paddingLeft={1}>
-        <diff
+        <PatchDiff
+          scroll={ctx.scroll}
           diff={p.diff}
           view={view()}
           filetype={filetype(p.filePath)}

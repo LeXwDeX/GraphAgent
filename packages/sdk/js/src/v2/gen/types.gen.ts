@@ -728,6 +728,10 @@ export type SessionStatus =
     }
   | {
       type: "busy"
+      preparation?: {
+        stage: "memory" | "reasoning" | "tools"
+        startedAt: number
+      }
     }
 
 export type Goal = {
@@ -2069,7 +2073,7 @@ export type Config = {
   share?: "manual" | "auto" | "disabled"
   autoshare?: boolean
   /**
-   * Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications
+   * Deprecated compatibility setting; built-in application updates are disabled and this value is ignored
    */
   autoupdate?: boolean | "notify"
   disabled_providers?: Array<string>
