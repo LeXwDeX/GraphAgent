@@ -15,4 +15,30 @@ export const CommandExecuted = define({
   },
 })
 
-export const Definitions = inventory(CommandExecuted)
+export const HookStatus = define({
+  type: "session.hook.status",
+  schema: {
+    sessionID: SessionID,
+    hookID: Schema.String,
+    statusMessage: Schema.String,
+    phase: Schema.Literals(["started", "finished"]),
+  },
+})
+
+export const HookTerminal = define({
+  type: "session.hook.terminal",
+  schema: {
+    sessionID: SessionID,
+    sequence: Schema.String,
+  },
+})
+
+export const HookMessage = define({
+  type: "session.hook.message",
+  schema: {
+    sessionID: SessionID,
+    message: Schema.String,
+  },
+})
+
+export const Definitions = inventory(CommandExecuted, HookStatus, HookTerminal, HookMessage)

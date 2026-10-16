@@ -7,6 +7,7 @@ import type {
   WorkspaceAdapter as PluginWorkspaceAdapter,
 } from "@opencode-ai/plugin"
 import { Config } from "@/config/config"
+import { snapshotAgentHooks, recordPluginAgentHooks } from "@/config/agent-hooks"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 import { ServerAuth } from "@/server/auth"
 import { CodexAuthPlugin } from "./openai/codex"
@@ -258,6 +259,7 @@ export const layer = Layer.effect(
             },
           }),
         )
+        const hookOwners = new WeakMap<object, string>()
         for (const load of loaded) {
           if (!load) continue
 
@@ -277,11 +279,13 @@ export const layer = Layer.effect(
           // Derive compatibility from hooks that actually remain registered. An
           // empty successful return means DCP is disabled; a retained hook from a
           // partially failed legacy module is still active and must stay exclusive.
+          for (const hook of hooks.slice(hookStart)) hookOwners.set(hook, load.spec)
           knownExternalDcpDescriptor ??= activeKnownExternalDcp(load, hooks.slice(hookStart))
         }
 
         // Notify plugins of current config
         for (const hook of hooks) {
+          const beforeAgentHooks = snapshotAgentHooks(cfg)
           yield* Effect.tryPromise({
             try: () => Promise.resolve((hook as any).config?.(cfg)),
             catch: errorMessage,
@@ -289,6 +293,8 @@ export const layer = Layer.effect(
             Effect.tapError((error) => Effect.logError("plugin config hook failed", { error })),
             Effect.ignore,
           )
+          const owner = hookOwners.get(hook)
+          if (owner) recordPluginAgentHooks(cfg, beforeAgentHooks, owner)
         }
 
         const unsubscribe = yield* events.listen((event) => {

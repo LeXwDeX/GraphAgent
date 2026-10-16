@@ -46,6 +46,9 @@ import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
+import { SessionTurnHooks } from "@opencode-ai/core/session/turn-hooks"
+import { SessionCompactionHooks } from "@opencode-ai/core/session/compaction-hooks"
+import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
@@ -635,6 +638,309 @@ const expectBoundedOriginalCoreSummary = (request: LLMRequest) => {
 }
 
 describe("SessionRunnerLLM hot path", () => {
+  it.effect("cancelling an actual V2 run clears attention without reporting idle", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Synthetic pending request" }), resume: false })
+      responseStream = Stream.never
+      const states: string[] = []
+      const hooks = SessionTurnHooks.Service.of({
+        state: (_id, status) =>
+          Effect.sync(() => {
+            states.push(status)
+          }),
+        displayMode: (_id, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: () => Effect.succeed({}),
+        stop: () => Effect.succeed({}),
+        stopFailure: () => Effect.void,
+      })
+      const run = yield* runner
+        .run({ sessionID, force: true })
+        .pipe(Effect.provideService(SessionTurnHooks.Service, hooks), Effect.forkScoped)
+      yield* waitUntil(
+        Effect.sync(() => requests.length === 1),
+        "provider stream not started",
+      )
+      yield* Fiber.interrupt(run)
+      expect(states).toEqual(["busy", "cancelled"])
+    }),
+  )
+
+  it.effect("continues a V2 Stop block through a durable synthetic prompt", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Start" }), resume: false })
+      responses = [textTurn("first", "One"), textTurn("second", "Two")]
+      const stopCalls: Array<{ active: boolean; text?: string }> = []
+      const states: string[] = []
+      const hooks = SessionTurnHooks.Service.of({
+        state: (_id, status) =>
+          Effect.sync(() => {
+            states.push(status)
+          }),
+        displayMode: (_sessionID, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: () => Effect.succeed({}),
+        stop: (input) =>
+          Effect.sync(() => {
+            stopCalls.push({ active: input.stopHookActive, text: input.lastAssistantMessage })
+            return stopCalls.length === 1 ? { continueWith: "Hook says continue" } : {}
+          }),
+        stopFailure: () => Effect.void,
+      })
+      yield* runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionTurnHooks.Service, hooks))
+      expect(stopCalls).toEqual([
+        { active: false, text: "One" },
+        { active: true, text: "Two" },
+      ])
+      expect(states).toEqual(["busy", "idle"])
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[1]?.messages)).toContain("Hook says continue")
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Start" },
+        { type: "assistant", content: [{ type: "text", text: "One" }] },
+        { type: "user", text: "Hook says continue" },
+        { type: "assistant", content: [{ type: "text", text: "Two" }] },
+      ])
+    }),
+  )
+
+  it.effect("caps repeated V2 Stop continuations at eight", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Start" }), resume: false })
+      responses = Array.from({ length: 9 }, (_, index) => textTurn(`stop-${index}`, `Answer ${index}`))
+      const flags: boolean[] = []
+      const states: string[] = []
+      const hooks = SessionTurnHooks.Service.of({
+        state: (_id, status) =>
+          Effect.sync(() => {
+            states.push(status)
+          }),
+        displayMode: (_sessionID, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: () => Effect.succeed({}),
+        stop: (input) =>
+          Effect.sync(() => {
+            flags.push(input.stopHookActive)
+            return { continueWith: "Again" }
+          }),
+        stopFailure: () => Effect.void,
+      })
+      yield* runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionTurnHooks.Service, hooks))
+      expect(states).toEqual(["busy", "idle"])
+      expect(requests).toHaveLength(9)
+      expect(flags).toEqual([false, true, true, true, true, true, true, true, true])
+      expect((yield* session.context(sessionID)).filter((message) => message.type === "user")).toHaveLength(9)
+    }),
+  )
+
+  it.effect("resets the consecutive Stop cap after a tool call without losing stop_hook_active", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Start" }), resume: false })
+      responses = [
+        ...Array.from({ length: 8 }, (_, index) => textTurn(`before-tool-${index}`, `Answer ${index}`)),
+        toolTurn,
+        textTurn("after-tool-one", "After tool"),
+        textTurn("after-tool-two", "Final"),
+      ]
+      const flags: boolean[] = []
+      const hooks = SessionTurnHooks.Service.of({
+        displayMode: (_sessionID, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: () => Effect.succeed({}),
+        stop: (input) =>
+          Effect.sync(() => {
+            flags.push(input.stopHookActive)
+            return { continueWith: flags.length <= 9 ? "Again" : undefined }
+          }),
+        stopFailure: () => Effect.void,
+      })
+      yield* runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionTurnHooks.Service, hooks))
+      expect(requests).toHaveLength(11)
+      expect(flags).toEqual([false, true, true, true, true, true, true, true, true, true])
+    }),
+  )
+
+  it.effect("routes a provider-error event to StopFailure rather than Stop", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Start" }), resume: false })
+      response = [LLMEvent.providerError({ message: "private-provider-failure" })]
+      const calls: string[] = []
+      const hooks = SessionTurnHooks.Service.of({
+        displayMode: (_sessionID, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: () => Effect.succeed({}),
+        stop: () =>
+          Effect.sync(() => {
+            calls.push("Stop")
+            return {}
+          }),
+        stopFailure: (input) =>
+          Effect.sync(() => {
+            const error = input.error
+            if (
+              typeof error !== "object" ||
+              error === null ||
+              !("message" in error) ||
+              typeof error.message !== "string"
+            )
+              throw new Error("Provider error missing message")
+            calls.push(`StopFailure:${error.message}:${input.displayedError}`)
+          }),
+      })
+      yield* runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionTurnHooks.Service, hooks))
+      expect(calls).toEqual(["StopFailure:private-provider-failure:private-provider-failure"])
+    }),
+  )
+
+  it.effect("feeds PostToolBatch context into the next V2 model request", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Run echo" }), resume: false })
+      responses = [toolTurn, textTurn("after-batch", "Done")]
+      const batches: Array<Parameters<SessionTurnHooks.Interface["postToolBatch"]>[0]> = []
+      const hooks = SessionTurnHooks.Service.of({
+        displayMode: (_sessionID, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: (input) =>
+          Effect.sync(() => {
+            batches.push(input)
+            return { additionalContext: "Batch feedback" }
+          }),
+        stop: () => Effect.succeed({}),
+        stopFailure: () => Effect.void,
+      })
+      yield* runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionTurnHooks.Service, hooks))
+      expect(batches).toHaveLength(1)
+      expect(batches[0]?.toolCalls[0]).toMatchObject({
+        toolName: "echo",
+        toolUseID: "call-echo",
+        toolInput: { text: "Hi" },
+      })
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[1]?.messages)).toContain("Batch feedback")
+    }),
+  )
+
+  it.effect("defers one raw tool call and resumes its original ID before the next model request", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Run echo", hookMode: "noninteractive" }),
+        resume: false,
+      })
+      responses = [toolTurn, textTurn("after-defer", "Completed")]
+      let attempts = 0
+      const hooks = SessionConversationHooks.Service.of({
+        admit: () => Effect.void,
+        beforeTool: (input) =>
+          Effect.sync(() => {
+            attempts++
+            return attempts === 1 ? { toolInput: input.toolInput, deferred: true } : { toolInput: { text: "Changed" } }
+          }),
+        afterTool: () => Effect.succeed({}),
+      })
+      const resumedBatches: Array<Parameters<SessionTurnHooks.Interface["postToolBatch"]>[0]> = []
+      const turnHooks = SessionTurnHooks.Service.of({
+        displayMode: (_sessionID, mode) => Effect.succeed({ enabled: false, mode }),
+        display: (input) => Effect.succeed(input.delta),
+        postToolBatch: (input) =>
+          Effect.sync(() => {
+            resumedBatches.push(input)
+            return { additionalContext: "RESUMED_BATCH_CONTEXT" }
+          }),
+        stop: () => Effect.succeed({}),
+        stopFailure: () => Effect.void,
+      })
+      const run = () =>
+        runner
+          .run({ sessionID, force: true })
+          .pipe(
+            Effect.provideService(SessionConversationHooks.Service, hooks),
+            Effect.provideService(SessionTurnHooks.Service, turnHooks),
+          )
+      yield* run()
+      expect(requests).toHaveLength(1)
+      expect(executions).toEqual([])
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user" },
+        {
+          type: "assistant",
+          finish: "tool_deferred",
+          content: [
+            { type: "tool", id: "call-echo", state: { status: "running", deferred: true, input: { text: "Hi" } } },
+          ],
+        },
+      ])
+      expect(
+        (yield* durableEventTypes(sessionID)).filter((type) => type === "session.next.tool.success.1"),
+      ).toHaveLength(0)
+
+      const agentService = yield* AgentV2.Service
+      yield* agentService.transform((draft) =>
+        draft.update(AgentV2.defaultID, (agent) => {
+          agent.permissions = [{ action: "echo", resource: "*", effect: "deny" }]
+        }),
+      )
+      yield* run()
+      expect(attempts).toBe(1)
+      expect(requests).toHaveLength(1)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user" },
+        {
+          type: "assistant",
+          finish: "tool_deferred_unavailable",
+          content: [{ type: "tool", id: "call-echo", state: { status: "running", deferred: true } }],
+        },
+      ])
+      yield* agentService.transform((draft) =>
+        draft.update(AgentV2.defaultID, (agent) => {
+          agent.permissions = []
+        }),
+      )
+
+      yield* run()
+      expect(attempts).toBe(2)
+      expect(executions).toEqual(["Changed"])
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[1]?.messages)).toContain("Changed")
+      expect(JSON.stringify(requests[1]?.messages)).toContain("RESUMED_BATCH_CONTEXT")
+      expect(resumedBatches).toHaveLength(1)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user" },
+        {
+          type: "assistant",
+          content: [{ type: "tool", id: "call-echo", state: { status: "completed", input: { text: "Changed" } } }],
+        },
+        { type: "user", text: "RESUMED_BATCH_CONTEXT" },
+        { type: "assistant", content: [{ type: "text", text: "Completed" }] },
+      ])
+      const types = yield* durableEventTypes(sessionID)
+      expect(types).toContain("session.next.tool.deferred.1")
+      expect(types).toContain("session.next.tool.resuming.1")
+      expect(types).toContain("session.next.tool.input.replaced.1")
+    }),
+  )
+
   it.effect("folds duplicate built-in read, grep, and glob outputs only in the final outbound request", () =>
     Effect.gen(function* () {
       yield* setup
@@ -666,6 +972,57 @@ describe("SessionRunnerLLM hot path", () => {
         { type: "assistant", finish: "stop" },
       ])
       expect(executions).toEqual(["Hi"])
+    }),
+  )
+
+  it.effect("does not run PostCompact when the automatic summary fails or is interrupted", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      yield* seedFoldedCoreHistory(session)
+      let before = 0
+      let after = 0
+      const hooks = SessionCompactionHooks.Service.of({
+        before: () => Effect.sync(() => ({ blocked: (++before, false) })),
+        after: () =>
+          Effect.sync(() => {
+            after++
+            return {}
+          }),
+      })
+      const run = () =>
+        runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionCompactionHooks.Service, hooks))
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: `Summary failure ${"x".repeat(80_000)}` }),
+        resume: false,
+      })
+      responses = [[LLMEvent.providerError({ message: "summary failed" })], textTurn("fallback", "FALLBACK")]
+      requests.length = 0
+      yield* run()
+      expect(before).toBe(1)
+      expect(after).toBe(0)
+      expect(requests).toHaveLength(2)
+      expect((yield* session.context(sessionID)).some((message) => message.type === "compaction")).toBe(false)
+
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: `Interrupt summary ${"y".repeat(8_000)}` }),
+        resume: false,
+      })
+      requests.length = 0
+      responseStream = Stream.never
+      const fiber = yield* run().pipe(Effect.forkChild)
+      yield* waitUntil(
+        Effect.sync(() => requests.length >= 1),
+        "summary stream never started",
+      )
+      yield* Fiber.interrupt(fiber)
+      expect(after).toBe(0)
+      expect(
+        (yield* session.context(sessionID)).some((message) => message.type === "compaction" && !!message.summary),
+      ).toBe(false)
     }),
   )
 
@@ -835,7 +1192,7 @@ describe("SessionRunnerLLM hot path", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(1)
-      const userTexts = requests[0]!.messages
+      const userTexts = requests[0].messages
         .filter((message) => message.role === "user")
         .flatMap((message) =>
           message.content
@@ -939,7 +1296,7 @@ describe("SessionRunnerLLM hot path", () => {
         Effect.sync(() => requests.length >= 1),
         "provider stream never started",
       )
-      expect(Duration.toSeconds(requests[0]!.http!.timeout!)).toBe(1)
+      expect(Duration.toSeconds(requests[0].http!.timeout!)).toBe(1)
       // The tool call started and is stuck on the never-released gate; the
       // provider stream itself has finished (only the tool wait remains).
       yield* waitUntil(

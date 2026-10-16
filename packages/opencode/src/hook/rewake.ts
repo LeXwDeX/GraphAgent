@@ -20,7 +20,13 @@ import { Context, Effect } from "effect"
 import { SessionID } from "@/session/schema"
 
 export interface Interface {
-  readonly rewake: (input: { sessionID: SessionID; text: string; stopChain?: unknown }) => Effect.Effect<void>
+  readonly rewake: (input: {
+    sessionID: SessionID
+    text: string
+    stopChain?: unknown
+    /** Recheck the originating hook chain at durable V2 admission. */
+    valid?: () => Effect.Effect<boolean>
+  }) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/HookRewake") {}

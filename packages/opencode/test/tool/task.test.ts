@@ -186,6 +186,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const agent = yield* Agent.Service
         const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
         const registry = yield* ToolRegistry.Service
         const get = Effect.fnUntraced(function* () {
           const tools = yield* registry.tools({ ...ref, agent: build })
@@ -228,6 +229,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const agent = yield* Agent.Service
         const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
         const registry = yield* ToolRegistry.Service
         const get = Effect.fnUntraced(function* () {
           const tools = yield* registry.tools({ ...ref, agent: build })
@@ -263,6 +265,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const agent = yield* Agent.Service
         const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
         const registry = yield* ToolRegistry.Service
         const description =
           (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === WorkflowTool.id)?.description ??
@@ -313,6 +316,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const agent = yield* Agent.Service
         const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
         const registry = yield* ToolRegistry.Service
         const description =
           (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === WorkflowTool.id)?.description ??
@@ -345,6 +349,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const agent = yield* Agent.Service
         const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
         const registry = yield* ToolRegistry.Service
         const tools = yield* registry.tools({ ...ref, agent: build })
         const taskDescription = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
@@ -367,28 +372,27 @@ describe("tool.task", () => {
     },
   )
 
-  it.instance(
-    "workflow worker_type catalog lists primary build and plan, task catalog does not",
-    () =>
-      Effect.gen(function* () {
-        const agent = yield* Agent.Service
-        const build = yield* agent.get("build")
-        const registry = yield* ToolRegistry.Service
-        const tools = yield* registry.tools({ ...ref, agent: build })
-        const taskDescription = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
-        const workflowDescription = tools.find((tool) => tool.id === WorkflowTool.id)?.description ?? ""
+  it.instance("workflow worker_type catalog lists primary build and plan, task catalog does not", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const build = yield* agent.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({ ...ref, agent: build })
+      const taskDescription = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
+      const workflowDescription = tools.find((tool) => tool.id === WorkflowTool.id)?.description ?? ""
 
-        // blocks compile coding/prototype to build and plan blocks to plan, so
-        // the workflow catalog must let the model name them explicitly
-        expect(workflowDescription).toContain("- build:")
-        expect(workflowDescription).toContain("- plan:")
-        expect(workflowDescription).toContain("- general:")
-        expect(workflowDescription).toContain("- explore:")
-        // hidden primaries stay hidden and the task catalog stays subagent-only
-        expect(workflowDescription).not.toContain("- compaction:")
-        expect(taskDescription).not.toContain("- build:")
-        expect(taskDescription).not.toContain("- plan:")
-      }),
+      // blocks compile coding/prototype to build and plan blocks to plan, so
+      // the workflow catalog must let the model name them explicitly
+      expect(workflowDescription).toContain("- build:")
+      expect(workflowDescription).toContain("- plan:")
+      expect(workflowDescription).toContain("- general:")
+      expect(workflowDescription).toContain("- explore:")
+      // hidden primaries stay hidden and the task catalog stays subagent-only
+      expect(workflowDescription).not.toContain("- compaction:")
+      expect(taskDescription).not.toContain("- build:")
+      expect(taskDescription).not.toContain("- plan:")
+    }),
   )
 
   it.instance(
@@ -397,6 +401,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const agent = yield* Agent.Service
         const build = yield* agent.get("build")
+        if (!build) throw new Error("Expected configured agent fixture")
         const registry = yield* ToolRegistry.Service
         const description =
           (yield* registry.tools({ ...ref, agent: build })).find((tool) => tool.id === TaskTool.id)?.description ?? ""
@@ -570,24 +575,26 @@ describe("tool.task", () => {
       let seen: SessionPrompt.PromptInput | undefined
       const promptOps = stubOps({ text: "created", onPrompt: (input) => (seen = input) })
 
-      const result = yield* def.execute(
-        {
-          description: "inspect bug",
-          prompt: "look into the cache key path",
-          subagent_type: "general",
-          task_id: "ses_missing",
-        },
-        {
-          sessionID: chat.id,
-          messageID: assistant.id,
-          agent: "build",
-          abort: new AbortController().signal,
-          extra: { promptOps },
-          messages: [],
-          metadata: () => Effect.void,
-          ask: () => Effect.void,
-        },
-      ).pipe(Effect.exit)
+      const result = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            task_id: "ses_missing",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
 
       const kids = yield* sessions.children(chat.id)
       expect(kids).toHaveLength(0)
@@ -609,38 +616,36 @@ describe("tool.task", () => {
           Effect.provideService(Session.Service, {
             ...sessions,
             get: (id) =>
-              id === child.id
-                ? failure === "defect"
-                  ? Effect.die(lookupError)
-                  : Effect.interrupt
-                : sessions.get(id),
+              id === child.id ? (failure === "defect" ? Effect.die(lookupError) : Effect.interrupt) : sessions.get(id),
           }),
         )
         const def = yield* tool.init()
-        const result = yield* def.execute(
-          {
-            description: "resume work",
-            prompt: "continue from the previous result",
-            subagent_type: "general",
-            task_id: child.id,
-          },
-          {
-            sessionID: chat.id,
-            messageID: assistant.id,
-            agent: "build",
-            abort: new AbortController().signal,
-            extra: {
-              promptOps: stubOps({
-                onPrompt: () => {
-                  prompted = true
-                },
-              }),
+        const result = yield* def
+          .execute(
+            {
+              description: "resume work",
+              prompt: "continue from the previous result",
+              subagent_type: "general",
+              task_id: child.id,
             },
-            messages: [],
-            metadata: () => Effect.void,
-            ask: () => Effect.void,
-          },
-        ).pipe(Effect.exit)
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: {
+                promptOps: stubOps({
+                  onPrompt: () => {
+                    prompted = true
+                  },
+                }),
+              },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
         expect((yield* sessions.children(chat.id)).map((item) => item.id)).toEqual([child.id])
         expect(prompted).toBe(false)
         expect(Exit.isFailure(result)).toBe(true)
@@ -1258,7 +1263,7 @@ describe("tool.task", () => {
 
       expect(result.metadata.background).not.toBe(true)
       expect(result.output).toContain('state="completed"')
-      expect((yield* sessions.children(chat.id))).toHaveLength(1)
+      expect(yield* sessions.children(chat.id)).toHaveLength(1)
     }),
   )
 
@@ -1298,7 +1303,11 @@ describe("tool.task", () => {
       expect(stringFalse.metadata.background).not.toBe(true)
       expect(nativeTrue.metadata.background).toBe(true)
 
-      const sessionIds = new Set([stringTrue.metadata.sessionId, stringFalse.metadata.sessionId, nativeTrue.metadata.sessionId])
+      const sessionIds = new Set([
+        stringTrue.metadata.sessionId,
+        stringFalse.metadata.sessionId,
+        nativeTrue.metadata.sessionId,
+      ])
       expect(sessionIds.size).toBe(3)
       expect((yield* sessions.children(chat.id)).length).toBe(3)
 

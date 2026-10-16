@@ -1,3 +1,7 @@
+import { isRecord } from "@/util/record"
+import { LocalPermissionStartup } from "@/permission/local-startup"
+import { AppRuntime } from "@/effect/app-runtime"
+import { HookClientLifecycle } from "@/hook/client-lifecycle"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 // CLI entry point for `opencode run` and `opencode --mini`.
@@ -315,6 +319,7 @@ export const RunCommand = effectCmd({
 
       const replay = args.replay === false ? false : args.replay || args["replay-limit"] !== undefined
 
+      const localSessionIDs = new Set<string>()
       const root = Filesystem.resolve(process.env.PWD ?? process.cwd())
       const directory = (() => {
         if (!args.dir) return args.attach ? undefined : root
@@ -402,11 +407,6 @@ export const RunCommand = effectCmd({
       message = resolveRunInput(message, piped) ?? ""
       const initialInput = resolveRunInput(rawMessage, piped)
 
-      if (message.trim().length === 0 && !args.command && !interactive) {
-        UI.error("You must provide a message or a command")
-        process.exit(1)
-      }
-
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
         process.exit(1)
@@ -438,7 +438,7 @@ export const RunCommand = effectCmd({
         return message.slice(0, 50) + (message.length > 50 ? "..." : "")
       }
 
-      async function session(sdk: OpencodeClient): Promise<SessionInfo | undefined> {
+      async function session(sdk: OpencodeClient, agent?: string): Promise<SessionInfo | undefined> {
         if (args.session) {
           const current = await sdk.session
             .get({
@@ -501,8 +501,13 @@ export const RunCommand = effectCmd({
         }
 
         const name = title()
+        const selectedModel = pick(args.model)
         const result = await sdk.session.create({
           title: name,
+          agent,
+          ...(selectedModel
+            ? { model: { providerID: selectedModel.providerID, id: selectedModel.modelID, variant: args.variant } }
+            : {}),
           permission: [...rules],
         })
         const id = result.data?.id
@@ -553,6 +558,7 @@ export const RunCommand = effectCmd({
           throw new Error("Failed to create session")
         }
 
+        if (!args.attach) localSessionIDs.add(id)
         void share(sdk, id).catch(() => {})
         return {
           id,
@@ -653,12 +659,14 @@ export const RunCommand = effectCmd({
       }
 
       async function execute(sdk: OpencodeClient) {
-        const sess = await session(sdk)
+        const localSelectedAgent = args.attach ? undefined : await pickAgent(sdk)
+        const sess = await session(sdk, localSelectedAgent)
         if (!sess?.id) {
           UI.error("Session not found")
           process.exit(1)
         }
         const sessionID = sess.id
+        if (!args.attach) localSessionIDs.add(sessionID)
         let dagHold: DagHold.DagHold | undefined
 
         function emit(type: string, data: Record<string, unknown>) {
@@ -679,7 +687,7 @@ export const RunCommand = effectCmd({
         function renderText(part: TextPart) {
           if (dagHold?.hasText(part)) return
           if (!emit("text", { part })) {
-            const text = part.text.trim()
+            const text = (part.displayText ?? part.text).trim()
             if (text) {
               if (!process.stdout.isTTY) process.stdout.write(text + EOL)
               else {
@@ -700,6 +708,7 @@ export const RunCommand = effectCmd({
           client: OpencodeClient,
           events: Awaited<ReturnType<typeof sdk.event.subscribe>>,
           stop: () => void,
+          keepAlive?: () => boolean,
         ) {
           const toggles = new Map<string, boolean>()
           let error: string | undefined
@@ -709,7 +718,9 @@ export const RunCommand = effectCmd({
           // mode keeps today's break-on-first-idle exit.
 
           try {
-            for await (const event of dagHold ? DagHold.pollEvents(events.stream, sessionID, stop) : events.stream) {
+            for await (const event of dagHold || keepAlive
+              ? DagHold.pollEvents(events.stream, sessionID, stop)
+              : events.stream) {
               if (
                 event.type === "message.updated" &&
                 event.properties.sessionID === sessionID &&
@@ -798,7 +809,8 @@ export const RunCommand = effectCmd({
                 if (event.properties.status.type === "busy") {
                   await dagHold?.onBusy()
                 }
-                if (event.properties.status.type === "idle" && (await dagHold?.onIdle()) !== "hold") break
+                if (event.properties.status.type === "idle" && (await dagHold?.onIdle()) !== "hold" && !keepAlive?.())
+                  break
               }
 
               if (event.type === "permission.asked") {
@@ -832,29 +844,120 @@ export const RunCommand = effectCmd({
         const client = args.attach ? attachSDK(cwd) : sdk
 
         // Validate agent if specified
-        const agent = await pickAgent(client)
+        const agent = args.attach ? await pickAgent(client) : localSelectedAgent
 
         await share(client, sessionID)
 
         if (!interactive) {
-          const subscription = new AbortController()
-          const events = await client.event.subscribe(undefined, { signal: subscription.signal })
-          const requestedMessageID = args.attach ? undefined : MessageID.ascending()
-          dagHold = args.attach
-            ? undefined
-            : await DagHold.createDagRunHold(client, sessionID, requestedMessageID, renderText)
-          const completed = loop(client, events, () => subscription.abort()).catch((e) => {
-            console.error(e)
-            process.exitCode = 1
-          })
+          const model = pick(args.model)
+          let subscription!: AbortController
+          let completed!: Promise<string | undefined | void>
+          let requestedMessageID: string | undefined
+          let requestPending = true
+          async function begin() {
+            subscription = new AbortController()
+            const events = await client.event.subscribe(undefined, { signal: subscription.signal })
+            requestedMessageID = args.attach || !hasInput ? undefined : MessageID.ascending()
+            dagHold = args.attach
+              ? undefined
+              : await DagHold.createDagRunHold(client, sessionID, requestedMessageID, renderText)
+            completed = loop(
+              client,
+              events,
+              () => subscription.abort(),
+              () => requestPending,
+            ).catch((error) => {
+              if (!subscription.signal.aborted) {
+                console.error(error)
+                process.exitCode = 1
+              }
+            })
+          }
           async function finish() {
             if (args.attach) return
-            const error = await completed
-            if (error) process.exitCode = 1
+            if (await completed) process.exitCode = 1
           }
-
+          function fail(error: unknown) {
+            requestPending = false
+            subscription.abort()
+            if (!emit("error", { error })) UI.error(formatRunError(error))
+            process.exitCode = 1
+          }
+          function deferred(
+            result: { info: import("@opencode-ai/sdk/v2").Message; parts: Array<unknown> } | null | undefined,
+          ) {
+            const reason = result?.info.role === "assistant" ? result.info.finish : undefined
+            if (!result || (reason !== "tool_deferred" && reason !== "tool_deferred_unavailable")) return false
+            const part = result.parts.find((value): value is import("@opencode-ai/sdk/v2").ToolPart => {
+              return (
+                isRecord(value) &&
+                value.type === "tool" &&
+                typeof value.callID === "string" &&
+                typeof value.tool === "string" &&
+                isRecord(value.state) &&
+                value.state.status === "pending" &&
+                value.state.deferred === true &&
+                isRecord(value.state.input)
+              )
+            })
+            emit("result", {
+              stop_reason: reason,
+              session_id: sessionID,
+              ...(part ? { deferred_tool_use: { id: part.callID, name: part.tool, input: part.state.input } } : {}),
+              is_error: reason === "tool_deferred_unavailable",
+            })
+            if (reason === "tool_deferred_unavailable") process.exitCode = 1
+            return true
+          }
+          const hasInput = Boolean(args.command || message.trim() || files.length)
+          await begin()
+          const initial = await client.session.resume({
+            sessionID,
+            hookMode: "noninteractive",
+            initialOnly: hasInput,
+            messageID: requestedMessageID,
+            model,
+            agent,
+            variant: args.variant,
+            ...(hasInput
+              ? {
+                  followup: args.command
+                    ? {
+                        kind: "command" as const,
+                        command: args.command,
+                        arguments: message,
+                        agent,
+                        model: args.model,
+                        variant: args.variant,
+                        parts: files,
+                      }
+                    : {
+                        kind: "prompt" as const,
+                        parts: [...files, { type: "text" as const, text: message }],
+                        agent,
+                        model,
+                        variant: args.variant,
+                      },
+                }
+              : {}),
+          })
+          if (initial.error) {
+            fail(initial.error)
+            return
+          }
+          if (initial.data) {
+            requestPending = false
+            if (deferred(initial.data)) {
+              subscription.abort()
+              await completed
+              return
+            }
+            await finish()
+            return
+          }
           if (args.command) {
             const result = await client.session.command({
+              hookMode: "noninteractive",
               sessionID,
               messageID: requestedMessageID,
               agent,
@@ -864,16 +967,16 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
-              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-              process.exitCode = 1
+              fail(result.error)
               return
             }
+            requestPending = false
             await finish()
+            deferred(result.data)
             return
           }
-
-          const model = pick(args.model)
           const result = await client.session.prompt({
+            hookMode: "noninteractive",
             sessionID,
             messageID: requestedMessageID,
             agent,
@@ -882,11 +985,12 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
-            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
-            process.exitCode = 1
+            fail(result.error)
             return
           }
+          requestPending = false
           await finish()
+          deferred(result.data)
           return
         }
 
@@ -917,61 +1021,96 @@ export const RunCommand = effectCmd({
         return
       }
 
-      if (interactive && !args.attach && !args.session && !args.continue) {
-        const model = pick(args.model)
-        const { runInteractiveLocalMode } = await import("./run/runtime")
-        const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
-          const { Server } = await import("@/server/server")
-          const request = new Request(input, init)
-          const headers = new Headers(request.headers)
-          const auth = ServerAuth.header()
-          if (auth) headers.set("Authorization", auth)
-          return Server.Default().app.fetch(new Request(request, { headers }))
-        }) as typeof globalThis.fetch
+      try {
+        if (interactive && !args.attach && !args.session && !args.continue) {
+          const model = pick(args.model)
+          const { runInteractiveLocalMode } = await import("./run/runtime")
+          const fetchFn = Object.assign(
+            async (input: RequestInfo | URL, init?: RequestInit) => {
+              const { Server } = await import("@/server/server")
+              const request = new Request(input, init)
+              const headers = new Headers(request.headers)
+              const auth = ServerAuth.header()
+              if (auth) headers.set("Authorization", auth)
+              const localRequest = new Request(request, { headers })
+              if (
+                args["dangerously-skip-permissions"] &&
+                localRequest.method === "POST" &&
+                new URL(localRequest.url).pathname === "/session"
+              )
+                LocalPermissionStartup.mark(localRequest)
+              return Server.Default().app.fetch(localRequest)
+            },
+            { preconnect: globalThis.fetch.preconnect },
+          )
 
-        try {
-          return await runInteractiveLocalMode({
-            directory: directory ?? root,
-            fetch: fetchFn,
-            resolveAgent: localAgent,
-            session,
-            share,
-            createSession: createFreshSession,
-            agent: args.agent,
-            model,
-            variant: args.variant,
-            replay,
-            replayLimit: args["replay-limit"],
-            files,
-            initialInput,
-            thinking,
-            backgroundSubagents: flags.experimentalBackgroundSubagents,
-            demo: args.demo,
-          })
-        } catch (error) {
-          dieInteractive(error)
+          try {
+            return await runInteractiveLocalMode({
+              directory: directory ?? root,
+              fetch: fetchFn,
+              resolveAgent: localAgent,
+              session,
+              share,
+              createSession: createFreshSession,
+              agent: args.agent,
+              model,
+              variant: args.variant,
+              replay,
+              replayLimit: args["replay-limit"],
+              files,
+              initialInput,
+              thinking,
+              backgroundSubagents: flags.experimentalBackgroundSubagents,
+              demo: args.demo,
+            })
+          } catch (error) {
+            dieInteractive(error)
+          }
         }
-      }
 
-      if (args.attach) {
-        const sdk = attachSDK(directory)
-        return await execute(sdk)
-      }
+        if (args.attach) {
+          const sdk = attachSDK(directory)
+          return await execute(sdk)
+        }
 
-      const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const { Server } = await import("@/server/server")
-        const request = new Request(input, init)
-        const headers = new Headers(request.headers)
-        const auth = ServerAuth.header()
-        if (auth) headers.set("Authorization", auth)
-        return Server.Default().app.fetch(new Request(request, { headers }))
-      }) as typeof globalThis.fetch
-      const sdk = createOpencodeClient({
-        baseUrl: "http://opencode.internal",
-        fetch: fetchFn,
-        directory,
-      })
-      await execute(sdk)
+        const fetchFn = Object.assign(
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            const { Server } = await import("@/server/server")
+            const request = new Request(input, init)
+            const headers = new Headers(request.headers)
+            const auth = ServerAuth.header()
+            if (auth) headers.set("Authorization", auth)
+            const localRequest = new Request(request, { headers })
+            if (args["dangerously-skip-permissions"] && localRequest.method === "POST") {
+              const pathname = new URL(localRequest.url).pathname
+              if (pathname === "/session") LocalPermissionStartup.mark(localRequest)
+              else if (args.session || args.continue || args.fork) {
+                const selected = /^\/session\/([^/]+)\/(message|prompt|prompt_async|command|resume)$/.exec(
+                  pathname,
+                )?.[1]
+                if (selected && localSessionIDs.has(selected)) LocalPermissionStartup.mark(localRequest, selected)
+              }
+            }
+            return Server.Default().app.fetch(localRequest)
+          },
+          { preconnect: globalThis.fetch.preconnect },
+        )
+        const sdk = createOpencodeClient({
+          baseUrl: "http://opencode.internal",
+          fetch: fetchFn,
+          directory,
+        })
+        await execute(sdk)
+      } finally {
+        for (const sessionID of localSessionIDs)
+          await AppRuntime.runPromise(
+            HookClientLifecycle.endLocalSession({
+              sessionID,
+              directory: directory ?? root,
+              reason: interactive ? "prompt_input_exit" : "other",
+            }).pipe(Effect.catchCause(() => Effect.void)),
+          )
+      }
     })
   }),
 })

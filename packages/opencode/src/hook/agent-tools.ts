@@ -5,8 +5,7 @@ import { ChildProcess } from "effect/unstable/process"
 import type { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { type Tool, tool, jsonSchema } from "ai"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import type { HookJSONOutput } from "./settings"
-import { HookOutputSchema } from "./schema"
+import { HookEvaluatorOutputSchema, type HookEvaluatorOutput } from "./schema"
 import { FORBIDDEN_META, parseReadonlyCommand, readonlyExecutable, whitelistReject } from "./readonly-command"
 
 export const __test__ = { whitelistReject, FORBIDDEN_META }
@@ -29,7 +28,7 @@ export interface BuildAgentToolsDeps {
   signal: AbortSignal
   cwd: string
   /** Mutable slot the synthetic_output tool writes to. Loop polls .value. */
-  captured: { value: HookJSONOutput | null }
+  captured: { value: HookEvaluatorOutput | null }
 }
 
 export function buildAgentTools(deps: BuildAgentToolsDeps): Record<string, Tool> {
@@ -222,11 +221,13 @@ export function buildAgentTools(deps: BuildAgentToolsDeps): Record<string, Tool>
 
   const synthetic_output = tool({
     description: "Emit the final hook decision and stop. Call this exactly once when ready to terminate.",
-    inputSchema: HookOutputSchema,
+    inputSchema: HookEvaluatorOutputSchema,
     execute: async (args: any) => {
       try {
         signal.throwIfAborted()
-        captured.value = HookOutputSchema.parse(args) as HookJSONOutput
+        const parsed = HookEvaluatorOutputSchema.parse(args)
+        if (!parsed.ok && !parsed.reason) throw new Error("reason is required when ok is false")
+        captured.value = parsed
         return { output: "ok" }
       } catch (e: any) {
         return { output: `Error: ${e?.message ?? String(e)}` }

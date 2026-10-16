@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Config } from "@/config/config"
+import { agentHookProvenance } from "@/config/agent-hooks"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Provider } from "@/provider/provider"
 
@@ -35,6 +36,9 @@ import { PluginV2 } from "@opencode-ai/core/plugin"
 export const Info = Schema.Struct({
   name: Schema.String,
   description: Schema.optional(Schema.String),
+  hooks: Schema.optional(Schema.Unknown),
+  hookOrigin: Schema.optional(Schema.String),
+  hookSource: Schema.optional(Schema.Literals(["project", "user", "plugin", "builtin"])),
   mode: Schema.Literals(["subagent", "primary", "all"]),
   native: Schema.optional(Schema.Boolean),
   hidden: Schema.optional(Schema.Boolean),
@@ -61,8 +65,14 @@ const GeneratedAgent = Schema.Struct({
   systemPrompt: Schema.String,
 })
 
+export interface PermissionPolicy {
+  native: PermissionV1.Rule[]
+  rules: PermissionV1.Rule[]
+}
+
 export interface Interface {
-  readonly get: (agent: string) => Effect.Effect<Info>
+  readonly permissionPolicy: (agent: string) => Effect.Effect<PermissionPolicy>
+  readonly get: (agent: string) => Effect.Effect<Info | undefined>
   readonly list: () => Effect.Effect<Info[]>
   readonly defaultInfo: () => Effect.Effect<Info>
   readonly defaultAgent: () => Effect.Effect<string>
@@ -135,7 +145,8 @@ export const layer = Layer.effect(
           },
         })
 
-        const user = Permission.fromConfig(cfg.permission ?? {})
+        // Configuration is resolved on every permission check, not captured in this cache.
+        const user: PermissionV1.Ruleset = []
 
         const agents: Record<string, Info> = {
           build: {
@@ -264,6 +275,10 @@ export const layer = Layer.effect(
           },
         }
 
+        const nativePermissions = Object.fromEntries(
+          Object.entries(agents).map(([name, agent]) => [name, structuredClone(agent.permission)]),
+        )
+
         for (const [key, value] of Object.entries(cfg.agent ?? {})) {
           if (value.disable) {
             delete agents[key]
@@ -279,6 +294,10 @@ export const layer = Layer.effect(
               native: false,
             }
           if (value.model) item.model = Provider.parseModel(value.model)
+          item.hooks = value.hooks ?? item.hooks
+          const hookProvenance = agentHookProvenance(cfg, key)
+          item.hookOrigin = hookProvenance?.origin
+          item.hookSource = hookProvenance?.source ?? "project"
           item.variant = value.variant ?? item.variant
           item.prompt = value.prompt ?? item.prompt
           item.description = value.description ?? item.description
@@ -309,13 +328,49 @@ export const layer = Layer.effect(
           )
         }
 
+        const permissionPolicy = Effect.fnUntraced(function* (agent: string): Effect.fn.Return<PermissionPolicy> {
+          const latest = yield* config.get()
+          const key = agents[agent]
+            ? agent
+            : (Object.entries(agents).find(([, item]) => item.name === agent)?.[0] ?? agent)
+          const native = nativePermissions[key] ?? defaults
+          let rules = Permission.merge(
+            native,
+            latest.permissions?.map((rule) => ({
+              permission: rule.action,
+              pattern: rule.resource,
+              action: rule.effect,
+            })) ?? Permission.fromConfig(latest.permission ?? {}),
+            Permission.fromConfig(latest.agent?.[key]?.permission ?? {}),
+          )
+          const explicit = rules.some(
+            (rule) =>
+              rule.permission === "external_directory" && rule.action === "deny" && rule.pattern === Truncate.GLOB,
+          )
+          if (!explicit)
+            rules = Permission.merge(rules, Permission.fromConfig({ external_directory: { [Truncate.GLOB]: "allow" } }))
+          return { native, rules }
+        })
+        const hydrate = Effect.fnUntraced(function* (info: Info, agent = info.name) {
+          const latest = yield* config.get()
+          const key = Object.entries(agents).find(([, item]) => item === info)?.[0] ?? agent
+          const provenance = agentHookProvenance(latest, key)
+          return {
+            ...info,
+            hooks: latest.agent?.[key]?.hooks,
+            hookOrigin: provenance?.origin,
+            hookSource: provenance?.source ?? "project",
+            permission: (yield* permissionPolicy(agent)).rules,
+          }
+        })
         const get = Effect.fnUntraced(function* (agent: string) {
-          return agents[agent]
+          const info = agents[agent] ?? Object.values(agents).find((item) => item.name === agent)
+          return info ? yield* hydrate(info, agent) : undefined
         })
 
         const list = Effect.fnUntraced(function* () {
           const cfg = yield* config.get()
-          return pipe(
+          const sorted = pipe(
             agents,
             values(),
             sortBy(
@@ -323,6 +378,7 @@ export const layer = Layer.effect(
               [(x) => x.name, "asc"],
             ),
           )
+          return yield* Effect.forEach(sorted, (agent) => hydrate(agent))
         })
 
         const defaultInfo = Effect.fnUntraced(function* () {
@@ -332,11 +388,11 @@ export const layer = Layer.effect(
             if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
             if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
             if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
-            return agent
+            return yield* hydrate(agent)
           }
           const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
           if (!visible) throw new Error("no primary visible agent found")
-          return visible
+          return yield* hydrate(visible)
         })
 
         const defaultAgent = Effect.fnUntraced(function* () {
@@ -345,6 +401,7 @@ export const layer = Layer.effect(
 
         return {
           get,
+          permissionPolicy,
           list,
           defaultInfo,
           defaultAgent,
@@ -353,6 +410,9 @@ export const layer = Layer.effect(
     )
 
     return Service.of({
+      permissionPolicy: Effect.fn("Agent.permissionPolicy")((agent: string) =>
+        InstanceState.useEffect(state, (s) => s.permissionPolicy(agent)),
+      ),
       get: Effect.fn("Agent.get")(function* (agent: string) {
         return yield* InstanceState.useEffect(state, (s) => s.get(agent))
       }),
@@ -397,12 +457,10 @@ export const layer = Layer.effect(
           messages: [
             ...(isOpenaiOauth
               ? []
-              : system.map(
-                  (item): ModelMessage => ({
-                    role: "system",
-                    content: item,
-                  }),
-                )),
+              : system.map((item): ModelMessage => ({
+                  role: "system",
+                  content: item,
+                }))),
             {
               role: "user",
               content: `Create an agent configuration based on this request: "${input.description}".\n\nIMPORTANT: The following identifiers already exist and must NOT be used: ${existing.map((i) => i.name).join(", ")}\n  Return ONLY the JSON object, no other text, do not wrap in backticks`,

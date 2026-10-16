@@ -1,3 +1,11 @@
+import { HookModelMetrics } from "@/hook/model-metrics"
+import { HookFileWatch } from "@/hook/file-watch"
+import { HookConfigChange } from "@/hook/config-change"
+import { HookSessionContext } from "@/hook/session-context"
+import { HookTranscript } from "@/hook/transcript"
+import { Skill } from "@/skill"
+import { HookLifecycle } from "@/hook/lifecycle"
+import { HookStartContext } from "@/hook/start-context"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Slug } from "@opencode-ai/core/util/slug"
@@ -454,7 +462,11 @@ export interface Interface {
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
-  readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
+  readonly setTitle: (input: {
+    sessionID: SessionID
+    title: string
+    source?: "custom" | "generated"
+  }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
@@ -537,6 +549,11 @@ export const layer: Layer.Layer<
     // deferred import resolves to the cached module instantly.
     const { SettingsHook } = yield* Effect.promise(() => import("@/hook/settings"))
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+    const hookSkills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
+    const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
+    const hookWatch = Option.getOrUndefined(yield* Effect.serviceOption(HookFileWatch.Service))
+    const hookConfig = Option.getOrUndefined(yield* Effect.serviceOption(HookConfigChange.Service))
+    const hookStart = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     // GOAL-FP-01-05: goal/dag/lease cleanup used to resolve via
     // Effect.serviceOption(Goal.Service), which yields None in the production
     // AppLayer — Goal.defaultLayer and Session.defaultLayer are
@@ -557,6 +574,7 @@ export const layer: Layer.Layer<
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
       title?: string
+      titleSource?: "custom" | "generated"
       agent?: string
       model?: Schema.Schema.Type<typeof Model>
       parentID?: SessionID
@@ -579,7 +597,7 @@ export const layer: Layer.Layer<
         title: input.title ?? (input.parentID ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
         agent: input.agent,
         model: input.model,
-        metadata: input.metadata,
+        metadata: { ...input.metadata, hookTitleSource: input.title ? (input.titleSource ?? "custom") : "generated" },
         permission: input.permission ? [...input.permission] : undefined,
         cost: 0,
         tokens: EmptyTokens,
@@ -662,14 +680,13 @@ export const layer: Layer.Layer<
     })
 
     const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const session = yield* get(sessionID)
       try {
         // `remove` needs to work in all cases, such as broken sessions that
         // run cleanup without instance state.
-        const hasInstance = yield* InstanceState.directory.pipe(
-          Effect.as(true),
-          Effect.catchCause(() => Effect.succeed(false)),
-        )
+        const currentInstance = yield* InstanceState.context.pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        const hasInstance = currentInstance !== undefined
 
         if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
         const kids = yield* children(sessionID)
@@ -677,16 +694,63 @@ export const layer: Layer.Layer<
           yield* remove(child.id)
         }
 
-        // SettingsHook: SessionEnd fires before session-scoped hook state is cleared
-        // (the trigger implementation clears seen-cache and session hooks after execution).
-        // It deliberately runs BEFORE the destructive steps below so the hook
-        // observes the session and its workflows while they still fully exist.
-        if (settingsHook) {
-          const seResult = yield* settingsHook
-            .trigger({ event: "SessionEnd", reason: "delete" }, { sessionID, transcriptPath: "" })
-            .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-          yield* landSystemMessages(seResult, { sessionID })
+        // A deletion ends only the attached top-level client session; child lifetime uses SubagentStop.
+        if (!session.parentID && callSettings && (!hookLifecycle || (yield* hookLifecycle.claimEnd(sessionID)))) {
+          const finish = Effect.gen(function* () {
+            const transcriptPath = yield* HookTranscript.materialize({
+              sessionID,
+              directory: session.directory,
+              messages: yield* api.messages({ sessionID }).pipe(Effect.orDie),
+            }).pipe(Effect.orDie)
+            const result = yield* callSettings.trigger(
+              { event: "SessionEnd", reason: "other" },
+              {
+                sessionID,
+                transcriptPath,
+                environment: yield* HookTranscript.environment(sessionID).pipe(Effect.orDie),
+              },
+            )
+            yield* landSystemMessages(result, { sessionID })
+          })
+          yield* finish.pipe(
+            Effect.timeout(yield* callSettings.sessionEndTimeout?.() ?? Effect.succeed(1500)),
+            Effect.catchTag("TimeoutError", () => Effect.void),
+            Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void)),
+          )
         }
+        const [{ Permission }, { InstanceStore }] = yield* Effect.promise(() =>
+          Promise.all([import("@/permission"), import("@/project/instance-store")]),
+        )
+        const permission = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
+        const instances = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
+        if (permission?.clearHookPolicy && (hasInstance || instances)) {
+          const clear = permission.clearHookPolicy(sessionID)
+          yield* currentInstance?.directory === session.directory || !instances
+            ? clear
+            : instances.provide({ directory: session.directory }, clear)
+        }
+        if (hasInstance || instances) {
+          const [{ SessionAttention }, { SessionStatus }] = yield* Effect.promise(() =>
+            Promise.all([import("@/notification/attention"), import("@/session/status")]),
+          )
+          const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
+          const status = Option.getOrUndefined(yield* Effect.serviceOption(SessionStatus.Service))
+          if (status?.clear || attention) {
+            const clearAttention = Effect.gen(function* () {
+              if (status?.clear) yield* status.clear(sessionID)
+              if (attention) yield* attention.clear(sessionID)
+            })
+            // Finalizers can outlive the InstanceStore layer. Reuse the captured
+            // directory context instead of loading it through a closed store.
+            yield* currentInstance?.directory === session.directory || !instances
+              ? clearAttention
+              : instances.provide({ directory: session.directory }, clearAttention)
+          }
+        }
+        if (callSettings?.clearSession) yield* callSettings.clearSession(sessionID)
+        if (hookWatch) yield* hookWatch.clear(sessionID)
+        if (hookConfig) yield* hookConfig.clear(sessionID)
+        yield* HookTranscript.clearEnvironment(sessionID).pipe(Effect.ignore)
         // Cleanup durable automation state BEFORE the Deleted publish: the
         // SessionProjector deletes the session row (and FK cascades wipe the
         // workflow rows) inside the Deleted publish transaction. Publishing
@@ -766,19 +830,17 @@ export const layer: Layer.Layer<
         yield* Effect.forEach(
           dagIDs,
           (dagID) =>
-            events
-              .remove(dagID)
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterrupts(cause)
-                    ? Effect.interrupt
-                    : Effect.logWarning("dag aggregate scrub failed during session remove", {
-                        sessionID,
-                        dagID,
-                        cause,
-                      }),
-                ),
+            events.remove(dagID).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.logWarning("dag aggregate scrub failed during session remove", {
+                      sessionID,
+                      dagID,
+                      cause,
+                    }),
               ),
+            ),
           { discard: true },
         )
       } catch (error) {
@@ -849,6 +911,7 @@ export const layer: Layer.Layer<
     })
 
     const fork = Effect.fn("Session.fork")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
+      const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const ctx = yield* InstanceState.context
       const original = yield* get(input.sessionID)
       const title = getForkedTitle(original.title)
@@ -858,6 +921,7 @@ export const layer: Layer.Layer<
         workspaceID: original.workspaceID,
         title,
         metadata: structuredClone(original.metadata),
+        titleSource: original.metadata?.hookTitleSource === "custom" ? "custom" : "generated",
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const cutoff = input.messageID ? msgs.find((msg) => msg.info.id === input.messageID) : undefined
@@ -907,6 +971,47 @@ export const layer: Layer.Layer<
           { behavior: "immediate" },
         )
         .pipe(Effect.orDie)
+      if (callSettings) {
+        const snapshot = yield* messages({ sessionID: session.id }).pipe(Effect.orDie)
+        const transcriptPath = yield* HookTranscript.materialize({
+          sessionID: session.id,
+          directory: ctx.directory,
+          messages: snapshot,
+        }).pipe(Effect.orDie)
+        const result = yield* callSettings.trigger(
+          {
+            event: "SessionStart",
+            source: "fork",
+            ...(yield* HookModelMetrics.forSession({
+              source: "fork",
+              sessionID: session.id,
+              title: session.title,
+              titleSource: session.metadata?.hookTitleSource,
+              model: original.model,
+              agent: original.agent,
+              history: snapshot,
+            })),
+          },
+          {
+            sessionID: session.id,
+            transcriptPath,
+            environmentFile: yield* HookTranscript.environmentFile(session.id).pipe(Effect.orDie),
+          },
+        )
+        yield* landSystemMessages(result, { sessionID: session.id })
+        let apply = HookSessionContext.applyStart({
+          session,
+          sessions: api,
+          settings: callSettings,
+          result,
+          startContext: hookStart,
+          reloadSkills: hookSkills?.reload(),
+        })
+        if (hookLifecycle) apply = apply.pipe(Effect.provideService(HookLifecycle.Service, hookLifecycle))
+        if (hookWatch) apply = apply.pipe(Effect.provideService(HookFileWatch.Service, hookWatch))
+        if (hookConfig) apply = apply.pipe(Effect.provideService(HookConfigChange.Service, hookConfig))
+        yield* apply
+      }
       return session
     })
 
@@ -929,8 +1034,16 @@ export const layer: Layer.Layer<
       yield* patch(sessionID, { time: { updated: Date.now() } }).pipe(Effect.orDie)
     })
 
-    const setTitle = Effect.fn("Session.setTitle")(function* (input: { sessionID: SessionID; title: string }) {
-      yield* patch(input.sessionID, { title: input.title }).pipe(Effect.orDie)
+    const setTitle = Effect.fn("Session.setTitle")(function* (input: {
+      sessionID: SessionID
+      title: string
+      source?: "custom" | "generated"
+    }) {
+      const current = yield* get(input.sessionID).pipe(Effect.orDie)
+      yield* patch(input.sessionID, {
+        title: input.title,
+        metadata: { ...current.metadata, hookTitleSource: input.source ?? "custom" },
+      }).pipe(Effect.orDie)
     })
 
     const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
@@ -1069,7 +1182,7 @@ export const layer: Layer.Layer<
       return Option.none<SessionV1.WithParts>()
     })
 
-    return Service.of({
+    const api: Interface = Service.of({
       list,
       listGlobal,
       create,
@@ -1097,6 +1210,7 @@ export const layer: Layer.Layer<
       updatePartDelta,
       findMessage,
     })
+    return api
   }),
 )
 
@@ -1118,6 +1232,11 @@ export const defaultLayer = layer.pipe(
   Layer.provide(SessionAutomationLease.defaultLayer),
   Layer.provide(Dag.defaultLayer),
   Layer.provide(ToolSourceLedger.defaultLayer),
+  Layer.provide(Skill.defaultLayer),
+  Layer.provide(HookLifecycle.defaultLayer),
+  Layer.provide(HookFileWatch.defaultLayer),
+  Layer.provide(HookConfigChange.defaultLayer),
+  Layer.provide(HookStartContext.defaultLayer),
 )
 
 const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function* (
@@ -1263,6 +1382,11 @@ export function* listGlobal(input?: {
 }
 
 export const node = LayerNode.make(layer, [
+  Skill.node,
+  HookLifecycle.node,
+  HookFileWatch.node,
+  HookConfigChange.node,
+  HookStartContext.node,
   BackgroundJob.node,
   RuntimeFlags.node,
   Database.node,

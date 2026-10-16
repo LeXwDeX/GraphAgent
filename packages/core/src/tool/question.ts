@@ -1,3 +1,4 @@
+import { markPermissionRewrite } from "./permission-rewrite"
 export * as QuestionTool from "./question"
 
 import { ToolFailure } from "@opencode-ai/llm"
@@ -42,44 +43,46 @@ export const layer = Layer.effectDiscard(
 
     yield* tools
       .register({
-        [name]: Tool.make({
-          description,
-          input: Input,
-          output: Output,
-          toModelOutput: ({ input, output }) => [
-            { type: "text", text: toModelOutput(input.questions, output.answers, output.timedOut, output.rejected) },
-          ],
-          execute: (input, context) =>
-            permission
-              .assert({
-                action: "question",
-                resources: ["*"],
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
-              })
-              .pipe(
-                Effect.mapError(() => new ToolFailure({ message: "Permission denied: question" })),
-                Effect.andThen(
-                  question
-                    .ask({
-                      sessionID: context.sessionID,
-                      questions: input.questions,
-                      tool: { messageID: context.assistantMessageID, callID: context.toolCallID },
-                    })
-                    .pipe(
-                      Effect.map((answers) => ({ answers })),
-                      Effect.catchTag("QuestionV2.TimedOutError", () =>
-                        Effect.succeed({ answers: [], timedOut: true as const }),
+        [name]: markPermissionRewrite(
+          Tool.make({
+            description,
+            input: Input,
+            output: Output,
+            toModelOutput: ({ input, output }) => [
+              { type: "text", text: toModelOutput(input.questions, output.answers, output.timedOut, output.rejected) },
+            ],
+            execute: (input, context) =>
+              permission
+                .assert({
+                  action: "question",
+                  resources: ["*"],
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                })
+                .pipe(
+                  Effect.mapError(() => new ToolFailure({ message: "Permission denied: question" })),
+                  Effect.andThen(
+                    question
+                      .ask({
+                        sessionID: context.sessionID,
+                        questions: input.questions,
+                        tool: { messageID: context.assistantMessageID, callID: context.toolCallID },
+                      })
+                      .pipe(
+                        Effect.map((answers) => ({ answers })),
+                        Effect.catchTag("QuestionV2.TimedOutError", () =>
+                          Effect.succeed({ answers: [], timedOut: true as const }),
+                        ),
+                        Effect.catchTag("QuestionV2.RejectedError", () =>
+                          Effect.succeed({ answers: [], rejected: true as const }),
+                        ),
+                        Effect.orDie,
                       ),
-                      Effect.catchTag("QuestionV2.RejectedError", () =>
-                        Effect.succeed({ answers: [], rejected: true as const }),
-                      ),
-                      Effect.orDie,
-                    ),
+                  ),
                 ),
-              ),
-        }),
+          }),
+        ),
       })
       .pipe(Effect.orDie)
   }),

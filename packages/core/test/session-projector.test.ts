@@ -51,6 +51,51 @@ const assistantRow = (
 }
 
 describe("SessionProjector", () => {
+  it.effect("persists display text separately from canonical assistant text", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const assistantMessageID = SessionMessage.ID.make("msg_display_separate")
+      yield* db.insert(SessionMessageTable).values(assistantRow(assistantMessageID, 1)).run().pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      const base = { sessionID, assistantMessageID, timestamp: DateTime.makeUnsafe(3), textID: "text-1" }
+      yield* events.publish(SessionEvent.Text.Started, base)
+      yield* events.publish(SessionEvent.Text.Ended, { ...base, text: "canonical secret" })
+      yield* events.publish(SessionEvent.Text.DisplayUpdated, { ...base, displayText: "redacted" })
+      const row = yield* db
+        .select()
+        .from(SessionMessageTable)
+        .where(eq(SessionMessageTable.id, assistantMessageID))
+        .get()
+        .pipe(Effect.orDie)
+      expect(row).toBeDefined()
+      const message = Schema.decodeUnknownSync(SessionMessage.Message)({ ...row!.data, id: row!.id, type: row!.type })
+      expect(message.type).toBe("assistant")
+      if (message.type !== "assistant") return
+      expect(message.content.find((part) => part.type === "text")).toMatchObject({
+        type: "text",
+        text: "canonical secret",
+        displayText: "redacted",
+      })
+    }),
+  )
+
   it.effect("skips part updates whose parent message no longer exists", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

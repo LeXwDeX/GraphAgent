@@ -1,4 +1,7 @@
+import { decodeJsonRecord } from "../lib/hook-json"
 import { SessionHooks } from "@/hook/session-hooks"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -114,10 +117,11 @@ const providerCfg = (url: string) => ({
 // the Task result handed to the parent is the subagent's FINAL answer.
 it.live("SubagentStop continuation result is returned to the parent", () =>
   provideTmpdirServer(
-    Effect.fnUntraced(function* ({ llm }) {
+    Effect.fnUntraced(function* ({ dir, llm }) {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const hooks = yield* SessionHooks.Service
+      const audit = path.join(dir, "subagent-stop.jsonl")
       const session = yield* sessions.create({
         title: "Subagent stop continuation",
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
@@ -127,7 +131,7 @@ it.live("SubagentStop continuation result is returned to the parent", () =>
         hooks: [
           {
             type: "command",
-            command: `grep -q '"stop_hook_active":true' || printf '%s' '{"decision":"block","reason":"also verify the result"}'`,
+            command: `tee -a ${JSON.stringify(audit)} | grep -q '"stop_hook_active":true' || printf '%s' '{"decision":"block","reason":"also verify the result"}'`,
           },
         ],
       })
@@ -140,6 +144,17 @@ it.live("SubagentStop continuation result is returned to the parent", () =>
       const parentFollowUp = JSON.stringify((yield* llm.inputs)[3])
       expect(parentFollowUp).toContain("FINAL-VERIFIED-SUB-ANSWER")
       expect(parentFollowUp).not.toContain("STALE-FIRST-SUB-ANSWER")
+      const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
+        .trim()
+        .split("\n")
+        .map((line) => decodeJsonRecord(line))
+      expect(rows).toHaveLength(2)
+      expect(
+        rows.every(
+          (row) =>
+            row.session_id === session.id && Array.isArray(row.background_tasks) && Array.isArray(row.session_crons),
+        ),
+      ).toBe(true)
     }),
     { git: true, config: providerCfg },
   ),

@@ -8,7 +8,8 @@ import { Database } from "@opencode-ai/core/database/database"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
-import { nativeHookCommand } from "../fixture/claude-hook"
+import { hookCommand, nativeHookCommand } from "../fixture/claude-hook"
+import fs from "node:fs/promises"
 
 const it = testEffect(
   SettingsHook.layer.pipe(
@@ -29,24 +30,35 @@ const payloadFor = (event: (typeof EVENTS)[number], toolName: string, toolInput:
 }
 
 // Registers a native-format and a claude-code-format command hook, triggers the payload and
-// returns the envelope each of them received on stdin.
+// returns the envelope each of them received on stdin. The same command must run
+// once per distinct input format; only fully equivalent handlers are deduplicated.
 const capture = (payload: HookPayload) =>
   Effect.gen(function* () {
+    const test = yield* TestInstance
     const hooks = yield* SettingsHook.Service
     const store = yield* SessionHooks.Service
     const id = SessionID.descending()
+    const audit = path.join(test.directory, `hook-cwd-${id}.jsonl`)
+    const command = hookCommand(`
+      const input = JSON.parse(await Bun.stdin.text());
+      const fs = await import('node:fs/promises');
+      await fs.appendFile(${JSON.stringify(audit)}, JSON.stringify(input) + '\\n');
+    `)
     yield* store.add(id, {
       event: payload.event,
       matcher: "*",
       hooks: [
-        { type: "command", command: nativeHookCommand },
-        { type: "command", command: nativeHookCommand + " # claude", inputFormat: "claude-code" },
+        { type: "command", command, inputFormat: "opencode" },
+        { type: "command", command, inputFormat: "claude-code" },
       ],
     })
-    const result = yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
-    // Identical envelopes (same tool name casing, same cwd) are deduplicated into one context.
-    expect(result.additionalContexts.length).toBeGreaterThan(0)
-    return result.additionalContexts.map((text) => JSON.parse(text.slice("NATIVE_CONTEXT:".length)))
+    yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
+    return yield* Effect.promise(async () =>
+      (await fs.readFile(audit, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    )
   })
 
 describe("hook envelope cwd follows bash workdir", () => {
@@ -60,7 +72,9 @@ describe("hook envelope cwd follows bash workdir", () => {
           expect(envelope.cwd).toBe(workdir)
           expect(envelope.tool_input.workdir).toBe(workdir)
         }
-        expect(envelopes.map((e) => e.tool_name)).toEqual(["bash", "Bash"])
+        expect(
+          envelopes.map((e) => e.tool_name).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+        ).toEqual(["Bash", "bash"])
       }),
     )
   }
@@ -111,7 +125,10 @@ describe("hook envelope cwd follows bash workdir", () => {
       const store = yield* SessionHooks.Service
       const id = SessionID.descending()
       yield* store.add(id, { event: "UserPromptSubmit", hooks: [{ type: "command", command: nativeHookCommand }] })
-      const result = yield* hooks.trigger({ event: "UserPromptSubmit", prompt: "hi" }, { sessionID: id, transcriptPath: "" })
+      const result = yield* hooks.trigger(
+        { event: "UserPromptSubmit", prompt: "hi" },
+        { sessionID: id, transcriptPath: "" },
+      )
       expect(JSON.parse(result.additionalContexts[0].slice("NATIVE_CONTEXT:".length)).cwd).toBe(test.directory)
     }),
   )

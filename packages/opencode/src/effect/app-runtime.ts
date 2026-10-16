@@ -1,3 +1,14 @@
+import { SessionAttention } from "@/notification/attention"
+import { HookAttentionHost } from "@/notification/attention-host"
+import { Notification } from "@/notification"
+import { HookCwd } from "@/hook/cwd"
+import { HookModelSwitch } from "@/hook/model-switch"
+import { HookV2Conversation } from "@/hook/v2-conversation"
+import { HookV2Turn } from "@/hook/v2-turn"
+import { HookV2Compaction } from "@/hook/v2-compaction"
+import { HookV2Lifecycle } from "@/hook/v2-lifecycle"
+import { HookTodo } from "@/hook/todo"
+import { HookConfigChange } from "@/hook/config-change"
 import { Layer, ManagedRuntime } from "effect"
 import { attach } from "./run-service"
 import * as Observability from "@opencode-ai/core/observability"
@@ -52,6 +63,8 @@ import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
+import { HookLifecycle } from "@/hook/lifecycle"
+import { HookFileWatch } from "@/hook/file-watch"
 import { SettingsHook } from "@/hook/settings"
 import { HookRewakeLive } from "@/hook/rewake-live"
 import { Goal } from "@/goal/goal"
@@ -66,7 +79,7 @@ import { EventResidueSweep } from "@opencode-ai/core/event/residue-sweep"
 import { Memory } from "@/memory/memory"
 import { ToolSourceLedger } from "@/session/tool-source-ledger"
 
-export const AppLayer = Layer.mergeAll(
+const BaseAppLayer = Layer.mergeAll(
   Layer.mergeAll(
     Npm.defaultLayer,
     FSUtil.defaultLayer,
@@ -126,6 +139,9 @@ export const AppLayer = Layer.mergeAll(
     HookStartContext.defaultLayer,
   ),
 ).pipe(
+  Layer.provideMerge(HookLifecycle.defaultLayer),
+  Layer.provideMerge(HookFileWatch.defaultLayer),
+  Layer.provideMerge(HookConfigChange.defaultLayer),
   Layer.provideMerge(Ripgrep.defaultLayer),
   Layer.provideMerge(InstanceLayer.layer),
   Layer.provideMerge(Observability.layer),
@@ -149,7 +165,20 @@ export const AppLayer = Layer.mergeAll(
   // soft-degrading — never blocks or fails startup.
   Layer.provideMerge(EventResidueSweep.defaultLayer),
   Layer.provideMerge(SettingsHook.defaultLayer),
+  Layer.provideMerge(Notification.defaultLayer),
+  Layer.provideMerge(SessionAttention.defaultLayer),
 )
+
+export const AppLayer = Layer.mergeAll(
+  HookAttentionHost.layer,
+  HookCwd.layer,
+  HookTodo.layer,
+  HookModelSwitch.layer,
+  HookV2Conversation.layer,
+  HookV2Turn.layer,
+  HookV2Compaction.layer,
+  HookV2Lifecycle.layer,
+).pipe(Layer.provideMerge(BaseAppLayer))
 
 const rt = ManagedRuntime.make(AppLayer, { memoMap })
 type Runtime = Pick<typeof rt, "runSync" | "runPromise" | "runPromiseExit" | "runFork" | "runCallback" | "dispose">

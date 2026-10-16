@@ -1,7 +1,9 @@
 export * as SkillV2 from "./skill"
 
 import path from "path"
-import { Context, Effect, Layer, Schema, Types } from "effect"
+import { Global } from "./global"
+import { SourceProvenance } from "./session/source-provenance"
+import { Context, Effect, Layer, Schema, Types, Option } from "effect"
 import { Skill } from "@opencode-ai/schema/skill"
 import { AgentV2 } from "./agent"
 import { ConfigMarkdown } from "./config/markdown"
@@ -33,6 +35,7 @@ const Frontmatter = Schema.Struct({
   name: Schema.String.pipe(Schema.optional),
   description: Schema.String.pipe(Schema.optional),
   slash: Schema.Boolean.pipe(Schema.optional),
+  hooks: Schema.Record(Schema.String, Schema.Any).pipe(Schema.optional),
 })
 const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter)
 
@@ -56,6 +59,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const discovery = yield* SkillDiscovery.Service
+    const global = Option.getOrUndefined(yield* Effect.serviceOption(Global.Service))
     const fs = yield* FSUtil.Service
 
     const state = State.create<Data, Draft>({
@@ -91,13 +95,28 @@ export const layer = Layer.effect(
                 ? path.basename(filepath, ".md")
                 : undefined
           if (!name) continue
-          skills.push({
+          const skill: Info = {
             name,
             description: frontmatter.description,
             slash: frontmatter.slash,
+            hooks: frontmatter.hooks,
             location: AbsolutePath.make(filepath),
             content: markdown.content,
-          })
+          }
+          SourceProvenance.setSkill(
+            skill,
+            SourceProvenance.skillSource(source) ?? {
+              origin: filepath,
+              source:
+                source.type === "directory" &&
+                global !== undefined &&
+                !path.relative(global.config, source.path).startsWith("..") &&
+                !path.isAbsolute(path.relative(global.config, source.path))
+                  ? "user"
+                  : "project",
+            },
+          )
+          skills.push(skill)
         }
       }
       return skills
@@ -119,7 +138,11 @@ export const layer = Layer.effect(
 
     return Service.of({
       transform: state.transform,
-      reload: state.reload,
+      reload: () =>
+        Effect.gen(function* () {
+          cache.clear()
+          yield* state.reload()
+        }),
       sources: Effect.fn("SkillV2.sources")(function* () {
         return state.get().sources
       }),

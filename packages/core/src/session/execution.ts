@@ -9,6 +9,12 @@ export interface Interface {
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
   readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  /** Land background hook feedback as durable synthetic context, then force this V2 runner. Returns false for a non-V2 session. */
+  readonly rewake?: (input: {
+    sessionID: SessionSchema.ID
+    text: string
+    valid: () => Effect.Effect<boolean>
+  }) => Effect.Effect<boolean>
   /** Interrupt active work owned by this process. Idle interruption is a no-op. */
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
 }

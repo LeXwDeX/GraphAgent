@@ -47,7 +47,10 @@ const it = testEffect(
       list: () => Effect.succeed([]),
       trigger,
     }),
-    Layer.mock(Permission.Service, { ask: () => Effect.void }),
+    Layer.mock(Permission.Service, {
+      ask: () => Effect.void,
+      hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
+    }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([workflowDefinition, taskDefinition, agentDefinition]),
@@ -66,6 +69,7 @@ describe("workflow child boundary", () => {
     Effect.gen(function* () {
       const agents = yield* Agent.Service
       const build = yield* agents.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
       const parentID = SessionID.make("ses_workflow_tool_parent")
       const parentTools = yield* resolvedToolIDs(build, session(parentID))
       const childTools = yield* resolvedToolIDs(build, session(SessionID.make("ses_workflow_tool_child"), parentID))

@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { asc } from "drizzle-orm"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
@@ -8,6 +8,7 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionTable, TodoTable } from "@opencode-ai/core/session/sql"
+import { SessionTodoHooks } from "@opencode-ai/core/session/todo-hooks"
 import { SessionTodo } from "@opencode-ai/core/session/todo"
 import { testEffect } from "./lib/effect"
 
@@ -90,3 +91,75 @@ describe("SessionTodo", () => {
     }),
   )
 })
+
+describe("Todo lifecycle preflight", () => {
+  it.effect("stable bulk task identities survive reordering, priority and status changes", () =>
+    Effect.sync(() => {
+      const before = [
+        { content: "alpha", status: "pending" },
+        { content: "beta", status: "in_progress" },
+        { content: "alpha", status: "pending" },
+      ]
+      const old = SessionTodoHooks.identified(sessionID, before)
+      const next = SessionTodoHooks.identified(sessionID, [before[1], { ...before[0], status: "completed" }, before[2]])
+      expect(next.map((item) => item.id)).toEqual([old[1].id, old[0].id, old[2].id])
+      expect(SessionTodoHooks.changes(sessionID, before, next)).toEqual([
+        { event: "TaskCompleted", sessionID, taskID: old[0].id, subject: "alpha" },
+      ])
+      expect(
+        SessionTodoHooks.changes(sessionID, [], [{ content: "new", status: "completed" }]).map((item) => item.event),
+      ).toEqual(["TaskCreated", "TaskCompleted"])
+    }),
+  )
+  it.effect("a later veto preserves the entire previous real database list and publishes no update", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const todos = yield* SessionTodo.Service
+      const previous = [{ content: "kept", status: "pending", priority: "high" }]
+      yield* todos.update({ sessionID, todos: previous })
+      const calls: SessionTodoHooks.Change[] = []
+      const result = yield* todos
+        .update({ sessionID, todos: [{ content: "new", status: "completed", priority: "low" }] })
+        .pipe(
+          Effect.provideService(SessionTodoHooks.Service, {
+            check: (change) =>
+              Effect.sync(() => {
+                calls.push(change)
+                return change.event === "TaskCompleted" ? { blocked: { reason: "actual policy veto" } } : {}
+              }),
+          }),
+          Effect.exit,
+        )
+      expect(result._tag).toBe("Failure")
+      expect(calls.map((change) => change.event)).toEqual(["TaskCreated", "TaskCompleted"])
+      expect(yield* todos.get(sessionID)).toEqual(previous)
+    }),
+  )
+})
+
+it.effect("Todo preflight serializes concurrent replacements and releases its lock on interruption", () =>
+  Effect.gen(function* () {
+    yield* setup
+    const todos = yield* SessionTodo.Service
+    const entered = yield* Deferred.make<void>()
+    const blocked = yield* Deferred.make<void>()
+    const hook = {
+      check: (change: SessionTodoHooks.Change) =>
+        change.subject === "first"
+          ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(blocked)), Effect.as({}))
+          : Effect.succeed({}),
+    }
+    const first = yield* todos
+      .update({ sessionID, todos: [{ content: "first", status: "pending", priority: "low" }] })
+      .pipe(Effect.provideService(SessionTodoHooks.Service, hook), Effect.forkScoped)
+    yield* Deferred.await(entered)
+    // A normal DB read remains available while the external hook is suspended.
+    expect(yield* todos.get(sessionID)).toEqual([])
+    const second = yield* todos
+      .update({ sessionID, todos: [{ content: "second", status: "pending", priority: "high" }] })
+      .pipe(Effect.provideService(SessionTodoHooks.Service, hook), Effect.forkScoped)
+    yield* Fiber.interrupt(first)
+    yield* Fiber.join(second)
+    expect(yield* todos.get(sessionID)).toEqual([{ content: "second", status: "pending", priority: "high" }])
+  }),
+)

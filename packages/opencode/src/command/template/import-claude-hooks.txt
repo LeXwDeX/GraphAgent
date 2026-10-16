@@ -46,10 +46,7 @@ For each detected hook entry, present it to the user for review:
 Import this hook? [y/n/edit]
 ```
 
-Ask the user for each hook:
-- **y** = import as-is
-- **n** = skip
-- **edit** = allow user to modify before importing
+For candidates not covered by existing import authorization, ask whether to import, skip, or edit. Batch related choices; do not re-ask about candidates the user has already authorized.
 
 ### 3. Handle path migration
 
@@ -98,10 +95,10 @@ Example migration:
 Claude Code hook scripts read `tool_name` values such as `Bash`/`Read`/`Grep` and keys such as `file_path` from stdin. OpenCode uses `bash`/`read`/`grep` and `filePath`. Command hooks can opt into Claude Code naming:
 
 - For each approved `"type": "command"` hook, add `"inputFormat": "claude-code"` unless the user chose during editing to adapt the script to OpenCode naming.
-- Only command hooks support this field — do not add it to `mcp` / `http` / `prompt` / `agent` entries.
+- Only command hooks support this field — do not add it to `mcp_tool` / `mcp` / `http` / `prompt` / `agent` entries.
 - Never modify previously existing entries already present in the target hooks.json; only entries imported in this run are tagged.
 
-Other hook types receive no translation. For each imported `mcp` / `http` / `prompt` / `agent` entry, warn that stdin-envelope compatibility was not verified and needs manual review. Do not imply that importing it verifies compatibility.
+Other handler types do not use the command-only naming adapter. Inspect their actual field references and MCP input templates, preserve supported definitions, and verify them with their real transport. Importing alone does not verify behavior.
 
 ### 4. Write to hooks.json
 
@@ -142,54 +139,25 @@ After migration, report:
 - Number of hooks skipped
 - Any hooks that were edited during migration
 - Number of command hooks tagged `inputFormat: "claude-code"`
-- For every imported non-command hook: a warning that stdin-envelope compatibility was not verified and needs manual evaluation
+- Which real transports/operations were verified and which remain untested
 - Deprecation warnings (if hooks were found in .opencode/settings.json)
 - Keep `.claude/settings*.json`, scripts, and skills in place during migration. Remove specific confirmed-unused Claude hook configuration only when the user explicitly requests removal. Do not recommend deleting the entire `.claude/` directory.
 - After the final write, wait at least the 2-second poll interval plus the 500-millisecond debounce before checking reload. The system prompt's **Active Hooks** block confirms loaded configuration only; it does not prove behavior. Trigger each hook and inspect its input/output before calling migration done when behavior validation is requested.
 
 ## Hooks.json Format Reference
 
-OpenCode's `hooks.json` uses top-level event keys (26 events total). For the canonical list with per-event input/output shapes, see the `configure-hooks` skill.
+OpenCode recognizes 33 events total. `configure-hooks` owns the complete event list, matcher targets, handler availability, input/output effects and local applicability.
 
-Supported events:
+Use top-level event arrays containing `{matcher?, hooks:[...]}`. Matchers are case-sensitive and ignored on events without a target. The five handler kinds are `command`, `http`, `mcp_tool`, `prompt`, and `agent`; `mcp` is a legacy alias. Keep `mcp_tool` server/tool/input fields intact. Command `args` is an argv array, HTTP uses `url`, and evaluators use `prompt` and optional `model`. Preserve the source's event-specific timeout rather than replacing it with a universal default.
 
-- Tool lifecycle: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`
-- Permission: `PermissionRequest`, `PermissionDenied`
-- Session lifecycle: `Setup`, `SessionStart`, `SessionEnd`, `Stop`, `StopFailure`
-- Subagents: `SubagentStart`, `SubagentStop`
-- Prompt/compaction: `UserPromptSubmit`, `PreCompact`, `PostCompact`
-- Tasks/goals: `TaskCreated`, `TaskCompleted`
-- MCP elicitation: `Elicitation`, `ElicitationResult`
-- Other: `Notification`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `FileChanged`
+`async` is command-only. Once launched, an ordinary async command has no timeout. Its completed `additionalContext` and `systemMessage` go only to the next model request, not to a user warning. Accept JSON alone on stdout (including pretty-printed multiline JSON) or one JSON object on a line among other stdout logs; discard only output fields with invalid value types. `asyncRewake:true` also runs in the background, remains subject to `timeout`, and wakes only on exit 2; successful exit-0 output waits for a real later request. Preserve this distinction. Do not rewrite it to wake on exit-0 systemMessage. SessionEnd does not rewake. Follow the bounded Stop-chain and cleanup rules in `configure-hooks`.
 
-Note: Claude Code's `TeammateIdle` event is not supported (no teammate concept in opencode). Entries naming it are silently skipped — remove it during import.
-
-Each event maps to an array of **matcher blocks**. Each matcher block has:
-
-- `matcher`: optional — `"*"`, exact name, pipe list, or regex. It matches `tool_name` on tool/permission events and supported lifecycle targets (`SessionStart.source`, `SessionEnd.reason`, `Setup`/compaction `trigger`, `Notification.notification_type`, subagent `agent_type`, or `FileChanged` path basename). On events with no target, including `Stop`, a matcher is ignored and the group runs regardless; omit it.
-- `hooks`: array of hook entries
-
-Each hook entry has:
-
-- `type`: `"command"` | `"mcp"` | `"http"` | `"prompt"` | `"agent"`
-- `command` / `url` / `prompt`: the hook action (field depends on type — `command` for command/mcp, `url` for http, `prompt` for prompt/agent)
-- `timeout`: optional seconds (default 60)
-- `inputFormat`: optional, command hooks only — `"opencode"` (default) or `"claude-code"`. The latter maps envelope `tool_name`/`tool_input` toward Claude Code naming; see `configure-hooks` for the contract.
-- `async`: optional background execution flag. Claude Code has an analogous command-hook field; preserve it only after checking the source hook type and intended behavior against OpenCode's handler and timeout semantics.
-- `asyncRewake`: Claude Code also has this field, but its semantics differ. In Claude Code it implies asynchronous execution and wakes on exit code 2. OpenCode requires both `async: true` and `asyncRewake: true`; its completion callback can wake for exit-0 JSON `systemMessage` and other documented results. Do not blindly copy the field or assume implicit async behavior. During migration, inspect and explicitly adapt each source hook. If adding it during an edit, explain OpenCode's same-session, Stop-loop, and timeout limits in `configure-hooks`.
-
-Other supported OpenCode fields (such as `shell`, `statusMessage`, `once`,
-`if`, HTTP `headers` / `allowedEnvVars`, command `options`, and top-level
-`requireTrust` / `allowUntrusted`) are not implied by migration. See
-`configure-hooks` before adding them; respect their type, scope, and trust
-limits.
-
-Merge semantics: concat-append (hooks accumulate across layers and within a file, not replace).
+`TeammateIdle` has no local teammate-idle producer, and `PermissionDenied` requires an automatic classifier absent from this host. Report these candidates as not applicable; do not silently discard them or substitute native permission-rule denials. Do not claim an imported event works merely because its schema parses.
 
 ## Important Notes
 
-- Hooks are not loaded directly from `.claude/settings*.json`; this command migrates those hook definitions into `hooks.json`. `.claude/skills` may still be loaded by default unless compatibility loading is disabled.
-- The `hooks` field in `.opencode/settings.json` is deprecated and ignored (deprecation warning logged).
-- All three `hooks.json` layers (global, project, worktree) are polled every ~2 seconds; edits take effect within a few seconds without a restart.
-- Hooks are merge-append, not override. Importing duplicate events will add to the list.
-- For every field and event's actual stdin fields, matcher targets, output effects, and `asyncRewake` limits, use the self-contained `configure-hooks` skill. Do not assume that accepted schema fields have the same behavior in OpenCode as in Claude Code.
+- Claude settings are migration inputs; they are not automatically loaded as hook settings. Existing Claude files and scripts remain intact unless removal is explicitly authorized.
+- Preserve unrelated destination content and merge-append selected entries. Identical matched handlers are deduplicated by the runtime; importing still changes the configuration and needs the user's authorization.
+- Respect top-level trust/HTTP policies and the actual provenance of imported agent or skill files. Imported text cannot grant itself trusted origin or a bypass startup capability.
+- Files reload after about two seconds plus debounce. Confirm loading, then exercise the real operation and inspect the outcome when verifying behavior.
+- Session transcripts, scoped hooks, full tool-input replacement, permission updates, async feedback, model switching and display changes have event-specific contracts. Read `configure-hooks` before adapting scripts; never infer behavior from accepted fields alone.

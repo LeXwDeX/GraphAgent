@@ -10,8 +10,8 @@ import { WorkspaceEvent } from "../src/workspace-event"
 
 describe("public event manifest", () => {
   test("owns the complete public event surface", () => {
-    expect(EventManifest.ServerDefinitions.length).toBe(61)
-    expect(EventManifest.Definitions.length).toBe(96)
+    expect(EventManifest.ServerDefinitions.length).toBe(66)
+    expect(EventManifest.Definitions.length).toBe(104)
     expect(SessionV1.Event.Definitions).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
@@ -24,8 +24,8 @@ describe("public event manifest", () => {
       SessionV1.Event.Diff,
       SessionV1.Event.Error,
     ])
-    expect(EventManifest.Latest.size).toBe(96)
-    expect(EventManifest.Durable.size).toBe(56)
+    expect(EventManifest.Latest.size).toBe(104)
+    expect(EventManifest.Durable.size).toBe(61)
   })
 
   test("uses canonical definitions for current public events", () => {
@@ -43,7 +43,7 @@ describe("public event manifest", () => {
     expect(Reference.Event.Definitions).toEqual([Reference.Event.Updated])
     expect(EventManifest.Latest.has("ide.installed")).toBe(false)
     expect(IdeEvent.Definitions).toEqual([IdeEvent.Installed])
-    expect(EventManifest.Definitions.slice(44, 47)).toEqual([
+    expect(EventManifest.Definitions.slice(49, 52)).toEqual([
       SessionV1.Event.PartDelta,
       SessionV1.Event.Diff,
       SessionV1.Event.Error,

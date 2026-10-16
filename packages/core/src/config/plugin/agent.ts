@@ -1,5 +1,6 @@
 export * as ConfigAgentPlugin from "./agent"
 
+import { SourceProvenance } from "../../session/source-provenance"
 import { define } from "../../plugin/internal"
 import path from "path"
 import { Effect, Option, Schema } from "effect"
@@ -25,9 +26,7 @@ const decodeAgent = Schema.decodeUnknownOption(ConfigAgent.Info)
 const decodeLegacyAgent = Schema.decodeUnknownOption(ConfigAgentV1.Info)
 const decodeConfig = Schema.decodeUnknownOption(Config.Info)
 type PathAction =
-  | LocationMutation.ExternalDirectoryAuthorization["action"]
-  | typeof ReadTool.name
-  | typeof EditTool.name
+  LocationMutation.ExternalDirectoryAuthorization["action"] | typeof ReadTool.name | typeof EditTool.name
 const pathActions = ["external_directory", "read", "edit"] as const satisfies readonly PathAction[]
 const agentKeys = new Set([
   "model",
@@ -41,15 +40,17 @@ const agentKeys = new Set([
   "steps",
   "disabled",
   "permissions",
+  "hooks",
 ])
 
 export const Plugin = define({
   id: "config-agent",
-  effect: Effect.fn(function* (ctx) {
+  effect: Effect.fn(function* () {
     const config = yield* Config.Service
+    const agentOwner = yield* AgentV2.Service
     const fs = yield* FSUtil.Service
     const global = yield* Global.Service
-    yield* ctx.agent.transform(
+    yield* agentOwner.transform(
       Effect.fn(function* (draft) {
         const documents = yield* Effect.forEach(yield* config.entries(), (entry) => {
           if (entry.type === "document") return Effect.succeed([entry])
@@ -85,6 +86,16 @@ export const Plugin = define({
               continue
             }
 
+            if (item.hooks !== undefined)
+              SourceProvenance.setAgent(agentOwner, agentID, {
+                origin: document.path ?? "config-agent:" + id,
+                source:
+                  document.path !== undefined &&
+                  path.relative(global.config, document.path).split(path.sep)[0] !== ".." &&
+                  !path.isAbsolute(path.relative(global.config, document.path))
+                    ? "user"
+                    : "project",
+              })
             const exists = draft.get(agentID) !== undefined
             draft.update(agentID, (agent) => {
               if (!exists) agent.permissions.push(...permissions)
@@ -100,6 +111,7 @@ export const Plugin = define({
                 Object.assign(agent.request.body, item.request.body ?? {})
               }
               if (item.system !== undefined) agent.system = item.system
+              if (item.hooks !== undefined) agent.hooks = Object.fromEntries(Object.entries(item.hooks))
               if (item.description !== undefined) agent.description = item.description
               if (item.mode !== undefined) agent.mode = item.mode
               if (item.hidden !== undefined) agent.hidden = item.hidden
@@ -119,7 +131,9 @@ export const Plugin = define({
 function expandPermissions(rules: PermissionV2.Ruleset, home: string): PermissionV2.Ruleset {
   // Expand only resources tools resolve as filesystem paths. Bash resources are raw shell text:
   // rewriting `$HOME/private/**` would miss `$HOME/private/key`, and safe expansion needs shell-aware parsing.
-  return rules.map((rule) => (isPathAction(rule.action) ? { ...rule, resource: expandHome(rule.resource, home) } : rule))
+  return rules.map((rule) =>
+    isPathAction(rule.action) ? { ...rule, resource: expandHome(rule.resource, home) } : rule,
+  )
 }
 
 function isPathAction(action: string): action is PathAction {

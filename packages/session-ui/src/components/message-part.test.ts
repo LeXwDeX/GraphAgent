@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readPartText } from "./message-part-text"
+import { readDisplayPartText, readPartText } from "./message-part-text"
 
 describe("readPartText", () => {
   test("returns empty string when accum is undefined and part text is undefined", () => {
@@ -24,5 +24,18 @@ describe("readPartText", () => {
 
   test("trims leading and trailing whitespace", () => {
     expect(readPartText(undefined, { id: "part_1", text: "\n  body  \n" })).toBe("body")
+  })
+})
+
+describe("readDisplayPartText", () => {
+  test("renders the hook replacement while preserving raw accumulated text for other consumers", () => {
+    const part = { id: "part_1", text: "raw", displayText: "  shown  " }
+    expect(readDisplayPartText({ part_1: "raw streaming" }, part)).toBe("shown")
+    expect(readPartText({ part_1: "raw streaming" }, part)).toBe("raw streaming")
+  })
+
+  test("honors an empty replacement and falls back when no replacement exists", () => {
+    expect(readDisplayPartText({ part_1: "raw" }, { id: "part_1", text: "raw", displayText: "" })).toBe("")
+    expect(readDisplayPartText({ part_1: "stream" }, { id: "part_1", text: "raw" })).toBe("stream")
   })
 })

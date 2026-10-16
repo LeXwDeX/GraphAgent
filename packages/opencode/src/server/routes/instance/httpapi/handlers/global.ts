@@ -8,7 +8,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Queue, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
 import { GlobalUpgradeInput } from "../groups/global"
@@ -83,7 +83,9 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     })
 
     const configUpdate = Effect.fn("GlobalHttpApi.configUpdate")(function* (ctx) {
-      const result = yield* config.updateGlobal(ctx.payload)
+      const result = yield* config
+        .updateGlobal(ctx.payload)
+        .pipe(Effect.catchTag("ConfigChangeBlocked", () => Effect.fail(new HttpApiError.BadRequest({}))))
       if (result.changed) bridge.fork(disposeAllInstancesAndEmitGlobalDisposed({ swallowErrors: true }))
       return result.info
     })

@@ -12,7 +12,6 @@ import { Config } from "@/config/config"
 import { GoalLoop } from "@/goal/loop"
 import { DagLoop } from "@/dag/runtime/loop"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
-import { SettingsHook } from "@/hook/settings"
 import { Service } from "./bootstrap-service"
 import { Memory } from "@/memory/memory"
 
@@ -89,14 +88,6 @@ export const layer = Layer.effect(
       yield* dagPublisher
         .init()
         .pipe(Effect.catchCause((cause) => Effect.logWarning("dag summary publisher init failed", { cause })))
-      // SettingsHook: Setup fires once per instance bootstrap. Resolved lazily
-      // so bootstrap layers stay self-contained.
-      const settingsHook = yield* Effect.serviceOption(SettingsHook.Service)
-      if (settingsHook._tag === "Some") {
-        yield* settingsHook.value
-          .trigger({ event: "Setup", trigger: "startup" }, { sessionID: "", transcriptPath: "" })
-          .pipe(Effect.ignore)
-      }
     }).pipe(Effect.withSpan("InstanceBootstrap"))
 
     return Service.of({ run })

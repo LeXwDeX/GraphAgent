@@ -48,7 +48,16 @@ describe("hooks audit - actual runtime boundary", () => {
                 hooks: [
                   null,
                   { type: "http" },
-                  { type: "command", command: command({ decision: "block", reason: "valid sibling" }) },
+                  {
+                    type: "command",
+                    command: command({
+                      hookSpecificOutput: {
+                        hookEventName: "PreToolUse",
+                        permissionDecision: "deny",
+                        permissionDecisionReason: "valid sibling",
+                      },
+                    }),
+                  },
                 ],
               },
             ],
@@ -60,7 +69,8 @@ describe("hooks audit - actual runtime boundary", () => {
         { event: "PreToolUse", toolName: "write", toolInput: {} },
         { sessionID: SessionID.descending(), transcriptPath: "" },
       )
-      expect(result.blocked?.reason).toBe("valid sibling")
+      expect(result.permissionDecision).toBe("deny")
+      expect(result.permissionDecisionReason).toBe("valid sibling")
     }),
   )
 
@@ -86,9 +96,17 @@ describe("hooks audit - actual runtime boundary", () => {
       const result = yield* runHook({
         type: "command",
         shell: "bash",
-        command: "[[ -n $BASH_VERSION ]] && " + command({ decision: "block", reason: "bash selected" }),
+        command:
+          "[[ -n $BASH_VERSION ]] && " +
+          command({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason: "bash selected",
+            },
+          }),
       })
-      expect(result.blocked?.reason).toBe("bash selected")
+      expect(result.permissionDecisionReason).toBe("bash selected")
     }),
   )
 
@@ -162,7 +180,10 @@ describe("hooks audit - actual runtime boundary", () => {
       yield* trigger("unmatched")
       expect(yield* store.listAll(id)).toHaveLength(1)
       yield* Effect.all([trigger("match1"), trigger("match2")], { concurrency: "unbounded" })
-      expect((yield* Effect.promise(() => fs.readFile(output, "utf8"))).trim().split("\n")).toEqual(["first", "second"])
+      expect((yield* Effect.promise(() => fs.readFile(output, "utf8"))).trim().split("\n").sort()).toEqual([
+        "first",
+        "second",
+      ])
       expect(yield* store.listAll(id)).toHaveLength(0)
     }),
   )
@@ -196,10 +217,19 @@ describe("hooks audit - actual runtime boundary", () => {
     )
   }
 
-  it.instance("control: exit 0 accepts block output", () =>
+  it.instance("control: exit 0 accepts PreToolUse permission output", () =>
     Effect.gen(function* () {
-      const result = yield* runHook({ type: "command", command: command({ decision: "block", reason: "audit-block" }) })
-      expect(result.blocked?.reason).toBe("audit-block")
+      const result = yield* runHook({
+        type: "command",
+        command: command({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: "audit-block",
+          },
+        }),
+      })
+      expect(result.permissionDecisionReason).toBe("audit-block")
     }),
   )
 

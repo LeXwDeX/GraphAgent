@@ -12,6 +12,7 @@ import { Auth } from "@/auth"
 import { MCP } from "@/mcp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { applyPreHookDecision } from "@/hook/pre-hook-decision"
 import { testEffect } from "../lib/effect"
 
 const base = SettingsHook.layer.pipe(
@@ -20,14 +21,17 @@ const base = SettingsHook.layer.pipe(
   Layer.provideMerge(SessionHooks.defaultLayer),
 )
 const it = testEffect(Layer.mergeAll(base, CrossSpawnSpawner.defaultLayer, FSUtil.defaultLayer))
-const run = (entry: HookCommand) =>
+const run = (
+  entry: HookCommand,
+  event: "PreToolUse" | "PostToolUse" | "PermissionRequest" | "PermissionDenied" = "PreToolUse",
+) =>
   Effect.gen(function* () {
     const store = yield* SessionHooks.Service
     const settings = yield* SettingsHook.Service
     const id = SessionID.descending()
-    yield* store.add(id, { event: "PreToolUse", hooks: [entry] })
+    yield* store.add(id, { event, hooks: [entry] })
     return yield* settings.trigger(
-      { event: "PreToolUse", toolName: "bash", toolInput: {} },
+      { event, toolName: "bash", toolInput: {}, ...(event === "PostToolUse" ? { toolResponse: "done" } : {}) } as any,
       { sessionID: id, transcriptPath: "" },
     )
   })
@@ -52,17 +56,34 @@ const providerLayer = (language: any) =>
   )
 
 describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
-  it.instance("prompt handler accepts a model-produced block decision", () =>
+  it.instance("prompt PreToolUse rejection stops the turn and denies the tool by default", () =>
     Effect.gen(function* () {
       const model = new MockLanguageModelV3({
-        doGenerate: generated(JSON.stringify({ decision: "block", reason: "prompt-real-handler" })),
+        doGenerate: generated(JSON.stringify({ ok: false, reason: "prompt-real-handler" })),
       })
       const result = yield* run({ type: "prompt", prompt: "audit decision" }).pipe(Effect.provide(providerLayer(model)))
-      expect(result.blocked?.reason).toBe("prompt-real-handler")
+      expect(result.permissionDecision).toBe("deny")
+      expect(result.preventContinuation).toBe(true)
+      expect(result.stopReason).toBe("prompt-real-handler")
+      expect(result.systemMessages).toContain("prompt-real-handler")
+      expect(applyPreHookDecision({ command: "unsafe" }, result).stopReason).toBe("prompt-real-handler")
     }),
   )
 
-  it.instance("agent handler runs synthetic_output and accepts the result", () =>
+  it.instance("prompt continueOnBlock denies only the tool and returns feedback", () =>
+    Effect.gen(function* () {
+      const model = new MockLanguageModelV3({
+        doGenerate: generated(JSON.stringify({ ok: false, reason: "adjust input" })),
+      })
+      const result = yield* run({ type: "prompt", prompt: "audit decision", continueOnBlock: true }).pipe(
+        Effect.provide(providerLayer(model)),
+      )
+      expect(result.preventContinuation).toBeUndefined()
+      expect(applyPreHookDecision({ command: "unsafe" }, result).deniedReason).toBe("adjust input")
+    }),
+  )
+
+  it.instance("agent PreToolUse rejection denies the tool and continues", () =>
     Effect.gen(function* () {
       const model = new MockLanguageModelV3({
         doGenerate: {
@@ -71,7 +92,7 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
               type: "tool-call",
               toolCallId: "audit-output",
               toolName: "synthetic_output",
-              input: JSON.stringify({ decision: "block", reason: "agent-real-handler" }),
+              input: JSON.stringify({ ok: false, reason: "agent-real-handler" }),
             },
           ],
           finishReason: { unified: "tool-calls", raw: "tool_calls" },
@@ -82,7 +103,43 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
       const result = yield* run({ type: "agent", prompt: "emit audit decision" }).pipe(
         Effect.provide(providerLayer(model)),
       )
-      expect(result.blocked?.reason).toBe("agent-real-handler")
+      expect(result.preventContinuation).toBeUndefined()
+      expect(applyPreHookDecision({ command: "unsafe" }, result).deniedReason).toBe("agent-real-handler")
+    }),
+  )
+
+  it.instance("prompt PostToolUse default stops while continueOnBlock feeds back", () =>
+    Effect.gen(function* () {
+      const model = new MockLanguageModelV3({
+        doGenerate: generated(JSON.stringify({ ok: false, reason: "post-check failed" })),
+      })
+      const stop = yield* run({ type: "prompt", prompt: "audit post" }, "PostToolUse").pipe(
+        Effect.provide(providerLayer(model)),
+      )
+      const retry = yield* run({ type: "prompt", prompt: "audit post", continueOnBlock: true }, "PostToolUse").pipe(
+        Effect.provide(providerLayer(model)),
+      )
+      expect(stop.preventContinuation).toBe(true)
+      expect(stop.systemMessages).toContain("post-check failed")
+      expect(retry.preventContinuation).toBeUndefined()
+      expect(retry.additionalContexts).toEqual(["post-check failed"])
+    }),
+  )
+
+  it.instance("prompt PermissionRequest and PermissionDenied outputs are discarded", () =>
+    Effect.gen(function* () {
+      const model = new MockLanguageModelV3({
+        doGenerate: generated(JSON.stringify({ ok: false, reason: "cannot override permission" })),
+      })
+      for (const event of ["PermissionRequest", "PermissionDenied"] as const) {
+        const result = yield* run({ type: "prompt", prompt: "audit permission" }, event).pipe(
+          Effect.provide(providerLayer(model)),
+        )
+        expect(result.blocked).toBeUndefined()
+        expect(result.preventContinuation).toBeUndefined()
+        expect(result.permissionRequestDecision).toBeUndefined()
+        expect(result.additionalContexts).toEqual([])
+      }
     }),
   )
 
@@ -96,7 +153,18 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
               execute: async (input: any) => {
                 envelope = input
                 return {
-                  content: [{ type: "text", text: JSON.stringify({ decision: "block", reason: "mcp-real-handler" }) }],
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        hookSpecificOutput: {
+                          hookEventName: "PreToolUse",
+                          permissionDecision: "deny",
+                          permissionDecisionReason: "mcp-real-handler",
+                        },
+                      }),
+                    },
+                  ],
                 }
               },
             },
@@ -104,7 +172,8 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
       })
       const result = yield* run({ type: "mcp", command: "mcp__audit__check" }).pipe(Effect.provide(mcp))
       expect(envelope.hook_event_name).toBe("PreToolUse")
-      expect(result.blocked?.reason).toBe("mcp-real-handler")
+      expect(result.permissionDecision).toBe("deny")
+      expect(result.permissionDecisionReason).toBe("mcp-real-handler")
     }),
   )
 

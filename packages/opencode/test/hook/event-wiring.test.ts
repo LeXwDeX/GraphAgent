@@ -22,12 +22,7 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { SettingsHook, type HookPayload } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { InstanceBootstrap } from "@/project/bootstrap"
-import { Worktree } from "@/worktree"
-import { Git } from "@/git"
-import { AppProcess } from "@opencode-ai/core/process"
-import { Project } from "@/project/project"
-import { NodePath } from "@effect/platform-node"
-import { TestInstance, testInstanceStoreLayer } from "../fixture/fixture"
+import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
 // hook-event-wiring integration tests: each newly wired trigger site fires the
@@ -77,7 +72,7 @@ const sessionEnv = Layer.mergeAll(
 const sessionIt = testEffect(sessionEnv)
 
 describe("SessionEnd trigger on session delete", () => {
-  sessionIt.instance("fires with reason delete", () =>
+  sessionIt.instance("fires with the documented other reason", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const chat = yield* sessions.create({ title: "doomed" })
@@ -94,7 +89,7 @@ describe("SessionEnd trigger on session delete", () => {
       yield* sessions.remove(chat.id)
       const events = sessionRecorder.recorded.filter((p) => p.event === "SessionEnd")
       expect(events).toHaveLength(1)
-      expect(events[0]).toMatchObject({ event: "SessionEnd", reason: "delete" })
+      expect(events[0]).toMatchObject({ event: "SessionEnd", reason: "other" })
     }),
   )
 })
@@ -123,7 +118,7 @@ describe("InstructionsLoaded trigger on instruction file load", () => {
     () =>
       Effect.gen(function* () {
         const instruction = yield* Instruction.Service
-        yield* instruction.system()
+        yield* instruction.system({ sessionID: "ses_instructions", transcriptPath: "/tmp/instruction-fixture.jsonl" })
         const events = instructionRecorder.recorded.filter(
           (p): p is Extract<HookPayload, { event: "InstructionsLoaded" }> =>
             p.event === "InstructionsLoaded" && !!p.path?.endsWith("AGENTS.md"),
@@ -132,20 +127,19 @@ describe("InstructionsLoaded trigger on instruction file load", () => {
         expect(events[0].content).toHaveLength(32 * 1024)
 
         // Second load must not re-announce (once per instance)
-        yield* instruction.system()
+        yield* instruction.system({ sessionID: "ses_instructions", transcriptPath: "/tmp/instruction-fixture.jsonl" })
         const again = instructionRecorder.recorded.filter(
           (p) => p.event === "InstructionsLoaded" && (p as { path?: string }).path?.endsWith("AGENTS.md"),
         )
         expect(again).toHaveLength(1)
       }),
     {
-      init: (dir) =>
-        Effect.promise(() => fs.writeFile(path.join(dir, "AGENTS.md"), BIG_CONTENT)),
+      init: (dir) => Effect.promise(() => fs.writeFile(path.join(dir, "AGENTS.md"), BIG_CONTENT)),
     },
   )
 })
 
-// ── 4.6 Setup fires exactly once at bootstrap ───────────────────
+// ── 4.6 Setup runs only for explicit initialization ─────────────
 
 const setupRecorder = makeRecorder()
 const bootstrapEnv = Layer.mergeAll(InstanceBootstrap.defaultLayer, setupRecorder.layer)
@@ -153,13 +147,12 @@ const bootstrapEnv = Layer.mergeAll(InstanceBootstrap.defaultLayer, setupRecorde
 const bootstrapIt = testEffect(bootstrapEnv)
 
 describe("Setup trigger on instance bootstrap", () => {
-  bootstrapIt.instance("fires exactly once with trigger startup", () =>
+  bootstrapIt.instance("does not run for ordinary startup", () =>
     Effect.gen(function* () {
       const bootstrap = yield* InstanceBootstrap.Service
       yield* bootstrap.run
       const events = setupRecorder.recorded.filter((p) => p.event === "Setup")
-      expect(events).toHaveLength(1)
-      expect(events[0]).toMatchObject({ event: "Setup", trigger: "startup" })
+      expect(events).toEqual([])
     }),
   )
 })
@@ -173,10 +166,7 @@ const notificationRecorder = makeRecorder()
 // recording SettingsHook) are resolved at call time via serviceOption, so they
 // are merged as siblings to be visible at call time.
 const permissionEnv = Layer.mergeAll(
-  Permission.layer.pipe(
-    Layer.provide(Database.defaultLayer),
-    Layer.provide(EventV2Bridge.defaultLayer),
-  ),
+  Permission.layer.pipe(Layer.provide(Database.defaultLayer), Layer.provide(EventV2Bridge.defaultLayer)),
   notificationRecorder.layer,
   Notification.defaultLayer,
 )
@@ -184,7 +174,7 @@ const permissionEnv = Layer.mergeAll(
 const permissionIt = testEffect(permissionEnv)
 
 describe("Notification trigger on permission ask", () => {
-  permissionIt.instance("fires with notificationType permission and does not block the flow", () =>
+  permissionIt.instance("fires permission_prompt only after six seconds without blocking pending", () =>
     Effect.gen(function* () {
       const permission = yield* Permission.Service
       const fiber = yield* permission
@@ -207,7 +197,9 @@ describe("Notification trigger on permission ask", () => {
         "permission ask never became pending",
         "5 seconds",
       )
-      // ...and the forked Notification trigger fires.
+      expect(notificationRecorder.recorded.filter((p) => p.event === "Notification")).toEqual([])
+      yield* Effect.sleep("6 seconds")
+      // ...and the delayed Notification trigger fires.
       yield* pollWithTimeout(
         Effect.sync(() =>
           notificationRecorder.recorded.some((p) => p.event === "Notification") ? (true as const) : undefined,
@@ -218,7 +210,7 @@ describe("Notification trigger on permission ask", () => {
       const events = notificationRecorder.recorded.filter(
         (p): p is Extract<HookPayload, { event: "Notification" }> => p.event === "Notification",
       )
-      expect(events[0].notificationType).toBe("permission")
+      expect(events[0].notificationType).toBe("permission_prompt")
       expect(events[0].message).toContain("bash")
 
       // Unblock the pending ask.
@@ -230,47 +222,9 @@ describe("Notification trigger on permission ask", () => {
   )
 })
 
-// ── 4.7 CwdChanged fires on worktree switch ─────────────────────
-
-const cwdRecorder = makeRecorder()
-const worktreeEnv = Worktree.layer.pipe(
-  Layer.provide(cwdRecorder.layer),
-  Layer.provide(Git.defaultLayer),
-  Layer.provide(AppProcess.defaultLayer),
-  Layer.provide(Project.defaultLayer),
-  Layer.provide(Database.defaultLayer),
-  Layer.provide(FSUtil.defaultLayer),
-  Layer.provide(NodePath.layer),
-  Layer.provide(testInstanceStoreLayer),
-)
-
-const worktreeIt = testEffect(worktreeEnv)
-
-describe("CwdChanged trigger on worktree switch", () => {
-  worktreeIt.instance(
-    "fires with old and new cwd after worktree boot",
-    () =>
-      Effect.gen(function* () {
-        const worktree = yield* Worktree.Service
-        const inst = yield* TestInstance
-        const info = yield* worktree.create({ name: "wired" })
-        // boot() runs forked — wait until it fires CwdChanged.
-        yield* pollWithTimeout(
-          Effect.sync(() =>
-            cwdRecorder.recorded.some((p) => p.event === "CwdChanged") ? (true as const) : undefined,
-          ),
-          "CwdChanged hook never fired",
-          "15 seconds",
-        )
-        const events = cwdRecorder.recorded.filter(
-          (p): p is Extract<HookPayload, { event: "CwdChanged" }> => p.event === "CwdChanged",
-        )
-        expect(events[0].oldCwd).toBe(inst.directory)
-        expect(events[0].newCwd).toBe(info.directory)
-      }),
-    { git: true },
-  )
-})
+// CwdChanged now belongs to persisted MoveSession, not worktree creation.
+// The real producer → command → transcript/ownership path is exercised in
+// hooks-lifecycle-cwd.test.ts.
 
 // ── 4.3 ConfigChange fires on hooks.json hot-reload ─────────────
 // Uses the REAL SettingsHook layer: a ConfigChange command hook touches a
@@ -309,7 +263,10 @@ describe("ConfigChange trigger on hooks hot-reload", () => {
         const inst = yield* TestInstance
 
         // First trigger constructs state and starts the watcher (v1 on disk).
-        yield* hook.trigger({ event: "SessionStart", source: "startup" }, { sessionID: "sess_wiring_test", transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "SessionStart", source: "startup" },
+          { sessionID: "sess_wiring_test", transcriptPath: "" },
+        )
 
         // Modify the watched hooks.json → hot-reload → ConfigChange fires →
         // command hook touches the marker file. Explicitly bump mtime to a

@@ -41,6 +41,8 @@ export const Prompt = Schema.Struct({
   text: Schema.String,
   files: Schema.Array(FileAttachment).pipe(Schema.optional),
   agents: Schema.Array(AgentAttachment).pipe(Schema.optional),
+  /** Persisted caller display mode; never included in model-facing text. */
+  hookMode: Schema.Literals(["interactive", "noninteractive"]).pipe(Schema.optional),
 })
   .annotate({ identifier: "Prompt" })
   .pipe(

@@ -1,3 +1,4 @@
+import { markPermissionRewrite } from "./permission-rewrite"
 export * as GlobTool from "./glob"
 
 import { ToolFailure } from "@opencode-ai/llm"
@@ -45,64 +46,66 @@ export const layer = Layer.effectDiscard(
 
     yield* tools
       .register({
-        [name]: Tool.make({
-          contextFolding: { instructions: "none" },
-          description:
-            "Find files by glob pattern. Paths default to the active Location; external absolute directories require external_directory approval. Relative paths must stay inside the Location. Paths inside it cannot escape through symlinks. Structured file resources are Location-relative; model output shows absolute paths. Use limit to bound the result count.",
-          input: Input,
-          output: Output,
-          toModelOutput: ({ output }) => [
-            {
-              type: "text",
-              text: toModelOutput(
-                output.map((entry) => ({ ...entry, path: path.resolve(location.directory, entry.path) })),
-              ),
-            },
-          ],
-          execute: (input, context) =>
-            Effect.gen(function* () {
-              const resolved = yield* mutation.resolve({ path: input.path ?? ".", kind: "directory" })
-              if (resolved.externalDirectory)
+        [name]: markPermissionRewrite(
+          Tool.make({
+            contextFolding: { instructions: "none" },
+            description:
+              "Find files by glob pattern. Paths default to the active Location; external absolute directories require external_directory approval. Relative paths must stay inside the Location. Paths inside it cannot escape through symlinks. Structured file resources are Location-relative; model output shows absolute paths. Use limit to bound the result count.",
+            input: Input,
+            output: Output,
+            toModelOutput: ({ output }) => [
+              {
+                type: "text",
+                text: toModelOutput(
+                  output.map((entry) => ({ ...entry, path: path.resolve(location.directory, entry.path) })),
+                ),
+              },
+            ],
+            execute: (input, context) =>
+              Effect.gen(function* () {
+                const resolved = yield* mutation.resolve({ path: input.path ?? ".", kind: "directory" })
+                if (resolved.externalDirectory)
+                  yield* permission.assert({
+                    ...LocationMutation.externalDirectoryPermission(resolved.externalDirectory),
+                    sessionID: context.sessionID,
+                    agent: context.agent,
+                    source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                  })
                 yield* permission.assert({
-                  ...LocationMutation.externalDirectoryPermission(resolved.externalDirectory),
+                  action: name,
+                  resources: [input.pattern],
+                  save: ["*"],
+                  metadata: {
+                    root: input.path ?? ".",
+                    path: input.path,
+                    limit: input.limit,
+                  },
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
                 })
-              yield* permission.assert({
-                action: name,
-                resources: [input.pattern],
-                save: ["*"],
-                metadata: {
-                  root: input.path ?? ".",
-                  path: input.path,
-                  limit: input.limit,
-                },
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
-              })
-              const cwd = resolved.canonical
-              return yield* ripgrep
-                .glob({
-                  cwd,
-                  pattern: input.pattern,
-                  limit: input.limit ?? Number.MAX_SAFE_INTEGER,
-                })
-                .pipe(
-                  Effect.map((result) =>
-                    result.map((entry) =>
-                      FileSystem.Entry.make({
-                        ...entry,
-                        path: RelativePath.make(path.relative(location.directory, path.resolve(cwd, entry.path))),
-                      }),
+                const cwd = resolved.canonical
+                return yield* ripgrep
+                  .glob({
+                    cwd,
+                    pattern: input.pattern,
+                    limit: input.limit ?? Number.MAX_SAFE_INTEGER,
+                  })
+                  .pipe(
+                    Effect.map((result) =>
+                      result.map((entry) =>
+                        FileSystem.Entry.make({
+                          ...entry,
+                          path: RelativePath.make(path.relative(location.directory, path.resolve(cwd, entry.path))),
+                        }),
+                      ),
                     ),
-                  ),
-                )
-            }).pipe(
-              Effect.mapError(() => new ToolFailure({ message: `Unable to find files matching ${input.pattern}` })),
-            ),
-        }),
+                  )
+              }).pipe(
+                Effect.mapError(() => new ToolFailure({ message: `Unable to find files matching ${input.pattern}` })),
+              ),
+          }),
+        ),
       })
       .pipe(Effect.orDie)
   }),

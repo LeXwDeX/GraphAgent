@@ -1,7 +1,7 @@
 export * as SessionV2 from "./session"
 export * from "./session/schema"
 
-import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Context, Stream, Option } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
 import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
@@ -29,6 +29,11 @@ import { SessionExecution } from "./session/execution"
 import { MessageDecodeError } from "./session/error"
 import { SessionEvent } from "./session/event"
 import { SessionInput } from "./session/input"
+import { SessionTurnHooks } from "./session/turn-hooks"
+import { SessionLifecycleHooks } from "./session/lifecycle-hooks"
+import { SessionAdmission } from "./session/admission"
+import { SessionConversationHooks } from "./session/conversation-hooks"
+import { SessionModelSwitchHook } from "./session/model-switch"
 import { Snapshot } from "./snapshot"
 import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
@@ -103,7 +108,13 @@ export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictE
 export const MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
-export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
+export type Error =
+  | NotFoundError
+  | MessageDecodeError
+  | OperationUnavailableError
+  | PromptConflictError
+  | SessionModelSwitchHook.Blocked
+  | SessionConversationHooks.Blocked
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
@@ -133,14 +144,15 @@ export interface Interface {
   readonly switchModel: (input: {
     sessionID: SessionSchema.ID
     model: ModelV2.Ref
-  }) => Effect.Effect<void, NotFoundError>
+  }) => Effect.Effect<void, NotFoundError | SessionModelSwitchHook.Blocked>
   readonly prompt: (input: {
     id?: SessionMessage.ID
     sessionID: SessionSchema.ID
     prompt: Prompt
+    hookMode?: "interactive" | "noninteractive"
     delivery?: SessionInput.Delivery
     resume?: boolean
-  }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError>
+  }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError | SessionConversationHooks.Blocked>
   readonly shell: (input: {
     id?: EventV2.ID
     sessionID: SessionSchema.ID
@@ -183,6 +195,7 @@ export const layer = Layer.unwrap(
           const execution = yield* SessionExecution.Service
           const store = yield* SessionStore.Service
           const locations = yield* LocationServiceMap
+          const admissions = SessionAdmission.make()
           const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
           const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
           const decode = (row: typeof SessionMessageTable.$inferSelect) =>
@@ -196,61 +209,93 @@ export const layer = Layer.unwrap(
               ),
             )
 
+          const startLifecycle = Effect.fn("V2Session.startLifecycle")(function* (
+            sessionID: SessionSchema.ID,
+            source: "startup" | "resume",
+          ) {
+            if (Option.isNone(yield* Effect.serviceOption(SessionLifecycleHooks.Service))) return false
+            const current = yield* store.get(sessionID)
+            if (!current) return false
+            return yield* Effect.gen(function* () {
+              const started = yield* SessionLifecycleHooks.start({ sessionID, source })
+              yield* SessionLifecycleHooks.landContext(events, { sessionID, text: started.additionalContext })
+              return yield* SessionLifecycleHooks.landInitial(db, events, {
+                sessionID,
+                text: started.initialUserMessage,
+              })
+            }).pipe(Effect.provide(locations.get(current.location)))
+          })
+
           const result = Service.of({
             create: Effect.fn("V2Session.create")(function* (input) {
               const sessionID = input.id ?? SessionSchema.ID.create()
-              const recorded = yield* store.get(sessionID)
-              if (recorded) return recorded
-              const project = yield* projects.resolve(input.location.directory)
-              yield* db
-                .insert(ProjectTable)
-                .values({ id: project.id, worktree: project.directory, vcs: project.vcs?.type, sandboxes: [] })
-                .onConflictDoNothing()
-                .run()
-                .pipe(Effect.orDie)
-              const now = Date.now()
-              const info = SessionV1.SessionInfo.make({
-                id: sessionID,
-                slug: Slug.create(),
-                version: InstallationVersion,
-                projectID: project.id,
-                directory: input.location.directory,
-                path: path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
-                workspaceID: input.location.workspaceID ? WorkspaceV2.ID.make(input.location.workspaceID) : undefined,
-                title: `New session - ${new Date(now).toISOString()}`,
-                agent: input.agent,
-                model: input.model
-                  ? {
-                      id: ModelV2.ID.make(input.model.id),
-                      providerID: input.model.providerID,
-                      variant: input.model.variant,
-                    }
-                  : undefined,
-                cost: 0,
-                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-                time: { created: now, updated: now },
-              })
-              const projected = yield* events
-                .publish(SessionV1.Event.Created, { sessionID, info }, { location: input.location })
-                .pipe(
-                  Effect.as({ type: "created" } as const),
-                  Effect.catchDefect((defect) => {
-                    if (!(defect instanceof SessionProjector.SessionAlreadyProjected)) {
-                      return Effect.die(defect)
-                    }
-                    // Concurrent creation lost the projection race. The existing Session identity wins.
-                    return store
-                      .get(sessionID)
-                      .pipe(
-                        Effect.flatMap((session) =>
-                          session ? Effect.succeed({ type: "existing", session } as const) : Effect.die(defect),
-                        ),
-                      )
-                  }),
-                )
-              if (projected.type === "existing") return projected.session
-              // TODO: Restore recorded sessions onto replacement synchronized workspaces in a future API slice.
-              return yield* result.get(sessionID).pipe(Effect.orDie)
+              return yield* SessionLifecycleHooks.withLock(
+                sessionID,
+                Effect.gen(function* () {
+                  const recorded = yield* store.get(sessionID)
+                  if (recorded) return recorded
+                  const project = yield* projects.resolve(input.location.directory)
+                  yield* db
+                    .insert(ProjectTable)
+                    .values({ id: project.id, worktree: project.directory, vcs: project.vcs?.type, sandboxes: [] })
+                    .onConflictDoNothing()
+                    .run()
+                    .pipe(Effect.orDie)
+                  const now = Date.now()
+                  const info = SessionV1.SessionInfo.make({
+                    id: sessionID,
+                    slug: Slug.create(),
+                    version: InstallationVersion,
+                    projectID: project.id,
+                    directory: input.location.directory,
+                    path: path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
+                    workspaceID: input.location.workspaceID
+                      ? WorkspaceV2.ID.make(input.location.workspaceID)
+                      : undefined,
+                    title: `New session - ${new Date(now).toISOString()}`,
+                    agent: input.agent,
+                    model: input.model
+                      ? {
+                          id: ModelV2.ID.make(input.model.id),
+                          providerID: input.model.providerID,
+                          variant: input.model.variant,
+                        }
+                      : undefined,
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                    time: { created: now, updated: now },
+                  })
+                  const projected = yield* events
+                    .publish(SessionV1.Event.Created, { sessionID, info }, { location: input.location })
+                    .pipe(
+                      Effect.as({ type: "created" } as const),
+                      Effect.catchDefect((defect) => {
+                        if (!(defect instanceof SessionProjector.SessionAlreadyProjected)) {
+                          return Effect.die(defect)
+                        }
+                        // Concurrent creation lost the projection race. The existing Session identity wins.
+                        return store
+                          .get(sessionID)
+                          .pipe(
+                            Effect.flatMap((session) =>
+                              session ? Effect.succeed({ type: "existing", session } as const) : Effect.die(defect),
+                            ),
+                          )
+                      }),
+                    )
+                  if (projected.type === "existing") return projected.session
+                  yield* admissions
+                    .run(sessionID, (commit) =>
+                      Effect.gen(function* () {
+                        const initial = yield* startLifecycle(sessionID, "startup")
+                        if (initial) yield* commit(execution.wake(sessionID))
+                      }),
+                    )
+                    .pipe(Effect.catchTag("SessionConversationHookBlocked", () => Effect.void))
+                  // TODO: Restore recorded sessions onto replacement synchronized workspaces in a future API slice.
+                  return yield* result.get(sessionID).pipe(Effect.orDie)
+                }),
+              )
             }),
             get: Effect.fn("V2Session.get")(function* (sessionID) {
               const session = yield* store.get(sessionID)
@@ -345,29 +390,67 @@ export const layer = Layer.unwrap(
                   .pipe(Effect.as(events.durable({ aggregateID: input.sessionID, after: input.after }))),
               ).pipe(Stream.filter((event): event is SessionEvent.DurableEvent => isDurableSessionEvent(event))),
             prompt: Effect.fn("V2Session.prompt")((input) =>
-              Effect.uninterruptible(
-                Effect.gen(function* () {
-                  yield* result.get(input.sessionID)
-                  const messageID = input.id ?? SessionMessage.ID.create()
-                  const delivery = input.delivery ?? "steer"
-                  const expected = { sessionID: input.sessionID, messageID, prompt: input.prompt, delivery }
-                  const admitted = yield* SessionInput.admit(db, events, {
-                    id: messageID,
-                    sessionID: input.sessionID,
-                    prompt: input.prompt,
-                    delivery,
-                  }).pipe(
-                    Effect.catchDefect((defect) =>
-                      defect instanceof SessionInput.LifecycleConflict
-                        ? new PromptConflictError({ sessionID: input.sessionID, messageID })
-                        : Effect.die(defect),
-                    ),
-                  )
-                  if (!SessionInput.equivalent(admitted, expected))
-                    return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
-                  if (input.resume !== false) yield* execution.wake(admitted.sessionID)
-                  return admitted
-                }),
+              admissions.run(input.sessionID, (commit) =>
+                SessionLifecycleHooks.withLock(
+                  input.sessionID,
+                  Effect.gen(function* () {
+                    yield* result.get(input.sessionID)
+                    const messageID = input.id ?? SessionMessage.ID.create()
+                    // Exact-ID retries read the durable input first. A hook that has
+                    // side effects must not run again because the client retried.
+                    const prior = yield* SessionInput.find(db, messageID)
+                    if (!prior) yield* startLifecycle(input.sessionID, "resume")
+                    const prompt =
+                      prior &&
+                      input.hookMode === undefined &&
+                      input.prompt.hookMode === undefined &&
+                      prior.prompt.hookMode === undefined
+                        ? input.prompt
+                        : { ...input.prompt, hookMode: input.hookMode ?? input.prompt.hookMode ?? "noninteractive" }
+                    let additionalContext: string | undefined
+                    if (!prior) {
+                      const hook = Option.getOrUndefined(yield* Effect.serviceOption(SessionConversationHooks.Service))
+                      if (hook) {
+                        const decision = yield* hook.admit({ sessionID: input.sessionID, prompt })
+                        additionalContext = decision?.additionalContext
+                      }
+                    }
+                    return yield* commit(
+                      Effect.gen(function* () {
+                        const intent = yield* SessionLifecycleHooks.deliveryIntent(db, events, {
+                          sessionID: input.sessionID,
+                          messageID,
+                          requested: input.delivery ?? "steer",
+                          prior,
+                        })
+                        if (intent.conflict)
+                          return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
+                        const delivery = intent.delivery
+                        const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
+                        yield* SessionLifecycleHooks.landContext(events, {
+                          sessionID: input.sessionID,
+                          text: additionalContext,
+                        })
+                        const admitted = yield* SessionInput.admit(db, events, {
+                          id: messageID,
+                          sessionID: input.sessionID,
+                          prompt,
+                          delivery,
+                        }).pipe(
+                          Effect.catchDefect((defect) =>
+                            defect instanceof SessionInput.LifecycleConflict
+                              ? new PromptConflictError({ sessionID: input.sessionID, messageID })
+                              : Effect.die(defect),
+                          ),
+                        )
+                        if (!SessionInput.equivalent(admitted, expected))
+                          return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
+                        if (input.resume !== false) yield* execution.wake(admitted.sessionID)
+                        return admitted
+                      }),
+                    )
+                  }),
+                ),
               ),
             ),
             shell: Effect.fn("V2Session.shell")(function* () {
@@ -387,6 +470,8 @@ export const layer = Layer.unwrap(
             }),
             switchModel: Effect.fn("V2Session.switchModel")(function* (input) {
               yield* result.get(input.sessionID)
+              const hook = Option.getOrUndefined(yield* Effect.serviceOption(SessionModelSwitchHook.Service))
+              if (hook) return yield* hook.switchModel(input)
               yield* events.publish(SessionEvent.ModelSwitched, {
                 sessionID: input.sessionID,
                 messageID: SessionMessage.ID.create(),
@@ -404,10 +489,38 @@ export const layer = Layer.unwrap(
             }),
             resume: Effect.fn("V2Session.resume")(function* (sessionID) {
               yield* result.get(sessionID)
-              yield* execution.resume(sessionID)
+              let joiningExecution = false
+              yield* admissions
+                .run(sessionID, (commit) =>
+                  Effect.gen(function* () {
+                    yield* SessionLifecycleHooks.withLock(sessionID, startLifecycle(sessionID, "resume"))
+                    yield* commit(Effect.void)
+                    // Joining a runner must hold neither the hook lock nor the commit lock.
+                    joiningExecution = true
+                    yield* execution.resume(sessionID)
+                  }),
+                )
+                .pipe(
+                  Effect.catchTag("SessionConversationHookBlocked", () =>
+                    joiningExecution ? Effect.interrupt : Effect.void,
+                  ),
+                )
             }),
             interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
-              Effect.uninterruptible(execution.interrupt(sessionID)),
+              admissions.cancel(
+                sessionID,
+                Effect.gen(function* () {
+                  const current = yield* store.get(sessionID)
+                  const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SessionTurnHooks.Service))
+                  if (current && hooks?.invalidateRewake) {
+                    // A failed host hook must never prevent the user's cancellation.
+                    yield* hooks
+                      .invalidateRewake(sessionID)
+                      .pipe(Effect.provide(locations.get(current.location)), Effect.exit)
+                  }
+                  yield* execution.interrupt(sessionID)
+                }),
+              ),
             ),
             revert: {
               stage: Effect.fn("V2Session.revert.stage")(function* (input) {
@@ -439,15 +552,23 @@ export const layer = Layer.unwrap(
   ),
 )
 
-export const defaultLayer = layer.pipe(
-  Layer.provide(
-    Layer.unwrap(Effect.promise(() => import("./location-layer")).pipe(Effect.map((m) => m.LocationServiceMap.layer))),
-  ),
-  Layer.provide(SessionExecution.noopLayer),
-  Layer.provide(SessionStore.defaultLayer),
-  Layer.provide(SessionProjector.defaultLayer),
-  Layer.provide(EventV2.defaultLayer),
-  Layer.provide(Database.defaultLayer),
-  Layer.provide(ProjectV2.defaultLayer),
-  Layer.orDie,
-)
+const withServices = (service: typeof layer) =>
+  service.pipe(
+    Layer.provide(
+      Layer.unwrap(
+        Effect.promise(() => import("./location-layer")).pipe(Effect.map((m) => m.LocationServiceMap.layer)),
+      ),
+    ),
+    Layer.provide(SessionStore.defaultLayer),
+    Layer.provide(SessionProjector.defaultLayer),
+    Layer.provide(EventV2.defaultLayer),
+    Layer.provide(Database.defaultLayer),
+    Layer.provide(ProjectV2.defaultLayer),
+    Layer.orDie,
+  )
+
+/** Isolate only the executing session constructor; storage and projectors stay shared. */
+export const applicationLayer = withServices(layer.pipe(Layer.fresh))
+
+/** Low-level callers may opt into recording without running model requests. */
+export const defaultLayer = withServices(layer).pipe(Layer.provide(SessionExecution.noopLayer))

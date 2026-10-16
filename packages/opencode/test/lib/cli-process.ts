@@ -141,6 +141,7 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
   return {
     OPENCODE_TEST_HOME: home,
     HOME: home,
+    PWD: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
     XDG_DATA_HOME: path.join(home, ".local/share"),
     XDG_STATE_HOME: path.join(home, ".local/state"),
@@ -202,6 +203,8 @@ export type ServeHandle = {
   readonly url: string
   readonly hostname: string
   readonly port: number
+  /** Recent child stderr for diagnosing background run failures in integration tests. */
+  readonly stderrTail: () => string
   // Sends SIGTERM. The scope finalizer also calls this, so tests rarely need
   // to invoke it directly — useful for tests that assert exit behavior.
   readonly kill: () => void
@@ -495,6 +498,7 @@ export function withCliFixture<A, E>(
         url: match.url,
         hostname: match.hostname,
         port: match.port,
+        stderrTail: () => stderrChunks.join("").slice(-4000),
         kill: () => {
           proc.kill()
         },

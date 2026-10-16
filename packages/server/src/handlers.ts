@@ -48,7 +48,7 @@ export const handlers = Layer.mergeAll(
 ).pipe(
   Layer.provide(sessionLocationLayer),
   Layer.provide(locationLayer),
-  Layer.provide(SessionV2.defaultLayer),
+  Layer.provide(SessionV2.applicationLayer),
   Layer.provide(SessionExecutionLocal.defaultLayer),
   Layer.provide(PermissionSaved.defaultLayer),
   Layer.provide(PtyTicket.defaultLayer),

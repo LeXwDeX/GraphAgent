@@ -69,11 +69,11 @@ export const DialogSelectModelUnpaid: Component<{ model?: ModelState }> = (props
               {node}
             </Tooltip>
           )}
-          onSelect={(x) => {
-            model.set(x ? { modelID: x.id, providerID: x.provider.id } : undefined, {
+          onSelect={async (x) => {
+            const accepted = await model.set(x ? { modelID: x.id, providerID: x.provider.id } : undefined, {
               recent: true,
             })
-            dialog.close()
+            if (accepted) dialog.close()
           }}
         >
           {(i) => (

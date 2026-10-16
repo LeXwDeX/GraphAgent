@@ -32,6 +32,7 @@ export type Event =
   | EventSessionNextTextStarted
   | EventSessionNextTextDelta
   | EventSessionNextTextEnded
+  | EventSessionNextTextDisplayUpdated
   | EventSessionNextReasoningStarted
   | EventSessionNextReasoningDelta
   | EventSessionNextReasoningEnded
@@ -39,6 +40,10 @@ export type Event =
   | EventSessionNextToolInputDelta
   | EventSessionNextToolInputEnded
   | EventSessionNextToolCalled
+  | EventSessionNextToolInputReplaced
+  | EventSessionNextToolDeferred
+  | EventSessionNextToolResuming
+  | EventSessionNextToolUnavailable
   | EventSessionNextToolProgress
   | EventSessionNextToolSuccess
   | EventSessionNextToolFailed
@@ -82,6 +87,9 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
+  | EventSessionHookStatus
+  | EventSessionHookTerminal
+  | EventSessionHookMessage
   | EventProjectUpdated
   | EventSessionStatus
   | EventSessionIdle
@@ -248,6 +256,7 @@ export type UserMessage = {
   id: string
   sessionID: string
   role: "user"
+  hookMode?: "interactive" | "noninteractive"
   time: {
     created: number
     consumed?: number
@@ -390,6 +399,7 @@ export type TextPart = {
   messageID: string
   type: "text"
   text: string
+  displayText?: string
   synthetic?: boolean
   ignored?: boolean
   time?: {
@@ -503,6 +513,7 @@ export type ToolStatePending = {
     [key: string]: unknown
   }
   raw: string
+  deferred?: boolean
 }
 
 export type ToolStateRunning = {
@@ -561,6 +572,9 @@ export type ToolPart = {
   type: "tool"
   callID: string
   tool: string
+  v2?: {
+    messageID: string
+  }
   state: ToolState
   metadata?: {
     [key: string]: unknown
@@ -665,6 +679,7 @@ export type Prompt = {
   text: string
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
+  hookMode?: "interactive" | "noninteractive"
 }
 
 export type Pty = {
@@ -1061,6 +1076,17 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.text.display.updated"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          textID: string
+          displayText: string
+        }
+      }
+    | {
+        id: string
         type: "session.next.reasoning.started"
         properties: {
           timestamp: number
@@ -1155,6 +1181,49 @@ export type GlobalEvent = {
               }
             }
           }
+        }
+      }
+    | {
+        id: string
+        type: "session.next.tool.input.replaced"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
+          input: {
+            [key: string]: unknown
+          }
+        }
+      }
+    | {
+        id: string
+        type: "session.next.tool.deferred"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.tool.resuming"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.tool.unavailable"
+        properties: {
+          timestamp: number
+          sessionID: string
+          assistantMessageID: string
+          callID: string
         }
       }
     | {
@@ -1602,6 +1671,32 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.hook.status"
+        properties: {
+          sessionID: string
+          hookID: string
+          statusMessage: string
+          phase: "started" | "finished"
+        }
+      }
+    | {
+        id: string
+        type: "session.hook.terminal"
+        properties: {
+          sessionID: string
+          sequence: string
+        }
+      }
+    | {
+        id: string
+        type: "session.hook.message"
+        properties: {
+          sessionID: string
+          message: string
+        }
+      }
+    | {
+        id: string
         type: "project.updated"
         properties: {
           id: string
@@ -1791,11 +1886,16 @@ export type GlobalEvent = {
     | SyncEventSessionNextStepFailed
     | SyncEventSessionNextTextStarted
     | SyncEventSessionNextTextEnded
+    | SyncEventSessionNextTextDisplayUpdated
     | SyncEventSessionNextReasoningStarted
     | SyncEventSessionNextReasoningEnded
     | SyncEventSessionNextToolInputStarted
     | SyncEventSessionNextToolInputEnded
     | SyncEventSessionNextToolCalled
+    | SyncEventSessionNextToolInputReplaced
+    | SyncEventSessionNextToolDeferred
+    | SyncEventSessionNextToolResuming
+    | SyncEventSessionNextToolUnavailable
     | SyncEventSessionNextToolProgress
     | SyncEventSessionNextToolSuccess
     | SyncEventSessionNextToolFailed
@@ -1858,6 +1958,9 @@ export type AgentConfig = {
   temperature?: number
   top_p?: number
   prompt?: string
+  hooks?: {
+    [key: string]: unknown
+  }
   tools?: {
     [key: string]: boolean
   }
@@ -2159,6 +2262,11 @@ export type Config = {
   instructions?: Array<string>
   layout?: LayoutConfig
   permission?: PermissionConfig
+  permissions?: PermissionV2Ruleset
+  hookPermissions?: {
+    mode?: "default" | "manual" | "acceptEdits" | "dontAsk" | "plan"
+    directories?: Array<string>
+  }
   tools?: {
     [key: string]: boolean
   }
@@ -2512,6 +2620,9 @@ export type Command = {
 export type Agent = {
   name: string
   description?: string
+  hooks?: unknown
+  hookOrigin?: string
+  hookSource?: "project" | "user" | "plugin" | "builtin"
   mode: "subagent" | "primary" | "all"
   native?: boolean
   hidden?: boolean
@@ -2887,17 +2998,17 @@ export type ServiceUnavailableError = {
   service?: string
 }
 
+export type UnknownError1 = {
+  _tag: "UnknownError"
+  message: string
+  ref?: string
+}
+
 export type MessageNotFoundError = {
   _tag: "MessageNotFoundError"
   sessionID: string
   messageID: string
   message: string
-}
-
-export type UnknownError1 = {
-  _tag: "UnknownError"
-  message: string
-  ref?: string
 }
 
 export type SessionMessagesResponse = {
@@ -2942,6 +3053,7 @@ export type V2Event =
   | V2EventSessionNextTextStarted
   | V2EventSessionNextTextDelta
   | V2EventSessionNextTextEnded
+  | V2EventSessionNextTextDisplayUpdated
   | V2EventSessionNextReasoningStarted
   | V2EventSessionNextReasoningDelta
   | V2EventSessionNextReasoningEnded
@@ -2949,6 +3061,10 @@ export type V2Event =
   | V2EventSessionNextToolInputDelta
   | V2EventSessionNextToolInputEnded
   | V2EventSessionNextToolCalled
+  | V2EventSessionNextToolInputReplaced
+  | V2EventSessionNextToolDeferred
+  | V2EventSessionNextToolResuming
+  | V2EventSessionNextToolUnavailable
   | V2EventSessionNextToolProgress
   | V2EventSessionNextToolSuccess
   | V2EventSessionNextToolFailed
@@ -2992,6 +3108,9 @@ export type V2Event =
   | V2EventMcpToolsChanged
   | V2EventMcpBrowserOpenFailed
   | V2EventCommandExecuted
+  | V2EventSessionHookStatus
+  | V2EventSessionHookTerminal
+  | V2EventSessionHookMessage
   | V2EventProjectUpdated
   | V2EventSessionStatus
   | V2EventSessionIdle
@@ -3623,6 +3742,24 @@ export type SyncEventSessionNextTextEnded = {
   }
 }
 
+export type SyncEventSessionNextTextDisplayUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.text.display.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      textID: string
+      displayText: string
+    }
+  }
+}
+
 export type SyncEventSessionNextReasoningStarted = {
   type: "sync"
   id: string
@@ -3730,6 +3867,77 @@ export type SyncEventSessionNextToolCalled = {
           }
         }
       }
+    }
+  }
+}
+
+export type SyncEventSessionNextToolInputReplaced = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.tool.input.replaced.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
+      input: {
+        [key: string]: unknown
+      }
+    }
+  }
+}
+
+export type SyncEventSessionNextToolDeferred = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.tool.deferred.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
+    }
+  }
+}
+
+export type SyncEventSessionNextToolResuming = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.tool.resuming.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
+    }
+  }
+}
+
+export type SyncEventSessionNextToolUnavailable = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.tool.unavailable.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      assistantMessageID: string
+      callID: string
     }
   }
 }
@@ -3936,6 +4144,16 @@ export type ConfigV2ModelReasoningDistillation = {
   enabled?: boolean
 }
 
+export type PermissionV2Effect = "allow" | "deny" | "ask"
+
+export type PermissionV2Rule = {
+  action: string
+  resource: string
+  effect: PermissionV2Effect
+}
+
+export type PermissionV2Ruleset = Array<PermissionV2Rule>
+
 export type ConfigV2ReasoningDistillationCompatibility = {
   runtime: string
   protocol: string
@@ -4027,16 +4245,6 @@ export type LocationInfo = {
   }
 }
 
-export type PermissionV2Effect = "allow" | "deny" | "ask"
-
-export type PermissionV2Rule = {
-  action: string
-  resource: string
-  effect: PermissionV2Effect
-}
-
-export type PermissionV2Ruleset = Array<PermissionV2Rule>
-
 export type AgentV2Info = {
   id: string
   model?: {
@@ -4053,6 +4261,9 @@ export type AgentV2Info = {
     }
   }
   system?: string
+  hooks?: {
+    [key: string]: unknown
+  }
   description?: string
   mode: "subagent" | "primary" | "all"
   hidden: boolean
@@ -4194,6 +4405,7 @@ export type SessionMessageAssistantText = {
   type: "text"
   id: string
   text: string
+  displayText?: string
 }
 
 export type SessionMessageAssistantReasoning = {
@@ -4218,6 +4430,7 @@ export type SessionMessageToolStateRunning = {
   input: {
     [key: string]: unknown
   }
+  deferred?: boolean
   structured: {
     [key: string]: unknown
   }
@@ -4559,6 +4772,9 @@ export type SkillV2Info = {
   slash?: boolean
   location: string
   content: string
+  hooks?: {
+    [key: string]: unknown
+  }
 }
 
 export type V2EventModelsDevRefreshed = {
@@ -5101,6 +5317,27 @@ export type V2EventSessionNextTextEnded = {
   }
 }
 
+export type V2EventSessionNextTextDisplayUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.text.display.updated"
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    textID: string
+    displayText: string
+  }
+}
+
 export type V2EventSessionNextReasoningStarted = {
   id: string
   metadata?: {
@@ -5266,6 +5503,89 @@ export type V2EventSessionNextToolCalled = {
         }
       }
     }
+  }
+}
+
+export type V2EventSessionNextToolInputReplaced = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.tool.input.replaced"
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    input: {
+      [key: string]: unknown
+    }
+  }
+}
+
+export type V2EventSessionNextToolDeferred = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.tool.deferred"
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+  }
+}
+
+export type V2EventSessionNextToolResuming = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.tool.resuming"
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+  }
+}
+
+export type V2EventSessionNextToolUnavailable = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.tool.unavailable"
+  data: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
   }
 }
 
@@ -6142,6 +6462,62 @@ export type V2EventCommandExecuted = {
   }
 }
 
+export type V2EventSessionHookStatus = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.hook.status"
+  data: {
+    sessionID: string
+    hookID: string
+    statusMessage: string
+    phase: "started" | "finished"
+  }
+}
+
+export type V2EventSessionHookTerminal = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.hook.terminal"
+  data: {
+    sessionID: string
+    sequence: string
+  }
+}
+
+export type V2EventSessionHookMessage = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.hook.message"
+  data: {
+    sessionID: string
+    message: string
+  }
+}
+
 export type V2EventProjectUpdated = {
   id: string
   metadata?: {
@@ -6843,6 +7219,18 @@ export type EventSessionNextTextEnded = {
   }
 }
 
+export type EventSessionNextTextDisplayUpdated = {
+  id: string
+  type: "session.next.text.display.updated"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    textID: string
+    displayText: string
+  }
+}
+
 export type EventSessionNextReasoningStarted = {
   id: string
   type: "session.next.reasoning.started"
@@ -6945,6 +7333,53 @@ export type EventSessionNextToolCalled = {
         }
       }
     }
+  }
+}
+
+export type EventSessionNextToolInputReplaced = {
+  id: string
+  type: "session.next.tool.input.replaced"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+    input: {
+      [key: string]: unknown
+    }
+  }
+}
+
+export type EventSessionNextToolDeferred = {
+  id: string
+  type: "session.next.tool.deferred"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+  }
+}
+
+export type EventSessionNextToolResuming = {
+  id: string
+  type: "session.next.tool.resuming"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
+  }
+}
+
+export type EventSessionNextToolUnavailable = {
+  id: string
+  type: "session.next.tool.unavailable"
+  properties: {
+    timestamp: number
+    sessionID: string
+    assistantMessageID: string
+    callID: string
   }
 }
 
@@ -7376,6 +7811,35 @@ export type EventCommandExecuted = {
     sessionID: string
     arguments: string
     messageID: string
+  }
+}
+
+export type EventSessionHookStatus = {
+  id: string
+  type: "session.hook.status"
+  properties: {
+    sessionID: string
+    hookID: string
+    statusMessage: string
+    phase: "started" | "finished"
+  }
+}
+
+export type EventSessionHookTerminal = {
+  id: string
+  type: "session.hook.terminal"
+  properties: {
+    sessionID: string
+    sequence: string
+  }
+}
+
+export type EventSessionHookMessage = {
+  id: string
+  type: "session.hook.message"
+  properties: {
+    sessionID: string
+    message: string
   }
 }
 
@@ -8882,6 +9346,8 @@ export type AppSkillsResponses = {
     description?: string
     location: string
     content: string
+    hooks?: unknown
+    hookOrigin?: string
   }>
 }
 
@@ -10374,10 +10840,23 @@ export type SessionHookListResponses = {
       | "InstructionsLoaded"
       | "CwdChanged"
       | "FileChanged"
+      | "UserPromptExpansion"
+      | "PostToolBatch"
+      | "TeammateIdle"
+      | "DirectoryAdded"
+      | "PreModelSwitch"
+      | "PostModelSwitch"
+      | "MessageDisplay"
     matcher?: string
     hooks: Array<{
-      type: "command" | "mcp" | "http" | "prompt" | "agent"
+      type: "command" | "mcp" | "mcp_tool" | "http" | "prompt" | "agent"
       command?: string
+      args?: Array<string>
+      server?: string
+      tool?: string
+      input?: {
+        [key: string]: unknown
+      }
       url?: string
       prompt?: string
       headers?: {
@@ -10391,6 +10870,8 @@ export type SessionHookListResponses = {
       inputFormat?: "opencode" | "claude-code"
       allowedEnvVars?: Array<string>
       statusMessage?: string
+      model?: string
+      onFailure?: "continue" | "block"
       once?: boolean
       options?: {
         [key: string]: unknown
@@ -10431,10 +10912,23 @@ export type SessionHookAddData = {
       | "InstructionsLoaded"
       | "CwdChanged"
       | "FileChanged"
+      | "UserPromptExpansion"
+      | "PostToolBatch"
+      | "TeammateIdle"
+      | "DirectoryAdded"
+      | "PreModelSwitch"
+      | "PostModelSwitch"
+      | "MessageDisplay"
     matcher?: string
     hooks: Array<{
-      type: "command" | "mcp" | "http" | "prompt" | "agent"
+      type: "command" | "mcp" | "mcp_tool" | "http" | "prompt" | "agent"
       command?: string
+      args?: Array<string>
+      server?: string
+      tool?: string
+      input?: {
+        [key: string]: unknown
+      }
       url?: string
       prompt?: string
       headers?: {
@@ -10448,6 +10942,8 @@ export type SessionHookAddData = {
       inputFormat?: "opencode" | "claude-code"
       allowedEnvVars?: Array<string>
       statusMessage?: string
+      model?: string
+      onFailure?: "continue" | "block"
       once?: boolean
       options?: {
         [key: string]: unknown
@@ -10603,6 +11099,7 @@ export type SessionPromptData = {
     }
     agent?: string
     noReply?: boolean
+    hookMode?: "interactive" | "noninteractive"
     tools?: {
       [key: string]: boolean
     }
@@ -10623,9 +11120,9 @@ export type SessionPromptData = {
 
 export type SessionPromptErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * InvalidRequestError | BadRequest
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: InvalidRequestError | EffectHttpApiErrorBadRequest
   /**
    * NotFoundError
    */
@@ -10941,6 +11438,175 @@ export type SessionSummarizeResponses = {
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]
 
+export type SessionSetModelData = {
+  body?: {
+    model?: {
+      providerID: string
+      modelID: string
+    }
+    variant?: string
+    source?: "command" | "picker" | "sdk"
+    hookMode?: "interactive" | "noninteractive"
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/model"
+}
+
+export type SessionSetModelErrors = {
+  /**
+   * InvalidRequestError | BadRequest
+   */
+  400: InvalidRequestError | EffectHttpApiErrorBadRequest
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionSetModelError = SessionSetModelErrors[keyof SessionSetModelErrors]
+
+export type SessionSetModelResponses = {
+  /**
+   * Selected session model
+   */
+  200: {
+    providerID: string
+    modelID: string
+  }
+}
+
+export type SessionSetModelResponse = SessionSetModelResponses[keyof SessionSetModelResponses]
+
+export type SessionAttentionData = {
+  body?: {
+    clientID: string
+    clientType?: "terminal" | "web"
+    activity?: number
+    backgroundView?: boolean
+    closed?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/attention"
+}
+
+export type SessionAttentionErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionAttentionError = SessionAttentionErrors[keyof SessionAttentionErrors]
+
+export type SessionAttentionResponses = {
+  /**
+   * Success
+   */
+  200: boolean
+}
+
+export type SessionAttentionResponse = SessionAttentionResponses[keyof SessionAttentionResponses]
+
+export type SessionResumeData = {
+  body?: {
+    messageID?: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
+    agent?: string
+    variant?: string
+    hookMode?: "interactive" | "noninteractive"
+    initialOnly?: boolean
+    followup?:
+      | {
+          kind: "prompt"
+          messageID?: string
+          model?: {
+            providerID: string
+            modelID: string
+          }
+          agent?: string
+          noReply?: boolean
+          hookMode?: "interactive" | "noninteractive"
+          tools?: {
+            [key: string]: boolean
+          }
+          format?: OutputFormat
+          system?: string
+          variant?: string
+          parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
+        }
+      | {
+          kind: "command"
+          messageID?: string
+          agent?: string
+          model?: string
+          hookMode?: "interactive" | "noninteractive"
+          arguments: string
+          command: string
+          variant?: string
+          parts?: Array<{
+            id?: string
+            type: "file"
+            mime: string
+            filename?: string
+            url: string
+            source?: FilePartSource
+          }>
+        }
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/resume"
+}
+
+export type SessionResumeErrors = {
+  /**
+   * InvalidRequestError | BadRequest
+   */
+  400: InvalidRequestError | EffectHttpApiErrorBadRequest
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionResumeError = SessionResumeErrors[keyof SessionResumeErrors]
+
+export type SessionResumeResponses = {
+  /**
+   * Resumed message, or null when no initial message is queued
+   */
+  200: {
+    info: Message
+    parts: Array<Part>
+  }
+}
+
+export type SessionResumeResponse = SessionResumeResponses[keyof SessionResumeResponses]
+
 export type SessionPromptAsyncData = {
   body?: {
     messageID?: string
@@ -10950,6 +11616,7 @@ export type SessionPromptAsyncData = {
     }
     agent?: string
     noReply?: boolean
+    hookMode?: "interactive" | "noninteractive"
     tools?: {
       [key: string]: boolean
     }
@@ -10995,6 +11662,7 @@ export type SessionCommandData = {
     messageID?: string
     agent?: string
     model?: string
+    hookMode?: "interactive" | "noninteractive"
     arguments: string
     command: string
     variant?: string
@@ -11019,9 +11687,9 @@ export type SessionCommandData = {
 
 export type SessionCommandErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * InvalidRequestError | BadRequest
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: InvalidRequestError | EffectHttpApiErrorBadRequest
   /**
    * NotFoundError
    */
@@ -11051,6 +11719,7 @@ export type SessionShellData = {
       modelID: string
     }
     command: string
+    hookMode?: "interactive" | "noninteractive"
   }
   path: {
     sessionID: string
@@ -12629,6 +13298,51 @@ export type V2SessionGetResponses = {
 
 export type V2SessionGetResponse = V2SessionGetResponses[keyof V2SessionGetResponses]
 
+export type V2SessionAttentionData = {
+  body: {
+    clientID: string
+    clientType?: "terminal" | "web"
+    activity?: number
+    backgroundView?: boolean
+    closed?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/attention"
+}
+
+export type V2SessionAttentionErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type V2SessionAttentionError = V2SessionAttentionErrors[keyof V2SessionAttentionErrors]
+
+export type V2SessionAttentionResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionAttentionResponse = V2SessionAttentionResponses[keyof V2SessionAttentionResponses]
+
 export type V2SessionSwitchAgentData = {
   body: {
     agent: string
@@ -12711,6 +13425,7 @@ export type V2SessionPromptData = {
   body: {
     id?: string
     prompt: Prompt
+    hookMode?: "interactive" | "noninteractive"
     delivery?: "steer" | "queue"
     resume?: boolean
   }
@@ -12791,6 +13506,80 @@ export type V2SessionCompactResponses = {
 }
 
 export type V2SessionCompactResponse = V2SessionCompactResponses[keyof V2SessionCompactResponses]
+
+export type V2SessionResumeData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/resume"
+}
+
+export type V2SessionResumeErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type V2SessionResumeError = V2SessionResumeErrors[keyof V2SessionResumeErrors]
+
+export type V2SessionResumeResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionResumeResponse = V2SessionResumeResponses[keyof V2SessionResumeResponses]
+
+export type V2SessionInterruptData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/interrupt"
+}
+
+export type V2SessionInterruptErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionInterruptError = V2SessionInterruptErrors[keyof V2SessionInterruptErrors]
+
+export type V2SessionInterruptResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionInterruptResponse = V2SessionInterruptResponses[keyof V2SessionInterruptResponses]
 
 export type V2SessionWaitData = {
   body?: never

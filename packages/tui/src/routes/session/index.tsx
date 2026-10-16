@@ -47,6 +47,7 @@ import type {
   ReasoningPart,
   SessionStatus,
 } from "@opencode-ai/sdk/v2"
+import { createSessionAttention } from "@opencode-ai/sdk/v2/attention"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
@@ -288,6 +289,43 @@ export function Session() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
+  const [hookStatus, setHookStatus] = createSignal<Record<string, string>>({})
+  const currentHookStatus = createMemo(() => Object.values(hookStatus())[0])
+
+  onCleanup(
+    event.subscribe((evt) => {
+      if (
+        evt.type !== "session.hook.status" &&
+        evt.type !== "session.hook.message" &&
+        evt.type !== "session.hook.terminal"
+      )
+        return
+      if (evt.properties.sessionID !== route.sessionID) return
+      if (evt.type === "session.hook.message") {
+        const message = evt.properties.message
+        if (typeof message === "string" && message) toast.show({ message, variant: "info", duration: 5000 })
+        return
+      }
+      if (evt.type === "session.hook.terminal") {
+        const sequence = evt.properties.sequence
+        if (process.stdout.isTTY && typeof sequence === "string") process.stdout.write(sequence)
+        return
+      }
+      const { hookID, statusMessage, phase } = evt.properties
+      if (typeof hookID !== "string" || typeof statusMessage !== "string") return
+      if (phase === "started") {
+        setHookStatus((current) => ({ ...current, [hookID]: statusMessage }))
+        return
+      }
+      if (phase === "finished") {
+        setHookStatus((current) => {
+          const next = { ...current }
+          delete next[hookID]
+          return next
+        })
+      }
+    }),
+  )
 
   createEffect(() => {
     const sessionID = route.sessionID
@@ -317,6 +355,9 @@ export function Session() {
       }
       editor.reconnect(result.data.directory)
       await sync.session.sync(sessionID)
+      if (result.data.parentID && !sync.data.message[result.data.parentID]) {
+        await sync.session.sync(result.data.parentID).catch(() => undefined)
+      }
       if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
@@ -361,6 +402,40 @@ export function Session() {
   const keymap = useOpencodeKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()
+
+  const attention = createSessionAttention({
+    clientType: "terminal",
+    send: (update, signal) => sdk.client.session.attention(update, { signal }),
+  })
+  const backgroundAttention = createSessionAttention({
+    clientType: "terminal",
+    send: (update, signal) => sdk.client.session.attention(update, { signal }),
+  })
+  createEffect(() => attention.select(route.sessionID))
+  createEffect(() => {
+    const current = session()
+    const parentID = current?.parentID
+    const viewing =
+      parentID &&
+      (sync.data.message[parentID] ?? []).some((message) =>
+        (sync.data.part[message.id] ?? []).some(
+          (part) =>
+            part.type === "tool" &&
+            part.tool === "task" &&
+            part.state.status !== "pending" &&
+            part.state.metadata?.background === true &&
+            part.state.metadata?.sessionId === current.id,
+        ),
+      )
+    backgroundAttention.select(viewing ? parentID : undefined, !!viewing)
+  })
+  const reportActivity = () => attention.activity()
+  renderer.keyInput.on("keypress", reportActivity)
+  onCleanup(() => {
+    renderer.keyInput.off("keypress", reportActivity)
+    void attention.close()
+    void backgroundAttention.close()
+  })
 
   onCleanup(
     event.on("session.status", (evt) => {
@@ -915,7 +990,7 @@ export function Session() {
         }
 
         const text = textParts
-          .map((part) => part.text)
+          .map((part) => part.displayText ?? part.text)
           .join("\n")
           .trim()
         if (!text) {
@@ -1332,6 +1407,13 @@ export function Session() {
                   <SubagentFooter />
                 </Show>
                 <Show when={visible()}>
+                  <Show when={currentHookStatus()}>
+                    {(status) => (
+                      <text fg={theme.textMuted} paddingLeft={3}>
+                        {status()}
+                      </text>
+                    )}
+                  </Show>
                   <pluginRuntime.Slot
                     name="session_prompt"
                     mode="replace"
@@ -1744,14 +1826,15 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  const content = createMemo(() => (props.part.displayText ?? props.part.text).trim())
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={content()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
           streaming={true}
           internalBlockMode="top-level"
-          content={props.part.text.trim()}
+          content={content()}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
           fg={theme.markdownText}

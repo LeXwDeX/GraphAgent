@@ -1,3 +1,7 @@
+import { HookModelMetrics } from "@/hook/model-metrics"
+import { HookSessionContext } from "@/hook/session-context"
+import { Skill } from "@/skill"
+import { HookTranscript } from "@/hook/transcript"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -303,13 +307,22 @@ export const layer = Layer.effect(
             })
           : []
 
-      // PreCompact hook. processCompaction has no custom-instruction channel, so
-      // custom_instructions defaults to "" (CC behavior) in the envelope builder.
+      let transcriptPath = yield* HookTranscript.materialize({
+        sessionID: input.sessionID,
+        directory: yield* InstanceState.directory,
+        messages: input.messages,
+      }).pipe(Effect.orDie)
+      // Current compaction entry points supply no custom instructions; the wire value is null.
       if (settingsHook) {
         const preResult = yield* settingsHook
           .trigger(
-            { event: "PreCompact", trigger: input.auto ? "auto" : "manual" },
-            { sessionID: input.sessionID, transcriptPath: "" },
+            { event: "PreCompact", trigger: input.auto ? "auto" : "manual", customInstructions: null },
+            {
+              sessionID: input.sessionID,
+              transcriptPath,
+              environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
+              environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
+            },
           )
           .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
         yield* SettingsHook.landSystemMessages(preResult, { sessionID: input.sessionID })
@@ -342,6 +355,7 @@ export const layer = Layer.effect(
       }
 
       const agent = yield* agents.get("compaction")
+      if (!agent) return yield* Effect.die(new Error("Compaction agent is unavailable"))
       const conversationModel = yield* provider
         .getModel(userMessage.model.providerID, userMessage.model.modelID)
         .pipe(Effect.orDie)
@@ -603,8 +617,13 @@ export const layer = Layer.effect(
             })
         }
         yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
-        // PostCompact hook
+        // PostCompact sees the committed compacted conversation, not the pre-compaction snapshot.
         if (settingsHook) {
+          transcriptPath = yield* HookTranscript.materialize({
+            sessionID: input.sessionID,
+            directory: yield* InstanceState.directory,
+            messages: yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie),
+          }).pipe(Effect.orDie)
           const pcResult = yield* settingsHook
             .trigger(
               {
@@ -612,7 +631,12 @@ export const layer = Layer.effect(
                 trigger: input.auto ? "auto" : "manual",
                 compactSummary: summary ?? "compaction completed",
               } as any,
-              { sessionID: input.sessionID, transcriptPath: "" },
+              {
+                sessionID: input.sessionID,
+                transcriptPath,
+                environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
+                environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
+              },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
           yield* SettingsHook.landSystemMessages(pcResult, { sessionID: input.sessionID })
@@ -625,11 +649,36 @@ export const layer = Layer.effect(
           if (current && !current.parentID) {
             const ssResult = yield* settingsHook
               .trigger(
-                { event: "SessionStart", source: "compact" },
-                { sessionID: input.sessionID, transcriptPath: "" },
+                {
+                  event: "SessionStart",
+                  source: "compact",
+                  ...(yield* HookModelMetrics.forSession({
+                    source: "compact",
+                    sessionID: current.id,
+                    title: current.title,
+                    titleSource: current.metadata?.hookTitleSource,
+                    model: current.model ?? { providerID: conversationModel.providerID, id: conversationModel.id },
+                    agent: current.agent,
+                    history: yield* session.messages({ sessionID: current.id }).pipe(Effect.orDie),
+                  })),
+                },
+                {
+                  sessionID: input.sessionID,
+                  transcriptPath,
+                  environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
+                  environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
+                },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(ssResult, { sessionID: input.sessionID })
+            const skills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
+            yield* HookSessionContext.applyStart({
+              session: current,
+              sessions: session,
+              settings: settingsHook,
+              result: ssResult,
+              reloadSkills: skills?.reload(),
+            })
             for (const ctx of ssResult.additionalContexts ?? []) {
               if (!ctx) continue
               if (followUpID) {

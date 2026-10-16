@@ -11,6 +11,8 @@ import { useSDK } from "./sdk"
 import { useSync } from "./sync"
 import { useServerSDK } from "./server-sdk"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
+import { showToast } from "@/utils/toast"
+import { formatServerError } from "@/utils/server-errors"
 
 export type ModelKey = { providerID: string; modelID: string; variant?: string }
 
@@ -272,6 +274,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const recent = createMemo(() => models.recent.list().map(models.find).filter(Boolean))
 
+    let modelRequest = Promise.resolve()
+    let modelRequestID = 0
     const model = {
       ready: models.ready,
       current,
@@ -293,20 +297,53 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         if (!entry) return
         model.set({ providerID: entry.provider.id, modelID: entry.id })
       },
-      set(item: ModelKey | undefined, options?: { recent?: boolean }) {
-        batch(() => {
-          setStore("last", {
-            type: "model",
-            agent: agent.current()?.name,
-            model: item ?? null,
-            variant: selected(),
+      set(item: ModelKey | undefined, options?: { recent?: boolean; source?: "picker" | "command" }) {
+        const requestID = ++modelRequestID
+        const sessionID = id()
+        const agentName = agent.current()?.name
+        const matchesSelection = () => id() === sessionID && agent.current()?.name === agentName
+        const commit = () => {
+          if (!matchesSelection()) return false
+          batch(() => {
+            setStore("last", {
+              type: "model",
+              agent: agent.current()?.name,
+              model: item ?? null,
+              variant: selected(),
+            })
+            write({ model: item })
+            if (!item) return
+            models.setVisibility(item, true)
+            if (options?.recent) models.recent.push(item)
           })
-          write({ model: item })
-          if (!item) return
-          models.setVisibility(item, true)
-          if (!options?.recent) return
-          models.recent.push(item)
-        })
+          // An accepted request remains the server's model if the next choice is refused.
+          // Only the newest choice may close its picker.
+          return requestID === modelRequestID
+        }
+        if (!sessionID) return Promise.resolve(commit())
+
+        const apply = async () => {
+          if (requestID !== modelRequestID || !matchesSelection()) return false
+          try {
+            await sdk().client.session.setModel(
+              {
+                sessionID,
+                model: item ? { providerID: item.providerID, modelID: item.modelID } : undefined,
+                source: options?.source ?? "picker",
+                hookMode: "interactive",
+              },
+              { throwOnError: true },
+            )
+            return commit()
+          } catch (error) {
+            if (requestID === modelRequestID && matchesSelection())
+              showToast({ variant: "error", title: "Model switch blocked", description: formatServerError(error) })
+            return false
+          }
+        }
+        const queued = modelRequest.then(apply, apply)
+        modelRequest = queued.then(() => undefined)
+        return queued
       },
       visible(item: ModelKey) {
         return models.visible(item)

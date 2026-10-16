@@ -69,6 +69,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
   let assistantActive = false
   let assistantFailed = false
   let providerFailed = false
+  let providerFailure: Extract<LLMEvent, { type: "provider-error" }> | undefined
   let stepSettlement: { readonly finish: string; readonly tokens: ReturnType<typeof tokens> } | undefined
 
   const startAssistant = Effect.fnUntraced(function* () {
@@ -403,6 +404,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
         return
       case "provider-error":
         providerFailed = true
+        providerFailure = event
         yield* failAssistant(event.message)
         return
     }
@@ -416,6 +418,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     hasActiveAssistant: () => assistantActive,
     hasAssistantStarted: () => assistantMessageID !== undefined,
     hasProviderError: () => providerFailed,
+    providerFailure: () => providerFailure,
     stepSettlement: () => stepSettlement,
     startAssistant,
     assistantMessageID: assistantMessageIDForTool,

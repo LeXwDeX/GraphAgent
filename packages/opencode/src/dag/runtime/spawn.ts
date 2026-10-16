@@ -30,6 +30,10 @@
  * (Level 2) is a documented boundary — see eval.ts.
  */
 
+import { HookLifecycle } from "@/hook/lifecycle"
+import { SettingsHook } from "@/hook/settings"
+import { HookTranscript } from "@/hook/transcript"
+import { HookStartContext } from "@/hook/start-context"
 import { Logging } from "@opencode-ai/core/observability/logging"
 import { Effect, Semaphore, Scope, Fiber, Option, Clock, Cause, Exit } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
@@ -363,6 +367,9 @@ export function spawnNode(
     const promptSvc = yield* SessionPrompt.Service
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const scope = yield* Scope.Scope
+    const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+    const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
+    const hookStart = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const admissionAttempt = {
       replanAttempts: input.node.replanAttempts,
       nodeSeq: input.node.seq,
@@ -476,6 +483,7 @@ export function spawnNode(
     // Assigned inside the fiber once the child session materializes; read by
     // the ensuring/onInterrupt cleanups below.
     let childSessionID: string | undefined
+    const hookOrigin = agent.hookOrigin ? `agent:${agent.hookOrigin}` : `agent-config:${agent.name}`
 
     // Forked first so the execution fiber's cleanup closures can capture it.
     const watcherFiber = yield* Effect.forkIn(scope)(
@@ -647,6 +655,28 @@ export function spawnNode(
             )
             return false
           })
+          if (hooks?.registerScoped && agent.hooks !== undefined)
+            yield* hooks.registerScoped(childSession.id, {
+              kind: "agent",
+              origin: hookOrigin,
+              source: agent.hookSource,
+              hooks: agent.hooks,
+              child: true,
+            })
+          const hookAttempt = DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts)
+          if (hooks && (!hookLifecycle || (yield* hookLifecycle.claimChildStart(childSession.id, hookAttempt)))) {
+            const transcriptPath = yield* HookTranscript.materialize({
+              sessionID: parent.id,
+              directory: parent.directory,
+              messages: yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie),
+            }).pipe(Effect.orDie)
+            const started = yield* hooks.trigger(
+              { event: "SubagentStart", agentID: childSession.id, agentType: agent.name },
+              { sessionID: parent.id, transcriptPath },
+            )
+            yield* SettingsHook.landSystemMessages(started, { sessionID: parent.id })
+            if (hookStart) for (const text of started.additionalContexts) yield* hookStart.append(childSession.id, text)
+          }
           let result = yield* promptSvc.prompt({
             messageID: MessageID.ascending(),
             sessionID: childSession.id,
@@ -970,6 +1000,7 @@ export function spawnNode(
             if (childSessionID) {
               clearCaptureSlot(childSessionID)
               clearFinalResponseSession(childSessionID)
+              if (hooks?.unregisterScoped) yield* hooks.unregisterScoped(childSessionID, hookOrigin)
             }
           }),
         ),

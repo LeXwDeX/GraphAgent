@@ -1,6 +1,9 @@
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Fiber } from "effect"
 import { define } from "@opencode-ai/plugin/v2/effect"
+import { SkillV2 } from "@opencode-ai/core/skill"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SourceProvenance } from "@opencode-ai/core/session/source-provenance"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { testEffect } from "./lib/effect"
@@ -69,3 +72,55 @@ describe("PluginV2", () => {
     }),
   )
 })
+
+it.effect("records hook provenance from the actual plugin execution boundary", () =>
+  Effect.gen(function* () {
+    const plugins = yield* PluginV2.Service
+    const agents = yield* AgentV2.Service
+    const id = PluginV2.ID.make("actual-hook-owner")
+    yield* plugins.add(id, (ctx) =>
+      ctx.agent
+        .transform((draft) => {
+          draft.update("scoped", (agent) =>
+            Object.assign(agent, { hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } }),
+          )
+        })
+        .pipe(Effect.asVoid),
+    )
+    expect((yield* agents.get(AgentV2.ID.make("scoped")))?.hooks).toBeDefined()
+    expect(SourceProvenance.agent(agents, "scoped")).toEqual({
+      source: "plugin",
+      origin: "actual-hook-owner:agent:scoped",
+    })
+    yield* agents.reload()
+    expect(SourceProvenance.agent(agents, "scoped")?.source).toBe("plugin")
+  }),
+)
+
+it.effect("records only actually registered plugin skill hooks as plugin sources", () =>
+  Effect.gen(function* () {
+    const plugins = yield* PluginV2.Service
+    const skills = yield* SkillV2.Service
+    yield* plugins.add(PluginV2.ID.make("actual-skill-owner"), (ctx) =>
+      ctx.skill
+        .transform((draft) => {
+          draft.source({
+            type: "embedded",
+            skill: SkillV2.Info.make({
+              name: "plugin-hook-skill",
+              location: AbsolutePath.make("/fixture/plugin/SKILL.md"),
+              content: "fixture",
+              hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] },
+            }),
+          })
+        })
+        .pipe(Effect.asVoid),
+    )
+    const loaded = (yield* skills.list()).find((item) => item.name === "plugin-hook-skill")
+    expect(loaded?.hooks).toBeDefined()
+    expect(loaded && SourceProvenance.skill(loaded)).toEqual({
+      source: "plugin",
+      origin: "actual-skill-owner:skill:embedded:plugin-hook-skill",
+    })
+  }),
+)

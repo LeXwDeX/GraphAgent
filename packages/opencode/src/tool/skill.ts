@@ -1,7 +1,8 @@
 import path from "path"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Skill } from "../skill"
+import { SettingsHook } from "@/hook/settings"
 import * as Tool from "./tool"
 import DESCRIPTION from "./skill.txt"
 
@@ -41,6 +42,19 @@ export const SkillTool = Tool.define(
             signal: ctx.abort,
             limit: 10,
           })
+
+          // A skill's frontmatter hooks become active only when the skill tool
+          // actually loads it. The stable path origin makes repeated loads in
+          // this session idempotent; SessionEnd owns eventual cleanup.
+          if (info.hooks !== undefined && info.hookOrigin) {
+            const settings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+            if (settings?.registerScoped)
+              yield* settings.registerScoped(ctx.sessionID, {
+                kind: "skill",
+                origin: info.hookOrigin,
+                hooks: info.hooks,
+              })
+          }
 
           return {
             title: `Loaded skill: ${info.name}`,

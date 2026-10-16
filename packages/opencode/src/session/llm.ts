@@ -1,3 +1,4 @@
+import type { ToolBatch } from "@/hook/tool-batch"
 import { randomUUID } from "node:crypto"
 import { Logging } from "@opencode-ai/core/observability/logging"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -157,6 +158,7 @@ export type StreamInput = {
   tools: Record<string, Tool>
   /** Shared across every provider request for the current user input. */
   toolBudget?: ToolBudget.Budget
+  toolBatch?: ToolBatch
   retries?: number
   toolChoice?: "auto" | "required" | "none"
   purpose?: RequestPurpose
@@ -443,6 +445,7 @@ const live: Layer.Layer<
           contextFolding: folding,
           onThinkingInvalidated: input.onThinkingInvalidated,
           sessionID: input.sessionID,
+          toolBatch: input.toolBatch,
         })
         if (native.type === "supported") {
           yield* Effect.logInfo(
@@ -564,6 +567,42 @@ const live: Layer.Layer<
             middleware: [
               {
                 specificationVersion: "v3" as const,
+                async wrapStream({ doStream }) {
+                  const response = await doStream()
+                  if (!input.toolBatch) return response
+                  const batch = input.toolBatch
+                  const reader = response.stream.getReader()
+                  let complete = false
+                  return {
+                    ...response,
+                    stream: new ReadableStream({
+                      async pull(controller) {
+                        try {
+                          const next = await reader.read()
+                          if (next.done) {
+                            if (!complete) batch.finish(false)
+                            controller.close()
+                            return
+                          }
+                          const part = next.value
+                          if (part.type === "tool-call" && !part.providerExecuted) batch.add(part.toolCallId)
+                          if (part.type === "finish") {
+                            complete = true
+                            batch.finish()
+                          }
+                          controller.enqueue(part)
+                        } catch (error) {
+                          batch.finish(false)
+                          controller.error(error)
+                        }
+                      },
+                      async cancel(reason) {
+                        batch.finish(false)
+                        await reader.cancel(reason)
+                      },
+                    }),
+                  }
+                },
                 async transformParams(args) {
                   if (args.type === "stream") {
                     const sourceOrigins = ThinkingReplay.replayOrigins(args.params.prompt)

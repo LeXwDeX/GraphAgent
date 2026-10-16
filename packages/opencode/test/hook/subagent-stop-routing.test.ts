@@ -1,3 +1,4 @@
+import { decodeJsonRecord } from "../lib/hook-json"
 import { SessionHooks } from "@/hook/session-hooks"
 import { expect } from "bun:test"
 import fs from "node:fs/promises"
@@ -147,26 +148,25 @@ it.live("subagent completion must not fire main-agent Stop hooks", () =>
   ),
 )
 
-const writeStopCapture = (dir: string) =>
+const writeStopCapture = (dir: string, event: "Stop" | "SubagentStop" = "Stop") =>
   Effect.promise(async () => {
     const capture = path.join(dir, "stop-events.jsonl")
     await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
     await fs.writeFile(
       path.join(dir, ".opencode", "hooks.json"),
       JSON.stringify({
-        Stop: [{ hooks: [{ type: "command", command: `cat >> '${capture}'; echo >> '${capture}'` }] }],
+        [event]: [{ hooks: [{ type: "command", command: `cat >> '${capture}'; echo >> '${capture}'` }] }],
       }),
     )
     return capture
   })
 
 // A child session created through the public API (`POST /session {parentID}`)
-// is not driven by the task tool, so nothing fires SubagentStop for it: its own
-// turn must still fire Stop.
-it.live("SDK-created child session still fires Stop", () =>
+// is not driven by TaskTool; its own prompt loop emits the parent-scoped SubagentStop.
+it.live("SDK-created child session emits parent-scoped SubagentStop", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm, dir }) {
-      const capture = yield* writeStopCapture(dir)
+      const capture = yield* writeStopCapture(dir, "SubagentStop")
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const parent = yield* sessions.create({ title: "SDK parent" })
@@ -176,8 +176,10 @@ it.live("SDK-created child session still fires Stop", () =>
       const events = (yield* Effect.promise(() => fs.readFile(capture, "utf8")))
         .split("\n")
         .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as { session_id: string; hook_event_name: string })
-      expect(events.map((e) => e.session_id)).toEqual([child.id])
+        .map((line) => decodeJsonRecord(line))
+      expect(events).toEqual([
+        expect.objectContaining({ session_id: parent.id, agent_id: child.id, hook_event_name: "SubagentStop" }),
+      ])
     }),
     { git: true, config: providerCfg },
   ),

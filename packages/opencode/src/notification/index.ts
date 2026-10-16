@@ -1,22 +1,12 @@
-/**
- * notification-emitter — single internal choke point for "agent needs attention"
- * moments. Today's producers: permission asks (notificationType "permission") and
- * MCP elicitation asks (notificationType "elicitation"). The emitter fires the
- * `Notification` hook (resolved optionally so hook-less compositions stay valid)
- * and is the seam future OS/desktop notification delivery will plug into.
- *
- * Following the Todo/Question module pattern: self-contained `defaultLayer` with
- * no construction-time deps (SettingsHook resolved via serviceOption at call
- * time, per the AGENTS.md invariant for optional cross-deps).
- */
+import { SessionAttention } from "./attention"
+/** Non-blocking internal hook delivery. Producers own the business timing and cancellation. */
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer, Context, Option } from "effect"
-import { SettingsHook } from "@/hook/settings"
 
 export interface NotifyInput {
   message: string
   title?: string
-  /** Producer category — "permission" | "elicitation" | … */
+  /** Official Notification matcher category. */
   notificationType: string
   /** Session that needs attention; reported to the hook as `session_id`. */
   sessionID?: string
@@ -36,37 +26,72 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/No
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    // SettingsHook is resolved at CALL time (inside notify), not at layer
-    // construction. This keeps the emitter self-contained: Layer.mergeAll
-    // siblings don't cross-provide, so a construction-time serviceOption would
-    // return None in merged compositions. Call-time resolution sees whatever
-    // hooks context the notifying flow runs in (per the AGENTS.md invariant for
-    // optional cross-deps).
+    const { SettingsHook } = yield* Effect.promise(() => import("@/hook/settings"))
+    const layerSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
 
-    const notify = Effect.fn("Notification.notify")(function* (input: NotifyInput) {
-      const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
-      if (!settingsHook) return
-      const nResult = yield* settingsHook
-        .trigger(
-          {
-            event: "Notification",
-            message: input.message,
-            title: input.title,
-            notificationType: input.notificationType,
-          },
-          { sessionID: input.sessionID ?? "", transcriptPath: "" },
-        )
-        .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-      yield* SettingsHook.landSystemMessages(nResult, { sessionID: input.sessionID ?? "" })
-    })
+    const notify = Effect.fn("Notification.notify")(
+      function* (input: NotifyInput) {
+        const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? layerSettings
+        if (!settingsHook) return
+        const { consumerContext } = yield* Effect.promise(() => import("@/hook/consumer-context"))
+        const nResult = yield* settingsHook
+          .trigger(
+            {
+              event: "Notification",
+              message: input.message,
+              title: input.title,
+              notificationType: input.notificationType,
+            },
+            input.sessionID
+              ? yield* consumerContext(input.sessionID).pipe(Effect.orDie)
+              : { sessionID: "", transcriptPath: "" },
+          )
+          .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
+        void nResult // Notification output cannot alter the conversation.
+        if (input.sessionID && ["permission_prompt", "elicitation_dialog"].includes(input.notificationType)) {
+          const { BackgroundJob } = yield* Effect.promise(() => import("@/background/job"))
+          const jobs = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
+          const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
+          const job = jobs
+            ? (yield* jobs.list()).find(
+                (job) =>
+                  job.status === "running" &&
+                  job.metadata?.background === true &&
+                  job.metadata?.sessionId === input.sessionID,
+              )
+            : undefined
+          const parent = job?.metadata?.parentSessionId
+          if (attention && typeof parent === "string" && (yield* attention.viewing(parent))) {
+            yield* settingsHook
+              .trigger(
+                {
+                  event: "Notification",
+                  notificationType: "agent_needs_input",
+                  message: "A background agent needs your input",
+                },
+                yield* consumerContext(input.sessionID).pipe(Effect.orDie),
+              )
+              .pipe(Effect.ignore)
+          }
+        }
+      },
+      Effect.ignore,
+      Effect.catchDefect(() => Effect.void),
+    )
 
     return Service.of({ notify })
   }),
 )
 
-// No construction-time deps → self-contained. SettingsHook is ambient.
-export const defaultLayer: Layer.Layer<Service> = layer
+export const defaultLayer: Layer.Layer<Service> = Layer.suspend(() =>
+  layer.pipe(Layer.provide(SessionAttention.defaultLayer)),
+)
 
-export const node = LayerNode.make(layer, [])
+export const node = {
+  ...LayerNode.make(layer, []),
+  get dependencies() {
+    return [SessionAttention.node]
+  },
+}
 
 export * as Notification from "."

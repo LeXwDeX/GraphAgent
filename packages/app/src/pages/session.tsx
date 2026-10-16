@@ -1,4 +1,5 @@
 import type { Project, UserMessage } from "@opencode-ai/sdk/v2"
+import { createSessionAttention } from "@opencode-ai/sdk/v2/attention"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { createQuery, skipToken, useMutation, useQueryClient } from "@tanstack/solid-query"
 import {
@@ -20,7 +21,7 @@ import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { debounce } from "@solid-primitives/scheduled"
 import { useLocal } from "@/context/local"
 import { selectionFromLines, useFile, type FileSelection, type SelectedLineRange } from "@/context/file"
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import { ResizeHandle } from "@opencode-ai/ui/resize-handle"
 import { Select } from "@opencode-ai/ui/select"
 import { Tabs } from "@opencode-ai/ui/tabs"
@@ -134,6 +135,17 @@ export default function Page() {
   const newSessionDesign = createMemo(() => settings.general.newLayoutDesigns())
 
   createEffect(() => {
+    const client = sdk().client
+    const attention = createSessionAttention({
+      clientType: "web",
+      send: (update, signal) => client.session.attention(update, { signal }),
+    })
+    createEffect(() => attention.select(params.id))
+    makeEventListener(document, "keydown", () => attention.activity(), { capture: true })
+    onCleanup(() => void attention.close())
+  })
+
+  createEffect(() => {
     if (!prompt.ready()) return
     untrack(() => {
       if (params.id) return
@@ -146,6 +158,7 @@ export default function Page() {
 
   const [ui, setUi] = createStore({
     pendingMessage: undefined as string | undefined,
+    hookStatus: {} as Record<string, string>,
     reviewSnap: false,
     scrollGesture: 0,
     scroll: {
@@ -592,6 +605,7 @@ export default function Page() {
       () => {
         setStore(sessionViewState())
         setUi("pendingMessage", undefined)
+        setUi("hookStatus", reconcile({}))
       },
       { defer: true },
     ),
@@ -608,6 +622,26 @@ export default function Page() {
     refreshVcs()
   })
   onCleanup(stopVcs)
+
+  const stopHookEvents = sdk().event.listen((evt) => {
+    const kind = String(evt.details.type)
+    if (kind !== "session.hook.status" && kind !== "session.hook.message") return
+    const properties = evt.details.properties as Record<string, unknown>
+    if (properties.sessionID !== params.id) return
+    if (kind === "session.hook.message") {
+      if (typeof properties.message === "string" && properties.message) showToast({ description: properties.message })
+      return
+    }
+    if (typeof properties.hookID !== "string" || typeof properties.statusMessage !== "string") return
+    if (properties.phase === "started") {
+      setUi("hookStatus", properties.hookID, properties.statusMessage)
+      return
+    }
+    if (properties.phase === "finished") {
+      setUi("hookStatus", properties.hookID, undefined!)
+    }
+  })
+  onCleanup(stopHookEvents)
 
   createEffect(
     on(
@@ -1570,6 +1604,7 @@ export default function Page() {
   const composerRegion = (placement: "dock" | "inline") => (
     <SessionComposerRegion
       state={composer}
+      hookStatus={Object.values(ui.hookStatus)[0]}
       sessionKey={sessionKey()}
       sessionID={params.id}
       controls={composerControls()}

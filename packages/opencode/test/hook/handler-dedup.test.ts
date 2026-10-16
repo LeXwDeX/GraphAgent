@@ -41,7 +41,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
             path.join(dir, ".opencode", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
-                { matcher: "bash", hooks: [{ type: "command", command: cmd }] },
+                { matcher: "Bash", hooks: [{ type: "command", command: cmd }] },
                 { matcher: "*", hooks: [{ type: "command", command: cmd }] },
               ],
             }),
@@ -60,7 +60,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
           { sessionID: "ses_handler_dedup_2", transcriptPath: "" },
         )
         const log = yield* Effect.promise(() => fs.readFile(path.join(dir, "count.log"), "utf8"))
-        expect(log.trim().split("\n")).toEqual(["a", "b"])
+        expect(log.trim().split("\n").sort()).toEqual(["a", "b"])
       }),
     {
       init: (dir) =>
@@ -71,7 +71,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
             path.join(dir, ".opencode", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
-                { matcher: "bash", hooks: [{ type: "command", command: cmd("a") }] },
+                { matcher: "Bash", hooks: [{ type: "command", command: cmd("a") }] },
                 { matcher: "*", hooks: [{ type: "command", command: cmd("b") }] },
               ],
             }),
@@ -101,7 +101,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
             path.join(dir, ".opencode", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
-                { matcher: "bash", hooks: [{ type: "command", command: cmd, timeout: 5 }] },
+                { matcher: "Bash", hooks: [{ type: "command", command: cmd, timeout: 5 }] },
                 { matcher: "*", hooks: [{ type: "command", command: cmd, timeout: 6 }] },
               ],
             }),

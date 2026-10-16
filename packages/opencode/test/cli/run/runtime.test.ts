@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { OpencodeClient } from "@opencode-ai/sdk/v2"
-import { runInteractiveMode } from "@/cli/cmd/run/runtime"
-import type { FooterApi, RunProvider } from "@/cli/cmd/run/types"
+import { type SessionAttentionUpdate, OpencodeClient } from "@opencode-ai/sdk/v2"
+import { runInteractiveLocalMode, runInteractiveMode } from "@/cli/cmd/run/runtime"
+import type { FooterApi, RunPrompt, RunProvider } from "@/cli/cmd/run/types"
 
 type SessionMessage = NonNullable<Awaited<ReturnType<OpencodeClient["session"]["messages"]>>["data"]>[number]
 
@@ -236,3 +236,186 @@ describe("run interactive runtime", () => {
     expect(transportProviders).toEqual([[provider]])
   })
 })
+
+test("local mini creates attention only after ensureSession, switches on /new, and closes the selected client", async () => {
+  const ui = footer()
+  const ready = defer<void>()
+  const rows: SessionAttentionUpdate[] = []
+  const turns: string[] = []
+  const sessionReady = defer<void>()
+  let submit: ((input: RunPrompt) => void) | undefined
+  ui.onPrompt = (fn) => {
+    submit = fn
+    ready.resolve()
+    return () => {
+      submit = undefined
+    }
+  }
+  const localFetch: typeof fetch = Object.assign(
+    async (input: RequestInfo | URL) => {
+      const request = input instanceof Request ? input : new Request(input)
+      const path = new URL(request.url).pathname
+      if (path.endsWith("/attention")) {
+        rows.push({ ...(await request.json()), sessionID: path.split("/")[2] })
+        return Response.json(true)
+      }
+      if (path === "/config/providers") return Response.json({ providers: [], default: {} })
+      if (path === "/agent" || path === "/command") return Response.json([])
+      if (path === "/experimental/resource") return Response.json({})
+      return new Response("fixture route not used", { status: 404 })
+    },
+    { preconnect: fetch.preconnect },
+  )
+  const task = runInteractiveLocalMode(
+    {
+      directory: "/tmp",
+      fetch: localFetch,
+      resolveAgent: async () => "build",
+      session: async () => {
+        await sessionReady.promise
+        return { id: "ses_first" }
+      },
+      share: async () => {},
+      createSession: async () => ({ id: "ses_second" }),
+      agent: "build",
+      model: undefined,
+      variant: undefined,
+      files: [],
+      thinking: false,
+      backgroundSubagents: false,
+    },
+    {
+      createRuntimeLifecycle: async (input) => {
+        input.onActivity?.()
+        input.onBackgroundView?.(true)
+        expect(rows).toEqual([])
+        return {
+          footer: ui,
+          onResize: () => () => {},
+          refreshTheme: () => {},
+          resetForReplay: async () => {},
+          close: async () => {},
+        }
+      },
+      streamTransport: Promise.resolve({
+        createSessionTransport: async (input) => ({
+          runPromptTurn: async () => {
+            turns.push(input.sessionID)
+          },
+          selectSubagent: () => {},
+          replayOnResize: async () => false,
+          close: async () => {},
+        }),
+        formatUnknownError: (error) => String(error),
+      }),
+    },
+  )
+  const waitFor = async (check: () => boolean) => {
+    for (let count = 0; count < 200 && !check(); count++) await Bun.sleep(5)
+    expect(check()).toBe(true)
+  }
+  try {
+    await ready.promise
+    expect(rows).toEqual([])
+    sessionReady.resolve()
+    if (!submit) throw new Error("mini did not subscribe to prompt input")
+    submit({ text: "first", parts: [] })
+    await waitFor(() => turns.length === 1 && rows.length > 0)
+    expect(rows[0]?.sessionID).toBe("ses_first")
+    expect(rows[0]?.backgroundView).toBe(true)
+    submit({ text: "/new", parts: [] })
+    await waitFor(() => rows.some((row) => row.sessionID === "ses_second"))
+    const oldClose = rows.findIndex((row) => row.sessionID === "ses_first" && row.closed)
+    const next = rows.findIndex((row) => row.sessionID === "ses_second")
+    expect(oldClose).toBeGreaterThanOrEqual(0)
+    expect(oldClose).toBeLessThan(next)
+    expect(rows[next]?.backgroundView).toBe(false)
+    expect(turns).toEqual(["ses_first"])
+  } finally {
+    sessionReady.resolve()
+    ui.close()
+    await task
+  }
+  expect(rows.at(-1)).toMatchObject({ sessionID: "ses_second", closed: true, backgroundView: false })
+})
+
+for (const ignoresSignal of [false, true]) {
+  test(`mini restores its shell when attention transport ${ignoresSignal ? "ignores abort" : "is a stalled real fetch"}`, async () => {
+    const ui = footer()
+    let entered = false
+    let shellClosed = false
+    const signals: AbortSignal[] = []
+    let release: ((response: Response) => void) | undefined
+    const held = new Promise<Response>((resolve) => {
+      release = resolve
+    })
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", idleTimeout: 0, fetch: () => held })
+    const localFetch: typeof fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const request = input instanceof Request ? input : new Request(input)
+        const path = new URL(request.url).pathname
+        if (path.endsWith("/attention")) {
+          entered = true
+          signals.push(request.signal)
+          return ignoresSignal ? held : fetch(server.url, { signal: request.signal })
+        }
+        if (path === "/config/providers") return Response.json({ providers: [], default: {} })
+        if (path === "/agent" || path === "/command") return Response.json([])
+        if (path === "/experimental/resource") return Response.json({})
+        return new Response("unused fixture route", { status: 404 })
+      },
+      { preconnect: fetch.preconnect },
+    )
+    const task = runInteractiveLocalMode(
+      {
+        directory: "/tmp",
+        fetch: localFetch,
+        resolveAgent: async () => "build",
+        session: async () => ({ id: "ses_stalled_runtime" }),
+        share: async () => {},
+        agent: "build",
+        model: undefined,
+        variant: undefined,
+        files: [],
+        thinking: false,
+        backgroundSubagents: false,
+      },
+      {
+        createRuntimeLifecycle: async () => ({
+          footer: ui,
+          onResize: () => () => {},
+          refreshTheme: () => {},
+          resetForReplay: async () => {},
+          close: async () => {
+            shellClosed = true
+          },
+        }),
+        streamTransport: Promise.resolve({
+          createSessionTransport: async () => ({
+            runPromptTurn: async () => {},
+            selectSubagent: () => {},
+            replayOnResize: async () => false,
+            close: async () => {},
+          }),
+          formatUnknownError: (error) => String(error),
+        }),
+      },
+    )
+    try {
+      for (let count = 0; count < 200; count++) {
+        if (entered) break
+        await Bun.sleep(5)
+      }
+      expect(entered).toBe(true)
+      ui.close()
+      await Bun.sleep(2_150)
+      expect(shellClosed).toBe(true)
+      expect(signals.every((signal) => signal.aborted)).toBe(true)
+    } finally {
+      ui.close()
+      release?.(new Response("released"))
+      await task
+      await server.stop(true)
+    }
+  })
+}

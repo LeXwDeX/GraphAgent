@@ -141,6 +141,7 @@ export function latest<K extends keyof Info>(entries: readonly Entry[], key: K):
 export interface Interface {
   /** Returns location config documents and supplemental directories from lowest to highest priority. */
   readonly entries: () => Effect.Effect<Entry[]>
+  readonly refresh?: () => Effect.Effect<void, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Config") {}
@@ -157,26 +158,32 @@ export const layer = Layer.effect(
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
 
-    const loadFile = Effect.fnUntraced(function* (filepath: string) {
+    const loadFile = Effect.fnUntraced(function* (filepath: string, strict = false) {
       const text = yield* fs.readFileStringSafe(filepath)
-      if (!text) return
+      if (!text) return undefined
 
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
-      if (errors.length) return
+      if (errors.length) {
+        if (strict) return yield* Effect.fail(new Error(`Invalid configuration JSON: ${filepath}`))
+        return undefined
+      }
 
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)
           ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
           : decodeInfo(input),
       )
-      if (!info) return
+      if (!info) {
+        if (strict) return yield* Effect.fail(new Error(`Invalid configuration schema: ${filepath}`))
+        return undefined
+      }
       return new Document({ type: "document", path: filepath, info })
     })
 
-    const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {
+    const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath, strict = false) {
       return [
-        ...(yield* Effect.forEach(names, (file) => loadFile(path.join(directory, file))).pipe(
+        ...(yield* Effect.forEach(names, (file) => loadFile(path.join(directory, file), strict)).pipe(
           Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
         )),
         new Directory({ type: "directory", path: directory }),
@@ -185,45 +192,62 @@ export const layer = Layer.effect(
 
     const globalDirectory = AbsolutePath.make(global.config)
     const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
-    // Read configuration once when this location opens. Later calls reuse these
-    // values until the location is reopened.
-    const discovered = locationIsGlobal
-      ? []
-      : yield* fs
-          .up({
+    const readConfigs = Effect.fn("Config.readConfigs")(function* (strict: boolean) {
+      const discovered = locationIsGlobal
+        ? []
+        : yield* fs.up({
             targets: [".opencode", ...names.toReversed()],
             start: location.directory,
             stop: location.project.directory,
           })
-          .pipe(Effect.orDie)
-    const directories = [
-      globalDirectory,
-      ...discovered
-        .filter((item) => path.basename(item) === ".opencode")
-        .toReversed()
-        .map((directory) => AbsolutePath.make(directory)),
-    ]
-    // A config closer to the opened directory should win over one higher up.
-    // Search starts nearby, so reverse the results before applying them.
-    const directPaths = discovered.filter((item) => path.basename(item) !== ".opencode").toReversed()
-    const direct = yield* Effect.forEach(directPaths, loadFile).pipe(
-      Effect.orDie,
-      Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
-    )
-    const supplementary = yield* Effect.forEach(directories, loadDirectory).pipe(Effect.orDie)
-    // Apply general settings first and more specific settings last:
-    // global config, project files, then `.opencode` files.
-    const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
-    // Rules use the opposite order so a user-global rule can override a
-    // repository rule. Statement order inside each file stays unchanged.
-    yield* policy.load(
-      configs
-        .filter((config): config is Document => config.type === "document")
-        .toReversed()
-        .flatMap((config) => config.info.experimental?.policies ?? []),
-    )
+
+      const directories = [
+        globalDirectory,
+        ...discovered
+          .filter((item) => path.basename(item) === ".opencode")
+          .toReversed()
+          .map((directory) => AbsolutePath.make(directory)),
+      ]
+      // A config closer to the opened directory should win over one higher up.
+      // Search starts nearby, so reverse the results before applying them.
+      const directPaths = discovered.filter((item) => path.basename(item) !== ".opencode").toReversed()
+      const direct = yield* Effect.forEach(directPaths, (file) => loadFile(file, strict)).pipe(
+        Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
+      )
+      const supplementary = yield* Effect.forEach(directories, (directory) => loadDirectory(directory, strict))
+      // Apply general settings first and more specific settings last:
+      // global config, project files, then `.opencode` files.
+      const localPermissions = yield* loadFile(
+        path.join(location.directory, ".opencode", "permissions.local.json"),
+        strict,
+      )
+      const configs = [
+        ...(supplementary[0] ?? []),
+        ...direct,
+        ...supplementary.slice(1).flat(),
+        ...(localPermissions ? [localPermissions] : []),
+      ]
+      // Rules use the opposite order so a user-global rule can override a
+      // repository rule. Statement order inside each file stays unchanged.
+      yield* policy.load(
+        configs
+          .filter((config): config is Document => config.type === "document")
+          .toReversed()
+          .flatMap((config) => config.info.experimental?.policies ?? []),
+      )
+
+      return configs
+    })
+    let configs = yield* readConfigs(false).pipe(Effect.orDie)
+    const refresh = Effect.fn("Config.refresh")(function* () {
+      const next = yield* readConfigs(true).pipe(
+        Effect.mapError((cause) => new Error("Unable to refresh location configuration", { cause })),
+      )
+      configs = next
+    })
 
     return Service.of({
+      refresh,
       entries: Effect.fn("Config.entries")(function* () {
         return configs
       }),
