@@ -1,4 +1,5 @@
 import "./worker-console"
+import { Logging } from "@opencode-ai/core/observability/logging"
 
 import { Server } from "@/server/server"
 import { InstanceRuntime } from "@/project/instance-runtime"
@@ -88,6 +89,7 @@ export const rpc = {
   async reload() {
     await AppRuntime.runPromise(
       Effect.gen(function* () {
+        yield* Logging.backgroundDebug("lifecycle.worker.reload", { source: "worker.rpc.reload", phase: "requested" })
         const cfg = yield* Config.Service
         yield* cfg.invalidate()
         yield* disposeAllInstancesAndEmitGlobalDisposed({ swallowErrors: true })
@@ -95,6 +97,9 @@ export const rpc = {
     )
   },
   async shutdown() {
+    await AppRuntime.runPromise(
+      Logging.backgroundDebug("lifecycle.worker.shutdown", { source: "worker.rpc.shutdown", phase: "requested" }),
+    )
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
     process.off("unhandledRejection", onUnhandledRejection)

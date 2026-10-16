@@ -362,6 +362,23 @@ describe("Anthropic Messages route", () => {
     }),
   )
 
+  it.effect("preserves a signature for an empty thinking block", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        { type: "message_start", message: { usage: { input_tokens: 1 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "empty_sig" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+        { type: "message_stop" },
+      )
+      const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)))
+      expect(response.message.content).toEqual([
+        { type: "reasoning", text: "", providerMetadata: { anthropic: { signature: "empty_sig" } } },
+      ])
+    }),
+  )
+
   it.effect("parses text, reasoning, and usage stream fixtures", () =>
     Effect.gen(function* () {
       const body = sseEvents(

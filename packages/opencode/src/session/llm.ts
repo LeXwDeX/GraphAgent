@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { llmClient } from "@opencode-ai/core/effect/layer-node-platform"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -28,6 +30,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { ThinkingReplay } from "./thinking-replay"
 import {
   ContextFolding,
   type HistorySnapshot as ContextFoldingHistorySnapshot,
@@ -160,6 +163,8 @@ export type StreamInput = {
   contextFolding?: ContextFoldingHistorySnapshot
   /** In-process safety signal for activity that can precede or outlive stream events. */
   onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
+  /** Persist local replay tombstones before a request can leave this process. */
+  onThinkingInvalidated?: (blocks: readonly string[]) => Effect.Effect<void>
 }
 
 export type StreamRequest = StreamInput & {
@@ -436,6 +441,8 @@ const live: Layer.Layer<
           headers: prepared.headers,
           abort: input.abort,
           contextFolding: folding,
+          onThinkingInvalidated: input.onThinkingInvalidated,
+          sessionID: input.sessionID,
         })
         if (native.type === "supported") {
           yield* Effect.logInfo(
@@ -481,24 +488,35 @@ const live: Layer.Layer<
         "llm.provider": input.model.providerID,
         "llm.model": input.model.id,
       })
+      // One stream may contain multiple projections/tool rounds; errors never guess a projection or HTTP attempt.
+      const diagnostic = {
+        clientOperationID: randomUUID(),
+        scope: "llm-stream",
+        runtime: "ai-sdk",
+        sessionID: input.sessionID,
+        providerID: input.model.providerID,
+        modelID: input.model.id,
+        apiModelID: input.model.api.id,
+        sdk: input.model.api.npm,
+        upstreamIdentity: "unobservable",
+      }
+      let projectionSeq = 0
+      let thinking: ReturnType<typeof ThinkingReplay.project> | undefined
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
       return {
         type: "ai-sdk" as const,
         observeToolCall,
+        bindThinking: (event: LLMEvent) => thinking?.bind(event) ?? event,
         result: streamText({
           // System messages are deliberately assembled by LLMRequestPrep.
           allowSystemInMessages: true,
           onError(error) {
             bridge.fork(
-              Effect.logError("stream error", {
-                providerID: input.model.providerID,
-                modelID: input.model.id,
-                "session.id": input.sessionID,
-                small: (input.small ?? false).toString(),
-                agent: input.agent.name,
-                mode: input.agent.mode,
-                error,
+              Logging.backgroundDebug("thinking replay error", {
+                ...diagnostic,
+                errorChannel: "sdk-onError",
+                ...ThinkingReplay.errorDiagnostic(error.error),
               }),
             )
           },
@@ -548,6 +566,7 @@ const live: Layer.Layer<
                 specificationVersion: "v3" as const,
                 async transformParams(args) {
                   if (args.type === "stream") {
+                    const sourceOrigins = ThinkingReplay.replayOrigins(args.params.prompt)
                     const sourceMessages = ContextFolding.copyModelMessages(args.params.prompt)
                     const transformed = ProviderTransform.message(
                       args.params.prompt,
@@ -589,6 +608,32 @@ const live: Layer.Layer<
                         }),
                       ),
                     )
+                    {
+                      const replay = ThinkingReplay.project({
+                        messages: outbound,
+                        sourceOrigins,
+                        tools: args.params.tools,
+                        context: {
+                          provider: input.model.providerID,
+                          model: input.model.api.id,
+                          sdk: input.model.api.npm,
+                        },
+                      })
+                      thinking = replay
+                      if (replay.invalidated.length) {
+                        if (!input.onThinkingInvalidated)
+                          throw new Error("Thinking replay invalidation requires durable settlement")
+                        await bridge.promise(input.onThinkingInvalidated(replay.invalidated))
+                      }
+                      await bridge.promise(
+                        Logging.backgroundDebug("thinking replay projection", {
+                          ...diagnostic,
+                          projectionSeq: ++projectionSeq,
+                          ...replay.diagnostic,
+                        }),
+                      )
+                      outbound = replay.messages
+                    }
                     // @ts-expect-error
                     args.params.prompt = outbound
                   }
@@ -631,6 +676,7 @@ const live: Layer.Layer<
             ).pipe(
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event, input.onAttemptActivity)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
+              Stream.map(result.bindThinking),
               Stream.tap(result.observeToolCall),
             )
           }),

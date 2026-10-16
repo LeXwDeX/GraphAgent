@@ -1,3 +1,4 @@
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -276,6 +277,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* Logging.backgroundDebug("lifecycle.session.cancel", {
+        source: "http.session.abort",
+        sessionID: ctx.params.sessionID,
+      })
       yield* promptSvc.cancel(ctx.params.sessionID)
       return true
     })
