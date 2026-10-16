@@ -430,8 +430,15 @@ export type HookPayload =
 //   - `permission_mode`: only "plan" | "default" via agentToPermissionMode;
 //     acceptEdits / bypassPermissions have no fork equivalent and are omitted
 //     rather than fabricated.
-//   - SessionStart `source` covers only "startup" here; resume/clear/compact have
-//     no distinct entry points in this fork (see openspec hooks-api-fidelity 2.1).
+//   - SessionStart `source` is "startup" (new top-level session), "compact" (after
+//     a successful compaction, top-level only) or "resume" (first prompt admission
+//     in this instance for an existing top-level session). "clear" has no distinct
+//     entry point in this fork.
+//   - `cwd` for bash tool events (PreToolUse, PostToolUse, PostToolUseFailure,
+//     PermissionRequest, PermissionDenied) follows the call's `workdir`, resolved
+//     against the instance directory, as Claude Code's cwd follows the agent's
+//     working directory. All other events, and the hook process spawn cwd, keep
+//     the instance directory.
 //   - matcher matching is case-INsensitive here (CC is case-sensitive). A matcher
 //     like `Write` also matches a `write` tool call. Documented deviation, not a bug.
 export interface TriggerContext {
@@ -1189,12 +1196,34 @@ function parseStdout(stdout: string, command: string): HookJSONOutput | undefine
 
 // ── Payload → stdin envelope ────────────────────────────────────
 
+// Envelope cwd for bash tool events: the call's `workdir` resolved against the instance
+// directory (mirrors ShellTool's path.resolve(instanceDir, workdir), minus cygpath
+// lookups). Any other event/tool, or a missing/blank/non-string workdir, keeps `cwd`.
+function envelopeCwd(payload: HookPayload, cwd: string): string {
+  switch (payload.event) {
+    case "PreToolUse":
+    case "PostToolUse":
+    case "PostToolUseFailure":
+    case "PermissionRequest":
+    case "PermissionDenied": {
+      if (payload.toolName.toLowerCase() !== "bash") return cwd
+      const input = payload.toolInput
+      const workdir = input !== null && typeof input === "object" ? (input as { workdir?: unknown }).workdir : undefined
+      if (typeof workdir !== "string" || workdir.length === 0) return cwd
+      if (process.platform === "win32") return FSUtil.normalizePath(path.resolve(cwd, FSUtil.windowsPath(workdir)))
+      return path.resolve(cwd, workdir)
+    }
+    default:
+      return cwd
+  }
+}
+
 function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: string): Record<string, unknown> {
   const base: Record<string, unknown> = {
     hook_event_name: payload.event,
     session_id: ctx.sessionID,
     transcript_path: ctx.transcriptPath,
-    cwd,
+    cwd: envelopeCwd(payload, cwd),
   }
   // Explicit ctx.permissionMode wins; otherwise derive from agentType so callers only pass agent.
   const permissionMode = ctx.permissionMode ?? (ctx.agentType ? agentToPermissionMode(ctx.agentType) : undefined)
@@ -1399,10 +1428,24 @@ function matcherTarget(payload: HookPayload): string | undefined {
 /**
  * Tool events report fresh feedback per call (e.g. a PostToolUse validator
  * repeating the same lint error), so their additionalContext is deduplicated
- * only within one trigger. Every other event keeps per-session dedup: its
- * context (SessionStart, Stop, …) stays in history after the first injection.
+ * only within one trigger. SubagentStart is keyed by the PARENT sessionID but its
+ * context lands in a fresh child session each time, so a second subagent (or a
+ * resumed task_id) must receive the same text again. Every other event keeps
+ * per-session dedup: its context (SessionStart, Stop, …) stays in history after
+ * the first injection.
+ *
+ * Exception to per-session dedup: a SessionStart with source "compact" clears the
+ * session's bucket first (see trigger). Compaction removes earlier injected context
+ * from model history, so identical text must be injectable again. `resume` keeps
+ * per-session dedup: it fires at most once per session per instance, on a fresh
+ * instance state whose bucket is empty, so nothing can be wrongly dropped.
  */
-const PER_TRIGGER_DEDUP_EVENTS: ReadonlySet<HookEvent> = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"])
+const PER_TRIGGER_DEDUP_EVENTS: ReadonlySet<HookEvent> = new Set([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "SubagentStart",
+])
 
 /**
  * Identity of a handler for per-trigger dedup: only fully equivalent handlers
@@ -2167,6 +2210,12 @@ export const layer = Layer.effect(
         // (before each return point below) — clearing here would remove
         // session-registered SessionEnd hooks before the matcher can see them.
       }
+
+      // Compaction dropped earlier injected context from model history: forget what this
+      // session has seen so re-injection is not suppressed (per-session dedup resumes after).
+      // Done before the short-circuits: other events' texts must be forgotten even when no
+      // SessionStart hook is configured.
+      if (payload.event === "SessionStart" && payload.source === "compact") s.seen.delete(ctx.sessionID)
 
       // ── WP-6A: O(1) short-circuit ─────────────────────────────
       // Skip the entire matcher pipeline (envelope build, target derivation,
