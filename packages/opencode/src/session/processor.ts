@@ -1,3 +1,4 @@
+import { ThinkingReplay } from "./thinking-replay"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
@@ -1245,6 +1246,28 @@ export const layer = Layer.effect(
             const generation = ++attemptGeneration
             const source = llm.stream({
               ...streamInput,
+              onThinkingInvalidated: (blocks) =>
+                Effect.gen(function* () {
+                  const invalidated = new Set(blocks)
+                  for (const message of yield* session.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)) {
+                    for (const part of message.parts) {
+                      if (part.type !== "reasoning" || part.time.end === undefined) continue
+                      const saved = ThinkingReplay.origin(part.metadata)
+                      if (!saved || saved.invalidated || !invalidated.has(saved.block)) continue
+                      const current = yield* session.getPart({
+                        sessionID: ctx.sessionID,
+                        messageID: part.messageID,
+                        partID: part.id,
+                      })
+                      if (current?.type !== "reasoning" || current.time.end === undefined) continue
+                      const latest = ThinkingReplay.origin(current.metadata)
+                      if (!latest || latest.invalidated || latest.block !== saved.block) continue
+                      const metadata = ThinkingReplay.invalidate(current.metadata)
+                      if (metadata) yield* session.updatePart({ ...current, metadata })
+                    }
+                  }
+                  if (streamInput.onThinkingInvalidated) yield* streamInput.onThinkingInvalidated(blocks)
+                }),
               onAttemptActivity: (activity) => {
                 if (generation !== attemptGeneration) return
                 if (activity === "tool-executed") ctx.anyToolCalled = true

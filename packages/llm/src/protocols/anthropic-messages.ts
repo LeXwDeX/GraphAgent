@@ -516,7 +516,11 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
     request.tools.length === 0 || request.toolChoice?.type === "none"
       ? undefined
       : request.tools.map((tool) =>
-          lowerTool(breakpoints, tool, ToolSchemaProjection.modelCompatibility(tool.inputSchema, toolSchemaCompatibility)),
+          lowerTool(
+            breakpoints,
+            tool,
+            ToolSchemaProjection.modelCompatibility(tool.inputSchema, toolSchemaCompatibility),
+          ),
         )
   const system =
     request.system.length === 0
@@ -679,12 +683,17 @@ const onContentBlockStart = (state: ParserState, event: AnthropicEvent): StepRes
     ]
   }
 
-  if (block.type === "thinking" && block.thinking) {
+  if (block.type === "thinking") {
     const events: LLMEvent[] = []
     return [
       {
         ...state,
-        lifecycle: Lifecycle.reasoningDelta(state.lifecycle, events, `reasoning-${event.index ?? 0}`, block.thinking),
+        lifecycle: Lifecycle.reasoningDelta(
+          state.lifecycle,
+          events,
+          `reasoning-${event.index ?? 0}`,
+          block.thinking ?? "",
+        ),
       },
       events,
     ]

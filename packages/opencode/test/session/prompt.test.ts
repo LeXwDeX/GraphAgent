@@ -7117,3 +7117,358 @@ for (const mode of ["failure", "timeout"] as const) {
     }),
   )
 }
+
+const thinkingPrefixMemory = ["Replay fixture memory before"]
+const thinkingPrefixIt = testEffect(makeHttp({ memoryContext: thinkingPrefixMemory }))
+const nativeThinkingPrefixIt = testEffect(makeHttp({ memoryContext: thinkingPrefixMemory, native: true }))
+
+function thinkingPrefixReply(signature?: string) {
+  return raw({
+    chunks: [
+      {
+        type: "message_start",
+        message: {
+          id: "fixture",
+          type: "message",
+          role: "assistant",
+          model: "claude-fable-5-1",
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "fixture answer" } },
+      { type: "content_block_stop", index: 1 },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } },
+      { type: "message_stop" },
+    ].filter((event) => signature !== undefined || !("index" in event && event.index === 0)),
+  })
+}
+
+for (const output of ["thinking", "text-only"] as const)
+  for (const [runtime, runner] of [
+    ["sdk", thinkingPrefixIt],
+    ["native", nativeThinkingPrefixIt],
+  ] as const)
+    runner.instance(
+      `does not replay a signed block after real prompt memory changes its system prefix (${runtime}, ${output})`,
+      () =>
+        Effect.gen(function* () {
+          const { llm } = yield* useServerConfig((url) => {
+            const config = providerCfg(url)
+            return {
+              ...config,
+              provider: {
+                test: {
+                  ...config.provider.test,
+                  npm: "@ai-sdk/anthropic",
+                  models: {
+                    "test-model": {
+                      ...config.provider.test.models["test-model"],
+                      id: "claude-fable-5-1",
+                      reasoning: true,
+                    },
+                  },
+                },
+              },
+            }
+          })
+          const sessions = yield* Session.Service
+          const prompt = yield* SessionPrompt.Service
+          const session = yield* sessions.create({ title: "Signed replay prefix fixture" })
+          yield* llm.push(thinkingPrefixReply("opaque-first-response"))
+          const first = yield* prompt.prompt({
+            sessionID: session.id,
+            model: ref,
+            parts: [{ type: "text", text: "first question" }],
+          })
+          if (first.info.role !== "assistant") throw new Error("Missing fixture assistant")
+          expect(first.info.error).toBeUndefined()
+          expect(
+            first.parts.some(
+              (part) => part.type === "reasoning" && part.metadata?.anthropic?.signature === "opaque-first-response",
+            ),
+          ).toBe(true)
+          const saved = structuredClone(first.parts)
+          yield* llm.push(thinkingPrefixReply("opaque-unchanged-response"))
+          yield* prompt.prompt({
+            sessionID: session.id,
+            model: ref,
+            parts: [{ type: "text", text: "unchanged followup" }],
+          })
+          const unchangedHits = (yield* llm.hits).filter(
+            (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+          )
+          expect(createHash("sha256").update(JSON.stringify(unchangedHits[1].body.system)).digest("hex")).toBe(
+            createHash("sha256").update(JSON.stringify(unchangedHits[0].body.system)).digest("hex"),
+          )
+          expect(createHash("sha256").update(JSON.stringify(unchangedHits[1].body.tools)).digest("hex")).toBe(
+            createHash("sha256").update(JSON.stringify(unchangedHits[0].body.tools)).digest("hex"),
+          )
+          const system = unchangedHits[0].body.system
+          expect(Array.isArray(system)).toBe(true)
+          if (!Array.isArray(system)) throw new Error("Missing Anthropic system blocks")
+          for (const part of system) {
+            if (!part || typeof part !== "object" || !("text" in part))
+              throw new Error("Malformed Anthropic system block")
+            expect(typeof part.text).toBe("string")
+          }
+          expect(JSON.stringify(unchangedHits[1].body.messages)).toContain("opaque-first-response")
+          thinkingPrefixMemory[0] = "Replay fixture memory after"
+          yield* llm.push(thinkingPrefixReply(output === "thinking" ? "opaque-second-response" : undefined))
+          yield* prompt.prompt({
+            sessionID: session.id,
+            model: ref,
+            parts: [{ type: "text", text: "second question" }],
+          })
+          const hits = (yield* llm.hits).filter(
+            (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+          )
+          expect(hits).toHaveLength(3)
+          expect(hits[2].body.system).not.toEqual(hits[0].body.system)
+          expect(JSON.stringify(hits[2].body.messages)).not.toContain("opaque-first-response")
+          expect(JSON.stringify(hits[2].body.messages)).not.toContain("opaque-unchanged-response")
+          expect(JSON.stringify(hits.map((hit) => hit.body))).not.toContain("thinkingReplay")
+          const stored = yield* sessions.messages({ sessionID: session.id })
+          for (const part of saved)
+            if (part.type === "reasoning") part.metadata!.opencode.thinkingReplay.invalidated = true
+          expect(stored.find((message) => message.info.id === first.info.id)?.parts).toEqual(saved)
+          const fork = yield* sessions.fork({ sessionID: session.id })
+          const forked = yield* sessions.messages({ sessionID: fork.id })
+          const forkedThinking = forked.flatMap((message) => message.parts).filter((part) => part.type === "reasoning")
+          expect(
+            forkedThinking.find((part) => part.metadata?.anthropic?.signature === "opaque-first-response")?.metadata
+              ?.opencode?.thinkingReplay?.invalidated,
+          ).toBe(true)
+          thinkingPrefixMemory[0] = "Replay fixture memory before"
+          yield* llm.push(thinkingPrefixReply("opaque-restored-response"))
+          yield* prompt.prompt({
+            sessionID: session.id,
+            model: ref,
+            parts: [{ type: "text", text: "restored question" }],
+          })
+          const restored = (yield* llm.hits).at(-1)!
+          expect(JSON.stringify(restored.body.messages)).not.toContain("opaque-first-response")
+          expect(JSON.stringify(restored.body.messages)).not.toContain("opaque-unchanged-response")
+          expect(JSON.stringify(restored.body.messages)).not.toContain("opaque-second-response")
+          yield* llm.push(thinkingPrefixReply("opaque-fresh-response"))
+          yield* prompt.prompt({ sessionID: session.id, model: ref, parts: [{ type: "text", text: "fresh followup" }] })
+          const fresh = (yield* llm.hits).at(-1)!
+          expect(JSON.stringify(fresh.body.messages)).toContain("opaque-restored-response")
+          expect(JSON.stringify(fresh.body.messages)).not.toContain("opaque-first-response")
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              thinkingPrefixMemory[0] = "Replay fixture memory before"
+            }),
+          ),
+        ),
+    )
+
+thinkingPrefixIt.instance("does not reinsert Claude thinking after a different provider SDK and back", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const config = providerCfg(url)
+      return {
+        ...config,
+        provider: {
+          test: {
+            ...config.provider.test,
+            npm: "@ai-sdk/anthropic",
+            models: {
+              "test-model": { ...config.provider.test.models["test-model"], id: "claude-fable-5-1", reasoning: true },
+            },
+          },
+          other: config.provider.test,
+        },
+      }
+    })
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const session = yield* sessions.create({ title: "Provider switch replay fixture" })
+    yield* llm.push(thinkingPrefixReply("before-provider-switch"))
+    const first = yield* prompt.prompt({
+      sessionID: session.id,
+      model: ref,
+      parts: [{ type: "text", text: "fixture first" }],
+    })
+    yield* llm.push(reply().text("other answer").stop())
+    yield* prompt.prompt({
+      sessionID: session.id,
+      model: { providerID: ProviderV2.ID.make("other"), modelID: ref.modelID },
+      parts: [{ type: "text", text: "other provider" }],
+    })
+    const stored = yield* sessions.messages({ sessionID: session.id })
+    expect(
+      stored.find((message) => message.info.id === first.info.id)?.parts.find((part) => part.type === "reasoning")
+        ?.metadata?.opencode?.thinkingReplay?.invalidated,
+    ).toBe(true)
+    yield* llm.push(thinkingPrefixReply("after-provider-switch"))
+    yield* prompt.prompt({ sessionID: session.id, model: ref, parts: [{ type: "text", text: "back to Claude" }] })
+    expect(JSON.stringify((yield* llm.hits).at(-1)!.body.messages)).not.toContain("before-provider-switch")
+  }),
+)
+
+for (const change of ["tools", "history"] as const) {
+  const tools: Record<string, AITool> = {}
+  const runner = testEffect(makeHttp({ mcpTools: tools }))
+  runner.instance(`invalidates signed replay after actual ${change} prefix changes`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => {
+        const config = providerCfg(url)
+        return {
+          ...config,
+          provider: {
+            test: {
+              ...config.provider.test,
+              npm: "@ai-sdk/anthropic",
+              models: {
+                "test-model": { ...config.provider.test.models["test-model"], id: "claude-fable-5-1", reasoning: true },
+              },
+            },
+          },
+        }
+      })
+      const sessions = yield* Session.Service
+      const prompt = yield* SessionPrompt.Service
+      const session = yield* sessions.create({ title: "Mutable prefix fixture" })
+      yield* llm.push(thinkingPrefixReply("before-prefix-change"))
+      yield* prompt.prompt({
+        sessionID: session.id,
+        model: ref,
+        parts: [{ type: "text", text: "synthetic fixture question" }],
+      })
+      if (change === "tools")
+        tools.fixture_extra = aiTool({
+          description: "new synthetic tool",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => "unused",
+        })
+      else {
+        const history = yield* sessions.messages({ sessionID: session.id })
+        const part = history.find((message) => message.info.role === "user")?.parts.find((part) => part.type === "text")
+        if (!part || part.type !== "text") throw new Error("Missing synthetic user fixture")
+        yield* sessions.updatePart({ ...part, text: "edited synthetic fixture question" })
+      }
+      yield* llm.push(thinkingPrefixReply("after-prefix-change"))
+      yield* prompt.prompt({ sessionID: session.id, model: ref, parts: [{ type: "text", text: "fixture followup" }] })
+      const hits = yield* llm.hits
+      expect(JSON.stringify(hits.at(-1)!.body.messages)).not.toContain("before-prefix-change")
+      if (change === "tools") expect(hits.at(-1)!.body.tools).not.toEqual(hits[0].body.tools)
+      const stored = yield* sessions.messages({ sessionID: session.id })
+      expect(
+        stored
+          .flatMap((message) => message.parts)
+          .filter((part) => part.type === "reasoning")
+          .find((part) => part.metadata?.anthropic?.signature === "before-prefix-change")?.metadata?.opencode
+          ?.thinkingReplay?.invalidated,
+      ).toBe(true)
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          delete tools.fixture_extra
+        }),
+      ),
+    ),
+  )
+}
+
+for (const native of [false, true]) {
+  const signedToolRoundIt = testEffect(
+    makeHttp({
+      native,
+      mcpTools: {
+        fixture_replay: aiTool({
+          description: "Synthetic replay fixture",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => ({ content: [{ type: "text" as const, text: "tool fixture answer" }] }),
+        }),
+      },
+    }),
+  )
+  signedToolRoundIt.instance(
+    `preserves signed thinking across an actual complete tool round (${native ? "native" : "sdk"})`,
+    () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig((url) => {
+          const config = providerCfg(url)
+          return {
+            ...config,
+            provider: {
+              test: {
+                ...config.provider.test,
+                npm: "@ai-sdk/anthropic",
+                models: {
+                  "test-model": {
+                    ...config.provider.test.models["test-model"],
+                    id: "claude-fable-5-1",
+                    reasoning: true,
+                  },
+                },
+              },
+            },
+          }
+        })
+        const sessions = yield* Session.Service
+        const prompt = yield* SessionPrompt.Service
+        const session = yield* sessions.create({ title: "Signed tool round fixture" })
+        yield* llm.push(
+          raw({
+            chunks: [
+              {
+                type: "message_start",
+                message: {
+                  id: "fixture",
+                  type: "message",
+                  role: "assistant",
+                  model: "claude-fable-5-1",
+                  content: [],
+                  usage: { input_tokens: 1, output_tokens: 0 },
+                },
+              },
+              { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+              {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "signature_delta", signature: "before-tool-signature" },
+              },
+              { type: "content_block_stop", index: 0 },
+              {
+                type: "content_block_start",
+                index: 1,
+                content_block: { type: "tool_use", id: "fixture-tool", name: "fixture_replay", input: {} },
+              },
+              { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{}" } },
+              { type: "content_block_stop", index: 1 },
+              { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+              { type: "message_stop" },
+            ],
+          }),
+        )
+        yield* llm.push(thinkingPrefixReply("after-tool-signature"))
+        const first = yield* prompt.prompt({
+          sessionID: session.id,
+          model: ref,
+          parts: [{ type: "text", text: "synthetic tool round" }],
+        })
+        if (first.info.role !== "assistant") throw new Error("Missing final assistant")
+        expect(first.info.error).toBeUndefined()
+        const toolHistory = yield* sessions.messages({ sessionID: session.id })
+        expect(completedTool(toolHistory.flatMap((message) => message.parts))?.state.output).toBe("tool fixture answer")
+        yield* llm.push(thinkingPrefixReply("next-round-signature"))
+        yield* prompt.prompt({
+          sessionID: session.id,
+          model: ref,
+          parts: [{ type: "text", text: "same context followup" }],
+        })
+        const body = (yield* llm.hits).at(-1)!.body
+        expect(JSON.stringify(body.messages)).toContain("before-tool-signature")
+        expect(JSON.stringify(body.messages)).toContain("after-tool-signature")
+      }),
+  )
+}

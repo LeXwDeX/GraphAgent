@@ -1,3 +1,4 @@
+import { ThinkingReplay } from "./thinking-replay"
 import { SessionID, MessageID } from "./schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -418,8 +419,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             distillation: part.distillation,
             enabled: options?.reasoningDistillationEnabled === true,
           })
-          if (invalidatedThinking && claudeThinking(replay.metadata, msg.info.providerID)) continue
-          if (differentModel) {
+          const knownThinking = ThinkingReplay.origin(replay.metadata) !== undefined
+          if (invalidatedThinking && claudeThinking(replay.metadata, msg.info.providerID) && !knownThinking) continue
+          if (differentModel && !knownThinking) {
             if (replay.text.trim().length > 0)
               assistantMessage.parts.push({
                 type: "text",
@@ -430,7 +432,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "reasoning",
             text: replay.text,
-            providerMetadata: replay.metadata as typeof part.metadata,
+            providerMetadata: (invalidatedThinking && knownThinking
+              ? ThinkingReplay.forceInvalidation(replay.metadata)
+              : replay.metadata) as typeof part.metadata,
           })
         }
       }

@@ -54,7 +54,7 @@ const done = Symbol("done")
 
 function line(input: unknown) {
   if (input === done) return "data: [DONE]\n\n"
-  return `data: ${JSON.stringify(input)}\n\n`
+  return `${typeof input === "object" && input !== null && "type" in input && typeof input.type === "string" ? `event: ${input.type}\n` : ""}data: ${JSON.stringify(input)}\n\n`
 }
 
 function tokens(input?: Usage) {
@@ -699,6 +699,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
       })
 
       yield* router.add("POST", "/v1/chat/completions", handle("chat"))
+      yield* router.add("POST", "/v1/messages", handle("chat"))
       yield* router.add("POST", "/v1/responses", handle("responses"))
 
       yield* server.serve(router.asHttpEffect())

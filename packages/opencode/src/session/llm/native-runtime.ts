@@ -20,6 +20,7 @@ import {
 import type { LLMClientShape } from "@opencode-ai/llm/route"
 import { RequestExecutor } from "@opencode-ai/llm/route"
 import { LLMNative } from "./native-request"
+import { ThinkingReplay } from "../thinking-replay"
 import {
   ContextFolding,
   type HistorySnapshot as ContextFoldingHistorySnapshot,
@@ -54,6 +55,7 @@ type StreamInput = {
   readonly providerOptions?: Record<string, any>
   readonly headers: Record<string, string>
   readonly abort: AbortSignal
+  readonly onThinkingInvalidated?: (blocks: readonly string[]) => Effect.Effect<void>
   readonly contextFolding?: {
     readonly enabled: boolean
     readonly purpose: RequestPurpose
@@ -161,10 +163,24 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
             system: folding.system,
           })
         : undefined
-    const request =
+    let request =
       projection?.applied === true
         ? LLMRequest.update(canonical, { messages: projection.request.messages as typeof canonical.messages })
         : canonical
+    const thinking = ThinkingReplay.project({
+      messages: request.messages,
+      system: request.system,
+      tools: request.tools,
+      context: { provider: input.model.providerID, model: input.model.api.id, sdk: input.model.api.npm },
+    })
+    if (thinking) {
+      if (thinking.invalidated.length) {
+        if (!input.onThinkingInvalidated)
+          return yield* Effect.die(new Error("Thinking replay invalidation requires durable settlement"))
+        yield* input.onThinkingInvalidated(thinking.invalidated)
+      }
+      request = LLMRequest.update(request, { messages: thinking.messages })
+    }
     const stream = Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
@@ -211,7 +227,9 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     return {
       ...current,
       contextFoldingPlan: projection?.plan,
-      stream: fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream,
+      stream: (fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream).pipe(
+        Stream.map((event) => thinking?.bind(event) ?? event),
+      ),
     }
   })
 }
