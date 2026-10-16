@@ -28,6 +28,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { buildPrompt } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
+import { HookStartContext } from "@/hook/start-context"
 import { Memory } from "@/memory/memory"
 import { SessionStatus } from "./status"
 
@@ -172,6 +173,7 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const status = yield* SessionStatus.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+    const startContext = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const reasoningDistillationEnabled = (cfg: ConfigV1.Info, model: Provider.Model) =>
       ConfigReasoningDistillation.resolveEnabled({
         disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
@@ -488,6 +490,10 @@ export const layer = Layer.effect(
         })
       }
 
+      // Auto-compaction may append a follow-up user message (overflow replay or the
+      // synthetic "continue" prompt). SessionStart(compact) contexts attach to it so
+      // they sit after the summary in model input; without one they are queued.
+      let followUpID: MessageID | undefined
       if (result === "continue" && input.auto) {
         if (replay) {
           const original = replay.info
@@ -502,6 +508,7 @@ export const layer = Layer.effect(
             tools: original.tools,
             system: original.system,
           })
+          followUpID = replayMsg.id
           for (const part of replay.parts) {
             if (part.type === "compaction") continue
             const replayPart =
@@ -547,6 +554,7 @@ export const layer = Layer.effect(
               agent: userMessage.agent,
               model: userMessage.model,
             })
+            followUpID = continueMsg.id
             const text =
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
@@ -607,6 +615,37 @@ export const layer = Layer.effect(
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
           yield* SettingsHook.landSystemMessages(pcResult, { sessionID: input.sessionID })
+
+          // SessionStart(compact): Claude Code re-fires SessionStart after compaction so
+          // hooks can re-inject context the summary dropped. Top-level sessions only
+          // (subagents never fire SessionStart). A hook failure must not fail compaction.
+          // A session that cannot be read (e.g. deleted meanwhile) skips the hook instead of failing.
+          const current = yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          if (current && !current.parentID) {
+            const ssResult = yield* settingsHook
+              .trigger(
+                { event: "SessionStart", source: "compact" },
+                { sessionID: input.sessionID, transcriptPath: "" },
+              )
+              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            yield* SettingsHook.landSystemMessages(ssResult, { sessionID: input.sessionID })
+            for (const ctx of ssResult.additionalContexts ?? []) {
+              if (!ctx) continue
+              if (followUpID) {
+                yield* session.updatePart({
+                  id: PartID.ascending(),
+                  messageID: followUpID,
+                  sessionID: input.sessionID,
+                  type: "text",
+                  synthetic: true,
+                  text: ctx,
+                  time: { start: Date.now(), end: Date.now() },
+                })
+              } else if (startContext) {
+                yield* startContext.append(input.sessionID, ctx)
+              }
+            }
+          }
         }
       }
       return result === "continue" ? "continue" : "stop"
@@ -664,6 +703,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
+    Layer.provide(HookStartContext.defaultLayer),
   ),
 )
 
@@ -678,6 +718,7 @@ export const node = LayerNode.make(layer, [
   RuntimeFlags.node,
   Memory.node,
   SettingsHook.node,
+  HookStartContext.node,
   SessionStatus.node,
 ])
 

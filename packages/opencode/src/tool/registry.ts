@@ -15,6 +15,7 @@ import { TodoWriteTool } from "./todo"
 import { GoalTool } from "./goal"
 import { MemorySearch } from "./memory-search"
 import { SettingsHook } from "@/hook/settings"
+import { HookStartContext } from "@/hook/start-context"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -424,7 +425,11 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(CrossSpawnSpawner.defaultLayer),
       Layer.provide(Truncate.defaultLayer),
     )
-    .pipe(Layer.provide(Database.defaultLayer), Layer.provide(RuntimeFlags.defaultLayer)),
+    .pipe(
+      Layer.provide(Database.defaultLayer),
+      Layer.provide(RuntimeFlags.defaultLayer),
+      Layer.provide(HookStartContext.defaultLayer),
+    ),
 )
 
 function isZodType(value: unknown): value is z.ZodType {
@@ -524,6 +529,7 @@ export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer
   RuntimeFlags.node,
   Database.node,
   SettingsHook.node,
+  HookStartContext.node,
   Dag.node,
   DagAgentMessages.node,
 ])

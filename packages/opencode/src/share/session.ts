@@ -47,6 +47,8 @@ export const layer = Layer.effect(
     const create = Effect.fn("SessionShare.create")(function* (input?: Session.CreateInput) {
       const result = yield* session.create(input)
       if (result.parentID) return result
+      // Startup is handled here, so the first prompt admission must not fire `resume`.
+      if (startCtx) yield* startCtx.markStarted(result.id)
       // Fire SessionStart hook for top-level sessions only.
       // SettingsHook.Service is guaranteed available because SettingsHook.node
       // is now listed in this layer's dependencies; the previous diagnostic
@@ -83,6 +85,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Session.defaultLayer),
   Layer.provide(Config.defaultLayer),
   Layer.provide(RuntimeFlags.defaultLayer),
+  Layer.provide(HookStartContext.defaultLayer),
 )
 
 export const node = LayerNode.make(layer, [Config.node, Session.node, ShareNext.node, RuntimeFlags.node, HookStartContext.node, SettingsHook.node])

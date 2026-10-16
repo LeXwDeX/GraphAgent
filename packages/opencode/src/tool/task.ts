@@ -16,6 +16,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
+import { HookStartContext } from "@/hook/start-context"
 import { TaskSubagents } from "@/hook/task-subagents"
 
 export interface TaskPromptOps {
@@ -104,6 +105,9 @@ export const TaskTool = Tool.define(
     // the ToolRegistry mergeAll group during construction, so this resolves Some.
     // Goal.Service, by contrast, is a mergeAll sibling and invisible at build.
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+    // SubagentStart additionalContext is queued here for the child session; prompt
+    // admission drains it into synthetic text parts (same pattern as share/session.ts).
+    const startCtx = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
 
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -215,6 +219,7 @@ export const TaskTool = Tool.define(
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         // SubagentStart hook
+        let startContexts: readonly string[] = []
         if (settingsHook) {
           const result = yield* settingsHook
             .trigger(
@@ -223,8 +228,16 @@ export const TaskTool = Tool.define(
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(result, { sessionID: ctx.sessionID })
+          startContexts = result.additionalContexts
         }
         const parts = yield* ops.resolvePromptParts(params.prompt)
+        // Queue immediately before ops.prompt (after parts resolved) so a failed resolve leaves no
+        // stale queued context; admission of the child's first message drains it.
+        if (startCtx) {
+          for (const text of startContexts) {
+            if (text) yield* startCtx.append(nextSession.id, text)
+          }
+        }
         const result = yield* ops.prompt({
           messageID: MessageID.ascending(),
           sessionID: nextSession.id,
