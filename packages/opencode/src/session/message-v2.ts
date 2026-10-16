@@ -141,12 +141,40 @@ function providerMeta(metadata: Record<string, any> | undefined) {
 
 import { reasoningForReplay } from "@opencode-ai/core/session/reasoning-distillation/canonical"
 
+// Compaction changes the signed conversation prefix. Only these native carriers
+// are known to encode Claude thinking/redacted_thinking blocks; other reasoning
+// keeps its existing replay policy.
+function claudeThinking(metadata: Record<string, any> | undefined, providerID: string) {
+  return [metadata?.anthropic, metadata?.bedrock, metadata?.[providerID]].some(
+    (value) => value?.signature != null || value?.redactedData != null || value?.redactedContent != null,
+  )
+}
+
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; reasoningDistillationEnabled?: boolean },
+  options?: {
+    stripMedia?: boolean
+    toolOutputMaxChars?: number
+    reasoningDistillationEnabled?: boolean
+    stripSignedThinking?: boolean
+  },
 ) {
   const result: UIMessage[] = []
+  const claudeReplay = ["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic", "@ai-sdk/amazon-bedrock"].includes(
+    model.api.npm,
+  )
+  const compactions = new Map<MessageID, User>()
+  for (const msg of input) {
+    if (msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction"))
+      compactions.set(msg.info.id, msg.info)
+  }
+  const compactedThrough = input.reduce<User | undefined>((boundary, msg) => {
+    if (msg.info.role !== "assistant" || !msg.info.summary || !msg.info.finish || msg.info.error) return boundary
+    const marker = compactions.get(msg.info.parentID)
+    if (!marker) return boundary
+    return !boundary || before(boundary, marker) ? marker : boundary
+  }, undefined)
   const toolNames = new Set<string>()
   // Track media from tool results that need to be injected as user messages
   // for providers that don't support that media type in tool results.
@@ -267,6 +295,15 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       ) {
         continue
       }
+      // A successful client compaction inserts a summary before the retained old
+      // tail. Its old thinking is bound to the replaced prefix, and the summary's
+      // own thinking was produced under the separate summarizer system/tools.
+      // Fresh main-conversation thinking after this boundary remains replayable.
+      const invalidatedThinking =
+        claudeReplay &&
+        (options?.stripSignedThinking === true ||
+          msg.info.summary === true ||
+          (compactedThrough !== undefined && before(msg.info, compactedThrough)))
       const assistantMessage: UIMessage = {
         id: msg.info.id,
         role: "assistant",
@@ -283,10 +320,12 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       // here is the only safe replay point we have.
       // Use a single space so the separator survives replay without changing
       // the neighboring signed reasoning blocks.
-      const hasSignedReasoning = msg.parts.some((part) => {
-        if (part.type !== "reasoning") return false
-        return part.metadata?.anthropic?.signature != null
-      })
+      const hasSignedReasoning =
+        !invalidatedThinking &&
+        msg.parts.some((part) => {
+          if (part.type !== "reasoning") return false
+          return part.metadata?.anthropic?.signature != null
+        })
       for (const part of msg.parts) {
         if (part.type === "text") {
           const text = part.text === "" && hasSignedReasoning ? " " : part.text
@@ -379,6 +418,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             distillation: part.distillation,
             enabled: options?.reasoningDistillationEnabled === true,
           })
+          if (invalidatedThinking && claudeThinking(replay.metadata, msg.info.providerID)) continue
           if (differentModel) {
             if (replay.text.trim().length > 0)
               assistantMessage.parts.push({
@@ -438,7 +478,12 @@ export const contextFoldingHistory = ContextFolding.history
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; reasoningDistillationEnabled?: boolean },
+  options?: {
+    stripMedia?: boolean
+    toolOutputMaxChars?: number
+    reasoningDistillationEnabled?: boolean
+    stripSignedThinking?: boolean
+  },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }

@@ -972,6 +972,47 @@ describe("session.compaction.process", () => {
     }),
   )
 
+  itCompaction.instance("does not send signed history to the separate summarizer context", () => {
+    const stub = llm()
+    const captured: string[] = []
+    stub.push(reply("summary", (input) => captured.push(JSON.stringify(input.messages))))
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const root = (yield* TestInstance).directory
+      for (const name of ["head", "tail"]) {
+        const user = yield* createUserMessage(session.id, `question ${name}`)
+        const assistant = yield* createAssistantMessage(session.id, user.id, root)
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: assistant.id,
+          sessionID: session.id,
+          type: "reasoning",
+          text: "",
+          time: { start: 0, end: 1 },
+          metadata: { anthropic: { signature: `opaque-${name}` } },
+        })
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: assistant.id,
+          sessionID: session.id,
+          type: "text",
+          text: `answer ${name}`,
+        })
+      }
+      yield* createSummaryCompaction(session.id)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      const parentID = messages.at(-1)!.info.id
+      const saved = structuredClone(messages)
+      yield* SessionCompaction.use.process({ parentID, messages, sessionID: session.id, auto: false })
+      expect(captured).toHaveLength(1)
+      expect(captured[0]).toContain("answer head")
+      expect(captured[0]).not.toContain("opaque-head")
+      expect(captured[0]).not.toContain("opaque-tail")
+      expect(messages).toEqual(saved)
+    }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 10_000 }) }))
+  })
+
   itCompaction.instance(
     "persists tail_start_id for retained recent turns",
     Effect.gen(function* () {
