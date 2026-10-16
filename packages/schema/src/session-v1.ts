@@ -104,6 +104,8 @@ export const TextPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("text"),
   text: Schema.String,
+  /** Display-only hook output. The canonical text is retained for history and model input. */
+  displayText: Schema.optional(Schema.String),
   synthetic: Schema.optional(Schema.Boolean),
   ignored: Schema.optional(Schema.Boolean),
   time: Schema.optional(
@@ -263,6 +265,8 @@ export const ToolStatePending = Schema.Struct({
   status: Schema.Literal("pending"),
   input: Schema.Record(Schema.String, Schema.Any),
   raw: Schema.String,
+  /** A headless hook paused this unexecuted call; resume re-runs its permission boundary. */
+  deferred: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "ToolStatePending" })
 export type ToolStatePending = Types.DeepMutable<Schema.Schema.Type<typeof ToolStatePending>>
 
@@ -320,6 +324,7 @@ export const ToolPart = Schema.Struct({
   type: Schema.Literal("tool"),
   callID: Schema.String,
   tool: Schema.String,
+  v2: Schema.Struct({ messageID: Schema.String }).pipe(Schema.optional),
   state: ToolState,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
 }).annotate({ identifier: "ToolPart" })
@@ -335,6 +340,7 @@ const messageBase = {
 export const User = Schema.Struct({
   ...messageBase,
   role: Schema.Literal("user"),
+  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
   time: Schema.Struct({
     created: Timestamp,
     consumed: Schema.optional(Timestamp),

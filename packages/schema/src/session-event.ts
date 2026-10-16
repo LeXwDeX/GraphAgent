@@ -230,6 +230,19 @@ export namespace Text {
     },
   })
   export type Ended = typeof Ended.Type
+
+  /** Replayable presentation copy. Never changes Text.Ended or model history. */
+  export const DisplayUpdated = Event.define({
+    type: "session.next.text.display.updated",
+    ...options,
+    schema: {
+      ...Base,
+      assistantMessageID: SessionMessageID.ID,
+      textID: Schema.String,
+      displayText: Schema.String,
+    },
+  })
+  export type DisplayUpdated = typeof DisplayUpdated.Type
 }
 
 export namespace Reasoning {
@@ -325,6 +338,41 @@ export namespace Tool {
     },
   })
   export type Called = typeof Called.Type
+
+  /** Accepted replacement after validation and permission, retaining the provider's raw call separately. */
+  export const InputReplaced = Event.define({
+    type: "session.next.tool.input.replaced",
+    ...options,
+    schema: {
+      ...ToolBase,
+      input: Schema.Record(Schema.String, Schema.Unknown),
+    },
+  })
+  export type InputReplaced = typeof InputReplaced.Type
+
+  /** A single non-interactive tool call paused for a later explicit resume. */
+  export const Deferred = Event.define({
+    type: "session.next.tool.deferred",
+    ...options,
+    schema: ToolBase,
+  })
+  export type Deferred = typeof Deferred.Type
+
+  /** Resume has claimed the saved call before running its hook or tool again. */
+  export const Resuming = Event.define({
+    type: "session.next.tool.resuming",
+    ...options,
+    schema: ToolBase,
+  })
+  export type Resuming = typeof Resuming.Type
+
+  /** The saved call cannot resume until its tool is registered again. */
+  export const Unavailable = Event.define({
+    type: "session.next.tool.unavailable",
+    ...options,
+    schema: ToolBase,
+  })
+  export type Unavailable = typeof Unavailable.Type
 
   /**
    * Replayable bounded running-tool state. Tools should checkpoint semantic
@@ -462,9 +510,14 @@ export const DurableDefinitions = Event.inventory(
   Step.Failed,
   Text.Started,
   Text.Ended,
+  Text.DisplayUpdated,
   Tool.Input.Started,
   Tool.Input.Ended,
   Tool.Called,
+  Tool.InputReplaced,
+  Tool.Deferred,
+  Tool.Resuming,
+  Tool.Unavailable,
   Tool.Progress,
   Tool.Success,
   Tool.Failed,
@@ -494,6 +547,7 @@ export const Definitions = Event.inventory(
   Text.Started,
   Text.Delta,
   Text.Ended,
+  Text.DisplayUpdated,
   Reasoning.Started,
   Reasoning.Delta,
   Reasoning.Ended,
@@ -501,6 +555,10 @@ export const Definitions = Event.inventory(
   Tool.Input.Delta,
   Tool.Input.Ended,
   Tool.Called,
+  Tool.InputReplaced,
+  Tool.Deferred,
+  Tool.Resuming,
+  Tool.Unavailable,
   Tool.Progress,
   Tool.Success,
   Tool.Failed,

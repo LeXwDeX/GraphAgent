@@ -8,6 +8,7 @@ import { ProjectV2 } from "../project"
 import { SessionV2 } from "../session"
 import { SessionExecution } from "../session/execution"
 import { SessionEvent } from "../session/event"
+import { SessionCwdHooks } from "../session/cwd-hooks"
 import { SessionSchema } from "../session/schema"
 import { AbsolutePath, RelativePath } from "../schema"
 import path from "path"
@@ -106,6 +107,12 @@ export const layer = Layer.effect(
         location: Location.Ref.make({ directory }),
         subdirectory: RelativePath.make(path.relative(destination.directory, directory).replaceAll("\\", "/")),
         timestamp: yield* DateTime.now,
+      })
+
+      yield* SessionCwdHooks.changed({
+        sessionID: input.sessionID,
+        previousDirectory: current.location.directory,
+        directory,
       })
 
       if (patch) {

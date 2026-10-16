@@ -27,10 +27,9 @@ describe("condition-filter evaluate", () => {
     expect(result).toBe(true)
   })
 
-  test("非工具事件 (Stop) if 恒为真（被忽略）", () => {
-    // delta spec scenario: any if on a non-tool event is ignored
-    expect(evaluate(entry("Bash(rm *)"), { prompt: "hi" }, "Stop")).toBe(true)
-    expect(evaluate(entry("Edit(*.ts)"), {}, "UserPromptSubmit")).toBe(true)
+  test("非工具事件带 if 条件时不运行", () => {
+    expect(evaluate(entry("Bash(rm *)"), { prompt: "hi" }, "Stop")).toBe(false)
+    expect(evaluate(entry("Edit(*.ts)"), {}, "UserPromptSubmit")).toBe(false)
   })
 
   test("PreToolUse 既有行为保持（匹配/不匹配）", () => {

@@ -9,12 +9,13 @@ Before claiming a feature is unavailable, check this catalog and its configurati
 
 ### Hooks
 - Lifecycle hooks cover tool, permission, session, subagent, prompt, compaction, task, and file events.
-- Hook types are command, mcp, http, prompt, and agent.
+- Hook types are command, mcp_tool (legacy mcp alias), http, prompt, and agent, with event-specific availability.
 - hooks.json lives in the global OpenCode config directory and project/worktree .opencode directories.
 - Hook configuration uses append merging and hot reload.
 - Claude .claude/settings*.json files are not loaded automatically. Use /import-claude-hooks to migrate them.
 - Command hooks can use inputFormat: "claude-code" to translate builtin tool names and input keys.
-- This translation provides naming compatibility. It does not provide complete Claude Code behavior parity.
+- Hooks also cover model switches, displayed text, actual instruction loads, scoped skill/agent hooks, and durable deferred tool resumption.
+- Compatibility follows the local product operations documented by configure-hooks; teammate-idle and automatic classifier behavior require corresponding host features.
 - Load configure-hooks for exact events, schemas, supported output fields, and verification.
 - Use /create-hook for guided authoring.
 

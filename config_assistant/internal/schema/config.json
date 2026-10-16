@@ -4,12 +4,7 @@
   "$defs": {
     "LogLevel": {
       "type": "string",
-      "enum": [
-        "DEBUG",
-        "INFO",
-        "WARN",
-        "ERROR"
-      ],
+      "enum": ["DEBUG", "INFO", "WARN", "ERROR"],
       "description": "Log level"
     },
     "ServerConfig": {
@@ -59,9 +54,7 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "repository"
-      ],
+      "required": ["repository"],
       "additionalProperties": false
     },
     "ConfigV2.Reference.Local": {
@@ -77,18 +70,12 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "path"
-      ],
+      "required": ["path"],
       "additionalProperties": false
     },
     "PermissionActionConfig": {
       "type": "string",
-      "enum": [
-        "ask",
-        "allow",
-        "deny"
-      ]
+      "enum": ["ask", "allow", "deny"]
     },
     "PermissionObjectConfig": {
       "type": "object",
@@ -186,6 +173,9 @@
         "prompt": {
           "type": "string"
         },
+        "hooks": {
+          "type": "object"
+        },
         "tools": {
           "type": "object",
           "additionalProperties": {
@@ -202,11 +192,7 @@
         },
         "mode": {
           "type": "string",
-          "enum": [
-            "subagent",
-            "primary",
-            "all"
-          ]
+          "enum": ["subagent", "primary", "all"]
         },
         "hidden": {
           "type": "boolean",
@@ -223,15 +209,7 @@
             },
             {
               "type": "string",
-              "enum": [
-                "primary",
-                "secondary",
-                "accent",
-                "success",
-                "warning",
-                "error",
-                "info"
-              ]
+              "enum": ["primary", "secondary", "accent", "success", "warning", "error", "info"]
             }
           ],
           "description": "Hex color code (e.g., #FF5733) or theme color (e.g., primary)"
@@ -325,9 +303,7 @@
                 },
                 {
                   "type": "boolean",
-                  "enum": [
-                    false
-                  ]
+                  "enum": [false]
                 }
               ],
               "description": "Timeout in milliseconds for full requests to this provider. Set to false to disable timeout."
@@ -341,9 +317,7 @@
                 },
                 {
                   "type": "boolean",
-                  "enum": [
-                    false
-                  ]
+                  "enum": [false]
                 }
               ],
               "description": "Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout."
@@ -389,25 +363,17 @@
                 "anyOf": [
                   {
                     "type": "boolean",
-                    "enum": [
-                      true
-                    ]
+                    "enum": [true]
                   },
                   {
                     "type": "object",
                     "properties": {
                       "field": {
                         "type": "string",
-                        "enum": [
-                          "reasoning",
-                          "reasoning_content",
-                          "reasoning_details"
-                        ]
+                        "enum": ["reasoning", "reasoning_content", "reasoning_details"]
                       }
                     },
-                    "required": [
-                      "field"
-                    ],
+                    "required": ["field"],
                     "additionalProperties": false
                   }
                 ]
@@ -449,9 +415,7 @@
                           "properties": {
                             "type": {
                               "type": "string",
-                              "enum": [
-                                "context"
-                              ]
+                              "enum": ["context"]
                             },
                             "size": {
                               "exclusiveMinimum": 0,
@@ -459,18 +423,11 @@
                               "maximum": 9007199254740991
                             }
                           },
-                          "required": [
-                            "type",
-                            "size"
-                          ],
+                          "required": ["type", "size"],
                           "additionalProperties": false
                         }
                       },
-                      "required": [
-                        "input",
-                        "output",
-                        "tier"
-                      ],
+                      "required": ["input", "output", "tier"],
                       "additionalProperties": false
                     }
                   },
@@ -490,17 +447,11 @@
                         "type": "number"
                       }
                     },
-                    "required": [
-                      "input",
-                      "output"
-                    ],
+                    "required": ["input", "output"],
                     "additionalProperties": false
                   }
                 },
-                "required": [
-                  "input",
-                  "output"
-                ],
+                "required": ["input", "output"],
                 "additionalProperties": false
               },
               "limit": {
@@ -516,10 +467,7 @@
                     "type": "number"
                   }
                 },
-                "required": [
-                  "context",
-                  "output"
-                ],
+                "required": ["context", "output"],
                 "additionalProperties": false
               },
               "modalities": {
@@ -529,26 +477,14 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": [
-                        "text",
-                        "audio",
-                        "image",
-                        "video",
-                        "pdf"
-                      ]
+                      "enum": ["text", "audio", "image", "video", "pdf"]
                     }
                   },
                   "output": {
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": [
-                        "text",
-                        "audio",
-                        "image",
-                        "video",
-                        "pdf"
-                      ]
+                      "enum": ["text", "audio", "image", "video", "pdf"]
                     }
                   }
                 },
@@ -559,12 +495,7 @@
               },
               "status": {
                 "type": "string",
-                "enum": [
-                  "alpha",
-                  "beta",
-                  "deprecated",
-                  "active"
-                ]
+                "enum": ["alpha", "beta", "deprecated", "active"]
               },
               "reasoningDistillation": {
                 "$ref": "#/$defs/ConfigV2.Model.ReasoningDistillation"
@@ -615,9 +546,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "local"
-          ],
+          "enum": ["local"],
           "description": "Type of MCP server connection"
         },
         "command": {
@@ -650,18 +579,11 @@
         },
         "protocol": {
           "type": "string",
-          "enum": [
-            "auto",
-            "legacy",
-            "modern"
-          ],
+          "enum": ["auto", "legacy", "modern"],
           "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
         }
       },
-      "required": [
-        "type",
-        "command"
-      ],
+      "required": ["type", "command"],
       "additionalProperties": false
     },
     "McpOAuthConfig": {
@@ -697,9 +619,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "remote"
-          ],
+          "enum": ["remote"],
           "description": "Type of MCP server connection"
         },
         "url": {
@@ -724,9 +644,7 @@
             },
             {
               "type": "boolean",
-              "enum": [
-                false
-              ]
+              "enum": [false]
             }
           ],
           "description": "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection."
@@ -739,26 +657,42 @@
         },
         "protocol": {
           "type": "string",
-          "enum": [
-            "auto",
-            "legacy",
-            "modern"
-          ],
+          "enum": ["auto", "legacy", "modern"],
           "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
         }
       },
-      "required": [
-        "type",
-        "url"
-      ],
+      "required": ["type", "url"],
       "additionalProperties": false
     },
     "LayoutConfig": {
       "type": "string",
-      "enum": [
-        "auto",
-        "stretch"
-      ]
+      "enum": ["auto", "stretch"]
+    },
+    "PermissionV2.Effect": {
+      "type": "string",
+      "enum": ["allow", "deny", "ask"]
+    },
+    "PermissionV2.Rule": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionV2.Effect"
+        }
+      },
+      "required": ["action", "resource", "effect"],
+      "additionalProperties": false
+    },
+    "PermissionV2.Ruleset": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PermissionV2.Rule"
+      }
     },
     "ImageAttachmentConfig": {
       "type": "object",
@@ -846,10 +780,7 @@
         },
         "language": {
           "type": "string",
-          "enum": [
-            "zh",
-            "en"
-          ]
+          "enum": ["zh", "en"]
         },
         "compatibility": {
           "type": "array",
@@ -862,10 +793,7 @@
     },
     "Policy.Effect": {
       "type": "string",
-      "enum": [
-        "allow",
-        "deny"
-      ]
+      "enum": ["allow", "deny"]
     },
     "ConfigV2.Experimental.Policy": {
       "type": "object",
@@ -876,9 +804,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "enum": [
-                    "provider.use"
-                  ]
+                  "enum": ["provider.use"]
                 }
               ]
             }
@@ -891,11 +817,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "action",
-        "effect",
-        "resource"
-      ],
+      "required": ["action", "effect", "resource"],
       "additionalProperties": false
     },
     "Config": {
@@ -955,9 +877,7 @@
                 "type": "boolean"
               }
             },
-            "required": [
-              "template"
-            ],
+            "required": ["template"],
             "additionalProperties": false
           },
           "description": "Command configuration, see https://opencode.ai/docs/commands"
@@ -1058,11 +978,7 @@
         },
         "share": {
           "type": "string",
-          "enum": [
-            "manual",
-            "auto",
-            "disabled"
-          ],
+          "enum": ["manual", "auto", "disabled"],
           "description": "Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing"
         },
         "autoshare": {
@@ -1076,9 +992,7 @@
             },
             {
               "type": "string",
-              "enum": [
-                "notify"
-              ]
+              "enum": ["notify"]
             }
           ],
           "description": "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored"
@@ -1194,9 +1108,7 @@
                     "type": "boolean"
                   }
                 },
-                "required": [
-                  "enabled"
-                ],
+                "required": ["enabled"],
                 "additionalProperties": false
               }
             ]
@@ -1255,14 +1167,10 @@
                     "properties": {
                       "disabled": {
                         "type": "boolean",
-                        "enum": [
-                          true
-                        ]
+                        "enum": [true]
                       }
                     },
-                    "required": [
-                      "disabled"
-                    ],
+                    "required": ["disabled"],
                     "additionalProperties": false
                   },
                   {
@@ -1293,9 +1201,7 @@
                         "type": "object"
                       }
                     },
-                    "required": [
-                      "command"
-                    ],
+                    "required": ["command"],
                     "additionalProperties": false
                   }
                 ]
@@ -1317,6 +1223,27 @@
         },
         "permission": {
           "$ref": "#/$defs/PermissionConfig"
+        },
+        "permissions": {
+          "$ref": "#/$defs/PermissionV2.Ruleset",
+          "description": "Ordered permission rules; supersedes the legacy permission map within this document"
+        },
+        "hookPermissions": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["default", "manual", "acceptEdits", "dontAsk", "plan"]
+            },
+            "directories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "description": "OpenCode-owned permission hook mode and additional directory grants"
         },
         "tools": {
           "type": "object",

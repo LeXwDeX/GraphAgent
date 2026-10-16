@@ -258,6 +258,12 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             if (match) match.text += event.data.delta
           })
           break
+        case "session.next.text.display.updated":
+          message.update(event.data.sessionID, (draft) => {
+            const match = message.latestText(message.assistant(draft, event.data.assistantMessageID), event.data.textID)
+            if (match) match.displayText = event.data.displayText
+          })
+          break
         case "session.next.text.ended":
           message.update(event.data.sessionID, (draft) => {
             const match = message.latestText(message.assistant(draft, event.data.assistantMessageID), event.data.textID)

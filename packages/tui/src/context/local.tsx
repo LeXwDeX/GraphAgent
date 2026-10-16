@@ -12,6 +12,7 @@ import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
+import { errorMessage } from "../util/error"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -241,6 +242,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         )
       })
 
+      let modelRequest = Promise.resolve()
+      let modelRequestID = 0
       return {
         current: currentModel,
         get ready() {
@@ -280,9 +283,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (next >= recent.length) next = 0
           const val = recent[next]
           if (!val) return
-          const a = agent.current()
-          if (!a) return
-          setModelStore("model", a.name, { ...val })
+          void this.set({ ...val })
         },
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
@@ -308,30 +309,65 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
           const next = favorites[index]
           if (!next) return
-          const a = agent.current()
-          if (!a) return
-          setModelStore("model", a.name, { ...next })
-          setModelStore("recent", recentModels(next, modelStore.recent))
-          save()
+          void this.set({ ...next }, { recent: true })
         },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
-          batch(() => {
+        set(
+          model: { providerID: string; modelID: string },
+          options?: { recent?: boolean; source?: "picker" | "command" },
+        ) {
+          const requestID = ++modelRequestID
+          const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+          const agentName = agent.current()?.name
+          const matchesSelection = () =>
+            (route.data.type === "session" ? route.data.sessionID : undefined) === sessionID &&
+            agent.current()?.name === agentName
+          const commit = () => {
+            if (!matchesSelection()) return false
             if (!isModelValid(model)) {
               toast.show({
                 message: `Model ${model.providerID}/${model.modelID} is not valid`,
                 variant: "warning",
                 duration: 3000,
               })
-              return
+              return false
             }
             const a = agent.current()
-            if (!a) return
-            setModelStore("model", a.name, model)
-            if (options?.recent) {
-              setModelStore("recent", recentModels(model, modelStore.recent))
-              save()
+            if (!a) return false
+            batch(() => {
+              setModelStore("model", a.name, model)
+              if (options?.recent) {
+                setModelStore("recent", recentModels(model, modelStore.recent))
+                save()
+              }
+            })
+            // An accepted request remains the server's model if the next choice is refused.
+            // Only the newest choice may close its picker.
+            return requestID === modelRequestID
+          }
+          if (!sessionID) return Promise.resolve(commit())
+
+          const apply = async () => {
+            if (requestID !== modelRequestID || !matchesSelection()) return false
+            try {
+              await sdk.client.session.setModel(
+                {
+                  sessionID,
+                  model,
+                  source: options?.source ?? "picker",
+                  hookMode: "interactive",
+                },
+                { throwOnError: true },
+              )
+              return commit()
+            } catch (error) {
+              if (requestID === modelRequestID && matchesSelection())
+                toast.show({ message: errorMessage(error), variant: "warning", duration: 5000 })
+              return false
             }
-          })
+          }
+          const queued = modelRequest.then(apply, apply)
+          modelRequest = queued.then(() => undefined)
+          return queued
         },
         toggleFavorite(model: { providerID: string; modelID: string }) {
           batch(() => {

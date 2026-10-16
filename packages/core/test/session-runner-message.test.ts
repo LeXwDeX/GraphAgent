@@ -14,6 +14,31 @@ const id = (value: string) => SessionMessage.ID.make(`msg_${value}`)
 const model = Model.make({ id: "model", provider: "provider", route: OpenAIChat.route })
 
 describe("toLLMMessages", () => {
+  test("replays canonical text instead of the persistent display copy", () => {
+    const messages = toLLMMessages(
+      [
+        SessionMessage.Assistant.make({
+          id: id("display-copy"),
+          type: "assistant",
+          agent: "build",
+          model: { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") },
+          content: [
+            SessionMessage.AssistantText.make({
+              type: "text",
+              id: "display-copy-text",
+              text: "canonical",
+              displayText: "visible",
+            }),
+          ],
+          time: { created, completed: created },
+        }),
+      ],
+      model,
+    )
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.content).toEqual([{ type: "text", text: "canonical" }])
+  })
+
   test("omits empty assistant turns", () => {
     const assistant = (value: string, content: SessionMessage.Assistant["content"]) =>
       SessionMessage.Assistant.make({

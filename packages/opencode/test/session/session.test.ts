@@ -243,13 +243,14 @@ describe("Session", () => {
         session.remove(info.id).pipe(Effect.ignore),
       )
 
-      expect(saved.metadata).toEqual(meta)
-      expect(fork.metadata).toEqual(meta)
+      expect(saved.metadata).toEqual({ ...meta, hookTitleSource: "custom" })
+      expect(fork.metadata).toEqual({ ...meta, hookTitleSource: "custom" })
+      expect(meta).toEqual({ source: "sdk", trace: { id: "abc" } })
       expect(fork.metadata).not.toBe(meta)
     }),
   )
 
-  it.instance("omits metadata when not provided", () =>
+  it.instance("records explicit title provenance without unrelated user metadata", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
       const created = yield* Effect.acquireRelease(session.create({ title: "empty-meta" }), (info) =>
@@ -257,8 +258,8 @@ describe("Session", () => {
       )
       const saved = yield* session.get(created.id)
 
-      expect(created.metadata).toBeUndefined()
-      expect(saved.metadata).toBeUndefined()
+      expect(created.metadata).toEqual({ hookTitleSource: "custom" })
+      expect(saved.metadata).toEqual({ hookTitleSource: "custom" })
     }),
   )
 })

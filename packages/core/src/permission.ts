@@ -1,6 +1,6 @@
 export * as PermissionV2 from "./permission"
 
-import { Context, Deferred, Effect as EffectRuntime, Layer, Schema } from "effect"
+import { Context, Deferred, Effect as EffectRuntime, Layer, Schema, Option, Scope, Fiber } from "effect"
 import { Permission } from "@opencode-ai/schema/permission"
 import { EventV2 } from "./event"
 import { Location } from "./location"
@@ -8,6 +8,8 @@ import { AgentV2 } from "./agent"
 import { SessionV2 } from "./session"
 import { SessionStore } from "./session/store"
 import { Wildcard } from "./util/wildcard"
+import { PermissionHookScope } from "./permission/hook-scope"
+import { SessionTurnHooks } from "./session/turn-hooks"
 import { PermissionSaved } from "./permission/saved"
 
 export { Effect, Rule, Ruleset } from "@opencode-ai/schema/permission"
@@ -90,6 +92,8 @@ export function merge(...rulesets: Permission.Ruleset[]): Permission.Ruleset {
 
 export interface Interface {
   readonly ask: (input: AssertInput) => EffectRuntime.Effect<AskResult, SessionV2.NotFoundError>
+  /** User confirmation only; it grants no leaf authorization. */
+  readonly confirm?: (input: AssertInput) => EffectRuntime.Effect<void, RejectedError | CorrectedError>
   readonly assert: (input: AssertInput) => EffectRuntime.Effect<void, Error | SessionV2.NotFoundError>
   readonly reply: (input: ReplyInput) => EffectRuntime.Effect<void, NotFoundError>
   readonly get: (id: ID) => EffectRuntime.Effect<Request | undefined>
@@ -114,6 +118,7 @@ export const layer = Layer.effect(
     const sessions = yield* SessionStore.Service
     const saved = yield* PermissionSaved.Service
     const pending = new Map<ID, Pending>()
+    const scope = yield* Scope.Scope
 
     yield* EffectRuntime.addFinalizer(() =>
       EffectRuntime.forEach(pending.values(), (item) => Deferred.fail(item.deferred, new RejectedError()), {
@@ -128,9 +133,11 @@ export const layer = Layer.effect(
     )
 
     const savedRules = EffectRuntime.fnUntraced(function* () {
-      return (yield* saved.list({ projectID: location.project.id })).map(
-        (item): Permission.Rule => ({ action: item.action, resource: item.resource, effect: "allow" }),
-      )
+      return (yield* saved.list({ projectID: location.project.id })).map((item): Permission.Rule => ({
+        action: item.action,
+        resource: item.resource,
+        effect: "allow",
+      }))
     })
 
     const configured = EffectRuntime.fn("PermissionV2.configured")(function* (
@@ -151,10 +158,15 @@ export const layer = Layer.effect(
       return rules.filter((rule) => Wildcard.match(input.action, rule.action))
     }
 
-    const evaluateInput = EffectRuntime.fnUntraced(function* (input: AssertInput) {
-      const rules = yield* configured(input.sessionID, input.agent)
-      if (denied(input, rules)) return { effect: "deny" as const, rules }
-      const all = [...rules, ...(yield* savedRules())]
+    const evaluateInput = EffectRuntime.fnUntraced(function* (
+      input: AssertInput,
+      overlay: Permission.Ruleset = [],
+      plan = false,
+    ) {
+      const rules = yield* configured(input.sessionID, plan ? AgentV2.ID.make("plan") : input.agent)
+      if (denied(input, rules) || denied(input, overlay))
+        return { effect: "deny" as const, rules: [...rules, ...overlay] }
+      const all = [...rules, ...overlay, ...(yield* savedRules())]
       const effects = input.resources.map((resource) => evaluate(input.action, resource, all).effect)
       const effect: Permission.Effect = effects.includes("deny") ? "deny" : effects.includes("ask") ? "ask" : "allow"
       return { effect, rules: all }
@@ -182,6 +194,18 @@ export const layer = Layer.effect(
           yield* events
             .publish(Event.Asked, request)
             .pipe(EffectRuntime.onError(() => EffectRuntime.sync(() => pending.delete(request.id))))
+          const host = Option.getOrUndefined(yield* EffectRuntime.serviceOption(SessionTurnHooks.Service))
+          if (host?.permissionPending) {
+            const notification = yield* host
+              .permissionPending(request.sessionID, request.action)
+              .pipe(EffectRuntime.ignore, EffectRuntime.interruptible, EffectRuntime.forkIn(scope))
+            yield* Deferred.await(deferred).pipe(
+              EffectRuntime.ignore,
+              EffectRuntime.andThen(Fiber.interrupt(notification)),
+              EffectRuntime.interruptible,
+              EffectRuntime.forkIn(scope),
+            )
+          }
           return item
         }),
       )
@@ -196,19 +220,109 @@ export const layer = Layer.effect(
     const assert = EffectRuntime.fn("PermissionV2.assert")((input: AssertInput) =>
       EffectRuntime.uninterruptibleMask((restore) =>
         EffectRuntime.gen(function* () {
-          const result = yield* evaluateInput(input)
+          const hook = Option.getOrUndefined(yield* EffectRuntime.serviceOption(PermissionHookScope.Service))
+          const policy = hook
+            ? yield* restore(
+                hook.hooks
+                  .policy()
+                  .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+              )
+            : undefined
+          const result = yield* evaluateInput(input, policy?.rules, policy?.mode === "plan")
           if (result.effect === "deny") {
-            return yield* new DeniedError({
-              rules: relevant(input, result.rules),
-            })
+            if (hook) hook.denied = true
+            return yield* new DeniedError({ rules: relevant(input, result.rules) })
           }
-          if (result.effect === "allow") return
+          const force = hook?.preDecision === "ask" && !hook.confirmed
+          if (!force && policy?.mode === "bypassPermissions") return undefined
+          const explicitAsk = result.rules.some(
+            (rule) =>
+              rule.effect === "ask" &&
+              rule.action !== "*" &&
+              Wildcard.match(input.action, rule.action) &&
+              input.resources.some((resource) => Wildcard.match(resource, rule.resource)),
+          )
+          const implicitAllowed =
+            !force &&
+            !explicitAsk &&
+            (hook?.preDecision === "allow" || (policy?.mode === "acceptEdits" && input.action === "edit"))
+          if (!force && (result.effect === "allow" || implicitAllowed)) return undefined
+          if (policy?.mode === "dontAsk") {
+            if (hook) hook.denied = true
+            return yield* new DeniedError({ rules: relevant(input, result.rules) })
+          }
+          if (hook) {
+            const decision = yield* restore(
+              hook.hooks
+                .request({
+                  action: input.action,
+                  resources: input.resources,
+                  toolInput: hook.input,
+                  metadata: input.metadata,
+                })
+                .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+            )
+            if (decision.behavior === "deny") {
+              hook.denied = true
+              if (decision.interrupt) hook.stopped = decision.message ?? "Stopped by permission hook"
+              return yield* new CorrectedError({ feedback: decision.message ?? "Denied by permission hook" })
+            }
+            if (decision.updatedInput !== undefined) {
+              hook.pendingInput = decision.updatedInput
+              return yield* new DeniedError({ rules: [] })
+            }
+            // Permission updates may have changed this very action's policy.
+            const refreshedPolicy = yield* restore(
+              hook.hooks
+                .policy()
+                .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+            )
+            const refreshed = yield* evaluateInput(input, refreshedPolicy.rules, refreshedPolicy.mode === "plan")
+            if (refreshed.effect === "deny") {
+              hook.denied = true
+              return yield* new DeniedError({ rules: relevant(input, refreshed.rules) })
+            }
+            if (!force && refreshedPolicy.mode === "bypassPermissions") return undefined
+            const refreshedExplicitAsk = refreshed.rules.some(
+              (rule) =>
+                rule.effect === "ask" &&
+                rule.action !== "*" &&
+                Wildcard.match(input.action, rule.action) &&
+                input.resources.some((resource) => Wildcard.match(resource, rule.resource)),
+            )
+            if (!force && (refreshed.effect === "allow" || (!refreshedExplicitAsk && decision.behavior === "allow")))
+              return undefined
+            if (refreshedPolicy.mode === "dontAsk") {
+              hook.denied = true
+              return yield* new DeniedError({ rules: relevant(input, refreshed.rules) })
+            }
+          }
+          const item = yield* create(request(input), input.agent)
+          return yield* restore(Deferred.await(item.deferred)).pipe(
+            EffectRuntime.tap(() =>
+              EffectRuntime.sync(() => {
+                if (hook) hook.confirmed = true
+              }),
+            ),
+            EffectRuntime.ensuring(
+              Deferred.fail(item.deferred, new RejectedError()).pipe(
+                EffectRuntime.andThen(EffectRuntime.sync(() => pending.delete(item.request.id))),
+              ),
+            ),
+          )
+        }),
+      ),
+    )
+
+    const confirm = EffectRuntime.fn("PermissionV2.confirm")((input: AssertInput) =>
+      EffectRuntime.uninterruptibleMask((restore) =>
+        EffectRuntime.gen(function* () {
           const item = yield* create(request(input), input.agent)
           return yield* restore(Deferred.await(item.deferred)).pipe(
             EffectRuntime.ensuring(
-              EffectRuntime.sync(() => {
-                pending.delete(item.request.id)
-              }),
+              Deferred.fail(item.deferred, new RejectedError()).pipe(
+                EffectRuntime.andThen(EffectRuntime.sync(() => pending.delete(item.request.id))),
+              ),
             ),
           )
         }),
@@ -295,7 +409,7 @@ export const layer = Layer.effect(
       return Array.from(pending.values(), (item) => item.request).filter((request) => request.sessionID === sessionID)
     })
 
-    return Service.of({ ask, assert, reply, get, forSession, list })
+    return Service.of({ ask, assert, confirm, reply, get, forSession, list })
   }),
 )
 

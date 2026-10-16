@@ -57,6 +57,8 @@ type Config<Input extends SchemaType<any>, Output extends SchemaType<any>> = {
 type Runtime = {
   readonly permission?: string
   readonly definition: (name: string) => ToolDefinition
+  readonly validate: (call: ToolCall) => Effect.Effect<void, ToolFailure>
+  readonly replaceOutput: (call: ToolCall, value: unknown) => Effect.Effect<ToolOutput, ToolFailure>
   readonly settle: (call: ToolCall, context: Context) => Effect.Effect<ToolOutput, ToolFailure>
   readonly contextFolding: Readonly<{ instructions: CandidateSafety["instructions"] }>
 }
@@ -68,7 +70,42 @@ export function make<Input extends SchemaType<any>, Output extends SchemaType<an
 ): Definition<Input, Output> {
   const tool = Object.freeze({}) as Definition<Input, Output>
   const definitions = new Map<string, ToolDefinition>()
+  const decode = (call: ToolCall) =>
+    Schema.decodeUnknownEffect(config.input)(call.input).pipe(
+      Effect.mapError((error) => new ToolFailure({ message: `Invalid tool input: ${error.message}` })),
+    )
+  const project = (input: Schema.Schema.Type<Input>, value: Schema.Schema.Type<Output>) =>
+    Schema.encodeEffect(config.output)(value).pipe(
+      Effect.mapError(
+        (error) =>
+          new ToolFailure({ message: `Tool returned an invalid value for its output schema: ${error.message}` }),
+      ),
+      Effect.map((output) => ({
+        structured: output,
+        content:
+          config.toModelOutput?.({ input, output }).map((part) =>
+            part.type === "text"
+              ? { type: "text" as const, text: part.text }
+              : {
+                  type: "file" as const,
+                  uri: `data:${part.mime};base64,${part.data}`,
+                  mime: part.mime,
+                  name: part.name,
+                },
+          ) ?? (typeof output === "string" ? [{ type: "text" as const, text: output }] : []),
+      })),
+    )
   runtimes.set(tool, {
+    validate: (call) => decode(call).pipe(Effect.asVoid),
+    replaceOutput: (call, value) =>
+      decode(call).pipe(
+        Effect.flatMap((input) =>
+          Schema.decodeUnknownEffect(config.output)(value).pipe(
+            Effect.mapError((error) => new ToolFailure({ message: `Invalid hook tool output: ${error.message}` })),
+            Effect.flatMap((output) => project(input, output)),
+          ),
+        ),
+      ),
     contextFolding: config.contextFolding ?? { instructions: "unknown" },
     definition: (name) => {
       const cached = definitions.get(name)
@@ -83,35 +120,9 @@ export function make<Input extends SchemaType<any>, Output extends SchemaType<an
       return definition
     },
     settle: (call, context) =>
-      Schema.decodeUnknownEffect(config.input)(call.input).pipe(
-        Effect.mapError((error) => new ToolFailure({ message: `Invalid tool input: ${error.message}` })),
+      decode(call).pipe(
         Effect.flatMap((input) =>
-          config.execute(input, context).pipe(
-            Effect.flatMap((output) =>
-              Schema.encodeEffect(config.output)(output).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new ToolFailure({
-                      message: `Tool returned an invalid value for its output schema: ${error.message}`,
-                    }),
-                ),
-              ),
-            ),
-            Effect.map((output) => ({
-              structured: output,
-              content:
-                config.toModelOutput?.({ input, output }).map((part) =>
-                  part.type === "text"
-                    ? { type: "text" as const, text: part.text }
-                    : {
-                        type: "file" as const,
-                        uri: `data:${part.mime};base64,${part.data}`,
-                        mime: part.mime,
-                        name: part.name,
-                      },
-                ) ?? (typeof output === "string" ? [{ type: "text" as const, text: output }] : []),
-            })),
-          ),
+          config.execute(input, context).pipe(Effect.flatMap((output) => project(input, output))),
         ),
       ),
   })
@@ -148,3 +159,10 @@ function toJsonSchema(schema: Schema.Top): JsonSchema.JsonSchema {
   if (Object.keys(document.definitions).length === 0) return document.schema
   return { ...document.schema, $defs: document.definitions }
 }
+
+/** Decode only; no permission checks or execution. */
+export const validateInput = (tool: AnyTool, call: ToolCall) => runtimeOf(tool).validate(call)
+
+/** Validate and project a hook replacement through the original output codec. */
+export const replaceOutput = (tool: AnyTool, call: ToolCall, value: unknown) =>
+  runtimeOf(tool).replaceOutput(call, value)

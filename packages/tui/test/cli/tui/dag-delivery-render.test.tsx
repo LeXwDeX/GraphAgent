@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import type { AssistantMessage, TextPart, UserMessage } from "@opencode-ai/sdk/v2"
@@ -215,6 +215,126 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
     expect(frame.match(/DELIVERY BODY/g)).toHaveLength(1)
     expect(sync.data.message[sessionID]?.map((item) => item.id)).toEqual([requestID, deliveryID, followupID])
     expect(sync.data.part[deliveryID]?.map((part) => part.id)).toEqual([source.id, answer.id])
+
+    // Display updates must replace visible text while the stored transcript remains canonical.
+    const replaced = { ...answer, text: "SECRET canonical answer", displayText: "REDACTED visible answer" }
+    events.emit({
+      directory,
+      project: "proj_test",
+      payload: {
+        id: "evt_display",
+        type: "message.part.updated",
+        properties: { sessionID, time: 21, part: replaced },
+      },
+    })
+    const shown = await waitForFrame(app, "REDACTED visible answer")
+    expect(shown).not.toContain("SECRET canonical answer")
+    expect(sync.data.part[deliveryID]?.find((part) => part.id === answer.id)).toMatchObject({
+      text: "SECRET canonical answer",
+      displayText: "REDACTED visible answer",
+    })
+    events.emit({
+      directory,
+      project: "proj_test",
+      payload: {
+        id: "evt_hidden",
+        type: "message.part.updated",
+        properties: { sessionID, time: 22, part: { ...replaced, displayText: "" } },
+      },
+    })
+    let hidden = false
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await app.renderOnce()
+      if (!app.captureCharFrame().includes("REDACTED visible answer")) {
+        hidden = true
+        break
+      }
+      await Bun.sleep(10)
+    }
+    expect(hidden).toBe(true)
+    expect(app.captureCharFrame()).not.toContain("SECRET canonical answer")
+    events.emit({
+      directory,
+      project: "proj_test",
+      payload: {
+        id: "evt_hook_started",
+        type: "session.hook.status",
+        properties: { sessionID, hookID: "policy", statusMessage: "Checking model policy", phase: "started" },
+      },
+    })
+    await waitForFrame(app, "Checking model policy")
+    events.emit({
+      directory,
+      project: "proj_test",
+      payload: {
+        id: "evt_hook_finished",
+        type: "session.hook.status",
+        properties: { sessionID, hookID: "policy", statusMessage: "Checking model policy", phase: "finished" },
+      },
+    })
+    events.emit({
+      directory,
+      project: "proj_test",
+      payload: {
+        id: "evt_hook_message",
+        type: "session.hook.message",
+        properties: { sessionID, message: "Hook warning for user" },
+      },
+    })
+    const notified = await waitForFrame(app, "Hook warning for user")
+    expect(notified).not.toContain("Checking model policy")
+
+    // Exercise the mounted session's terminal outlet; only its own TTY receives a sequence.
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY")
+    const writes: string[] = []
+    const output = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      writes.push(String(chunk))
+      return true
+    })
+    const sequence = "\x1b]0;Hook terminal test\x07"
+    try {
+      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true })
+      events.emit({
+        directory,
+        project: "proj_test",
+        payload: {
+          id: "evt_hook_terminal_other",
+          type: "session.hook.terminal",
+          properties: { sessionID: "ses_other", sequence },
+        },
+      })
+      await app.renderOnce()
+      await Bun.sleep(30)
+      expect(writes).not.toContain(sequence)
+      events.emit({
+        directory,
+        project: "proj_test",
+        payload: {
+          id: "evt_hook_terminal",
+          type: "session.hook.terminal",
+          properties: { sessionID, sequence },
+        },
+      })
+      for (let attempt = 0; attempt < 100 && !writes.includes(sequence); attempt++) await Bun.sleep(10)
+      expect(writes.filter((value) => value === sequence)).toHaveLength(1)
+      Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: false })
+      events.emit({
+        directory,
+        project: "proj_test",
+        payload: {
+          id: "evt_hook_terminal_pipe",
+          type: "session.hook.terminal",
+          properties: { sessionID, sequence },
+        },
+      })
+      await app.renderOnce()
+      await Bun.sleep(30)
+      expect(writes.filter((value) => value === sequence)).toHaveLength(1)
+    } finally {
+      output.mockRestore()
+      if (tty) Object.defineProperty(process.stdout, "isTTY", tty)
+      else Reflect.deleteProperty(process.stdout, "isTTY")
+    }
   } finally {
     app.renderer.destroy()
   }

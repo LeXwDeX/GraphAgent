@@ -582,11 +582,12 @@ describe("session HttpApi", () => {
         const headers = { "x-opencode-directory": test.directory }
         const session = yield* createSession({ title: "v2 prompt recording" })
 
+        // This test verifies durable admission before any runner promotion.
         const recordPrompt = () =>
           request(`/api/session/${session.id}/prompt`, {
             method: "POST",
             headers: { ...headers, "content-type": "application/json" },
-            body: JSON.stringify({ id: "msg_http_prompt", prompt: { text: "hello" } }),
+            body: JSON.stringify({ id: "msg_http_prompt", prompt: { text: "hello" }, resume: false }),
           })
         const first = yield* recordPrompt()
         const retried = yield* recordPrompt()
@@ -621,7 +622,7 @@ describe("session HttpApi", () => {
         const conflict = yield* request(`/api/session/${session.id}/prompt`, {
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({ id: "msg_http_prompt", prompt: { text: "goodbye" } }),
+          body: JSON.stringify({ id: "msg_http_prompt", prompt: { text: "goodbye" }, resume: false }),
         })
         expect(conflict.status).toBe(409)
         expect(yield* responseJson(conflict)).toEqual({

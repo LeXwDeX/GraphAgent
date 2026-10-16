@@ -1,194 +1,57 @@
 ---
-description: Create a new hook interactively and write it to the correct hooks.json layer
+description: Create a hook in the correct hooks.json layer and verify its behavior
 ---
 
 # Create Hook
 
-Interactively create one hook entry in the correct `hooks.json` file. Validate its event name, then merge-append it without overwriting existing entries.
+Load `configure-hooks` first. Infer the event, action, destination and write authorization already supplied. Ask only for missing choices that affect behavior.
 
-## Prerequisites
+## Select the event and handler
 
-Load the `configure-hooks` skill first. It defines the 26 events, 5 hook types, and `hooks.json` format. Use it for event names and field shapes.
+Use its 33-event list to recognize all 33 events. Check local applicability before writing:
 
-## Process
-
-### 1. Resolve the requested configuration
-
-Infer every field the user already specified. Ask only for missing information
-that materially affects correct behavior; do not re-ask for supplied values or
-write authorization already given. Use `configure-hooks` for the full field,
-event-input, output-effect, trust, and async contracts.
-
-**Event** — choose from the `configure-hooks` skill's 26-event list. It names all 26 events:
-
-- Tool lifecycle: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`
+- Tool: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`
 - Permission: `PermissionRequest`, `PermissionDenied`
 - Session: `Setup`, `SessionStart`, `SessionEnd`, `Stop`, `StopFailure`
-- Subagents: `SubagentStart`, `SubagentStop`
-- Prompt and compaction: `UserPromptSubmit`, `PreCompact`, `PostCompact`
-- Tasks: `TaskCreated`, `TaskCompleted`
-- MCP elicitation: `Elicitation`, `ElicitationResult`
-- Other: `Notification`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `FileChanged`
+- Subagent: `SubagentStart`, `SubagentStop`, `TeammateIdle`
+- Prompt and compaction: `UserPromptSubmit`, `UserPromptExpansion`, `PreCompact`, `PostCompact`
+- Task: `TaskCreated`, `TaskCompleted`
+- MCP: `Elicitation`, `ElicitationResult`
+- Environment: `Notification`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `DirectoryAdded`, `FileChanged`
+- Model and display: `PreModelSwitch`, `PostModelSwitch`, `MessageDisplay`
 
-**Reject invalid event names before doing anything else** — show the valid list and re-ask. Do NOT write the file for an unknown event.
+`TeammateIdle` requires a teammate-idle operation that this host does not have. `PermissionDenied` means an automatic classifier denial, not an ordinary rule denial; this host has no automatic classifier. Explain that limit and retain the user's intent without inventing a producer or silently dropping their request. Reject unknown names.
 
-**Hook type** — `command` | `mcp` | `http` | `prompt` | `agent`. Ask which action the hook should perform:
+Use the handler types and per-event restrictions in `configure-hooks`:
 
-- `command` — run a shell command
-- `mcp` — invoke an MCP tool (`mcp__<server>__<tool>`)
-- `http` — POST the event envelope to a URL
-- `prompt` — run an LLM call with structured output
-- `agent` — run an autonomous sub-agent loop
+- `command`: command and optional argv `args`; `shell` applies to shell execution.
+- `http`: `url`, optional headers and environment allowlist.
+- `mcp_tool`: `server`, `tool`, and optional templated `input`. `mcp` remains a legacy alias.
+- `prompt` or `agent`: `prompt`, optional model; evaluator output is `{ok,reason?,impossible?}`.
 
-**Action field** (depends on type):
+Matchers are case-sensitive. Use the event's documented target, such as `Bash`, source, agent type, server name, command name, error category or canonical model name. Omit matchers on events without a target. Conditions are filters and grant no permissions.
 
-- `command` → the shell command string
-- `mcp` → the tool name in `mcp__<server>__<tool>` format
-- `http` → the endpoint URL
-- `prompt` / `agent` → the prompt / goal text
+Set a finite `timeout` appropriate to the operation; defaults vary by event and handler. `statusMessage` is visible progress. `once` is scoped to supported skill/session registrations. Command `async:true` has no timeout after the background process starts; its `additionalContext` and `systemMessage` are delivered to the next model request, not shown as user warnings. Print JSON alone on stdout (pretty-printed JSON may span lines), or as one JSON line among other stdout logs; fields with invalid value types are dropped independently. `asyncRewake:true` also runs in the background but remains subject to `timeout` and wakes only on exit 2; exit-0 output waits for a real later request. Stop scripts must honor `stop_hook_active` and be idempotent.
 
-**Matcher** — optional. The five tool/permission events match `tool_name`.
-Other supported matcher targets are `SessionStart` → `source`, `SessionEnd` →
-`reason`, `Setup` → `trigger`, `PreCompact` / `PostCompact` → `trigger`,
-`Notification` → `notification_type`, `SubagentStart` / `SubagentStop` →
-`agent_type`, and `FileChanged` → basename of `path`.
+## Choose and write the file
 
-- Empty / omitted / `*` — matches all tools
-- `Bash` — exact tool name
-- `Bash|Edit|Write` — pipe-separated list
-- Names using letters, digits or underscores — exact match (case-insensitive), optionally pipe-separated
-- Other strings — treated as a regex
+- Global: `${Global.Path.config}/hooks.json`, following XDG configuration.
+- Project: `${PROJECT_DIR}/.opencode/hooks.json`.
+- Worktree: `${WORKTREE_DIR}/.opencode/hooks.json` when separate.
 
-For events without a matcher target (including `Stop`, `StopFailure`,
-`UserPromptSubmit`, task, elicitation, config, worktree, instruction, and cwd
-events), any matcher is ignored and every group runs; omit it for clarity.
-
-**Optional fields** — apply specified requirements and defaults; ask only when
-a choice is necessary. Fields include `timeout` (positive seconds, default
-60), `statusMessage` (logged label, not UI progress), `once` (once per loaded
-entry/session), and `if` (tool/permission events only; ignored elsewhere).
-Command hooks may set `shell` (`bash`/`powershell`) and `inputFormat`
-(`opencode` by default, `claude-code` for an unchanged Claude Code stdin
-script). HTTP hooks may set `headers` and `allowedEnvVars`; command hooks may
-set `options`.
-
-For background work that should return completion feedback, set both
-`async: true` and `asyncRewake: true`. The running handler must finish before
-the same session can be rewoken; it is not an in-progress notification. Use a
-finite timeout (default 60 seconds) and make Stop hooks honor
-`stop_hook_active` and be idempotent. `asyncRewake` alone has no effect; see
-`configure-hooks` for which outputs cause a rewake and its limits.
-
-**Scope** — `project`, `global`, or `worktree`:
-
-- `project` → `.opencode/hooks.json` in the current project (hot-reloads in ~2s)
-- `global` → `${Global.Path.config}/hooks.json` (hot-reloads in ~2s as well; follows the XDG config directory, commonly `$XDG_CONFIG_HOME/opencode/hooks.json` and usually `~/.config/opencode/hooks.json`)
-- `worktree` → `<worktree>/.opencode/hooks.json` when the worktree is separate
-
-### 2. Build the JSON entry
-
-Build the entry in `hooks.json` format. Each event key maps to an array of matcher blocks. Each block has an optional `matcher` and a `hooks` array:
+Read the destination first. Append the intended matcher block to its event array, preserving every sibling event and unrelated field. Create missing directories/files only within the chosen scope. Do not overwrite the whole existing configuration or delete unrelated hooks. Trust controls belong at the top level; a repository cannot grant itself global trust or a bypass startup capability.
 
 ```json
 {
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [
-        { "type": "command", "command": "echo 'hello from hook'", "timeout": 10 }
-      ]
-    }
-  ]
+  "PreToolUse": [{
+    "matcher": "Bash",
+    "hooks": [{ "type": "command", "command": "./scripts/check.sh", "timeout": 10 }]
+  }]
 }
 ```
 
-For an event without a matcher target, omit the `matcher` field:
+Show the exact addition and destination before an unapproved write. If the user already requested creating and writing that hook, proceed under that authorization. Repair invalid JSON introduced by your write and reread it; preserve pre-existing corruption if a safe merge cannot be determined.
 
-```json
-{
-  "Stop": [
-    {
-      "hooks": [
-        { "type": "command", "command": "echo 'session stopped'" }
-      ]
-    }
-  ]
-}
-```
+## Verify
 
-If `requireTrust` / `allowUntrusted` matters, it is a top-level setting, not a
-hook-entry field. Follow the trust rules in `configure-hooks`; project and
-worktree files cannot opt themselves out of a trust gate.
-
-### 3. Confirm with the user when needed
-
-Show the exact JSON addition and destination before writing when the user has
-not already authorized the write. If they clearly asked you to create and
-write the hook, proceed without asking them to confirm that action again. If
-they request changes, incorporate them and ask only about genuinely missing
-information.
-
-### 4. Write to hooks.json (merge-append)
-
-Read the target `hooks.json` first:
-
-- **Project scope**: `${PROJECT_DIR}/.opencode/hooks.json`
-- **Global scope**: `${Global.Path.config}/hooks.json` (resolve using the XDG config directory)
-- **Worktree scope**: `${WORKTREE_DIR}/.opencode/hooks.json` (only when the active worktree differs from the project directory)
-
-Then:
-
-1. If the file does not exist, create it (create the relevant `.opencode/` directory for project or worktree scope if needed).
-2. If the file exists, parse it and **merge-append** the new entry:
-   - If the event key already exists, append the new matcher block to the existing array (do NOT replace existing entries).
-   - If the event key does not exist, add it with the new matcher block as the only element.
-   - Preserve all existing entries and any unknown fields (e.g. `$schema`, `version`) — only touch the event key you are adding to.
-3. Write the merged JSON back with 2-space indentation.
-
-Never overwrite the entire file. Never delete existing hooks.
-
-### 5. Verify the write
-
-After writing, re-read the file and JSON-parse it to confirm validity. If the
-write produced invalid JSON, repair the file while preserving existing entries,
-then re-read and parse again. Do not leave your own malformed write for the
-user to repair manually. If pre-existing corruption prevents a safe merge,
-describe the exact issue and preserve the existing content.
-
-- If the parse succeeds, report success.
-- If the parse fails after repair, do not report success; explain what pre-existing or external corruption prevented a safe repair.
-
-### 6. Report hot-reload semantics
-
-- **Project scope**: "The hook will hot-reload within ~2 seconds — it will be active on the next session turn."
-- **Global scope**: "The global hooks.json is polled every ~2 seconds too — the hook becomes active shortly after the write, no restart needed." Resolve it from `${Global.Path.config}`, which follows the XDG config directory.
-- **Worktree scope**: the worktree file is polled too and becomes active shortly after the write.
-
-After the final write, allow at least the 2-second poll interval plus the
-500-millisecond debounce before ending this command flow. Then, when available,
-inspect the **Active Hooks** block to confirm the configuration was loaded.
-That block does not prove the hook's behavior works; trigger it and inspect its
-input/output when behavior verification is requested.
-
-## Example session
-
-```
-User: /create-hook
-Agent: Which event should this hook fire on? (asked only because it was not specified)
-User: PreToolUse
-Agent: What type of hook? command / mcp / http / prompt / agent
-User: command
-Agent: What shell command should run?
-User: ./scripts/check.sh
-Agent: Which tools should trigger this? (asked only if relevant and not specified)
-User: Bash
-Agent: Project or global scope? (asked only because scope was not specified)
-User: project
-
-Here is the entry I will write to .opencode/hooks.json:
-{ "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "./scripts/check.sh" }] }] }
-The write proceeds under the user's existing authorization.
-
-✓ Written to .opencode/hooks.json (merge-appended alongside existing hooks).
-It will hot-reload shortly; the Active Hooks block confirms loaded configuration, not that behavior has been verified.
-```
+After the final write, allow the two-second poll interval plus debounce. Inspect Active Hooks or the session registration API to confirm loading. Then trigger the intended operation with a controlled fixture and check both handler input and its observable consumer. A loaded configuration alone does not establish execution or compatibility. Report the destination, event, behavior tested and any applicable local limit.

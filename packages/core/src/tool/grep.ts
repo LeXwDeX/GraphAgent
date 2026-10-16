@@ -1,3 +1,4 @@
+import { markPermissionRewrite } from "./permission-rewrite"
 export * as GrepTool from "./grep"
 
 import { ToolFailure } from "@opencode-ai/llm"
@@ -61,80 +62,82 @@ export const layer = Layer.effectDiscard(
 
     yield* tools
       .register({
-        [name]: Tool.make({
-          contextFolding: { instructions: "none" },
-          description:
-            "Search file contents by regular expression. Paths default to the active Location; external absolute files or directories require external_directory approval. Relative paths must stay inside the Location. Paths inside it cannot escape through symlinks. Use a path to narrow the search, include to filter files by glob, and limit to bound the match count. Returns concise file resources, line numbers, and bounded line previews.",
-          input: Input,
-          output: Output,
-          toModelOutput: ({ output }) => [
-            {
-              type: "text",
-              text: toModelOutput(
-                output.map((match) => ({
-                  ...match,
-                  entry: { ...match.entry, path: path.resolve(location.directory, match.entry.path) },
-                })),
-              ),
-            },
-          ],
-          execute: (input, context) =>
-            Effect.gen(function* () {
-              const resolved = yield* mutation.resolve({ path: input.path ?? ".", kind: "directory" })
-              if (resolved.externalDirectory)
+        [name]: markPermissionRewrite(
+          Tool.make({
+            contextFolding: { instructions: "none" },
+            description:
+              "Search file contents by regular expression. Paths default to the active Location; external absolute files or directories require external_directory approval. Relative paths must stay inside the Location. Paths inside it cannot escape through symlinks. Use a path to narrow the search, include to filter files by glob, and limit to bound the match count. Returns concise file resources, line numbers, and bounded line previews.",
+            input: Input,
+            output: Output,
+            toModelOutput: ({ output }) => [
+              {
+                type: "text",
+                text: toModelOutput(
+                  output.map((match) => ({
+                    ...match,
+                    entry: { ...match.entry, path: path.resolve(location.directory, match.entry.path) },
+                  })),
+                ),
+              },
+            ],
+            execute: (input, context) =>
+              Effect.gen(function* () {
+                const resolved = yield* mutation.resolve({ path: input.path ?? ".", kind: "directory" })
+                if (resolved.externalDirectory)
+                  yield* permission.assert({
+                    ...LocationMutation.externalDirectoryPermission(resolved.externalDirectory),
+                    sessionID: context.sessionID,
+                    agent: context.agent,
+                    source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                  })
                 yield* permission.assert({
-                  ...LocationMutation.externalDirectoryPermission(resolved.externalDirectory),
+                  action: name,
+                  resources: [input.pattern],
+                  save: ["*"],
+                  metadata: {
+                    root: ".",
+                    path: input.path,
+                    include: input.include,
+                    limit: input.limit,
+                  },
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
                 })
-              yield* permission.assert({
-                action: name,
-                resources: [input.pattern],
-                save: ["*"],
-                metadata: {
-                  root: ".",
-                  path: input.path,
-                  include: input.include,
-                  limit: input.limit,
-                },
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
-              })
-              const target = resolved.canonical
-              const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
-              return yield* ripgrep
-                .grep({
-                  cwd: info?.type === "Directory" ? target : path.dirname(target),
-                  pattern: input.pattern,
-                  file: info?.type === "File" ? path.basename(target) : undefined,
-                  include: input.include,
-                  limit: input.limit ?? Number.MAX_SAFE_INTEGER,
-                })
-                .pipe(
-                  Effect.map((result) =>
-                    result.map((match) =>
-                      FileSystem.Match.make({
-                        ...match,
-                        entry: FileSystem.Entry.make({
-                          ...match.entry,
-                          path: RelativePath.make(
-                            path.relative(
-                              location.directory,
-                              path.resolve(
-                                info?.type === "Directory" ? target : path.dirname(target),
-                                match.entry.path,
+                const target = resolved.canonical
+                const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                return yield* ripgrep
+                  .grep({
+                    cwd: info?.type === "Directory" ? target : path.dirname(target),
+                    pattern: input.pattern,
+                    file: info?.type === "File" ? path.basename(target) : undefined,
+                    include: input.include,
+                    limit: input.limit ?? Number.MAX_SAFE_INTEGER,
+                  })
+                  .pipe(
+                    Effect.map((result) =>
+                      result.map((match) =>
+                        FileSystem.Match.make({
+                          ...match,
+                          entry: FileSystem.Entry.make({
+                            ...match.entry,
+                            path: RelativePath.make(
+                              path.relative(
+                                location.directory,
+                                path.resolve(
+                                  info?.type === "Directory" ? target : path.dirname(target),
+                                  match.entry.path,
+                                ),
                               ),
                             ),
-                          ),
+                          }),
                         }),
-                      }),
+                      ),
                     ),
-                  ),
-                )
-            }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to grep for ${input.pattern}` }))),
-        }),
+                  )
+              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to grep for ${input.pattern}` }))),
+          }),
+        ),
       })
       .pipe(Effect.orDie)
   }),

@@ -92,6 +92,7 @@ describe("tool.memory_search", () => {
     Effect.gen(function* () {
       const agent = yield* Agent.Service
       const build = yield* agent.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
       const sessionID = SessionID.make("ses_memory_tool_root")
 
       const root = yield* resolvedToolIDs(build, session(sessionID))
@@ -106,6 +107,7 @@ describe("tool.memory_search", () => {
     Effect.gen(function* () {
       const agents = yield* Agent.Service
       const build = yield* agents.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
       const deny = { permission: "memory_search", pattern: "*", action: "deny" as const }
       const sessionID = SessionID.make("ses_memory_tool_denied")
 

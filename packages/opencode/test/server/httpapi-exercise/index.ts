@@ -1087,6 +1087,15 @@ const scenarios: Scenario[] = [
     }))
     .json(200, data(object)),
   http.protected
+    .post("/api/session/{sessionID}/attention", "v2.session.attention")
+    .seeded((ctx) => ctx.session({ title: "Client attention" }))
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/attention", { sessionID: ctx.state.id }),
+      headers: { ...ctx.headers(), "content-type": "application/json" },
+      body: { clientID: "httpapi-exercise", clientType: "web", activity: 1, closed: true },
+    }))
+    .status(204, undefined, "none"),
+  http.protected
     .post("/api/session/{sessionID}/agent", "v2.session.switchAgent")
     .seeded((ctx) => ctx.session({ title: "Switch agent" }))
     .at((ctx) => ({
@@ -1185,6 +1194,29 @@ const scenarios: Scenario[] = [
     .post("/api/session/{sessionID}/compact", "v2.session.compact")
     .at((ctx) => ({
       path: route("/api/session/{sessionID}/compact", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .status(404, undefined, "status"),
+  http.protected
+    .post("/api/session/{sessionID}/resume", "v2.session.resume")
+    .seeded((ctx) => ctx.session({ title: "No deferred tool" }))
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/resume", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .status(400, undefined, "status"),
+  http.protected
+    .post("/api/session/{sessionID}/interrupt", "v2.session.interrupt")
+    .seeded((ctx) => ctx.session({ title: "Interrupt idle session" }))
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/interrupt", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .status(204, undefined, "status"),
+  http.protected
+    .post("/api/session/{sessionID}/interrupt", "v2.session.interrupt.missing")
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/interrupt", { sessionID: "ses_httpapi_missing" }),
       headers: ctx.headers(),
     }))
     .status(404, undefined, "status"),
@@ -1650,6 +1682,42 @@ const scenarios: Scenario[] = [
       }),
     ),
   http.protected
+    .post("/session/{sessionID}/model", "session.setModel")
+    .withLlm()
+    .seeded((ctx) => ctx.session({ title: "Hook model selection" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/model", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { model: { providerID: "test", modelID: "test-model" }, source: "sdk" },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(
+        body.providerID === "test" && body.modelID === "test-model",
+        "model selection must return the committed model",
+      )
+    }),
+  http.protected
+    .post("/session/{sessionID}/attention", "session.attention")
+    .seeded((ctx) => ctx.session({ title: "Legacy client attention" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/attention", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { clientID: "httpapi-exercise", clientType: "web", activity: 1, closed: true },
+    }))
+    .json(200, (body) => check(body === true, "session attention must acknowledge the actual session")),
+  http.protected
+    .post("/session/{sessionID}/resume", "session.resume")
+    .seeded((ctx) => ctx.session({ title: "Hook initial no-op" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/resume", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { initialOnly: true, hookMode: "noninteractive" },
+    }))
+    .json(200, (body) =>
+      check(body === null, "resume must not manufacture a user message when no initial hook message is queued"),
+    ),
+  http.protected
     .post("/session/{sessionID}/message", "session.prompt")
     .preserveDatabase()
     .withLlm()
@@ -1966,7 +2034,10 @@ const scenarios: Scenario[] = [
     .json(400, (body) => {
       object(body)
       check(body.success === false, "built-in updates must be disabled")
-      check(typeof body.error === "string" && body.error.includes("disabled"), "disabled update explanation is required")
+      check(
+        typeof body.error === "string" && body.error.includes("disabled"),
+        "disabled update explanation is required",
+      )
     }),
 
   // ── DAG workflow routes ──────────────────────────────────────────────
@@ -2591,6 +2662,7 @@ const scenarios: Scenario[] = [
 
 const llmScenarios = new Set([
   "session.init",
+  "session.setModel",
   "session.prompt",
   "session.prompt_async",
   "session.command",

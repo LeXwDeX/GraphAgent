@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import type { AuthOAuthResult, Hooks } from "@opencode-ai/plugin"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { Option } from "effect"
 import { Auth } from "@/auth"
 import { InstanceState } from "@/effect/instance-state"
 import { optionalOmitUndefined } from "@opencode-ai/core/schema"
@@ -218,6 +219,11 @@ export const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> =
           ...extra,
         })
       }
+      const { Notification } = yield* Effect.promise(() => import("@/notification"))
+      const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
+      if (notification)
+        yield* notification.notify({ notificationType: "auth_success", message: "Provider authentication completed" })
+      return undefined
     })
 
     return Service.of({ methods, authorize, callback })

@@ -8,9 +8,9 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Global } from "@opencode-ai/core/global"
 import { SkillPlugin } from "@opencode-ai/core/plugin/skill"
-import { Permission } from "@/permission"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Config } from "@/config/config"
+import { ConfigPaths } from "@/config/paths"
 import { FrontmatterError } from "@opencode-ai/core/v1/config/error"
 import { ConfigMarkdown } from "@/config/markdown"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -55,6 +55,8 @@ export const Info = Schema.Struct({
   description: Schema.optional(Schema.String),
   location: Schema.String,
   content: Schema.String,
+  hooks: Schema.optional(Schema.Unknown),
+  hookOrigin: Schema.optional(Schema.String),
 })
 export type Info = Schema.Schema.Type<typeof Info>
 
@@ -66,7 +68,7 @@ const Issue = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Unknown)],
 )
 
-function isSkillFrontmatter(data: unknown): data is { name: string; description?: string } {
+function isSkillFrontmatter(data: unknown): data is { name: string; description?: string; hooks?: unknown } {
   return (
     isRecord(data) &&
     typeof data.name === "string" &&
@@ -114,6 +116,7 @@ export interface Interface {
   readonly get: (name: string) => Effect.Effect<Info | undefined>
   readonly require: (name: string) => Effect.Effect<Info, NotFoundError>
   readonly all: () => Effect.Effect<Info[]>
+  readonly reload: () => Effect.Effect<void>
   readonly dirs: () => Effect.Effect<string[]>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
@@ -152,6 +155,7 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
     description: md.data.description,
     location: match,
     content: md.content,
+    ...(md.data.hooks === undefined ? {} : { hooks: md.data.hooks, hookOrigin: `skill:${match}` }),
   }
 })
 
@@ -218,7 +222,14 @@ const discoverSkills = Effect.fnUntraced(function* (
     }
   }
 
-  const configDirs = yield* config.directories()
+  // SessionStart may install the first .opencode directory after configuration was cached.
+  const configDirs = new Set([
+    ...(yield* config.directories()),
+    ...(yield* ConfigPaths.directories(directory, worktree).pipe(
+      Effect.provideService(FSUtil.Service, fsys),
+      Effect.orDie,
+    )),
+  ])
   for (const dir of configDirs) {
     yield* scan(state, dir, OPENCODE_SKILL_PATTERN)
   }
@@ -339,10 +350,17 @@ export const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       const list = Object.values(s.skills).toSorted((a, b) => a.name.localeCompare(b.name))
       if (!agent) return list
+      // Keep Skill loadable by Session without closing Session → Skill → Permission → Settings → Plugin → Session.
+      const { Permission } = yield* Effect.promise(() => import("@/permission"))
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
 
-    return Service.of({ get, require, all, dirs, available })
+    const reload = Effect.fn("Skill.reload")(function* () {
+      yield* InstanceState.invalidate(state)
+      yield* InstanceState.invalidate(discovered)
+      yield* InstanceState.get(state)
+    })
+    return Service.of({ get, require, all, dirs, available, reload })
   }),
 )
 

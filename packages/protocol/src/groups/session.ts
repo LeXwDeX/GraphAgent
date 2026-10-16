@@ -1,3 +1,4 @@
+import { SessionAttentionInput } from "@opencode-ai/schema/session-attention"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { SessionInput } from "@opencode-ai/schema/session-input"
 import { Prompt } from "@opencode-ai/schema/prompt"
@@ -139,6 +140,23 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         ),
     )
     .add(
+      HttpApiEndpoint.post("session.attention", "/api/session/:sessionID/attention", {
+        params: { sessionID: Session.ID },
+        payload: SessionAttentionInput,
+        success: HttpApiSchema.NoContent,
+        error: [SessionNotFoundError, ServiceUnavailableError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.attention",
+            summary: "Report session attention",
+            description:
+              "Report client activity and a short-lived background task view lease without sending typed content.",
+          }),
+        ),
+    )
+    .add(
       HttpApiEndpoint.post("session.switchAgent", "/api/session/:sessionID/agent", {
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ agent: Agent.ID }),
@@ -159,7 +177,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ model: Model.Ref }),
         success: HttpApiSchema.NoContent,
-        error: SessionNotFoundError,
+        error: [SessionNotFoundError, InvalidRequestError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(
@@ -176,11 +194,12 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         payload: Schema.Struct({
           id: SessionMessage.ID.pipe(Schema.optional),
           prompt: Prompt,
+          hookMode: Schema.Literals(["interactive", "noninteractive"]).pipe(Schema.optional),
           delivery: SessionInput.Delivery.pipe(Schema.optional),
           resume: Schema.Boolean.pipe(Schema.optional),
         }),
         success: Schema.Struct({ data: SessionInput.Admitted }),
-        error: [ConflictError, SessionNotFoundError],
+        error: [ConflictError, SessionNotFoundError, InvalidRequestError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(
@@ -203,6 +222,37 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             identifier: "v2.session.compact",
             summary: "Compact session",
             description: "Compact a session conversation.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.resume", "/api/session/:sessionID/resume", {
+        params: { sessionID: Session.ID },
+        success: HttpApiSchema.NoContent,
+        error: [SessionNotFoundError, InvalidRequestError, UnknownError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.resume",
+            summary: "Resume deferred tool call",
+            description:
+              "Retry the session's saved single deferred tool call without admitting a new prompt. Returns 204 after the attempt. Read session context to distinguish a completed call from a still deferred or unavailable tool.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.interrupt", "/api/session/:sessionID/interrupt", {
+        params: { sessionID: Session.ID },
+        success: HttpApiSchema.NoContent,
+        error: SessionNotFoundError,
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.interrupt",
+            summary: "Interrupt session",
+            description: "Cancel the active session turn and invalidate pending hook continuations.",
           }),
         ),
     )

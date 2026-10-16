@@ -1,5 +1,6 @@
 export * as PluginV2 from "./plugin"
 
+import { SourceProvenance } from "./session/source-provenance"
 import { Context, Deferred, Effect, Exit, Layer, Scope } from "effect"
 import type { Plugin } from "@opencode-ai/plugin/v2/effect"
 import { PluginEvent, PluginID } from "@opencode-ai/schema/plugin"
@@ -57,6 +58,7 @@ export const layer = Layer.effect(
 
                 const child = yield* Scope.fork(scope)
                 yield* effect(host).pipe(
+                  Effect.provideService(SourceProvenance.CurrentPlugin, id),
                   Scope.provide(child),
                   Effect.withSpan("Plugin.load", { attributes: { "plugin.id": id } }),
                   Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(child, exit) : Effect.void)),

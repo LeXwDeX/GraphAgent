@@ -242,16 +242,16 @@ describe("hook-async-rewake", () => {
 
         yield* hook.trigger({ event: "SessionEnd", reason: "other" }, { sessionID: "sess-4-4b", transcriptPath: "" })
 
-        yield* pollWithTimeout(
-          Effect.promise(() =>
+        // SessionEnd owns the final cleanup and interrupts its background work.
+        yield* Effect.sleep("100 millis")
+        expect(
+          yield* Effect.promise(() =>
             fs
               .access(marker44b)
-              .then(() => true as const)
-              .catch(() => undefined),
+              .then(() => true)
+              .catch(() => false),
           ),
-          "4.4b hook marker never appeared — fiber did not reach onAsyncComplete",
-        )
-        // Marker visible ⇒ onAsyncComplete already hit the `event === "SessionEnd"` early return.
+        ).toBe(false)
         expect(rewakeCalls.length).toBe(0)
       }),
     {
@@ -315,20 +315,33 @@ describe("hook-async-rewake", () => {
     },
   )
 
-  // ── 4.5: asyncRewake without async is inert ──────────────────
+  // ── 4.5: asyncRewake alone implies background execution ──────
   it.instance(
-    "asyncRewake:true without async:true runs synchronously",
+    "asyncRewake:true without async:true runs in the background and rewakes on exit 2",
     () =>
       Effect.gen(function* () {
         rewakeCalls.length = 0
         const hook = yield* SettingsHook.Service
 
-        yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "sess-4-5", transcriptPath: "" })
+        const result = yield* hook.trigger(
+          { event: "Stop", stopHookActive: false },
+          { sessionID: "sess-4-5", transcriptPath: "" },
+        )
+        expect(result.blocked).toBeUndefined()
         expect(rewakeCalls.length).toBe(0)
+        yield* pollWithTimeout(
+          Effect.sync(() => rewakeCalls.find((call) => call.sessionID === "sess-4-5")),
+          "asyncRewake-only Stop did not reawaken the session",
+        )
+        expect(rewakeCalls[0]?.text).toContain("async-only feedback")
       }),
     {
       init: writeSettingsTo({
-        Stop: [{ hooks: [{ type: "command", command: "echo ok", asyncRewake: true }] }],
+        Stop: [
+          {
+            hooks: [{ type: "command", command: "sleep 0.1; echo async-only feedback >&2; exit 2", asyncRewake: true }],
+          },
+        ],
       }),
     },
   )
@@ -342,14 +355,16 @@ describe("hook-async-rewake", () => {
     }),
   )
 
-  // ── 4.7: once async session entry removed at fork time ───────
+  // ── 4.7: once async session entry retires after success ──────
   const marker47 = tmp("once-4-7.txt")
-  it.instance("once:true async session hook fires only once across two triggers", () =>
+  const count47 = tmp("once-4-7-count.txt")
+  it.instance("once:true async session hook runs once during and after successful settlement", () =>
     Effect.gen(function* () {
       rewakeCalls.length = 0
       const hook = yield* SettingsHook.Service
       const sessionHooks = yield* SessionHooks.Service
       yield* Effect.promise(() => fs.rm(marker47, { force: true }))
+      yield* Effect.promise(() => fs.rm(count47, { force: true }))
 
       yield* sessionHooks.add(SessionID.make("sess-4-7"), {
         event: "Stop",
@@ -357,16 +372,16 @@ describe("hook-async-rewake", () => {
         hooks: [
           {
             type: "command",
-            command: `sleep 0.2 && touch ${JSON.stringify(marker47)}`,
+            command: `printf 'run\\n' >> ${JSON.stringify(count47)}; sleep 0.2 && touch ${JSON.stringify(marker47)}`,
             async: true,
           },
         ],
       })
 
-      // First trigger — forks the hook, removes entry at fork time
+      // First trigger starts the hook and reserves the once entry.
       yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "sess-4-7", transcriptPath: "" })
 
-      // Second trigger immediately — entry already removed
+      // Second trigger while the first is running cannot claim the entry.
       const r2 = yield* hook.trigger(
         { event: "Stop", stopHookActive: false },
         { sessionID: "sess-4-7", transcriptPath: "" },
@@ -384,10 +399,75 @@ describe("hook-async-rewake", () => {
         "once-marker never appeared",
       )
 
-      const remaining = yield* sessionHooks.list(SessionID.make("sess-4-7"), "Stop")
-      expect(remaining.length).toBe(0)
+      // The marker is written before the child exits. Wait for the session
+      // entry to retire, which is the observable async-success settlement.
+      yield* pollWithTimeout(
+        sessionHooks
+          .list(SessionID.make("sess-4-7"), "Stop")
+          .pipe(Effect.map((remaining) => (remaining.length === 0 ? true : undefined))),
+        "successful async once entry was not retired",
+      )
+
+      expect(yield* Effect.promise(() => fs.readFile(count47, "utf8"))).toBe("run\n")
+      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "sess-4-7", transcriptPath: "" })
+      expect(yield* Effect.promise(() => fs.readFile(count47, "utf8"))).toBe("run\n")
     }),
   )
+
+  for (const flags of [{ asyncRewake: true }, { async: true, asyncRewake: true }] as const) {
+    it.instance(`timed-out ${JSON.stringify(flags)} hook discards partial output and retries once`, () =>
+      Effect.gen(function* () {
+        rewakeCalls.length = 0
+        const hook = yield* SettingsHook.Service
+        const store = yield* SessionHooks.Service
+        const sessionID = SessionID.descending()
+        const marker = tmp(`timeout-async-${crypto.randomUUID()}`)
+        const output = JSON.stringify({
+          systemMessage: "TIMED_OUT_OUTPUT",
+          hookSpecificOutput: { hookEventName: "Stop", additionalContext: "PARTIAL" },
+        })
+        const id = yield* store.add(sessionID, {
+          event: "Stop",
+          once: true,
+          hooks: [
+            {
+              type: "command",
+              command: process.execPath,
+              args: [
+                "-e",
+                `process.stdout.write(${JSON.stringify(output)});require('node:fs').appendFileSync(${JSON.stringify(marker)},'x');setTimeout(()=>{},2000)`,
+              ],
+              timeout: 0.3,
+              ...flags,
+            },
+          ],
+        })
+        for (const count of [1, 2]) {
+          yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+          yield* pollWithTimeout(
+            Effect.promise(() =>
+              fs
+                .readFile(marker, "utf8")
+                .then((value) => (value.length === count ? true : undefined))
+                .catch(() => undefined),
+            ),
+            "timed-out async child did not write its output",
+          )
+          const token = yield* pollWithTimeout(
+            store.claim(sessionID, id),
+            "timed-out async once claim was not released",
+          )
+          yield* store.complete(sessionID, id, token, false)
+          const drained = yield* hook.drainAsync!(sessionID)
+          expect(drained.additionalContexts).toEqual([])
+          expect(drained.systemMessages).toEqual([])
+          expect(rewakeCalls).toEqual([])
+          expect(yield* store.list(sessionID, "Stop")).toHaveLength(1)
+        }
+        yield* Effect.promise(() => fs.rm(marker, { force: true }))
+      }),
+    )
+  }
 })
 
 for (const event of ["Stop", "StopFailure"] as const) {
@@ -400,7 +480,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
         const hook = yield* SettingsHook.Service
         const hooks = yield* SessionHooks.Service
         const sessionID = SessionID.make(`ses-stale-${event}-${boundary}`)
-        const discarded = yield* observeDiscardedCallback(sessionID)
+        const discarded = boundary === "UserPromptSubmit" ? yield* observeDiscardedCallback(sessionID) : undefined
         yield* hooks.add(sessionID, {
           event,
           once: true,
@@ -409,7 +489,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
               type: "command",
               async: true,
               asyncRewake: true,
-              command: `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"stale result"}'; touch ${JSON.stringify(completed)}`,
+              command: `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"stale result"}'; touch ${JSON.stringify(completed)}; exit 2`,
             },
           ],
         })
@@ -431,18 +511,30 @@ for (const event of ["Stop", "StopFailure"] as const) {
           )
         }
         yield* Effect.promise(() => fs.writeFile(release, "go"))
-        yield* pollWithTimeout(
-          Effect.promise(() =>
-            fs
-              .access(completed)
-              .then(() => true as const)
-              .catch(() => undefined),
-          ),
-          "pending hook did not complete",
-        )
-        yield* discarded
+        if (boundary === "UserPromptSubmit") {
+          yield* pollWithTimeout(
+            Effect.promise(() =>
+              fs
+                .access(completed)
+                .then(() => true as const)
+                .catch(() => undefined),
+            ),
+            "pending hook did not complete",
+          )
+          if (discarded) yield* discarded
+        } else {
+          yield* Effect.sleep("100 millis")
+          expect(
+            yield* Effect.promise(() =>
+              fs
+                .access(completed)
+                .then(() => true)
+                .catch(() => false),
+            ),
+          ).toBe(false)
+        }
         expect(rewakeCalls).toEqual([])
-        yield* Effect.promise(() => Promise.all([fs.rm(release), fs.rm(completed)]))
+        yield* Effect.promise(() => Promise.all([fs.rm(release, { force: true }), fs.rm(completed, { force: true })]))
       }),
     )
   }
@@ -470,7 +562,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
             type: "command",
             async: true,
             asyncRewake: true,
-            command: `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"result after cancel"}'; touch ${JSON.stringify(completed)}`,
+            command: `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"result after cancel"}'; touch ${JSON.stringify(completed)}; exit 2`,
           },
         ],
       })
@@ -521,7 +613,7 @@ it.instance("session cancel invalidation is per-session — other pending callba
             type: "command",
             async: true,
             asyncRewake: true,
-            command: `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"verdict ${sid}"}'; touch ${JSON.stringify(`${release}.completed`)}`,
+            command: `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"verdict ${sid}"}'; touch ${JSON.stringify(`${release}.completed`)}; exit 2`,
           },
         ],
       })
@@ -556,7 +648,7 @@ it.instance("session cancel invalidation is per-session — other pending callba
     expect(rewakeCalls).toHaveLength(1)
     expect(rewakeCalls[0].sessionID).toBe(b)
     yield* Effect.promise(() =>
-      Promise.all([fs.rm(releaseA), fs.rm(releaseB), fs.rm(`${releaseA}.completed`), fs.rm(`${completedB}`)]),
+      Promise.all([fs.rm(releaseA), fs.rm(releaseB), fs.rm(`${releaseA}.completed`), fs.rm(completedB)]),
     )
   }),
 )
@@ -583,7 +675,7 @@ it.instance("a fresh Stop trigger after cancel establishes a new valid chain", (
           asyncRewake: true,
           command: cmd(
             releaseOld,
-            `printf '%s' '{"systemMessage":"stale"}'; touch ${JSON.stringify(`${releaseOld}.completed`)}`,
+            `printf '%s' '{"systemMessage":"stale"}'; touch ${JSON.stringify(`${releaseOld}.completed`)}; exit 2`,
           ),
         },
       ],
@@ -601,7 +693,7 @@ it.instance("a fresh Stop trigger after cancel establishes a new valid chain", (
           asyncRewake: true,
           command: cmd(
             releaseNew,
-            `printf '%s' '{"systemMessage":"fresh verdict"}'; touch ${JSON.stringify(`${releaseNew}.completed`)}`,
+            `printf '%s' '{"systemMessage":"fresh verdict"}'; touch ${JSON.stringify(`${releaseNew}.completed`)}; exit 2`,
           ),
         },
       ],
@@ -650,7 +742,7 @@ it.instance("stop-chain token validation: fresh chain validates, old tokens neve
     const releaseOld = tmp(`fence-old-${crypto.randomUUID()}`)
     const releaseNew = tmp(`fence-new-${crypto.randomUUID()}`)
     const cmd = (release: string, marker: string) =>
-      `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"verdict"}'; touch ${JSON.stringify(marker)}`
+      `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"verdict"}'; touch ${JSON.stringify(marker)}; exit 2`
     const addStopHook = (release: string, marker: string) =>
       hooks.add(sessionID, {
         event: "Stop",
@@ -708,7 +800,7 @@ it.instance("concurrent SubagentStop callbacks share the continuation budget", (
           type: "command",
           async: true,
           asyncRewake: true,
-          command: `printf 'done\\n' >> ${JSON.stringify(completed)}; printf '%s' '{"systemMessage":"subagent verdict"}'`,
+          command: `printf 'done\\n' >> ${JSON.stringify(completed)}; printf '%s' '{"systemMessage":"subagent verdict"}'; exit 2`,
         },
       ],
     })

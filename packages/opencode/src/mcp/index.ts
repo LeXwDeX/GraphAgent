@@ -469,7 +469,7 @@ export const layer = Layer.effect(
       // mcp-elicitation-notification: handle `elicitation/create` reverse requests.
       // Routes through the Question service (best-effort session via SessionContext),
       // firing Elicitation/ElicitationResult hooks and the Notification emitter.
-      registerElicitationHandler(client, bridge)
+      registerElicitationHandler(client, bridge, name)
       client.onclose = () => {
         if (s.clients[name] !== client) return
         delete s.clients[name]
@@ -906,7 +906,19 @@ export const layer = Layer.effect(
 
         const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig.timeout)
+        const status = yield* storeClient(
+          s,
+          mcpName,
+          client,
+          listed,
+          client.getInstructions()?.trim(),
+          mcpConfig.timeout,
+        )
+        const { Notification } = yield* Effect.promise(() => import("@/notification"))
+        const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
+        if (status.status === "connected" && notification)
+          yield* notification.notify({ notificationType: "auth_success", message: "MCP authentication completed" })
+        return status
       }
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
@@ -965,7 +977,12 @@ export const layer = Layer.effect(
 
       const mcpConfig = yield* requireMcpConfig(mcpName)
 
-      return yield* createAndStore(mcpName, mcpConfig)
+      const status = yield* createAndStore(mcpName, mcpConfig)
+      const { Notification } = yield* Effect.promise(() => import("@/notification"))
+      const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
+      if (status.status === "connected" && notification)
+        yield* notification.notify({ notificationType: "auth_success", message: "MCP authentication completed" })
+      return status
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {

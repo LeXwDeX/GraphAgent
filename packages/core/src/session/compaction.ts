@@ -1,10 +1,13 @@
 export * as SessionCompaction from "./compaction"
 
 import { LLM, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/llm"
-import { DateTime, Effect, Stream } from "effect"
+import { DateTime, Effect, Option, Stream } from "effect"
 import type { Config } from "../config"
+import type { Database } from "../database/database"
 import type { EventV2 } from "../event"
 import { SessionEvent } from "./event"
+import { SessionCompactionHooks } from "./compaction-hooks"
+import { SessionLifecycleHooks } from "./lifecycle-hooks"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { Token } from "../util/token"
@@ -62,6 +65,7 @@ type Settings = {
 }
 
 type Dependencies = {
+  readonly db: Database.Interface["db"]
   readonly events: EventV2.Interface
   readonly llm: {
     readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
@@ -193,6 +197,8 @@ export const make = (dependencies: Dependencies) => {
     })
     const summaryOutput = Math.min(output || SUMMARY_OUTPUT_TOKENS, SUMMARY_OUTPUT_TOKENS)
     if (Token.estimate(summaryPrompt) > context - summaryOutput) return false
+    const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SessionCompactionHooks.Service))
+    if (hooks && (yield* hooks.before(input.sessionID)).blocked) return false
     const messageID = SessionMessage.ID.create()
     yield* dependencies.events.publish(SessionEvent.Compaction.Started, {
       sessionID: input.sessionID,
@@ -231,6 +237,25 @@ export const make = (dependencies: Dependencies) => {
       text: summary,
       recent: selected.recent,
     })
+    yield* SessionLifecycleHooks.withLock(
+      input.sessionID,
+      Effect.gen(function* () {
+        const post = hooks ? yield* hooks.after({ sessionID: input.sessionID, summary }) : undefined
+        yield* SessionLifecycleHooks.landContext(dependencies.events, {
+          sessionID: input.sessionID,
+          text: post?.additionalContext,
+        })
+        const started = yield* SessionLifecycleHooks.start({ sessionID: input.sessionID, source: "compact" })
+        yield* SessionLifecycleHooks.landContext(dependencies.events, {
+          sessionID: input.sessionID,
+          text: started.additionalContext,
+        })
+        yield* SessionLifecycleHooks.landInitial(dependencies.db, dependencies.events, {
+          sessionID: input.sessionID,
+          text: started.initialUserMessage,
+        })
+      }),
+    )
     return true
   })
   const compactIfNeeded = Effect.fn("SessionCompaction.compactIfNeeded")(function* (input: Input) {

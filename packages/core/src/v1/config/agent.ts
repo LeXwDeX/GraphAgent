@@ -18,6 +18,7 @@ const AgentSchema = Schema.StructWithRest(
     temperature: Schema.optional(Schema.Finite),
     top_p: Schema.optional(Schema.Finite),
     prompt: Schema.optional(Schema.String),
+    hooks: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
     tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
       description: "@deprecated Use 'permission' field instead",
     }),
@@ -45,6 +46,9 @@ const KNOWN_KEYS = new Set([
   "model",
   "variant",
   "prompt",
+  "hooks",
+  "hookOrigin",
+  "hookSource",
   "description",
   "temperature",
   "top_p",
@@ -61,6 +65,9 @@ const KNOWN_KEYS = new Set([
 
 const normalize = (agent: Schema.Schema.Type<typeof AgentSchema>): Schema.Schema.Type<typeof AgentSchema> => {
   const options: Record<string, unknown> = { ...agent.options }
+  delete options.hooks
+  delete options.hookOrigin
+  delete options.hookSource
   for (const [key, value] of Object.entries(agent)) {
     if (!KNOWN_KEYS.has(key)) options[key] = value
   }

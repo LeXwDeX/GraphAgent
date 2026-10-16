@@ -1,3 +1,9 @@
+import { realpath } from "node:fs/promises"
+import { ApiNotFoundError } from "../errors"
+import { InstanceRef } from "@/effect/instance-ref"
+import { SessionAttention } from "@/notification/attention"
+import type { SessionAttentionInput } from "@opencode-ai/schema/session-attention"
+import { LocalPermissionStartup } from "@/permission/local-startup"
 import { Logging } from "@opencode-ai/core/observability/logging"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
@@ -34,6 +40,8 @@ import {
   MessagesQuery,
   PermissionResponsePayload,
   PromptPayload,
+  ResumePayload,
+  SetModelPayload,
   QueuedMessageDeletePayload,
   QueuedMessageEditPayload,
   RevertPayload,
@@ -42,8 +50,13 @@ import {
   UpdatePayload,
   SessionHookAddPayload,
 } from "../groups/session"
-import { ConflictError, PermissionNotFoundError, notFound } from "../errors"
+import { ConflictError, InvalidRequestError, PermissionNotFoundError, notFound } from "../errors"
 import * as SessionError from "./session-errors"
+
+const promptError = (error: unknown) =>
+  error instanceof SessionPrompt.ModelSwitchBlocked || error instanceof SessionPrompt.NoPendingHookInput
+    ? new InvalidRequestError({ message: error.message })
+    : new HttpApiError.BadRequest({})
 
 const tryParseJson = (text: string) =>
   Effect.try({
@@ -206,8 +219,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const createRaw = Effect.fn("SessionHttpApi.createRaw")(function* (ctx: {
       request: HttpServerRequest.HttpServerRequest
     }) {
+      const approved = LocalPermissionStartup.take(ctx.request.source)
+      const grant =
+        approved && permissionSvc.grantHookBypass
+          ? LocalPermissionStartup.once(permissionSvc.grantHookBypass)
+          : undefined
+      const createLocal = (payload?: Session.CreateInput) =>
+        create({ payload }).pipe(Effect.provideService(LocalPermissionStartup.Grant, grant))
       const body = yield* Effect.orDie(ctx.request.text)
-      if (body.trim().length === 0) return yield* create({})
+      if (body.trim().length === 0) return yield* createLocal()
 
       const json = yield* tryParseJson(body)
       const decoded = yield* Schema.decodeUnknownEffect(Session.CreateInput)(json).pipe(
@@ -219,7 +239,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             permission: decoded.permission ? [...decoded.permission] : undefined,
           }
         : decoded
-      return yield* create({ payload })
+      return yield* createLocal(payload)
     })
 
     const remove = Effect.fn("SessionHttpApi.remove")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -347,10 +367,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     // so headless entrypoints get the same Command.Event.Executed lifecycle
     // (incl. project init stamping) as the TUI; a registry miss falls through
     // to a plain prompt turn, preserving existing text-prompt semantics.
+    const grantLocalStartup = Effect.fn("SessionHttpApi.grantLocalStartup")(function* (sessionID: SessionID) {
+      const request = yield* HttpServerRequest.HttpServerRequest
+      if (LocalPermissionStartup.take(request.source, sessionID) && permissionSvc.grantHookBypass)
+        yield* permissionSvc.grantHookBypass(sessionID)
+    })
+
     const promptOrCommand = Effect.fn("SessionHttpApi.promptOrCommand")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
     }) {
+      yield* grantLocalStartup(ctx.params.sessionID)
+
       const parsed = parseCommandPayload(ctx.payload)
       const cmd = parsed ? yield* commands.get(parsed.command) : undefined
       if (parsed && cmd) {
@@ -361,10 +389,52 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           messageID: ctx.payload.messageID,
           agent: ctx.payload.agent,
           variant: ctx.payload.variant,
+          hookMode: ctx.payload.hookMode,
           ...(ctx.payload.model ? { model: `${ctx.payload.model.providerID}/${ctx.payload.model.modelID}` } : {}),
         })
       }
       return yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID })
+    })
+
+    const setModel = Effect.fn("SessionHttpApi.setModel")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof SetModelPayload.Type
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* promptSvc
+        .setModel({ ...ctx.payload, sessionID: ctx.params.sessionID })
+        .pipe(Effect.mapError(promptError))
+    })
+
+    const attention = Effect.fn("SessionHttpApi.attention")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: SessionAttentionInput
+    }) {
+      const current = yield* requireSession(ctx.params.sessionID)
+      const instance = yield* InstanceRef
+      const directories = instance
+        ? yield* Effect.tryPromise(() => Promise.all([realpath(current.directory), realpath(instance.directory)])).pipe(
+            Effect.option,
+          )
+        : Option.none()
+      if (Option.isNone(directories) || directories.value[0] !== directories.value[1])
+        return yield* new ApiNotFoundError({
+          name: "NotFoundError",
+          data: { message: "Session not found in this directory" },
+        })
+      const service = yield* SessionAttention.Service
+      yield* service.update(ctx.params.sessionID, ctx.payload)
+      return true
+    })
+    const resume = Effect.fn("SessionHttpApi.resume")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof ResumePayload.Type
+    }) {
+      yield* grantLocalStartup(ctx.params.sessionID)
+      yield* requireSession(ctx.params.sessionID)
+      return yield* promptSvc
+        .resume({ ...ctx.payload, sessionID: ctx.params.sessionID })
+        .pipe(Effect.mapError(promptError))
     })
 
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
@@ -372,7 +442,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      const message = yield* promptOrCommand(ctx).pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+      const message = yield* promptOrCommand(ctx).pipe(Effect.mapError(promptError))
       return HttpServerResponse.stream(Stream.make(JSON.stringify(message)).pipe(Stream.encodeText), {
         contentType: "application/json",
       })
@@ -402,10 +472,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof CommandPayload.Type
     }) {
+      yield* grantLocalStartup(ctx.params.sessionID)
+
       yield* requireSession(ctx.params.sessionID)
       return yield* promptSvc
         .command({ ...ctx.payload, sessionID: ctx.params.sessionID })
-        .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+        .pipe(Effect.mapError(promptError))
     })
 
     const shell = Effect.fn("SessionHttpApi.shell")(function* (ctx: {
@@ -570,6 +642,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("share", share)
       .handle("unshare", unshare)
       .handle("summarize", summarize)
+      .handle("setModel", setModel)
+      .handle("resume", resume)
+      .handle("attention", attention)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("command", command)

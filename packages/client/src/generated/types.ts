@@ -26,6 +26,14 @@ export type SessionNotFoundError = {
 export const isSessionNotFoundError = (value: unknown): value is SessionNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value._tag === "SessionNotFoundError"
 
+export type ServiceUnavailableError = {
+  readonly _tag: "ServiceUnavailableError"
+  readonly message: string
+  readonly service?: string | undefined
+}
+export const isServiceUnavailableError = (value: unknown): value is ServiceUnavailableError =>
+  typeof value === "object" && value !== null && "_tag" in value && value._tag === "ServiceUnavailableError"
+
 export type ConflictError = {
   readonly _tag: "ConflictError"
   readonly message: string
@@ -34,13 +42,13 @@ export type ConflictError = {
 export const isConflictError = (value: unknown): value is ConflictError =>
   typeof value === "object" && value !== null && "_tag" in value && value._tag === "ConflictError"
 
-export type ServiceUnavailableError = {
-  readonly _tag: "ServiceUnavailableError"
+export type UnknownError = {
+  readonly _tag: "UnknownError"
   readonly message: string
-  readonly service?: string | undefined
+  readonly ref?: string | undefined
 }
-export const isServiceUnavailableError = (value: unknown): value is ServiceUnavailableError =>
-  typeof value === "object" && value !== null && "_tag" in value && value._tag === "ServiceUnavailableError"
+export const isUnknownError = (value: unknown): value is UnknownError =>
+  typeof value === "object" && value !== null && "_tag" in value && value._tag === "UnknownError"
 
 export type MessageNotFoundError = {
   readonly _tag: "MessageNotFoundError"
@@ -50,14 +58,6 @@ export type MessageNotFoundError = {
 }
 export const isMessageNotFoundError = (value: unknown): value is MessageNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value._tag === "MessageNotFoundError"
-
-export type UnknownError = {
-  readonly _tag: "UnknownError"
-  readonly message: string
-  readonly ref?: string | undefined
-}
-export const isUnknownError = (value: unknown): value is UnknownError =>
-  typeof value === "object" && value !== null && "_tag" in value && value._tag === "UnknownError"
 
 export type SessionsListInput = {
   readonly workspace?: {
@@ -274,6 +274,47 @@ export type SessionsGetOutput = {
   }
 }["data"]
 
+export type SessionsAttentionInput = {
+  readonly sessionID: { readonly sessionID: string }["sessionID"]
+  readonly clientID: {
+    readonly clientID: string
+    readonly clientType?: "terminal" | "web" | undefined
+    readonly activity?: number | undefined
+    readonly backgroundView?: boolean | undefined
+    readonly closed?: boolean | undefined
+  }["clientID"]
+  readonly clientType?: {
+    readonly clientID: string
+    readonly clientType?: "terminal" | "web" | undefined
+    readonly activity?: number | undefined
+    readonly backgroundView?: boolean | undefined
+    readonly closed?: boolean | undefined
+  }["clientType"]
+  readonly activity?: {
+    readonly clientID: string
+    readonly clientType?: "terminal" | "web" | undefined
+    readonly activity?: number | undefined
+    readonly backgroundView?: boolean | undefined
+    readonly closed?: boolean | undefined
+  }["activity"]
+  readonly backgroundView?: {
+    readonly clientID: string
+    readonly clientType?: "terminal" | "web" | undefined
+    readonly activity?: number | undefined
+    readonly backgroundView?: boolean | undefined
+    readonly closed?: boolean | undefined
+  }["backgroundView"]
+  readonly closed?: {
+    readonly clientID: string
+    readonly clientType?: "terminal" | "web" | undefined
+    readonly activity?: number | undefined
+    readonly backgroundView?: boolean | undefined
+    readonly closed?: boolean | undefined
+  }["closed"]
+}
+
+export type SessionsAttentionOutput = void
+
 export type SessionsSwitchAgentInput = {
   readonly sessionID: { readonly sessionID: string }["sessionID"]
   readonly agent: { readonly agent: string }["agent"]
@@ -311,7 +352,9 @@ export type SessionsPromptInput = {
             readonly source?: { readonly start: number; readonly end: number; readonly text: string } | undefined
           }>
         | undefined
+      readonly hookMode?: "interactive" | "noninteractive" | undefined
     }
+    readonly hookMode?: "interactive" | "noninteractive" | undefined
     readonly delivery?: "steer" | "queue" | undefined
     readonly resume?: boolean | undefined
   }["id"]
@@ -334,10 +377,37 @@ export type SessionsPromptInput = {
             readonly source?: { readonly start: number; readonly end: number; readonly text: string } | undefined
           }>
         | undefined
+      readonly hookMode?: "interactive" | "noninteractive" | undefined
     }
+    readonly hookMode?: "interactive" | "noninteractive" | undefined
     readonly delivery?: "steer" | "queue" | undefined
     readonly resume?: boolean | undefined
   }["prompt"]
+  readonly hookMode?: {
+    readonly id?: string | undefined
+    readonly prompt: {
+      readonly text: string
+      readonly files?:
+        | ReadonlyArray<{
+            readonly uri: string
+            readonly mime: string
+            readonly name?: string | undefined
+            readonly description?: string | undefined
+            readonly source?: { readonly start: number; readonly end: number; readonly text: string } | undefined
+          }>
+        | undefined
+      readonly agents?:
+        | ReadonlyArray<{
+            readonly name: string
+            readonly source?: { readonly start: number; readonly end: number; readonly text: string } | undefined
+          }>
+        | undefined
+      readonly hookMode?: "interactive" | "noninteractive" | undefined
+    }
+    readonly hookMode?: "interactive" | "noninteractive" | undefined
+    readonly delivery?: "steer" | "queue" | undefined
+    readonly resume?: boolean | undefined
+  }["hookMode"]
   readonly delivery?: {
     readonly id?: string | undefined
     readonly prompt: {
@@ -357,7 +427,9 @@ export type SessionsPromptInput = {
             readonly source?: { readonly start: number; readonly end: number; readonly text: string } | undefined
           }>
         | undefined
+      readonly hookMode?: "interactive" | "noninteractive" | undefined
     }
+    readonly hookMode?: "interactive" | "noninteractive" | undefined
     readonly delivery?: "steer" | "queue" | undefined
     readonly resume?: boolean | undefined
   }["delivery"]
@@ -380,7 +452,9 @@ export type SessionsPromptInput = {
             readonly source?: { readonly start: number; readonly end: number; readonly text: string } | undefined
           }>
         | undefined
+      readonly hookMode?: "interactive" | "noninteractive" | undefined
     }
+    readonly hookMode?: "interactive" | "noninteractive" | undefined
     readonly delivery?: "steer" | "queue" | undefined
     readonly resume?: boolean | undefined
   }["resume"]
@@ -404,6 +478,7 @@ export type SessionsPromptOutput = {
         readonly name: string
         readonly source?: { readonly start: number; readonly end: number; readonly text: string } | null
       }> | null
+      readonly hookMode?: "interactive" | "noninteractive" | null
     }
     readonly delivery: "steer" | "queue"
     readonly timeCreated: number
@@ -414,6 +489,14 @@ export type SessionsPromptOutput = {
 export type SessionsCompactInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
 
 export type SessionsCompactOutput = void
+
+export type SessionsResumeInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
+
+export type SessionsResumeOutput = void
+
+export type SessionsInterruptInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
+
+export type SessionsInterruptOutput = void
 
 export type SessionsWaitInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
 
@@ -519,7 +602,7 @@ export type SessionsContextOutput = {
         readonly agent: string
         readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string | null }
         readonly content: ReadonlyArray<
-          | { readonly type: "text"; readonly id: string; readonly text: string }
+          | { readonly type: "text"; readonly id: string; readonly text: string; readonly displayText?: string | null }
           | {
               readonly type: "reasoning"
               readonly id: string
@@ -546,6 +629,7 @@ export type SessionsContextOutput = {
                 | {
                     readonly status: "running"
                     readonly input: { readonly [x: string]: JsonValue }
+                    readonly deferred?: boolean | null
                     readonly structured: { readonly [x: string]: any }
                     readonly content: ReadonlyArray<
                       | { readonly type: "text"; readonly text: string }

@@ -1201,6 +1201,7 @@ export function Prompt(props: PromptProps) {
         .shell(
           {
             sessionID,
+            hookMode: "interactive",
             agent: agent.name,
             model: {
               providerID: selectedModel.providerID,
@@ -1231,6 +1232,7 @@ export function Prompt(props: PromptProps) {
         .command(
           {
             sessionID,
+            hookMode: "interactive",
             command: command.slice(1),
             arguments: args,
             agent: agent.name,
@@ -1257,6 +1259,7 @@ export function Prompt(props: PromptProps) {
         .prompt(
           {
             sessionID,
+            hookMode: "interactive",
             ...selectedModel,
             messageID,
             agent: agent.name,

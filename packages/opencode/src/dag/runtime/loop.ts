@@ -69,6 +69,8 @@ import { Checkpoint } from "./checkpoint"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
 import { makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
+import { HookStartContext } from "@/hook/start-context"
+import { HookLifecycle } from "@/hook/lifecycle"
 import { deliverReport, selectReportNode } from "./report-delivery"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
@@ -188,9 +190,7 @@ const serviceLayer = Layer.effect(
           const second = yield* attempt
           if (second) return second
 
-          const workflow = yield* store.getWorkflow(dagID).pipe(
-            Effect.catchCause(() => Effect.void),
-          )
+          const workflow = yield* store.getWorkflow(dagID).pipe(Effect.catchCause(() => Effect.void))
           if (
             !workflow ||
             workflow.status === "completed" ||
@@ -212,7 +212,10 @@ const serviceLayer = Layer.effect(
           entry: WorkflowEntry,
           nodes?: readonly DagStore.NodeRow[],
         ) {
-          const checkpoint = Checkpoint.latestReplanCheckpoint(entry.config, nodes ?? (yield* store.getCurrentNodes(dagID)))
+          const checkpoint = Checkpoint.latestReplanCheckpoint(
+            entry.config,
+            nodes ?? (yield* store.getCurrentNodes(dagID)),
+          )
           if (!checkpoint) return false
 
           const disposition = yield* checkpointDisposition(dagID, checkpoint)
@@ -338,9 +341,10 @@ const serviceLayer = Layer.effect(
                 // undefined (documented condition_false), and numeric
                 // comparisons keep their loud failure.
                 outputs[dep] = {
-                  output: typeof depNode.output === "string"
-                    ? Option.getOrElse(parseJsonOption(depNode.output), () => depNode.output)
-                    : depNode.output,
+                  output:
+                    typeof depNode.output === "string"
+                      ? Option.getOrElse(parseJsonOption(depNode.output), () => depNode.output)
+                      : depNode.output,
                 }
               }
               const condResult = evaluateCondition(nodeConfig.condition, outputs)
@@ -351,12 +355,7 @@ const serviceLayer = Layer.effect(
                 continue
               }
               if (!condResult.value) {
-                const skipped = yield* dag.nodeSkipped(
-                  dagID,
-                  nodeID,
-                  "condition_false",
-                  admissionAttempt,
-                ).pipe(
+                const skipped = yield* dag.nodeSkipped(dagID, nodeID, "condition_false", admissionAttempt).pipe(
                   Effect.as(true),
                   Effect.catchIf(isTransitionRejection, () => Effect.succeed(false)),
                 )
@@ -374,7 +373,9 @@ const serviceLayer = Layer.effect(
             const promptParts: { type: "text"; text: string }[] = []
 
             let resolvedMapping: Record<string, unknown> = {}
-            const inputMapping = nodeConfig.input_mapping ?? Object.fromEntries(node.dependsOn.map((dependency) => [dependency, dependency]))
+            const inputMapping =
+              nodeConfig.input_mapping ??
+              Object.fromEntries(node.dependsOn.map((dependency) => [dependency, dependency]))
             const sourceIDs = new Set([
               ...node.dependsOn,
               ...Object.values(inputMapping).flatMap((source) => {
@@ -382,24 +383,32 @@ const serviceLayer = Layer.effect(
                 return reference.ok ? [reference.nodeID] : []
               }),
             ])
-            const inputSources = nodesSnapshot.filter((source) => sourceIDs.has(source.id) && source.status === "completed")
+            const inputSources = nodesSnapshot.filter(
+              (source) => sourceIDs.has(source.id) && source.status === "completed",
+            )
             const artifactsValid = yield* Effect.forEach(
               inputSources,
               (source) => verifyOutputFileRef(source.capturedOutput),
               { discard: true },
             ).pipe(
               Effect.as(true),
-              Effect.catch((error) => dag.nodeFailed(
-                dagID, nodeID, `Input artifact verification failed: ${error.message}`, "exec_failed", admissionAttempt,
-              ).pipe(Effect.as(false))),
+              Effect.catch((error) =>
+                dag
+                  .nodeFailed(
+                    dagID,
+                    nodeID,
+                    `Input artifact verification failed: ${error.message}`,
+                    "exec_failed",
+                    admissionAttempt,
+                  )
+                  .pipe(Effect.as(false)),
+              ),
             )
             if (!artifactsValid) continue
             if (nodeConfig.input_mapping) {
               const resolved = resolveInputMappingChecked(inputMapping, (dependency) => {
                 const source = nodesSnapshot.find((candidate) => candidate.id === dependency)
-                return source?.status === "completed"
-                  ? { found: true, output: source.output }
-                  : { found: false }
+                return source?.status === "completed" ? { found: true, output: source.output } : { found: false }
               })
               if (!resolved.ok) {
                 yield* dag
@@ -440,13 +449,15 @@ const serviceLayer = Layer.effect(
             if (nodeConfig) {
               const reviewInput = validateReviewExecutionInput(nodeConfig, resolvedMapping)
               if (!reviewInput.valid) {
-                yield* dag.nodeFailed(
-                  dagID,
-                  nodeID,
-                  `Review input contract failed: ${reviewInput.errors.join("; ")}`,
-                  "verdict_fail",
-                  admissionAttempt,
-                ).pipe(Effect.ignore)
+                yield* dag
+                  .nodeFailed(
+                    dagID,
+                    nodeID,
+                    `Review input contract failed: ${reviewInput.errors.join("; ")}`,
+                    "verdict_fail",
+                    admissionAttempt,
+                  )
+                  .pipe(Effect.ignore)
                 continue
               }
             }
@@ -483,13 +494,15 @@ const serviceLayer = Layer.effect(
             if (!resolved.ok) continue
 
             if (resolved.unresolvedPlaceholders.length > 0) {
-              yield* dag.nodeFailed(
-                dagID,
-                nodeID,
-                `Unresolved template placeholders: ${resolved.unresolvedPlaceholders.join(", ")}`,
-                "verdict_fail",
-                admissionAttempt,
-              ).pipe(Effect.ignore)
+              yield* dag
+                .nodeFailed(
+                  dagID,
+                  nodeID,
+                  `Unresolved template placeholders: ${resolved.unresolvedPlaceholders.join(", ")}`,
+                  "verdict_fail",
+                  admissionAttempt,
+                )
+                .pipe(Effect.ignore)
               continue
             }
 
@@ -567,7 +580,8 @@ const serviceLayer = Layer.effect(
                 : undefined,
               fallbackModel: DagConfig.tierModel(dagConfig, { required: node.required, workerType: node.workerType }),
               variant: dagConfig.thinking_depth,
-              maxTimeoutExtensions: entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
+              maxTimeoutExtensions:
+                entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
             }).pipe(
               Effect.tap((result) =>
                 Effect.sync(() => {
@@ -1011,7 +1025,10 @@ const serviceLayer = Layer.effect(
                 // input as recoverWorkflow — adoption must not resurrect the
                 // replaced segment's failures either.
                 const nodes = yield* store.getCurrentNodes(dagID)
-                const maxConcurrency = Math.max(1, config?.max_concurrency ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxConcurrency)
+                const maxConcurrency = Math.max(
+                  1,
+                  config?.max_concurrency ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
+                )
                 const runtime = new WorkflowRuntime(toSchedulingNodes(nodes), maxConcurrency)
                 const semaphore = Semaphore.makeUnsafe(maxConcurrency)
                 const entry: WorkflowEntry = {
@@ -1056,9 +1073,10 @@ const serviceLayer = Layer.effect(
           // A completed node is an output-producing success; a skipped node is a
           // terminal no-output state that must stay distinguishable so pure-skip
           // descendants cascade instead of running (D13).
-          const settle = def === DagEvent.NodeSkipped || def === DagEvent.NodeAborted
-            ? (entry: WorkflowEntry, nodeID: string) => entry.runtime.markSkipped(nodeID)
-            : (entry: WorkflowEntry, nodeID: string) => entry.runtime.markSatisfied(nodeID)
+          const settle =
+            def === DagEvent.NodeSkipped || def === DagEvent.NodeAborted
+              ? (entry: WorkflowEntry, nodeID: string) => entry.runtime.markSkipped(nodeID)
+              : (entry: WorkflowEntry, nodeID: string) => entry.runtime.markSatisfied(nodeID)
           yield* events.subscribe(def).pipe(
             Stream.filter((e) => runtimes.has(e.data.dagID as string)),
             Stream.runForEach((evt) =>
@@ -1066,78 +1084,98 @@ const serviceLayer = Layer.effect(
                 const dagID = evt.data.dagID as string
                 const entry = runtimes.get(dagID)
                 if (!entry) return
-                yield* entry.evalLock.withPermits(1)(
-                  Effect.gen(function* () {
-                    const nodeID = evt.data.nodeID as string
-                    // Same DB cross-check as the NodeFailed handler: projection
-                    // is transactional with publish, so a row that no longer
-                    // matches the event's terminal status means a later
-                    // restart/replan reset it — drop the stale event without
-                    // touching the new generation's fiber.
-                    const expected = def === DagEvent.NodeSkipped ? "skipped" : def === DagEvent.NodeAborted ? "aborted" : "completed"
-                    const node = yield* store.getNode(dagID, nodeID)
-                    const confirmed = node?.status === expected
-                    if (confirmed) {
-                      if (def === DagEvent.NodeSkipped || def === DagEvent.NodeAborted) {
-                        // Cancel-skip race: workflow-level cancel publishes NodeSkipped
-                        // for running nodes, and this handler may win the cross-stream
-                        // race against WorkflowCancelled. Deleting the fiber here
-                        // uninterrupted would orphan it from the WorkflowCancelled
-                        // sweep and the child session would keep running until its
-                        // prompt finishes or times out. Stop it now, mirroring the
-                        // NodeCancelled handler. Completed nodes keep the plain
-                        // delete — their fiber published the event and is finishing.
-                        const fiber = entry.fibers.get(nodeID)
-                        if (fiber) {
-                          yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
-                          yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
+                yield* entry.evalLock
+                  .withPermits(1)(
+                    Effect.gen(function* () {
+                      const nodeID = evt.data.nodeID as string
+                      // Same DB cross-check as the NodeFailed handler: projection
+                      // is transactional with publish, so a row that no longer
+                      // matches the event's terminal status means a later
+                      // restart/replan reset it — drop the stale event without
+                      // touching the new generation's fiber.
+                      const expected =
+                        def === DagEvent.NodeSkipped
+                          ? "skipped"
+                          : def === DagEvent.NodeAborted
+                            ? "aborted"
+                            : "completed"
+                      const node = yield* store.getNode(dagID, nodeID)
+                      const confirmed = node?.status === expected
+                      if (confirmed) {
+                        if (def === DagEvent.NodeSkipped || def === DagEvent.NodeAborted) {
+                          // Cancel-skip race: workflow-level cancel publishes NodeSkipped
+                          // for running nodes, and this handler may win the cross-stream
+                          // race against WorkflowCancelled. Deleting the fiber here
+                          // uninterrupted would orphan it from the WorkflowCancelled
+                          // sweep and the child session would keep running until its
+                          // prompt finishes or times out. Stop it now, mirroring the
+                          // NodeCancelled handler. Completed nodes keep the plain
+                          // delete — their fiber published the event and is finishing.
+                          const fiber = entry.fibers.get(nodeID)
+                          if (fiber) {
+                            yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                            yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
+                          }
                         }
+                        // N3: interrupt the watcher on BOTH terminal events. A node
+                        // re-timed via replan carries a REPLACED watcher in
+                        // entry.watchers; the spawn-time cleanup only interrupts the
+                        // original watcherFiber, so without this the replacement
+                        // lingers until its deadline wake (≤ the extended timeout)
+                        // before it re-reads a terminal row and exits.
+                        const watcher = entry.watchers.get(nodeID)
+                        if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
+                        entry.fibers.delete(nodeID)
+                        entry.watchers.delete(nodeID)
                       }
-                      // N3: interrupt the watcher on BOTH terminal events. A node
-                      // re-timed via replan carries a REPLACED watcher in
-                      // entry.watchers; the spawn-time cleanup only interrupts the
-                      // original watcherFiber, so without this the replacement
-                      // lingers until its deadline wake (≤ the extended timeout)
-                      // before it re-reads a terminal row and exits.
-                      const watcher = entry.watchers.get(nodeID)
-                      if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
-                      entry.fibers.delete(nodeID)
-                      entry.watchers.delete(nodeID)
-                    }
-                    if (!confirmed) {
-                      yield* Effect.logDebug("DagLoop dropped stale node terminal event", { dagID, nodeID, expected, dbStatus: node?.status ?? "missing" })
-                    }
-                    const workflow = yield* store.getWorkflow(dagID)
-                    // F2: honor the veto hold — a durable "running" row must
-                    // not lift the fail-closed pause a verdict gate set.
-                    entry.runtime.setPaused(workflow?.status === "paused" || entry.vetoHold)
-                    entry.runtime.setStepMode(workflow?.status === "stepping")
-                    // Guard against stale events: a node already cancelled
-                    // (markUnsatisfied) or already satisfied must not be flipped
-                    // back. Mirrors the NodeFailed handler's isActive guard.
-                    let checkpointHeld = false
-                    if (confirmed && entry.runtime.isActive(nodeID)) {
-                      settle(entry, nodeID)
-                      checkpointHeld = yield* enforceCheckpointGate(dagID, entry)
-                      if (checkpointHeld) {
-                        yield* Effect.logWarning("DagLoop paused workflow after gate verdict: replan", {
+                      if (!confirmed) {
+                        yield* Effect.logDebug("DagLoop dropped stale node terminal event", {
                           dagID,
                           nodeID,
+                          expected,
+                          dbStatus: node?.status ?? "missing",
                         })
                       }
-                      // In stepMode, do NOT auto-advance — wait for the next
-                      // explicit step command.
-                      if (!checkpointHeld && !entry.runtime.isStepMode()) yield* spawnReady(dagID)
-                    }
-                    if (!checkpointHeld) yield* checkCompletion(dagID)
-                  }),
-                ).pipe(
-                  // P1-2: trigger wake check directly on node terminal — the
-                  // parent session may already be idle (no new idle event will
-                  // fire), so we can't rely on the idle subscription alone.
-                  Effect.onExit(forkWakeAfter(entry.parentSessionID)),
-                )
-              }).pipe(guarded(def === DagEvent.NodeSkipped ? "NodeSkipped" : def === DagEvent.NodeAborted ? "NodeAborted" : "NodeCompleted")),
+                      const workflow = yield* store.getWorkflow(dagID)
+                      // F2: honor the veto hold — a durable "running" row must
+                      // not lift the fail-closed pause a verdict gate set.
+                      entry.runtime.setPaused(workflow?.status === "paused" || entry.vetoHold)
+                      entry.runtime.setStepMode(workflow?.status === "stepping")
+                      // Guard against stale events: a node already cancelled
+                      // (markUnsatisfied) or already satisfied must not be flipped
+                      // back. Mirrors the NodeFailed handler's isActive guard.
+                      let checkpointHeld = false
+                      if (confirmed && entry.runtime.isActive(nodeID)) {
+                        settle(entry, nodeID)
+                        checkpointHeld = yield* enforceCheckpointGate(dagID, entry)
+                        if (checkpointHeld) {
+                          yield* Effect.logWarning("DagLoop paused workflow after gate verdict: replan", {
+                            dagID,
+                            nodeID,
+                          })
+                        }
+                        // In stepMode, do NOT auto-advance — wait for the next
+                        // explicit step command.
+                        if (!checkpointHeld && !entry.runtime.isStepMode()) yield* spawnReady(dagID)
+                      }
+                      if (!checkpointHeld) yield* checkCompletion(dagID)
+                    }),
+                  )
+                  .pipe(
+                    // P1-2: trigger wake check directly on node terminal — the
+                    // parent session may already be idle (no new idle event will
+                    // fire), so we can't rely on the idle subscription alone.
+                    Effect.onExit(forkWakeAfter(entry.parentSessionID)),
+                  )
+              }).pipe(
+                guarded(
+                  def === DagEvent.NodeSkipped
+                    ? "NodeSkipped"
+                    : def === DagEvent.NodeAborted
+                      ? "NodeAborted"
+                      : "NodeCompleted",
+                ),
+              ),
             ),
             Effect.forkScoped({ startImmediately: true }),
           )
@@ -1174,12 +1212,13 @@ const serviceLayer = Layer.effect(
 
         yield* events.subscribe(DagEvent.NodeFailed).pipe(
           Stream.filter((e) => runtimes.has(e.data.dagID as string)),
-            Stream.runForEach((evt) =>
-              Effect.gen(function* () {
-                const dagID = evt.data.dagID as string
-                const entry = runtimes.get(dagID)
-                if (!entry) return
-                yield* entry.evalLock.withPermits(1)(
+          Stream.runForEach((evt) =>
+            Effect.gen(function* () {
+              const dagID = evt.data.dagID as string
+              const entry = runtimes.get(dagID)
+              if (!entry) return
+              yield* entry.evalLock
+                .withPermits(1)(
                   Effect.gen(function* () {
                     const nid = evt.data.nodeID as string
                     // Generation arbitration via DB status: each projector runs
@@ -1207,15 +1246,20 @@ const serviceLayer = Layer.effect(
                       if (!entry.runtime.isStepMode()) yield* spawnReady(dagID)
                     }
                     if (node?.status !== "failed") {
-                      yield* Effect.logDebug("DagLoop dropped stale NodeFailed", { dagID, nodeID: nid, dbStatus: node?.status ?? "missing" })
+                      yield* Effect.logDebug("DagLoop dropped stale NodeFailed", {
+                        dagID,
+                        nodeID: nid,
+                        dbStatus: node?.status ?? "missing",
+                      })
                     }
                     // In stepMode, checkCompletion (which can trigger autonomous
                     // fail/complete) still runs, but spawnReady is skipped —
                     // stepping must NOT auto-advance after a node fails.
                     yield* checkCompletion(dagID)
                   }),
-                ).pipe(Effect.onExit(forkWakeAfter(entry.parentSessionID)))
-              }).pipe(guarded("NodeFailed")),
+                )
+                .pipe(Effect.onExit(forkWakeAfter(entry.parentSessionID)))
+            }).pipe(guarded("NodeFailed")),
           ),
           Effect.forkScoped({ startImmediately: true }),
         )
@@ -1377,13 +1421,13 @@ const serviceLayer = Layer.effect(
                     const frag = newConfig?.nodes.find((candidate) => candidate.id === node.id)
                     if (!frag) continue
                     const oldTimeoutMs =
-                      oldConfig?.nodes.find((candidate) => candidate.id === node.id)?.worker_config?.timeout_ms
-                      ?? oldConfig?.node_defaults?.worker_config?.timeout_ms
-                      ?? Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
+                      oldConfig?.nodes.find((candidate) => candidate.id === node.id)?.worker_config?.timeout_ms ??
+                      oldConfig?.node_defaults?.worker_config?.timeout_ms ??
+                      Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
                     const fragTimeoutMs =
-                      frag.worker_config?.timeout_ms
-                      ?? newConfig?.node_defaults?.worker_config?.timeout_ms
-                      ?? Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
+                      frag.worker_config?.timeout_ms ??
+                      newConfig?.node_defaults?.worker_config?.timeout_ms ??
+                      Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
                     // §3.7: re-time only when the replan carries a NEW
                     // timeout_ms. The persisted config behind WorkflowReplanned
                     // is the MERGED config — every non-cancel survivor keeps its
@@ -1422,9 +1466,10 @@ const serviceLayer = Layer.effect(
                     //   by the deadlineElapsed case on the public path and is a
                     //   no-op there (cons-F1).
                     if (
-                      (!node.escalationPending && node.deadlineMs != null && node.deadlineMs > now)
-                      || (node.escalationPending && !node.wakeReported)
-                    ) continue
+                      (!node.escalationPending && node.deadlineMs != null && node.deadlineMs > now) ||
+                      (node.escalationPending && !node.wakeReported)
+                    )
+                      continue
                     // N1: write the new deadline FIRST. nodeExtendTimeout
                     // acquires the workflow lock and can fail or block; if the
                     // write never lands, the old watcher must keep supervising
@@ -1442,18 +1487,21 @@ const serviceLayer = Layer.effect(
                     // a structural check, whereas Cause.interruptors collects
                     // only DEFINED fiber IDs and ignores interrupt reasons
                     // carrying none — those would be swallowed as errors here.
-                    const written = yield* dag.nodeExtendTimeout(dagID, node.id, now + fragTimeoutMs, {
-                      replanAttempts: node.replanAttempts,
-                      ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
-                    }).pipe(
-                      Effect.catchCause((cause) =>
-                        Cause.hasInterrupts(cause)
-                          ? Effect.failCause(cause)
-                          : Effect.logWarning("DagLoop replan re-time failed; keeping the old watcher and continuing the batch", { dagID, nodeID: node.id, cause }).pipe(
-                              Effect.as(-1),
-                            ),
-                      ),
-                    )
+                    const written = yield* dag
+                      .nodeExtendTimeout(dagID, node.id, now + fragTimeoutMs, {
+                        replanAttempts: node.replanAttempts,
+                        ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
+                      })
+                      .pipe(
+                        Effect.catchCause((cause) =>
+                          Cause.hasInterrupts(cause)
+                            ? Effect.failCause(cause)
+                            : Effect.logWarning(
+                                "DagLoop replan re-time failed; keeping the old watcher and continuing the batch",
+                                { dagID, nodeID: node.id, cause },
+                              ).pipe(Effect.as(-1)),
+                        ),
+                      )
                     // Negative verdict: -1 (write failure, mapped above), -2
                     // (Q2 delivery-gate rejection), or -3 (cumulative timeout
                     // cap exhausted). In every case no deadline was written
@@ -1473,7 +1521,10 @@ const serviceLayer = Layer.effect(
                       const deadWatcher = entry.watchers.get(node.id)
                       if (deadWatcher) yield* Fiber.interrupt(deadWatcher).pipe(Effect.ignore)
                       entry.watchers.delete(node.id)
-                      yield* Effect.logWarning("DagLoop replan re-time skipped — node no longer running", { dagID, nodeID: node.id })
+                      yield* Effect.logWarning("DagLoop replan re-time skipped — node no longer running", {
+                        dagID,
+                        nodeID: node.id,
+                      })
                       continue
                     }
                     // Write committed: install the re-armed watcher BEFORE
@@ -1495,7 +1546,8 @@ const serviceLayer = Layer.effect(
                         ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
                       },
                       timeoutMs: fragTimeoutMs,
-                      maxTimeoutExtensions: newConfig?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
+                      maxTimeoutExtensions:
+                        newConfig?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
                     }).pipe(
                       Effect.provideService(Dag.Service, dag),
                       Effect.provideService(SessionPrompt.Service, promptSvc),
@@ -1504,7 +1556,11 @@ const serviceLayer = Layer.effect(
                     const oldWatcher = entry.watchers.get(node.id)
                     entry.watchers.set(node.id, newWatcher)
                     if (oldWatcher) yield* Fiber.interrupt(oldWatcher).pipe(Effect.ignore)
-                    yield* Effect.logInfo("DagLoop extended node deadline via replan", { dagID, nodeID: node.id, newDeadlineMs: now + fragTimeoutMs })
+                    yield* Effect.logInfo("DagLoop extended node deadline via replan", {
+                      dagID,
+                      nodeID: node.id,
+                      newDeadlineMs: now + fragTimeoutMs,
+                    })
                   }
                   // Replan resets restarted nodes to pending. Old fibers of nodes
                   // that are no longer running/queued must be interrupted here:
@@ -1601,17 +1657,14 @@ const serviceLayer = Layer.effect(
         // already idle (P1-2 fix).
 
         const readWakeBatch = Effect.fn("DagLoop.readWakeBatch")(function* (sessionID: string) {
-          const snapshot = yield* store.getWakeSnapshot(sessionID).pipe(
-            Effect.catch(() =>
-              Effect.succeed({ nodes: [], workflows: [] } satisfies DagStore.WakeSnapshot),
-            ),
-          )
+          const snapshot = yield* store
+            .getWakeSnapshot(sessionID)
+            .pipe(Effect.catch(() => Effect.succeed({ nodes: [], workflows: [] } satisfies DagStore.WakeSnapshot)))
           const now = yield* Clock.currentTimeMillis
           const reportableWorkflows = snapshot.workflows.filter(
-            (workflow) => !workflow.wakeReported && (
-              isTerminalWorkflowStatusValue(workflow.status)
-              || isPausedReminderDue(workflow, now)
-            ),
+            (workflow) =>
+              !workflow.wakeReported &&
+              (isTerminalWorkflowStatusValue(workflow.status) || isPausedReminderDue(workflow, now)),
           )
           // Timeout-escalated nodes must reach the main agent for
           // adjudication — their workflow is a delivery boundary even though
@@ -1625,13 +1678,18 @@ const serviceLayer = Layer.effect(
           // override the delivery boundary for the rest of the attempt.
           const escalatedWorkflowIDs = new Set(
             snapshot.nodes
-              .filter((node) => node.escalationPending || (node.timeoutExtensions > 0 && isNodeTerminalStatus(node.status as never)))
+              .filter(
+                (node) =>
+                  node.escalationPending || (node.timeoutExtensions > 0 && isNodeTerminalStatus(node.status as never)),
+              )
               .map((node) => node.workflowId),
           )
-          const workflowIDs = [...new Set([
-            ...snapshot.nodes.map((node) => node.workflowId),
-            ...reportableWorkflows.map((workflow) => workflow.id),
-          ])]
+          const workflowIDs = [
+            ...new Set([
+              ...snapshot.nodes.map((node) => node.workflowId),
+              ...reportableWorkflows.map((workflow) => workflow.id),
+            ]),
+          ]
           const workflowsByID = new Map(snapshot.workflows.map((workflow) => [workflow.id, workflow]))
           const workflows = workflowIDs.map((workflowID) => workflowsByID.get(workflowID))
           const boundaryWorkflows = workflows.filter((workflow): workflow is DagStore.WorkflowRow => {
@@ -1672,9 +1730,7 @@ const serviceLayer = Layer.effect(
               boundaryWorkflows
                 .filter((workflow) => {
                   const entry = runtimes.get(workflow.id)
-                  return workflow.status === "running"
-                    && !entry?.runtime.isPaused()
-                    && !entry?.runtime.isStepMode()
+                  return workflow.status === "running" && !entry?.runtime.isPaused() && !entry?.runtime.isStepMode()
                 })
                 .map((workflow) => workflow.id),
             ),
@@ -1843,7 +1899,9 @@ const serviceLayer = Layer.effect(
                 (durableReceipt?.type === "text" && durableReceipt.synthetic === true)
 
               // Preemption guard (task 3.3): abort if fresher user message exists
-              const msgs = yield* sessionSvc.messages({ sessionID: SessionID.make(sessionID), limit: 20 }).pipe(Effect.catch(() => Effect.succeed([])))
+              const msgs = yield* sessionSvc
+                .messages({ sessionID: SessionID.make(sessionID), limit: 20 })
+                .pipe(Effect.catch(() => Effect.succeed([])))
               let lastUserAt = -1
               let lastAsstAt = -1
               for (const m of msgs) {
@@ -1862,10 +1920,18 @@ const serviceLayer = Layer.effect(
                 // Superseded replaced failures (cancelled rows already fall
                 // out via errorClass null) must not be re-attributed.
                 const failedNodes = yield* store.getCurrentNodes(workflow.id).pipe(
-                  Effect.map((nodes) => nodes.filter((node): node is DagStore.NodeRow & { errorClass: string } => node.status === "failed" && node.errorClass !== null)),
+                  Effect.map((nodes) =>
+                    nodes.filter(
+                      (node): node is DagStore.NodeRow & { errorClass: string } =>
+                        node.status === "failed" && node.errorClass !== null,
+                    ),
+                  ),
                   Effect.catchCause((cause) =>
                     Effect.gen(function* () {
-                      yield* Effect.logWarning("wake digest failed to read failed nodes", { workflowId: workflow.id, cause })
+                      yield* Effect.logWarning("wake digest failed to read failed nodes", {
+                        workflowId: workflow.id,
+                        cause,
+                      })
                       return [] as (DagStore.NodeRow & { errorClass: string })[]
                     }),
                   ),
@@ -1873,7 +1939,9 @@ const serviceLayer = Layer.effect(
                 if (failedNodes.length > 0) {
                   failuresByWorkflow.set(
                     workflow.id,
-                    failedNodes.map((node) => `- "${node.name}" (${node.errorClass}): ${node.errorReason ?? "unknown error"}`.slice(0, 300)),
+                    failedNodes.map((node) =>
+                      `- "${node.name}" (${node.errorClass}): ${node.errorReason ?? "unknown error"}`.slice(0, 300),
+                    ),
                   )
                 }
               }
@@ -2042,7 +2110,11 @@ const serviceLayer = Layer.effect(
                 const retry = wakePending.delete(sessionID)
                 wakeInFlight.delete(sessionID)
                 return retry
-                  ? tryDeliverWake(sessionID).pipe(guarded("WakePendingRetry"), Effect.forkIn(stateScope), Effect.asVoid)
+                  ? tryDeliverWake(sessionID).pipe(
+                      guarded("WakePendingRetry"),
+                      Effect.forkIn(stateScope),
+                      Effect.asVoid,
+                    )
                   : Effect.void
               }),
             ),
@@ -2196,9 +2268,9 @@ const serviceLayer = Layer.effect(
             yield* tryDeliverWake(sessionID).pipe(guarded("PausedReminder"), Effect.forkScoped)
           }
         }).pipe(guarded("PausedReminderSweep"))
-        yield* Effect.forever(
-          Effect.sleep(30_000).pipe(Effect.flatMap(() => remindPausedWorkflows)),
-        ).pipe(Effect.forkScoped)
+        yield* Effect.forever(Effect.sleep(30_000).pipe(Effect.flatMap(() => remindPausedWorkflows))).pipe(
+          Effect.forkScoped,
+        )
 
         // R5 session-deletion teardown: when the parent session is removed,
         // Session.remove publishes SessionV1.Event.Deleted and the FK cascade
@@ -2379,8 +2451,7 @@ const serviceLayer = Layer.effect(
           // lease, so wake redelivery does not depend on this sweep.
           yield* Effect.forEach(
             snapshot.workflows.filter((workflow) => !isWorkflowTerminalStatus(workflow.status as never)),
-            (workflow) =>
-              automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id }),
+            (workflow) => automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id }),
             { discard: true },
           )
           yield* tryDeliverWake(sessionID).pipe(Effect.forkScoped)
@@ -2411,6 +2482,8 @@ export const defaultLayer = layer.pipe(
   Layer.provide(SessionPrompt.defaultLayer),
   Layer.provide(Permission.defaultLayer),
   Layer.provide(SessionStatus.defaultLayer),
+  Layer.provide(HookStartContext.defaultLayer),
+  Layer.provide(HookLifecycle.defaultLayer),
 )
 
 export const node = LayerNode.make(layer, [
@@ -2424,4 +2497,6 @@ export const node = LayerNode.make(layer, [
   SessionPrompt.node,
   Permission.node,
   SessionStatus.node,
+  HookStartContext.node,
+  HookLifecycle.node,
 ])

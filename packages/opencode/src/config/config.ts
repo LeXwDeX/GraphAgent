@@ -26,9 +26,13 @@ import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { ConfigAgent } from "./agent"
+import { setAgentHookOrigins, type AgentHookProvenance } from "./agent-hooks"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
+import { HookConfigChange } from "@/hook/config-change"
+import { HookPermissions } from "./permissions"
+import type { PermissionUpdate } from "@/hook/trigger-result"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
 import { RemoteLkg } from "./remote-lkg"
@@ -39,7 +43,10 @@ import { withTransientReadRetry } from "@/util/effect-http-client"
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
 function mergeConfig(target: Info, source: Info): Info {
-  return mergeDeep(target, source) as Info
+  const merged = mergeDeep(target, source) as Info
+  if (target.permissions !== undefined || source.permissions !== undefined || target.permission || source.permission)
+    merged.permissions = [...HookPermissions.orderedRules(target), ...HookPermissions.orderedRules(source)]
+  return merged
 }
 
 function mergeConfigConcatArrays(target: Info, source: Info): Info {
@@ -125,9 +132,14 @@ export interface Interface {
   readonly get: () => Effect.Effect<Info>
   readonly getGlobal: () => Effect.Effect<Info>
   readonly getConsoleState: () => Effect.Effect<ConsoleState>
-  readonly update: (config: Info) => Effect.Effect<void>
-  readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }>
-  readonly invalidate: () => Effect.Effect<void>
+  readonly updateHookPermissions: (
+    updates: readonly PermissionUpdate[],
+  ) => Effect.Effect<Info, HookConfigChange.ConfigChangeBlocked>
+  readonly update: (config: Info) => Effect.Effect<void, HookConfigChange.ConfigChangeBlocked>
+  readonly updateGlobal: (
+    config: Info,
+  ) => Effect.Effect<{ info: Info; changed: boolean }, HookConfigChange.ConfigChangeBlocked>
+  readonly invalidate: () => Effect.Effect<void, HookConfigChange.ConfigChangeBlocked>
   readonly directories: () => Effect.Effect<string[]>
   readonly waitForDependencies: () => Effect.Effect<void>
 }
@@ -181,6 +193,15 @@ export const layer = Layer.effect(
     const env = yield* Env.Service
     const npmSvc = yield* Npm.Service
     const http = yield* HttpClient.HttpClient
+
+    const configChanges = yield* HookConfigChange.Service
+    const checkConfigChange = Effect.fn("Config.checkChange")(function* (
+      file: string,
+      source: HookConfigChange.Change["source"],
+    ) {
+      const decision = yield* configChanges.check({ path: file, source })
+      if (decision.blocked) yield* new HookConfigChange.ConfigChangeBlocked({ message: decision.blocked.reason })
+    })
 
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
 
@@ -374,6 +395,22 @@ export const layer = Layer.effect(
         const auth = yield* authSvc.all().pipe(Effect.orDie)
 
         let result: Info = {}
+        const agentHookOrigins = new Map<string, AgentHookProvenance>()
+        const modeHookOrigins = new Map<string, AgentHookProvenance>()
+        const agentHookSource = (source: string): AgentHookProvenance["source"] => {
+          const roots = [Global.Path.config, path.join(Global.Path.home, ".opencode")]
+          return roots.some((root) => source === root || source.startsWith(root + path.sep)) ? "user" : "project"
+        }
+        const rememberAgentHooks = (next: Info, source: string) => {
+          for (const [name, mode] of Object.entries(next.mode ?? {})) {
+            if (Object.hasOwn(mode, "hooks"))
+              modeHookOrigins.set(name, { source: agentHookSource(source), origin: source })
+          }
+          for (const [name, agent] of Object.entries(next.agent ?? {})) {
+            if (Object.hasOwn(agent, "hooks"))
+              agentHookOrigins.set(name, { source: agentHookSource(source), origin: source })
+          }
+        }
         const authEnv: Record<string, string> = {}
         const consoleManagedProviders = new Set<string>()
         let activeOrgName: string | undefined
@@ -407,6 +444,7 @@ export const layer = Layer.effect(
         })
 
         const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+          rememberAgentHooks(next, source)
           result = mergeConfigConcatArrays(result, next)
           return mergePluginOrigins(source, next.plugin, kind)
         }
@@ -552,8 +590,16 @@ export const layer = Layer.effect(
           deps.push(dep)
 
           result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
+          for (const loaded of [
+            yield* Effect.promise(() => ConfigAgent.load(dir)),
+            yield* Effect.promise(() => ConfigAgent.loadMode(dir)),
+          ]) {
+            for (const [name, agent] of Object.entries(loaded)) {
+              if (agent.hooks !== undefined)
+                agentHookOrigins.set(name, { source: agentHookSource(dir), origin: String(agent.hookOrigin) })
+            }
+            result.agent = mergeDeep(result.agent ?? {}, loaded)
+          }
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
           const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
@@ -619,16 +665,14 @@ export const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+          const next = yield* loadConfig(managed.text, { dir: path.dirname(managed.source), source: managed.source })
+          rememberAgentHooks(next, managed.source)
+          result = mergeConfigConcatArrays(result, next)
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
+          if (Object.hasOwn(mode, "hooks"))
+            agentHookOrigins.set(name, modeHookOrigins.get(name) ?? { source: "project", origin: "mode:" + name })
           result.agent = mergeDeep(result.agent ?? {}, {
             [name]: {
               ...mode,
@@ -637,9 +681,14 @@ export const layer = Layer.effect(
           })
         }
 
+        const localPermissions = yield* HookPermissions.read(HookPermissions.localFile(ctx.directory))
+        if (localPermissions.permission || localPermissions.permissions) result = mergeConfig(result, localPermissions)
+        if (localPermissions.hookPermissions)
+          result.hookPermissions = { ...result.hookPermissions, ...localPermissions.hookPermissions }
+
         if (Flag.OPENCODE_PERMISSION) {
           try {
-            result.permission = mergeDeep(result.permission ?? {}, JSON.parse(Flag.OPENCODE_PERMISSION))
+            result = mergeConfig(result, { permission: JSON.parse(Flag.OPENCODE_PERMISSION) })
           } catch (err) {
             yield* Effect.logWarning("OPENCODE_PERMISSION contains invalid JSON, skipping", { err })
           }
@@ -655,6 +704,10 @@ export const layer = Layer.effect(
             }
             perms[tool] = action
           }
+          result.permissions = [
+            ...HookPermissions.orderedRules({ permission: perms }),
+            ...HookPermissions.orderedRules(result),
+          ]
           result.permission = mergeDeep(perms, result.permission ?? {})
         }
 
@@ -678,6 +731,7 @@ export const layer = Layer.effect(
           result.compaction = { ...result.compaction, dynamic: false, prune: false }
         }
 
+        setAgentHookOrigins(result, agentHookOrigins)
         return {
           config: result,
           directories,
@@ -720,12 +774,65 @@ export const layer = Layer.effect(
       const dir = yield* InstanceState.directory
       const file = path.join(dir, "config.json")
       const existing = yield* loadFile(file)
+      yield* checkConfigChange(file, "project_settings")
       yield* fs
         .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
         .pipe(Effect.orDie)
     })
 
+    const updateHookPermissions = Effect.fn("Config.updateHookPermissions")(function* (
+      updates: readonly PermissionUpdate[],
+    ) {
+      yield* Effect.sync(() => HookPermissions.validateUpdates(updates))
+      const effectiveUpdates = updates.filter(
+        (entry) => !(entry.type === "setMode" && entry.mode === "bypassPermissions"),
+      )
+      if (!effectiveUpdates.length) return yield* InstanceState.use(state, (current) => current.config)
+      const ctx = yield* InstanceState.context
+      for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
+        if (!effectiveUpdates.some((entry) => entry.destination === destination)) continue
+        const file =
+          destination === "userSettings"
+            ? globalConfigFile()
+            : destination === "projectSettings"
+              ? path.join(ctx.directory, "opencode.jsonc")
+              : HookPermissions.localFile(ctx.directory)
+        yield* checkConfigChange(
+          file,
+          destination === "userSettings"
+            ? "user_settings"
+            : destination === "localSettings"
+              ? "local_settings"
+              : "project_settings",
+        )
+      }
+      for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
+        const entries = effectiveUpdates.filter((entry) => entry.destination === destination)
+        if (!entries.length) continue
+        const file =
+          destination === "userSettings"
+            ? globalConfigFile()
+            : destination === "projectSettings"
+              ? path.join(ctx.directory, "opencode.jsonc")
+              : HookPermissions.localFile(ctx.directory)
+        yield* HookPermissions.update(file, entries, ctx.directory).pipe(
+          Effect.provideService(FSUtil.Service, fs),
+          Effect.provide(EffectFlock.defaultLayer),
+          Effect.orDie,
+        )
+      }
+      const next = yield* loadInstanceState(ctx).pipe(Effect.orDie)
+      yield* InstanceState.use(state, (current) => {
+        // Permission writes must not discard plugin.config's derived agent/hooks layer.
+        current.config.permission = next.config.permission
+        current.config.permissions = next.config.permissions
+        current.config.hookPermissions = next.config.hookPermissions
+      })
+      return yield* InstanceState.use(state, (current) => current.config)
+    })
+
     const invalidate = Effect.fn("Config.invalidate")(function* () {
+      yield* checkConfigChange(globalConfigFile(), "user_settings")
       yield* invalidateGlobal
     })
 
@@ -741,16 +848,22 @@ export const layer = Layer.effect(
         const merged = mergeDeep(writable(existing), patch)
         const serialized = JSON.stringify(merged, null, 2)
         changed = serialized !== before
-        if (changed) yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
+        if (changed) {
+          yield* checkConfigChange(file, "user_settings")
+          yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
+        }
         next = merged
       } else {
         const updated = patchJsonc(before, patch)
         next = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
-        if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
+        if (changed) {
+          yield* checkConfigChange(file, "user_settings")
+          yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
+        }
       }
 
-      if (changed) yield* invalidate()
+      if (changed) yield* invalidateGlobal
       return { info: next, changed }
     })
 
@@ -760,12 +873,13 @@ export const layer = Layer.effect(
       getConsoleState,
       update,
       updateGlobal,
+      updateHookPermissions,
       invalidate,
       directories,
       waitForDependencies,
     })
   }),
-)
+).pipe(Layer.provide(HookConfigChange.defaultLayer))
 
 export const defaultLayer = layer.pipe(
   Layer.provide(EffectFlock.defaultLayer),
@@ -777,6 +891,14 @@ export const defaultLayer = layer.pipe(
   Layer.provide(FetchHttpClient.layer),
 )
 
-export const node = LayerNode.make(layer, [FSUtil.node, Auth.node, Account.node, Env.node, Npm.node, httpClient])
+export const node = LayerNode.make(layer, [
+  FSUtil.node,
+  Auth.node,
+  Account.node,
+  Env.node,
+  Npm.node,
+  httpClient,
+  HookConfigChange.node,
+])
 
 export * as Config from "./config"

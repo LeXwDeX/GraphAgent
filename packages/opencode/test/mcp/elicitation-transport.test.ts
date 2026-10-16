@@ -22,10 +22,12 @@ const cacheBuster = `?bust=${Date.now()}`
 const { Client } = (await import(`@modelcontextprotocol/client${cacheBuster}`)) as unknown as {
   Client: typeof ClientType
 }
+import { convertTool } from "@/mcp/catalog"
+import { SessionContext } from "@/effect/session-context"
 import { Question } from "@/question"
 import { Notification } from "@/notification"
 import { SettingsHook, type HookPayload } from "@/hook/settings"
-import { registerElicitationHandler, setActiveElicitationSession } from "@/mcp/elicitation"
+import { registerElicitationHandler } from "@/mcp/elicitation"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EffectBridge } from "@/effect/bridge"
 import { disposeAllInstances, testInstanceStoreLayer } from "../fixture/fixture"
@@ -52,11 +54,9 @@ beforeEach(() => {
   // module-level activeSession slot left behind by a prior file would route
   // this test's elicitation to the wrong session (or none) before callTool
   // gets to set the fallback. afterEach alone only cleans up after each test.
-  setActiveElicitationSession(undefined)
 })
 
 afterEach(async () => {
-  setActiveElicitationSession(undefined)
   await disposeAllInstances()
 })
 
@@ -90,7 +90,6 @@ const env = Layer.mergeAll(
 const it = testEffect(env)
 
 const SESSION = "ses_elicitation_transport"
-const STALE_SESSION = "ses_elicitation_transport_stale"
 
 /**
  * Build a stub MCP server whose only tool, "pick", elicits a color choice from
@@ -156,19 +155,23 @@ describe("mcp elicitation — real transport round-trip (5.4)", () => {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
       yield* Effect.promise(() => Promise.all([client.connect(clientTransport), server.connect(serverTransport)]))
 
-      // Drive the tool call. Production MCP tool execution sets the active
-      // session synchronously around the server call (the SDK transport dispatch
-      // breaks AsyncLocalStorage, so SessionContext alone is insufficient — see
-      // elicitation.ts). The test mirrors that by setting the fallback directly.
+      // Exercise the real catalog binding instead of the removed global fallback.
       const before = rec.recorded.length
-      const cleanup = setActiveElicitationSession(SESSION)
-      yield* Effect.addFinalizer(() => Effect.sync(cleanup))
-      const staleCleanup = setActiveElicitationSession(STALE_SESSION)
-      yield* Effect.addFinalizer(() => Effect.sync(staleCleanup))
-      staleCleanup()
-      const callFiber = yield* Effect.promise(() => client.callTool({ name: "pick", arguments: {} })).pipe(
-        Effect.forkScoped,
-      )
+      const callable = convertTool({ name: "pick", inputSchema: { type: "object", properties: {} } }, client)
+      const callFiber = yield* Effect.promise(() =>
+        SessionContext.run(SESSION, () =>
+          Promise.resolve(
+            callable.execute!(
+              {},
+              {
+                toolCallId: "transport-pick",
+                messages: [],
+                abortSignal: new AbortController().signal,
+              },
+            ),
+          ),
+        ),
+      ).pipe(Effect.forkScoped)
 
       // The elicitation surfaces as a pending Question. Filter by this test's
       // SESSION so a pending question leaked from a prior file (bun runs the
@@ -215,7 +218,7 @@ describe("mcp elicitation — real transport round-trip (5.4)", () => {
       expect(
         events.filter(
           (p) =>
-            p.event === "ElicitationResult" && JSON.stringify((p as { result?: unknown }).result).includes("green"),
+            p.event === "ElicitationResult" && JSON.stringify((p as { content?: unknown }).content).includes("green"),
         ),
       ).toHaveLength(1)
     }),

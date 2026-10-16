@@ -1,3 +1,4 @@
+import type { ToolBatch } from "@/hook/tool-batch"
 import { randomUUID } from "node:crypto"
 import { Logging } from "@opencode-ai/core/observability/logging"
 import type { Auth } from "@/auth"
@@ -44,6 +45,7 @@ export type StreamResult =
 
 type StreamInput = {
   readonly sessionID?: string
+  readonly toolBatch?: ToolBatch
   readonly model: Provider.Model
   readonly provider: Provider.Info
   readonly auth: Auth.Info | undefined
@@ -209,7 +211,22 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
           const settlements = yield* FiberSet.make<void>()
           const results = yield* Queue.unbounded<LLMEvent, Cause.Done>()
           const completion: LLMEvent[] = []
+          let providerFinished = false
           const provider = input.llmClient.stream(request).pipe(
+            Stream.tap((event) =>
+              Effect.sync(() => {
+                if (event.type === "tool-call" && !event.providerExecuted) input.toolBatch?.add(event.id)
+                if (event.type === "step-finish" || event.type === "finish") {
+                  providerFinished = true
+                  input.toolBatch?.finish()
+                }
+              }),
+            ),
+            Stream.ensuring(
+              Effect.sync(() => {
+                if (!providerFinished) input.toolBatch?.finish(false)
+              }),
+            ),
             Stream.flatMap((event) => {
               // The processor may close the stream for compaction at step-finish.
               // Deliver every local settlement before exposing that boundary.

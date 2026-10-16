@@ -17,8 +17,8 @@
  * - `*`                    → Always matches (wildcard)
  * - (empty/undefined)      → Always matches (no condition)
  *
- * For non-tool events (UserPromptSubmit, Stop, etc.), `if` is ignored
- * (always matches) — CC behavior.
+ * For non-tool events (UserPromptSubmit, Stop, etc.), an `if` condition
+ * does not match. Claude Code only evaluates these rules for tool events.
  */
 
 import os from "os"
@@ -45,7 +45,7 @@ export function evaluate(entry: HookCommand, envelope: Record<string, unknown>, 
     event !== "PermissionRequest" &&
     event !== "PermissionDenied"
   ) {
-    return true
+    return false
   }
 
   const toolName = (envelope.tool_name as string) ?? ""

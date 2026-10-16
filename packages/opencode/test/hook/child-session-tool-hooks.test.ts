@@ -47,7 +47,10 @@ const it = testEffect(
   Layer.mergeAll(
     recorder,
     Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
-    Layer.mock(Permission.Service, { ask: () => Effect.void }),
+    Layer.mock(Permission.Service, {
+      ask: () => Effect.void,
+      hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
+    }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(Truncate.Service, {}),
     Layer.mock(ToolRegistry.Service, {

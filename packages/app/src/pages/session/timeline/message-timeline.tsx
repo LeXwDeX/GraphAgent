@@ -907,7 +907,12 @@ export function MessageTimeline(props: {
       const parts = getMsgParts(message.id)
       for (let j = parts.length - 1; j >= 0; j--) {
         const part = parts[j]
-        if (!part || part.type !== "text" || !part.text?.trim()) continue
+        if (
+          !part ||
+          part.type !== "text" ||
+          !("displayText" in part && typeof part.displayText === "string" ? part.displayText : part.text)?.trim()
+        )
+          continue
         return part.id
       }
     }

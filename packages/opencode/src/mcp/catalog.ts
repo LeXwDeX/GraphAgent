@@ -1,7 +1,10 @@
+import { isRecord } from "@/util/record"
 import { ListToolsResultSchema, ToolSchema } from "@modelcontextprotocol/core"
 import { Client } from "@modelcontextprotocol/client"
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/client"
 import { dynamicTool, jsonSchema, type JSONSchema7, type Tool } from "ai"
+import { SessionContext } from "@/effect/session-context"
+import { mcpHookSource, withClientElicitationCall } from "./elicitation-binding"
 import { Effect } from "effect"
 
 const DEFAULT_TIMEOUT = 30_000
@@ -47,18 +50,29 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(inputSchema),
     execute: async (args: unknown, options) => {
-      const result = await client.callTool(
+      const hook = mcpHookSource(options)
+      const result = await withClientElicitationCall(
+        client,
         {
-          name: mcpTool.name,
-          arguments: (args || {}) as Record<string, unknown>,
-        },
-        {
-          resetTimeoutOnProgress: true,
+          sessionID: hook?.sessionID ?? SessionContext.sessionID,
+          callID: options.toolCallId,
           signal: options.abortSignal,
-          timeout,
-          // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
-          onprogress: () => {},
+          inHook: hook?.inHook,
         },
+        (signal) =>
+          client.callTool(
+            {
+              name: mcpTool.name,
+              arguments: isRecord(args) ? args : {},
+            },
+            {
+              resetTimeoutOnProgress: true,
+              signal,
+              timeout,
+              // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
+              onprogress: () => {},
+            },
+          ),
       )
       if (result.isError)
         throw new Error(

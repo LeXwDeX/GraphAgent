@@ -110,7 +110,9 @@ describe("mcp elicitation — end-to-end through Question (5.3)", () => {
       expect(response.action).toBe("decline")
       const events = env1.recorded.slice(before)
       expect(events.filter((p) => p.event === "Elicitation")).toHaveLength(1)
-      expect(events.filter((p) => p.event === "ElicitationResult" && (p as { cancelled?: boolean }).cancelled)).toHaveLength(1)
+      expect(
+        events.filter((p) => p.event === "ElicitationResult" && (p as { action?: string }).action === "decline"),
+      ).toHaveLength(1)
     }),
   )
 
@@ -141,7 +143,7 @@ describe("mcp elicitation — end-to-end through Question (5.3)", () => {
 })
 
 describe("mcp elicitation — Notification emitter (5.5)", () => {
-  it.instance("elicitation ask routes through the emitter (Notification fires, type elicitation)", () =>
+  it.instance("an answered elicitation cancels its delayed dialog notification", () =>
     Effect.gen(function* () {
       const question = yield* Question.Service
       const before = env1.recorded.length
@@ -156,9 +158,10 @@ describe("mcp elicitation — Notification emitter (5.5)", () => {
         .slice(before)
         .filter(
           (p): p is Extract<HookPayload, { event: "Notification" }> =>
-            p.event === "Notification" && (p as { notificationType?: string }).notificationType === "elicitation",
+            p.event === "Notification" &&
+            (p as { notificationType?: string }).notificationType === "elicitation_dialog",
         )
-      expect(notifications.length).toBeGreaterThanOrEqual(1)
+      expect(notifications).toHaveLength(0)
     }),
   )
 })
@@ -183,8 +186,8 @@ describe("mcp elicitation — headless declines immediately (5.6)", () => {
         sessionID: SESSION,
       })
       expect(response.action).toBe("decline")
-      // No Question surfaced, no elicitation hooks (declined before surfacing).
-      expect(headlessEnv.recorded.filter((p) => p.event === "Elicitation")).toHaveLength(0)
+      // The hook can answer in headless mode; absent an answer there is still no Question UI.
+      expect(headlessEnv.recorded.filter((p) => p.event === "Elicitation")).toHaveLength(1)
     }),
   )
 

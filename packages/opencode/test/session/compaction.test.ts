@@ -213,6 +213,7 @@ function fake(
       return msg
     },
     updateToolCall: Effect.fn("TestSessionProcessor.updateToolCall")(() => Effect.succeed(undefined)),
+    resumeToolCall: () => Effect.void,
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
     process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),
   } satisfies SessionProcessorModule.SessionProcessor.Handle
@@ -293,7 +294,8 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     : layer(options?.result ?? "continue")
   const compaction = SessionCompaction.layer.pipe(
     Layer.provide(processor),
-    Layer.provideMerge(Layer.mergeAll(
+    Layer.provideMerge(
+      Layer.mergeAll(
         options?.memory ?? Layer.empty,
         options?.settingsHook ?? Layer.empty,
         options?.startContext ?? Layer.empty,
@@ -1267,7 +1269,10 @@ describe("session.compaction.process", () => {
         expect(result).toBe("continue")
         expect(sources).toEqual(["compact"])
         expect(last?.info.role).toBe("user")
-        expect(syntheticTexts(last)).toEqual([expect.stringContaining("Continue if you have next steps"), "compact-ctx"])
+        expect(syntheticTexts(last)).toEqual([
+          expect.stringContaining("Continue if you have next steps"),
+          "compact-ctx",
+        ])
         expect(queued).toEqual([])
       }).pipe(
         withCompaction({

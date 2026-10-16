@@ -18,10 +18,10 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 
 const agentLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Agent.layer.pipe(
-    Layer.provide(Plugin.defaultLayer),
+    Layer.provideMerge(Plugin.defaultLayer),
     Layer.provide(Provider.defaultLayer),
     Layer.provide(Auth.defaultLayer),
-    Layer.provide(Config.defaultLayer),
+    Layer.provideMerge(Config.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(LocationServiceMap.layer),
     Layer.provide(RuntimeFlags.layer(flags)),
@@ -757,4 +757,113 @@ it.instance(
       },
     },
   },
+)
+
+it.instance("retains agent frontmatter hooks with its actual source", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const source = path.join(test.directory, ".opencode", "agents", "hook-source.md")
+    yield* Effect.promise(() =>
+      Bun.write(
+        source,
+        `---
+name: hook-source
+hookOrigin: spoofed-origin
+hookSource: user
+hooks:
+  PreToolUse:
+    - hooks:
+        - type: command
+          command: echo fixture
+---
+fixture agent
+`,
+      ),
+    )
+    const agent = yield* load((service) => service.get("hook-source"))
+    expect(agent?.hookOrigin).toBe(source)
+    expect(agent?.hookSource).toBe("project")
+    expect(agent?.options).not.toHaveProperty("hooks")
+    expect(agent?.options).not.toHaveProperty("hookOrigin")
+    expect(agent?.options).not.toHaveProperty("hookSource")
+    expect(agent?.hooks).toEqual({ PreToolUse: [{ hooks: [{ type: "command", command: "echo fixture" }] }] })
+  }),
+)
+
+const pluginAgentIt = testEffect(agentLayer({ pure: false, disableDefaultPlugins: true }))
+pluginAgentIt.instance(
+  "actual plugin config callback owns changed agent hooks without trusting config source fields",
+  () =>
+    Effect.gen(function* () {
+      const first = yield* load((service) => service.get("plugin-hook-agent"))
+      if (!first) throw new Error("Expected configured hook agent fixture")
+      expect(first.hookSource).toBe("project")
+      yield* (yield* Plugin.Service).list()
+      const current = yield* load((service) => service.get("plugin-hook-agent"))
+      if (!current) throw new Error("Expected configured hook agent fixture")
+      expect(current.hookSource).toBe("plugin")
+      expect(current.hookOrigin).toContain("agent-plugin.mjs")
+      yield* (yield* Config.Service).updateHookPermissions([
+        {
+          type: "addRules",
+          destination: "projectSettings",
+          behavior: "deny",
+          rules: [{ toolName: "fixture_permission_write" }],
+        },
+      ])
+      const afterPermission = yield* load((service) => service.get("plugin-hook-agent"))
+      if (!afterPermission) throw new Error("Expected configured hook agent fixture")
+      expect(afterPermission.hookSource).toBe("plugin")
+      expect(afterPermission.hookOrigin).toBe(current.hookOrigin)
+      expect(afterPermission.hooks).toEqual(current.hooks)
+      expect(current.hooks).toEqual({ Stop: [{ hooks: [{ type: "command", command: "echo plugin-hook" }] }] })
+    }),
+  {
+    init: (directory) =>
+      Effect.promise(async () => {
+        const plugin = path.join(directory, "agent-plugin.mjs")
+        await Bun.write(
+          plugin,
+          `export default async()=>({config(config){config.agent["plugin-hook-agent"].hooks={Stop:[{hooks:[{type:"command",command:"echo plugin-hook"}]}]}}})`,
+        )
+        await Bun.write(
+          path.join(directory, "opencode.json"),
+          JSON.stringify({
+            plugin: [plugin],
+            agent: { "plugin-hook-agent": { hooks: { Stop: [] }, hookSource: "user", hookOrigin: "spoofed" } },
+          }),
+        )
+      }),
+  },
+)
+
+it.instance("global agent hook exemption comes from the real loader root", () =>
+  Effect.gen(function* () {
+    const { directory } = yield* TestInstance
+    const previous = Global.Path.config
+    const global = path.join(directory, "isolated-global")
+    const source = path.join(global, "agents", "global-hook-agent.md")
+    const config = yield* Config.Service
+    ;(Global.Path as { config: string }).config = global
+    yield* Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        Bun.write(
+          source,
+          `---\nname: global-hook-agent\nhookSource: project\nhookOrigin: fake\nhooks:\n  Stop: []\n---\nfixture\n`,
+        ),
+      )
+      yield* config.invalidate().pipe(Effect.orDie)
+      const agent = yield* load((service) => service.get("global-hook-agent"))
+      if (!agent) throw new Error("Expected configured hook agent fixture")
+      expect(agent.hookSource).toBe("user")
+      expect(agent.hookOrigin).toBe(source)
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          ;(Global.Path as { config: string }).config = previous
+          yield* config.invalidate().pipe(Effect.orDie)
+        }),
+      ),
+    )
+  }),
 )

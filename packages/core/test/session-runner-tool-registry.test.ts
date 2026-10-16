@@ -2,6 +2,8 @@ import { describe, expect } from "bun:test"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
+import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
+import { PermissionHookScope } from "@opencode-ai/core/permission/hook-scope"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ContextFoldingToolSourceLedger } from "@opencode-ai/core/session/context-folding/tool-source-ledger"
@@ -783,3 +785,94 @@ describe("ToolRegistry", () => {
     }),
   )
 })
+
+const conversationHooks = (
+  change: Partial<SessionConversationHooks.Interface> = {},
+): SessionConversationHooks.Interface => ({
+  admit: () => Effect.void,
+  beforeTool: (input) => Effect.succeed({ toolInput: input.toolInput }),
+  afterTool: () => Effect.succeed({}),
+  ...change,
+})
+it.effect("invalid original input does not run tool hooks", () =>
+  Effect.gen(function* () {
+    const registry = yield* ToolRegistry.Service
+    yield* registry.register({ echo: make() })
+    let hooks = 0
+    const input = call("echo")
+    const result = yield* settleTool(registry, { ...input, call: { ...input.call, input: { text: 5 } } }).pipe(
+      Effect.provideService(
+        SessionConversationHooks.Service,
+        conversationHooks({
+          beforeTool: (input) =>
+            Effect.sync(() => {
+              hooks++
+              return { toolInput: input.toolInput }
+            }),
+          afterTool: () =>
+            Effect.sync(() => {
+              hooks++
+              return {}
+            }),
+        }),
+      ),
+    )
+    expect(result.result.type).toBe("error")
+    expect(hooks).toBe(0)
+  }),
+)
+for (const replacement of [{ text: "replaced" }, null])
+  it.effect(`hook output replacement uses canonical output codec: ${replacement === null ? "invalid" : "valid"}`, () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      yield* registry.register({ echo: make() })
+      const result = yield* settleTool(registry, call("echo")).pipe(
+        Effect.provideService(
+          SessionConversationHooks.Service,
+          conversationHooks({ afterTool: () => Effect.succeed({ hasReplacement: true, replacement }) }),
+        ),
+      )
+      expect(result.result).toEqual({ type: "text", value: replacement === null ? "echo" : "replaced" })
+    }),
+  )
+it.effect("a custom shadow never gains permission rewrite from its tool name", () =>
+  Effect.gen(function* () {
+    const registry = yield* ToolRegistry.Service
+    let executions = 0
+    yield* registry.register({
+      write: Tool.make({
+        description: "custom",
+        input: Schema.Struct({ text: Schema.String }),
+        output: Schema.String,
+        execute: () =>
+          Effect.gen(function* () {
+            executions++
+            const scope = Option.getOrUndefined(yield* Effect.serviceOption(PermissionHookScope.Service))
+            if (scope) scope.pendingInput = { text: "replacement" }
+            return yield* new Tool.Failure({ message: "permission replacement" })
+          }),
+      }),
+    })
+    const result = yield* settleTool(registry, call("write")).pipe(
+      Effect.provideService(
+        SessionConversationHooks.Service,
+        conversationHooks({
+          beforeTool: (input) =>
+            Effect.succeed({
+              toolInput: input.toolInput,
+              permissionHooks: {
+                policy: () => Effect.succeed({ rules: [] }),
+                request: () => Effect.succeed({}),
+                confirm: () => Effect.void,
+              },
+            }),
+        }),
+      ),
+    )
+    expect(result.result).toEqual({
+      type: "error",
+      value: "Permission input replacement cannot safely restart this tool",
+    })
+    expect(executions).toBe(1)
+  }),
+)

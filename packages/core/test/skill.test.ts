@@ -125,3 +125,31 @@ describe("SkillV2", () => {
     ),
   )
 })
+
+it.live("reload re-reads hooks from an existing skill source", () =>
+  Effect.acquireRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ).pipe(
+    Effect.flatMap((tmp) =>
+      Effect.gen(function* () {
+        const directory = path.join(tmp.path, "reload")
+        yield* Effect.promise(() => fs.mkdir(directory, { recursive: true }))
+        const file = path.join(directory, "SKILL.md")
+        const body = (command: string) =>
+          `---\nname: reload-hooks\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: ${command}\n---\nfixture`
+        yield* Effect.promise(() => fs.writeFile(file, body("first")))
+        const skills = yield* SkillV2.Service
+        yield* skills.transform((draft) =>
+          draft.source(SkillV2.DirectorySource.make({ type: "directory", path: AbsolutePath.make(directory) })),
+        )
+        expect((yield* skills.list())[0]?.hooks).toEqual({ Stop: [{ hooks: [{ type: "command", command: "first" }] }] })
+        yield* Effect.promise(() => fs.writeFile(file, body("second")))
+        yield* skills.reload()
+        expect((yield* skills.list())[0]?.hooks).toEqual({
+          Stop: [{ hooks: [{ type: "command", command: "second" }] }],
+        })
+      }),
+    ),
+  ),
+)

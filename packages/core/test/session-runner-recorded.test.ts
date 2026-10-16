@@ -24,6 +24,7 @@ import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
+import { SessionTurnHooks } from "@opencode-ai/core/session/turn-hooks"
 import { Location } from "@opencode-ai/core/location"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SystemContext } from "@opencode-ai/core/system-context"
@@ -133,6 +134,73 @@ const it = testEffect(
 const sessionID = SessionV2.ID.make("ses_runner_recorded")
 
 describe("SessionRunnerLLM recorded", () => {
+  it.effect("persists V2 MessageDisplay output while replaying the canonical answer", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+      const sessions = yield* SessionV2.Service
+      const runner = yield* SessionRunner.Service
+      const seen: Array<{ mode?: string; delta?: string; final?: boolean; index?: number }> = []
+      const hooks = SessionTurnHooks.Service.of({
+        displayMode: (_sessionID, mode) =>
+          Effect.sync(() => {
+            seen.push({ mode })
+            return { enabled: true, mode }
+          }),
+        display: (input) =>
+          Effect.sync(() => {
+            seen.push({ delta: input.delta, final: input.final, index: input.index })
+            return input.delta.toUpperCase()
+          }),
+        postToolBatch: () => Effect.succeed({}),
+        stop: () => Effect.succeed({}),
+        stopFailure: () => Effect.void,
+      })
+      yield* sessions.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Say hello in one short sentence." }),
+        hookMode: "interactive",
+        resume: false,
+      })
+      yield* runner.run({ sessionID, force: true }).pipe(Effect.provideService(SessionTurnHooks.Service, hooks))
+      const context = yield* sessions.context(sessionID)
+      const assistant = context.find((message) => message.type === "assistant")
+      expect(assistant?.type).toBe("assistant")
+      if (assistant?.type !== "assistant") return
+      expect(assistant.content.find((part) => part.type === "text")).toMatchObject({
+        type: "text",
+        text: "Hello!",
+        displayText: "HELLO!",
+      })
+      expect(seen).toEqual([{ mode: "interactive" }, { delta: "Hello!", final: true, index: 0 }])
+      const types = (yield* db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, sessionID))
+        .orderBy(EventTable.seq)
+        .all()).map((event) => event.type)
+      expect(types).toContain("session.next.text.display.updated.1")
+    }),
+  )
+
   it.effect("executes one recorded V2 prompt through the recorded HTTP transport", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

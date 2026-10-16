@@ -18,6 +18,7 @@ import { NEW_SESSION_CONTENT_WIDTH } from "@/pages/session/new-session-layout"
 
 export function SessionComposerRegion(props: {
   state: SessionComposerState
+  hookStatus?: string
   sessionKey: string
   sessionID?: string
   controls: PromptInputControls
@@ -163,6 +164,13 @@ export function SessionComposerRegion(props: {
           "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered,
         }}
       >
+        <Show when={props.hookStatus}>
+          {(status) => (
+            <div role="status" aria-live="polite" class="pb-2 text-12-regular text-text-weak">
+              {status()}
+            </div>
+          )}
+        </Show>
         <Show when={props.state.questionRequest()} keyed>
           {(request) => (
             <div>

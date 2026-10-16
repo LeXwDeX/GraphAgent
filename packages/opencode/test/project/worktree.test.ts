@@ -75,13 +75,28 @@ const worktreeRemoveHookLayer = Layer.effect(
   SettingsHook.Service,
   Effect.gen(function* () {
     const probe = yield* RemoveHookProbe
+    const fs = yield* FSUtil.Service
     return SettingsHook.Service.of({
       trigger: (payload) =>
-        payload.event === "WorktreeRemove" ? probe.run.pipe(Effect.as(hookResult)) : Effect.succeed(hookResult),
-      list: () => Effect.succeed([]),
+        Effect.gen(function* () {
+          if (payload.event === "WorktreeCreate") {
+            yield* fs.makeDirectory(payload.path!, { recursive: true })
+            return { ...hookResult, worktreePath: payload.path }
+          }
+          if (payload.event === "WorktreeRemove") {
+            yield* probe.run
+            yield* fs.remove(payload.path!, { recursive: true })
+          }
+          return hookResult
+        }).pipe(Effect.orDie),
+      list: () =>
+        Effect.succeed([
+          { event: "WorktreeCreate", scope: "project", type: "command", descriptor: "fixture create" },
+          { event: "WorktreeRemove", scope: "project", type: "command", descriptor: "fixture remove" },
+        ]),
     })
   }),
-).pipe(Layer.provideMerge(removeHookProbeLayer))
+).pipe(Layer.provideMerge(removeHookProbeLayer), Layer.provide(FSUtil.defaultLayer))
 
 const concurrentIt = testEffect(
   Layer.mergeAll(

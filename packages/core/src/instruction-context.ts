@@ -1,6 +1,9 @@
 export * as InstructionContext from "./instruction-context"
 
-import { Array, Effect, Layer, Schema } from "effect"
+import { createHash } from "node:crypto"
+import { SessionHookContext } from "./session/hook-context"
+import { SessionSourceHooks } from "./session/source-hooks"
+import { Array, Effect, Layer, Schema, Option } from "effect"
 import { isAbsolute, join, relative, sep } from "path"
 import { FSUtil } from "./fs-util"
 import { Flag } from "./flag/flag"
@@ -36,6 +39,8 @@ export const layer = Layer.effectDiscard(
         removed: () => "Previously loaded instructions no longer apply.",
       })
 
+    const admitted = new Map<string, Map<string, string>>()
+
     const observe = Effect.fn("InstructionContext.observe")(function* () {
       const start = FSUtil.resolve(location.directory)
       const stop = FSUtil.resolve(location.project.directory)
@@ -67,7 +72,28 @@ export const layer = Layer.effectDiscard(
       )
       if (files.some((file, index) => file === undefined && discovered.has(paths[index])))
         return SystemContext.unavailable
-      return files.filter((file): file is File => file !== undefined)
+      const loaded = files.filter((file): file is File => file !== undefined)
+      const session = Option.getOrUndefined(yield* Effect.serviceOption(SessionHookContext.Service))
+      const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SessionSourceHooks.Service))
+      if (session && hooks) {
+        let versions = admitted.get(session.sessionID)
+        if (!versions) admitted.set(session.sessionID, (versions = new Map()))
+        for (const file of loaded) {
+          const version = createHash("sha256").update(file.content).digest("hex")
+          const reason = session.loadReason ?? "session_start"
+          const key =
+            reason + ":" + (reason === "compact" ? (session.loadBatch ?? "compact") : "initial") + ":" + file.path
+          if (versions.get(key) === version) continue
+          yield* hooks.instructionsLoaded({
+            sessionID: session.sessionID,
+            filePath: file.path,
+            memoryType: file.path === FSUtil.resolve(join(global.config, "AGENTS.md")) ? "User" : "Project",
+            loadReason: reason,
+          })
+          versions.set(key, version)
+        }
+      }
+      return loaded
     })
 
     yield* registry.register({

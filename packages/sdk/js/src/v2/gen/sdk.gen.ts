@@ -193,6 +193,8 @@ import type {
   QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionAttentionErrors,
+  SessionAttentionResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -233,8 +235,12 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionResumeErrors,
+  SessionResumeResponses,
   SessionRevertErrors,
   SessionRevertResponses,
+  SessionSetModelErrors,
+  SessionSetModelResponses,
   SessionShareErrors,
   SessionShareResponses,
   SessionShellErrors,
@@ -362,6 +368,8 @@ import type {
   V2QuestionRequestListResponses,
   V2ReferenceListErrors,
   V2ReferenceListResponses,
+  V2SessionAttentionErrors,
+  V2SessionAttentionResponses,
   V2SessionCompactErrors,
   V2SessionCompactResponses,
   V2SessionContextErrors,
@@ -370,6 +378,8 @@ import type {
   V2SessionCreateResponses,
   V2SessionGetErrors,
   V2SessionGetResponses,
+  V2SessionInterruptErrors,
+  V2SessionInterruptResponses,
   V2SessionListErrors,
   V2SessionListResponses,
   V2SessionMessagesErrors,
@@ -388,6 +398,8 @@ import type {
   V2SessionQuestionRejectResponses,
   V2SessionQuestionReplyErrors,
   V2SessionQuestionReplyResponses,
+  V2SessionResumeErrors,
+  V2SessionResumeResponses,
   V2SessionRevertClearErrors,
   V2SessionRevertClearResponses,
   V2SessionRevertCommitErrors,
@@ -3488,10 +3500,23 @@ export class Hook extends HeyApiClient {
         | "InstructionsLoaded"
         | "CwdChanged"
         | "FileChanged"
+        | "UserPromptExpansion"
+        | "PostToolBatch"
+        | "TeammateIdle"
+        | "DirectoryAdded"
+        | "PreModelSwitch"
+        | "PostModelSwitch"
+        | "MessageDisplay"
       matcher?: string
       hooks: Array<{
-        type: "command" | "mcp" | "http" | "prompt" | "agent"
+        type: "command" | "mcp" | "mcp_tool" | "http" | "prompt" | "agent"
         command?: string
+        args?: Array<string>
+        server?: string
+        tool?: string
+        input?: {
+          [key: string]: unknown
+        }
         url?: string
         prompt?: string
         headers?: {
@@ -3505,6 +3530,8 @@ export class Hook extends HeyApiClient {
         inputFormat?: "opencode" | "claude-code"
         allowedEnvVars?: Array<string>
         statusMessage?: string
+        model?: string
+        onFailure?: "continue" | "block"
         once?: boolean
         options?: {
           [key: string]: unknown
@@ -4001,6 +4028,7 @@ export class Session2 extends HeyApiClient {
       }
       agent?: string
       noReply?: boolean
+      hookMode?: "interactive" | "noninteractive"
       tools?: {
         [key: string]: boolean
       }
@@ -4023,6 +4051,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "model" },
             { in: "body", key: "agent" },
             { in: "body", key: "noReply" },
+            { in: "body", key: "hookMode" },
             { in: "body", key: "tools" },
             { in: "body", key: "format" },
             { in: "body", key: "system" },
@@ -4338,6 +4367,191 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Select session model
+   *
+   * Apply a requested session model change after PreModelSwitch hooks approve it.
+   */
+  public setModel<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
+      variant?: string
+      source?: "command" | "picker" | "sdk"
+      hookMode?: "interactive" | "noninteractive"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "model" },
+            { in: "body", key: "variant" },
+            { in: "body", key: "source" },
+            { in: "body", key: "hookMode" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionSetModelResponses, SessionSetModelErrors, ThrowOnError>({
+      url: "/session/{sessionID}/model",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Report session attention
+   *
+   * Report client activity and a short-lived background task view lease without sending typed content.
+   */
+  public attention<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      clientID: string
+      clientType?: "terminal" | "web"
+      activity?: number
+      backgroundView?: boolean
+      closed?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "clientID" },
+            { in: "body", key: "clientType" },
+            { in: "body", key: "activity" },
+            { in: "body", key: "backgroundView" },
+            { in: "body", key: "closed" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionAttentionResponses, SessionAttentionErrors, ThrowOnError>({
+      url: "/session/{sessionID}/attention",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Resume pending hook input
+   *
+   * Run the initial SessionStart message or resume the same deferred tool call without adding a user message.
+   */
+  public resume<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      messageID?: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
+      agent?: string
+      variant?: string
+      hookMode?: "interactive" | "noninteractive"
+      initialOnly?: boolean
+      followup?:
+        | {
+            kind: "prompt"
+            messageID?: string
+            model?: {
+              providerID: string
+              modelID: string
+            }
+            agent?: string
+            noReply?: boolean
+            hookMode?: "interactive" | "noninteractive"
+            tools?: {
+              [key: string]: boolean
+            }
+            format?: OutputFormat
+            system?: string
+            variant?: string
+            parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
+          }
+        | {
+            kind: "command"
+            messageID?: string
+            agent?: string
+            model?: string
+            hookMode?: "interactive" | "noninteractive"
+            arguments: string
+            command: string
+            variant?: string
+            parts?: Array<{
+              id?: string
+              type: "file"
+              mime: string
+              filename?: string
+              url: string
+              source?: FilePartSource
+            }>
+          }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "messageID" },
+            { in: "body", key: "model" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "variant" },
+            { in: "body", key: "hookMode" },
+            { in: "body", key: "initialOnly" },
+            { in: "body", key: "followup" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionResumeResponses, SessionResumeErrors, ThrowOnError>({
+      url: "/session/{sessionID}/resume",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Send async message
    *
    * Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.
@@ -4354,6 +4568,7 @@ export class Session2 extends HeyApiClient {
       }
       agent?: string
       noReply?: boolean
+      hookMode?: "interactive" | "noninteractive"
       tools?: {
         [key: string]: boolean
       }
@@ -4376,6 +4591,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "model" },
             { in: "body", key: "agent" },
             { in: "body", key: "noReply" },
+            { in: "body", key: "hookMode" },
             { in: "body", key: "tools" },
             { in: "body", key: "format" },
             { in: "body", key: "system" },
@@ -4410,6 +4626,7 @@ export class Session2 extends HeyApiClient {
       messageID?: string
       agent?: string
       model?: string
+      hookMode?: "interactive" | "noninteractive"
       arguments: string
       command: string
       variant?: string
@@ -4435,6 +4652,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "messageID" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },
+            { in: "body", key: "hookMode" },
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
             { in: "body", key: "variant" },
@@ -4472,6 +4690,7 @@ export class Session2 extends HeyApiClient {
         modelID: string
       }
       command: string
+      hookMode?: "interactive" | "noninteractive"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4487,6 +4706,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "agent" },
             { in: "body", key: "model" },
             { in: "body", key: "command" },
+            { in: "body", key: "hookMode" },
           ],
         },
       ],
@@ -6091,6 +6311,49 @@ export class Session3 extends HeyApiClient {
   }
 
   /**
+   * Report session attention
+   *
+   * Report client activity and a short-lived background task view lease without sending typed content.
+   */
+  public attention<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      clientID: string
+      clientType?: "terminal" | "web"
+      activity?: number
+      backgroundView?: boolean
+      closed?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "body", key: "clientID" },
+            { in: "body", key: "clientType" },
+            { in: "body", key: "activity" },
+            { in: "body", key: "backgroundView" },
+            { in: "body", key: "closed" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<V2SessionAttentionResponses, V2SessionAttentionErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/attention",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Switch session agent
    *
    * Switch the agent used by subsequent provider turns.
@@ -6182,6 +6445,7 @@ export class Session3 extends HeyApiClient {
       sessionID: string
       id?: string
       prompt: Prompt
+      hookMode?: "interactive" | "noninteractive"
       delivery?: "steer" | "queue"
       resume?: boolean
     },
@@ -6195,6 +6459,7 @@ export class Session3 extends HeyApiClient {
             { in: "path", key: "sessionID" },
             { in: "body", key: "id" },
             { in: "body", key: "prompt" },
+            { in: "body", key: "hookMode" },
             { in: "body", key: "delivery" },
             { in: "body", key: "resume" },
           ],
@@ -6227,6 +6492,44 @@ export class Session3 extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
     return (options?.client ?? this.client).post<V2SessionCompactResponses, V2SessionCompactErrors, ThrowOnError>({
       url: "/api/session/{sessionID}/compact",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Resume deferred tool call
+   *
+   * Retry the session's saved single deferred tool call without admitting a new prompt. Returns 204 after the attempt. Read session context to distinguish a completed call from a still deferred or unavailable tool.
+   */
+  public resume<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).post<V2SessionResumeResponses, V2SessionResumeErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/resume",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Interrupt session
+   *
+   * Cancel the active session turn and invalidate pending hook continuations.
+   */
+  public interrupt<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).post<V2SessionInterruptResponses, V2SessionInterruptErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/interrupt",
       ...options,
       ...params,
     })

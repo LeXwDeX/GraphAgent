@@ -34,7 +34,17 @@ const write = (dir: string) =>
           { matcher: "startup", hooks: [ctxHook("session-start-startup")] },
           { matcher: "resume|compact", hooks: [ctxHook("session-start-resume")] },
         ],
-        PreCompact: [{ matcher: "auto", hooks: [ctxHook("precompact-auto")] }],
+        PreCompact: [
+          {
+            matcher: "auto",
+            hooks: [
+              {
+                type: "command",
+                command: `printf '%s' '${JSON.stringify({ decision: "block", reason: "precompact-auto" })}'`,
+              },
+            ],
+          },
+        ],
         SubagentStop: [{ matcher: "explore", hooks: [ctxHook("subagent-explore")] }],
         // UserPromptSubmit has no matcher support: the matcher is ignored.
         UserPromptSubmit: [{ matcher: "anything", hooks: [ctxHook("prompt-always")] }],
@@ -66,12 +76,12 @@ describe("matchers on non-tool events", () => {
           { event: "PreCompact", trigger: "auto" },
           { sessionID: "ses_matcher_2", transcriptPath: "" },
         )
-        expect(r.additionalContexts).toEqual(["precompact-auto"])
+        expect(r.blocked?.reason).toBe("precompact-auto")
         const manual = yield* hook.trigger(
           { event: "PreCompact", trigger: "manual" },
           { sessionID: "ses_matcher_2b", transcriptPath: "" },
         )
-        expect(manual.additionalContexts).toEqual([])
+        expect(manual.blocked).toBeUndefined()
       }),
     { init: write },
   )

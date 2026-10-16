@@ -83,6 +83,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
 
       await input.client.session.command({
         sessionID: input.draft.sessionID,
+        hookMode: "interactive",
         command: cmd,
         arguments: tail.join(" "),
         agent: input.draft.agent,
@@ -154,6 +155,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
 
     await input.client.session.promptAsync({
       sessionID: input.draft.sessionID,
+      hookMode: "interactive",
       agent: input.draft.agent,
       model: input.draft.model,
       messageID,

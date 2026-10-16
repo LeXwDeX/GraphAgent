@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+import { HookTranscript } from "@/hook/transcript"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
 import path from "path"
@@ -35,7 +37,7 @@ function extract(messages: SessionV1.WithParts[]) {
 export interface Interface {
   readonly clear: (messageID: MessageID) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
-  readonly system: () => Effect.Effect<string[], FSUtil.Error>
+  readonly system: (input?: { sessionID: string; transcriptPath?: string }) => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
   readonly resolve: (
     messages: SessionV1.WithParts[],
@@ -156,7 +158,8 @@ export const layer: Layer.Layer<
       return paths
     })
 
-    const system = Effect.fn("Instruction.system")(function* () {
+    const system = Effect.fn("Instruction.system")(function* (input?: { sessionID: string; transcriptPath?: string }) {
+      const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
       const urls = (config.instructions ?? []).filter(
@@ -168,19 +171,34 @@ export const layer: Layer.Layer<
 
       // SettingsHook: InstructionsLoaded — once per instruction file per instance,
       // content truncated to 32KB to bound hook stdin size.
-      if (settingsHook) {
+      if (callSettings && input?.sessionID && input.transcriptPath) {
         const s = yield* InstanceState.get(state)
         const loaded = Array.from(paths).flatMap((item, i) => (files[i] ? [{ path: item, content: files[i] }] : []))
         for (const file of loaded) {
-          if (s.announced.has(file.path)) continue
-          s.announced.add(file.path)
-          const ilResult = yield* settingsHook
+          const key = `${input.sessionID}:${file.path}:${createHash("sha256").update(file.content).digest("hex")}`
+          if (s.announced.has(key)) continue
+          s.announced.add(key)
+          const eligible =
+            !callSettings.hasEvent || (yield* callSettings.hasEvent("InstructionsLoaded", input.sessionID))
+          const environment = eligible
+            ? yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie)
+            : undefined
+          const ilResult = yield* callSettings
             .trigger(
-              { event: "InstructionsLoaded", path: file.path, content: file.content.slice(0, 32 * 1024) },
-              { sessionID: "", transcriptPath: "" },
+              {
+                event: "InstructionsLoaded",
+                loadReason: "session_start",
+                path: file.path,
+                content: file.content.slice(0, 32 * 1024),
+              },
+              {
+                sessionID: input.sessionID,
+                transcriptPath: input.transcriptPath,
+                ...(environment ? { environment } : {}),
+              },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-          yield* SettingsHook.landSystemMessages(ilResult, { sessionID: "" })
+          yield* SettingsHook.landSystemMessages(ilResult, { sessionID: input.sessionID })
         }
       }
 
@@ -203,6 +221,7 @@ export const layer: Layer.Layer<
       filepath: string,
       messageID: MessageID,
     ) {
+      const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const sys = yield* systemPaths()
       const already = extract(messages)
       const results: { filepath: string; content: string }[] = []
@@ -234,6 +253,26 @@ export const layer: Layer.Layer<
         const content = yield* read(found)
         if (content) {
           results.push({ filepath: found, content: `Instructions from: ${found}\n${content}` })
+          const sessionID = messages.at(-1)?.info.sessionID
+          const key = `${sessionID}:${found}:${createHash("sha256").update(content).digest("hex")}`
+          if (callSettings && sessionID && !s.announced.has(key)) {
+            s.announced.add(key)
+            const eligible = !callSettings.hasEvent || (yield* callSettings.hasEvent("InstructionsLoaded", sessionID))
+            const transcriptPath = eligible
+              ? yield* HookTranscript.materialize({ sessionID, directory: root, messages }).pipe(Effect.orDie)
+              : ""
+            const environment = eligible ? yield* HookTranscript.environment(sessionID).pipe(Effect.orDie) : undefined
+            const result = yield* callSettings.trigger(
+              {
+                event: "InstructionsLoaded",
+                loadReason: "nested_traversal",
+                path: found,
+                content: content.slice(0, 32 * 1024),
+              },
+              { sessionID, transcriptPath, ...(environment ? { environment } : {}) },
+            )
+            yield* SettingsHook.landSystemMessages(result, { sessionID })
+          }
         }
 
         current = path.dirname(current)

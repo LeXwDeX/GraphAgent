@@ -1,7 +1,7 @@
 export * as PluginInternal from "./internal"
 
 import type { PluginContext } from "@opencode-ai/plugin/v2/effect"
-import { Effect, Layer, Scope } from "effect"
+import { Context, Effect, Fiber, Layer, Scope } from "effect"
 import { AgentV2 } from "../agent"
 import { Catalog } from "../catalog"
 import { CommandV2 } from "../command"
@@ -57,7 +57,13 @@ export function define<R>(plugin: Plugin<R>) {
   return plugin
 }
 
-export const locationLayer = Layer.effectDiscard(
+/** Completion of the configured plugins for this Location, including agent permission rules. */
+export class Ready extends Context.Service<Ready, { readonly awaitReady: Effect.Effect<void> }>()(
+  "@opencode/v2/PluginInternal/Ready",
+) {}
+
+export const locationLayer = Layer.effect(
+  Ready,
   Effect.gen(function* () {
     const catalog = yield* Catalog.Service
     const commands = yield* CommandV2.Service
@@ -102,7 +108,7 @@ export const locationLayer = Layer.effectDiscard(
       return plugin.add(PluginV2.ID.make(loaded.id), loaded.effect)
     }
 
-    yield* Effect.gen(function* () {
+    const boot = yield* Effect.gen(function* () {
       yield* add(ConfigReferencePlugin.Plugin)
       yield* add(AgentPlugin.Plugin)
       yield* add(CommandPlugin.Plugin)
@@ -116,6 +122,7 @@ export const locationLayer = Layer.effectDiscard(
       yield* add(ConfigProviderPlugin.Plugin)
       yield* add(VariantPlugin.Plugin)
     }).pipe(Effect.withSpan("PluginInternal.boot"), Effect.forkScoped({ startImmediately: true }))
+    return Ready.of({ awaitReady: Fiber.join(boot) })
   }),
 ).pipe(
   Layer.provideMerge(PluginV2.locationLayer),

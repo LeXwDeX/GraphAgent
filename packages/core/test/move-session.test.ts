@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import path from "path"
 import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
+import { SessionCwdHooks } from "@opencode-ai/core/session/cwd-hooks"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { Database } from "@opencode-ai/core/database/database"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -115,9 +116,28 @@ describe("MoveSession", () => {
         .run()
         .pipe(Effect.orDie)
 
+      const observed: SessionCwdHooks.Change[] = []
       yield* MoveSession.Service.use((service) =>
         service.moveSession({ sessionID, destination: { directory: moved }, moveChanges: true }),
+      ).pipe(
+        Effect.provideService(SessionCwdHooks.Service, {
+          changed: (change) =>
+            Effect.gen(function* () {
+              const persisted = yield* db
+                .select({ directory: SessionTable.directory })
+                .from(SessionTable)
+                .where(eq(SessionTable.id, sessionID))
+                .get()
+              expect(persisted?.directory).toBe(moved)
+              observed.push(change)
+              yield* Effect.die("observational hook failure must not skip original source cleanup")
+            }),
+        }),
       )
+      expect(observed).toEqual([{ sessionID, previousDirectory: source, directory: moved }])
+      yield* MoveSession.Service.use((service) =>
+        service.moveSession({ sessionID, destination: { directory: moved } }),
+      ).pipe(Effect.provideService(SessionCwdHooks.Service, { changed: () => Effect.die("no-op must not notify") }))
 
       expect(yield* Effect.promise(() => fs.readFile(path.join(moved, "tracked.txt"), "utf8"))).toBe("changed\n")
       expect(yield* Effect.promise(() => fs.readFile(path.join(moved, "untracked.txt"), "utf8"))).toBe("new\n")

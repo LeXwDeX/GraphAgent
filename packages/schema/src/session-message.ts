@@ -85,6 +85,7 @@ export interface ToolStateRunning extends Schema.Schema.Type<typeof ToolStateRun
 export const ToolStateRunning = Schema.Struct({
   status: Schema.Literal("running"),
   input: Schema.Record(Schema.String, Schema.Unknown),
+  deferred: Schema.Boolean.pipe(Schema.optional),
   structured: Schema.Record(Schema.String, Schema.Any),
   content: ToolContent.pipe(Schema.Array),
 }).annotate({ identifier: "Session.Message.ToolState.Running" })
@@ -139,6 +140,8 @@ export const AssistantText = Schema.Struct({
   type: Schema.Literal("text"),
   id: Schema.String,
   text: Schema.String,
+  /** Presentation-only hook result; model replay always reads canonical `text`. */
+  displayText: Schema.String.pipe(Schema.optional),
 }).annotate({ identifier: "Session.Message.Assistant.Text" })
 
 export interface AssistantReasoning extends Schema.Schema.Type<typeof AssistantReasoning> {}

@@ -97,17 +97,21 @@ const providerCfg = (url: string) => ({
   },
 })
 
-
 const sources: Array<{ sessionID: string; source: string }> = []
-const settingsHook = Layer.mock(SettingsHook.Service, {
-  trigger: (payload, ctx) =>
-    Effect.sync(() => {
-      if (payload.event !== "SessionStart") return { additionalContexts: [], systemMessages: [] }
-      sources.push({ sessionID: ctx.sessionID ?? "", source: payload.source })
-      return { additionalContexts: [`ctx-${payload.source}`], systemMessages: [] }
-    }),
-  list: () => Effect.succeed([]),
-})
+const settingsHook = Layer.succeed(
+  SettingsHook.Service,
+  SettingsHook.Service.of({
+    trigger: (payload, ctx) =>
+      Effect.sync(() => {
+        if (payload.event !== "SessionStart") return { additionalContexts: [], systemMessages: [] }
+        sources.push({ sessionID: ctx.sessionID ?? "", source: payload.source })
+        return { additionalContexts: [`ctx-${payload.source}`], systemMessages: [] }
+      }),
+    hasEvent: (event) => Effect.succeed(event === "SessionStart"),
+    list: () => Effect.succeed([]),
+    fileWatchPaths: () => Effect.succeed([]),
+  }),
+)
 
 const root = LayerNode.group([
   SessionPrompt.node,
