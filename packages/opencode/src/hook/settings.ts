@@ -2193,9 +2193,14 @@ function matcherTarget(payload: HookPayload, ctx: TriggerContext): string | unde
  */
 function canonicalModelMatcherName(raw: string): string | undefined {
   const name = raw.replace(/\[1m\]$/i, "")
-  const match = name.match(/(?:^|[./:])claude-(opus|sonnet|haiku)-(\d+)(?:[.-](\d+))?(?=$|[-./:])/i)
+  const match = name.match(/(?:^|[./:@])claude-(opus|sonnet|haiku)-(\d+)(?:[.@-](\d+))?(?=$|[-./:@])/i)
   if (!match) return undefined
-  return `claude-${match[1].toLowerCase()}-${match[2]}${match[3] ? `-${match[3]}` : ""}`
+  const minor = match[3]
+  // An 8-digit date (claude-sonnet-4-20250514) and the ".0" alias minor
+  // (claude-sonnet-4.0) name the same undated model; keeping either would make
+  // an exact canonical matcher silently miss the switch.
+  const keepMinor = minor !== undefined && minor !== "0" && !/^\d{8}$/.test(minor)
+  return `claude-${match[1].toLowerCase()}-${match[2]}${keepMinor ? `-${minor}` : ""}`
 }
 
 /**

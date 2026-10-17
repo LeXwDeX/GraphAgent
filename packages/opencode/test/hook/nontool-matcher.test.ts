@@ -285,3 +285,68 @@ describe("matcher targets on lifecycle and elicitation events", () => {
     { init: writeMarkers },
   )
 })
+
+// Model switch matchers match the canonical Claude model name. Dated suffixes
+// (`-20250514`), `.0` alias minors and provider-qualified spellings must all
+// converge on `claude-<family>-<major>[-<minor>]`; otherwise an exact canonical
+// matcher silently skips the switch.
+// PreModelSwitch controls the switch through permissionDecision and does not
+// consume additionalContext; PostModelSwitch injects context.
+const denySwitch = {
+  type: "command",
+  command: `printf '%s' '${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreModelSwitch",
+      permissionDecision: "deny",
+      permissionDecisionReason: "denied",
+    },
+  })}'`,
+}
+
+const writeModel = (dir: string) =>
+  Effect.promise(async () => {
+    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.writeFile(
+      path.join(dir, ".opencode", "hooks.json"),
+      JSON.stringify({
+        PreModelSwitch: [{ matcher: "claude-sonnet-4", hooks: [denySwitch] }],
+        PostModelSwitch: [{ matcher: "claude-opus-4|claude-haiku-4-5", hooks: [ctxHook("post-canonical")] }],
+      }),
+    )
+  })
+
+describe("model switch matchers use the canonical model name", () => {
+  it.instance(
+    "dated, alias and provider-qualified IDs match the canonical alias",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const pre = (toModel: string, id: string) =>
+          hook.trigger(
+            { event: "PreModelSwitch", fromModel: "claude-sonnet-3-7", toModel },
+            { sessionID: id, transcriptPath: "" },
+          )
+        for (const [toModel, id] of [
+          ["claude-sonnet-4-20250514", "ses_model_dated"],
+          ["claude-sonnet-4.0", "ses_model_alias"],
+          ["us.anthropic.claude-sonnet-4-20250514-v1:0", "ses_model_bedrock"],
+        ] as const) {
+          expect((yield* pre(toModel, id)).modelSwitchDecision).toBe("deny")
+        }
+        // An unrelated family must not be matched by the canonical alias.
+        expect((yield* pre("claude-haiku-4-5", "ses_model_pre_miss")).modelSwitchDecision).toBeUndefined()
+        const post = (toModel: string, id: string) =>
+          hook.trigger(
+            { event: "PostModelSwitch", fromModel: "claude-sonnet-4", toModel },
+            { sessionID: id, transcriptPath: "" },
+          )
+        expect((yield* post("claude-opus-4.0", "ses_model_opus_alias")).additionalContexts).toEqual(["post-canonical"])
+        expect((yield* post("claude-haiku-4-5-20250929", "ses_model_haiku_dated")).additionalContexts).toEqual([
+          "post-canonical",
+        ])
+        // A different family is not silently matched by the canonical alias.
+        expect((yield* post("claude-sonnet-4", "ses_model_miss")).additionalContexts).toEqual([])
+      }),
+    { init: writeModel },
+  )
+})
