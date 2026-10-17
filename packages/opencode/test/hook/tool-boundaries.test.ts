@@ -540,7 +540,8 @@ describe("Claude command consumer with real discovery tools", () => {
         expect(claude.tool_use_id).toBe(`compat-${name}`)
         if (name === "read") {
           expect(claude.tool_input.file_path).toBe(target)
-          expect(claude.tool_response).toContain("HOOK_SEARCH_NEEDLE")
+          // PostToolUse carries the tool's structured metadata, not its text output.
+          expect(claude.tool_response.preview).toContain("HOOK_SEARCH_NEEDLE")
         } else expect(output).toContain(target)
       }),
     )

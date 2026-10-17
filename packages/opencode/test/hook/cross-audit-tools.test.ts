@@ -40,7 +40,11 @@ const writeDefinition = {
     Effect.promise(async () => {
       if (args.content === "THROW") throw new Error("CROSS_AUDIT_TOOL_FAILURE")
       await fs.writeFile(args.filePath, args.content)
-      return { title: "written", output: "WRITE_COMPLETE", metadata: {} }
+      return {
+        title: "written",
+        output: "WRITE_COMPLETE",
+        metadata: { filepath: args.filePath, exists: false },
+      }
     }),
 }
 let extraDefinitions: any[] = []
@@ -232,7 +236,11 @@ describe("PreToolUse feedback survives PostToolUse output replacement", () => {
       expect(result.output).toContain("CROSS_AUDIT_REPLACED")
       expect(result.output).not.toContain("WRITE_COMPLETE")
       const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
-      expect(JSON.stringify(seen.tool_response)).toContain("WRITE_COMPLETE")
+      // CC hands PostToolUse scripts the structured response, not the model text.
+      expect(seen.tool_response).toEqual({
+        filepath: path.join(instance.directory, "d4.txt"),
+        exists: false,
+      })
       expect(JSON.stringify(seen.tool_response)).not.toContain("CROSS_AUDIT_PRE_CTX")
       // Direct SessionTools.resolve callers have no prompt-level transcript wrapper;
       // the hook envelope must still point at a materialized transcript file.
@@ -264,6 +272,83 @@ describe("PreToolUse feedback survives PostToolUse output replacement", () => {
       expect(result.output).toContain("CROSS_AUDIT_REPLACED")
       const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
       expect(JSON.stringify(seen.tool_response)).not.toContain("CROSS_AUDIT_PRE_CTX")
+    }),
+  )
+})
+
+const capturePostHook = (capture: string) => ({
+  type: "command" as const,
+  command: hookCommand(
+    `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(capture)},JSON.stringify(i))`,
+  ),
+})
+
+// CC gives PostToolUse scripts the tool's structured response, and V2 already
+// passes `output.structured`; V1 must not fall back to the model-facing string.
+describe("PostToolUse tool_response is the tool's structured output", () => {
+  it.instance("built-in tool: hook receives metadata, not the model-facing output", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const capture = path.join(instance.directory, "post-structured.json")
+      const target = path.join(instance.directory, "structured.txt")
+      yield* store.add(id, { event: "PostToolUse", hooks: [capturePostHook(capture)] })
+      const tools = yield* resolve(id, instance.directory)
+      yield* Effect.promise(() =>
+        Promise.resolve(tools.write.execute!({ filePath: target, content: "x" }, options("structured-builtin"))),
+      )
+      const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
+      expect(seen.tool_response).toEqual({ filepath: target, exists: false })
+    }),
+  )
+
+  it.instance("MCP resource tool: hook receives metadata, not the model-facing output", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const capture = path.join(instance.directory, "post-structured-resource.json")
+      mcpClients = {
+        fixture: { getServerCapabilities: () => ({ resources: {} }), listResources: async () => ({ resources: [] }) },
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          mcpClients = {}
+        }),
+      )
+      yield* store.add(id, { event: "PostToolUse", hooks: [capturePostHook(capture)] })
+      const tools = yield* resolve(id, instance.directory)
+      yield* Effect.promise(() =>
+        Promise.resolve(tools.list_mcp_resources.execute!({}, options("structured-resource"))),
+      )
+      const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
+      expect(seen.tool_response).toEqual({ count: 0, servers: ["fixture"], truncated: false })
+    }),
+  )
+
+  it.instance("MCP tool: hook receives the structured CallToolResult", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const capture = path.join(instance.directory, "post-structured-mcp.json")
+      mcpTools = {
+        fixture_probe: tool({
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+          execute: async () => ({ content: [{ type: "text" as const, text: "MCP_STRUCTURED" }] }),
+        }),
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          mcpTools = {}
+        }),
+      )
+      yield* store.add(id, { event: "PostToolUse", hooks: [capturePostHook(capture)] })
+      const tools = yield* resolve(id, instance.directory)
+      yield* Effect.promise(() => Promise.resolve(tools.fixture_probe.execute!({}, options("structured-mcp"))))
+      const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
+      expect(seen.tool_response).toEqual({ content: [{ type: "text", text: "MCP_STRUCTURED" }] })
     }),
   )
 })

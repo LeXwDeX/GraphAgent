@@ -555,7 +555,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                           event: "PostToolUse",
                           toolName: item.id,
                           toolInput: toRecord(args),
-                          toolResponse: output.output,
+                          // V2 passes the tool's structured output; the model-facing
+                          // text lives in the transcript, not in tool_response.
+                          toolResponse: output.metadata,
                           toolUseID: ctx.callID,
                         }
                       : {
@@ -1041,7 +1043,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   toolName: name,
                   toolInput: args,
                   toolUseID: opts.toolCallId,
-                  toolResponse: output.output,
+                  toolResponse: output.metadata,
                 },
                 { ...(yield* hookContext()), sessionID: input.session.id },
               )
