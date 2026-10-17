@@ -1,5 +1,5 @@
 import { expect } from "bun:test"
-import { Effect, Layer, Exit, Fiber } from "effect"
+import { DateTime, Effect, Layer, Exit, Fiber, Schema } from "effect"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { Agent } from "@/agent/agent"
@@ -16,6 +16,9 @@ import { Permission } from "@/permission"
 import { MessageID, PartID } from "@/session/schema"
 import { HookTranscript } from "@/hook/transcript"
 import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
+import { SessionMessage } from "@opencode-ai/core/session/message"
+import { SessionMessageTable } from "@opencode-ai/core/session/sql"
+import { Database } from "@opencode-ai/core/database/database"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { location } from "../../../core/test/fixture/location"
@@ -83,6 +86,39 @@ it.instance("raw permission and DirectoryAdded hooks receive actual JSONL, envir
       expect(row.env).toBe("present")
       expect(row.mode).toBe("default")
     }
+  }),
+)
+
+it.instance("derives effort from the V2 session model when the transcript prompt carries none", () =>
+  Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      model: { id: ModelV2.ID.make("fixture"), providerID: ProviderV2.ID.make("fixture"), variant: "high" },
+    })
+    // V2 durable user rows carry no model; only the session row keeps the variant.
+    const id = SessionMessage.ID.make("msg_session_effort")
+    const {
+      id: _,
+      type,
+      ...data
+    } = Schema.encodeSync(SessionMessage.Message)(
+      SessionMessage.User.make({
+        id,
+        type: "user",
+        text: "SESSION_EFFORT_PROMPT",
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+    )
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(SessionMessageTable)
+      .values({ id, session_id: session.id, type, seq: 1, time_created: 0, time_updated: 0, data })
+      .run()
+      .pipe(Effect.orDie)
+
+    const context = yield* consumerContext(session.id)
+    expect(context.promptID).toBe(id)
+    expect(context.effort).toBe("high")
   }),
 )
 
