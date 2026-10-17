@@ -7736,6 +7736,51 @@ distillationIt.instance("organizes reasoning in place after visible text has sta
   }),
 )
 
+distillationIt.instance("organizes reasoning in place after a tool call has started", () =>
+  Effect.gen(function* () {
+    const { llm, dir } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    yield* writeText(path.join(dir, "distillation-source.txt"), "source data")
+    const { prompt, sessions, chat } = yield* boot()
+    let organizerCalls = 0
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          organizerCalls++
+          return { text: "adopted-after-tool", finishReason: "stop" }
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "call a tool, then think" }],
+    })
+    // Tool activity and the reasoning part share one attempt, so this request cannot split and the part must be
+    // organized in place.
+    yield* llm.push(
+      reply()
+        .tool("read", { filePath: path.join(dir, "distillation-source.txt") }, "read-after-tool")
+        .reason(longThought("after-tool")),
+      reply().text("tool-answer").stop(),
+    )
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(organizerCalls).toBe(1)
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "reasoning" && part.text === "adopted-after-tool")).toBe(true)
+    expect(parts.some((part) => part.type === "reasoning" && part.text === longThought("after-tool"))).toBe(false)
+    expect(parts.find((part) => part.type === "tool")).toMatchObject({
+      callID: "read-after-tool",
+      state: { status: "completed" },
+    })
+    expect(parts.some((part) => part.type === "text" && part.text === "tool-answer")).toBe(true)
+  }),
+)
+
 distillationIt.instance("does not split reasoning below the organizer minimum", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
