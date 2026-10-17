@@ -31,3 +31,6 @@ const elapsed = performance.now() - start
 console.log(JSON.stringify({ result, beats, elapsed }))
 phase("output")
 if (result.ok || !result.error.includes("host resource budget") || beats < 5 || elapsed > 1_000) process.exit(1)
+// The validation worker is terminated asynchronously. Exit explicitly so a slow worker teardown on a loaded host
+// cannot extend the fixture beyond the test's validation/exit watchdog.
+process.exit(0)
