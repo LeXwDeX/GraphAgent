@@ -273,7 +273,7 @@ export const TaskTool = Tool.define(
               },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
-          yield* SettingsHook.landSystemMessages(result, { sessionID: ctx.sessionID })
+          yield* SettingsHook.landSystemMessages(result, { sessionID: nextSession.id })
           startContexts = result.additionalContexts
         }
         const parts = yield* ops.resolvePromptParts(params.prompt)

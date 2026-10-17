@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
 import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -21,6 +22,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { disposeAllInstances } from "../fixture/fixture"
+import { decodeRecord, decodeString } from "../lib/hook-json"
 import { testEffect } from "../lib/effect"
 
 // Claude Code injects SubagentStart hookSpecificOutput.additionalContext into the
@@ -30,6 +32,7 @@ import { testEffect } from "../lib/effect"
 // user message).
 
 afterEach(async () => {
+  startNotices = []
   await disposeAllInstances()
 })
 
@@ -40,6 +43,7 @@ const ref = {
 
 const recorded: HookPayload[] = []
 let startContexts: string[] = []
+let startNotices: string[] = []
 const recorder = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
@@ -48,7 +52,7 @@ const recorder = Layer.succeed(
         recorded.push(payload)
         const result: TriggerResult = {
           additionalContexts: payload.event === "SubagentStart" ? startContexts : [],
-          systemMessages: [],
+          systemMessages: payload.event === "SubagentStart" ? startNotices : [],
         }
         return result
       }),
@@ -238,6 +242,31 @@ describe("SubagentStart additionalContext injection", () => {
       const sessions = yield* Session.Service
       const child = (yield* sessions.list()).find((info) => info.parentID === chat.id)!
       expect(yield* startCtx.consume(child.id)).toEqual([])
+    }),
+  )
+
+  // The exit-2/onFailure notice for SubagentStart belongs to the subagent's own
+  // transcript, not the parent conversation. additionalContext already targets
+  // the child; systemMessages must land there too.
+  it.instance("lands SubagentStart systemMessages on the child session, not the parent", () =>
+    Effect.gen(function* () {
+      recorded.length = 0
+      startContexts = []
+      startNotices = ["SUBAGENT_START_WARNING"]
+      const events = yield* EventV2Bridge.Service
+      const notices: { sessionID: string; message: string }[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== LegacyEvent.HookMessage.type) return Effect.void
+        const data = decodeRecord(event.data)
+        notices.push({ sessionID: decodeString(data.sessionID), message: decodeString(data.message) })
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => (typeof off === "function" ? Effect.sync(off) : off))
+      const { chat } = yield* run([])
+      const sessions = yield* Session.Service
+      const child = (yield* sessions.list()).find((info) => info.parentID === chat.id)!
+      expect(child).toBeDefined()
+      expect(notices).toEqual([{ sessionID: child.id, message: "SUBAGENT_START_WARNING" }])
     }),
   )
 })
