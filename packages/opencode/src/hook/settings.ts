@@ -935,8 +935,11 @@ function evaluatorDecision(
       : { continue: false, stopReason: answer.reason, systemMessage: answer.reason }
   if (event === "PostToolUseFailure")
     return { hookSpecificOutput: { hookEventName: event, additionalContext: answer.reason } }
-  // Claude returns this reason as tool feedback and keeps the turn running; only TaskCreated cancels creation.
-  if (event === "TaskCreated" || event === "TaskCompleted") return { systemMessage: answer.reason }
+  // The reference returns this reason as a tool error: the todo write is refused
+  // with the reason as feedback, while the turn keeps running (no continue:false).
+  // systemMessage keeps the human-visible notification from the previous behavior.
+  if (event === "TaskCreated" || event === "TaskCompleted")
+    return { decision: "block", reason: answer.reason, systemMessage: answer.reason }
   return { decision: "block", reason: answer.reason, systemMessage: answer.reason }
 }
 
