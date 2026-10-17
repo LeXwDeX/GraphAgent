@@ -25,6 +25,7 @@ import path from "path"
 import { Effect } from "effect"
 import * as Log from "@/util/log"
 import type { Settings } from "../settings"
+import { hasWorktreeLayer } from "../workspace-trust"
 
 const log = Log.create({ service: "hook.extensions.hot-reload" })
 
@@ -40,7 +41,10 @@ function watchedFiles(projectDir: string, worktree: string | undefined, opencode
   const files: string[] = []
   if (opencodeGlobalConfig) files.push(path.join(opencodeGlobalConfig, "hooks.json"))
   files.push(path.join(projectDir, ".opencode", "hooks.json"))
-  if (worktree && worktree !== projectDir) {
+  // A non-VCS project reports the drive/filesystem root as its worktree, which
+  // is not a workspace-owned layer: polling `/.opencode/hooks.json` would watch
+  // a file shared by every session on the machine.
+  if (hasWorktreeLayer(projectDir, worktree)) {
     files.push(path.join(worktree, ".opencode", "hooks.json"))
   }
   return files
@@ -193,3 +197,9 @@ export function watchSettings(
     },
   }
 }
+
+/**
+ * @internal Test-only: the hooks.json files polled for a project/worktree, so
+ * tests can assert the polling set without waiting on the poll interval.
+ */
+export { watchedFiles as __watchedFiles }

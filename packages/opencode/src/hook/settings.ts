@@ -77,7 +77,7 @@ import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 import { EffectBridge } from "@/effect/bridge"
 import { buildForkHooks, watchSettings } from "./extensions" // [FORK:hook-ext]
-import { isTrusted, trustFilePath } from "./workspace-trust" // [FORK:hook-ext] WP-6B
+import { hasWorktreeLayer, isTrusted, trustFilePath } from "./workspace-trust" // [FORK:hook-ext] WP-6B
 import { HookTranscript } from "./transcript"
 
 const log = Log.create({ service: "hook.settings" })
@@ -1167,7 +1167,7 @@ function chainCandidates(
     { scope: "global", file: path.join(opencodeGlobal, "hooks.json") },
     { scope: "project", file: path.join(directory, ".opencode", "hooks.json") },
   ]
-  if (worktree && worktree !== directory) {
+  if (hasWorktreeLayer(directory, worktree)) {
     candidates.push({ scope: "worktree", file: path.join(worktree, ".opencode", "hooks.json") })
   }
   return candidates
@@ -1307,7 +1307,7 @@ function deprecatedSettingsPaths(opencodeGlobal: string, directory: string, work
     path.join(directory, ".opencode", "settings.json"),
     path.join(directory, ".opencode", "settings.local.json"),
   ]
-  if (worktree && worktree !== directory) {
+  if (hasWorktreeLayer(directory, worktree)) {
     paths.push(
       path.join(worktree, ".opencode", "settings.json"),
       path.join(worktree, ".opencode", "settings.local.json"),
@@ -1361,6 +1361,18 @@ export function __hasWarnedDeprecated(filepath: string): boolean {
 export function __resetDeprecatedWarnings(): void {
   warnedDeprecatedHooks.clear()
 }
+
+/**
+ * @internal Test-only: the hooks.json layer candidates for a project, so tests
+ * can assert which files the chain would read without writing to them.
+ */
+export { chainCandidates as __chainCandidates }
+
+/**
+ * @internal Test-only: the deprecated settings.json paths scanned for a stale
+ * `hooks` field, exported for the same reason as `__chainCandidates`.
+ */
+export { deprecatedSettingsPaths as __deprecatedSettingsPaths }
 
 /** Diagnose fields that have no effect for the selected handler type. */
 export function detectUnsupportedFields(
@@ -3336,10 +3348,8 @@ export const layer = Layer.effect(
       // the deferred SessionHooks.clear on SessionEnd reachable in an untrusted
       // workspace, so registered hooks cannot leak for the process lifetime.
       const envTrust = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
-      const gateEnabled =
-        envTrust === "1" ? true : envTrust === "0" ? false : s.settings.requireTrust !== false
-      const fileHooksAllowed =
-        !hasFile || !gateEnabled || s.settings.allowUntrusted === true || isTrusted(s.cwd)
+      const gateEnabled = envTrust === "1" ? true : envTrust === "0" ? false : s.settings.requireTrust !== false
+      const fileHooksAllowed = !hasFile || !gateEnabled || s.settings.allowUntrusted === true || isTrusted(s.cwd)
       if (!fileHooksAllowed) {
         log.warn("settings hooks skipped: workspace not trusted", {
           cwd: s.cwd,
@@ -3747,7 +3757,8 @@ export const layer = Layer.effect(
             "WorktreeCreate",
             "WorktreeRemove",
           ])
-          if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event)) result.systemMessages.push(sanitizeHookContext(exitBlock))
+          if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event))
+            result.systemMessages.push(sanitizeHookContext(exitBlock))
           if (exitBlock && payload.event !== "PermissionRequest" && !observational.has(payload.event)) {
             result.blocked = { reason: exitBlock, command: commandText(entry) }
             // A failed or exit-2 PreToolUse hook is a deny that outranks defer, and no JSON
@@ -4118,8 +4129,7 @@ export const layer = Layer.effect(
       token: unknown,
     ) {
       const s = yield* InstanceState.get(state)
-      for (const [key, chain] of s.stopRewakeChains)
-        if (key.endsWith(`:${sessionID}`) && chain === token) return true
+      for (const [key, chain] of s.stopRewakeChains) if (key.endsWith(`:${sessionID}`) && chain === token) return true
       return false
     })
 

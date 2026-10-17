@@ -30,6 +30,19 @@ export function trustFilePath(): string {
 }
 
 /**
+ * Whether a worktree layer exists for this project. A global non-VCS project
+ * reports `worktree = "/"` (the drive root on Windows); treating that as a
+ * layer would read `/.opencode/hooks.json` — a file shared by every session on
+ * the machine rather than owned by the workspace. Distinct roots are the only
+ * valid worktree layers.
+ */
+export function hasWorktreeLayer(directory: string, worktree: string | undefined): worktree is string {
+  if (!worktree || worktree === directory) return false
+  const resolved = path.resolve(worktree)
+  return path.dirname(resolved) !== resolved
+}
+
+/**
  * Load the trust list from `file` (defaults to the persisted trust file).
  * Missing or unparseable file → empty array (everything untrusted). Non-string
  * entries are dropped. The `file` param lets tests point at an isolated temp
@@ -104,7 +117,7 @@ function configRequireTrust(directory: string, worktree?: string): "enforce" | "
   const files = [
     { scope: "global", file: path.join(Global.Path.config, "hooks.json") },
     { scope: "project", file: path.join(directory, ".opencode", "hooks.json") },
-    ...(worktree && worktree !== directory
+    ...(hasWorktreeLayer(directory, worktree)
       ? [{ scope: "worktree", file: path.join(worktree, ".opencode", "hooks.json") }]
       : []),
   ]
