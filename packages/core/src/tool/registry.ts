@@ -212,11 +212,13 @@ const registryLayer = Layer.effect(
             permissionState.confirmed = true
           }
           executionAttempted = true
+          const hookInput = "hookInput" in before ? before.hookInput : undefined
           const execution = settle(registration.tool, call, {
             sessionID: input.sessionID,
             agent: input.agent,
             assistantMessageID: input.assistantMessageID,
             toolCallID: input.call.id,
+            ...(hookInput ? { hookInput } : {}),
           })
           const pending = yield* (
             permissionState

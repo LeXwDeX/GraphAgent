@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { QuestionV2 } from "@opencode-ai/core/question"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { QuestionTool } from "@opencode-ai/core/tool/question"
 import { testEffect } from "./lib/effect"
@@ -44,6 +45,25 @@ const question = Layer.succeed(
 )
 const tool = QuestionTool.layer.pipe(Layer.provide(registry), Layer.provide(permission), Layer.provide(question))
 const it = testEffect(Layer.mergeAll(permission, registry, question, tool))
+
+const suppliedAnswers = {
+  "What should happen?": "Build",
+  "Which checks?": "Unit, E2E",
+}
+const hooks = Layer.succeed(
+  SessionConversationHooks.Service,
+  SessionConversationHooks.Service.of({
+    admit: () => Effect.void,
+    beforeTool: (input) =>
+      Effect.succeed({
+        toolInput: input.toolInput,
+        hookInput: { answers: suppliedAnswers },
+        permissionDecision: "allow" as const,
+      }),
+    afterTool: () => Effect.succeed({}),
+  }),
+)
+const itHooks = testEffect(Layer.mergeAll(permission, registry, question, tool, hooks))
 
 describe("QuestionTool", () => {
   it.effect("reports timeout without fabricating a user answer", () =>
@@ -184,6 +204,57 @@ describe("QuestionTool", () => {
       })
       expect(JSON.stringify(result)).toContain("Do not repeat this question")
       expect(JSON.stringify(result)).not.toContain("User has answered")
+    }),
+  )
+
+  itHooks.effect("answers with hook-supplied answers instead of opening the dialog", () =>
+    Effect.gen(function* () {
+      captured = undefined
+      reject = false
+      deny = false
+      assertions.length = 0
+      const registryService = yield* ToolRegistry.Service
+      const questions = [
+        {
+          question: "What should happen?",
+          header: "Action",
+          options: [{ label: "Build", description: "Build it" }],
+        },
+        {
+          question: "Which checks?",
+          header: "Checks",
+          options: [
+            { label: "Unit", description: "Unit tests" },
+            { label: "E2E", description: "End-to-end tests" },
+          ],
+          multiple: true,
+        },
+      ]
+
+      expect(
+        yield* settleTool(registryService, {
+          sessionID,
+          ...toolIdentity,
+          call: { type: "tool-call", id: "call-question", name: "question", input: { questions } },
+        }),
+      ).toEqual({
+        result: {
+          type: "text",
+          value:
+            'User has answered your questions: "What should happen?"="Build", "Which checks?"="Unit, E2E". You can now continue with the user\'s answers in mind.',
+        },
+        output: {
+          structured: { answers: [["Build"], ["Unit", "E2E"]] },
+          content: [
+            {
+              type: "text",
+              text: 'User has answered your questions: "What should happen?"="Build", "Which checks?"="Unit, E2E". You can now continue with the user\'s answers in mind.',
+            },
+          ],
+        },
+      })
+      expect(capturedInput()).toBeUndefined()
+      expect(assertions).toMatchObject([{ sessionID, action: "question", resources: ["*"] }])
     }),
   )
 })

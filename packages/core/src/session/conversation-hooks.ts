@@ -20,6 +20,12 @@ export interface Interface {
   }) => Effect.Effect<
     {
       toolInput: Record<string, unknown>
+      /**
+       * Hook-only fields removed from `toolInput` before schema decoding, such as
+       * AskUserQuestion `answers`. They never reach the tool's schema; a tool that
+       * understands them reads them from its execution context instead.
+       */
+      hookInput?: Record<string, unknown>
       blocked?: string
       stopped?: string
       feedback?: string

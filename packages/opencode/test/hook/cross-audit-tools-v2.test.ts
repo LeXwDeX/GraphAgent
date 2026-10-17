@@ -37,7 +37,11 @@ function harness(result: (payload: HookPayload) => TriggerResult) {
       ),
     ),
   )
-  const beforeTool = (input: { isSingle?: () => Promise<boolean>; toolName?: string }) =>
+  const beforeTool = (input: {
+    isSingle?: () => Promise<boolean>
+    toolName?: string
+    toolInput?: Record<string, unknown>
+  }) =>
     Effect.gen(function* () {
       const hooks = yield* SessionConversationHooks.Service
       return yield* hooks.beforeTool({
@@ -45,7 +49,7 @@ function harness(result: (payload: HookPayload) => TriggerResult) {
         sessionID: "ses_cross_audit" as never,
         toolName: input.toolName ?? "write",
         toolCallID: "call_1",
-        toolInput: { filePath: "a" },
+        toolInput: input.toolInput ?? { filePath: "a" },
         isSingle: input.isSingle,
       })
     }).pipe(
@@ -92,5 +96,35 @@ describe("V2 PreToolUse defer that cannot be honored", () => {
     const result = await Effect.runPromise(h.beforeTool({ isSingle: async () => false }))
     expect(result.blocked).toContain("CROSS_AUDIT_DENY")
     expect(result.blocked).toContain("CROSS_AUDIT_PRE_CTX")
+  })
+})
+
+describe("V2 PreToolUse AskUserQuestion answers", () => {
+  const questions = [
+    {
+      question: "What should happen?",
+      header: "Action",
+      options: [{ label: "Build", description: "Build it" }],
+    },
+  ]
+  const answers = { "What should happen?": "Build" }
+
+  test("an allow forwards the hook-only answers next to the schema input", async () => {
+    const h = harness(() => ({
+      ...base(),
+      permissionDecision: "allow",
+      updatedInput: { questions, answers },
+    }))
+    const result = await Effect.runPromise(h.beforeTool({ toolName: "question", toolInput: { questions } }))
+    expect(result.toolInput).toEqual({ questions })
+    expect(result.hookInput).toEqual({ answers })
+    expect(result.permissionDecision).toBe("allow")
+  })
+
+  test("without an allow the answers reach neither input", async () => {
+    const h = harness(() => ({ ...base(), updatedInput: { questions, answers } }))
+    const result = await Effect.runPromise(h.beforeTool({ toolName: "question", toolInput: { questions } }))
+    expect(result.toolInput).toEqual({ questions })
+    expect("hookInput" in result ? result.hookInput : undefined).toBeUndefined()
   })
 })

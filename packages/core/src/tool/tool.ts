@@ -12,6 +12,8 @@ export interface Context {
   readonly agent: AgentV2.ID
   readonly assistantMessageID: SessionMessage.ID
   readonly toolCallID: string
+  /** Hook-only PreToolUse fields that no tool schema accepts (see SessionConversationHooks). */
+  readonly hookInput?: Readonly<Record<string, unknown>>
 }
 
 export type SchemaType<A> = Schema.Codec<A, any, never, never>

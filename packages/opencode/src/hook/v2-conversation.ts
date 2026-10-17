@@ -209,8 +209,19 @@ const conversationLayer = Layer.effect(
                 return undefined
               }),
           }
+          // `answers` is hook-only: it never reaches the tool schema, and only an explicit
+          // allow lets it stand in for the user. Anything else keeps the dialog.
+          const updated = result.updatedInput
+          let toolInput = updated ?? input.toolInput
+          let hookInput: Record<string, unknown> | undefined
+          if (input.toolName === "question" && updated && Object.hasOwn(updated, "answers")) {
+            const { answers, ...rest } = updated
+            toolInput = rest
+            if (result.permissionDecision === "allow") hookInput = { answers }
+          }
           return {
-            toolInput: result.updatedInput ?? input.toolInput,
+            toolInput,
+            ...(hookInput ? { hookInput } : {}),
             permissionDecision:
               result.permissionDecision === "allow" || result.permissionDecision === "ask"
                 ? result.permissionDecision
