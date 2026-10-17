@@ -1901,7 +1901,6 @@ function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: stri
     case "PermissionRequest":
       return {
         ...base,
-        ...(payload.toolUseID !== undefined ? { tool_use_id: payload.toolUseID } : {}),
         tool_name: payload.toolName,
         tool_input: payload.toolInput,
         ...(payload.permissionSuggestions !== undefined
