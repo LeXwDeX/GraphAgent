@@ -10,6 +10,19 @@ import { Database } from "@opencode-ai/core/database/database"
 import { dispatchTrust, isTrusted, isTrustedDir, loadTrustedList } from "@/hook/workspace-trust"
 import { testEffect } from "../lib/effect"
 
+// Bun runs every test file of a CI shard in ONE process, so an env value left
+// modified here silently changes hook behavior for later files. That is a real
+// CI failure, not a theoretical one: leaving the gate's variable deleted made
+// `mcp/elicitation-integration.test.ts` skip its project `.opencode/hooks.json`
+// (audit file missing → ENOENT). Restore the suite preload value after EVERY
+// test in this file, not just inside one describe.
+const PRELOAD_REQUIRE_TRUST = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+
+afterEach(() => {
+  if (PRELOAD_REQUIRE_TRUST === undefined) delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+  else process.env.OPENCODE_HOOKS_REQUIRE_TRUST = PRELOAD_REQUIRE_TRUST
+})
+
 // WP-6B workspace-trust gate. Two layers of tests:
 //  - pure predicate + file-IO degradation (no Global.Path dependency)
 //  - real SettingsHook trigger integration (enforcement on/off, allowUntrusted)
@@ -60,7 +73,7 @@ describe("loadTrustedList — file degradation", () => {
 // settings-file hooks are skipped. No need to touch Global.Path.data.
 // The suite preload disables the gate with OPENCODE_HOOKS_REQUIRE_TRUST=0 so
 // unrelated hook tests keep working; each test here selects the gate state it
-// exercises and afterEach restores the preload value.
+// exercises and the file-level afterEach above restores the preload value.
 
 const testLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
@@ -73,9 +86,9 @@ const CONTEXT = "trust-gate-hook-fired"
 
 const writeHooks = (json: unknown) => (dir: string) =>
   Effect.promise(() =>
-    fs.promises.mkdir(path.join(dir, ".opencode"), { recursive: true }).then(() =>
-      fs.promises.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(json)),
-    ),
+    fs.promises
+      .mkdir(path.join(dir, ".opencode"), { recursive: true })
+      .then(() => fs.promises.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(json))),
   )
 
 const sessionStartHook = (extra: Record<string, unknown>) => ({
@@ -84,11 +97,6 @@ const sessionStartHook = (extra: Record<string, unknown>) => ({
 })
 
 describe("SettingsHook workspace-trust gate (WP-6B)", () => {
-  afterEach(() => {
-    // Restore the suite preload default (see test/preload.ts).
-    process.env.OPENCODE_HOOKS_REQUIRE_TRUST = "0"
-  })
-
   trustIt.instance(
     "explicit requireTrust:true + untrusted cwd → hooks silently skipped (empty result)",
     () =>
