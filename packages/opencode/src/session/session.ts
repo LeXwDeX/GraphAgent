@@ -3,6 +3,7 @@ import { HookFileWatch } from "@/hook/file-watch"
 import { HookConfigChange } from "@/hook/config-change"
 import { HookSessionContext } from "@/hook/session-context"
 import { HookTranscript } from "@/hook/transcript"
+import { promptIdentity } from "@/hook/prompt-identity"
 import { Skill } from "@/skill"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { HookStartContext } from "@/hook/start-context"
@@ -709,6 +710,7 @@ export const layer: Layer.Layer<
               { event: "SessionEnd", reason: "other" },
               {
                 sessionID,
+                ...promptIdentity(messages),
                 transcriptPath,
                 environment: yield* HookTranscript.environment(sessionID).pipe(Effect.orDie),
               },
@@ -755,6 +757,7 @@ export const layer: Layer.Layer<
         if (hookWatch) yield* hookWatch.clear(sessionID)
         if (hookConfig) yield* hookConfig.clear(sessionID)
         yield* HookTranscript.clearEnvironment(sessionID).pipe(Effect.ignore)
+        yield* HookTranscript.clearScratchpad(sessionID).pipe(Effect.ignore)
         // Cleanup durable automation state BEFORE the Deleted publish: the
         // SessionProjector deletes the session row (and FK cascades wipe the
         // workflow rows) inside the Deleted publish transaction. Publishing
@@ -998,6 +1001,7 @@ export const layer: Layer.Layer<
           },
           {
             sessionID: session.id,
+            ...promptIdentity(snapshot),
             transcriptPath,
             environmentFile: yield* HookTranscript.environmentFile(session.id).pipe(Effect.orDie),
           },

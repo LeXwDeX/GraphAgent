@@ -183,6 +183,39 @@ describe("§4.2b allowUntrusted is only honored from the global layer (trust-gat
       ])
     }
   })
+
+  test("project-layer requireTrust:false is stripped (a repo cannot disable the default gate)", async () => {
+    const globalDir = await mktmp("global")
+    const projectDir = await mktmp("project")
+    try {
+      await writeHooksJson(projectDir, { requireTrust: false, ...hooksJsonTopLevel("p") })
+
+      const merged = loadChain(projectDir, "", globalDir)
+      expect(merged.requireTrust).toBeUndefined()
+    } finally {
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  })
+
+  test("global-layer requireTrust:false disables the default gate and wins over project true", async () => {
+    const globalDir = await mktmp("global")
+    const projectDir = await mktmp("project")
+    try {
+      await writeGlobalHooksJson(globalDir, { requireTrust: false })
+      await writeHooksJson(projectDir, { requireTrust: true, ...hooksJsonTopLevel("p") })
+
+      const merged = loadChain(projectDir, "", globalDir)
+      expect(merged.requireTrust).toBe(false)
+    } finally {
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  })
 })
 
 describe("§4.3 top-level events format (no wrapper) parses correctly", () => {

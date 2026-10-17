@@ -4,6 +4,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { HookLifecycle } from "./lifecycle"
 import { HookTranscript } from "./transcript"
+import { promptIdentity } from "./prompt-identity"
 import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 
@@ -39,7 +40,12 @@ export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(
       if (lifecycle && !(yield* lifecycle.claimEnd(input.sessionID))) return
       const result = yield* settings.trigger(
         { event: "SessionEnd", reason: input.reason },
-        { sessionID: id, transcriptPath, environment: yield* HookTranscript.environment(id).pipe(Effect.orDie) },
+        {
+          sessionID: id,
+          ...promptIdentity(messages),
+          transcriptPath,
+          environment: yield* HookTranscript.environment(id).pipe(Effect.orDie),
+        },
       )
       yield* SettingsHook.landSystemMessages(result, { sessionID: id })
       if (settings.settleSessionEnd) yield* settings.settleSessionEnd()
@@ -57,6 +63,7 @@ export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(
           const permission = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
           if (permission) yield* permission.clearHookPolicy(id)
           yield* HookTranscript.clearEnvironment(id).pipe(Effect.ignore)
+          yield* HookTranscript.clearScratchpad(id).pipe(Effect.ignore)
         }),
       ),
     )

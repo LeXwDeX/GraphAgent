@@ -126,6 +126,7 @@ import { HookTurnContext } from "@/hook/turn-context"
 import { dispatchTrust } from "@/hook/workspace-trust"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
+import { promptIdentity, withPromptIdentity } from "@/hook/prompt-identity"
 import { Skill } from "@/skill"
 import { HookRewake } from "@/hook/rewake"
 import { Goal } from "@/goal/goal"
@@ -510,8 +511,15 @@ export const layer = Layer.effect(
           const environmentFile = yield* HookTranscript.environmentFile(context.sessionID).pipe(Effect.orDie)
           const policy = yield* permission.hookPolicy(context.sessionID)
           const permissionMode = policy.mode === "manual" ? "default" : policy.mode
+          // CC's prompt-scoped envelope fields. An explicit promptID from the
+          // caller wins (UserPromptSubmit names the prompt it is about to
+          // persist); everything else derives from the newest user message.
+          const identity = withPromptIdentity(
+            context,
+            promptIdentity(messages as unknown as readonly HookTranscript.Message[]),
+          )
           return yield* rawSettingsHook.trigger(payload, {
-            ...context,
+            ...identity,
             transcriptPath,
             environmentFile,
             environment: yield* HookTranscript.environment(context.sessionID).pipe(Effect.orDie),
@@ -2241,6 +2249,11 @@ export const layer = Layer.effect(
           return { message, run: false as const }
         }
       }
+      // CC's `prompt_id` names the prompt being submitted, but the message row is
+      // only persisted after UserPromptSubmit has run. Allocate the identity now
+      // and reuse it below, so the envelope and the transcript name the same
+      // message. A caller-supplied id (queued/follow-up prompts) wins.
+      const promptMessageID = input.messageID ?? MessageID.ascending()
       if (settingsHook && !isRewake && options?.internalDelegation !== true) {
         // session_title is present only for a title the user or a hook chose, never for a generated one.
         const titled = session.metadata?.hookTitleSource === "custom" && session.title ? session.title : undefined
@@ -2251,7 +2264,7 @@ export const layer = Layer.effect(
               prompt: promptText,
               ...(titled !== undefined ? { sessionTitle: titled } : {}),
             },
-            { sessionID: input.sessionID, transcriptPath: "" },
+            { sessionID: input.sessionID, transcriptPath: "", promptID: promptMessageID },
           )
           .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
         hookAdditionalContexts = hookResult.additionalContexts ?? []
@@ -2269,7 +2282,11 @@ export const layer = Layer.effect(
         // only the message: the text stays in local storage either way and never reaches the model.
         const original = hookResult.suppressOriginalPrompt === true ? "" : `\n\nOriginal prompt: ${promptText}`
         const message = yield* createUserMessage(
-          { ...input, parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }] },
+          {
+            ...input,
+            messageID: promptMessageID,
+            parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }],
+          },
           persistAdmission,
         )
         yield* sessions.touch(input.sessionID)
@@ -2289,7 +2306,7 @@ export const layer = Layer.effect(
       // Rewake prompts are internal re-entries into a live session and never claim resume.
       const resumeTexts = isRewake ? [] : yield* resumeContexts(session)
 
-      const message = yield* createUserMessage(input, persistAdmission)
+      const message = yield* createUserMessage({ ...input, messageID: promptMessageID }, persistAdmission)
       yield* sessions.touch(input.sessionID)
 
       // The chain was validated before admission, but cancel can land while

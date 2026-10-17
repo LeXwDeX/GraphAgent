@@ -8,6 +8,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { HookTranscript } from "./transcript"
+import { promptIdentity } from "./prompt-identity"
 import { HookLifecycle } from "./lifecycle"
 import { HookFileWatch } from "./file-watch"
 import { HookConfigChange } from "./config-change"
@@ -38,15 +39,17 @@ export const layer = Layer.effect(
           const instance = yield* instances.load({ directory: change.directory })
           yield* Effect.gen(function* () {
             if (initial) yield* lifecycle.queueInitial(sessionID, initial)
+            const messages = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
             const transcriptPath = yield* HookTranscript.materialize({
               sessionID,
               directory: change.directory,
-              messages: yield* sessions.messages({ sessionID }).pipe(Effect.orDie),
+              messages,
             }).pipe(Effect.orDie)
             const result = yield* settings.trigger(
               { event: "CwdChanged", oldCwd: change.previousDirectory, newCwd: change.directory },
               {
                 sessionID,
+                ...promptIdentity(messages),
                 transcriptPath,
                 environmentFile: yield* HookTranscript.environmentFile(sessionID, undefined, "directory").pipe(
                   Effect.orDie,

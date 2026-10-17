@@ -297,4 +297,43 @@ export const clearEnvironment = Effect.fn("HookTranscript.clearEnvironment")(fun
   }
 }, Effect.provide(NodeFileSystem.layer))
 
+/**
+ * CC's `scratchpad_dir`: a per-session directory hooks (and the Bash tool) may
+ * use for temporary files. Keyed by a hash of the session id so two sessions
+ * never share a directory and the path leaks no session identity. Created
+ * lazily by `SettingsHook.trigger` the first time a hook actually runs; `0o700`
+ * because hooks receive the path and may write secrets into it.
+ *
+ * Returns `undefined` when the directory cannot be created — an unavailable
+ * temp dir is exactly the case where CC omits the field, and a scratchpad is
+ * an affordance, never a reason to fail a hook.
+ */
+export const scratchpadDir = Effect.fn("HookTranscript.scratchpadDir")(function* (
+  sessionID: string,
+  rootOverride?: string,
+) {
+  if (!sessionID) return undefined
+  const fs = yield* FileSystem.FileSystem
+  const root = rootOverride ?? path.join(Global.Path.tmp, "hooks", "scratchpad")
+  const dir = path.join(root, createHash("sha256").update(sessionID).digest("hex"))
+  const created = yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 }).pipe(
+    Effect.as(true),
+    Effect.catch(() => Effect.succeed(false)),
+  )
+  return created ? dir : undefined
+}, Effect.provide(NodeFileSystem.layer))
+
+/** Session end drops its scratchpad; missing directory is success. */
+export const clearScratchpad = Effect.fn("HookTranscript.clearScratchpad")(function* (
+  sessionID: string,
+  rootOverride?: string,
+) {
+  if (!sessionID) return
+  const fs = yield* FileSystem.FileSystem
+  const root = rootOverride ?? path.join(Global.Path.tmp, "hooks", "scratchpad")
+  yield* fs
+    .remove(path.join(root, createHash("sha256").update(sessionID).digest("hex")), { recursive: true, force: true })
+    .pipe(Effect.ignore)
+}, Effect.provide(NodeFileSystem.layer))
+
 export * as HookTranscript from "./transcript"

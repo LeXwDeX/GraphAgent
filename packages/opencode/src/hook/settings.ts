@@ -23,7 +23,9 @@
  *   - { type: "agent",   prompt: "<llm-task-prompt>", command?: "<legacy-prompt>", timeout?: <seconds> }
  *
  * stdin JSON envelope per Claude Code spec:
- *   { hook_event_name, session_id, transcript_path, cwd, ...event-specific }
+ *   { hook_event_name, session_id, prompt_id, transcript_path, cwd,
+ *     scratchpad_dir, permission_mode, agent_id?, agent_type?, effort?,
+ *     ...event-specific }
  *
  * stdout control JSON (any subset):
  *   { continue, stopReason, suppressOutput, systemMessage,
@@ -76,6 +78,7 @@ import { HookFileWatch } from "./file-watch"
 import { EffectBridge } from "@/effect/bridge"
 import { buildForkHooks, watchSettings } from "./extensions" // [FORK:hook-ext]
 import { isTrusted, trustFilePath } from "./workspace-trust" // [FORK:hook-ext] WP-6B
+import { HookTranscript } from "./transcript"
 
 const log = Log.create({ service: "hook.settings" })
 
@@ -245,11 +248,18 @@ export interface Settings {
   /** Optional global ceiling for environment interpolation in HTTP headers. */
   httpHookAllowedEnvVars?: string[]
   /**
-   * Opt-in enforcement of the workspace-trust gate (WP-6B). When `true` (any
-   * layer in the chain), `SettingsHook.trigger` silently skips ALL hooks for a
-   * working directory that is not on the trust list, unless `allowUntrusted` is
-   * also set. Read from the top-level `requireTrust` key of a hooks.json. Also
-   * enabled by env `OPENCODE_HOOKS_REQUIRE_TRUST=1`. Default false → zero gate.
+   * Workspace-trust gate for settings-file hooks (WP-6B). The gate is ON by
+   * default: while the working directory is not on the trust list, matchers
+   * read from the hooks.json chain are held back (CC's workspace-trust rule for
+   * settings files). Runtime-registered session hooks (plugins, builtins, the
+   * session-hook HTTP API, user-scope agent frontmatter) are not gated; project
+   * subagent frontmatter keeps its own registration-time trust check.
+   *
+   * A GLOBAL hooks.json may set `false` to disable the gate; the explicit
+   * `true` (any layer) is kept for compatibility and forces the same behavior
+   * as the default. Non-global `false` values are stripped by `readChain` so a
+   * repository cannot opt itself out. Env `OPENCODE_HOOKS_REQUIRE_TRUST=0|1`
+   * overrides the chain (1 also forces the gate; 0 disables it).
    */
   requireTrust?: boolean
   /**
@@ -621,7 +631,24 @@ export interface TriggerContext {
   canonicalToolName?: string
   /** Real MCP server binding of the tool in this trigger; surfaced as `mcp_server`. */
   mcpServer?: { name: string; source: string }
+  /**
+   * CC envelope `prompt_id`: the user prompt currently being processed. The fork
+   * reports the persisted user message id (stable per prompt, absent before the
+   * first input). `buildStdinEnvelope` omits the field when unset.
+   */
+  promptID?: string
+  /**
+   * CC envelope `effort`: the effort level in effect for this trigger. Only the
+   * five CC levels are meaningful; producers derive it from the model variant
+   * (see `hook/prompt-identity.ts`). Emitted only for tool-use-context events.
+   */
+  effort?: HookEffort
+  /** CC envelope `scratchpad_dir`: per-session scratch directory, created lazily by `trigger`. */
+  scratchpadDir?: string
 }
+
+/** CC's effort levels (the `level` reported inside the `effort` envelope object). */
+export type HookEffort = "low" | "medium" | "high" | "xhigh" | "max"
 
 // `TriggerResult` and `landSystemMessages` live in `./trigger-result` (a
 // cycle-free leaf). Re-exported here so existing `SettingsHook.*` /
@@ -1095,10 +1122,12 @@ export function mergeSettings(layers: Settings[]): Settings {
       acc.push(...(matchers ?? []))
     }
   }
-  // requireTrust is chain-wide: any layer opting in enables enforcement.
-  // allowUntrusted merges the same way here, but readChain strips it from
-  // non-global layers before merge — only the global layer's opt-out survives.
-  if (layers.some((l) => l.requireTrust === true)) out.requireTrust = true
+  // The trust gate defaults ON. `true` from any layer forces it; an explicit
+  // `false` can only survive from the global layer (readChain strips the rest),
+  // so its presence means "the user disabled the gate". allowUntrusted merges
+  // the same way — only the global layer's escape hatch survives.
+  if (layers.some((l) => l.requireTrust === false)) out.requireTrust = false
+  else if (layers.some((l) => l.requireTrust === true)) out.requireTrust = true
   if (layers.some((l) => l.allowUntrusted === true)) out.allowUntrusted = true
   for (const layer of layers) if (layer.disableAllHooks !== undefined) out.disableAllHooks = layer.disableAllHooks
   if (layers.some((l) => l.allowedHttpHookUrls !== undefined))
@@ -1179,6 +1208,15 @@ function readChain(
         scope,
       })
       data.allowUntrusted = undefined
+    }
+    // `requireTrust: false` is the global opt-out. A project or worktree must
+    // not be able to switch the gate off for its own hooks.
+    if (scope !== "global" && data.requireTrust === false) {
+      log.warn("requireTrust:false ignored: only the global hooks.json layer may disable the trust gate", {
+        file,
+        scope,
+      })
+      data.requireTrust = undefined
     }
     warnUnsupportedFields(data.hooks, path.dirname(file))
     layers.push(data)
@@ -1730,6 +1768,24 @@ function envelopeCwd(payload: HookPayload, cwd: string): string {
 
 type HookEnvelope = Record<string, unknown> & { hook_event_name: HookEvent }
 
+/**
+ * CC emits `effort` only for events that fire "within a tool-use context" and
+ * only when the active model supports the effort parameter. The fork cannot ask
+ * every provider whether effort is supported, so it reports the field exactly
+ * when a variant is known (see `variantToEffort`) and the event is in that
+ * context — the tool-event family plus the turn-terminating Stop events.
+ */
+const EFFORT_EVENTS: ReadonlySet<HookEvent> = new Set<HookEvent>([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+  "PermissionDenied",
+  "Stop",
+  "StopFailure",
+  "SubagentStop",
+])
+
 function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: string): HookEnvelope {
   // Provider/MCP auth notifications can occur before a user session exists.
   // An empty sentinel in the internal context is not a session identity.
@@ -1739,6 +1795,12 @@ function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: stri
     ...(!sessionlessNotification ? { session_id: ctx.sessionID, transcript_path: ctx.transcriptPath } : {}),
     cwd: envelopeCwd(payload, cwd),
   }
+  // `prompt_id` and `scratchpad_dir` are session/prompt-scoped, so the same
+  // sessionless-notification rule applies. Both are omitted rather than sent
+  // as empty strings: "absent" is part of CC's contract.
+  if (!sessionlessNotification && ctx.promptID) base.prompt_id = ctx.promptID
+  if (!sessionlessNotification && ctx.scratchpadDir) base.scratchpad_dir = ctx.scratchpadDir
+  if (ctx.effort && EFFORT_EVENTS.has(payload.event)) base.effort = { level: ctx.effort }
   // Explicit ctx.permissionMode wins; otherwise derive from agentType so callers only pass agent.
   const permissionMode = ctx.permissionMode ?? (ctx.agentType ? agentToPermissionMode(ctx.agentType) : undefined)
   if (permissionMode) base.permission_mode = permissionMode
@@ -2548,16 +2610,26 @@ const mcpToolHandler: HookHandler = {
 }
 
 /**
- * `type: "http"` handler. Per CC protocol, `entry.command` is the endpoint URL;
- * the envelope is POSTed as JSON with `entry.headers` applied verbatim (auth
- * tokens etc.). 2xx → body parsed via the same parseStdout path as command
- * stdout. Non-2xx → synthetic `exitBlock` so the trigger aggregator surfaces it
- * as a block. Network errors / timeouts → log.warn + silent allow, mirroring
- * commandHandler's spawnError behavior (hooks must never crash the host).
+ * `type: "http"` handler. Per CC protocol, `url` (legacy: `command`) is the
+ * endpoint; the envelope is POSTed once as JSON with `headers` after `$VAR` /
+ * `${VAR}` interpolation restricted to `allowedEnvVars` (unlisted variables
+ * become ""). Timeout comes from `timeoutFor` (600 s default; `timeout`
+ * overrides).
  *
- * Factory takes the resolved HttpClient so the HookHandler.run signature stays
- * `R = never` (the WP-4A interface contract). Captures `http` in closure scope —
- * registered once per layer construction inside the layer's Effect.gen block.
+ * 2xx empty body → success with no output. 2xx JSON object → parsed with the
+ * same HookOutputSchema as command stdout; a schema mismatch is a non-blocking
+ * error. 2xx with any other body (plain text, array, multiple JSON lines) →
+ * non-blocking error; the text is never injected into context.
+ *
+ * Non-2xx, connection failure and timeout → non-blocking error (exitCode 1;
+ * null on timeout, output discarded). `onFailure: "block"` on a foreground,
+ * non-exempt event is the only path that turns them into a synthetic
+ * `exitBlock`. There is no retry: one POST per trigger. Hooks must never crash
+ * the host.
+ *
+ * The handler is a plain HookHandler that resolves HttpClient per run via
+ * Effect.serviceOption, so `run` stays `R = never` (the WP-4A interface
+ * contract); it is registered once in the handler map below.
  */
 const httpHandler: HookHandler = {
   type: "http",
@@ -3246,28 +3318,33 @@ export const layer = Layer.effect(
       }
 
       // ── WP-6B workspace-trust gate ──────────────────────────────
-      // OPT-IN enforcement: enabled only when any chain layer sets `requireTrust`
-      // OR env OPENCODE_HOOKS_REQUIRE_TRUST=1. When enabled and the working
-      // directory is not on the persisted trust list, ALL hooks are silently
-      // skipped (log.warn pointing at the trust file + cwd, empty TriggerResult).
-      // A layer may declare `allowUntrusted: true` to opt out of the gate. NEVER
-      // deny / throw — a trust gate that throws becomes a denial vector. Default
-      // (enforcement off) is byte-for-byte the prior behavior (zero gate).
-      const requireTrust = s.settings.requireTrust === true || process.env.OPENCODE_HOOKS_REQUIRE_TRUST === "1"
-      if (requireTrust && !isTrusted(s.cwd) && s.settings.allowUntrusted !== true) {
-        log.warn("hooks skipped: workspace not trusted", {
+      // The gate is ON by default and applies to settings-file matchers only:
+      // while `s.cwd` is untrusted, hooks.json entries are held back, matching
+      // Claude Code's workspace-trust rule for settings files. Runtime-registered
+      // session hooks (plugins, builtins, the session-hook HTTP API, user-scope
+      // agent frontmatter) are not repository configuration and keep running;
+      // project subagent frontmatter has its own registration-time trust check in
+      // SessionHooks.
+      //
+      // Opt-outs: a GLOBAL hooks.json `requireTrust: false` (readChain strips the
+      // field from project/worktree layers) or env OPENCODE_HOOKS_REQUIRE_TRUST=0.
+      // Env `=1` and any layer's explicit `true` force the gate. A layer may also
+      // declare `allowUntrusted: true` (global only) to exempt its directory.
+      // NEVER deny / throw — a trust gate that throws becomes a denial vector.
+      //
+      // Filtering only the file matchers (instead of early-returning) also keeps
+      // the deferred SessionHooks.clear on SessionEnd reachable in an untrusted
+      // workspace, so registered hooks cannot leak for the process lifetime.
+      const envTrust = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+      const gateEnabled =
+        envTrust === "1" ? true : envTrust === "0" ? false : s.settings.requireTrust !== false
+      const fileHooksAllowed =
+        !hasFile || !gateEnabled || s.settings.allowUntrusted === true || isTrusted(s.cwd)
+      if (!fileHooksAllowed) {
+        log.warn("settings hooks skipped: workspace not trusted", {
           cwd: s.cwd,
           trustFile: trustFilePath(),
         })
-        // Still free this session's hook bucket on SessionEnd — the trust gate
-        // is the one early-return path that would otherwise skip the deferred
-        // SessionHooks.clear (mirrors the short-circuit / empty-matcher / end
-        // return points), leaving an untrusted session's registered hooks
-        // leaked in memory for the process lifetime.
-        if (payload.event === "SessionEnd" && ctx.sessionID) {
-          yield* clearEndedSession(s, ctx.sessionID)
-        }
-        return result
       }
 
       // ── Session-scoped hook resolution (WP-5D) ────────────────
@@ -3288,7 +3365,7 @@ export const layer = Layer.effect(
             )
           : []
 
-      const fileMatchers = s.settings.hooks?.[payload.event] ?? []
+      const fileMatchers = fileHooksAllowed ? (s.settings.hooks?.[payload.event] ?? []) : []
       // Tag matchers with their origin so once-cleanup can remove session ones
       // after execution. The settings chain matchers carry no _sessionEntry.
       type RunMatcher = HookMatcher & { _sessionEntry?: SessionHookEntry; _sessionOwner?: string }
@@ -3322,7 +3399,12 @@ export const layer = Layer.effect(
       }
 
       const targets = matcherTargets(payload, ctx)
-      const envelope = buildStdinEnvelope(payload, ctx, s.cwd)
+      // CC's `scratchpad_dir`: create it only now, after the short-circuits, so
+      // sessions that never run a hook leave no directory behind. A failed
+      // mkdir makes the field absent instead of failing the hook.
+      const scratchpadDir =
+        ctx.scratchpadDir ?? (ctx.sessionID ? yield* HookTranscript.scratchpadDir(ctx.sessionID) : undefined)
+      const envelope = buildStdinEnvelope(payload, scratchpadDir ? { ...ctx, scratchpadDir } : ctx, s.cwd)
       // Identical handlers matched by several groups/layers run once per trigger.
       const ran = new Set<string>()
       // additionalContext dedup: only within this trigger for tool events,

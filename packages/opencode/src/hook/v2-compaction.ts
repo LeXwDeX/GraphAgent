@@ -7,6 +7,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { HookTranscript } from "./transcript"
+import { promptIdentity } from "./prompt-identity"
 import { SettingsHook, type HookPayload } from "./settings"
 
 /** Host hook adapter for the V2 runner's actual auto-compaction boundary. */
@@ -25,13 +26,15 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             const session = yield* sessions.get(sessionID)
             if (!session.directory) return undefined
+            const messages = yield* sessions.messages({ sessionID })
             const transcriptPath = yield* HookTranscript.materialize({
               sessionID,
               directory: session.directory,
-              messages: yield* sessions.messages({ sessionID }),
+              messages,
             })
             const result = yield* settings.trigger(payload, {
               sessionID,
+              ...promptIdentity(messages),
               transcriptPath,
               environment: yield* HookTranscript.environment(sessionID),
             })

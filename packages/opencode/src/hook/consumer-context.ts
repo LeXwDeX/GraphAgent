@@ -4,6 +4,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { HookTranscript, type Message } from "./transcript"
+import { promptIdentity } from "./prompt-identity"
 
 /** Actual persisted history and SessionStart environment for consumers without the prompt wrapper. */
 export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
@@ -42,6 +43,7 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   return {
     sessionID,
     agentType: agent,
+    ...promptIdentity(messages),
     transcriptPath: yield* HookTranscript.materialize({ sessionID, directory, messages }),
     environment: yield* HookTranscript.environment(sessionID),
     permissionMode: permissionMode === "manual" ? "default" : (permissionMode ?? "default"),

@@ -234,6 +234,11 @@ describe("PreToolUse feedback survives PostToolUse output replacement", () => {
       const seen = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
       expect(JSON.stringify(seen.tool_response)).toContain("WRITE_COMPLETE")
       expect(JSON.stringify(seen.tool_response)).not.toContain("CROSS_AUDIT_PRE_CTX")
+      // Direct SessionTools.resolve callers have no prompt-level transcript wrapper;
+      // the hook envelope must still point at a materialized transcript file.
+      expect(typeof seen.transcript_path).toBe("string")
+      expect(seen.transcript_path.length).toBeGreaterThan(0)
+      expect(yield* Effect.promise(() => fs.stat(seen.transcript_path))).toBeTruthy()
     }),
   )
 
