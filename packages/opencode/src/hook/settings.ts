@@ -2373,6 +2373,8 @@ interface HookExecution {
   exitCode?: number | null
   /** True only after the handler actually ran successfully; absent means failure. */
   succeeded?: boolean
+  /** Failure text for the user-visible `<hook name> hook error` notice; never model context. */
+  failureMessage?: string
 }
 
 const claudeTools = new Map<string, { name: string; fields: readonly (readonly [string, string])[] }>([
@@ -2459,6 +2461,7 @@ const commandHandler: HookHandler = {
         return {
           json: undefined,
           exitCode: 1,
+          failureMessage: spawnError,
           exitBlock: failureBlocks ? `hook failed; blocking because onFailure is "block": ${spawnError}` : undefined,
         }
 
@@ -2492,7 +2495,13 @@ const commandHandler: HookHandler = {
           MISSING_FILE_STDERR.test(stderr)
         ) {
           log.warn("hook exit 2 reports a missing file; treating as non-blocking", { command: commandText(entry) })
-          return { json: undefined, exitCode, succeeded: false, exitBlock: undefined }
+          return {
+            json: undefined,
+            exitCode,
+            succeeded: false,
+            failureMessage: stderr.trim() || "hook exited with code 2",
+            exitBlock: undefined,
+          }
         }
         const outcome = sync(stdout)
         const json = outcome.kind === "json" ? outcome.value : undefined
@@ -2519,6 +2528,7 @@ const commandHandler: HookHandler = {
           rawStdout: undefined,
           exitCode: null,
           succeeded: false,
+          failureMessage: `hook timed out after ${entry.timeout ?? DEFAULT_TIMEOUT_MS / 1000}s`,
           exitBlock: failureBlocks ? 'hook timed out; blocking because onFailure is "block"' : undefined,
         }
       }
@@ -2532,6 +2542,7 @@ const commandHandler: HookHandler = {
         return {
           json: outcome.kind === "json" ? outcome.value : undefined,
           exitCode,
+          failureMessage: stderr.trim() || `hook exited with code ${exitCode}`,
           exitBlock: failureBlocks ? `hook failed; blocking because onFailure is "block": ${stderr.trim()}` : undefined,
         }
       }
@@ -2552,6 +2563,7 @@ const commandHandler: HookHandler = {
         rawStdout: stdout,
         exitCode,
         succeeded: !invalidJson,
+        failureMessage: invalidJson ? "hook returned invalid JSON" : undefined,
         exitBlock:
           invalidJson && failureBlocks ? `hook invalid JSON; blocking because onFailure is "block"` : undefined,
       }
@@ -2592,11 +2604,22 @@ const mcpHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
+        failureMessage: hookFailureText(exit.cause),
         exitBlock: undefined,
       }
     }
     return { ...exit.value, succeeded: exit.value.succeeded ?? true }
   }),
+}
+
+/** Readable failure text for the user-visible hook-error notice; never the raw cause. */
+function hookFailureText(cause: Cause.Cause<unknown>): string {
+  // invokeMcpHook throws, and a throw inside Effect.gen is a defect rather than
+  // a typed failure, so both reason kinds carry the message the user needs.
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause)) ?? cause.reasons.find(Cause.isDieReason)?.defect
+  if (Cause.isTimeoutError(error)) return "hook timed out"
+  if (error instanceof Error) return error.message
+  return String(error ?? "hook failed")
 }
 
 const mcpToolHandler: HookHandler = {
@@ -2617,6 +2640,7 @@ const mcpToolHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
+        failureMessage: hookFailureText(exit.cause),
         exitBlock: undefined,
       }
     }
@@ -2679,6 +2703,7 @@ const httpHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
+        failureMessage: hookFailureText(exit.cause),
         exitBlock: blocksOnFailure(entry, envelope.hook_event_name)
           ? `http hook failed; blocking because onFailure is "block"`
           : undefined,
@@ -2690,6 +2715,7 @@ const httpHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: 1,
+        failureMessage: `hook returned status ${status}`,
         exitBlock: blocksOnFailure(entry, envelope.hook_event_name)
           ? `http hook returned status ${status}; blocking because onFailure is "block"`
           : undefined,
@@ -2701,6 +2727,7 @@ const httpHandler: HookHandler = {
     return {
       json,
       succeeded: !!json,
+      failureMessage: json ? undefined : "hook returned invalid JSON",
       exitBlock:
         !json && blocksOnFailure(entry, envelope.hook_event_name)
           ? `http hook invalid JSON; blocking because onFailure is "block"`
@@ -3701,7 +3728,7 @@ export const layer = Layer.effect(
           // kill the session. Catch defects here at the single entry-execution point
           // (covers all handler types: command/mcp/http/prompt/agent) → silent allow,
           // log, and continue to the next entry.
-          const { json, exitBlock, rawStdout, exitCode, succeeded } = yield* Fiber.join(pending).pipe(
+          const { json, exitBlock, rawStdout, exitCode, succeeded, failureMessage } = yield* Fiber.join(pending).pipe(
             Effect.catchDefect((defect) => {
               log.warn("hook entry defect swallowed (host protected)", {
                 event: payload.event,
@@ -3714,9 +3741,17 @@ export const layer = Layer.effect(
                 rawStdout: undefined,
                 exitCode: undefined,
                 succeeded: false,
+                failureMessage: undefined,
               })
             }),
           )
+          // Reference parity: a hook that failed without blocking still leaves a
+          // user-visible `<hook name> hook error` notice. It never enters model
+          // context, tool feedback, or any hook decision.
+          if (succeeded !== true && !exitBlock && failureMessage)
+            (result.hookErrors ??= []).push(
+              `${group.matcher ? `${payload.event}:${group.matcher}` : payload.event} hook error: ${sanitizeHookContext(failureMessage)}`,
+            )
           if (group._sessionEntry?.once && group._sessionOwner)
             yield* settleGroup(
               `${group._sessionOwner}:${group._sessionEntry.id}`,

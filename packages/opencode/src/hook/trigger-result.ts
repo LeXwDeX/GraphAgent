@@ -20,6 +20,13 @@ export interface TriggerResult {
   additionalContexts: string[]
   /** systemMessage strings emitted by hooks */
   systemMessages: string[]
+  /**
+   * User-visible notices for hooks that failed without blocking
+   * (`<event>[:<matcher>] hook error: <failure>`). Reference parity: a mistyped
+   * command or a dead endpoint must not disappear into the log. Never model
+   * context and never part of tool feedback.
+   */
+  hookErrors?: string[]
   /** Validated OSC/BEL terminal sequences for interactive clients to emit. */
   terminalSequences?: string[]
   /** Block decision — non-undefined means main flow must short-circuit */
@@ -124,7 +131,7 @@ export function withHookFailure(error: unknown, result: TriggerResult, preContex
 }
 
 /**
- * Land a TriggerResult's `systemMessages` so they are never silently dropped.
+ * Land a TriggerResult's user-visible notices so they are never silently dropped.
  *
  * Warnings are user-visible ephemeral events, not model context. `inject`
  * remains accepted for existing callers but is intentionally unused.
@@ -133,7 +140,7 @@ export function landSystemMessages(
   result: TriggerResult,
   opts: { sessionID: string; inject?: (message: string) => Effect.Effect<unknown> },
 ): Effect.Effect<void> {
-  const messages = result.systemMessages ?? []
+  const messages = [...(result.systemMessages ?? []), ...(result.hookErrors ?? [])]
   if (messages.length === 0) return Effect.void
   return Effect.gen(function* () {
     // Lazy import preserves this leaf's cycle-free module initialization.
