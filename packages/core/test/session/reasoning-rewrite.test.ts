@@ -245,6 +245,26 @@ describe("reasoning rewrite job", () => {
     }),
   )
 
+  it.effect("counts provider errors as failures so consecutive errors pause the session", () =>
+    Effect.gen(function* () {
+      const budget = makeRewriteBudget()
+      const failing = {
+        budget,
+        sessionID: "s",
+        slot,
+        language: "zh" as const,
+        call: (): OrganizeCall => async () => ({ text: "provider error", finishReason: "error" }),
+        adopt: () => Effect.succeed(true),
+      }
+      for (let index = 0; index < ReasoningDistillationPolicy.calls.maxConsecutiveFailures; index++)
+        expect((yield* runReasoningRewrite(failing)).reason).toBe("model-failure")
+      expect((yield* runReasoningRewrite(failing)).reason).toBe("budget-paused")
+      expect(budget.snapshot("s").consecutiveFailures).toBe(
+        ReasoningDistillationPolicy.calls.maxConsecutiveFailures,
+      )
+    }),
+  )
+
   it.effect("stops once the session token ceiling is reached", () =>
     Effect.gen(function* () {
       const budget = makeRewriteBudget()

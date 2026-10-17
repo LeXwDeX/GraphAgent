@@ -39,7 +39,9 @@ export const makeRewriteBudget = () => {
       sessionID: string,
       input: { responded: boolean; aborted: boolean; usageTokens?: number; prompt: string; output?: string },
     ) => {
-      const current = state(sessionID)
+      // A late in-flight rewrite must not recreate budget state after the session was deleted.
+      const current = states.get(sessionID)
+      if (!current) return
       if (!input.responded) {
         if (input.aborted) return
         current.consecutiveFailures++

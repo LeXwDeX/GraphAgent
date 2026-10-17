@@ -1,4 +1,5 @@
 import { ReasoningCarrier } from "@opencode-ai/llm"
+import { Hash } from "../../util/hash"
 
 /** Pure editability contract for a persisted reasoning part. */
 export type CanonicalReasoning = Readonly<{
@@ -80,6 +81,7 @@ export const reasoningForReplay = (input: {
   metadata?: Record<string, unknown>
   distillation?: {
     originalText: string
+    sourceFingerprint?: string
     version?: 2
     originalMetadata?: Record<string, unknown>
   }
@@ -87,7 +89,29 @@ export const reasoningForReplay = (input: {
 }): Readonly<{ text: string; metadata?: Record<string, unknown> }> => {
   const saved = input.distillation
   if (!saved) return { text: input.text, metadata: input.metadata }
-  if (input.enabled && saved.version === 2) return { text: input.text, metadata: input.metadata }
+  if (input.enabled && saved.version === 2) {
+    // A V2 provenance must describe the stored original. If the mirror or fingerprint no longer matches, replay the
+    // known original pair instead of sending contradictory text and metadata.
+    if (saved.sourceFingerprint !== undefined && saved.sourceFingerprint !== Hash.sha256(saved.originalText))
+      return { text: saved.originalText, metadata: saved.originalMetadata ?? input.metadata }
+    // The current metadata belongs to the adopted mirror, not to the original source. Validate against the
+    // provenance's original carrier so a legitimate adoption is not mistaken for corruption.
+    const originalMetadata = saved.originalMetadata ?? input.metadata
+    if (originalMetadata === undefined || Object.keys(originalMetadata).length === 0)
+      return { text: input.text, metadata: input.metadata }
+    const edited = replaceCanonicalReasoning(
+      {
+        text: saved.originalText,
+        metadata: originalMetadata,
+        settled: true,
+        distilled: false,
+      },
+      input.text,
+    )
+    return edited
+      ? { text: input.text, metadata: input.metadata }
+      : { text: saved.originalText, metadata: originalMetadata }
+  }
   if (input.enabled) {
     // Legacy adoption changed only text. Reconstruct an exact plaintext mirror for send when possible;
     // otherwise preserve the known original pair instead of emitting contradictory text and metadata.

@@ -23,24 +23,26 @@ export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(
     if (status?.clear) yield* status.clear(SessionID.make(input.sessionID))
     if (attention) yield* attention.clear(input.sessionID)
     const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
-    if (!lifecycle || !(yield* lifecycle.claimEnd(input.sessionID))) return
     const { SettingsHook } = yield* Effect.promise(() => import("./settings"))
     const { Session } = yield* Effect.promise(() => import("@/session/session"))
     const settings = yield* SettingsHook.Service
     const session = yield* Session.Service
     const id = SessionID.make(input.sessionID)
     const finish = Effect.gen(function* () {
+      // Materialize before claiming: a failed transcript read must not consume the one SessionEnd attempt.
       const messages = yield* session.messages({ sessionID: id }).pipe(Effect.orDie)
       const transcriptPath = yield* HookTranscript.materialize({
         sessionID: id,
         directory: input.directory,
         messages,
       }).pipe(Effect.orDie)
+      if (lifecycle && !(yield* lifecycle.claimEnd(input.sessionID))) return
       const result = yield* settings.trigger(
         { event: "SessionEnd", reason: input.reason },
         { sessionID: id, transcriptPath, environment: yield* HookTranscript.environment(id).pipe(Effect.orDie) },
       )
       yield* SettingsHook.landSystemMessages(result, { sessionID: id })
+      if (settings.settleSessionEnd) yield* settings.settleSessionEnd()
     })
     yield* finish.pipe(
       Effect.timeout(yield* settings.sessionEndTimeout?.() ?? Effect.succeed(1500)),

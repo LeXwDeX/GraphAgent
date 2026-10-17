@@ -856,7 +856,7 @@ it.live("native write, edit and multi-file patch emit actual FileChanged paths",
   ),
 )
 
-for (const event of ["Stop", "StopFailure"] as const) {
+for (const event of ["Stop"] as const) {
   it.live(`${event} asyncRewake shares a bounded chain and resets for a new prompt`, () =>
     provideTmpdirServer(
       Effect.fnUntraced(function* ({ llm, dir }) {
@@ -877,10 +877,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
             },
           ],
         })
-        for (let i = 0; i < 20; i++) {
-          if (event === "StopFailure") yield* llm.error(400, { error: { message: `provider failure ${i}` } })
-          else yield* llm.text(`response ${i}`)
-        }
+        for (let i = 0; i < 20; i++) yield* llm.text(`response ${i}`)
         const completedStops = (count: number) =>
           pollWithTimeout(
             Effect.promise(async () => {
@@ -912,3 +909,45 @@ for (const event of ["Stop", "StopFailure"] as const) {
     ),
   )
 }
+
+it.live("StopFailure asyncRewake records the failure but does not start a new model turn", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "StopFailure audit", permission: [] })
+      const marker = path.join(dir, "stop-failure")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      yield* hooks.add(session.id, {
+        event: "StopFailure",
+        hooks: [
+          {
+            type: "command",
+            async: true,
+            asyncRewake: true,
+            command: `printf '%s' 'ignored failure' > ${quote(marker)}; exit 2`,
+          },
+        ],
+      })
+      yield* llm.error(400, { error: { message: "provider failure" } })
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "start" }] })
+      yield* pollWithTimeout(
+        Effect.promise(() =>
+          fs
+            .access(marker)
+            .then(() => true as const)
+            .catch(() => undefined),
+        ),
+        "StopFailure hook did not run",
+        "15 seconds",
+      )
+      // Exit 2 is ignored for StopFailure: neither its stderr nor stdout may start another provider turn.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 200)))
+      const messages = JSON.stringify(yield* sessions.messages({ sessionID: session.id }))
+      expect(messages).not.toContain("ignored failure")
+      yield* hooks.clear(session.id)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)

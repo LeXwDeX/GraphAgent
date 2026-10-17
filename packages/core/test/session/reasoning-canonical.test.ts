@@ -87,6 +87,19 @@ describe("canonical reasoning editability", () => {
     })
   })
 
+  test("replays the original pair when a v2 provenance no longer matches its source", () => {
+    const saved = {
+      originalText: "ORIGINAL",
+      sourceFingerprint: "bad-fingerprint",
+      version: 2 as const,
+      originalMetadata: { relay: { reasoning_details: [{ type: "reasoning.text", text: "ORIGINAL" }] } },
+    }
+    expect(reasoningForReplay({ text: "DISTILLED", metadata: {}, distillation: saved, enabled: true })).toEqual({
+      text: "ORIGINAL",
+      metadata: saved.originalMetadata,
+    })
+  })
+
   test("empty distilled text updates a plaintext mirror and restores the original on disabled replay", () => {
     const metadata = {
       relay: { reasoning_details: [{ type: "reasoning.text", text: "ORIGINAL", format: "unknown", index: 0 }] },

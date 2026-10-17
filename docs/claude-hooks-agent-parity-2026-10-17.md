@@ -35,6 +35,22 @@
 | command / HTTP / MCP / prompt / agent 五种 handler                                            | `src/hook/settings.ts`                               | `hook-executor-protocol.test.ts`、`hook-transport-http.test.ts`、`hook-transport-mcp.test.ts`、`hook-consumer-*.test.ts` |
 | 阻断、附加上下文、系统消息、权限决策                                                          | 各事件 reducer + consumer                            | 对应事件测试                                                                                                             |
 
+## 兼容边界
+
+- **输入格式。** 默认 envelope 是本 fork 的 native 形态（小写工具名和 native 参数）。command hook 可设置
+  `inputFormat: "claude-code"`，在 entry 边界翻译为 Claude 的 `tool_name`/`tool_input`。HTTP、MCP、prompt 和
+  agent handler 没有该 opt-in；依赖 `Bash`、`file_path` 等 Claude 字段的脚本必须使用 command + 该选项。
+- **SessionEnd 生命周期。** 本地生产者为 `other`（session 删除）和 `prompt_input_exit`（CLI/TUI 退出）。
+  `clear`/`resume`/`logout` 目前没有本地 producer；SessionStart 的 `clear` 同样没有。配置在这些 reason 上的
+  matcher 不会触发，直到对应生命周期接入。
+- **SessionEnd 异步。** 前台 hook 受 `sessionEndTimeout`（默认 1.5s）约束。异步 SessionEnd 在客户端退出时
+  也会在该预算内等待；超时后取消，实例继续存活时则保留至实例 dispose。
+- **exit 2 的 stderr。** `SessionStart`、`SessionEnd`、`CwdChanged`、`FileChanged`、`PostCompact`、
+  `SubagentStart`、`PostModelSwitch` 显示 stderr 但不阻断。其他事件仍按阻断语义处理。
+- **上下文边界。** `additionalContext` 与 `systemMessage` 限制为 10,000 字符，超出时截断并标注；内容中的
+  `<system-reminder>` 标签会转义，避免 hook 输出关闭宿主 envelope。
+- **Stop 输出。** `continue:false` 的 `stopReason` 以用户可见通知落地；异步 `StopFailure` 的输出被忽略。
+
 ## 逐项回归
 
 每个事件按“主测试文件 → 边界测试文件”的顺序执行。一个事件通过后再进入下一个。命令均在 `packages/opencode` 下运行。

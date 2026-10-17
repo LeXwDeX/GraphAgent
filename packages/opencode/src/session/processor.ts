@@ -418,6 +418,8 @@ export const layer = Layer.effect(
 
       const flushV2Fragments = Effect.fn("SessionProcessor.flushV2Fragments")(function* () {
         if (!mirrorAssistant) return
+        // step-finish clears the V2 assistant ID. A later halt must not fabricate an Ended event without an owner.
+        if (!ctx.v2AssistantMessageID) return
         if (!ctx.assistantMessage.summary && ctx.currentText && ctx.currentTextID) {
           yield* events.publish(SessionEvent.Text.Ended, {
             sessionID: ctx.sessionID,
@@ -1240,7 +1242,9 @@ export const layer = Layer.effect(
         ctx.toolcalls = {}
         if (deferred) ctx.assistantMessage.finish = "tool_deferred"
         yield* display(true)
-        if (ctx.splitForContinuation) return
+        // A split normally hands the message to a continuation, which completes it. Compaction takes precedence and
+        // never continues, so it must still complete the message.
+        if (ctx.splitForContinuation && !ctx.needsCompaction) return
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })

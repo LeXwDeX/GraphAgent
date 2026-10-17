@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-distillation"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1493,7 +1494,7 @@ describe("session.compaction.process", () => {
                 time: { start: 1, end: 2 },
                 distillation: {
                   originalText: `original reasoning ${"x".repeat(60_000)}`,
-                  sourceFingerprint: "tail-source",
+                  sourceFingerprint: Hash.sha256(`original reasoning ${"x".repeat(60_000)}`),
                   version: 2,
                 },
               })
@@ -1649,7 +1650,9 @@ describe("session.compaction.process", () => {
                   time: { start: 1, end: 2 },
                   distillation: {
                     originalText: `${name} original reasoning${name === "tail" ? "x".repeat(4_000) : ""}`,
-                    sourceFingerprint: `${name}-source`,
+                    sourceFingerprint: Hash.sha256(
+                      `${name} original reasoning${name === "tail" ? "x".repeat(4_000) : ""}`,
+                    ),
                     version: 2,
                   },
                 })
