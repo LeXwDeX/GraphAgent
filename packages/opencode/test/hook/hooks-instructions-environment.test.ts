@@ -3,6 +3,8 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../lib/cli-process"
+import { $ } from "bun"
+import { pollWithTimeout } from "../lib/effect"
 import { decodeRecord, decodeRecords, decodeSession } from "../lib/hook-json"
 
 cliIt.live(
@@ -112,5 +114,141 @@ cliIt.live(
       expect(new Set(rows.map((row) => row.value)).size).toBe(2)
       expect(yield* llm.calls).toBe(8)
       expect(process.env.INSTRUCTION_SESSION_VALUE).toBe(hostValue)
+    }),
+)
+
+import type { OpencodeCli } from "../lib/cli-process"
+
+const instructionSetup = (home: string, opencode: OpencodeCli, source: string, args: string[] = []) =>
+  Effect.gen(function* () {
+    const audit = path.join(home, "instructions-audit.jsonl")
+    const script = path.join(home, "instructions-audit.ts")
+    yield* Effect.promise(async () => {
+      await $`git init`.cwd(home).quiet()
+      await $`git config commit.gpgsign false`.cwd(home).quiet()
+      await $`git -c user.name=Test -c user.email=test@example.test commit --allow-empty -m fixture`.cwd(home).quiet()
+      await fs.mkdir(path.join(home, "nested"), { recursive: true })
+      await fs.writeFile(path.join(home, ".config/opencode/AGENTS.md"), "# Global instruction\n")
+      await fs.writeFile(path.join(home, "AGENTS.md"), "# Project instruction\n")
+      await fs.writeFile(path.join(home, "nested/AGENTS.md"), "# Nested instruction\n")
+      await fs.writeFile(path.join(home, "nested/value.txt"), "NESTED_VALUE")
+      await fs.writeFile(script, source.replaceAll("__AUDIT__", JSON.stringify(audit)))
+      await fs.writeFile(
+        path.join(home, ".config/opencode/hooks.json"),
+        JSON.stringify({
+          InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script, ...args] }] }],
+        }),
+      )
+    })
+    const server = yield* opencode.serve({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "" } })
+    const post = (route: string, payload: object) =>
+      Effect.promise(() =>
+        fetch(server.url + route, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          body: JSON.stringify(payload),
+        }),
+      )
+    const created = yield* post("/session", {})
+    const id = decodeSession(yield* Effect.promise(() => created.json())).id
+    const rows = Effect.promise(async () =>
+      (await fs.readFile(audit, "utf8").catch(() => ""))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => decodeRecord(JSON.parse(line))),
+    )
+    const nested = yield* Effect.promise(() => fs.realpath(path.join(home, "nested/value.txt")))
+    const turn = (text: string) =>
+      Effect.gen(function* () {
+        const response = yield* post(`/session/${id}/message`, {
+          model: { providerID: "test", modelID: "test-model" },
+          parts: [{ type: "text", text }],
+        })
+        expect(response.status).toBe(200)
+        yield* Effect.promise(() => response.text())
+      })
+    return { audit, post, id, rows, nested, turn }
+  })
+
+const record =
+  'const i=JSON.parse(await Bun.stdin.text());const fs=await import("node:fs/promises");await fs.appendFile(__AUDIT__,JSON.stringify({reason:i.load_reason,path:i.file_path,type:i.memory_type,trigger:i.trigger_file_path})+"\\n");'
+
+cliIt.live("V1 InstructionsLoaded reports real memory_type and the nested trigger file", ({ home, llm, opencode }) =>
+  Effect.gen(function* () {
+    const fixture = yield* instructionSetup(home, opencode, record)
+    yield* llm.tool("read", { filePath: fixture.nested })
+    yield* llm.text("DONE")
+    yield* fixture.turn("read nested")
+    const rows = yield* pollWithTimeout(
+      fixture.rows.pipe(Effect.map((items) => (items.length >= 3 ? items : undefined))),
+      "InstructionsLoaded rows",
+      "10 seconds",
+    )
+    const byPath = (suffix: string) => rows.find((row) => String(row.path).endsWith(suffix))
+    expect(byPath(path.join(".config/opencode/AGENTS.md"))).toMatchObject({ reason: "session_start", type: "User" })
+    expect(rows.find((row) => row.reason === "session_start" && row.type === "Project")).toBeDefined()
+    expect(rows.find((row) => row.reason === "nested_traversal")).toMatchObject({
+      type: "Project",
+      trigger: fixture.nested,
+    })
+    expect(rows.some((row) => row.type === "Managed" || row.type === undefined)).toBe(false)
+  }),
+)
+
+cliIt.live("V1 InstructionsLoaded observes in the background without delaying the model", ({ home, llm, opencode }) =>
+  Effect.gen(function* () {
+    const done = path.join(home, "instructions-slow-done")
+    const fixture = yield* instructionSetup(
+      home,
+      opencode,
+      `${record}await new Promise((resolve)=>setTimeout(resolve,9000));await fs.writeFile(process.argv[2],"done");`,
+      [done],
+    )
+    yield* llm.text("BACKGROUND_DONE")
+    yield* fixture.turn("hello")
+    expect(yield* Effect.promise(() => fs.exists(done))).toBe(false)
+    yield* pollWithTimeout(
+      Effect.promise(async () => ((await fs.exists(done)) ? true : undefined)),
+      "background hook completion",
+      "30 seconds",
+    )
+  }),
+)
+
+cliIt.live(
+  "V1 InstructionsLoaded reloads with load_reason compact after a committed compaction",
+  ({ home, llm, opencode }) =>
+    Effect.gen(function* () {
+      const fixture = yield* instructionSetup(home, opencode, record)
+      yield* llm.text("FIRST")
+      yield* fixture.turn("first")
+      yield* pollWithTimeout(
+        fixture.rows.pipe(Effect.map((items) => (items.length >= 2 ? items : undefined))),
+        "initial rows",
+        "10 seconds",
+      )
+      yield* llm.text("COMPACT_SUMMARY")
+      const summarized = yield* fixture.post(`/session/${fixture.id}/summarize`, {
+        providerID: "test",
+        modelID: "test-model",
+        auto: false,
+      })
+      expect(summarized.status).toBe(200)
+      yield* Effect.promise(() => summarized.text())
+      yield* llm.text("AFTER_COMPACT")
+      yield* fixture.turn("after")
+      const rows = yield* pollWithTimeout(
+        fixture.rows.pipe(Effect.map((items) => (items.some((row) => row.reason === "compact") ? items : undefined))),
+        "compact reload rows",
+        "10 seconds",
+      )
+      expect(
+        rows
+          .filter((row) => row.reason === "compact")
+          .map((row) => row.type)
+          .sort((a, b) => String(a).localeCompare(String(b))),
+      ).toEqual(["Project", "User"])
+      expect(rows.filter((row) => row.reason === "session_start")).toHaveLength(2)
     }),
 )

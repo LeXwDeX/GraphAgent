@@ -43,6 +43,10 @@ export interface AskOptions {
   readonly toolInput?: Record<string, unknown>
   readonly hookAllowed?: boolean
   readonly toolName?: string
+  /** Official `mcp__server__tool` name from the real MCP binding; never derived from `toolName`. */
+  readonly canonicalToolName?: string
+  /** Real MCP server of the tool that is asking. */
+  readonly mcpServer?: { name: string; source: string }
   readonly resolveRuleset?: (
     mode?: "plan",
   ) => Effect.Effect<{ native: PermissionV1.Ruleset; rules: PermissionV1.Ruleset }>
@@ -292,8 +296,28 @@ export const layer = Layer.effect(
                 always: request.always,
               }),
               toolUseID: request.tool?.callID,
+              // Only what this dialog already offers as "always allow", expressed as a session rule update.
+              ...(request.always.length
+                ? {
+                    permissionSuggestions: [
+                      {
+                        type: "addRules" as const,
+                        rules: request.always.map((ruleContent) => ({
+                          toolName: options?.canonicalToolName ?? request.permission,
+                          ruleContent,
+                        })),
+                        behavior: "allow" as const,
+                        destination: "session",
+                      },
+                    ],
+                  }
+                : {}),
             },
-            yield* consumerContext(request.sessionID, policy.mode ?? "default").pipe(Effect.orDie),
+            {
+              ...(yield* consumerContext(request.sessionID, policy.mode ?? "default").pipe(Effect.orDie)),
+              ...(options?.canonicalToolName ? { canonicalToolName: options.canonicalToolName } : {}),
+              ...(options?.mcpServer ? { mcpServer: options.mcpServer } : {}),
+            },
           )
           .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
         yield* SettingsHook.landSystemMessages(hookResult, { sessionID: request.sessionID ?? "" })

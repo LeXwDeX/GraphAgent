@@ -244,7 +244,12 @@ const registryLayer = Layer.effect(
           }
           return pending
         })
-      const pending = yield* attempt(0)
+      const attempted = yield* attempt(0)
+      // PreToolUse context stays with a rejected or failed result of the call it governed.
+      const pending =
+        "result" in attempted && attempted.result.type === "error" && "feedback" in before && before.feedback
+          ? { result: { type: "error" as const, value: `${attempted.result.value}\n\n${before.feedback}` } }
+          : attempted
       if (permissionState?.stopped)
         return { result: { type: "text" as const, value: permissionState.stopped }, stopped: permissionState.stopped }
       if ((permissionState?.denied || !executionAttempted) && "result" in pending) return pending

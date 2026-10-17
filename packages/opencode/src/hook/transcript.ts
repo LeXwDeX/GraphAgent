@@ -191,14 +191,24 @@ export const materialize = Effect.fn("HookTranscript.materialize")(function* (in
   return lifecycle ? yield* lifecycle.serializeTranscript(input.sessionID, write) : yield* write
 }, Effect.provide(NodeFileSystem.layer))
 
+/**
+ * `session` exports (SessionStart/Setup) last until the session ends. `directory`
+ * exports (CwdChanged/FileChanged) are an overlay that the next CwdChanged clears.
+ */
+export type EnvironmentLifetime = "session" | "directory"
+
 export const environmentFile = Effect.fn("HookTranscript.environmentFile")(function* (
   sessionID: string,
   rootOverride?: string,
+  lifetime: EnvironmentLifetime = "session",
 ) {
   const fs = yield* FileSystem.FileSystem
   const root = rootOverride ?? path.join(Global.Path.data, "hooks", "environment")
   yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 })
-  const file = path.join(root, createHash("sha256").update(sessionID).digest("hex") + ".sh")
+  const file = path.join(
+    root,
+    createHash("sha256").update(sessionID).digest("hex") + (lifetime === "directory" ? ".directory.sh" : ".sh"),
+  )
   if (!(yield* fs.exists(file))) yield* fs.writeFileString(file, "", { mode: 0o600 })
   return file
 }, Effect.provide(NodeFileSystem.layer))
@@ -208,13 +218,17 @@ export const environment = Effect.fn("HookTranscript.environment")(function* (
   rootOverride?: string,
   base: NodeJS.ProcessEnv = process.env,
 ) {
-  const file = yield* environmentFile(sessionID, rootOverride)
-  const text = yield* FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.readFileString(file)))
+  const files = [
+    yield* environmentFile(sessionID, rootOverride, "session"),
+    yield* environmentFile(sessionID, rootOverride, "directory"),
+  ]
+  const fileSystem = yield* FileSystem.FileSystem
+  const texts = yield* Effect.forEach(files, (file) => fileSystem.readFileString(file))
   const directory = (yield* InstanceRef)?.directory ?? process.cwd()
   const signature = createHash("sha256")
     .update(directory)
     .update("\0")
-    .update(text)
+    .update(JSON.stringify(texts))
     .update("\0")
     .update(JSON.stringify(Object.entries(base).sort(([a], [b]) => a.localeCompare(b))))
     .digest("hex")
@@ -224,9 +238,9 @@ export const environment = Effect.fn("HookTranscript.environment")(function* (
         process.platform === "win32" ? "bash.exe" : "/bin/bash",
         [
           "-c",
-          '/usr/bin/env -0; printf "\\0"; set -a; source "$1" >/dev/null; /usr/bin/env -0',
+          '/usr/bin/env -0; printf "\\0"; set -a; source "$1" >/dev/null; source "$2" >/dev/null; /usr/bin/env -0',
           "hook-environment",
-          file,
+          ...files,
         ],
         { cwd: directory, env: base, signal, timeout: 5000, maxBuffer: 1024 * 1024 },
       ).then(({ stdout }) => {
@@ -270,10 +284,17 @@ export function applyEnvironment(
   return result
 }
 
-export const clearEnvironment = Effect.fn("HookTranscript.clearEnvironment")(function* (sessionID: string) {
-  const file = yield* environmentFile(sessionID)
+/** Session end clears every layer (`all`); a working-directory change clears only the `directory` overlay. */
+export const clearEnvironment = Effect.fn("HookTranscript.clearEnvironment")(function* (
+  sessionID: string,
+  lifetime: EnvironmentLifetime | "all" = "all",
+  rootOverride?: string,
+) {
   const fs = yield* FileSystem.FileSystem
-  yield* fs.writeFileString(file, "", { mode: 0o600 })
+  for (const layer of lifetime === "all" ? (["session", "directory"] as const) : ([lifetime] as const)) {
+    const file = yield* environmentFile(sessionID, rootOverride, layer)
+    yield* fs.writeFileString(file, "", { mode: 0o600 })
+  }
 }, Effect.provide(NodeFileSystem.layer))
 
 export * as HookTranscript from "./transcript"

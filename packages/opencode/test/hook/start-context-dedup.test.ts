@@ -64,7 +64,7 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
   )
 
   it.instance(
-    "SessionStart(compact) re-injects identical context; later events dedupe per session again",
+    "SessionStart(compact) re-injects identical context; each prompt still receives it",
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
@@ -73,11 +73,10 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
         const compact = yield* hook.trigger({ event: "SessionStart", source: "compact" }, ctx)
         expect(startup.additionalContexts).toEqual([FIXED])
         expect(compact.additionalContexts).toEqual([FIXED])
-        // The compact trigger re-seeded the bucket with FIXED: the same text from a per-session
-        // event is deduped, as before.
+        // Every prompt is a new turn: identical context must reach the model again.
         const prompt = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "a" }, ctx)
-        expect(prompt.additionalContexts).toEqual([])
-        // Another compaction clears the bucket again.
+        expect(prompt.additionalContexts).toEqual([FIXED])
+        // Another compaction clears the per-session bucket again.
         const compact2 = yield* hook.trigger({ event: "SessionStart", source: "compact" }, ctx)
         expect(compact2.additionalContexts).toEqual([FIXED])
       }),
@@ -91,11 +90,16 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
         const hook = yield* SettingsHook.Service
         const a = { sessionID: "ses_compact_a", transcriptPath: "" }
         const b = { sessionID: "ses_compact_b", transcriptPath: "" }
-        const first = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "x" }, b)
+        const first = yield* hook.trigger({ event: "SessionStart", source: "resume" }, b)
+        const second = yield* hook.trigger({ event: "SessionStart", source: "resume" }, b)
         yield* hook.trigger({ event: "SessionStart", source: "compact" }, a)
-        const again = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "y" }, b)
+        const third = yield* hook.trigger({ event: "SessionStart", source: "resume" }, b)
         expect(first.additionalContexts).toEqual([FIXED])
-        expect(again.additionalContexts).toEqual([])
+        expect(second.additionalContexts).toEqual([])
+        expect(third.additionalContexts).toEqual([])
+        // Per-turn context is independent of the per-session bucket.
+        const prompt = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "y" }, b)
+        expect(prompt.additionalContexts).toEqual([FIXED])
       }),
     { init: write(["SessionStart", "UserPromptSubmit"]) },
   )
@@ -106,15 +110,15 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
         const ctx = { sessionID: "ses_compact_no_start_hook", transcriptPath: "" }
-        const before = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "a" }, ctx)
-        const deduped = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "b" }, ctx)
+        const before = yield* hook.trigger({ event: "PostModelSwitch", fromModel: "a", toModel: "b" }, ctx)
+        const deduped = yield* hook.trigger({ event: "PostModelSwitch", fromModel: "a", toModel: "b" }, ctx)
         yield* hook.trigger({ event: "SessionStart", source: "compact" }, ctx)
-        const after = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "c" }, ctx)
+        const after = yield* hook.trigger({ event: "PostModelSwitch", fromModel: "a", toModel: "b" }, ctx)
         expect(before.additionalContexts).toEqual([FIXED])
         expect(deduped.additionalContexts).toEqual([])
         expect(after.additionalContexts).toEqual([FIXED])
       }),
-    { init: write(["UserPromptSubmit"]) },
+    { init: write(["PostModelSwitch"]) },
   )
 
   it.instance(

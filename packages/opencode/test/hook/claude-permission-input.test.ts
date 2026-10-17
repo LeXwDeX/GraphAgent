@@ -156,7 +156,7 @@ describe("Claude-formatted PermissionRequest input rewrite", () => {
       yield* Effect.promise(() =>
         fs.writeFile(
           script,
-          `import fs from 'node:fs/promises';let n=0;try{n=Number(await fs.readFile(${JSON.stringify(count)},'utf8'))}catch{};n++;await fs.writeFile(${JSON.stringify(count)},String(n));process.stdout.write(n===1?'{"continue":':JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'fixture-deny'}}))`,
+          `import fs from 'node:fs/promises';let n=0;try{n=Number(await fs.readFile(${JSON.stringify(count)},'utf8'))}catch{};n++;await fs.writeFile(${JSON.stringify(count)},String(n));process.stdout.write(n===1?'{"continue":}':JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:'fixture-deny'}}))`,
         ),
       )
       const hooks = yield* SettingsHook.Service

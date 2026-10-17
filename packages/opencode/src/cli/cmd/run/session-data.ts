@@ -62,6 +62,10 @@ type SessionCommit = StreamCommit
 // - sent:   part ID → byte offset of last flushed text (for incremental output)
 // - visible: part ID → rendered text for an active part after display transforms
 // - end:    part IDs whose time.end has arrived (part is finished)
+// - managed: text part IDs whose displayText is set (even ""), meaning hooks own
+//            the visible text; `text` then holds displayText and raw deltas are ignored
+// - done:   assistant message IDs whose time.completed/error has arrived; hook-managed
+//           parts finish only then, because the final display batch lands after text-end
 // - shell:  shell call ID → chosen transcript source for direct shell calls
 // - echo:   message ID → bash outputs to strip from the next assistant chunk
 type ShellCall = {
@@ -85,6 +89,8 @@ export type SessionData = {
   sent: Map<string, number>
   visible: Map<string, string>
   end: Set<string>
+  managed: Set<string>
+  done: Set<string>
   echo: Map<string, Set<string>>
 }
 
@@ -123,6 +129,8 @@ export function createSessionData(
     sent: new Map(),
     visible: new Map(),
     end: new Set(),
+    managed: new Set(),
+    done: new Set(),
     echo: new Map(),
   }
 }
@@ -574,6 +582,18 @@ function drop(data: SessionData, partID: string) {
   data.visible.delete(partID)
   data.msg.delete(partID)
   data.end.delete(partID)
+  data.managed.delete(partID)
+}
+
+// Hook-managed parts (displayText present, even "") receive their final display
+// batch after the part's time.end, so they may only finish once the message does.
+function settled(data: SessionData, partID: string): boolean {
+  if (!data.managed.has(partID)) {
+    return true
+  }
+
+  const msg = data.msg.get(partID)
+  return !msg || data.done.has(msg)
 }
 
 // Called when we learn a message's role (from message.updated). Flushes any
@@ -610,7 +630,7 @@ function replay(data: SessionData, commits: SessionCommit[], messageID: string, 
 
     flushPart(data, commits, partID)
 
-    if (!data.end.has(partID)) {
+    if (!data.end.has(partID) || !settled(data, partID)) {
       continue
     }
 
@@ -830,6 +850,9 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
     const info = event.properties.info
     if (typeof info.id === "string") {
       data.role.set(info.id, info.role)
+      if (info.role === "assistant" && (typeof info.time?.completed === "number" || info.error)) {
+        data.done.add(info.id)
+      }
       replay(data, commits, info.id, info.role, input.thinking)
     }
 
@@ -893,6 +916,11 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
 
     if (typeof event.properties.messageID === "string") {
       data.msg.set(partID, event.properties.messageID)
+    }
+
+    // Hook-managed text is shown only through displayText; raw deltas must not reach output.
+    if (data.managed.has(partID)) {
+      return out(data, commits)
     }
 
     const text = data.text.get(partID) ?? ""
@@ -1028,7 +1056,16 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
     }
 
     data.part.set(part.id, role === "user" && kind === "assistant" ? "user" : kind)
-    syncText(data, part.id, part.text)
+    if (part.type === "text" && typeof part.displayText === "string") {
+      // Replace any raw delta that arrived before the metadata; only the display text is visible.
+      if (!data.managed.has(part.id)) {
+        data.managed.add(part.id)
+        data.text.delete(part.id)
+      }
+      syncText(data, part.id, part.displayText)
+    } else {
+      syncText(data, part.id, part.text)
+    }
 
     if (part.time?.end) {
       data.end.add(part.id)
@@ -1044,7 +1081,7 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
 
     flushPart(data, commits, part.id)
 
-    if (!part.time?.end) {
+    if (!part.time?.end || !settled(data, part.id)) {
       return out(data, commits)
     }
 

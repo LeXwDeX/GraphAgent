@@ -310,6 +310,15 @@ it.live("notifies actual admitted instruction versions separately for each sessi
         const file = path.join(tmp.path, "AGENTS.md")
         yield* Effect.promise(() => fs.writeFile(file, "first"))
         const seen: Array<{ sessionID: string; filePath: string }> = []
+        // InstructionsLoaded is dispatched in the background, so each assertion waits for the observation.
+        const waitSeen = (count: number) =>
+          Effect.promise(async () => {
+            const deadline = Date.now() + 2000
+            while (seen.length < count) {
+              if (Date.now() > deadline) throw new Error(`timed out waiting for ${count} admitted versions`)
+              await new Promise((resolve) => setTimeout(resolve, 10))
+            }
+          })
         yield* Effect.gen(function* () {
           const registry = yield* SystemContextRegistry.Service
           const load = (id: string, loadReason?: "compact", loadBatch?: string) =>
@@ -323,16 +332,21 @@ it.live("notifies actual admitted instruction versions separately for each sessi
             )
           yield* load("ses_first")
           yield* load("ses_first")
+          yield* waitSeen(1)
           expect(seen).toEqual([{ sessionID: "ses_first", filePath: file }])
           yield* load("ses_second")
+          yield* waitSeen(2)
           expect(seen).toHaveLength(2)
           yield* Effect.promise(() => fs.writeFile(file, "second"))
           yield* load("ses_first")
+          yield* waitSeen(3)
           expect(seen).toHaveLength(3)
           yield* load("ses_first", "compact", "actual-compact-1")
           yield* load("ses_first", "compact", "actual-compact-1")
+          yield* waitSeen(4)
           expect(seen).toHaveLength(4)
           yield* load("ses_first", "compact", "actual-compact-2")
+          yield* waitSeen(5)
           expect(seen).toHaveLength(5)
         }).pipe(
           Effect.provide(InstructionContext.layer.pipe(Layer.provideMerge(SystemContextRegistry.layer))),

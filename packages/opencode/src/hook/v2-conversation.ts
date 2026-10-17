@@ -21,6 +21,7 @@ import { PermissionV2 } from "@opencode-ai/core/permission"
 import { PermissionHookScope } from "@opencode-ai/core/permission/hook-scope"
 import { isDeepStrictEqual } from "node:util"
 import { postHookFeedback } from "./trigger-result"
+import { withoutUnusableDefer } from "./pre-hook-decision"
 
 /** Reuse the v1 hook executor at the durable V2 prompt-admission boundary. */
 const conversationLayer = Layer.effect(
@@ -106,7 +107,7 @@ const conversationLayer = Layer.effect(
                 })
               : false
             if (single) return { toolInput: input.toolInput, deferred: true }
-            result = { additionalContexts: [], systemMessages: [] }
+            result = withoutUnusableDefer(result)
           }
           yield* withSession(SettingsHook.landSystemMessages(result, { sessionID }))
 
@@ -115,7 +116,11 @@ const conversationLayer = Layer.effect(
             (result.permissionDecision === "deny"
               ? (result.permissionDecisionReason ?? "Tool denied by hook")
               : undefined)
-          if (blocked) return { toolInput: input.toolInput, blocked }
+          if (blocked)
+            return {
+              toolInput: input.toolInput,
+              blocked: [blocked, ...result.additionalContexts.filter(Boolean)].join("\n\n"),
+            }
           const failure = (error: { message?: string; feedback?: string }) =>
             new PermissionHookScope.Failure({ message: error.feedback ?? error.message ?? "Permission hook failed" })
           const permissionHooks: PermissionHookScope.Hooks = {

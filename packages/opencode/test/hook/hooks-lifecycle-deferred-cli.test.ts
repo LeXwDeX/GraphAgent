@@ -155,3 +155,77 @@ cliIt.live(
       expect(yield* Effect.promise(() => Bun.file(target).exists())).toBe(false)
     }),
 )
+
+// A deferred call that is resumed later still completes its assistant batch, so PostToolBatch must run
+// before the next model request and honor its decision.
+for (const stop of [false, true]) {
+  cliIt.live(
+    `CLI resume of a deferred tool runs PostToolBatch before the next model request${stop ? " and honors block" : ""}`,
+    ({ home, env, llm, opencode }) =>
+      Effect.gen(function* () {
+        const target = path.join(home, "batch-write.txt")
+        const allow = path.join(home, "allow-batch-write")
+        const audit = path.join(home, "batch-audit.jsonl")
+        const script = path.join(home, "batch-deferred-hook.ts")
+        const batchOutput = stop
+          ? { decision: "block", reason: "BATCH_BLOCK_REASON" }
+          : { hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "BATCH_CONTEXT_MARKER" } }
+        yield* Effect.promise(async () => {
+          await fs.writeFile(
+            script,
+            `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');if(i.hook_event_name==='PostToolBatch'){await fs.appendFile(${JSON.stringify(audit)},JSON.stringify(i)+"\\n");process.stdout.write(JSON.stringify(${JSON.stringify(batchOutput)}))}if(i.hook_event_name==='PreToolUse')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:await Bun.file(${JSON.stringify(allow)}).exists()?'allow':'defer'}}));`,
+          )
+          const hook = { type: "command", command: process.execPath, args: [script] }
+          await fs.writeFile(
+            path.join(home, ".config/opencode/hooks.json"),
+            JSON.stringify({
+              PreToolUse: [{ matcher: "Write", hooks: [hook] }],
+              PostToolBatch: [{ hooks: [hook] }],
+            }),
+          )
+        })
+        const cfg = { ...JSON.parse(env.OPENCODE_CONFIG_CONTENT), permission: { "*": "allow" } }
+        const opts: RunOpts = {
+          format: "json",
+          env: {
+            PWD: home,
+            OPENCODE_DB: path.join(home, "restart.sqlite"),
+            OPENCODE_CONFIG_CONTENT: JSON.stringify(cfg),
+          },
+        }
+        yield* llm.tool("write", { filePath: target, content: "BATCH_DEFERRED_CONTENT" })
+        const first = yield* opencode.run("start batch", opts)
+        opencode.expectExit(first, 0)
+        const result = opencode.parseJsonEvents(first.stdout).find((event) => event.type === "result")
+        expect(result?.stop_reason).toBe("tool_deferred")
+        const sessionID = result?.session_id
+        if (typeof sessionID !== "string") throw new Error("Deferred session ID missing")
+        yield* Effect.promise(() => fs.writeFile(allow, "allow"))
+        yield* llm.text("AFTER_DEFERRED_BATCH")
+        const resumed = yield* opencode.run("", { ...opts, timeoutMs: 15000, extraArgs: ["--session", sessionID] })
+        opencode.expectExit(resumed, 0)
+        expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("BATCH_DEFERRED_CONTENT")
+        const rows = yield* Effect.promise(async () =>
+          (await fs.readFile(audit, "utf8").catch(() => ""))
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        )
+        expect(rows).toHaveLength(1)
+        expect(rows[0].tool_calls).toHaveLength(1)
+        expect(rows[0].tool_calls[0].tool_name.toLowerCase()).toBe("write")
+        const inputs = (yield* llm.inputs).filter(
+          (input) => !JSON.stringify(input).includes("Generate a title for this conversation"),
+        )
+        if (stop) {
+          expect(inputs.length).toBe(1)
+          expect(resumed.stdout).not.toContain("AFTER_DEFERRED_BATCH")
+        } else {
+          expect(inputs.length).toBe(2)
+          expect(JSON.stringify(inputs[1])).toContain("BATCH_CONTEXT_MARKER")
+          expect(resumed.stdout).toContain("AFTER_DEFERRED_BATCH")
+        }
+      }),
+  )
+}

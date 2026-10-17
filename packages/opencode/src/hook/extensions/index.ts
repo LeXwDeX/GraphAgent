@@ -29,16 +29,19 @@ export { evaluate as evaluateCondition } from "./condition-filter"
  * @param deps - Dependencies needed by extensions
  * @returns ForkHooks instance to plug into settings.ts trigger()
  */
-export function buildForkHooks(_deps: {
-  sessionHooks: SessionHooks.Interface
-}): ForkHooks {
+export function buildForkHooks(_deps: { sessionHooks: SessionHooks.Interface }): ForkHooks {
   return {
     /**
      * Pre-dispatch filter — evaluates `if` conditions on hook entries.
      * Return false to skip the entry, true to proceed.
      */
-    beforeRunEntry(entry: HookCommand, envelope: Record<string, unknown>, event: HookEvent): boolean {
-      return evaluateCondition(entry, envelope, event)
+    beforeRunEntry(
+      entry: HookCommand,
+      envelope: Record<string, unknown>,
+      event: HookEvent,
+      tool?: { canonicalToolName?: string },
+    ): boolean {
+      return evaluateCondition(entry, envelope, event, tool)
     },
 
     /**

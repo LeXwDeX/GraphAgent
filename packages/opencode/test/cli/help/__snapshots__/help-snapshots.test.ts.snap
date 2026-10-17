@@ -108,7 +108,13 @@ Options:
                                       max, minimal)                                         [string]
       --thinking                      show thinking blocks                                 [boolean]
       --dangerously-skip-permissions  auto-approve permissions that are not explicitly denied
-                                      (dangerous!)                        [boolean] [default: false]"
+                                      (dangerous!)                        [boolean] [default: false]
+      --init                          run Setup hooks for one-time initialization, then continue the
+                                      run                                 [boolean] [default: false]
+      --maintenance                   run Setup hooks for maintenance, then continue the run
+                                                                          [boolean] [default: false]
+      --init-only                     run Setup and startup SessionStart hooks, then exit without
+                                      starting a conversation             [boolean] [default: false]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode debug --help 1`] = `

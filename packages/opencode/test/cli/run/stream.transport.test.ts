@@ -2067,6 +2067,66 @@ describe("run stream transport", () => {
     }
   })
 
+  test("sends prompts and slash commands with the interactive hook mode", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const prompts: unknown[] = []
+    const commands: unknown[] = []
+    const client = sdk({
+      stream: src.stream,
+      promptAsync: async (input) => {
+        prompts.push(input)
+        queueMicrotask(() => {
+          src.push(busy())
+          src.push(idle())
+        })
+        return ok(undefined)
+      },
+    })
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+    spyOn(client.session, "command").mockImplementation((async (input: unknown) => {
+      commands.push(input)
+      queueMicrotask(() => {
+        src.push(busy())
+        src.push(idle())
+      })
+      return ok(undefined)
+    }) as unknown as OpencodeClient["session"]["command"])
+
+    const transport = await createSessionTransport({
+      sdk: client,
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+    })
+
+    try {
+      await transport.runPromptTurn({
+        agent: undefined,
+        model: undefined,
+        variant: undefined,
+        prompt: { text: "hello", parts: [] },
+        files: [],
+        includeFiles: false,
+      })
+      await transport.runPromptTurn({
+        agent: undefined,
+        model: undefined,
+        variant: undefined,
+        prompt: { text: "/review now", parts: [], command: { name: "review", arguments: "now" } },
+        files: [],
+        includeFiles: false,
+      })
+
+      expect(prompts).toEqual([expect.objectContaining({ hookMode: "interactive" })])
+      expect(commands).toEqual([expect.objectContaining({ command: "review", hookMode: "interactive" })])
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
+
   test("falls back to session status polling when idle events are missing", async () => {
     const src = eventFeed()
     const ui = footer()

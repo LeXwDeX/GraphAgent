@@ -110,6 +110,172 @@ function tool(input: { id: string; messageID: string; tool: string; state: Recor
   }
 }
 
+function managedText(input: {
+  id: string
+  messageID: string
+  text: string
+  displayText: string
+  time?: Record<string, number>
+}) {
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: input.id,
+        messageID: input.messageID,
+        sessionID: "session-1",
+        type: "text",
+        text: input.text,
+        displayText: input.displayText,
+        ...(input.time ? { time: input.time } : {}),
+      },
+    },
+  }
+}
+
+describe("run session data hook-managed text", () => {
+  test("renders only displayText, merges the final display before completing, and never leaks raw deltas", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    data = reduce(
+      data,
+      managedText({ id: "txt-1", messageID: "msg-1", text: "", displayText: "", time: { start: 1 } }),
+    ).data
+
+    let out = reduce(data, delta("msg-1", "txt-1", "SECRET one\n"))
+    expect(out.commits).toEqual([])
+    out = reduce(
+      out.data,
+      managedText({
+        id: "txt-1",
+        messageID: "msg-1",
+        text: "SECRET one\n",
+        displayText: "safe one\n",
+        time: { start: 1 },
+      }),
+    )
+    expect(out.commits).toEqual([expect.objectContaining({ kind: "assistant", text: "safe one\n", partID: "txt-1" })])
+
+    // text-end arrives before the final display batch, so completion must wait.
+    out = reduce(out.data, delta("msg-1", "txt-1", "SECRET two"))
+    expect(out.commits).toEqual([])
+    out = reduce(
+      out.data,
+      managedText({
+        id: "txt-1",
+        messageID: "msg-1",
+        text: "SECRET one\nSECRET two",
+        displayText: "safe one\n",
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(out.commits).toEqual([])
+    expect(out.data.ids.has("txt-1")).toBe(false)
+
+    out = reduce(
+      out.data,
+      managedText({
+        id: "txt-1",
+        messageID: "msg-1",
+        text: "SECRET one\nSECRET two",
+        displayText: "safe one\nsafe two",
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(out.commits).toEqual([expect.objectContaining({ text: "safe two", partID: "txt-1" })])
+    expect(out.data.ids.has("txt-1")).toBe(false)
+
+    out = reduce(out.data, assistant("msg-1", { time: { created: 1, completed: 3 } }))
+    expect(out.commits).toEqual([])
+    expect(out.data.ids.has("txt-1")).toBe(true)
+    expect(out.data.part.has("txt-1")).toBe(false)
+  })
+
+  test("hides text entirely when displayText stays empty, including for the final merge", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    const outputs = [
+      reduce(data, managedText({ id: "txt-1", messageID: "msg-1", text: "", displayText: "", time: { start: 1 } })),
+    ]
+    outputs.push(reduce(outputs.at(-1)!.data, delta("msg-1", "txt-1", "SECRET")))
+    outputs.push(
+      reduce(
+        outputs.at(-1)!.data,
+        managedText({ id: "txt-1", messageID: "msg-1", text: "SECRET", displayText: "", time: { start: 1, end: 2 } }),
+      ),
+    )
+    outputs.push(reduce(outputs.at(-1)!.data, assistant("msg-1", { time: { created: 1, completed: 3 } })))
+
+    expect(outputs.flatMap((item) => item.commits)).toEqual([])
+    expect(outputs.at(-1)!.data.ids.has("txt-1")).toBe(true)
+  })
+
+  test("buffers a delta that arrives before the part metadata instead of leaking then masking it", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    let out = reduce(data, delta("msg-1", "txt-1", "SECRET"))
+    expect(out.commits).toEqual([])
+    out = reduce(
+      out.data,
+      managedText({ id: "txt-1", messageID: "msg-1", text: "SECRET", displayText: "", time: { start: 1 } }),
+    )
+    expect(out.commits).toEqual([])
+    out = reduce(
+      out.data,
+      managedText({ id: "txt-1", messageID: "msg-1", text: "SECRET", displayText: "ok", time: { start: 1 } }),
+    )
+    expect(out.commits).toEqual([expect.objectContaining({ text: "ok" })])
+    out = reduce(out.data, delta("msg-1", "txt-1", " more SECRET"))
+    expect(out.commits).toEqual([])
+  })
+
+  test("a persisted completed message replays displayText and finalizes immediately", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1", { time: { created: 1, completed: 3 } })).data
+    const out = reduce(
+      data,
+      managedText({ id: "txt-1", messageID: "msg-1", text: "SECRET", displayText: "safe", time: { start: 1, end: 2 } }),
+    )
+    expect(out.commits).toEqual([expect.objectContaining({ text: "safe" })])
+    expect(out.data.ids.has("txt-1")).toBe(true)
+  })
+
+  test("a persisted hidden message replays nothing", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1", { time: { created: 1, completed: 3 } })).data
+    const out = reduce(
+      data,
+      managedText({ id: "txt-1", messageID: "msg-1", text: "SECRET", displayText: "", time: { start: 1, end: 2 } }),
+    )
+    expect(out.commits).toEqual([])
+    expect(out.data.ids.has("txt-1")).toBe(true)
+  })
+
+  test("native text without displayText keeps raw delta streaming and immediate completion", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    data = reduce(data, text({ id: "txt-1", messageID: "msg-1", text: "", time: { start: 1 } })).data
+    let out = reduce(data, delta("msg-1", "txt-1", "raw"))
+    expect(out.commits).toEqual([expect.objectContaining({ text: "raw" })])
+    out = reduce(out.data, text({ id: "txt-1", messageID: "msg-1", text: "raw", time: { start: 1, end: 2 } }))
+    expect(out.data.ids.has("txt-1")).toBe(true)
+  })
+
+  test("an interrupted turn flushes displayed text only", () => {
+    let data = createSessionData()
+    data = reduce(data, assistant("msg-1")).data
+    data = reduce(
+      data,
+      managedText({ id: "txt-1", messageID: "msg-1", text: "", displayText: "", time: { start: 1 } }),
+    ).data
+    data = reduce(data, delta("msg-1", "txt-1", "SECRET")).data
+    const commits: StreamCommit[] = []
+    flushInterrupted(data, commits)
+    expect(commits.map((item) => item.text)).not.toContain("SECRET")
+    expect(commits.every((item) => !item.text.includes("SECRET"))).toBe(true)
+  })
+})
+
 describe("run session data", () => {
   test("buffers delayed assistant text until the role is known", () => {
     let data = createSessionData()

@@ -196,7 +196,9 @@ describe("hook command executor protocol", () => {
       )
       expect(yield* Effect.promise(() => fs.readFile(marker, "utf8"))).toBe("started")
       expect(result.blocked?.reason).toContain("onFailure")
-      expect(result.permissionDecision).toBeUndefined()
+      // The failed policy hook denies; the buffered allow it printed before timing out is discarded.
+      expect(result.permissionDecision).toBe("deny")
+      expect(result.permissionDecisionReason).toContain("onFailure")
       expect(result.additionalContexts).toEqual([])
       expect(result.systemMessages).toEqual([])
       expect(yield* store.list(sessionID, "PreToolUse")).toHaveLength(1)

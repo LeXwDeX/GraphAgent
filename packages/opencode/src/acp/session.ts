@@ -16,6 +16,8 @@ export type KnownMessagePartMetadata = {
   partType?: Part["type"]
   role?: Message["role"]
   ignored?: boolean
+  /** True when hooks own the visible text (displayText present, even ""); raw deltas must not be forwarded. */
+  displayManaged?: boolean
   toolCallId?: string
   metadata?: unknown
 }
@@ -48,6 +50,7 @@ export type RecordPartMetadataInput = {
   partType?: Part["type"]
   role?: Message["role"]
   ignored?: boolean
+  displayManaged?: boolean
   toolCallId?: string
   metadata?: unknown
 }
@@ -156,6 +159,7 @@ export const layer = Layer.effect(
         partType: input.partType,
         role: input.role,
         ignored: input.ignored,
+        displayManaged: input.displayManaged,
         toolCallId: input.toolCallId,
         metadata: input.metadata,
       }

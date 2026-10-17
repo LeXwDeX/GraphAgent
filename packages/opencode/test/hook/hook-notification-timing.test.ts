@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock"
 import { SessionAttention } from "@/notification/attention"
 import { Notification, type NotifyInput } from "@/notification"
 import { Permission } from "@/permission"
+import type { Session as SessionNamespace } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -26,11 +27,28 @@ const notification = Layer.succeed(
       }),
   }),
 )
+const childID = SessionID.make("ses_notification_timing_child")
+// Only the child id resolves to a persisted child session; every other id is a top-level or unknown session.
+// Loaded lazily: importing the session module at top level closes a module-initialization cycle.
+const sessions = Layer.unwrap(
+  Effect.promise(async () => {
+    const { Session } = await import("@/session/session")
+    const { NotFoundError } = await import("@/storage/storage")
+    return Layer.mock(Session.Service, {
+      get: (sessionID: SessionID) =>
+        sessionID === childID
+          ? // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+            Effect.succeed({ id: childID, parentID: id } as unknown as SessionNamespace.Info)
+          : Effect.fail(new NotFoundError({ message: "Session not found" })),
+    })
+  }),
+)
 const layer = Layer.mergeAll(Permission.layer, SessionStatus.layer, Question.layer).pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       EventV2Bridge.defaultLayer,
       notification,
+      sessions,
       BackgroundJob.defaultLayer,
       SessionAttention.layer,
       Layer.mock(DagStore.Service, {
@@ -197,6 +215,37 @@ it.effect(
       yield* TestClock.adjust("60 seconds")
       expect(recorded).toHaveLength(0)
       activeWorkflow = false
+    }),
+  ),
+)
+
+it.effect(
+  "a child session going busy to idle never asks the user for a prompt, while its parent still does",
+  provideTmpdirInstance(() =>
+    Effect.gen(function* () {
+      recorded.length = 0
+      const status = yield* SessionStatus.Service
+      const attention = yield* SessionAttention.Service
+      yield* status.set(childID, { type: "busy" })
+      yield* status.set(childID, { type: "idle" })
+      yield* drain
+      yield* TestClock.adjust("120 seconds")
+      yield* drain
+      expect(recorded).toHaveLength(0)
+      yield* status.set(id, { type: "busy" })
+      yield* status.set(id, { type: "idle" })
+      yield* drain
+      // Parent attention input still cancels the timer.
+      yield* attention.input(id)
+      yield* drain
+      yield* TestClock.adjust("120 seconds")
+      expect(recorded).toHaveLength(0)
+      yield* status.set(id, { type: "busy" })
+      yield* status.set(id, { type: "idle" })
+      yield* drain
+      yield* TestClock.adjust("60 seconds")
+      yield* drain
+      expect(recorded.map((item) => item.notificationType)).toEqual(["idle_prompt"])
     }),
   ),
 )

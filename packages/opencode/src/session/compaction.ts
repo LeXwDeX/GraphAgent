@@ -2,6 +2,7 @@ import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
 import { HookTranscript } from "@/hook/transcript"
+import { Instruction } from "./instruction"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -16,6 +17,7 @@ import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-distillation"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { NamedError } from "@opencode-ai/core/util/error"
 
 import { Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
@@ -144,13 +146,14 @@ export interface Interface {
     estimatedInputTokens?: number
     threshold?: "auto" | "model"
   }) => Effect.Effect<boolean>
+  /** "declined": a PreCompact hook vetoed a proactive compaction; the caller continues uncompacted. */
   readonly process: (input: {
     parentID: MessageID
     messages: SessionV1.WithParts[]
     sessionID: SessionID
     auto: boolean
     overflow?: boolean
-  }) => Effect.Effect<"continue" | "stop">
+  }) => Effect.Effect<"continue" | "stop" | "declined">
   readonly create: (input: {
     sessionID: SessionID
     agent: string
@@ -177,6 +180,7 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const status = yield* SessionStatus.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+    const instruction = Option.getOrUndefined(yield* Effect.serviceOption(Instruction.Service))
     const startContext = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const reasoningDistillationEnabled = (cfg: ConfigV1.Info, model: Provider.Model) =>
       ConfigReasoningDistillation.resolveEnabled({
@@ -326,7 +330,41 @@ export const layer = Layer.effect(
           )
           .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
         yield* SettingsHook.landSystemMessages(preResult, { sessionID: input.sessionID })
-        if (preResult.blocked) return "stop"
+        if (preResult.blocked) {
+          // Settle the pending marker through the persisted message path. A leftover compaction part is
+          // unfinished work for every later prompt, which would then be vetoed again and never answered.
+          if (parent.parts.every((part) => part.type === "compaction"))
+            yield* session.removeMessage({ sessionID: input.sessionID, messageID: input.parentID })
+          else
+            for (const part of parent.parts)
+              if (part.type === "compaction")
+                yield* session.removePart({ sessionID: input.sessionID, messageID: input.parentID, partID: part.id })
+          const reason = preResult.blocked.reason.trim() || "PreCompact hook blocked compaction"
+          if (!input.auto) {
+            // Manual /compact shows the hook's reason to the user.
+            yield* events.publish(Session.Event.Error, {
+              sessionID: input.sessionID,
+              error: new NamedError.Unknown({ message: `Compaction blocked by hook: ${reason}` }).toObject(),
+            })
+          } else if (input.overflow) {
+            // Recovery from an API context-limit error: the failure stands. The provider error was already
+            // published; persist the terminal state on the request that overflowed.
+            const failed = input.messages.findLast(
+              (item) => item.info.role === "assistant" && !item.info.finish && !item.info.summary,
+            )
+            if (failed && failed.info.role === "assistant")
+              yield* session.updateMessage({
+                ...failed.info,
+                error: new SessionV1.ContextOverflowError({
+                  message: `Context limit exceeded and compaction was blocked by hook: ${reason}`,
+                }).toObject(),
+                finish: "error",
+              })
+          }
+          if (input.auto && !input.overflow) return "declined"
+          yield* status.set(input.sessionID, { type: "idle" })
+          return "stop"
+        }
       }
 
       let messages = input.messages
@@ -617,6 +655,8 @@ export const layer = Layer.effect(
             })
         }
         yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
+        // The committed summary drops earlier context; the next system prompt reloads instruction files.
+        if (instruction) yield* instruction.markCompacted(input.sessionID)
         // PostCompact sees the committed compacted conversation, not the pre-compaction snapshot.
         if (settingsHook) {
           transcriptPath = yield* HookTranscript.materialize({
@@ -629,7 +669,7 @@ export const layer = Layer.effect(
               {
                 event: "PostCompact",
                 trigger: input.auto ? "auto" : "manual",
-                compactSummary: summary ?? "compaction completed",
+                compactSummary: summary ?? "",
               } as any,
               {
                 sessionID: input.sessionID,
@@ -754,6 +794,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(EventV2Bridge.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(HookStartContext.defaultLayer),
+    Layer.provide(Instruction.defaultLayer),
   ),
 )
 
@@ -770,6 +811,7 @@ export const node = LayerNode.make(layer, [
   SettingsHook.node,
   HookStartContext.node,
   SessionStatus.node,
+  Instruction.node,
 ])
 
 export * as SessionCompaction from "./compaction"

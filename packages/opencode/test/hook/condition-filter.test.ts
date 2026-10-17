@@ -122,6 +122,76 @@ describe("condition-filter evaluate", () => {
     })
   })
 
+  // Reference "How `if` patterns match Bash commands" table, plus the cases where the
+  // runner cannot be determined and the hook must run.
+  describe("Bash if reference table", () => {
+    const RM = ["r", "m"].join("")
+    const bash = (cond: string, command: string) =>
+      evaluate(entry(cond), { tool_name: "bash", tool_input: { command } }, "PreToolUse")
+
+    test("the five documented rows", () => {
+      expect(bash("Bash(git *)", "FOO=bar git push")).toBe(true)
+      expect(bash("Bash(git *)", "npm test && git push")).toBe(true)
+      expect(bash(`Bash(${RM} *)`, `echo $(${RM} -rf /)`)).toBe(true)
+      expect(bash(`Bash(${RM} *)`, "echo $(date)")).toBe(false)
+      expect(bash("Bash(git push *)", "echo $(date)")).toBe(true)
+    })
+
+    test("backticks, process substitution and nested substitutions are checked", () => {
+      expect(bash(`Bash(${RM} *)`, `echo \`${RM} -rf /\``)).toBe(true)
+      expect(bash(`Bash(${RM} *)`, `echo "$(${RM} -rf /)"`)).toBe(true)
+      expect(bash(`Bash(${RM} *)`, `cat <(${RM} x)`)).toBe(true)
+      expect(bash(`Bash(${RM} *)`, "echo `date`")).toBe(false)
+    })
+
+    test("single-quoted text is literal, so it never counts as a command", () => {
+      expect(bash(`Bash(${RM} *)`, `echo '$(${RM} -rf /)'`)).toBe(false)
+      expect(bash(`Bash(${RM} *)`, "echo 'a; b' && date")).toBe(false)
+    })
+
+    test("variables, a variable as command name and unbalanced input run the hook conservatively", () => {
+      expect(bash("Bash(git push *)", "echo $HOME")).toBe(true)
+      expect(bash(`Bash(${RM} *)`, "$CMD -rf /")).toBe(true)
+      expect(bash(`Bash(${RM} *)`, 'eval "$X"')).toBe(true)
+      expect(bash(`Bash(${RM} *)`, "echo $(date")).toBe(true)
+      expect(bash(`Bash(${RM} *)`, 'echo "unterminated')).toBe(true)
+      // A name-only pattern is not forced by a plain variable argument.
+      expect(bash(`Bash(${RM} *)`, "echo $HOME")).toBe(false)
+    })
+
+    test("redirections do not split commands", () => {
+      expect(bash(`Bash(${RM} *)`, "make 2>&1 | tee log")).toBe(false)
+      expect(bash("Bash(make *)", "make 2>&1 | tee log")).toBe(true)
+    })
+  })
+
+  describe("tool rules beyond Bash and files", () => {
+    const run = (cond: string, envelope: Record<string, unknown>, canonicalToolName?: string) =>
+      evaluate(entry(cond), envelope, "PreToolUse", { canonicalToolName })
+
+    test("a bare tool rule matches only that tool", () => {
+      expect(run("Edit", { tool_name: "edit", tool_input: { filePath: "a.ts" } })).toBe(true)
+      expect(run("Edit", { tool_name: "write", tool_input: { filePath: "a.ts" } })).toBe(false)
+      expect(run("Edit", { tool_name: "bash", tool_input: { command: "ls" } })).toBe(false)
+    })
+
+    test("WebFetch(domain:...) compares the request host", () => {
+      const fetch = (url: string) => ({ tool_name: "webfetch", tool_input: { url } })
+      expect(run("WebFetch(domain:example)", fetch("https://example/a?b=1"))).toBe(true)
+      expect(run("WebFetch(domain:example)", fetch("https://notexample/a"))).toBe(false)
+      expect(run("WebFetch(domain:*.example)", fetch("https://docs.example/"))).toBe(true)
+    })
+
+    test("official names from the runtime binding and the native id both match", () => {
+      const mcp = { tool_name: "srv_lookup", tool_input: { q: "x" } }
+      expect(run("mcp__srv__lookup", mcp, "mcp__srv__lookup")).toBe(true)
+      expect(run("mcp__srv", mcp, "mcp__srv__lookup")).toBe(true)
+      expect(run("mcp__other", mcp, "mcp__srv__lookup")).toBe(false)
+      expect(run("srv_lookup", mcp, "mcp__srv__lookup")).toBe(true)
+      expect(run("Agent", { tool_name: "task", tool_input: {} }, "Agent")).toBe(true)
+    })
+  })
+
   test("空/* /undefined 条件恒为真", () => {
     const events: HookEvent[] = ["PreToolUse", "PermissionRequest", "Stop", "UserPromptSubmit"]
     for (const ev of events) {

@@ -346,6 +346,9 @@ export function replayActiveText(data: SessionData, current: SessionData): Strea
     data.text.set(partID, text)
     data.sent.set(partID, sent)
     data.visible.set(partID, visible)
+    if (current.managed.has(partID)) {
+      data.managed.add(partID)
+    }
     const messageID = current.msg.get(partID)
     if (messageID) {
       data.msg.set(partID, messageID)

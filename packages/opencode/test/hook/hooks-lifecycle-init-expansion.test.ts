@@ -5,7 +5,7 @@ import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 
 cliIt.live(
-  "explicit /init runs Setup and UserPromptExpansion before the model",
+  "explicit /init runs only UserPromptExpansion before the model; Setup is project bootstrap only",
   ({ home, llm, opencode }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "init-hook-audit.jsonl")
@@ -29,10 +29,8 @@ cliIt.live(
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line))
-      expect(rows.map((row) => row.event)).toEqual(["Setup", "UserPromptExpansion"])
-      expect(rows[0]).toMatchObject({ trigger: "init" })
-      expect(rows[1]).toMatchObject({ command: "init", source: "command", expansion: "slash_command" })
-      expect(rows[1].session).toBe(rows[0].session)
+      expect(rows.map((row) => row.event)).toEqual(["UserPromptExpansion"])
+      expect(rows[0]).toMatchObject({ command: "init", source: "command", expansion: "slash_command" })
       const inputs = yield* llm.inputs
       expect(inputs.some((input) => JSON.stringify(input).includes("EXPANSION_CONTEXT"))).toBe(true)
     }),

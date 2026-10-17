@@ -184,6 +184,13 @@ export interface AdmissionOptions {
   /** A previously persisted followup is already past initial-hook admission. */
   readonly skipHookStart?: boolean
   /**
+   * Task and DAG runtimes feeding their own child session (initial prompt, Stop continuation, nudge, recovery).
+   * Such input is not a user submission, so UserPromptSubmit does not run. Never part of a public body: only
+   * runtime callers set it, and a persisted hook followup carries it in `HookPendingInput.internalDelegation`.
+   * A report back to a parent session, a DAG wake, a goal continuation and agent messages are not delegation.
+   */
+  readonly internalDelegation?: true
+  /**
    * Opaque SettingsHook stop-chain token riding on an async Stop-hook rewake.
    * When set, admission re-validates the chain before commit and the run path
    * re-validates before runLoop, refusing callbacks whose chain was
@@ -217,7 +224,10 @@ export interface Interface {
     sessionID: SessionID
     apiModelID: string
   }) => Effect.Effect<readonly string[]>
-  readonly resume: (input: ResumeInput) => Effect.Effect<SessionV1.WithParts | null, PromptError | NoPendingHookInput>
+  readonly resume: (
+    input: ResumeInput,
+    options?: Pick<AdmissionOptions, "internalDelegation">,
+  ) => Effect.Effect<SessionV1.WithParts | null, PromptError | NoPendingHookInput>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, PromptError>
@@ -480,6 +490,47 @@ export const layer = Layer.effect(
           })
         }).pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(rewake, current))),
     }
+    // PostToolBatch for one assistant message's settled tool calls. Returns true when a hook stopped the turn.
+    // Feedback is hidden model context attached to the turn's user message as synthetic parts.
+    const postToolBatch = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      batch: readonly SessionV1.ToolPart[]
+      feedbackMessageID: MessageID
+    }) {
+      if (!settingsHook) return false
+      const afterBatch = yield* settingsHook.trigger(
+        {
+          event: "PostToolBatch",
+          toolCalls: input.batch.map((part) => ({
+            toolName: part.tool,
+            toolInput: part.state.input,
+            toolUseID: part.callID,
+            toolResponse:
+              part.state.status === "completed"
+                ? part.state.output
+                : part.state.status === "error"
+                  ? part.state.error
+                  : "",
+          })),
+        },
+        { sessionID: input.sessionID, transcriptPath: "" },
+      )
+      yield* SettingsHook.landSystemMessages(afterBatch, { sessionID: input.sessionID })
+      const feedback = [...afterBatch.additionalContexts]
+      const stop = !!(afterBatch.blocked || afterBatch.preventContinuation)
+      if (stop) feedback.push(afterBatch.stopReason ?? afterBatch.blocked?.reason ?? "Hook requested stop")
+      for (const text of feedback) {
+        yield* sessions.updatePart({
+          id: PartID.ascending(),
+          messageID: input.feedbackMessageID,
+          sessionID: input.sessionID,
+          type: "text",
+          text,
+          synthetic: true,
+        })
+      }
+      return stop
+    })
     const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
     const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
     const hookSkills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
@@ -2161,10 +2212,16 @@ export const layer = Layer.effect(
           return { message, run: false as const }
         }
       }
-      if (settingsHook && !isRewake) {
+      if (settingsHook && !isRewake && options?.internalDelegation !== true) {
+        // session_title is present only for a title the user or a hook chose, never for a generated one.
+        const titled = session.metadata?.hookTitleSource === "custom" && session.title ? session.title : undefined
         hookResult = yield* settingsHook
           .trigger(
-            { event: "UserPromptSubmit", prompt: promptText },
+            {
+              event: "UserPromptSubmit",
+              prompt: promptText,
+              ...(titled !== undefined ? { sessionTitle: titled } : {}),
+            },
             { sessionID: input.sessionID, transcriptPath: "" },
           )
           .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
@@ -2179,8 +2236,11 @@ export const layer = Layer.effect(
         // The submitted parts are replaced by one user-visible notice. `ignored`
         // keeps it out of model input (and makes the message no model work
         // boundary); it is not synthetic so clients render it in the transcript.
+        // The block message ends with the submitted text unless the hook set suppressOriginalPrompt. This changes
+        // only the message: the text stays in local storage either way and never reaches the model.
+        const original = hookResult.suppressOriginalPrompt === true ? "" : `\n\nOriginal prompt: ${promptText}`
         const message = yield* createUserMessage(
-          { ...input, parts: [{ type: "text", text: `[Hook stopped] ${reason}`, ignored: true }] },
+          { ...input, parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }] },
           persistAdmission,
         )
         yield* sessions.touch(input.sessionID)
@@ -2275,15 +2335,18 @@ export const layer = Layer.effect(
         input.hookMode !== "interactive"
       ) {
         const { sessionID, ...followup } = input
-        const initial = yield* resume({
-          sessionID,
-          model: input.model,
-          agent: input.agent,
-          variant: input.variant,
-          hookMode: "noninteractive",
-          initialOnly: true,
-          followup: { kind: "prompt", ...followup },
-        })
+        const initial = yield* resume(
+          {
+            sessionID,
+            model: input.model,
+            agent: input.agent,
+            variant: input.variant,
+            hookMode: "noninteractive",
+            initialOnly: true,
+            followup: { kind: "prompt", ...followup },
+          },
+          options?.internalDelegation ? { internalDelegation: true } : undefined,
+        )
         if (initial) return initial
       }
       const wait = yield* promptLocks.withLock(input.sessionID)(
@@ -2415,6 +2478,8 @@ export const layer = Layer.effect(
         let agentBoundaryApproved = false
         let nextAutoCompactionMinimum: number | undefined
         let autoCompactionPending = false
+        // A PreCompact veto of proactive compaction holds for the rest of this run; do not ask again each step.
+        let autoCompactionDeclined = false
         let awaitingPostCompactionUsage = false
         let consecutiveAutoCompactions = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
@@ -2573,6 +2638,19 @@ export const layer = Layer.effect(
               }),
             )
             if (handle.message.finish === "tool_deferred") return yield* getLastAssistant(sessionID)
+            // The resumed call completes the assistant's tool batch, which never ran PostToolBatch while deferred.
+            const settledBatch = (yield* MessageV2.parts(lastAssistant.id).pipe(
+              Effect.provideService(Database.Service, database),
+            )).filter(
+              (part): part is SessionV1.ToolPart =>
+                part.type === "tool" && (part.state.status === "completed" || part.state.status === "error"),
+            )
+            if (
+              settledBatch.length > 0 &&
+              (yield* postToolBatch({ sessionID, batch: settledBatch, feedbackMessageID: lastUser.id }))
+            ) {
+              turnStopped = true
+            }
             // Re-read persisted input and settlement before the next model request.
             continue
           }
@@ -2792,6 +2870,10 @@ export const layer = Layer.effect(
               overflow: task.overflow,
             })
             if (result === "stop") break
+            if (result === "declined") {
+              autoCompactionDeclined = true
+              autoCompactionPending = false
+            }
             continue
           }
 
@@ -2856,7 +2938,7 @@ export const layer = Layer.effect(
               lastFinished.summary !== true &&
               enoughNewContext &&
               (yield* compaction.isOverflow({ tokens, model, estimatedInputTokens, threshold: "auto" }))
-            if (hardOverflow || proactiveOverflow) {
+            if (hardOverflow || (proactiveOverflow && !autoCompactionDeclined)) {
               if (consecutiveAutoCompactions >= 3) {
                 const error = new SessionV1.ContextOverflowError({
                   message: "Context still exceeds the model limit after repeated automatic compaction",
@@ -3153,41 +3235,8 @@ export const layer = Layer.effect(
             if (batch.length > 0) {
               // The cap counts consecutive Stop continuations with no tool work.
               stopContinuationCount = 0
-              if (settingsHook) {
-                const afterBatch = yield* settingsHook.trigger(
-                  {
-                    event: "PostToolBatch",
-                    toolCalls: batch.map((part) => ({
-                      toolName: part.tool,
-                      toolInput: part.state.input,
-                      toolUseID: part.callID,
-                      toolResponse:
-                        part.state.status === "completed"
-                          ? part.state.output
-                          : part.state.status === "error"
-                            ? part.state.error
-                            : "",
-                    })),
-                  },
-                  { sessionID, transcriptPath: "" },
-                )
-                yield* SettingsHook.landSystemMessages(afterBatch, { sessionID })
-                const feedback = [...afterBatch.additionalContexts]
-                if (afterBatch.blocked || afterBatch.preventContinuation) {
-                  feedback.push(afterBatch.stopReason ?? afterBatch.blocked?.reason ?? "Hook requested stop")
-                  result = "stop"
-                }
-                for (const text of feedback) {
-                  yield* sessions.updatePart({
-                    id: PartID.ascending(),
-                    messageID: lastUser.id,
-                    sessionID,
-                    type: "text",
-                    text,
-                    synthetic: true,
-                  })
-                }
-              }
+              if (settingsHook && (yield* postToolBatch({ sessionID, batch, feedbackMessageID: lastUser.id })))
+                result = "stop"
             }
             if (result === "stop" || handle.message.error) {
               agentInputBlocked = true
@@ -3437,7 +3486,13 @@ export const layer = Layer.effect(
             return yield* (
               pending.input.kind === "command"
                 ? command({ ...pending.input, ...shared }, { skipHookStart: true })
-                : prompt({ ...pending.input, ...shared }, { skipHookStart: true })
+                : prompt(
+                    { ...pending.input, ...shared },
+                    {
+                      skipHookStart: true,
+                      ...(pending.internalDelegation ? { internalDelegation: true as const } : {}),
+                    },
+                  )
             ).pipe(
               Effect.ensuring(
                 promptLocks.withLock(sessionID)(
@@ -3457,7 +3512,7 @@ export const layer = Layer.effect(
         .pipe(Effect.catchTag("SessionConversationHookBlocked", () => Effect.succeed(completed)))
     })
 
-    const resume: Interface["resume"] = Effect.fn("SessionPrompt.resume")(function* (input) {
+    const resume: Interface["resume"] = Effect.fn("SessionPrompt.resume")(function* (input, options) {
       const result = yield* promptLocks.withLock(input.sessionID)(
         Effect.gen(function* () {
           const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -3488,14 +3543,19 @@ export const layer = Layer.effect(
               messageID: input.followup.messageID ?? MessageID.ascending(),
               phase: "pending",
               input: input.followup,
+              ...(options?.internalDelegation ? { internalDelegation: true } : {}),
             })
           }
           if (initialTurn) {
-            const admitted = yield* admitPrompt({
-              ...input,
-              parts: [{ type: "text", text: initial }],
-              hookMode: input.hookMode ?? "noninteractive",
-            })
+            const admitted = yield* admitPrompt(
+              {
+                ...input,
+                parts: [{ type: "text", text: initial }],
+                hookMode: input.hookMode ?? "noninteractive",
+              },
+              undefined,
+              options?.internalDelegation ? { internalDelegation: true } : undefined,
+            )
             if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
           } else if (input.hookMode) {
             const user = history.findLast((message) => message.info.role === "user")?.info
@@ -3811,14 +3871,6 @@ export const layer = Layer.effect(
         throw error
       }
       const agentName = cmd.agent ?? input.agent
-      const setup =
-        input.command === Command.Default.INIT && settingsHook
-          ? yield* settingsHook.trigger(
-              { event: "Setup", trigger: "init" },
-              { sessionID: input.sessionID, transcriptPath: "" },
-            )
-          : undefined
-      if (setup) yield* SettingsHook.landSystemMessages(setup, { sessionID: input.sessionID })
       const expansion = settingsHook
         ? yield* settingsHook.trigger(
             {
@@ -3918,9 +3970,6 @@ export const layer = Layer.effect(
             ...(input.parts ?? []),
           ]
 
-      for (const text of setup?.additionalContexts ?? []) {
-        parts.push({ type: "text", text, synthetic: true } as (typeof parts)[number])
-      }
       if (expansion) {
         yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
         for (const text of expansion.additionalContexts) {
@@ -4117,6 +4166,8 @@ export const HookPendingInput = Schema.Struct({
   messageID: MessageID,
   phase: Schema.Literals(["pending", "started"]),
   input: HookFollowupInput,
+  /** Runtime-delegated child input skips UserPromptSubmit when replayed. Records without it replay as user input. */
+  internalDelegation: Schema.optional(Schema.Boolean),
 })
 
 export const ResumeInput = Schema.Struct({

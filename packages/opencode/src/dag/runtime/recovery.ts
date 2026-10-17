@@ -759,18 +759,21 @@ export function continueRecoveredMessageNode(
           }
         }
         result = nudge
-          ? yield* prompt.prompt({
-              sessionID: SessionID.make(childSessionID),
-              messageID: MessageID.ascending(),
-              agent: result.info.agent,
-              model: { modelID: result.info.modelID, providerID: result.info.providerID },
-              parts: [
-                {
-                  type: "text",
-                  text: "Runtime continuation: incorporate the recorded agent messages and submit an updated result. Keep completed tool evidence; do not repeat completed writes.",
-                },
-              ],
-            })
+          ? yield* prompt.prompt(
+              {
+                sessionID: SessionID.make(childSessionID),
+                messageID: MessageID.ascending(),
+                agent: result.info.agent,
+                model: { modelID: result.info.modelID, providerID: result.info.providerID },
+                parts: [
+                  {
+                    type: "text",
+                    text: "Runtime continuation: incorporate the recorded agent messages and submit an updated result. Keep completed tool evidence; do not repeat completed writes.",
+                  },
+                ],
+              },
+              { internalDelegation: true },
+            )
           : yield* prompt.loop({ sessionID: SessionID.make(childSessionID) })
       }
     }).pipe(

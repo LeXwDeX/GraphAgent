@@ -696,7 +696,14 @@ export const layer = Layer.effect(
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
         for (const mcpTool of listed) {
           const key = McpCatalog.toolName(clientName, mcpTool.name)
-          result[key] = McpCatalog.convertTool(mcpTool, client, timeout)
+          result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout), {
+            server: clientName,
+            tool: mcpTool.name,
+            // Configuration provenance is not tracked per MCP server yet; never infer it from a name.
+            source: "unknown",
+            // Only the boolean `true` marks a tool; any other value is ignored.
+            requiresUserInteraction: mcpTool._meta?.["anthropic/requiresUserInteraction"] === true,
+          })
         }
       }
       return result

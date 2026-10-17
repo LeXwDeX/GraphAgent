@@ -112,48 +112,66 @@ const providerCfg = (url: string) => ({
 
 // Claude Code: a UserPromptSubmit block (decision:"block" or exit 2) stops the
 // prompt before it reaches the model; the reason is shown to the user and is not
-// added to context. A typical use is a secret scanner blocking credentials.
-it.live("blocked UserPromptSubmit prompt and reason never reach the model", () =>
-  provideTmpdirServer(
-    Effect.fnUntraced(function* ({ llm }) {
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const hooks = yield* SessionHooks.Service
-      const session = yield* sessions.create({ title: "Prompt block erase", permission: [] })
-      yield* hooks.add(session.id, {
-        event: "UserPromptSubmit",
-        hooks: [
-          {
-            type: "command",
-            command: `grep -q SECRET-TOKEN-1234 && printf '%s' '{"decision":"block","reason":"secret detected"}' || true`,
-          },
-        ],
-      })
-      yield* llm.text("second-turn-response")
-      const blocked = yield* prompt.prompt({
-        sessionID: session.id,
-        agent: "build",
-        parts: [{ type: "text", text: "my key is SECRET-TOKEN-1234" }],
-      })
-      expect(yield* llm.calls).toBe(0)
-      // The user sees the reason (non-synthetic, so clients render it) but the
-      // part is ignored for model input, and the prompt itself is never stored.
-      expect(blocked.parts).toEqual([
-        expect.objectContaining({ type: "text", text: "[Hook stopped] secret detected", ignored: true }),
-      ])
-      expect(blocked.parts[0]).not.toHaveProperty("synthetic", true)
-      expect(JSON.stringify(yield* sessions.messages({ sessionID: session.id }))).not.toContain("SECRET-TOKEN-1234")
-      yield* prompt.prompt({
-        sessionID: session.id,
-        agent: "build",
-        parts: [{ type: "text", text: "hello again" }],
-      })
-      expect(yield* llm.calls).toBe(1)
-      const inputs = JSON.stringify(yield* llm.inputs)
-      expect(inputs).not.toContain("SECRET-TOKEN-1234")
-      expect(inputs).not.toContain("secret detected")
-      expect(inputs).toContain("hello again")
-    }),
-    { git: true, config: providerCfg },
-  ),
-)
+// added to context. The block message ends with the submitted text unless the hook
+// sets suppressOriginalPrompt; either way the text never reaches the model.
+for (const suppress of [false, true]) {
+  it.live(`blocked UserPromptSubmit prompt and reason never reach the model (suppressOriginalPrompt ${suppress})`, () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const hooks = yield* SessionHooks.Service
+        const session = yield* sessions.create({ title: "Prompt block erase", permission: [] })
+        const output = JSON.stringify({
+          decision: "block",
+          reason: "secret detected",
+          ...(suppress
+            ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true } }
+            : {}),
+        })
+        yield* hooks.add(session.id, {
+          event: "UserPromptSubmit",
+          hooks: [
+            {
+              type: "command",
+              command: `grep -q SECRET-TOKEN-1234 && printf '%s' '${output}' || true`,
+            },
+          ],
+        })
+        yield* llm.text("second-turn-response")
+        const blocked = yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "my key is SECRET-TOKEN-1234" }],
+        })
+        expect(yield* llm.calls).toBe(0)
+        // The user sees the reason (non-synthetic, so clients render it) but the
+        // part is ignored for model input.
+        expect(blocked.parts).toEqual([
+          expect.objectContaining({
+            type: "text",
+            text: suppress
+              ? "[Hook stopped] secret detected"
+              : "[Hook stopped] secret detected\n\nOriginal prompt: my key is SECRET-TOKEN-1234",
+            ignored: true,
+          }),
+        ])
+        expect(blocked.parts[0]).not.toHaveProperty("synthetic", true)
+        expect(JSON.stringify(yield* sessions.messages({ sessionID: session.id })).includes("SECRET-TOKEN-1234")).toBe(
+          !suppress,
+        )
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "hello again" }],
+        })
+        expect(yield* llm.calls).toBe(1)
+        const inputs = JSON.stringify(yield* llm.inputs)
+        expect(inputs).not.toContain("SECRET-TOKEN-1234")
+        expect(inputs).not.toContain("secret detected")
+        expect(inputs).toContain("hello again")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+}

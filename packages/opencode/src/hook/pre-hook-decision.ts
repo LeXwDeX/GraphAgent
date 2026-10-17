@@ -46,6 +46,18 @@ export function applyPreHookDecision(
   return { effectiveArgs }
 }
 
+/**
+ * A `defer` verdict only pauses the call when the host can resume it. When it
+ * cannot, ignore just that verdict: every other aggregated field (exit-2
+ * `blocked`, `deny`, `continue:false`, updatedInput, contexts, messages) must
+ * keep applying so a sibling hook's rejection is never erased.
+ */
+export function withoutUnusableDefer(preResult: TriggerResult): TriggerResult {
+  if (preResult.permissionDecision !== "defer" || preResult.preventContinuation) return preResult
+  const { permissionDecision: _decision, permissionDecisionReason: _reason, ...rest } = preResult
+  return rest
+}
+
 // ── Permission "ask" verdict classification ─────────────────────────────
 //
 // `permissionDecision:"ask"` triggers a confirmation dialog via

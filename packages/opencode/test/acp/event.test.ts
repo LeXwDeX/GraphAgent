@@ -747,4 +747,99 @@ describe("acp event routing", () => {
       ],
     ])
   })
+
+  describe("hook-managed display text", () => {
+    function managedUpdated(
+      sessionID: string,
+      messageID: string,
+      partID: string,
+      text: string,
+      displayText: string,
+      end?: number,
+    ): Event {
+      return {
+        id: `evt_${partID}_${displayText.length}_${end ?? 0}`,
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          time: Date.now(),
+          part: {
+            id: partID,
+            sessionID,
+            messageID,
+            type: "text",
+            text,
+            displayText,
+            time: { start: 1, ...(end ? { end } : {}) },
+          },
+        },
+      }
+    }
+
+    function managedMessage(sessionID: string, messageID: string, partID: string, text: string, displayText: string) {
+      const message = assistantMessage(sessionID, messageID, partID, "text")
+      const part = message.parts[0]
+      if (part?.type !== "text") throw new Error("expected text part")
+      part.text = text
+      ;(part as typeof part & { displayText?: string }).displayText = displayText
+      return message
+    }
+
+    const texts = (updates: SessionUpdateParams[]) =>
+      updates.flatMap((item) => {
+        const update = item.update
+        return update.sessionUpdate === "agent_message_chunk" && update.content.type === "text"
+          ? [update.content.text]
+          : []
+      })
+
+    it("forwards only displayText suffixes and never raw deltas, across rewrite/final/hide", async () => {
+      const harness = createHarness({ msg_a: managedMessage("ses_a", "msg_a", "part_a", "", "") })
+      await Effect.runPromise(harness.session.create({ id: "ses_a", cwd: "/workspace" }))
+
+      await harness.subscription.handle(managedUpdated("ses_a", "msg_a", "part_a", "", ""))
+      await harness.subscription.handle(textDelta("ses_a", "msg_a", "part_a", "SECRET one\n"))
+      expect(harness.updates).toEqual([])
+
+      await harness.subscription.handle(managedUpdated("ses_a", "msg_a", "part_a", "SECRET one\n", "safe one\n"))
+      await harness.subscription.handle(textDelta("ses_a", "msg_a", "part_a", "SECRET two"))
+      await harness.subscription.handle(
+        managedUpdated("ses_a", "msg_a", "part_a", "SECRET one\nSECRET two", "safe one\n", 2),
+      )
+      await harness.subscription.handle(
+        managedUpdated("ses_a", "msg_a", "part_a", "SECRET one\nSECRET two", "safe one\nsafe two", 2),
+      )
+      // duplicate final display and a non-prefix rewrite are ignored
+      await harness.subscription.handle(
+        managedUpdated("ses_a", "msg_a", "part_a", "SECRET one\nSECRET two", "safe one\nsafe two", 2),
+      )
+      await harness.subscription.handle(managedUpdated("ses_a", "msg_a", "part_a", "x", "other", 2))
+
+      expect(texts(harness.updates)).toEqual(["safe one\n", "safe two"])
+      expect(JSON.stringify(harness.updates)).not.toContain("SECRET")
+    })
+
+    it("does not leak a delta that arrives before any part metadata", async () => {
+      const harness = createHarness({ msg_a: managedMessage("ses_a", "msg_a", "part_a", "SECRET", "") })
+      await Effect.runPromise(harness.session.create({ id: "ses_a", cwd: "/workspace" }))
+
+      await harness.subscription.handle(textDelta("ses_a", "msg_a", "part_a", "SECRET"))
+      await harness.subscription.handle(managedUpdated("ses_a", "msg_a", "part_a", "SECRET", "", 2))
+
+      expect(harness.updates).toEqual([])
+    })
+
+    it("replays displayText ?? text without falling back for an empty display", async () => {
+      const harness = createHarness()
+      await Effect.runPromise(harness.session.create({ id: "ses_a", cwd: "/workspace" }))
+
+      await harness.subscription.replayMessage(managedMessage("ses_a", "msg_a", "part_a", "SECRET", "shown"))
+      await harness.subscription.replayMessage(managedMessage("ses_a", "msg_b", "part_b", "SECRET", ""))
+      // a live update after replay continues from the replayed display, without duplication
+      await harness.subscription.handle(managedUpdated("ses_a", "msg_a", "part_a", "SECRET", "shown more", 2))
+
+      expect(texts(harness.updates)).toEqual(["shown", " more"])
+      expect(JSON.stringify(harness.updates)).not.toContain("SECRET")
+    })
+  })
 })

@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
+import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -15,7 +16,7 @@ import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
-import { withHookFeedback, withHookFailure } from "@/hook/trigger-result"
+import { withHookFeedback, withHookFailure, withPreContext } from "@/hook/trigger-result"
 import { builtinToolOutput, mcpToolOutput, toolOutputReplacement } from "@/hook/tool-output"
 import { toolInputValidator } from "@/hook/tool-input"
 import {
@@ -25,7 +26,7 @@ import {
   ToolInputUpdated,
 } from "@/permission/hook-control"
 import { Logging } from "@opencode-ai/core/observability/logging"
-import { applyPreHookDecision, classifyPermissionAsk } from "@/hook/pre-hook-decision"
+import { applyPreHookDecision, classifyPermissionAsk, withoutUnusableDefer } from "@/hook/pre-hook-decision"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
 import { Cause, Effect, Exit, type Schema } from "effect"
 import * as Option from "effect/Option"
@@ -38,6 +39,7 @@ import { SessionContext } from "@/effect/session-context"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { isRecord } from "@/util/record"
+import { hookQuestionAnswers } from "@/hook/question-answers"
 import {
   ToolSourceLedger,
   type Interface as ToolSourceLedgerInterface,
@@ -133,16 +135,25 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     input.sourceLedger ??
     Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service)) ??
     ToolSourceLedger.unavailable
+  // Answers a PreToolUse hook supplied for the question tool; never taken from model input.
+  const questionHookAnswers = new WeakMap<ToolExecutionOptions, ReadonlyArray<ReadonlyArray<string>>>()
   const resourceHookState = new WeakMap<
     ToolExecutionOptions,
     { confirmed: boolean; allowed: boolean; name: string; original: Record<string, unknown> }
   >()
   const hooks = input.hooks ?? Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
 
-  const hookContext = Effect.fn("SessionTools.hookContext")(function* () {
+  // Real MCP identity of each server-provided tool, keyed by its model-facing name. Hook
+  // matchers use the official `mcp__server__tool` name derived from this binding, never by
+  // splitting the lossy key.
+  const mcpHookIdentity = new Map<string, { canonicalToolName: string; mcpServer: { name: string; source: string } }>()
+  // Server-marked tools (`_meta["anthropic/requiresUserInteraction"] === true`) always need a human.
+  const mcpRequiresInteraction = new Map<string, { server: string; tool: string }>()
+  const hookContext = Effect.fn("SessionTools.hookContext")(function* (toolName?: string) {
     const policy = "hookPolicy" in permission ? yield* permission.hookPolicy(input.session.id) : undefined
     const mode = policy?.mode ?? (input.agent.name === "plan" ? "plan" : "default")
-    return { permissionMode: mode === "manual" ? "default" : mode }
+    const identity = toolName === undefined ? undefined : mcpHookIdentity.get(toolName)
+    return { permissionMode: mode === "manual" ? "default" : mode, ...identity }
   })
 
   const transformSchema = (schema: Parameters<typeof ProviderTransform.schema>[1]) =>
@@ -159,6 +170,16 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     (registration) => !(registration.definition.id === "submit_result" && isFinalResponseSession(input.session.id)),
   )
   const mcpItems = input.directTool ? {} : yield* mcp.tools()
+  for (const [key, item] of Object.entries(mcpItems)) {
+    const binding = McpCatalog.toolBinding(item)
+    if (binding?.requiresUserInteraction === true)
+      mcpRequiresInteraction.set(key, { server: binding.server, tool: binding.tool })
+    if (binding)
+      mcpHookIdentity.set(key, {
+        canonicalToolName: McpCatalog.canonicalToolName(binding),
+        mcpServer: { name: binding.server, source: binding.source },
+      })
+  }
   const hasMcpResourceServer =
     !input.directTool &&
     Object.values(yield* mcp.clients()).some((client) => !!client.getServerCapabilities()?.resources)
@@ -225,7 +246,12 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
-    extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
+    extra: {
+      model: input.model,
+      bypassAgentCheck: input.bypassAgentCheck,
+      promptOps: input.promptOps,
+      ...(questionHookAnswers.has(options) ? { hookAnswers: questionHookAnswers.get(options) } : {}),
+    },
     agent: input.agent.name,
     messages: input.messages,
     metadata: (val) =>
@@ -254,6 +280,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           {
             toolInput: args,
             toolName,
+            ...(toolName === undefined ? {} : mcpHookIdentity.get(toolName)),
+            // A forced ask is never settled by a hook allow, bypass, acceptEdits, remembered or configured
+            // allow; deny rules and dontAsk still apply first.
+            ...(toolName !== undefined && mcpRequiresInteraction.has(toolName) ? { force: true } : {}),
             hookAllowed,
             ...(agentService
               ? {
@@ -302,6 +332,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
       inputSchema: jsonSchema(schema),
       execute(args, options) {
         const settingsHook = withHookCancellation(hooks, options.abortSignal)
+        // PreToolUse context also rides on a failure of the call it governed.
+        let preContexts: string[] = []
         return run.promise(
           // Set the active session for server-initiated MCP reverse requests
           // (elicitation) so the handler can route the Question to this session.
@@ -317,7 +349,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 { args },
               )
               // SettingsHook PreToolUse
-              let preContexts: string[] = []
               let dynamicInstructions = false
               // Native todo surfacing (#429): once per assistant turn, before
               // any non-todowrite tool result, re-show the uncompleted list.
@@ -344,7 +375,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   ))
                 ) {
                   yield* Logging.backgroundDebug("hook defer ignored", { reason: "interactive-or-multiple-tool-call" })
-                  preResult = { additionalContexts: [], systemMessages: [] }
+                  preResult = withoutUnusableDefer(preResult)
                 }
                 let decision = applyPreHookDecision(toRecord(args), preResult)
                 if (decision.deferred)
@@ -358,7 +389,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   }
                 if (decision.deniedReason) {
                   return {
-                    output: `[Tool denied by hook] ${decision.deniedReason}`,
+                    output: withPreContext(
+                      `[Tool denied by hook] ${decision.deniedReason}`,
+                      preResult.additionalContexts,
+                    ),
                     attachments: [],
                     metadata: { hookDenied: true },
                   }
@@ -368,6 +402,20 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                     output: `[Hook stopped] ${decision.stopReason}`,
                     attachments: [],
                     metadata: { hookStopped: true, stopReason: decision.stopReason },
+                  }
+                }
+                if (
+                  item.id === "question" &&
+                  preResult.updatedInput !== undefined &&
+                  "answers" in decision.effectiveArgs
+                ) {
+                  // `answers` is hook-only: it never reaches the tool schema, and only an explicit
+                  // allow lets it stand in for the user. Anything else keeps the dialog.
+                  const { answers, ...rest } = decision.effectiveArgs
+                  decision = { ...decision, effectiveArgs: rest }
+                  if (preResult.permissionDecision === "allow") {
+                    const supplied = yield* Effect.sync(() => hookQuestionAnswers(rest.questions, answers))
+                    questionHookAnswers.set(options, supplied)
                   }
                 }
                 if (preResult.updatedInput !== undefined)
@@ -414,7 +462,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   if (outcome === "denied") {
                     const reason = askReason ?? "Denied by user in hook confirmation"
                     return {
-                      output: `[Tool denied by hook] ${reason}`,
+                      output: withPreContext(`[Tool denied by hook] ${reason}`, preResult.additionalContexts),
                       attachments: [],
                       metadata: { hookDenied: true },
                     }
@@ -466,13 +514,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   messageID: input.processor.message.id,
                 })),
               }
-              // PreToolUse additionalContexts: prepend so the model sees any hook-injected
-              // gate/reminder before the tool result (mirrors PostToolUse surfacing below).
+              // PreToolUse feedback is attached after PostToolUse has seen and possibly replaced the
+              // native result, so Post hooks never receive earlier hook text and a replacement keeps it.
               const preLines = [todoReminder, ...preContexts].filter((line): line is string => Boolean(line))
-              if (preLines.length) {
-                dynamicInstructions = true
-                output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
-              }
               const beforePlugin = outputFingerprint(output)
               yield* plugin.trigger(
                 "tool.execute.after",
@@ -518,6 +562,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                     ...(isRecord(output.metadata) ? output.metadata : {}),
                     ...hookStopMetadata(postResult),
                   }
+              }
+              if (preLines.length) {
+                dynamicInstructions = true
+                output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
               }
               dynamicInstructions ||=
                 output.output?.includes("<system-reminder>") ||
@@ -570,7 +618,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                         ),
                       )
                     yield* SettingsHook.landSystemMessages(failResult, { sessionID: input.session.id })
-                    const failure = withHookFailure(error, failResult)
+                    const failure = withHookFailure(error, failResult, preContexts)
                     if (failure !== error)
                       return yield* Cause.hasDies(cause) ? Effect.die(failure) : Effect.fail(failure)
                   }
@@ -838,8 +886,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     if (!item || !execute) continue
     const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
     const validateInput = toolInputValidator(schema)
-    item.execute = (original, options) =>
-      run.promise(
+    item.execute = (original, options) => {
+      let failureContexts: string[] = []
+      return run.promise(
         Effect.gen(function* () {
           let args = toRecord(original)
           const opts = { ...options }
@@ -870,7 +919,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 Promise.resolve(input.canDefer?.(opts.toolCallId, opts.abortSignal) ?? false),
               ))
             )
-              pre = { additionalContexts: [], systemMessages: [] }
+              pre = withoutUnusableDefer(pre)
             yield* SettingsHook.landSystemMessages(pre, { sessionID: input.session.id })
             let decision = applyPreHookDecision(args, pre)
             if (decision.deferred)
@@ -885,7 +934,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             if (decision.deniedReason)
               return {
                 title: "",
-                output: `[Tool denied by hook] ${decision.deniedReason}`,
+                output: withPreContext(`[Tool denied by hook] ${decision.deniedReason}`, pre.additionalContexts),
                 metadata: { hookDenied: true },
               }
             if (decision.stopReason)
@@ -927,12 +976,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               if (outcome === "denied")
                 return {
                   title: "",
-                  output: "[Tool denied by hook] User denied permission",
+                  output: withPreContext("[Tool denied by hook] User denied permission", pre.additionalContexts),
                   metadata: { hookDenied: true },
                 }
               if (Exit.isSuccess(ask)) args = ask.value.input
               confirmed = true
             }
+            failureContexts = pre.additionalContexts
           }
           const result = yield* executeWithPermissionInput(
             args,
@@ -953,8 +1003,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           const output = builtinToolOutput(result.value)
           if (!output) return yield* Effect.die(new Error("Invalid built-in MCP resource output"))
           args = result.input
-          if (pre.additionalContexts.length)
-            output.output = `${pre.additionalContexts.join("\n\n")}\n\n${output.output}`
+          const preLines = pre.additionalContexts
           if (settingsHook) {
             const post = yield* settingsHook
               .trigger(
@@ -985,6 +1034,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             output.output = withHookFeedback(output.output, post)
             if (post.preventContinuation) output.metadata = { ...output.metadata, ...hookStopMetadata(post) }
           }
+          if (preLines.length) output.output = `${preLines.join("\n\n")}\n\n${output.output}`
           return output
         }).pipe(
           Effect.catchCause((cause) =>
@@ -1016,7 +1066,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                     Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
                   )
                 yield* SettingsHook.landSystemMessages(failure, { sessionID: input.session.id })
-                const withFeedback = withHookFailure(error, failure)
+                const withFeedback = withHookFailure(error, failure, failureContexts)
                 if (withFeedback !== error)
                   return yield* Cause.hasDies(cause) ? Effect.die(withFeedback) : Effect.fail(withFeedback)
               }
@@ -1025,6 +1075,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           ),
         ),
       )
+    }
   }
 
   for (const [key, item] of Object.entries(mcpItems)) {
@@ -1038,6 +1089,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     item.inputSchema = jsonSchema(transformed)
     item.execute = (args, opts) => {
       const settingsHook = withHookCancellation(hooks, opts.abortSignal)
+      let preContexts: string[] = []
       return run.promise(
         Effect.gen(function* () {
           const originalArgs = toRecord(args)
@@ -1050,7 +1102,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             { args },
           )
           // SettingsHook PreToolUse
-          let preContexts: string[] = []
           // Native todo surfacing (#429): same per-turn contract as native tools.
           const mcpTodoReminder = yield* TodoReminders.preToolCall({
             sessionID: ctx.sessionID,
@@ -1061,7 +1112,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             let preResult = yield* settingsHook
               .trigger(
                 { event: "PreToolUse", toolName: key, toolInput: toRecord(args), toolUseID: opts.toolCallId },
-                { ...(yield* hookContext()), sessionID: ctx.sessionID, transcriptPath: "" },
+                { ...(yield* hookContext(key)), sessionID: ctx.sessionID, transcriptPath: "" },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(preResult, { sessionID: ctx.sessionID })
@@ -1073,7 +1124,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               ))
             ) {
               yield* Logging.backgroundDebug("hook defer ignored", { reason: "interactive-or-multiple-tool-call" })
-              preResult = { additionalContexts: [], systemMessages: [] }
+              preResult = withoutUnusableDefer(preResult)
             }
             let decision = applyPreHookDecision(toRecord(args), preResult)
             if (decision.deferred)
@@ -1084,7 +1135,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 metadata: { hookDeferred: true, deferredToolUse: { id: opts.toolCallId, name: key, input: args } },
               }
             if (decision.deniedReason) {
-              return { content: [{ type: "text", text: `[Tool denied by hook] ${decision.deniedReason}` }] }
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: withPreContext(
+                      `[Tool denied by hook] ${decision.deniedReason}`,
+                      preResult.additionalContexts,
+                    ),
+                  },
+                ],
+              }
             }
             if (decision.stopReason) {
               const text = `[Hook stopped] ${decision.stopReason}`
@@ -1128,7 +1189,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 return yield* Effect.failCause(outcome.propagate as never)
               if (outcome === "denied") {
                 const reason = askReason ?? "Denied by user in hook confirmation"
-                return { content: [{ type: "text", text: `[Tool denied by hook] ${reason}` }] }
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: withPreContext(`[Tool denied by hook] ${reason}`, preResult.additionalContexts),
+                    },
+                  ],
+                }
               }
               if (Exit.isSuccess(verdict)) decision = { ...decision, effectiveArgs: verdict.value.input }
               hookConfirmed = true
@@ -1143,7 +1211,21 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               toRecord(args),
               (next) => {
                 ctx = context(next, opts, hookConfirmed, next, key, hookAllowed)
-                return ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
+                const interaction = mcpRequiresInteraction.get(key)
+                return ctx.ask(
+                  interaction
+                    ? {
+                        permission: key,
+                        metadata: {
+                          requiresUserInteraction: true,
+                          mcpServer: interaction.server,
+                          mcpTool: interaction.tool,
+                        },
+                        patterns: ["*"],
+                        always: [],
+                      }
+                    : { permission: key, metadata: {}, patterns: ["*"], always: ["*"] },
+                )
               },
               {
                 canRestart: true,
@@ -1183,7 +1265,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   toolResponse: result,
                   toolUseID: opts.toolCallId,
                 },
-                { ...(yield* hookContext()), sessionID: ctx.sessionID, transcriptPath: "" },
+                { ...(yield* hookContext(key)), sessionID: ctx.sessionID, transcriptPath: "" },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(postResult, { sessionID: ctx.sessionID })
@@ -1296,13 +1378,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                       error: String(error),
                       toolUseID: opts.toolCallId,
                     },
-                    { ...(yield* hookContext()), sessionID: input.session.id, transcriptPath: "" },
+                    { ...(yield* hookContext(key)), sessionID: input.session.id, transcriptPath: "" },
                   )
                   .pipe(
                     Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
                   )
                 yield* SettingsHook.landSystemMessages(failResult, { sessionID: input.session.id })
-                const failure = withHookFailure(error, failResult)
+                const failure = withHookFailure(error, failResult, preContexts)
                 if (failure !== error) return yield* Cause.hasDies(cause) ? Effect.die(failure) : Effect.fail(failure)
               }
               return yield* Effect.failCause(cause)

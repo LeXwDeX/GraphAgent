@@ -48,6 +48,17 @@ export const layer = Layer.effect(
       data.statuses.delete(sessionID)
       if (timer) yield* Fiber.interrupt(timer)
     })
+    // The session module is imported lazily: it already imports this one. An unreadable session is not a child.
+    const hasParent = Effect.fnUntraced(function* (sessionID: SessionID): Effect.fn.Return<boolean> {
+      const { Session } = yield* Effect.promise(() => import("./session"))
+      const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
+      if (!sessions) return false
+      const info = yield* sessions.get(sessionID).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.catchDefect(() => Effect.succeed(undefined)),
+      )
+      return info?.parentID !== undefined
+    })
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
       const data = yield* InstanceState.get(state)
       const previous = data.statuses.get(sessionID)
@@ -60,23 +71,24 @@ export const layer = Layer.effect(
         data.statuses.delete(sessionID)
         const notification =
           Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service)) ?? layerNotification
+        // Only a top-level session waits on the user. A child (subagent or DAG node) returns to its parent.
+        // The parent check reads the session store, so it runs inside the timer fiber: status changes never wait on it.
         if (previous?.type === "busy" && notification) {
-          const fiber = yield* Effect.sleep("60 seconds").pipe(
-            Effect.andThen(
-              Effect.gen(function* () {
-                const { DagStore } = yield* Effect.promise(() => import("@opencode-ai/core/dag/store"))
-                const { HookTurnContext } = yield* Effect.promise(() => import("@/hook/turn-context"))
-                const workflows = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
-                const active = jobs ? yield* HookTurnContext.backgroundTasks(sessionID, { jobs, workflows }) : []
-                if (active.length) return
-                if (data.statuses.has(sessionID)) return
-                yield* notification.notify({
-                  sessionID,
-                  notificationType: "idle_prompt",
-                  message: "Session is awaiting your next prompt",
-                })
-              }),
-            ),
+          const fiber = yield* Effect.gen(function* () {
+            if (yield* hasParent(sessionID)) return
+            yield* Effect.sleep("60 seconds")
+            const { DagStore } = yield* Effect.promise(() => import("@opencode-ai/core/dag/store"))
+            const { HookTurnContext } = yield* Effect.promise(() => import("@/hook/turn-context"))
+            const workflows = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
+            const active = jobs ? yield* HookTurnContext.backgroundTasks(sessionID, { jobs, workflows }) : []
+            if (active.length) return
+            if (data.statuses.has(sessionID)) return
+            yield* notification.notify({
+              sessionID,
+              notificationType: "idle_prompt",
+              message: "Session is awaiting your next prompt",
+            })
+          }).pipe(
             Effect.raceFirst(attention ? attention.activity(sessionID) : Effect.never),
             Effect.ensuring(Effect.sync(() => data.timers.delete(sessionID))),
             Effect.forkIn(data.scope),

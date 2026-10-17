@@ -10,12 +10,11 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 
 import { Instruction } from "../../src/session/instruction"
-import type { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Global } from "@opencode-ai/core/global"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { provideInstance, provideTmpdirInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -284,6 +283,12 @@ it.live(
           ),
         )
         yield* program
+        // Background observation: wait for both raw triggers instead of assuming they ran before return.
+        yield* pollWithTimeout(
+          Effect.sync(() => (events.length >= 2 ? true : undefined)),
+          "InstructionsLoaded raw triggers were not observed",
+          "5 seconds",
+        )
         expect(events).toEqual(["InstructionsLoaded", "InstructionsLoaded"])
         const hash = createHash("sha256").update(sessionID).digest("hex")
         expect(

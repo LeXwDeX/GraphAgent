@@ -119,15 +119,24 @@ describe("InstructionsLoaded trigger on instruction file load", () => {
       Effect.gen(function* () {
         const instruction = yield* Instruction.Service
         yield* instruction.system({ sessionID: "ses_instructions", transcriptPath: "/tmp/instruction-fixture.jsonl" })
-        const events = instructionRecorder.recorded.filter(
-          (p): p is Extract<HookPayload, { event: "InstructionsLoaded" }> =>
-            p.event === "InstructionsLoaded" && !!p.path?.endsWith("AGENTS.md"),
+        // InstructionsLoaded is background observation: system() returns before the hook has run.
+        const events = yield* pollWithTimeout(
+          Effect.sync(() => {
+            const found = instructionRecorder.recorded.filter(
+              (p): p is Extract<HookPayload, { event: "InstructionsLoaded" }> =>
+                p.event === "InstructionsLoaded" && !!p.path?.endsWith("AGENTS.md"),
+            )
+            return found.length > 0 ? found : undefined
+          }),
+          "InstructionsLoaded was not observed",
+          "5 seconds",
         )
         expect(events).toHaveLength(1)
         expect(events[0].content).toHaveLength(32 * 1024)
 
         // Second load must not re-announce (once per instance)
         yield* instruction.system({ sessionID: "ses_instructions", transcriptPath: "/tmp/instruction-fixture.jsonl" })
+        yield* Effect.sleep("200 millis")
         const again = instructionRecorder.recorded.filter(
           (p) => p.event === "InstructionsLoaded" && (p as { path?: string }).path?.endsWith("AGENTS.md"),
         )
