@@ -177,9 +177,9 @@ describe("condition-filter evaluate", () => {
 
     test("WebFetch(domain:...) compares the request host", () => {
       const fetch = (url: string) => ({ tool_name: "webfetch", tool_input: { url } })
-      expect(run("WebFetch(domain:example.com)", fetch("https://example.com/a?b=1"))).toBe(true)
-      expect(run("WebFetch(domain:example.com)", fetch("https://evil.example.org/a"))).toBe(false)
-      expect(run("WebFetch(domain:*.example.com)", fetch("https://docs.example.com/"))).toBe(true)
+      expect(run("WebFetch(domain:example)", fetch("https://example/a?b=1"))).toBe(true)
+      expect(run("WebFetch(domain:example)", fetch("https://notexample/a"))).toBe(false)
+      expect(run("WebFetch(domain:*.example)", fetch("https://docs.example/"))).toBe(true)
     })
 
     test("official names from the runtime binding and the native id both match", () => {

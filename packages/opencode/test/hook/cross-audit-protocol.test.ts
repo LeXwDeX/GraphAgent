@@ -526,13 +526,10 @@ describe("cross-audit: canonical tool identity", () => {
       const hook = yield* SettingsHook.Service
       const sessionID = SessionID.descending()
       const dump = path.join(os.tmpdir(), `cfg-${crypto.randomUUID()}.json`)
+      const sink = `let d='';process.stdin.on('data',c=>d+=c).on('end',()=>require('node:fs').writeFileSync(process.argv[1],d))`
       yield* store.add(sessionID, {
         event: "ConfigChange",
-        hooks: [
-          node(
-            `let d='';process.stdin.on('data',c=>d+=c).on('end',()=>require('node:fs').writeFileSync(${JSON.stringify(dump)},d))`,
-          ),
-        ],
+        hooks: [node(sink, { args: ["-e", sink, dump] })],
       })
       yield* hook.trigger(
         { event: "ConfigChange", source: "project_settings", configPath: "/x/hooks.json" },

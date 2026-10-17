@@ -119,7 +119,7 @@ cliIt.live(
 
 import type { OpencodeCli } from "../lib/cli-process"
 
-const instructionSetup = (home: string, opencode: OpencodeCli, source: string) =>
+const instructionSetup = (home: string, opencode: OpencodeCli, source: string, args: string[] = []) =>
   Effect.gen(function* () {
     const audit = path.join(home, "instructions-audit.jsonl")
     const script = path.join(home, "instructions-audit.ts")
@@ -136,7 +136,7 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string) =
       await fs.writeFile(
         path.join(home, ".config/opencode/hooks.json"),
         JSON.stringify({
-          InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
+          InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script, ...args] }] }],
         }),
       )
     })
@@ -202,7 +202,8 @@ cliIt.live("V1 InstructionsLoaded observes in the background without delaying th
     const fixture = yield* instructionSetup(
       home,
       opencode,
-      `${record}await new Promise((resolve)=>setTimeout(resolve,9000));await fs.writeFile(${JSON.stringify(done)},"done");`,
+      `${record}await new Promise((resolve)=>setTimeout(resolve,9000));await fs.writeFile(process.argv[2],"done");`,
+      [done],
     )
     yield* llm.text("BACKGROUND_DONE")
     yield* fixture.turn("hello")

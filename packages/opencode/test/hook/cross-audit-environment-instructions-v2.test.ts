@@ -39,12 +39,12 @@ cliIt.live("V2 InstructionsLoaded does not delay the first model request", ({ ho
       )
       await fs.writeFile(
         script,
-        `await Bun.stdin.text();await new Promise((resolve)=>setTimeout(resolve,9000));await (await import('node:fs/promises')).writeFile(${JSON.stringify(done)},'done');`,
+        `await Bun.stdin.text();await new Promise((resolve)=>setTimeout(resolve,9000));await (await import('node:fs/promises')).writeFile(process.argv[2],'done');`,
       )
       await fs.writeFile(
         path.join(home, ".config/opencode/hooks.json"),
         JSON.stringify({
-          InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
+          InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script, done] }] }],
         }),
       )
     })

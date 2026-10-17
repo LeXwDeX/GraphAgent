@@ -72,24 +72,23 @@ export const layer = Layer.effect(
         const notification =
           Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service)) ?? layerNotification
         // Only a top-level session waits on the user. A child (subagent or DAG node) returns to its parent.
-        const child = previous?.type === "busy" && notification ? yield* hasParent(sessionID) : false
-        if (previous?.type === "busy" && notification && !child) {
-          const fiber = yield* Effect.sleep("60 seconds").pipe(
-            Effect.andThen(
-              Effect.gen(function* () {
-                const { DagStore } = yield* Effect.promise(() => import("@opencode-ai/core/dag/store"))
-                const { HookTurnContext } = yield* Effect.promise(() => import("@/hook/turn-context"))
-                const workflows = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
-                const active = jobs ? yield* HookTurnContext.backgroundTasks(sessionID, { jobs, workflows }) : []
-                if (active.length) return
-                if (data.statuses.has(sessionID)) return
-                yield* notification.notify({
-                  sessionID,
-                  notificationType: "idle_prompt",
-                  message: "Session is awaiting your next prompt",
-                })
-              }),
-            ),
+        // The parent check reads the session store, so it runs inside the timer fiber: status changes never wait on it.
+        if (previous?.type === "busy" && notification) {
+          const fiber = yield* Effect.gen(function* () {
+            if (yield* hasParent(sessionID)) return
+            yield* Effect.sleep("60 seconds")
+            const { DagStore } = yield* Effect.promise(() => import("@opencode-ai/core/dag/store"))
+            const { HookTurnContext } = yield* Effect.promise(() => import("@/hook/turn-context"))
+            const workflows = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
+            const active = jobs ? yield* HookTurnContext.backgroundTasks(sessionID, { jobs, workflows }) : []
+            if (active.length) return
+            if (data.statuses.has(sessionID)) return
+            yield* notification.notify({
+              sessionID,
+              notificationType: "idle_prompt",
+              message: "Session is awaiting your next prompt",
+            })
+          }).pipe(
             Effect.raceFirst(attention ? attention.activity(sessionID) : Effect.never),
             Effect.ensuring(Effect.sync(() => data.timers.delete(sessionID))),
             Effect.forkIn(data.scope),

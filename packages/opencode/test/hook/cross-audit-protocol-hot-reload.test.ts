@@ -100,7 +100,8 @@ const configLogger = (file: string) => ({
           command: process.execPath,
           args: [
             "-e",
-            `let d='';process.stdin.on('data',c=>d+=c).on('end',()=>require('node:fs').appendFileSync(${JSON.stringify(file)},d+'\\n'))`,
+            "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>require('node:fs').appendFileSync(process.argv[1],d+'\\n'))",
+            file,
           ],
         },
       ],
@@ -163,7 +164,8 @@ describe("hooks.json hot reload candidate gate", () => {
                   command: process.execPath,
                   args: [
                     "-e",
-                    `let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{require('node:fs').appendFileSync(${JSON.stringify(seen)},d+'\\n');process.stderr.write('no');process.exit(2)})`,
+                    "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{require('node:fs').appendFileSync(process.argv[1],d+'\\n');process.stderr.write('no');process.exit(2)})",
+                    seen,
                   ],
                 },
               ],

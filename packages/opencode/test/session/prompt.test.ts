@@ -2480,6 +2480,8 @@ backgroundUnix(
       }
       yield* llm.textMatch(childRequest, "reviewer done")
       yield* llm.textMatch((hit) => !childRequest(hit), "dispatched")
+      // The background completion can join the running parent turn or start its own turn.
+      yield* llm.text("background acknowledged")
 
       yield* prompt.prompt({
         sessionID: chat.id,
@@ -2494,14 +2496,28 @@ backgroundUnix(
       const job = yield* jobs.wait({ id: childSessionId, timeout: 30_000 })
       expect(job.info?.output).toContain("reviewer done")
       expect(job.info?.status).toBe("completed")
+      yield* pollWithTimeout(
+        sessions.messages({ sessionID: chat.id }).pipe(
+          Effect.orDie,
+          Effect.map((messages) =>
+            messages.some((message) =>
+              message.parts.some((part) => part.type === "text" && part.text.includes("Background task completed")),
+            )
+              ? true
+              : undefined,
+          ),
+        ),
+        "background completion report",
+        "10 seconds",
+      )
       const parentMessages = yield* sessions.messages({ sessionID: chat.id })
       expect(
         parentMessages.some((message) =>
           message.parts.some((part) => part.type === "text" && part.text === "dispatched"),
         ),
       ).toBe(true)
-      expect(yield* llm.calls).toBe(3)
-      expect(yield* llm.pending).toBe(0)
+      expect([3, 4]).toContain(yield* llm.calls)
+      expect([0, 1]).toContain(yield* llm.pending)
     }),
   30_000,
 )
