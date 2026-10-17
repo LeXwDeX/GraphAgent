@@ -193,6 +193,16 @@ describe("acp content conversion", () => {
 })
 
 describe("acp replay conversion", () => {
+  test("replays displayText instead of raw text, and an empty displayText hides the part", () => {
+    expect(partsToContentChunks([{ type: "text", text: "SECRET", displayText: "shown" }])).toEqual([
+      { content: { type: "text", text: "shown" } },
+    ])
+    expect(partsToContentChunks([{ type: "text", text: "SECRET", displayText: "" }])).toEqual([])
+    expect(partsToContentChunks([{ type: "text", text: "plain" }])).toEqual([
+      { content: { type: "text", text: "plain" } },
+    ])
+  })
+
   test("replays text audience annotations", () => {
     expect(partsToContentChunks([{ type: "text", text: "cached", synthetic: true }])).toEqual([
       {

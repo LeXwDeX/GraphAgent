@@ -8,18 +8,17 @@ import type { TriggerResult } from "./settings"
  * Centralizes:
  * - deny / blocked → `deniedReason` (caller returns a denied result)
  * - preventContinuation → `stopReason` (caller short-circuits with a stop message)
- * - updatedInput → `effectiveArgs` (shallow merge, hook fields override; last hook wins,
- *   matching CC's documented behavior — the trigger reducer already overwrites
- *   `updatedInput` per hook so the final value is the last hook's).
+ * - updatedInput → `effectiveArgs` (complete replacement; last hook wins).
  *
  * `permissionDecision:"ask"` is intentionally NOT handled here — it requires the
  * effectful permission dialog (`permission.ask`), which stays at each call site
  * (paths with a permission context) or degrades to deny (paths without).
  */
 export interface PreHookDecision {
-  /** Arguments the tool should actually execute with (original, or merged with updatedInput). */
+  /** Arguments the tool should actually execute with (original, or completely replaced by updatedInput). */
   readonly effectiveArgs: Record<string, unknown>
   /** Set when the hook denied/blocked — caller returns a denied result. */
+  readonly deferred?: true
   readonly deniedReason?: string
   /** Set when the hook requested continuation stop — caller short-circuits with a stop message. */
   readonly stopReason?: string
@@ -31,19 +30,32 @@ export function applyPreHookDecision(
 ): PreHookDecision {
   if (!preResult) return { effectiveArgs: args }
 
-  if (preResult.permissionDecision === "deny" || preResult.blocked) {
-    const deniedReason =
-      preResult.permissionDecisionReason ?? preResult.blocked?.reason ?? "Denied by PreToolUse hook"
-    return { effectiveArgs: args, deniedReason }
-  }
-
   if (preResult.preventContinuation) {
     const stopReason = preResult.stopReason ?? "Hook requested stop"
     return { effectiveArgs: args, stopReason }
   }
 
-  const effectiveArgs = preResult.updatedInput ? { ...args, ...preResult.updatedInput } : args
+  if (preResult.permissionDecision === "deny" || preResult.blocked) {
+    const deniedReason = preResult.permissionDecisionReason ?? preResult.blocked?.reason ?? "Denied by PreToolUse hook"
+    return { effectiveArgs: args, deniedReason }
+  }
+
+  if (preResult.permissionDecision === "defer") return { effectiveArgs: args, deferred: true }
+
+  const effectiveArgs = preResult.updatedInput ?? args
   return { effectiveArgs }
+}
+
+/**
+ * A `defer` verdict only pauses the call when the host can resume it. When it
+ * cannot, ignore just that verdict: every other aggregated field (exit-2
+ * `blocked`, `deny`, `continue:false`, updatedInput, contexts, messages) must
+ * keep applying so a sibling hook's rejection is never erased.
+ */
+export function withoutUnusableDefer(preResult: TriggerResult): TriggerResult {
+  if (preResult.permissionDecision !== "defer" || preResult.preventContinuation) return preResult
+  const { permissionDecision: _decision, permissionDecisionReason: _reason, ...rest } = preResult
+  return rest
 }
 
 // ── Permission "ask" verdict classification ─────────────────────────────
@@ -56,12 +68,9 @@ export function applyPreHookDecision(
 // Only a *typed* permission rejection (DeniedError / RejectedError /
 // CorrectedError) is a real denial. Interrupts and defects MUST propagate so the
 // session aborts / the bug surfaces instead of being silently swallowed.
-export type PermissionAskOutcome =
-  | "approved"
-  | "denied"
-  | { readonly propagate: unknown }
+export type PermissionAskOutcome<E = unknown> = "approved" | "denied" | { readonly propagate: Cause.Cause<E> }
 
-export function classifyPermissionAsk<E>(exit: Exit.Exit<void, E>): PermissionAskOutcome {
+export function classifyPermissionAsk<A, E>(exit: Exit.Exit<A, E>): PermissionAskOutcome<E> {
   if (Exit.isSuccess(exit)) return "approved"
   const cause = exit.cause
   if (Cause.hasInterrupts(cause) || Cause.hasDies(cause)) {

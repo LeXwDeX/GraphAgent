@@ -1,3 +1,4 @@
+import { markPermissionRewrite } from "./permission-rewrite"
 export * as WebFetchTool from "./webfetch"
 
 import { ToolFailure } from "@opencode-ai/llm"
@@ -120,58 +121,60 @@ export const layer = Layer.effectDiscard(
 
     yield* tools
       .register({
-        [name]: Tool.make({
-          description,
-          input: Input,
-          output: Output,
-          toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
-          execute: (input, context) =>
-            Effect.gen(function* () {
-              yield* Effect.try({
-                try: () => assertHttpUrl(new URL(input.url)),
-                catch: (error) => error,
-              })
+        [name]: markPermissionRewrite(
+          Tool.make({
+            description,
+            input: Input,
+            output: Output,
+            toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
+            execute: (input, context) =>
+              Effect.gen(function* () {
+                yield* Effect.try({
+                  try: () => assertHttpUrl(new URL(input.url)),
+                  catch: (error) => error,
+                })
 
-              yield* permission.assert({
-                action: name,
-                resources: [input.url],
-                save: ["*"],
-                metadata: input,
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
-              })
+                yield* permission.assert({
+                  action: name,
+                  resources: [input.url],
+                  save: ["*"],
+                  metadata: input,
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                })
 
-              const { body, contentType } = yield* Effect.gen(function* () {
-                const response = yield* execute(http, input.url, input.format).pipe(
-                  Effect.catchIf(isCloudflareChallenge, () => execute(http, input.url, input.format, "opencode")),
+                const { body, contentType } = yield* Effect.gen(function* () {
+                  const response = yield* execute(http, input.url, input.format).pipe(
+                    Effect.catchIf(isCloudflareChallenge, () => execute(http, input.url, input.format, "opencode")),
+                  )
+                  const contentType = response.headers["content-type"] || ""
+                  const mime = mimeFrom(contentType)
+                  if (isImageAttachment(mime))
+                    return yield* Effect.fail(new Error(`Unsupported fetched image content type: ${mime}`))
+                  if (!isTextualMime(mime))
+                    return yield* Effect.fail(new Error(`Unsupported fetched file content type: ${mime}`))
+                  return { body: yield* collectBody(response), contentType }
+                }).pipe(
+                  Effect.timeoutOrElse({
+                    duration: Duration.seconds(input.timeout ?? DEFAULT_TIMEOUT_SECONDS),
+                    orElse: () => Effect.fail(new Error("Request timed out")),
+                  }),
                 )
-                const contentType = response.headers["content-type"] || ""
-                const mime = mimeFrom(contentType)
-                if (isImageAttachment(mime))
-                  return yield* Effect.fail(new Error(`Unsupported fetched image content type: ${mime}`))
-                if (!isTextualMime(mime))
-                  return yield* Effect.fail(new Error(`Unsupported fetched file content type: ${mime}`))
-                return { body: yield* collectBody(response), contentType }
-              }).pipe(
-                Effect.timeoutOrElse({
-                  duration: Duration.seconds(input.timeout ?? DEFAULT_TIMEOUT_SECONDS),
-                  orElse: () => Effect.fail(new Error("Request timed out")),
-                }),
-              )
-              const content = new TextDecoder().decode(body)
-              const output = yield* Effect.try({
-                try: () => convert(content, contentType, input.format),
-                catch: (error) => error,
-              })
-              return {
-                url: input.url,
-                contentType,
-                format: input.format,
-                output,
-              }
-            }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to fetch ${input.url}` }))),
-        }),
+                const content = new TextDecoder().decode(body)
+                const output = yield* Effect.try({
+                  try: () => convert(content, contentType, input.format),
+                  catch: (error) => error,
+                })
+                return {
+                  url: input.url,
+                  contentType,
+                  format: input.format,
+                  output,
+                }
+              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to fetch ${input.url}` }))),
+          }),
+        ),
       })
       .pipe(Effect.orDie)
   }),

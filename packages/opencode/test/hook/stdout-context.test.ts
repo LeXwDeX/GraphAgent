@@ -26,9 +26,9 @@ const TEXT = "remember-this-repo-uses-bun"
 // this path at instance-state construction (init runs before the test body).
 const writeHooks = (hooks: unknown) => (dir: string) =>
   Effect.promise(() =>
-    fs.mkdir(path.join(dir, ".opencode"), { recursive: true }).then(() =>
-      fs.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(hooks)),
-    ),
+    fs
+      .mkdir(path.join(dir, ".opencode"), { recursive: true })
+      .then(() => fs.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(hooks))),
   )
 
 describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", () => {
@@ -59,7 +59,6 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const json = JSON.stringify({ hookSpecificOutput: { additionalContext: "from-json" } })
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
           { sessionID: "sess-p1a-2", transcriptPath: "" },
@@ -70,7 +69,16 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
       }),
     {
       init: writeHooks({
-        SessionStart: [{ hooks: [{ type: "command", command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { additionalContext: "from-json" } })}'` }] }],
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { additionalContext: "from-json" } })}'`,
+              },
+            ],
+          },
+        ],
       }),
     },
   )
@@ -95,10 +103,10 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
     },
   )
 
-  // Scenario 4: within one session the same plain-text stdout is injected once
-  // (per-session dedup, same bucket as hookSpecificOutput.additionalContext).
+  // Scenario 4: each prompt is a new turn, so identical plain-text stdout is
+  // delivered again. Only duplicate text from one trigger is deduplicated.
   it.instance(
-    "same plain-text stdout deduped within a session",
+    "same plain-text stdout is delivered for every prompt",
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
@@ -111,7 +119,7 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
           { sessionID: "sess-p1a-4", transcriptPath: "" },
         )
         expect(r1.additionalContexts).toEqual([TEXT])
-        expect(r2.additionalContexts).toEqual([])
+        expect(r2.additionalContexts).toEqual([TEXT])
       }),
     {
       init: writeHooks({

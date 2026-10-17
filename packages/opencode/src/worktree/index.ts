@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { path } from "@opencode-ai/core/effect/layer-node-platform"
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
@@ -291,17 +292,6 @@ export const layer: Layer.Layer<
         },
       })
 
-      // SettingsHook: the active working directory switched to the freshly booted worktree
-      if (settingsHook) {
-        const cwdResult = yield* settingsHook
-          .trigger(
-            { event: "CwdChanged", oldCwd: ctx.directory, newCwd: info.directory },
-            { sessionID: "", transcriptPath: "" },
-          )
-          .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-        yield* SettingsHook.landSystemMessages(cwdResult, { sessionID: "" })
-      }
-
       yield* runStartScripts(info.directory, { projectID, extra })
     })
 
@@ -321,18 +311,125 @@ export const layer: Layer.Layer<
       )
     })
 
-    const create = Effect.fn("Worktree.create")(function* (input?: CreateInput) {
-      const info = yield* makeWorktreeInfo({ name: input?.name })
-      yield* createFromInfo(info, input?.startCommand)
-      if (settingsHook) {
-        const wcResult = yield* settingsHook
-          .trigger(
-            { event: "WorktreeCreate", path: info.directory, branch: info.name },
-            { sessionID: "", transcriptPath: "" },
-          )
-          .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-        yield* SettingsHook.landSystemMessages(wcResult, { sessionID: "" })
+    const ownershipFile = (directory: string) =>
+      pathSvc.join(
+        Global.Path.data,
+        "hooks",
+        "worktrees",
+        createHash("sha256").update(directory).digest("hex") + ".json",
+      )
+    const hookOwned = Effect.fn("Worktree.hookOwned")(function* (directory: string, projectID: string) {
+      const file = ownershipFile(directory)
+      if (
+        !(yield* fs
+          .exists(file)
+          .pipe(Effect.mapError(() => new RemoveFailedError({ message: "Cannot verify hook worktree ownership" }))))
+      )
+        return false
+      const data = yield* fs
+        .readJson(file)
+        .pipe(Effect.mapError(() => new RemoveFailedError({ message: "Cannot read hook worktree ownership" })))
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !("version" in data) ||
+        data.version !== 1 ||
+        !("projectID" in data) ||
+        !("directory" in data) ||
+        data.projectID !== projectID ||
+        data.directory !== directory
+      )
+        return yield* new RemoveFailedError({
+          message: "Hook worktree ownership does not match the current project identity",
+        })
+      return true
+    })
+    const validateHookDirectory = Effect.fn("Worktree.validateHookDirectory")(function* (output: string) {
+      const ctx = yield* InstanceState.context
+      if (pathSvc.isAbsolute(output) && output.split(/[\\/]+/).some((part) => part === "." || part === ".."))
+        return yield* new CreateFailedError({
+          message: "WorktreeCreate hook returned an absolute path containing dot segments",
+        })
+      const resolved = pathSvc.resolve(ctx.directory, output)
+      const root = yield* canonical(ctx.worktree)
+      const components = resolved.slice(pathSvc.parse(resolved).root.length).split(pathSvc.sep).filter(Boolean)
+      let current = pathSvc.parse(resolved).root
+      let inside = false
+      for (const component of components) {
+        current = pathSvc.join(current, component)
+        if (
+          inside &&
+          (yield* fs.readLink(current).pipe(
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
+          ))
+        )
+          return yield* new CreateFailedError({
+            message: `WorktreeCreate hook path traverses a symlink below the repository: ${current}`,
+          })
+        if (!inside) inside = (yield* fs.realPath(current).pipe(Effect.catch(() => Effect.succeed("")))) === root
       }
+      return yield* canonical(resolved)
+    })
+    const create = Effect.fn("Worktree.create")(function* (input?: CreateInput) {
+      const configured = settingsHook && (yield* settingsHook.list()).some((hook) => hook.event === "WorktreeCreate")
+      const ctx = yield* InstanceState.context
+      const name = input?.name ? slugify(input.name) : Slug.create()
+      const info = configured
+        ? { name, directory: pathSvc.join(Global.Path.data, "worktree", ctx.project.id, name) }
+        : yield* makeWorktreeInfo({ name: input?.name })
+      if (configured && settingsHook) {
+        // A configured creation hook owns the operation. Failure never falls back to git.
+        const result = yield* settingsHook.trigger(
+          { event: "WorktreeCreate", name: info.name, path: info.directory, branch: info.name },
+          { sessionID: "", transcriptPath: "" },
+        )
+        const output = result.worktreePath?.trim()
+        if (result.blocked || !output)
+          return yield* new CreateFailedError({
+            message: result.blocked?.reason ?? "WorktreeCreate hook must return an existing directory",
+          })
+        const directory = yield* validateHookDirectory(output)
+        if (!(yield* fs.isDir(directory).pipe(Effect.catch(() => Effect.succeed(false)))))
+          return yield* new CreateFailedError({ message: "WorktreeCreate hook returned a missing directory" })
+        const ctx = yield* InstanceState.context
+        const sessionDirectory = yield* canonical(ctx.directory)
+        const relativeSession = pathSvc.relative(directory, sessionDirectory)
+        if (
+          directory === (yield* canonical(ctx.worktree)) ||
+          !relativeSession ||
+          (!relativeSession.startsWith("..") && !pathSvc.isAbsolute(relativeSession))
+        )
+          return yield* new CreateFailedError({
+            message: "WorktreeCreate hook returned the current project directory or one of its ancestors",
+          })
+        const created = { ...info, directory }
+        yield* lifecycle.withLock(directory)(
+          Effect.gen(function* () {
+            const marker = ownershipFile(directory)
+            yield* fs
+              .makeDirectory(pathSvc.dirname(marker), { recursive: true, mode: 0o700 })
+              .pipe(
+                Effect.mapError(() => new CreateFailedError({ message: "Failed to persist hook worktree ownership" })),
+              )
+            yield* fs
+              .writeJson(marker, { version: 1, projectID: ctx.project.id, directory }, 0o600)
+              .pipe(
+                Effect.mapError(() => new CreateFailedError({ message: "Failed to persist hook worktree ownership" })),
+              )
+            yield* project.addSandbox(ctx.project.id, directory)
+            yield* FiberMap.run(
+              bootFibers,
+              directory,
+              boot(created, input?.startCommand).pipe(
+                Effect.catchCause((cause) => Effect.logError("worktree bootstrap failed", { cause })),
+              ),
+            )
+          }),
+        )
+        return created
+      }
+      yield* createFromInfo(info, input?.startCommand)
       return info
     })
 
@@ -498,8 +595,7 @@ export const layer: Layer.Layer<
         // been admitted anywhere, so a destructive step (worktree remove) must
         // fail closed instead of destroying them; a retry under the successor
         // identity imports them first.
-        if (!memory)
-          return "Project identity is being upgraded. Retry once the upgrade completes."
+        if (!memory) return "Project identity is being upgraded. Retry once the upgrade completes."
         if (memory.unresolved > 0)
           return `Cannot continue with unresolved legacy project memory: ${memory.diagnostics
             .filter((item) => item.code.endsWith(".invalid") || item.code.endsWith(".conflict"))
@@ -512,13 +608,27 @@ export const layer: Layer.Layer<
 
     const removeLocked = Effect.fnUntraced(function* (input: RemoveInput, directory: string) {
       const ctx = yield* InstanceState.context
-      if (ctx.project.vcs !== "git") {
-        return yield* new NotGitError({ message: "Worktrees are only supported for git projects" })
+      const owned = yield* hookOwned(directory, ctx.project.id)
+      if (ctx.project.vcs !== "git" && !owned) {
+        return yield* new NotGitError({
+          message: "Worktrees are only supported for git projects without a creation hook",
+        })
       }
+      if (owned)
+        yield* validateHookDirectory(input.directory).pipe(
+          Effect.mapError((error) => new RemoveFailedError({ message: error.message })),
+        )
 
       const primary = yield* canonical(ctx.project.worktree)
       const current = yield* canonical(ctx.worktree)
-      if (directory === primary || directory === current) {
+      const sessionDirectory = yield* canonical(ctx.directory)
+      const relativeSession = pathSvc.relative(directory, sessionDirectory)
+      if (
+        directory === primary ||
+        directory === current ||
+        !relativeSession ||
+        (!relativeSession.startsWith("..") && !pathSvc.isAbsolute(relativeSession))
+      ) {
         return yield* new RemoveFailedError({ message: "Cannot remove the primary or current worktree" })
       }
 
@@ -534,11 +644,42 @@ export const layer: Layer.Layer<
       if (matches.length === 0) {
         return yield* new RemoveFailedError({ message: "Worktree is not registered with this Project" })
       }
-      const dropRegistrations = Effect.forEach(
-        matches,
-        (match) => project.removeSandbox(ctx.project.id, match),
-        { concurrency: 1, discard: true },
-      )
+      const dropRegistrations = Effect.forEach(matches, (match) => project.removeSandbox(ctx.project.id, match), {
+        concurrency: 1,
+        discard: true,
+      })
+
+      const removeHook =
+        owned && settingsHook && (yield* settingsHook.list()).some((hook) => hook.event === "WorktreeRemove")
+      if (removeHook && settingsHook) {
+        yield* FiberMap.remove(bootFibers, directory)
+        const result = yield* settingsHook.trigger(
+          { event: "WorktreeRemove", path: directory },
+          { sessionID: "", transcriptPath: "" },
+        )
+        if (result.worktreeRemoveFailed && (yield* fs.exists(directory).pipe(Effect.orDie)))
+          return yield* new RemoveFailedError({
+            message: result.blocked?.reason ?? "WorktreeRemove hook failed while the directory still exists",
+          })
+        const blocker = yield* reconcileLegacyMemory({
+          projectID: ctx.project.id,
+          projectDirectory: ctx.project.worktree,
+          directory,
+          directories: currentProject.sandboxes,
+          initialized: currentProject.time.initialized !== undefined,
+          updated: currentProject.time.updated,
+        }).pipe(Effect.mapError((error) => new RemoveFailedError({ message: error.message })))
+        if (blocker) return yield* new RemoveFailedError({ message: blocker })
+        yield* store.disposeDirectory(directory)
+        yield* dropRegistrations
+        yield* fs.remove(ownershipFile(directory)).pipe(Effect.ignore)
+        return true
+      }
+
+      if (owned && ctx.project.vcs !== "git")
+        return yield* new RemoveFailedError({
+          message: "Hook-created worktree needs a WorktreeRemove hook for cleanup",
+        })
 
       const list = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
       if (list.code !== 0) {
@@ -548,21 +689,17 @@ export const layer: Layer.Layer<
       const entries = parseWorktreeList(list.text)
       const entry = yield* locateWorktree(entries, directory)
       if (!entry?.path) {
+        if (owned && (yield* fs.exists(directory).pipe(Effect.orDie)))
+          return yield* new RemoveFailedError({
+            message: "Hook-created worktree is not recognized by git; configure WorktreeRemove to clean it up",
+          })
         // Registered, but git has no record of the worktree (admin data lost or
         // the git side was already removed). Recover deterministically instead
         // of failing with a false "not registered": legacy memory is reconciled
         // fail-closed against the directory when it still exists, then the stale
         // registration is dropped. The directory itself is never deleted here.
         yield* FiberMap.remove(bootFibers, directory)
-        if (settingsHook) {
-          const wrResult = yield* settingsHook
-            .trigger(
-              { event: "WorktreeRemove", path: directory, branch: pathSvc.basename(directory) },
-              { sessionID: "", transcriptPath: "" },
-            )
-            .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-          yield* SettingsHook.landSystemMessages(wrResult, { sessionID: "" })
-        }
+
         const blocker = yield* reconcileLegacyMemory({
           projectID: ctx.project.id,
           projectDirectory: ctx.project.worktree,
@@ -578,6 +715,7 @@ export const layer: Layer.Layer<
         if (blocker) return yield* new RemoveFailedError({ message: blocker })
         yield* store.disposeDirectory(directory)
         yield* dropRegistrations
+        if (owned) yield* fs.remove(ownershipFile(directory)).pipe(Effect.ignore)
         return true
       }
 
@@ -585,15 +723,6 @@ export const layer: Layer.Layer<
       // memory files; fire it BEFORE taking the fail-closed memory proof so the
       // proof observes everything the hook produced.
       yield* FiberMap.remove(bootFibers, directory)
-      if (settingsHook) {
-        const wrResult = yield* settingsHook
-          .trigger(
-            { event: "WorktreeRemove", path: entry.path, branch: pathSvc.basename(entry.path) },
-            { sessionID: "", transcriptPath: "" },
-          )
-          .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-        yield* SettingsHook.landSystemMessages(wrResult, { sessionID: "" })
-      }
 
       const blocker = yield* reconcileLegacyMemory({
         projectID: ctx.project.id,
@@ -666,7 +795,7 @@ export const layer: Layer.Layer<
       yield* cleanDirectory(entry.path)
 
       const branch = entry.branch?.replace(/^refs\/heads\//, "")
-      if (branch) {
+      if (branch && !owned) {
         const deleted = yield* git(["branch", "-D", branch], { cwd: ctx.worktree })
         if (deleted.code !== 0) {
           const restored = yield* git(["worktree", "add", entry.path, branch], { cwd: ctx.worktree })
@@ -682,6 +811,7 @@ export const layer: Layer.Layer<
       }
 
       yield* dropRegistrations
+      if (owned) yield* fs.remove(ownershipFile(directory)).pipe(Effect.ignore)
       return true
     })
 
@@ -773,7 +903,14 @@ export const layer: Layer.Layer<
 
       const primary = yield* canonical(ctx.project.worktree)
       const current = yield* canonical(ctx.worktree)
-      if (directory === primary || directory === current) {
+      const sessionDirectory = yield* canonical(ctx.directory)
+      const relativeSession = pathSvc.relative(directory, sessionDirectory)
+      if (
+        directory === primary ||
+        directory === current ||
+        !relativeSession ||
+        (!relativeSession.startsWith("..") && !pathSvc.isAbsolute(relativeSession))
+      ) {
         return yield* new ResetFailedError({ message: "Cannot reset the primary or current worktree" })
       }
 

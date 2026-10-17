@@ -1,3 +1,4 @@
+import { SessionAttentionInput } from "@opencode-ai/schema/session-attention"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Permission } from "@/permission"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -21,7 +22,13 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, ConflictError, PermissionNotFoundError, SessionBusyError } from "../errors"
+import {
+  ApiNotFoundError,
+  ConflictError,
+  InvalidRequestError,
+  PermissionNotFoundError,
+  SessionBusyError,
+} from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -69,6 +76,8 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelV2.ID,
   auto: Schema.optional(Schema.Boolean),
 })
+export const SetModelPayload = Schema.Struct(Struct.omit(SessionPrompt.SetModelInput.fields, ["sessionID"]))
+export const ResumePayload = Schema.Struct(Struct.omit(SessionPrompt.ResumeInput.fields, ["sessionID"]))
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -87,10 +96,14 @@ export const PermissionResponsePayload = Schema.Struct({
 // declaratively by the literal schemas (unknown event/type → 4xx); the
 // non-empty hooks[] guard is enforced at the handler boundary.
 const HookEventParam = Schema.Literals([...VALID_HOOK_EVENTS])
-const HookTypeParam = Schema.Literals(["command", "mcp", "http", "prompt", "agent"])
+const HookTypeParam = Schema.Literals(["command", "mcp", "mcp_tool", "http", "prompt", "agent"])
 export const SessionHookCommandPayload = Schema.Struct({
   type: HookTypeParam,
   command: Schema.optional(Schema.String),
+  args: Schema.optional(Schema.Array(Schema.String)),
+  server: Schema.optional(Schema.String),
+  tool: Schema.optional(Schema.String),
+  input: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   url: Schema.optional(Schema.String),
   prompt: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -102,6 +115,8 @@ export const SessionHookCommandPayload = Schema.Struct({
   inputFormat: Schema.optional(Schema.Literals(["opencode", "claude-code"])),
   allowedEnvVars: Schema.optional(Schema.Array(Schema.String)),
   statusMessage: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  onFailure: Schema.optional(Schema.Literals(["continue", "block"])),
   once: Schema.optional(Schema.Boolean),
   options: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 })
@@ -141,6 +156,9 @@ export const SessionPaths = {
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
   prompt: `${root}/:sessionID/message`,
+  resume: `${root}/:sessionID/resume`,
+  attention: `${root}/:sessionID/attention`,
+  setModel: `${root}/:sessionID/model`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
   shell: `${root}/:sessionID/shell`,
@@ -412,12 +430,59 @@ export const SessionApi = HttpApi.make("session")
             description: "Generate a concise summary of the session using AI compaction to preserve key information.",
           }),
         ),
+        HttpApiEndpoint.post("setModel", SessionPaths.setModel, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: SetModelPayload,
+          success: described(
+            Schema.Struct({ providerID: ProviderV2.ID, modelID: ModelV2.ID }),
+            "Selected session model",
+          ),
+          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.setModel",
+            summary: "Select session model",
+            description: "Apply a requested session model change after PreModelSwitch hooks approve it.",
+          }),
+        ),
+        HttpApiEndpoint.post("attention", SessionPaths.attention, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: SessionAttentionInput,
+          success: Schema.Boolean,
+          error: [ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.attention",
+            summary: "Report session attention",
+            description:
+              "Report client activity and a short-lived background task view lease without sending typed content.",
+          }),
+        ),
+        HttpApiEndpoint.post("resume", SessionPaths.resume, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: ResumePayload,
+          success: described(
+            Schema.NullOr(SessionV1.WithParts),
+            "Resumed message, or null when no initial message is queued",
+          ),
+          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.resume",
+            summary: "Resume pending hook input",
+            description:
+              "Run the initial SessionStart message or resume the same deferred tool call without adding a user message.",
+          }),
+        ),
         HttpApiEndpoint.post("prompt", SessionPaths.prompt, {
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           payload: PromptPayload,
           success: described(SessionV1.WithParts, "Created message"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.prompt",
@@ -444,7 +509,7 @@ export const SessionApi = HttpApi.make("session")
           query: WorkspaceRoutingQuery,
           payload: CommandPayload,
           success: described(SessionV1.WithParts, "Created message"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [InvalidRequestError, HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.command",

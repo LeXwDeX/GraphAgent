@@ -1,4 +1,5 @@
 import "./worker-console"
+import { HookClientLifecycle } from "@/hook/client-lifecycle"
 import { Logging } from "@opencode-ai/core/observability/logging"
 
 import { Server } from "@/server/server"
@@ -55,6 +56,8 @@ GlobalBus.on("event", (event) => {
   Rpc.emit("global.event", event)
 })
 
+const localSessions = new Map<string, string>()
+
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
 export const rpc = {
@@ -71,6 +74,31 @@ export const rpc = {
     })
     const response = await Server.Default().app.fetch(request)
     const body = await response.text()
+    const url = new URL(input.url)
+    const directory = request.headers.get("x-opencode-directory") ?? url.searchParams.get("directory") ?? process.cwd()
+    const existing = url.pathname.match(/\/(?:session|chat)\/([^/]+)\/(?:message|prompt|command|shell)$/)
+    if (input.method.toUpperCase() === "POST" && existing) localSessions.set(decodeURIComponent(existing[1]), directory)
+    if (input.method.toUpperCase() === "POST" && /\/(?:session|chat)\/?$/.test(url.pathname) && response.ok) {
+      try {
+        const parsed = JSON.parse(body)
+        const created = parsed?.data ?? parsed
+        const payload = input.body ? JSON.parse(input.body) : undefined
+        const createdDirectory =
+          typeof payload?.location?.directory === "string" ? payload.location.directory : directory
+        if (typeof created?.id === "string") localSessions.set(created.id, createdDirectory)
+      } catch {
+        /* Non-JSON responses are not session creation. */
+      }
+    }
+    if (input.method.toUpperCase() === "POST" && url.pathname.endsWith("/control-plane/move-session") && response.ok) {
+      try {
+        const moved = JSON.parse(input.body ?? "{}")
+        if (typeof moved.sessionID === "string" && typeof moved.destination?.directory === "string")
+          localSessions.set(moved.sessionID, moved.destination.directory)
+      } catch {
+        /* Only a successfully decoded move request can update client lifecycle ownership. */
+      }
+    }
     return {
       status: response.status,
       headers: Object.fromEntries(response.headers.entries()),
@@ -100,6 +128,13 @@ export const rpc = {
     await AppRuntime.runPromise(
       Logging.backgroundDebug("lifecycle.worker.shutdown", { source: "worker.rpc.shutdown", phase: "requested" }),
     )
+    for (const [sessionID, directory] of localSessions)
+      await AppRuntime.runPromise(
+        HookClientLifecycle.endLocalSession({ sessionID, directory, reason: "prompt_input_exit" }).pipe(
+          Effect.catchCause(() => Effect.void),
+        ),
+      )
+    localSessions.clear()
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
     process.off("unhandledRejection", onUnhandledRejection)

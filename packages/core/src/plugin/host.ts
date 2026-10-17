@@ -1,5 +1,6 @@
 export * as PluginHost from "./host"
 
+import { SourceProvenance } from "../session/source-provenance"
 import type { PluginContext as Interface } from "@opencode-ai/plugin/v2/effect"
 import { Effect, Schema } from "effect"
 import { AgentV2 } from "../agent"
@@ -28,15 +29,30 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Int
     agent: {
       reload: agents.reload,
       transform: (callback) =>
-        agents.transform((draft) =>
-          callback({
-            list: draft.list,
-            get: (id) => draft.get(AgentV2.ID.make(id)),
-            default: (id) => draft.default(id === undefined ? undefined : AgentV2.ID.make(id)),
-            update: (id, update) => draft.update(AgentV2.ID.make(id), update),
-            remove: (id) => draft.remove(AgentV2.ID.make(id)),
-          }),
-        ),
+        Effect.gen(function* () {
+          const pluginID = yield* SourceProvenance.CurrentPlugin
+          return yield* agents.transform((draft) =>
+            Effect.gen(function* () {
+              const before = new Map(draft.list().map((item) => [item.id, hookFingerprint(item.hooks)]))
+              const result = callback({
+                list: draft.list,
+                get: (id) => draft.get(AgentV2.ID.make(id)),
+                default: (id) => draft.default(id === undefined ? undefined : AgentV2.ID.make(id)),
+                update: (id, update) => draft.update(AgentV2.ID.make(id), update),
+                remove: (id) => draft.remove(AgentV2.ID.make(id)),
+              })
+              if (Effect.isEffect(result)) yield* result
+              if (pluginID && pluginID !== "config-agent")
+                for (const item of draft.list()) {
+                  if (item.hooks !== undefined && before.get(item.id) !== hookFingerprint(item.hooks))
+                    SourceProvenance.setAgent(agents, item.id, {
+                      source: "plugin",
+                      origin: pluginID + ":agent:" + item.id,
+                    })
+                }
+            }),
+          )
+        }),
     },
     aisdk: {
       sdk: (callback) =>
@@ -204,12 +220,34 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Int
     skill: {
       reload: skill.reload,
       transform: (callback) =>
-        skill.transform((draft) =>
-          callback({
-            source: (source) => draft.source(Schema.decodeUnknownSync(SkillV2.Source)(source)),
-            list: draft.list,
-          }),
-        ),
+        Effect.gen(function* () {
+          const pluginID = yield* SourceProvenance.CurrentPlugin
+          return yield* skill.transform((draft) =>
+            callback({
+              source: (source) => {
+                const decoded = Schema.decodeUnknownSync(SkillV2.Source)(source)
+                if (pluginID && pluginID !== "config-skill") {
+                  const provenance = {
+                    source: "plugin" as const,
+                    origin: pluginID + ":skill:" + SkillV2.Source.key(decoded),
+                  }
+                  SourceProvenance.setSkillSource(decoded, provenance)
+                  if (decoded.type === "embedded") SourceProvenance.setSkill(decoded.skill, provenance)
+                }
+                draft.source(decoded)
+              },
+              list: draft.list,
+            }),
+          )
+        }),
     },
   } satisfies Interface
 })
+
+function hookFingerprint(hooks: unknown): string | undefined {
+  try {
+    return JSON.stringify(hooks)
+  } catch {
+    return undefined
+  }
+}

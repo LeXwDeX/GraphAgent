@@ -35,6 +35,7 @@ import { Truncate } from "@/tool/truncate"
 import { SettingsHook, type HookPayload } from "@/hook/settings"
 import { Dag } from "@/dag/dag"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { DagStore } from "@opencode-ai/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { Memory } from "@/memory/memory"
@@ -189,6 +190,7 @@ const deps = Layer.mergeAll(
   status,
   Database.defaultLayer,
   DagMessages.defaultLayer,
+  DagStore.defaultLayer,
   EventV2Bridge.defaultLayer,
   ToolSourceLedger.defaultLayer,
 ).pipe(Layer.provideMerge(infra))

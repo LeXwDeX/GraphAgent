@@ -1,3 +1,4 @@
+import { SessionTodoHooks } from "./todo-hooks"
 export * as SessionTodo from "./todo"
 
 import { asc, eq } from "drizzle-orm"
@@ -17,7 +18,7 @@ export interface Interface {
   readonly update: (input: {
     readonly sessionID: SessionSchema.ID
     readonly todos: ReadonlyArray<Info>
-  }) => Effect.Effect<void>
+  }) => Effect.Effect<void, SessionTodoHooks.Blocked>
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<Info>>
 }
 
@@ -33,27 +34,33 @@ export const layer = Layer.effect(
       readonly sessionID: SessionSchema.ID
       readonly todos: ReadonlyArray<Info>
     }) {
-      yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            yield* tx.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
-            if (input.todos.length === 0) return
-            yield* tx
-              .insert(TodoTable)
-              .values(
-                input.todos.map((todo, position) => ({
-                  session_id: input.sessionID,
-                  content: todo.content,
-                  status: todo.status,
-                  priority: todo.priority,
-                  position,
-                })),
-              )
-              .run()
-          }),
-        )
-        .pipe(Effect.orDie)
-      yield* events.publish(Event.Updated, input)
+      return yield* SessionTodoHooks.withLock(
+        input.sessionID,
+        Effect.gen(function* () {
+          yield* SessionTodoHooks.check(input.sessionID, yield* get(input.sessionID), input.todos)
+          yield* db
+            .transaction((tx) =>
+              Effect.gen(function* () {
+                yield* tx.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
+                if (input.todos.length === 0) return
+                yield* tx
+                  .insert(TodoTable)
+                  .values(
+                    input.todos.map((todo, position) => ({
+                      session_id: input.sessionID,
+                      content: todo.content,
+                      status: todo.status,
+                      priority: todo.priority,
+                      position,
+                    })),
+                  )
+                  .run()
+              }),
+            )
+            .pipe(Effect.orDie)
+          yield* events.publish(Event.Updated, input)
+        }),
+      )
     })
 
     const get = Effect.fn("SessionTodo.get")(function* (sessionID: SessionSchema.ID) {

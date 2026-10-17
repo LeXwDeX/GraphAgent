@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Schema, Exit } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
@@ -995,3 +995,35 @@ describe("Config", () => {
     ),
   )
 })
+
+it.effect("refresh reads new permission files and keeps the active cache on invalid replacement", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) =>
+      Effect.gen(function* () {
+        const service = yield* Config.Service
+        const before = yield* service.entries()
+        const file = path.join(tmp.path, "opencode.jsonc")
+        yield* Effect.promise(async () => {
+          await fs.writeFile(file, JSON.stringify({ permission: { read: "deny" } }))
+          await fs.mkdir(path.join(tmp.path, ".opencode"), { recursive: true })
+          await fs.writeFile(
+            path.join(tmp.path, ".opencode", "permissions.local.json"),
+            JSON.stringify({ permission: { edit: "allow" } }),
+          )
+        })
+        expect(yield* service.entries()).toEqual(before)
+        expect(service.refresh).toBeDefined()
+        yield* service.refresh!()
+        const updated = yield* service.entries()
+        const rules = updated.flatMap((entry) => (entry.type === "document" ? (entry.info.permissions ?? []) : []))
+        expect(rules).toContainEqual({ action: "read", resource: "*", effect: "deny" })
+        expect(rules).toContainEqual({ action: "edit", resource: "*", effect: "allow" })
+        yield* Effect.promise(() => fs.writeFile(file, "{invalid-json"))
+        const failed = yield* service.refresh!().pipe(Effect.exit)
+        expect(Exit.isFailure(failed)).toBe(true)
+        expect(yield* service.entries()).toEqual(updated)
+      }).pipe(Effect.provide(testLayer(tmp.path))),
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ),
+)

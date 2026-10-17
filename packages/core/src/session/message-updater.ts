@@ -246,6 +246,12 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
           if (match) match.text = event.data.text
         })
       },
+      "session.next.text.display.updated": (event) => {
+        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+          const match = latestText(draft, event.data.textID)
+          if (match) match.displayText = event.data.displayText
+        })
+      },
       "session.next.tool.input.started": (event) => {
         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
           draft.content.push(
@@ -283,6 +289,32 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
               }),
             )
           }
+        })
+      },
+      "session.next.tool.input.replaced": (event) => {
+        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+          const match = latestTool(draft, event.data.callID)
+          if (match && match.state.status === "running") match.state.input = event.data.input
+        })
+      },
+      "session.next.tool.deferred": (event) => {
+        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+          const match = latestTool(draft, event.data.callID)
+          if (match && match.state.status === "running") match.state.deferred = true
+        })
+      },
+      "session.next.tool.resuming": (event) => {
+        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+          const match = latestTool(draft, event.data.callID)
+          if (match && match.state.status === "running") match.state.deferred = false
+          if (draft.finish === "tool_deferred_unavailable") draft.finish = "tool_deferred"
+        })
+      },
+      "session.next.tool.unavailable": (event) => {
+        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+          const match = latestTool(draft, event.data.callID)
+          if (match && match.state.status === "running" && match.state.deferred)
+            draft.finish = "tool_deferred_unavailable"
         })
       },
       "session.next.tool.progress": (event) => {

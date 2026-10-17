@@ -1279,6 +1279,8 @@ function createLayer(input: StreamInput) {
             agent: next.agent,
             model: next.model,
             variant: next.variant,
+            // The mini UI streams interactively; noninteractive would consume SessionStart initialUserMessage.
+            hookMode: "interactive" as const,
             parts: [
               ...(next.includeFiles ? next.files : []),
               { type: "text" as const, text: next.prompt.text },
@@ -1341,6 +1343,7 @@ function createLayer(input: StreamInput) {
                             agent: next.agent,
                             model: next.model ? `${next.model.providerID}/${next.model.modelID}` : undefined,
                             variant: next.variant,
+                            hookMode: "interactive",
                             command: command.name,
                             arguments: command.arguments,
                             parts: [

@@ -1,5 +1,11 @@
+import { Client } from "@modelcontextprotocol/client"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { decodeRecord, decodeOptionalRecord } from "../lib/hook-json"
+import { Question } from "@/question"
+import { handleElicitation } from "@/mcp/elicitation"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema, Cause } from "effect"
+import { Effect, Layer, Schema, Cause, Fiber, Exit } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { SessionTools } from "@/session/tools"
@@ -14,13 +20,16 @@ import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "@/session/schema"
 import { TestInstance } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { testEffect, pollWithTimeout } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { buildAgentTools } from "@/hook/agent-tools"
 import { jsonSchema, tool } from "ai"
+import { MockLanguageModelV3 } from "ai/test"
+import { Provider } from "@/provider/provider"
+import { Auth } from "@/auth"
 import { ReadTool } from "@/tool/read"
 import { GrepTool } from "@/tool/grep"
 import { GlobTool } from "@/tool/glob"
@@ -50,9 +59,12 @@ const writeDefinition = {
 const layers = Layer.mergeAll(
   hookLayer,
   Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
-  Layer.mock(Permission.Service, { ask: () => Effect.void }),
+  Layer.mock(Permission.Service, {
+    ask: () => Effect.void,
+    hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
+  }),
   Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
-  Layer.mock(Truncate.Service, {}),
+  Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
   Layer.mock(ToolRegistry.Service, {
     tools: () => Effect.succeed([writeDefinition]),
     registrations: () =>
@@ -82,8 +94,100 @@ const execute = (tools: any, filePath: string) =>
     ),
   )
 
+const rejectingModel = (reason: string) =>
+  new MockLanguageModelV3({
+    doGenerate: {
+      content: [{ type: "text", text: JSON.stringify({ ok: false, reason }) }],
+      finishReason: { unified: "stop", raw: "stop" },
+      usage: {
+        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 1, reasoning: 0 },
+      },
+      warnings: [],
+    },
+  })
+
+const evaluatorServices = (model: MockLanguageModelV3) =>
+  Layer.mergeAll(
+    Layer.mock(Provider.Service, {
+      defaultModel: () => Effect.succeed({ providerID: ProviderV2.ID.make("audit"), modelID: ModelV2.ID.make("test") }),
+      getModel: () => Effect.succeed(ProviderTest.model()),
+      getLanguage: () => Effect.succeed(model),
+    }),
+    Layer.mock(Auth.Service, { get: () => Effect.succeed({ type: "api" as const, key: "test-only" }) }),
+  )
+
 describe("real SessionTools call path", () => {
-  it.instance("FileChanged envelope must contain native filePath", () =>
+  for (const continueOnBlock of [false, true]) {
+    it.instance(
+      `prompt evaluator ${continueOnBlock ? "denies only the tool" : "stops the turn"} before the writer runs`,
+      () =>
+        Effect.gen(function* () {
+          const instance = yield* TestInstance
+          const store = yield* SessionHooks.Service
+          const id = SessionID.descending()
+          const target = path.join(instance.directory, `evaluator-${continueOnBlock}.txt`)
+          yield* store.add(id, {
+            event: "PreToolUse",
+            hooks: [{ type: "prompt", prompt: "Check the write", continueOnBlock }],
+          })
+          const model = rejectingModel("model rejected write")
+          const output = yield* Effect.gen(function* () {
+            const tools = yield* resolve(id, instance.directory)
+            return yield* execute(tools, target)
+          }).pipe(Effect.provide(evaluatorServices(model)))
+          expect(yield* Effect.promise(() => Bun.file(target).exists())).toBe(false)
+          expect(JSON.stringify(output)).toContain("model rejected write")
+          expect(decodeOptionalRecord(decodeRecord(output).metadata)?.hookStopped).toBe(
+            continueOnBlock ? undefined : true,
+          )
+          expect(model.doGenerateCalls).toHaveLength(1)
+        }),
+    )
+  }
+
+  it.instance("prompt PostToolUse continuation keeps the completed write and returns feedback", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const target = path.join(instance.directory, "post-evaluator.txt")
+      yield* store.add(id, {
+        event: "PostToolUse",
+        hooks: [{ type: "prompt", prompt: "Check the output", continueOnBlock: true }],
+      })
+      const model = rejectingModel("revise the write")
+      const output = yield* Effect.gen(function* () {
+        const tools = yield* resolve(id, instance.directory)
+        return yield* execute(tools, target)
+      }).pipe(Effect.provide(evaluatorServices(model)))
+      expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("audit-safe-fixture")
+      expect(JSON.stringify(output)).toContain("revise the write")
+      expect(decodeOptionalRecord(decodeRecord(output).metadata)?.hookStopped).toBeUndefined()
+    }),
+  )
+
+  it.instance("prompt PostToolUse default stops after the completed write", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const target = path.join(instance.directory, "post-stop-evaluator.txt")
+      yield* store.add(id, {
+        event: "PostToolUse",
+        hooks: [{ type: "prompt", prompt: "Check the output" }],
+      })
+      const output = yield* Effect.gen(function* () {
+        const tools = yield* resolve(id, instance.directory)
+        return yield* execute(tools, target)
+      }).pipe(Effect.provide(evaluatorServices(rejectingModel("halt after write"))))
+      expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("audit-safe-fixture")
+      expect(JSON.stringify(output)).toContain("halt after write")
+      expect(decodeOptionalRecord(decodeRecord(output).metadata)?.hookStopped).toBe(true)
+    }),
+  )
+
+  it.instance("unwatched tool writes do not invent FileChanged events", () =>
     Effect.gen(function* () {
       const instance = yield* TestInstance
       const store = yield* SessionHooks.Service
@@ -94,8 +198,14 @@ describe("real SessionTools call path", () => {
       const tools = yield* resolve(id, instance.directory)
       yield* execute(tools, target)
       expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("audit-safe-fixture")
-      const envelope = JSON.parse(yield* Effect.promise(() => fs.readFile(capture, "utf8")))
-      expect(envelope.path).toBe(target)
+      expect(
+        yield* Effect.promise(() =>
+          fs.access(capture).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      ).toBe(false)
     }),
   )
 
@@ -276,13 +386,16 @@ const discoveryToolLayer = Layer.mergeAll(
   Layer.mock(Agent.Service, {}),
   Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
   Layer.mock(LSP.Service, { touchFile: () => Effect.void }),
-  Layer.mock(Truncate.Service, {}),
+  Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
 )
 const discovery = testEffect(
   Layer.mergeAll(
     hookLayer,
     Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
-    Layer.mock(Permission.Service, { ask: () => Effect.void }),
+    Layer.mock(Permission.Service, {
+      ask: () => Effect.void,
+      hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
+    }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.unwrap(
       Effect.gen(function* () {
@@ -437,33 +550,339 @@ const permission = testEffect(
   Permission.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provideMerge(hookLayer)),
 )
 describe("permission hook call path", () => {
-  for (const variant of ["deny", "exit2"] as const) {
-    permission.instance(`PermissionRequest ${variant} should resolve rejection without user input`, () =>
+  permission.instance("PermissionRequest nested deny resolves without user input", () =>
+    Effect.gen(function* () {
+      const store = yield* SessionHooks.Service
+      const permissions = yield* Permission.Service
+      const id = SessionID.descending()
+      yield* store.add(id, {
+        event: "PermissionRequest",
+        hooks: [
+          {
+            type: "command",
+            command: jsonCommand({
+              hookSpecificOutput: {
+                hookEventName: "PermissionRequest",
+                decision: { behavior: "deny", message: "denied" },
+              },
+            }),
+          },
+        ],
+      })
+      const exit = yield* permissions
+        .ask({ sessionID: id, permission: "bash", patterns: ["echo test"], always: [], metadata: {}, ruleset: [] })
+        .pipe(Effect.timeout(1000), Effect.exit)
+      expect(exit._tag).toBe("Failure")
+      expect(exit._tag === "Failure" ? Cause.pretty(exit.cause) : "").not.toContain("Timeout")
+      expect(yield* permissions.list()).toHaveLength(0)
+    }),
+  )
+  permission.instance("PermissionRequest exit2 leaves the normal user permission flow unchanged", () =>
+    Effect.gen(function* () {
+      const store = yield* SessionHooks.Service
+      const permissions = yield* Permission.Service
+      const id = SessionID.descending()
+      yield* store.add(id, {
+        event: "PermissionRequest",
+        hooks: [{ type: "command", command: "printf '%s' 'DISCARDED_STDERR' >&2; exit 2" }],
+      })
+      const pending = yield* permissions
+        .ask({ sessionID: id, permission: "bash", patterns: ["echo test"], always: [], metadata: {}, ruleset: [] })
+        .pipe(Effect.forkScoped)
+      const requests = yield* pollWithTimeout(
+        permissions.list().pipe(Effect.map((items) => (items.length ? items : undefined))),
+        "permission dialog was not published",
+      )
+      expect(requests).toHaveLength(1)
+      yield* permissions.reply({ requestID: requests[0].id, reply: "once" })
+      expect(Exit.isSuccess(yield* Fiber.await(pending))).toBe(true)
+    }),
+  )
+})
+
+describe("hook consumer complete input and output replacement", () => {
+  it.instance("real command hook removes omitted MCP input keys before execution", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const mcp = yield* MCP.Service
+      const id = SessionID.descending()
+      let executed: unknown
+      yield* store.add(id, {
+        event: "PreToolUse",
+        hooks: [
+          {
+            type: "command",
+            command: jsonCommand({
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                updatedInput: { value: "new" },
+              },
+            }),
+          },
+        ],
+      })
+      const tools = yield* resolve(id, instance.directory).pipe(
+        Effect.provideService(MCP.Service, {
+          ...mcp,
+          tools: () =>
+            Effect.succeed({
+              audit_replace: tool({
+                inputSchema: jsonSchema({
+                  type: "object",
+                  properties: { value: { type: "string" }, obsolete: { type: "string" } },
+                  required: ["value"],
+                }),
+                execute: async (args) => {
+                  executed = args
+                  return { content: [{ type: "text", text: "ok" }] }
+                },
+              }),
+            }),
+        }),
+      )
+      yield* Effect.promise(() =>
+        Promise.resolve(
+          tools.audit_replace.execute!(
+            { value: "old", obsolete: "remove" },
+            {
+              toolCallId: "replace",
+              messages: [],
+              abortSignal: new AbortController().signal,
+            },
+          ),
+        ),
+      )
+      expect(executed).toEqual({ value: "new" })
+    }),
+  )
+
+  it.instance("real command hook replaces MCP output content and attachments", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const mcp = yield* MCP.Service
+      const id = SessionID.descending()
+      yield* store.add(id, {
+        event: "PostToolUse",
+        hooks: [
+          {
+            type: "command",
+            command: jsonCommand({
+              hookSpecificOutput: {
+                hookEventName: "PostToolUse",
+                updatedToolOutput: { content: [{ type: "text", text: "REDACTED" }] },
+              },
+            }),
+          },
+        ],
+      })
+      const tools = yield* resolve(id, instance.directory).pipe(
+        Effect.provideService(MCP.Service, {
+          ...mcp,
+          tools: () =>
+            Effect.succeed({
+              audit_replace: tool({
+                inputSchema: jsonSchema({ type: "object", properties: {} }),
+                execute: async () => ({
+                  content: [
+                    { type: "text", text: "ORIGINAL" },
+                    { type: "image", data: "eA==", mimeType: "image/png" },
+                  ],
+                }),
+              }),
+            }),
+        }),
+        Effect.provide(
+          Layer.mock(Truncate.Service, {
+            output: (text: string) => Effect.succeed({ content: text, truncated: false }),
+          }),
+        ),
+      )
+      const result = yield* Effect.promise(() =>
+        Promise.resolve(
+          tools.audit_replace.execute!(
+            {},
+            {
+              toolCallId: "replace",
+              messages: [],
+              abortSignal: new AbortController().signal,
+            },
+          ),
+        ),
+      )
+      expect(JSON.stringify(result)).toContain("REDACTED")
+      expect(JSON.stringify(result)).not.toContain("ORIGINAL")
+      expect(decodeRecord(result).attachments).toEqual([])
+    }),
+  )
+})
+
+describe("elicitation command output consumer", () => {
+  it.instance("command hook can answer before any Question UI is available", () =>
+    Effect.gen(function* () {
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      yield* store.add(id, {
+        event: "Elicitation",
+        hooks: [
+          {
+            type: "command",
+            command: jsonCommand({
+              hookSpecificOutput: { hookEventName: "Elicitation", action: "accept", content: { username: "fixture" } },
+            }),
+          },
+        ],
+      })
+      const result = yield* handleElicitation({
+        sessionID: id,
+        message: "name",
+        requestedSchema: {
+          type: "object",
+          properties: { username: { type: "string" } },
+          required: ["username"],
+        },
+      })
+      expect(result).toEqual({ action: "accept", content: { username: "fixture" } })
+    }),
+  )
+})
+
+describe("ElicitationResult real command output replacement", () => {
+  for (const [action, expected] of [
+    ["accept", { action: "accept", content: { username: "replacement" } }],
+    ["decline", { action: "decline" }],
+    ["cancel", { action: "cancel", content: { username: "submitted", unchanged: "original" } }],
+  ] as const) {
+    it.instance(`${action} is consumed before returning to MCP`, () =>
       Effect.gen(function* () {
         const store = yield* SessionHooks.Service
-        const permissions = yield* Permission.Service
         const id = SessionID.descending()
-        const command =
-          variant === "deny"
-            ? jsonCommand({ hookSpecificOutput: { hookEventName: "PermissionRequest", permissionDecision: "deny" } })
-            : "printf '%s' 'AUDIT_PERMISSION_BLOCK' >&2; exit 2"
-        yield* store.add(id, { event: "PermissionRequest", hooks: [{ type: "command", command }] })
-        const exit = yield* permissions
-          .ask({
-            sessionID: id,
-            permission: "bash",
-            patterns: ["echo test"],
-            always: [],
-            metadata: {},
-            ruleset: [],
-          })
-          .pipe(Effect.timeout(150), Effect.exit)
-        const error = exit._tag === "Failure" ? Cause.pretty(exit.cause) : "success"
-        expect(error).not.toContain("Timeout")
-        expect(exit._tag).toBe("Failure")
-        expect(yield* permissions.list()).toHaveLength(0)
-        if (variant === "exit2") expect(error).toContain("AUDIT_PERMISSION_BLOCK")
+        yield* store.add(id, {
+          event: "ElicitationResult",
+          hooks: [
+            {
+              type: "command",
+              command: jsonCommand({
+                hookSpecificOutput: {
+                  hookEventName: "ElicitationResult",
+                  action,
+                  content: { username: "replacement" },
+                },
+              }),
+            },
+          ],
+        })
+        const response = yield* handleElicitation({
+          sessionID: id,
+          message: "form",
+          requestedSchema: {
+            type: "object",
+            properties: { username: { type: "string" }, unchanged: { type: "string" } },
+          },
+        }).pipe(
+          Effect.provide(Layer.mock(Question.Service, { ask: () => Effect.succeed([["submitted"], ["original"]]) })),
+        )
+        expect(response).toEqual(expected)
       }),
     )
   }
 })
+
+describe("resource tools consume real command hooks", () => {
+  for (const name of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+    for (const denied of [true, false]) {
+      it.instance(`${name} ${denied ? "prevents the remote read" : "replaces the result"}`, () =>
+        Effect.gen(function* () {
+          const instance = yield* TestInstance
+          const hooks = yield* SessionHooks.Service
+          const mcp = yield* MCP.Service
+          const id = SessionID.descending()
+          let calls = 0
+          yield* hooks.add(id, {
+            event: denied ? "PreToolUse" : "PostToolUse",
+            hooks: [
+              {
+                type: "command",
+                command: jsonCommand({
+                  hookSpecificOutput: denied
+                    ? { hookEventName: "PreToolUse", permissionDecision: "deny" }
+                    : {
+                        hookEventName: "PostToolUse",
+                        updatedToolOutput: { title: "redacted", output: "REPLACED_RESOURCE", metadata: {} },
+                      },
+                }),
+              },
+            ],
+          })
+          const tools = yield* resolve(id, instance.directory).pipe(
+            Effect.provideService(MCP.Service, {
+              ...mcp,
+              clients: () =>
+                Effect.succeed({
+                  fixture: Object.assign(new Client({ name: "resource-fixture", version: "0" }), {
+                    getServerCapabilities: () => ({ resources: {} }),
+                  }),
+                }),
+              resources: () =>
+                Effect.sync(() => {
+                  calls++
+                  return { fixture: { client: "fixture", name: "original", uri: "fixture://original" } }
+                }),
+              resourceTemplates: () =>
+                Effect.sync(() => {
+                  calls++
+                  return { fixture: { client: "fixture", name: "original", uriTemplate: "fixture://{name}" } }
+                }),
+              readResource: () =>
+                Effect.sync(() => {
+                  calls++
+                  return { contents: [{ uri: "fixture://original", text: "ORIGINAL_RESOURCE" }] }
+                }),
+            }),
+          )
+          const result = yield* Effect.promise(() =>
+            Promise.resolve(
+              tools[name].execute!(
+                { server: "fixture", uri: "fixture://original" },
+                {
+                  toolCallId: `resource-${name}`,
+                  messages: [],
+                  abortSignal: new AbortController().signal,
+                },
+              ),
+            ),
+          )
+          expect(calls).toBe(denied ? 0 : 1)
+          expect(JSON.stringify(result)).toContain(denied ? "Tool denied by hook" : "REPLACED_RESOURCE")
+          expect(JSON.stringify(result)).not.toContain("ORIGINAL_RESOURCE")
+        }),
+      )
+    }
+  }
+})
+
+it.instance("continue:false beats ignored defer on the actual V1 tool path", () =>
+  Effect.gen(function* () {
+    const instance = yield* TestInstance
+    const id = SessionID.descending()
+    yield* (yield* SessionHooks.Service).add(id, {
+      event: "PreToolUse",
+      hooks: [
+        {
+          type: "command",
+          command: jsonCommand({
+            continue: false,
+            stopReason: "V1_STOP_OVER_DEFER",
+            hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "defer" },
+          }),
+        },
+      ],
+    })
+    const target = path.join(instance.directory, "must-not-execute.txt")
+    const result = yield* execute(yield* resolve(id, instance.directory), target)
+    expect(JSON.stringify(result)).toContain("V1_STOP_OVER_DEFER")
+    expect(JSON.stringify(result)).not.toContain("hookDeferred")
+    expect(yield* Effect.promise(() => Bun.file(target).exists())).toBe(false)
+  }),
+)

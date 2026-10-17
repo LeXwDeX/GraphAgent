@@ -39,10 +39,12 @@ export const TodoWriteTool = Tool.define<typeof Parameters, Metadata, Todo.Servi
             metadata: {},
           })
 
-          yield* todo.update({
-            sessionID: ctx.sessionID,
-            todos: params.todos,
-          })
+          yield* todo
+            .update({
+              sessionID: ctx.sessionID,
+              todos: params.todos,
+            })
+            .pipe(Effect.orDie)
 
           return {
             title: `${params.todos.filter((x) => x.status !== "completed").length} todos`,

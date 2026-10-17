@@ -1,5 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
+import { Schema } from "effect"
+import { SessionAttentionInput } from "../../../schema/src/session-attention"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createSignal, onCleanup, Show } from "solid-js"
@@ -132,6 +134,11 @@ function LocalProbe(props: { ready: (value: ReturnType<typeof useLocal>) => void
   return <box />
 }
 
+function RouteProbe(props: { ready: (value: ReturnType<typeof useRoute>) => void }) {
+  props.ready(useRoute())
+  return <box />
+}
+
 function EditorProbe(props: { ready: (value: ReturnType<typeof useEditorContext>) => void }) {
   props.ready(useEditorContext())
   return <box />
@@ -178,6 +185,7 @@ async function mountRoute(
   }
   const [mounted, setMounted] = createSignal(false)
   let local!: ReturnType<typeof useLocal>
+  let navigation!: ReturnType<typeof useRoute>
   let editor!: ReturnType<typeof useEditorContext>
   let sync!: ReturnType<typeof useSync>
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
@@ -203,6 +211,7 @@ async function mountRoute(
                   <KVProvider>
                     <ToastProvider>
                       <RouteProvider initialRoute={{ type: "home" }}>
+                        <RouteProbe ready={(value) => (navigation = value)} />
                         <TuiConfigProvider config={config}>
                           <PluginRuntimeProvider value={createPluginRuntime()}>
                             <SDKProvider
@@ -286,6 +295,7 @@ async function mountRoute(
     keymap,
     editor,
     local,
+    navigation,
     counter,
     mount: () => setMounted(true),
     unmount: () => setMounted(false),
@@ -842,7 +852,7 @@ test("explicitly selected provider model snapshots a Solid store proxy without a
   const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
   try {
     configureModel(route)
-    route.local.model.set({ providerID: "test", modelID: "m" })
+    await route.local.model.set({ providerID: "test", modelID: "m" })
     // Explicit selections come from LocalProvider's Solid model store; the
     // fallback path exercised by other tests returns a plain object instead.
     expect(() => structuredClone(route.local.model.current())).toThrow()
@@ -855,6 +865,196 @@ test("explicitly selected provider model snapshots a Solid store proxy without a
     expect(sent[before].parts).toContainEqual({ type: "text", text: "explicit model" })
     await route.app.renderOnce()
     expect(route.app.captureCharFrame()).not.toContain("The object can not be cloned")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("model picker keeps the server-accepted model when a queued replacement is refused", async () => {
+  let acceptFirst!: () => void
+  const firstAccepted = new Promise<void>((resolve) => {
+    acceptFirst = resolve
+  })
+  const requests: string[] = []
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname !== `/session/${routeSessionID}/model`) return undefined
+      const body: unknown = await request.json()
+      if (
+        !body ||
+        typeof body !== "object" ||
+        !("model" in body) ||
+        !body.model ||
+        typeof body.model !== "object" ||
+        !("modelID" in body.model) ||
+        typeof body.model.modelID !== "string"
+      )
+        throw new Error("Invalid model selection request")
+      requests.push(body.model.modelID)
+      if (body.model.modelID === "accepted") {
+        await firstAccepted
+        return json(true)
+      }
+      return json({ _tag: "InvalidRequestError", message: "SECOND_MODEL_REFUSED" }, { status: 400 })
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    const original = route.sync.data.provider[0].models.m
+    route.sync.set("provider", 0, "models", {
+      accepted: { ...original, id: "accepted", name: "Accepted model" },
+      refused: { ...original, id: "refused", name: "Refused model" },
+    })
+    await route.local.model.set({ providerID: "test", modelID: "m" })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const first = route.local.model.set({ providerID: "test", modelID: "accepted" })
+    await wait(() => requests.length === 1)
+    const second = route.local.model.set({ providerID: "test", modelID: "refused" })
+    acceptFirst()
+    expect(await first).toBe(false)
+    expect(await second).toBe(false)
+    expect(requests).toEqual(["accepted", "refused"])
+    expect(route.local.model.current()).toEqual({ providerID: "test", modelID: "accepted" })
+    await route.app.renderOnce()
+    expect(route.app.captureCharFrame()).toContain("Accepted model")
+  } finally {
+    acceptFirst()
+    await route.dispose()
+  }
+})
+
+test("resuming a session restores its persisted model locally without a model switch request or recents", async () => {
+  const requests: string[] = []
+  const messages = [
+    {
+      info: {
+        id: "msg_user_1",
+        sessionID: routeSessionID,
+        role: "user",
+        time: { created: 1 },
+        agent: "build",
+        model: { providerID: "test", modelID: "m" },
+      },
+      parts: [],
+    },
+  ]
+  const route = await mountRoute(
+    "prompt",
+    messages,
+    false,
+    async (url, request) => {
+      if (url.pathname === `/session/${routeSessionID}` && request.method === "GET")
+        return json({ ...routeSession, model: { id: "saved", providerID: "test" } })
+      if (url.pathname !== `/session/${routeSessionID}/model`) return undefined
+      requests.push(url.pathname)
+      return json(true)
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    const original = route.sync.data.provider[0].models.m
+    route.sync.set("provider", 0, "models", { saved: { ...original, id: "saved", name: "Saved model" } })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    await route.sync.session.sync(routeSessionID)
+    const recent = [...route.local.model.recent()]
+    route.mount()
+    await wait(() => Boolean(prompt))
+    await wait(() => route.local.model.current()?.modelID === "saved")
+    await Bun.sleep(50)
+    expect(requests).toEqual([])
+    expect(route.local.model.recent()).toEqual(recent)
+    expect(route.local.model.current()).toEqual({ providerID: "test", modelID: "saved" })
+    await route.app.renderOnce()
+    expect(route.app.captureCharFrame()).not.toContain("is not valid")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("session attention follows real typing, background child navigation, and unmount", async () => {
+  const childID = "ses_attention_child"
+  const child = { ...routeSession, id: childID, parentID: routeSessionID, title: "Background child" }
+  const updates: Array<{ sessionID: string; value: SessionAttentionInput }> = []
+  const parentMessage = {
+    info: {
+      id: "msg_attention_task",
+      sessionID: routeSessionID,
+      parentID: "msg_attention_user",
+      role: "assistant",
+      agent: "build",
+      mode: "build",
+      modelID: "m",
+      providerID: "test",
+      path: { cwd: directory, root: directory },
+      cost: 0,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 1, completed: 2 },
+      finish: "stop",
+    },
+    parts: [
+      {
+        id: "prt_attention_task",
+        sessionID: routeSessionID,
+        messageID: "msg_attention_task",
+        type: "tool",
+        tool: "task",
+        callID: "call_attention_task",
+        state: {
+          status: "completed",
+          input: { description: "Background child", subagent_type: "general" },
+          title: "Background child",
+          output: "Running",
+          time: { start: 1, end: 2 },
+          metadata: { background: true, sessionId: childID },
+        },
+      },
+    ],
+  }
+  const route = await mountRoute("session", [parentMessage], false, async (url, request) => {
+    const match = url.pathname.match(/^\/session\/([^/]+)\/attention$/)
+    if (match) {
+      updates.push({
+        sessionID: match[1],
+        value: Schema.decodeUnknownSync(SessionAttentionInput)(await request.json()),
+      })
+      return json(true)
+    }
+    if (url.pathname === `/session/${childID}`) return json(child)
+    if (url.pathname.startsWith(`/session/${childID}/`)) return json([])
+    return undefined
+  })
+  try {
+    configureModel(route)
+    route.sync.set("session", [routeSession, child])
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => updates.some((item) => item.sessionID === routeSessionID))
+    route.app.mockInput.pressKey("a")
+    await wait(() => updates.some((item) => item.sessionID === routeSessionID && item.value.activity === 1))
+    expect(updates.every((item) => item.value.clientType === "terminal")).toBe(true)
+    expect(updates.some((item) => item.value.backgroundView)).toBe(false)
+    route.navigation.navigate({ type: "session", sessionID: childID })
+    await wait(() => updates.some((item) => item.sessionID === routeSessionID && item.value.backgroundView))
+    const lease = updates.find((item) => item.sessionID === routeSessionID && item.value.backgroundView)
+    if (!lease) throw new Error("Background view lease missing")
+    route.app.mockInput.pressKey("b")
+    await wait(() => updates.some((item) => item.sessionID === childID && item.value.activity === 1))
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    await wait(() => updates.some((item) => item.value.clientID === lease.value.clientID && item.value.closed))
+    route.unmount()
+    await wait(() => updates.filter((item) => item.value.closed).length === 4)
+    const count = updates.length
+    route.app.mockInput.pressKey("c")
+    await Bun.sleep(150)
+    expect(updates).toHaveLength(count)
+    expect(updates.filter((item) => item.value.closed).every((item) => item.value.backgroundView === false)).toBe(true)
   } finally {
     await route.dispose()
   }

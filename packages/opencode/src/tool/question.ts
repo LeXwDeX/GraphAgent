@@ -31,6 +31,16 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
               metadata: { answers: [] },
             }
           }
+          // Answers supplied by a PreToolUse hook (allow + updatedInput.answers) replace the dialog.
+          const preset = ctx.extra?.hookAnswers
+          if (Array.isArray(preset) && preset.length === params.questions.length) {
+            const answers = preset as ReadonlyArray<Question.Answer>
+            return {
+              title: `Asked ${params.questions.length} question${params.questions.length > 1 ? "s" : ""}`,
+              output: QuestionGuidance.answeredOutput(params.questions, answers),
+              metadata: { answers },
+            }
+          }
           const result = yield* question
             .ask({
               sessionID: ctx.sessionID,

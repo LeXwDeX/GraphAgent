@@ -1,10 +1,12 @@
+import { SessionAttentionHost } from "@opencode-ai/core/session/attention"
 import { SessionV2 } from "@opencode-ai/core/session"
-import { DateTime, Effect } from "effect"
+import { Cause, DateTime, Effect, Option } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
 import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
 import {
   ConflictError,
+  InvalidRequestError,
   InvalidCursorError,
   MessageNotFoundError,
   ServiceUnavailableError,
@@ -94,6 +96,22 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         }),
       )
       .handle(
+        "session.attention",
+        Effect.fn(function* (ctx) {
+          yield* session
+            .get(ctx.params.sessionID)
+            .pipe(
+              Effect.catchTag("Session.NotFoundError", (error) =>
+                Effect.fail(new SessionNotFoundError({ sessionID: error.sessionID, message: "Session not found" })),
+              ),
+            )
+          const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttentionHost.Service))
+          if (!attention) return yield* new ServiceUnavailableError({ message: "Session attention host unavailable" })
+          yield* attention.update({ ...ctx.payload, sessionID: ctx.params.sessionID })
+          return HttpApiSchema.NoContent.make()
+        }),
+      )
+      .handle(
         "session.switchAgent",
         Effect.fn(function* (ctx) {
           yield* session.switchAgent({ sessionID: ctx.params.sessionID, agent: ctx.payload.agent }).pipe(
@@ -113,6 +131,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.switchModel",
         Effect.fn(function* (ctx) {
           yield* session.switchModel({ sessionID: ctx.params.sessionID, model: ctx.payload.model }).pipe(
+            Effect.catchTag("SessionModelSwitchBlocked", (error) =>
+              Effect.fail(new InvalidRequestError({ message: error.reason, kind: "model_switch_blocked" })),
+            ),
             Effect.catchTag("Session.NotFoundError", (error) =>
               Effect.fail(
                 new SessionNotFoundError({
@@ -134,6 +155,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                 sessionID: ctx.params.sessionID,
                 id: ctx.payload.id,
                 prompt: ctx.payload.prompt,
+                hookMode: ctx.payload.hookMode,
                 delivery: ctx.payload.delivery,
                 resume: ctx.payload.resume,
               })
@@ -153,6 +175,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                       resource: error.messageID,
                     }),
                   ),
+                ),
+                Effect.catchTag("SessionConversationHookBlocked", (error) =>
+                  Effect.fail(new InvalidRequestError({ message: error.reason, kind: "prompt_hook_blocked" })),
                 ),
               ),
           }
@@ -179,6 +204,78 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               ),
             ),
           )
+          return HttpApiSchema.NoContent.make()
+        }),
+      )
+      .handle(
+        "session.resume",
+        Effect.fn(function* (ctx) {
+          const context = yield* session.context(ctx.params.sessionID).pipe(
+            Effect.catchTag("Session.NotFoundError", (error) =>
+              Effect.fail(
+                new SessionNotFoundError({
+                  sessionID: error.sessionID,
+                  message: `Session not found: ${error.sessionID}`,
+                }),
+              ),
+            ),
+            Effect.catch((error) =>
+              Effect.fail(
+                error instanceof SessionNotFoundError
+                  ? error
+                  : new UnknownError({ message: "Deferred tool state could not be read" }),
+              ),
+            ),
+          )
+          const pending = context.some(
+            (message) =>
+              message.type === "assistant" &&
+              message.content.some(
+                (part) => part.type === "tool" && part.state.status === "running" && part.state.deferred === true,
+              ),
+          )
+          if (!pending)
+            return yield* new InvalidRequestError({
+              kind: "no_deferred_tool",
+              message: "No deferred tool call is pending for this session",
+            })
+          yield* session.resume(ctx.params.sessionID).pipe(
+            Effect.catchTag("Session.NotFoundError", (error) =>
+              Effect.fail(
+                new SessionNotFoundError({
+                  sessionID: error.sessionID,
+                  message: `Session not found: ${error.sessionID}`,
+                }),
+              ),
+            ),
+            Effect.catch((error) =>
+              Effect.fail(
+                error instanceof SessionNotFoundError
+                  ? error
+                  : new UnknownError({ message: "Deferred tool resume failed" }),
+              ),
+            ),
+            // An explicitly interrupted join is complete at the HTTP boundary.
+            // Preserve every typed failure and defect rather than masking them.
+            Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.failCause(cause))),
+          )
+          return HttpApiSchema.NoContent.make()
+        }),
+      )
+      .handle(
+        "session.interrupt",
+        Effect.fn(function* (ctx) {
+          yield* session.get(ctx.params.sessionID).pipe(
+            Effect.catchTag("Session.NotFoundError", (error) =>
+              Effect.fail(
+                new SessionNotFoundError({
+                  sessionID: error.sessionID,
+                  message: `Session not found: ${error.sessionID}`,
+                }),
+              ),
+            ),
+          )
+          yield* session.interrupt(ctx.params.sessionID)
           return HttpApiSchema.NoContent.make()
         }),
       )

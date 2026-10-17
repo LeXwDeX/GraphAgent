@@ -1,7 +1,10 @@
+import { isRecord } from "@/util/record"
 import { ListToolsResultSchema, ToolSchema } from "@modelcontextprotocol/core"
 import { Client } from "@modelcontextprotocol/client"
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/client"
 import { dynamicTool, jsonSchema, type JSONSchema7, type Tool } from "ai"
+import { SessionContext } from "@/effect/session-context"
+import { mcpHookSource, withClientElicitationCall } from "./elicitation-binding"
 import { Effect } from "effect"
 
 const DEFAULT_TIMEOUT = 30_000
@@ -47,18 +50,29 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(inputSchema),
     execute: async (args: unknown, options) => {
-      const result = await client.callTool(
+      const hook = mcpHookSource(options)
+      const result = await withClientElicitationCall(
+        client,
         {
-          name: mcpTool.name,
-          arguments: (args || {}) as Record<string, unknown>,
-        },
-        {
-          resetTimeoutOnProgress: true,
+          sessionID: hook?.sessionID ?? SessionContext.sessionID,
+          callID: options.toolCallId,
           signal: options.abortSignal,
-          timeout,
-          // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
-          onprogress: () => {},
+          inHook: hook?.inHook,
         },
+        (signal) =>
+          client.callTool(
+            {
+              name: mcpTool.name,
+              arguments: isRecord(args) ? args : {},
+            },
+            {
+              resetTimeoutOnProgress: true,
+              signal,
+              timeout,
+              // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
+              onprogress: () => {},
+            },
+          ),
       )
       if (result.isError)
         throw new Error(
@@ -111,6 +125,35 @@ export function fetch<T extends { name: string }>(
 export const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_")
 
 export const toolName = (clientName: string, name: string) => sanitize(clientName) + "_" + sanitize(name)
+
+/**
+ * Real identity of a server-provided tool. The model-facing key (`server_tool`) is
+ * lossy, so hook consumers must read this binding instead of splitting a key.
+ * `source` is where the server definition came from; it is "unknown" unless the
+ * runtime actually tracked it.
+ */
+export interface ToolBinding {
+  readonly server: string
+  readonly tool: string
+  readonly source: string
+  /** The server marked this tool `_meta["anthropic/requiresUserInteraction"] === true`. */
+  readonly requiresUserInteraction?: boolean
+}
+
+const bindings = new WeakMap<object, ToolBinding>()
+
+export function bindTool<T extends object>(item: T, binding: ToolBinding): T {
+  bindings.set(item, binding)
+  return item
+}
+
+export function toolBinding(item: object): ToolBinding | undefined {
+  return bindings.get(item)
+}
+
+/** Claude-style `mcp__<server>__<tool>` name derived from the real binding. */
+export const canonicalToolName = (binding: Pick<ToolBinding, "server" | "tool">) =>
+  `mcp__${sanitize(binding.server)}__${sanitize(binding.tool)}`
 
 export function prompts(client: Client, timeout?: number) {
   if (!client.getServerCapabilities()?.prompts) return Promise.resolve([])

@@ -106,6 +106,11 @@ describe("command hook Claude input naming", () => {
                 ? { ...base, event, reason: "denied" }
                 : { ...base, event }
         const result = yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
+        if (event === "PermissionRequest" || event === "PermissionDenied") {
+          // These events do not deliver additionalContext to the model.
+          expect(result.additionalContexts).toEqual([])
+          return
+        }
         expect(result.additionalContexts).toHaveLength(2) // Native duplicate is deduplicated.
         const claude = JSON.parse(result.additionalContexts[0].slice("CLAUDE_CONTEXT:".length))
         const native = JSON.parse(result.additionalContexts[1].slice("NATIVE_CONTEXT:".length))
@@ -237,9 +242,9 @@ describe("command hook Claude input naming", () => {
         { event: "PostToolUse", toolName: "read", toolInput: { filePath: "file.ts" }, toolResponse: "response" },
         { sessionID: id, transcriptPath: "" },
       )
-      // Reverse translation is PreToolUse-only; on other events the rewrite
-      // passes through untouched even for known tool names.
-      expect(result.updatedInput).toEqual({ file_path: "new.ts", filePath: "keep.ts" })
+      // updatedInput controls PreToolUse only; a post-tool rewrite cannot
+      // retroactively change the input of an already completed tool.
+      expect(result.updatedInput).toBeUndefined()
     }),
   )
 

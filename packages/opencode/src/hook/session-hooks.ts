@@ -21,11 +21,17 @@
  * wanting persistent hooks should use the on-disk hooks.json chain.
  */
 import { Context, Effect, Layer, Schema } from "effect"
+import path from "node:path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
 import type { HookEvent, HookJSONOutput, HookCommand } from "./settings"
 import { HookCommandSchema } from "./schema"
+import { isTrusted } from "./workspace-trust"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
 
 export type SessionHookCommand = HookCommand
 
@@ -38,8 +44,23 @@ export interface SessionHookEntryInput {
   /** CC matcher pattern (exact / pipe-list / regex / "*"). Undefined = match all. */
   matcher?: string
   hooks: SessionHookCommand[]
-  /** When true, the entry is removed automatically after its first execution. */
+  /** When true, the entry is removed after its first successful execution. */
   once?: boolean
+  /** Frontmatter source. Absent for ordinary HTTP/session registrations. */
+  origin?: string
+  kind?: "skill" | "agent"
+  child?: boolean
+}
+
+export interface ScopedHooksInput {
+  kind: "skill" | "agent"
+  /** Stable skill path or one active agent invocation; registration is idempotent by origin. */
+  origin: string
+  hooks: unknown
+  /** Explicit provenance for exempt agent frontmatter; never inferred from its filename. */
+  source?: "project" | "user" | "plugin" | "builtin"
+  /** Only a child agent's frontmatter Stop hook becomes SubagentStop. */
+  child?: boolean
 }
 
 export interface SessionHookEntry extends SessionHookEntryInput {
@@ -49,8 +70,12 @@ export interface SessionHookEntry extends SessionHookEntryInput {
 
 export interface Interface {
   readonly add: (sessionID: SessionID, entry: SessionHookEntryInput) => Effect.Effect<string, InvalidHookError>
-  /** Atomically remove a registration if still present; only one trigger can claim it. */
-  readonly claim: (sessionID: SessionID, id: string) => Effect.Effect<boolean>
+  /** Atomically reserve a once registration; returns a unique ownership token. */
+  readonly claim: (sessionID: SessionID, id: string) => Effect.Effect<string | undefined>
+  /** Complete only this reservation; a late finalizer cannot release a later run. */
+  readonly complete: (sessionID: SessionID, id: string, token: string, succeeded: boolean) => Effect.Effect<void>
+  readonly registerScoped: (sessionID: SessionID, input: ScopedHooksInput) => Effect.Effect<void, InvalidHookError>
+  readonly unregisterScoped: (sessionID: SessionID, origin: string) => Effect.Effect<void>
   readonly remove: (sessionID: SessionID, id: string) => Effect.Effect<void>
   readonly list: (sessionID: SessionID, event: HookEvent) => Effect.Effect<readonly SessionHookEntry[]>
   /** All entries for a session across every event (backs the HTTP GET endpoint). */
@@ -66,66 +91,186 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionHooks") {}
 
-export const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const state = yield* InstanceState.make(
-      Effect.fn("SessionHooks.state")(() => Effect.succeed(new Map<SessionID, SessionHookEntry[]>())),
-    )
+/** Test-only trust-list seam; production always uses the persisted workspace trust file. */
+export const layerWithTrustFile = (trustFile?: string) =>
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const state = yield* InstanceState.make(
+        Effect.fn("SessionHooks.state")(() => Effect.succeed(new Map<SessionID, SessionHookEntry[]>())),
+      )
+      const reservations = yield* InstanceState.make(
+        Effect.fn("SessionHooks.reservations")(() => Effect.succeed(new Map<SessionID, Map<string, string>>())),
+      )
+      const scopedOrigins = yield* InstanceState.make(
+        Effect.fn("SessionHooks.scopedOrigins")(() => Effect.succeed(new Map<SessionID, Set<string>>())),
+      )
 
-    const add = Effect.fn("SessionHooks.add")(function* (sessionID: SessionID, entry: SessionHookEntryInput) {
-      const parsed = HookCommandSchema.array().min(1).safeParse(entry.hooks)
-      if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
-      if (entry.matcher !== undefined && typeof entry.matcher !== "string")
-        return yield* new InvalidHookError({ message: "matcher must be a string" })
-      const data = yield* InstanceState.get(state)
-      const list = data.get(sessionID) ?? []
-      const id = crypto.randomUUID()
-      list.push({ ...entry, id, hooks: parsed.data })
-      data.set(sessionID, list)
-      return id
-    })
+      const add = Effect.fn("SessionHooks.add")(function* (sessionID: SessionID, entry: SessionHookEntryInput) {
+        const parsed = HookCommandSchema.array().min(1).safeParse(entry.hooks)
+        if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
+        if (entry.matcher !== undefined && typeof entry.matcher !== "string")
+          return yield* new InvalidHookError({ message: "matcher must be a string" })
+        const data = yield* InstanceState.get(state)
+        const list = data.get(sessionID) ?? []
+        const id = crypto.randomUUID()
+        list.push({ ...entry, id, hooks: parsed.data })
+        data.set(sessionID, list)
+        return id
+      })
 
-    const claim = Effect.fn("SessionHooks.claim")(function* (sessionID: SessionID, id: string) {
-      const data = yield* InstanceState.get(state)
-      const list = data.get(sessionID)
-      if (!list?.some((entry) => entry.id === id)) return false
-      const next = list.filter((entry) => entry.id !== id)
-      if (next.length === 0) data.delete(sessionID)
-      else data.set(sessionID, next)
-      return true
-    })
+      const claim = Effect.fn("SessionHooks.claim")(function* (sessionID: SessionID, id: string) {
+        const data = yield* InstanceState.get(state)
+        const list = data.get(sessionID)
+        if (!list?.some((entry) => entry.id === id)) return undefined
+        const locks = yield* InstanceState.get(reservations)
+        const owned = locks.get(sessionID) ?? new Map<string, string>()
+        if (owned.has(id)) return undefined
+        const token = crypto.randomUUID()
+        owned.set(id, token)
+        locks.set(sessionID, owned)
+        return token
+      })
 
-    const remove = Effect.fn("SessionHooks.remove")((sessionID: SessionID, id: string) =>
-      claim(sessionID, id).pipe(Effect.asVoid),
-    )
+      const complete = Effect.fn("SessionHooks.complete")(function* (
+        sessionID: SessionID,
+        id: string,
+        token: string,
+        succeeded: boolean,
+      ) {
+        const locks = yield* InstanceState.get(reservations)
+        const owned = locks.get(sessionID)
+        if (owned?.get(id) !== token) return
+        owned.delete(id)
+        if (!succeeded) return
+        const data = yield* InstanceState.get(state)
+        const next = (data.get(sessionID) ?? []).filter((entry) => entry.id !== id)
+        if (next.length) data.set(sessionID, next)
+        else data.delete(sessionID)
+      })
 
-    const list = Effect.fn("SessionHooks.list")(function* (sessionID: SessionID, event: HookEvent) {
-      const data = yield* InstanceState.get(state)
-      const arr = data.get(sessionID) ?? []
-      return arr.filter((e) => e.event === event) as readonly SessionHookEntry[]
-    })
+      const remove = Effect.fn("SessionHooks.remove")(function* (sessionID: SessionID, id: string) {
+        const locks = yield* InstanceState.get(reservations)
+        locks.get(sessionID)?.delete(id)
+        const data = yield* InstanceState.get(state)
+        const next = (data.get(sessionID) ?? []).filter((entry) => entry.id !== id)
+        if (next.length) data.set(sessionID, next)
+        else data.delete(sessionID)
+      })
 
-    const listAll = Effect.fn("SessionHooks.listAll")(function* (sessionID: SessionID) {
-      const data = yield* InstanceState.get(state)
-      return (data.get(sessionID) ?? []) as readonly SessionHookEntry[]
-    })
+      const registerScoped = Effect.fn("SessionHooks.registerScoped")(function* (
+        sessionID: SessionID,
+        input: ScopedHooksInput,
+      ) {
+        if (!input.origin || (input.kind !== "skill" && input.kind !== "agent"))
+          return yield* new InvalidHookError({ message: "scoped hook requires kind and origin" })
+        if (input.kind === "agent") {
+          const file = input.origin.startsWith("agent:") ? input.origin.slice("agent:".length) : input.origin
+          const exempt = input.source === "user" || input.source === "plugin" || input.source === "builtin"
+          // Project subagent frontmatter requires an explicit accepted workspace
+          // trust entry even in headless runs. An unknown origin fails closed.
+          if (!exempt && (!path.isAbsolute(file) || !isTrusted(path.dirname(file), trustFile))) return undefined
+        }
+        const raw = input.hooks
+        if (!isRecord(raw)) return yield* new InvalidHookError({ message: "scoped hooks must be an event map" })
+        // Resolve the event vocabulary only when registering. A static import
+        // would form a module-initialization cycle: settings owns SessionHooks,
+        // while permission and MCP also compose the settings layer.
+        const { VALID_HOOK_EVENTS } = yield* Effect.promise(() => import("./settings"))
+        const isEvent = (name: string): name is HookEvent => VALID_HOOK_EVENTS.has(name)
+        const entries: SessionHookEntry[] = []
+        for (const [name, groups] of Object.entries(raw)) {
+          if (!isEvent(name) || !Array.isArray(groups))
+            return yield* new InvalidHookError({ message: `invalid scoped hook event: ${name}` })
+          for (const group of groups) {
+            const item: unknown = group
+            if (!isRecord(item)) return yield* new InvalidHookError({ message: `invalid scoped hook group: ${name}` })
+            if (item.matcher !== undefined && typeof item.matcher !== "string")
+              return yield* new InvalidHookError({ message: `invalid scoped hook matcher: ${name}` })
+            const parsed = HookCommandSchema.array().min(1).safeParse(item.hooks)
+            if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
+            const event = input.kind === "agent" && input.child && name === "Stop" ? "SubagentStop" : name
+            entries.push({
+              id: crypto.randomUUID(),
+              event,
+              matcher: item.matcher,
+              hooks: parsed.data,
+              once: input.kind === "skill" && item.once === true,
+              origin: input.origin,
+              kind: input.kind,
+              child: input.child,
+            })
+          }
+        }
+        const data = yield* InstanceState.get(state)
+        const current = data.get(sessionID) ?? []
+        const registered = yield* InstanceState.get(scopedOrigins)
+        const origins = registered.get(sessionID) ?? new Set<string>()
+        if (origins.has(input.origin)) return undefined
+        origins.add(input.origin)
+        registered.set(sessionID, origins)
+        data.set(sessionID, [...current, ...entries])
+        return undefined
+      })
 
-    const hasForEvent = Effect.fn("SessionHooks.hasForEvent")(function* (sessionID: SessionID, event: HookEvent) {
-      const data = yield* InstanceState.get(state)
-      const arr = data.get(sessionID)
-      if (!arr || arr.length === 0) return false
-      return arr.some((e) => e.event === event)
-    })
+      const unregisterScoped = Effect.fn("SessionHooks.unregisterScoped")(function* (
+        sessionID: SessionID,
+        origin: string,
+      ) {
+        const data = yield* InstanceState.get(state)
+        const removed = (data.get(sessionID) ?? []).filter((entry) => entry.origin === origin)
+        const next = (data.get(sessionID) ?? []).filter((entry) => entry.origin !== origin)
+        if (next.length) data.set(sessionID, next)
+        else data.delete(sessionID)
+        const locks = yield* InstanceState.get(reservations)
+        for (const entry of removed) locks.get(sessionID)?.delete(entry.id)
+        const registered = yield* InstanceState.get(scopedOrigins)
+        registered.get(sessionID)?.delete(origin)
+      })
 
-    const clear = Effect.fn("SessionHooks.clear")(function* (sessionID: SessionID) {
-      const data = yield* InstanceState.get(state)
-      data.delete(sessionID)
-    })
+      const list = Effect.fn("SessionHooks.list")(function* (sessionID: SessionID, event: HookEvent) {
+        const data = yield* InstanceState.get(state)
+        const arr = data.get(sessionID) ?? []
+        return arr.filter((e) => e.event === event) as readonly SessionHookEntry[]
+      })
 
-    return Service.of({ add, claim, remove, list, listAll, hasForEvent, clear })
-  }),
-)
+      const listAll = Effect.fn("SessionHooks.listAll")(function* (sessionID: SessionID) {
+        const data = yield* InstanceState.get(state)
+        return (data.get(sessionID) ?? []) as readonly SessionHookEntry[]
+      })
+
+      const hasForEvent = Effect.fn("SessionHooks.hasForEvent")(function* (sessionID: SessionID, event: HookEvent) {
+        const data = yield* InstanceState.get(state)
+        const arr = data.get(sessionID)
+        if (!arr || arr.length === 0) return false
+        return arr.some((e) => e.event === event)
+      })
+
+      const clear = Effect.fn("SessionHooks.clear")(function* (sessionID: SessionID) {
+        const data = yield* InstanceState.get(state)
+        data.delete(sessionID)
+        const locks = yield* InstanceState.get(reservations)
+        locks.delete(sessionID)
+        const registered = yield* InstanceState.get(scopedOrigins)
+        registered.delete(sessionID)
+      })
+
+      return Service.of({
+        add,
+        claim,
+        complete,
+        registerScoped,
+        unregisterScoped,
+        remove,
+        list,
+        listAll,
+        hasForEvent,
+        clear,
+      })
+    }),
+  )
+
+export const layer = layerWithTrustFile()
 
 export const defaultLayer = layer
 

@@ -1,8 +1,11 @@
+import { HookTranscript } from "@/hook/transcript"
+import { InstanceState } from "@/effect/instance-state"
 import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
 import { ToolJsonSchema } from "./json-schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { BackgroundJob } from "@/background/job"
+import { DagStore } from "@opencode-ai/core/dag/store"
 import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
@@ -18,6 +21,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { HookStartContext } from "@/hook/start-context"
 import { TaskSubagents } from "@/hook/task-subagents"
+import { HookTurnContext } from "@/hook/turn-context"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
@@ -95,6 +99,7 @@ export const TaskTool = Tool.define(
   Effect.gen(function* () {
     const agent = yield* Agent.Service
     const background = yield* BackgroundJob.Service
+    const workflows = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
     const config = yield* Config.Service
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
@@ -180,17 +185,38 @@ export const TaskTool = Tool.define(
           ],
         }))
 
-      // TaskCreated hook
-      if (settingsHook) {
-        const result = yield* settingsHook
-          .trigger(
-            { event: "TaskCreated", taskID: nextSession.id, taskTitle: params.description },
-            { sessionID: ctx.sessionID, transcriptPath: "" },
-          )
-          .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
-        yield* SettingsHook.landSystemMessages(result, { sessionID: ctx.sessionID })
-      }
+      const scopedAgent = next
+      const scopedOrigin = scopedAgent.hookOrigin ? `agent:${scopedAgent.hookOrigin}` : `agent-config:${next.name}`
+      let retainScopedAgent = runInBackground
 
+      const transcript = Effect.fn("TaskTool.hookTranscript")(function* (sessionID: SessionID) {
+        return yield* HookTranscript.materialize({
+          sessionID,
+          directory: yield* InstanceState.directory,
+          messages: yield* sessions.messages({ sessionID }).pipe(Effect.orDie),
+        }).pipe(Effect.orDie)
+      })
+      let stopToolCount = 0
+      const countTools = (messages: readonly SessionV1.WithParts[]) =>
+        messages.reduce((count, message) => count + message.parts.filter((part) => part.type === "tool").length, 0)
+      const stopPayload = Effect.fn("TaskTool.subagentStopPayload")(function* (active: boolean) {
+        const messages = yield* sessions.messages({ sessionID: nextSession.id }).pipe(Effect.orDie)
+        stopToolCount = countTools(messages)
+        const last = messages.findLast((message) => message.info.role === "assistant")
+        return {
+          event: "SubagentStop" as const,
+          stopHookActive: active,
+          agentID: nextSession.id,
+          agentType: next.name,
+          agentTranscriptPath: yield* transcript(nextSession.id),
+          lastAssistantMessage: last?.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n"),
+          backgroundTasks: yield* HookTurnContext.backgroundTasks(ctx.sessionID, { jobs: background, workflows }),
+          sessionCrons: [],
+        }
+      })
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
         Effect.orDie,
@@ -218,13 +244,21 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
+        if (scopedAgent.hooks !== undefined && settingsHook?.registerScoped)
+          yield* settingsHook.registerScoped(nextSession.id, {
+            kind: "agent",
+            origin: scopedOrigin,
+            hooks: scopedAgent.hooks,
+            source: scopedAgent.hookSource,
+            child: true,
+          })
         // SubagentStart hook
         let startContexts: readonly string[] = []
         if (settingsHook) {
           const result = yield* settingsHook
             .trigger(
               { event: "SubagentStart", agentID: nextSession.id, agentType: next.name },
-              { sessionID: ctx.sessionID, transcriptPath: "" },
+              { sessionID: ctx.sessionID, transcriptPath: yield* transcript(ctx.sessionID) },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(result, { sessionID: ctx.sessionID })
@@ -238,28 +272,21 @@ export const TaskTool = Tool.define(
             if (text) yield* startCtx.append(nextSession.id, text)
           }
         }
-        const result = yield* ops.prompt({
-          messageID: MessageID.ascending(),
-          sessionID: nextSession.id,
-          model: {
-            modelID: model.modelID,
-            providerID: model.providerID,
+        const result = yield* ops.prompt(
+          {
+            messageID: MessageID.ascending(),
+            sessionID: nextSession.id,
+            model: {
+              modelID: model.modelID,
+              providerID: model.providerID,
+            },
+            variant: next.model ? undefined : variant,
+            agent: next.name,
+            parts,
           },
-          variant: next.model ? undefined : variant,
-          agent: next.name,
-          parts,
-        })
+          { internalDelegation: true },
+        )
         const text = result.parts.findLast((item) => item.type === "text")?.text ?? ""
-        // TaskCompleted hook
-        if (settingsHook) {
-          const result = yield* settingsHook
-            .trigger(
-              { event: "TaskCompleted", taskID: nextSession.id, taskTitle: params.description, result: text },
-              { sessionID: ctx.sessionID, transcriptPath: "" },
-            )
-            .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
-          yield* SettingsHook.landSystemMessages(result, { sessionID: ctx.sessionID })
-        }
         return text
       })
 
@@ -297,11 +324,24 @@ export const TaskTool = Tool.define(
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
         yield* background.wait({ id: jobID }).pipe(
-          Effect.flatMap((result) => {
-            if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
-            if (result.info?.status === "error") return inject("error", result.info.error ?? "")
-            return Effect.void
-          }),
+          Effect.flatMap((result) =>
+            Effect.gen(function* () {
+              if (result.info?.status !== "completed" && result.info?.status !== "error") return undefined
+              const { SessionAttention } = yield* Effect.promise(() => import("@/notification/attention"))
+              const { Notification } = yield* Effect.promise(() => import("@/notification"))
+              const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
+              const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
+              if (attention && notification && (yield* attention.viewing(ctx.sessionID)))
+                yield* notification.notify({
+                  sessionID: nextSession.id,
+                  notificationType: "agent_completed",
+                  message: "A background agent finished",
+                })
+              return yield* result.info.status === "completed"
+                ? inject("completed", result.info.output ?? "")
+                : inject("error", result.info.error ?? "")
+            }),
+          ),
           Effect.forkIn(scope, { startImmediately: true }),
         )
       })
@@ -415,15 +455,16 @@ export const TaskTool = Tool.define(
         // (the subagent is still running, not stopped); promotion released the
         // TaskSubagents registration, so the child's own loop fires Stop.
         const promoted = Boolean((output.metadata as { background?: boolean } | undefined)?.background)
+        retainScopedAgent = promoted
         // Promotion raced a clean child exit that had already skipped its own
         // Stop for this call: deliver SubagentStop once (no continuation, the
         // task now runs in the background).
         if (settingsHook && promoted && subagent && (yield* subagent.stopDelegated)) {
           const stopResult = yield* settingsHook
-            .trigger(
-              { event: "SubagentStop", stopHookActive: false, agentID: nextSession.id, agentType: next.name },
-              { sessionID: ctx.sessionID, transcriptPath: "" },
-            )
+            .trigger(yield* stopPayload(false), {
+              sessionID: ctx.sessionID,
+              transcriptPath: yield* transcript(ctx.sessionID),
+            })
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
         }
@@ -436,19 +477,17 @@ export const TaskTool = Tool.define(
           let lastStillBlocked = false
           for (let i = 0; i < SettingsHook.MAX_STOP_CONTINUATIONS; i++) {
             const stopResult = yield* settingsHook
-              .trigger(
-                {
-                  event: "SubagentStop",
-                  stopHookActive: subagentStopBlocked,
-                  agentID: nextSession.id,
-                  agentType: next.name,
-                },
-                { sessionID: ctx.sessionID, transcriptPath: "" },
-              )
+              .trigger(yield* stopPayload(subagentStopBlocked), {
+                sessionID: ctx.sessionID,
+                transcriptPath: yield* transcript(ctx.sessionID),
+              })
               .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
             // Land any hook systemMessages so they're never silently dropped.
             yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
-            if (!stopResult.blocked || stopResult.preventContinuation) {
+            if (
+              (!stopResult.blocked && !stopResult.additionalContexts?.some((text) => text.trim())) ||
+              stopResult.preventContinuation
+            ) {
               lastStillBlocked = false
               break
             }
@@ -457,6 +496,7 @@ export const TaskTool = Tool.define(
             // Continue the subagent: feed the block reason and run another turn.
             // A failure here breaks the loop immediately (don't swallow the error
             // and re-loop forever — the prior Effect.catch did that).
+            const toolsBefore = stopToolCount
             const cont = yield* ops
               .prompt(
                 {
@@ -465,15 +505,27 @@ export const TaskTool = Tool.define(
                   model: { modelID: model.modelID, providerID: model.providerID },
                   variant: next.model ? undefined : variant,
                   agent: next.name,
-                  parts: [{ type: "text", synthetic: true, text: stopResult.blocked.reason || "Continue." }],
+                  parts: [
+                    {
+                      type: "text",
+                      synthetic: true,
+                      text:
+                        [...(stopResult.additionalContexts ?? []), stopResult.blocked?.reason]
+                          .filter(Boolean)
+                          .join("\n\n") || "Continue.",
+                    },
+                  ],
                 },
-                { continueToolBudget: true },
+                { continueToolBudget: true, internalDelegation: true },
               )
               .pipe(Effect.exit)
             if (Exit.isFailure(cont)) {
               lastStillBlocked = false
               break
             }
+            const after = yield* sessions.messages({ sessionID: nextSession.id }).pipe(Effect.orDie)
+            // Like the main Stop budget, only consecutive feedback turns without tool work count.
+            if (countTools(after) > toolsBefore) i = -1
             // The parent receives the continuation's final answer, not the stale first one.
             output = {
               ...output,
@@ -493,7 +545,16 @@ export const TaskTool = Tool.define(
           }
         }
         return output
-      }).pipe(Effect.ensuring(releaseSubagent))
+      }).pipe(
+        Effect.ensuring(releaseSubagent),
+        Effect.ensuring(
+          Effect.suspend(() =>
+            !retainScopedAgent && settingsHook?.unregisterScoped
+              ? settingsHook.unregisterScoped(nextSession.id, scopedOrigin)
+              : Effect.void,
+          ),
+        ),
+      )
     })
 
     return {

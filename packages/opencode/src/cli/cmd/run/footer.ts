@@ -96,6 +96,8 @@ type RunFooterOptions = {
   onVariantSelect?: (variant: string | undefined) => CycleResult | void | Promise<CycleResult | void>
   onInterrupt?: () => void
   onBackground?: () => void
+  onActivity?: () => void
+  onBackgroundView?: (visible: boolean) => void
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
   onExit?: () => void
   onSubagentSelect?: (sessionID: string | undefined) => void
@@ -205,6 +207,7 @@ export class RunFooter implements FooterApi {
   private queuedPrompts: Accessor<FooterQueuedPrompt[]>
   private setQueuedPrompts: Setter<FooterQueuedPrompt[]>
   private promptRoute: FooterPromptRoute = { type: "composer" }
+  private backgroundVisible = false
   private subagentMenuRows = SUBAGENT_ROWS
   private autocomplete = false
   private interruptTimeout: NodeJS.Timeout | undefined
@@ -286,6 +289,7 @@ export class RunFooter implements FooterApi {
       setSubagent("details", reconcile(next.details))
       setSubagent("permissions", reconcile(next.permissions, { key: "id" }))
       setSubagent("questions", reconcile(next.questions, { key: "id" }))
+      this.syncAttentionView()
     }
     const [queuedPrompts, setQueuedPrompts] = createSignal<FooterQueuedPrompt[]>([])
     this.queuedPrompts = queuedPrompts
@@ -293,6 +297,7 @@ export class RunFooter implements FooterApi {
     this.base = Math.max(1, renderer.footerHeight - TEXTAREA_MIN_ROWS)
     this.scrollback = this.createScrollback(options.wrote ?? false)
 
+    this.renderer.keyInput.on("keypress", this.handleActivity)
     this.renderer.on(CliRenderEvents.DESTROY, this.handleDestroy)
     this.renderer.on(CliRenderEvents.PALETTE, this.handlePalette)
     this.renderer.on(CliRenderEvents.THEME_MODE, this.handleThemeRefresh)
@@ -528,6 +533,7 @@ export class RunFooter implements FooterApi {
     }
 
     this.setView(view)
+    this.syncAttentionView()
     this.applyHeight()
   }
 
@@ -642,6 +648,8 @@ export class RunFooter implements FooterApi {
     }
 
     this.closed = true
+    this.renderer.keyInput.off("keypress", this.handleActivity)
+    this.syncAttentionView()
     for (const fn of [...this.closes]) {
       fn()
     }
@@ -740,8 +748,27 @@ export class RunFooter implements FooterApi {
     }
   }
 
+  private handleActivity = (): void => {
+    // Only signal that input occurred; never pass key text or key metadata.
+    if (!this.isClosed) this.options.onActivity?.()
+  }
+
+  private syncAttentionView(): void {
+    const route = this.promptRoute
+    const tabs = this.subagent().tabs
+    const background =
+      route.type === "subagent-menu"
+        ? tabs.some((tab) => tab.background === true)
+        : route.type === "subagent" && tabs.some((tab) => tab.sessionID === route.sessionID && tab.background === true)
+    const visible = !this.isClosed && this.view().type === "prompt" && background
+    if (visible === this.backgroundVisible) return
+    this.backgroundVisible = visible
+    this.options.onBackgroundView?.(visible)
+  }
+
   private syncLayout = (next: { route: FooterPromptRoute; autocomplete: boolean; subagentRows: number }): void => {
     this.promptRoute = next.route
+    this.syncAttentionView()
     this.autocomplete = next.autocomplete
     this.subagentMenuRows = next.subagentRows
     if (this.view().type === "prompt") {

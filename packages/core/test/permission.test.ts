@@ -1,9 +1,10 @@
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Fiber, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer, Exit, Schema, Context, Scope } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
+import { PermissionHookScope } from "@opencode-ai/core/permission/hook-scope"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { PermissionTable } from "@opencode-ai/core/permission/sql"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
@@ -13,6 +14,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionTurnHooks } from "@opencode-ai/core/session/turn-hooks"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { eq } from "drizzle-orm"
@@ -300,3 +302,271 @@ describe("PermissionV2", () => {
     }),
   )
 })
+
+function hookScope(input: Partial<PermissionHookScope.State> = {}): PermissionHookScope.State {
+  return {
+    input: { path: "src/index.ts" },
+    confirmed: false,
+    hooks: {
+      policy: () => Effect.succeed({ rules: [] }),
+      request: () => Effect.succeed({ behavior: "allow" }),
+      confirm: () => Effect.die("unused"),
+    },
+    ...input,
+  }
+}
+
+it.effect("hook allow cannot override a native deny", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "deny" }])
+    const service = yield* PermissionV2.Service
+    let requests = 0
+    const scope = hookScope({ preDecision: "allow" })
+    scope.hooks.policy = () => Effect.succeed({ rules: [{ action: "read", resource: "*", effect: "allow" }] })
+    scope.hooks.request = () =>
+      Effect.sync(() => {
+        requests++
+        return { behavior: "allow" as const }
+      })
+    const exit = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(scope.denied).toBe(true)
+    expect(requests).toBe(0)
+    expect(yield* service.list()).toEqual([])
+  }),
+)
+it.effect("hook force ask retains a real user confirmation despite allow", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+    const service = yield* PermissionV2.Service
+    const events = yield* EventV2.Service
+    const asked = yield* Deferred.make<PermissionV2.Request>()
+    const off = yield* events.listen((event) =>
+      event.type === PermissionV2.Event.Asked.type
+        ? Deferred.succeed(asked, Schema.decodeUnknownSync(PermissionV2.Request)(event.data)).pipe(Effect.asVoid)
+        : Effect.void,
+    )
+    const scope = hookScope({ preDecision: "ask" })
+    const run = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.forkChild)
+    const request = yield* Deferred.await(asked)
+    expect(scope.confirmed).toBe(false)
+    yield* service.reply({ requestID: request.id, reply: "once" })
+    yield* Fiber.join(run)
+    expect(scope.confirmed).toBe(true)
+    yield* off
+  }),
+)
+it.effect("permission callback policy updates are rechecked before allow", () =>
+  Effect.gen(function* () {
+    yield* setup()
+    const service = yield* PermissionV2.Service
+    const scope = hookScope()
+    let denied = false
+    scope.hooks.policy = () =>
+      Effect.succeed({ rules: denied ? [{ action: "read", resource: "*", effect: "deny" }] : [] })
+    scope.hooks.request = () =>
+      Effect.sync(() => {
+        denied = true
+        return { behavior: "allow" as const }
+      })
+    const exit = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(scope.denied).toBe(true)
+    expect(yield* service.list()).toEqual([])
+  }),
+)
+
+it.effect("a user's dialog rejection marks the hook scope as a permission denial", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const service = yield* PermissionV2.Service
+    const events = yield* EventV2.Service
+    const asked = yield* Deferred.make<PermissionV2.Request>()
+    const off = yield* events.listen((event) =>
+      event.type === PermissionV2.Event.Asked.type
+        ? Deferred.succeed(asked, Schema.decodeUnknownSync(PermissionV2.Request)(event.data)).pipe(Effect.asVoid)
+        : Effect.void,
+    )
+    const scope = hookScope()
+    scope.hooks.request = () => Effect.succeed({})
+    const run = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit, Effect.forkChild)
+    const request = yield* Deferred.await(asked)
+    yield* service.reply({ requestID: request.id, reply: "reject" })
+    expect(Exit.isFailure(yield* Fiber.join(run))).toBe(true)
+    expect(scope.denied).toBe(true)
+    yield* off
+  }),
+)
+
+for (const failing of ["policy", "request"] as const)
+  it.effect(`a failed permission hook ${failing} marks the scope as a permission denial`, () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+      const service = yield* PermissionV2.Service
+      const scope = hookScope()
+      const failure = new PermissionHookScope.Failure({ message: "hook transport down" })
+      if (failing === "policy") scope.hooks.policy = () => Effect.fail(failure)
+      else scope.hooks.request = () => Effect.fail(failure)
+      const exit = yield* service
+        .assert(assertion())
+        .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(scope.denied).toBe(true)
+    }),
+  )
+
+it.effect("an interrupted permission hook is not recorded as a denial", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const entered = yield* Deferred.make<void>()
+    const scope = hookScope()
+    scope.hooks.request = () =>
+      Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never), Effect.as({ behavior: "allow" as const }))
+    const service = yield* PermissionV2.Service
+    const fiber = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.forkChild)
+    yield* Deferred.await(entered)
+    yield* Fiber.interrupt(fiber)
+    expect(scope.denied).toBeUndefined()
+  }),
+)
+
+for (const blocked of ["policy", "request"] as const)
+  it.effect(`cancels a blocked hook ${blocked} without releasing its hook`, () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const hooks = hookScope()
+      const wait = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+      if (blocked === "policy") hooks.hooks.policy = () => wait.pipe(Effect.as({ rules: [] }))
+      else hooks.hooks.request = () => wait.pipe(Effect.as({ behavior: "allow" as const }))
+      const permission = yield* PermissionV2.Service
+      const fiber = yield* permission
+        .assert(assertion())
+        .pipe(Effect.provideService(PermissionHookScope.Service, hooks), Effect.forkChild)
+      yield* Deferred.await(entered)
+      yield* Fiber.interrupt(fiber)
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(yield* permission.list()).toEqual([])
+    }),
+  )
+
+it.effect("host-authorized bypass skips ordinary asks but retains configured deny", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const permissions = yield* PermissionV2.Service
+    const scope = hookScope()
+    scope.hooks.policy = () => Effect.succeed({ mode: "bypassPermissions", rules: [] })
+    scope.hooks.request = () => Effect.die("bypass must not run ordinary permission hook")
+    yield* permissions.assert(assertion()).pipe(Effect.provideService(PermissionHookScope.Service, scope))
+    expect(yield* permissions.list()).toEqual([])
+    yield* (yield* AgentV2.Service).transform((draft) =>
+      draft.update(AgentV2.ID.make("test"), (agent) => {
+        agent.permissions.push({ action: "read", resource: "*", effect: "deny" })
+      }),
+    )
+    expect(
+      Exit.isFailure(
+        yield* permissions
+          .assert(assertion())
+          .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit),
+      ),
+    ).toBe(true)
+  }),
+)
+
+it.effect("a host-authorized bypass update takes effect after the current permission hook", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    let authorizedMode = false
+    const scope = hookScope()
+    scope.hooks.policy = () => Effect.succeed({ mode: authorizedMode ? "bypassPermissions" : undefined, rules: [] })
+    scope.hooks.request = () =>
+      Effect.sync(() => {
+        authorizedMode = true
+        return { behavior: "allow" as const }
+      })
+    const permissions = yield* PermissionV2.Service
+    yield* permissions.assert(assertion()).pipe(Effect.provideService(PermissionHookScope.Service, scope))
+    expect(authorizedMode).toBe(true)
+    expect(yield* permissions.list()).toEqual([])
+  }),
+)
+
+it.effect("pending permission host is cancelled on reply and interrupted confirmation", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const permissions = yield* PermissionV2.Service
+    const started = yield* Deferred.make<void>()
+    const stopped = yield* Deferred.make<void>()
+    const host = SessionTurnHooks.Service.of({
+      permissionPending: () =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(stopped, undefined)),
+        ),
+      displayMode: (_, mode) => Effect.succeed({ enabled: false, mode }),
+      display: ({ delta }) => Effect.succeed(delta),
+      postToolBatch: () => Effect.succeed({}),
+      stop: () => Effect.succeed({}),
+      stopFailure: () => Effect.void,
+    })
+    const asked = yield* permissions.ask(assertion()).pipe(Effect.provideService(SessionTurnHooks.Service, host))
+    yield* Deferred.await(started)
+    yield* permissions.reply({ requestID: asked.id, reply: "reject" })
+    yield* Deferred.await(stopped)
+    const confirming = yield* permissions.confirm!(assertion()).pipe(
+      Effect.provideService(SessionTurnHooks.Service, host),
+      Effect.forkChild,
+    )
+    yield* Effect.yieldNow
+    yield* Fiber.interrupt(confirming)
+    expect(yield* permissions.list()).toEqual([])
+  }),
+)
+
+it.effect("directory permission scope disposes a pending notification observer", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const started = yield* Deferred.make<void>()
+    const stopped = yield* Deferred.make<void>()
+    const host = SessionTurnHooks.Service.of({
+      permissionPending: () =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(stopped, undefined)),
+        ),
+      displayMode: (_, mode) => Effect.succeed({ enabled: false, mode }),
+      display: ({ delta }) => Effect.succeed(delta),
+      postToolBatch: () => Effect.succeed({}),
+      stop: () => Effect.succeed({}),
+      stopFailure: () => Effect.void,
+    })
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make()
+        const context = yield* Layer.buildWithScope(Layer.fresh(PermissionV2.layer), scope)
+        const permissions = Context.get(context, PermissionV2.Service)
+        yield* permissions.confirm!(assertion()).pipe(
+          Effect.provideService(SessionTurnHooks.Service, host),
+          Effect.forkChild,
+        )
+        yield* Deferred.await(started)
+        yield* Scope.close(scope, Exit.void)
+      }),
+    )
+    yield* Deferred.await(stopped)
+    expect(yield* Deferred.isDone(stopped)).toBe(true)
+  }),
+)

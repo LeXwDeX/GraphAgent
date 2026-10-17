@@ -1,5 +1,5 @@
-import { ConfigProvider, Effect, Layer } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { ConfigProvider, Context, Effect, Exit, Layer, Scope } from "effect"
+import { HttpEffect, HttpRouter } from "effect/unstable/http"
 import { parse } from "./assertions"
 import { exerciseWorkingDirectory } from "./environment"
 import { runtime, type Runtime } from "./runtime"
@@ -24,34 +24,77 @@ export function call(scenario: ActiveScenario, ctx: SeededContext<unknown>, opti
 }
 
 export function callAuthProbe(scenario: ActiveScenario, credentials: "missing" | "valid" = "missing") {
-  return Effect.promise(async (signal) => {
-    const controller = new AbortController()
-    // Forward fiber interruption (scenario timeout) into the probe abort so
-    // neither the request nor the race below can outlive the scenario.
-    const abortOuter = () => controller.abort("scenario interrupted")
-    signal.addEventListener("abort", abortOuter, { once: true })
-    try {
-      return await Promise.race([
-        Promise.resolve(
-          app(await runtime(), { auth: { password: "secret" } }).request(
-            toAuthProbeRequest(scenario, credentials, controller.signal),
+  return Effect.gen(function* () {
+    const backend = app(yield* Effect.promise(runtime), { auth: { password: "secret" } })
+    yield* authReady(backend)
+    return yield* Effect.promise(async (signal) => {
+      const controller = new AbortController()
+      // Forward fiber interruption (scenario timeout) into the probe abort so
+      // neither the request nor the race below can outlive the scenario.
+      const abortOuter = () => controller.abort("scenario interrupted")
+      signal.addEventListener("abort", abortOuter, { once: true })
+      try {
+        return await Promise.race([
+          Promise.resolve(backend.request(toAuthProbeRequest(scenario, credentials, controller.signal))).then(
+            (response) => capture(response, scenario.capture),
           ),
-        ).then((response) => capture(response, scenario.capture)),
-        Bun.sleep(1_000).then(() => {
-          controller.abort("auth probe timed out")
-          return {
-            status: 0,
-            contentType: "",
-            text: "auth probe timed out",
-            body: undefined,
-            timedOut: true,
-          }
-        }),
-      ])
-    } finally {
-      signal.removeEventListener("abort", abortOuter)
-    }
+          Bun.sleep(1_000).then(() => {
+            controller.abort("auth probe timed out")
+            return {
+              status: 0,
+              contentType: "",
+              text: "auth probe timed out",
+              body: undefined,
+              timedOut: true,
+            }
+          }),
+        ])
+      } finally {
+        signal.removeEventListener("abort", abortOuter)
+      }
+    })
   })
+}
+
+const authReadiness = new WeakMap<CachedApp, Effect.Effect<void>>()
+
+function authReady(backend: CachedApp) {
+  const existing = authReadiness.get(backend)
+  if (existing) return existing
+  // A valid health request acquires the complete route layer before measuring
+  // auth response latency. Cache only within this app's lifetime.
+  const ready = Effect.runSync(
+    Effect.cached(
+      Effect.promise(async (signal) => {
+        const response = await backend.request(
+          new Request("http://localhost/global/health", {
+            headers: {
+              authorization: basic("opencode", "secret"),
+              "x-opencode-directory": exerciseWorkingDirectory,
+            },
+            signal,
+          }),
+        )
+        await response.body?.cancel()
+        if (response.status !== 200) throw new Error(`auth readiness expected 200, got ${response.status}`)
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: "30 seconds",
+          orElse: () => Effect.die(new Error("auth readiness timed out")),
+        }),
+        Effect.onError(() =>
+          Effect.promise(async () => {
+            // Failed/interrupted Effect.cached values must not poison later scenarios.
+            // An old failure must also never evict a newer app.
+            if (appCache[":secret"] === backend) delete appCache[":secret"]
+            await backend.dispose()
+          }),
+        ),
+      ),
+    ),
+  )
+  authReadiness.set(backend, ready)
+  return ready
 }
 
 export type CachedApp = BackendApp & { readonly dispose: () => Promise<void> }
@@ -83,28 +126,46 @@ function app(modules: Runtime, options: CallOptions) {
   const cacheKey = `${username ?? ""}:${password ?? ""}`
   if (appCache[cacheKey]) return appCache[cacheKey]
 
-  const web = HttpRouter.toWebHandler(
-    modules.HttpApiApp.routes.pipe(
-      Layer.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromUnknown({
-            OPENCODE_SERVER_PASSWORD: password,
-            OPENCODE_SERVER_USERNAME: username,
-            OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: process.env.OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER,
-            OPENCODE_EXPERIMENTAL_FILEWATCHER: process.env.OPENCODE_EXPERIMENTAL_FILEWATCHER,
-          }),
-        ),
-      ),
+  const scope = Scope.makeUnsafe()
+  // HttpRouter.toWebHandler builds its layer in a detached promise on the first
+  // request. Build explicitly so scenario cancellation interrupts acquisition
+  // and dispose still releases exactly this app's memo-map references.
+  const handler = Effect.runSync(
+    Effect.cached(
+      Effect.gen(function* () {
+        const routes = modules.HttpApiApp.routes.pipe(
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                OPENCODE_SERVER_PASSWORD: password,
+                OPENCODE_SERVER_USERNAME: username,
+                OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: process.env.OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER,
+                OPENCODE_EXPERIMENTAL_FILEWATCHER: process.env.OPENCODE_EXPERIMENTAL_FILEWATCHER,
+              }),
+            ),
+          ),
+          Layer.provideMerge(HttpRouter.layer),
+        )
+        // Request markers describe handler requirements, not layer services.
+        // HttpRouter.toWebHandler erases the same markers at this boundary.
+        const context = yield* Layer.buildWithMemoMap(
+          routes as Layer.Layer<HttpRouter.HttpRouter, Layer.Error<typeof routes>>,
+          modules.memoMap,
+          scope,
+        )
+        const http = Context.get(context, HttpRouter.HttpRouter).asHttpEffect()
+        return HttpEffect.toWebHandlerWith<HttpRouter.HttpRouter, Effect.Services<typeof http>, unknown>(context)(http)
+      }),
     ),
-    { disableLogger: true, memoMap: modules.memoMap },
   )
   return (appCache[cacheKey] = {
-    dispose: web.dispose,
+    dispose: () => Effect.runPromise(Scope.close(scope, Exit.void)),
     request(input: string | URL | Request, init?: RequestInit) {
-      return web.handler(
-        input instanceof Request ? input : new Request(new URL(input, "http://localhost"), init),
-        modules.HttpApiApp.context,
-      )
+      const request = input instanceof Request ? input : new Request(new URL(input, "http://localhost"), init)
+      return Effect.runPromise(handler, { signal: request.signal }).then((handle) => {
+        request.signal.throwIfAborted()
+        return handle(request, modules.HttpApiApp.context)
+      })
     },
   })
 }

@@ -1,70 +1,56 @@
+import { SessionAttention } from "@/notification/attention"
 /**
  * MCP elicitation adapter (spec rev with form + url modes; this change
  * implements the flat-primitive form-mode subset).
  *
  * Lives in the MCP module because it owns the protocol edge. Resolves Question,
  * SettingsHook, and Notification via `Effect.serviceOption` so MCP layers stay
- * self-contained (AGENTS.md invariant). Session routing is best-effort via the
- * `SessionContext` ALS set around MCP tool calls; with no session or no
+ * self-contained (AGENTS.md invariant). Session routing uses the actual client
+ * binding held for the outstanding MCP tool call; with no session or no
  * Question service the adapter declines immediately — it never hangs the server.
  *
  * Lifecycle:
  *   elicitation/create ─▶ build Question request from requestedSchema
  *                          ─▶ fire Elicitation hook (blocking hook deny → decline, no surface)
- *                          ─▶ route through Notification emitter (type "elicitation")
+ *                          ─▶ route through Notification emitter (type "elicitation_dialog")
  *                          ─▶ Question.ask (blocks until reply/reject/timeout)
  *   user reply ─▶ validate ─▶ accept+content / decline
- *   reject / timeout / no-context ─▶ decline
+ *   user dismissal ─▶ cancel; timeout / no-context ─▶ decline
  *   ─▶ fire ElicitationResult hook (result | cancelled)
  *   ─▶ respond to server
  */
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option } from "effect"
 import type { Client } from "@modelcontextprotocol/client"
+import { consumerContext } from "@/hook/consumer-context"
 import { Question } from "@/question"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { Notification } from "@/notification"
-import { SessionContext } from "@/effect/session-context"
+import { clientElicitationBinding, withClientReverseRequest } from "./elicitation-binding"
 import { SessionID } from "@/session/schema"
 
 /** Hard cap on how long an elicitation waits for a user answer. */
 const ELICITATION_TIMEOUT_MS = 300_000
 
-/**
- * Active session for routing server-initiated elicitation.
- *
- * MCP clients are shared per-server, so the `elicitation/create` handler has no
- * ambient session of its own. AsyncLocalStorage (`SessionContext`) does NOT
- * survive the MCP SDK's transport dispatch (the reverse-request runs in the
- * transport's callback context, not the callTool's async context), so the
- * handler reads this module-level slot instead. It is set synchronously by MCP
- * tool execution (`session/tools.ts`) around the server call and cleared on
- * completion. Sequential tool calls (the turn norm) overwrite cleanly;
- * concurrent cross-session MCP calls are best-effort (last writer wins) —
- * acceptable and strictly better than ALS-only routing, which never resolves.
- */
-type ActiveElicitationSession = { id: string; token: number }
-type ActiveElicitationSessionCleanup = () => void
-
-let activeSessionToken = 0
-const activeSession: ActiveElicitationSession[] = []
-export const setActiveElicitationSession = (id: string | undefined): ActiveElicitationSessionCleanup => {
-  if (id === undefined) {
-    activeSession.splice(0)
-    return () => {}
-  }
-
-  const entry = { id, token: activeSessionToken++ }
-  activeSession.push(entry)
-  return () => {
-    const index = activeSession.findIndex((item) => item.token === entry.token)
-    if (index >= 0) activeSession.splice(index, 1)
-  }
-}
-
 export type ElicitAction = "accept" | "decline" | "cancel"
 export interface ElicitResponse {
   action: ElicitAction
   content?: Record<string, string | number | boolean | string[]>
+}
+
+function responseContent(input: Record<string, unknown>): ElicitResponse["content"] {
+  const content: NonNullable<ElicitResponse["content"]> = {}
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") content[key] = value
+    else if (Array.isArray(value) && value.every((item): item is string => typeof item === "string"))
+      content[key] = value
+    else return undefined
+  }
+  return content
+}
+function hookResponse(input: { action: ElicitAction; content?: Record<string, unknown> }): ElicitResponse {
+  if (input.content === undefined) return { action: input.action }
+  const content = responseContent(input.content)
+  return content === undefined ? { action: "decline" } : { action: input.action, content }
 }
 
 /**
@@ -229,7 +215,7 @@ export function fieldSpecsFromSchema(requestedSchema: unknown): FieldSpec[] {
   const schema = requestedSchema as { properties?: Record<string, unknown> }
   const properties = schema.properties ?? {}
   const fields: FieldSpec[] = []
-  for (const [name, prop] of Object.entries(properties)) {
+  for (const [name, prop] of Object.entries(properties as Record<string, unknown>)) {
     const result = classifyProperty(name, prop)
     if ("field" in result) fields.push(result.field)
   }
@@ -247,112 +233,172 @@ export const handleElicitation = Effect.fn("MCP.elicitation.handle")(function* (
   message: string
   requestedSchema: unknown
   mode?: string
+  serverName?: string
+  url?: string
+  elicitationID?: string
   /**
-   * The session that triggered the MCP tool call. Best-effort: read synchronously
-   * from `SessionContext` at handler entry (visible only if the MCP SDK preserves
-   * the callTool async context). Undefined → decline (never hang the server).
+   * The session bound to this actual MCP client call. Undefined → decline.
    */
   sessionID?: string
 }) {
-  // url-mode and other non-form modes are out of scope (Non-Goal) → decline.
-  if (input.mode !== undefined && input.mode !== "form") {
-    return { action: "decline" } satisfies ElicitResponse
-  }
-
   const question = Option.getOrUndefined(yield* Effect.serviceOption(Question.Service))
   const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
   const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
   const sessionID = input.sessionID
 
-  // No interaction layer or no session context → decline immediately. These
-  // branches used to decline silently (Question never surfaces, the caller just
-  // sees a decline), which made routing failures unobservable; log the reason
-  // and a routing snapshot so a decline here is diagnosable in production logs.
-  if (!question || !sessionID) {
-    yield* Effect.logWarning("elicitation declined without surfacing", {
-      reason: !question ? "no Question service" : "no sessionID",
-      sessionContext: SessionContext.sessionID,
-      activeSessionFallback: activeSession.map((entry) => entry.id),
-    })
-    return { action: "decline" } satisfies ElicitResponse
-  }
-
-  const mapped = schemaToQuestions(input.message, input.requestedSchema)
-  if ("reject" in mapped) {
-    yield* Effect.logWarning("elicitation schema rejected", { reason: mapped.reject })
-    return { action: "decline" } satisfies ElicitResponse
-  }
+  if (!sessionID) return { action: "decline" } satisfies ElicitResponse
 
   // Elicitation hook fires before surfacing. A blocking deny short-circuits to
   // decline without surfacing the Question.
   if (settingsHook) {
     const hookResult = yield* settingsHook
-      .trigger({ event: "Elicitation", prompt: input.message, schema: input.requestedSchema } as never, {
-        sessionID,
-        transcriptPath: "",
-      })
+      .trigger(
+        {
+          event: "Elicitation",
+          serverName: input.serverName,
+          message: input.message,
+          requestedSchema: input.requestedSchema,
+          mode: input.mode === "url" ? "url" : input.mode === "form" ? "form" : undefined,
+          url: input.url,
+          elicitationID: input.elicitationID,
+        },
+        yield* consumerContext(sessionID).pipe(Effect.orDie),
+      )
       .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
-    yield* SettingsHook.landSystemMessages(hookResult as TriggerResult, { sessionID })
-    if ((hookResult as TriggerResult).blocked) {
+    if (hookResult.blocked) {
       yield* Effect.logWarning("elicitation declined: hook blocked")
       return { action: "decline" } satisfies ElicitResponse
     }
+    if (hookResult.elicitation) return hookResponse(hookResult.elicitation)
   }
 
-  // Route the ask through the Notification emitter (non-blocking, tolerant).
-  if (notification) {
-    yield* notification
-      .notify({ message: input.message || "MCP elicitation", notificationType: "elicitation", sessionID })
-      .pipe(Effect.ignore)
-  }
+  // Hook answers do not need a Question UI (including URL-mode requests).
+  if (!question || (input.mode !== undefined && input.mode !== "form"))
+    return { action: "decline" } satisfies ElicitResponse
+  const mapped = schemaToQuestions(input.message, input.requestedSchema)
+  if ("reject" in mapped) return { action: "decline" } satisfies ElicitResponse
 
-  // Surface and await the user's answer with a bounded timeout. Timeout or
-  // rejection (user dismissed) both resolve to decline; only a validated reply
-  // resolves to accept.
+  // Dismissing the dialog is cancellation, not an explicit decline.
   const fields = fieldSpecsFromSchema(input.requestedSchema)
-  const validated = yield* question.ask({ sessionID: SessionID.make(sessionID), questions: mapped.questions }).pipe(
-    // timeoutOption returns None on timeout; timeoutOrElse would also work.
-    Effect.timeoutOption(ELICITATION_TIMEOUT_MS),
-    Effect.map((opt) => (Option.isNone(opt) ? undefined : validateAndCoerce(fields, opt.value))),
-    Effect.catch(() => Effect.succeed<undefined>(undefined)), // user reject (RejectedError) → decline
+  let response: ElicitResponse = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
+      if (notification)
+        yield* (attention ? attention.quiet(sessionID, 6_000) : Effect.sleep("6 seconds")).pipe(
+          Effect.andThen(
+            notification.notify({
+              message: "MCP elicitation requires a response",
+              notificationType: "elicitation_dialog",
+              sessionID,
+            }),
+          ),
+          Effect.ignore,
+          Effect.forkScoped,
+        )
+      return yield* question.ask({ sessionID: SessionID.make(sessionID), questions: mapped.questions }).pipe(
+        Effect.timeoutOption(ELICITATION_TIMEOUT_MS),
+        Effect.map((opt): ElicitResponse => {
+          const content = Option.isNone(opt) ? undefined : validateAndCoerce(fields, opt.value)
+          return content === undefined ? { action: "decline" } : { action: "accept", content }
+        }),
+        Effect.catch((error) =>
+          Effect.succeed<ElicitResponse>({
+            action: error._tag === "QuestionRejectedError" ? "cancel" : "decline",
+          }),
+        ),
+      )
+    }),
   )
 
-  // ElicitationResult hook fires on resolution (result on accept, cancelled otherwise).
+  // The result hook replaces the whole response content. Cancel preserves the
+  // submitted values; decline deliberately withholds them.
   if (settingsHook) {
-    const resultPayload =
-      validated !== undefined
-        ? ({ event: "ElicitationResult", result: validated } as never)
-        : ({ event: "ElicitationResult", cancelled: true } as never)
     const erResult = yield* settingsHook
-      .trigger(resultPayload, { sessionID, transcriptPath: "" })
-      .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
+      .trigger(
+        {
+          event: "ElicitationResult",
+          serverName: input.serverName,
+          action: response.action,
+          content: response.content,
+          mode: input.mode,
+          elicitationID: input.elicitationID,
+        },
+        yield* consumerContext(sessionID).pipe(Effect.orDie),
+      )
+      .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
     yield* SettingsHook.landSystemMessages(erResult, { sessionID })
+    if (erResult.blocked) response = { action: "decline" }
+    else if (erResult.elicitation) {
+      const replacement = erResult.elicitation
+      response =
+        replacement.action === "decline"
+          ? { action: "decline" }
+          : replacement.action === "cancel"
+            ? { action: "cancel", ...(response.content ? { content: response.content } : {}) }
+            : hookResponse(replacement)
+    }
   }
-
-  if (validated !== undefined) return { action: "accept", content: validated } satisfies ElicitResponse
-  return { action: "decline" } satisfies ElicitResponse
+  return response
 })
 
 /**
  * Register the elicitation handler on a connected MCP client. The handler is a
  * plain async function (Promise-returning) that bridges into the Effect world.
  */
-export function registerElicitationHandler(client: Client, bridge: import("@/effect/bridge").EffectBridge.Shape) {
+export function registerElicitationHandler(
+  client: Client,
+  bridge: import("@/effect/bridge").EffectBridge.Shape,
+  serverName?: string,
+) {
   // The handler receives the full JSON-RPC request `{ method, params: {...} }`;
   // the elicitation fields live under `params`. On 2026-era connections the
   // client drives input_required retries through this same handler.
-  const handler = async (request: { params?: { message?: string; requestedSchema?: unknown; mode?: string } }) => {
+  const handler = async (
+    request: {
+      params?: { message?: string; requestedSchema?: unknown; mode?: string; url?: string; elicitationId?: string }
+    },
+    context?: { mcpReq?: { signal?: AbortSignal } },
+  ) => {
+    const binding = clientElicitationBinding(client)
+    // Never guess a session from another client's/global most recent call.
+    if (!binding?.sessionID || binding.inHook) return { action: "decline" } satisfies ElicitResponse
     const params = request.params ?? {}
-    const sessionID = SessionContext.sessionID ?? activeSession.at(-1)?.id
-    const response = await bridge.promise(
-      handleElicitation({
-        message: params.message ?? "",
-        requestedSchema: params.requestedSchema,
-        mode: params.mode,
-        sessionID,
-      }),
+    const signal = context?.mcpReq?.signal
+      ? AbortSignal.any([binding.controller.signal, context.mcpReq.signal])
+      : binding.controller.signal
+    return withClientReverseRequest(client, () =>
+      bridge.promise(
+        handleElicitation({
+          message: params.message ?? "",
+          requestedSchema: params.requestedSchema,
+          mode: params.mode,
+          url: params.url,
+          elicitationID: params.elicitationId,
+          serverName,
+          sessionID: binding.sessionID,
+        }).pipe(
+          Effect.tap((response) =>
+            Effect.gen(function* () {
+              const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
+              if (notification)
+                yield* notification.notify({
+                  sessionID: binding.sessionID,
+                  notificationType: "elicitation_response",
+                  message: `MCP elicitation response sent: ${response.action}`,
+                })
+            }),
+          ),
+          Effect.raceFirst(
+            Effect.callback<never>((resume) => {
+              const abort = () => resume(Effect.interrupt)
+              signal.addEventListener("abort", abort, { once: true })
+              if (signal.aborted) abort()
+              return Effect.sync(() => signal.removeEventListener("abort", abort))
+            }),
+          ),
+        ),
+      ),
     )
-    return response
   }
   client.setRequestHandler("elicitation/create", handler as never)
 }

@@ -28,7 +28,7 @@ import { Image } from "../../src/image/image"
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { Session } from "@/session/session"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
+import { SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -50,12 +50,18 @@ import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Dag } from "@/dag/dag"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { DagStore } from "@opencode-ai/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { Truncate } from "@/tool/truncate"
-import { SettingsHook, type HookPayload } from "@/hook/settings"
+import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook/settings"
+import { HookLifecycle } from "@/hook/lifecycle"
+import { HookTranscript } from "@/hook/transcript"
+import { Global } from "@opencode-ai/core/global"
+import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { decodeRecord, decodeRecords, decodeString } from "../lib/hook-json"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
@@ -194,6 +200,7 @@ let stopPreventContinuation = false
 let stopSystemMessages: string[] = []
 let stopAdditionalContexts: string[] = []
 let subagentStopBlockAlways = false
+let hookOverride: ((payload: HookPayload) => TriggerResult | undefined) | undefined
 let userPromptAdmissionStarted: Deferred.Deferred<void> | undefined
 let userPromptAdmissionGate: Deferred.Deferred<void> | undefined
 let snapshotFenceStarted: Deferred.Deferred<void> | undefined
@@ -204,6 +211,8 @@ const hookRecorderLayer = Layer.succeed(
     trigger: (payload) =>
       Effect.gen(function* () {
         hookRecorded.push(payload)
+        const override = hookOverride?.(payload)
+        if (override) return override
         if (
           payload.event === "UserPromptSubmit" &&
           payload.prompt.includes("hold-human-admission") &&
@@ -224,10 +233,11 @@ const hookRecorderLayer = Layer.succeed(
           blocked = { reason: "test: subagent-stop block", command: "recorder" }
         }
         const systemMessages = payload.event === "Stop" ? stopSystemMessages : []
-        const additionalContexts = payload.event === "Stop" ? stopAdditionalContexts : []
+        const additionalContexts = payload.event === "Stop" && !payload.stopHookActive ? stopAdditionalContexts : []
         return {
           blocked,
-          preventContinuation: payload.event === "Stop" && stopPreventContinuation,
+          preventContinuation:
+            (payload.event === "Stop" || payload.event === "SubagentStop") && stopPreventContinuation,
           permissionDecision: undefined,
           permissionDecisionReason: undefined,
           additionalContexts,
@@ -265,11 +275,14 @@ const snapshotFenceAgentLayer: Layer.Layer<AgentSvc.Service> = Layer.succeed(
     list: () => Effect.succeed([fencedAgent]),
     defaultInfo: () => Effect.succeed(fencedAgent),
     defaultAgent: () => Effect.succeed("build"),
+    permissionPolicy: () => Effect.succeed({ native: [], rules: fencedAgent.permission }),
     generate: () => Effect.die("not used by snapshot fence regression"),
   }),
 )
 
 type PromptLayerOptions = {
+  settingsHookLayer?: Layer.Layer<SettingsHook.Service>
+  observeMessages?: (input: Parameters<Session.Interface["messages"]>[0]) => void
   organizer?: LLM.Interface["organizer"]
   mcpInstructions?: MCP.ServerInstructions[]
   mcpTools?: Record<string, AITool>
@@ -325,10 +338,27 @@ function makePrompt(input?: PromptLayerOptions) {
         }),
       ).pipe(Layer.provide(baseLLM))
     : baseLLM
+  const sessionLayer = input?.observeMessages
+    ? Layer.effect(
+        Session.Service,
+        Effect.gen(function* () {
+          const service = yield* Session.Service
+          return Session.Service.of({
+            ...service,
+            messages: (request) =>
+              Effect.suspend(() => {
+                input.observeMessages?.(request)
+                return service.messages(request)
+              }),
+          })
+        }),
+      ).pipe(Layer.provide(Session.defaultLayer))
+    : Session.defaultLayer
   const deps = Layer.mergeAll(
-    hookRecorderLayer,
+    input?.settingsHookLayer ?? hookRecorderLayer,
+    HookLifecycle.defaultLayer,
     memoryLayer,
-    Session.defaultLayer,
+    sessionLayer,
     Snapshot.defaultLayer,
     llmLayer,
     Env.defaultLayer,
@@ -345,6 +375,7 @@ function makePrompt(input?: PromptLayerOptions) {
     status,
     Database.defaultLayer,
     DagMessages.defaultLayer,
+    DagStore.defaultLayer,
     EventV2Bridge.defaultLayer,
     ToolSourceLedger.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
@@ -935,7 +966,7 @@ boundedMessageIt.instance("a Stop hook cannot extend an exhausted model step bud
   ),
 )
 
-it.instance("DAG late input respects a Stop hook preventing continuation", () =>
+it.instance("DAG late input respects a SubagentStop hook preventing continuation", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
@@ -945,6 +976,7 @@ it.instance("DAG late input respects a Stop hook preventing continuation", () =>
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
+    const beforeHooks = hookRecorded.length
     stopPreventContinuation = true
     yield* llm.hold("result before stop hook", gate)
     const running = yield* prompt
@@ -971,6 +1003,7 @@ it.instance("DAG late input respects a Stop hook preventing continuation", () =>
     ).toMatchObject({ ok: true })
     release()
     yield* Fiber.join(running)
+    expect(hookRecorded.slice(beforeHooks).filter((payload) => payload.event === "SubagentStop")).toHaveLength(1)
     expect(
       (yield* llm.hits).filter((hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation")),
     ).toHaveLength(1)
@@ -1233,13 +1266,31 @@ it.instance("DAG early model resolution failure durably stops preparation withou
         content: "DAG_INPUT_BEFORE_MODEL_RESOLUTION_FAILURE",
       }),
     ).toMatchObject({ ok: true })
-    const failed = yield* prompt
+    const rejected = yield* prompt
       .prompt({
         sessionID: parent.id,
         model: { ...ref, modelID: ModelV2.ID.make("missing-dag-model-697") },
-        parts: [{ type: "text", text: "Prepare DAG input with an unavailable model" }],
+        parts: [{ type: "text", text: "Reject unavailable explicit selection before admission" }],
       })
       .pipe(Effect.exit)
+    expect(Exit.isFailure(rejected)).toBe(true)
+    expect(yield* sessions.messages({ sessionID: parent.id })).toHaveLength(0)
+    expect(yield* mailbox.receive(parentCaller)).toMatchObject({ value: [{ state: "queued" }] })
+    // ModelSwitch now validates explicit selections before admission. Exercise
+    // the durable preparation boundary with already-admitted historical input
+    // whose model has become unavailable before a later runner activation.
+    const admitted = yield* prompt.prompt({
+      sessionID: parent.id,
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Prepare DAG input before its model is removed" }],
+    })
+    if (admitted.info.role !== "user") throw new Error("Expected admitted historical user")
+    yield* sessions.updateMessage({
+      ...admitted.info,
+      model: { ...ref, modelID: ModelV2.ID.make("missing-dag-model-697") },
+    })
+    const failed = yield* prompt.loop({ sessionID: parent.id }).pipe(Effect.exit)
     expect(Exit.isFailure(failed)).toBe(true)
     expect(yield* mailbox.receive(parentCaller)).toMatchObject({ value: [{ state: "queued" }] })
     expect(yield* (yield* SessionStatus.Service).get(parent.id)).toMatchObject({ type: "idle" })
@@ -2116,7 +2167,11 @@ it.instance("loop fires StopFailure (not Stop) when the turn ends in error", () 
     const stopFailures = fired.filter((p) => p.event === "StopFailure")
     expect(stopFailures).toHaveLength(1)
     expect(stopFailures[0]).toMatchObject({ event: "StopFailure", stopHookActive: false })
-    expect((stopFailures[0] as { error?: string }).error).toBeTruthy()
+    expect(stopFailures[0]).toMatchObject({
+      error: "invalid_request",
+      errorDetails: expect.any(String),
+      lastAssistantMessage: expect.any(String),
+    })
     expect(fired.filter((p) => p.event === "Stop")).toHaveLength(0)
   }),
 )
@@ -2271,12 +2326,22 @@ unix("Stop hard limit: a hook that always blocks is capped at MAX_STOP_CONTINUAT
   }),
 )
 
-unix("Stop hook systemMessage is landed as a synthetic text part (no silent drop)", () =>
+unix("Stop hook systemMessage reaches user notification without entering model context", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "stop-sysmsg" })
+    const notices: string[] = []
+    const events = yield* EventV2Bridge.Service
+    const off = yield* events.listen((event) => {
+      if (event.type === LegacyEvent.HookMessage.type) {
+        const data = decodeRecord(event.data)
+        if (data.sessionID === chat.id) notices.push(decodeString(data.message))
+      }
+      return Effect.void
+    })
+    yield* Effect.addFinalizer(() => (typeof off === "function" ? Effect.sync(off) : off))
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         stopSystemMessages = []
@@ -2293,13 +2358,13 @@ unix("Stop hook systemMessage is landed as a synthetic text part (no silent drop
     stopSystemMessages = ["SYSMSG-MARKER-123"]
     yield* prompt.loop({ sessionID: chat.id })
 
-    // The Stop path lands systemMessages via the shared outlet (log + inject
-    // here), so the marker reaches the conversation rather than being dropped.
-    expect(yield* syntheticTexts(chat.id)).toContain("SYSMSG-MARKER-123")
+    expect(notices).toContain("SYSMSG-MARKER-123")
+    expect(yield* syntheticTexts(chat.id)).not.toContain("SYSMSG-MARKER-123")
+    expect(yield* llm.calls).toBe(1)
   }),
 )
 
-unix("Stop hook additionalContext is consumed (not dropped) on the Stop path", () =>
+unix("Stop hook additionalContext continues through a real second model request", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
@@ -2312,6 +2377,7 @@ unix("Stop hook additionalContext is consumed (not dropped) on the Stop path", (
     )
 
     yield* llm.text("done reply")
+    yield* llm.text("feedback applied")
     yield* prompt.prompt({
       sessionID: chat.id,
       agent: "build",
@@ -2322,6 +2388,11 @@ unix("Stop hook additionalContext is consumed (not dropped) on the Stop path", (
     yield* prompt.loop({ sessionID: chat.id })
 
     expect(yield* syntheticTexts(chat.id)).toContain("ADDCTX-MARKER-456")
+    expect(yield* llm.calls).toBe(2)
+    const nextInput = JSON.stringify((yield* llm.inputs)[1])
+    expect(nextInput).toContain("ADDCTX-MARKER-456")
+    const history = yield* sessions.messages({ sessionID: chat.id })
+    expect(history.filter((message) => message.info.role === "assistant")).toHaveLength(2)
   }),
 )
 
@@ -2401,8 +2472,16 @@ backgroundUnix(
         subagent_type: "general",
         background: "true",
       })
-      yield* llm.text("dispatched")
-      yield* llm.text("reviewer done")
+      // Parent and child requests run concurrently; dispatch responses by the
+      // actual user request instead of assuming a scheduling order.
+      const childRequest = (hit: { body: Record<string, unknown> }) => {
+        const lastUser = decodeRecords(hit.body.messages).findLast((message) => message.role === "user")
+        return JSON.stringify(lastUser?.content).includes("review the change")
+      }
+      yield* llm.textMatch(childRequest, "reviewer done")
+      yield* llm.textMatch((hit) => !childRequest(hit), "dispatched")
+      // The background completion can join the running parent turn or start its own turn.
+      yield* llm.text("background acknowledged")
 
       yield* prompt.prompt({
         sessionID: chat.id,
@@ -2416,6 +2495,30 @@ backgroundUnix(
       if (!childSessionId) throw new Error("background task child session missing")
       const job = yield* jobs.wait({ id: childSessionId, timeout: 30_000 })
       expect(job.info?.output).toContain("reviewer done")
+      expect(job.info?.status).toBe("completed")
+      yield* pollWithTimeout(
+        sessions.messages({ sessionID: chat.id }).pipe(
+          Effect.orDie,
+          Effect.map((messages) =>
+            messages.some((message) =>
+              message.parts.some((part) => part.type === "text" && part.text.includes("Background task completed")),
+            )
+              ? true
+              : undefined,
+          ),
+        ),
+        "background completion report",
+        "10 seconds",
+      )
+      const parentMessages = yield* sessions.messages({ sessionID: chat.id })
+      expect(
+        parentMessages.some((message) =>
+          message.parts.some((part) => part.type === "text" && part.text === "dispatched"),
+        ),
+      ).toBe(true)
+      const calls = yield* llm.calls
+      expect(calls + (yield* llm.pending)).toBe(4)
+      expect(calls === 3 || calls === 4).toBe(true)
     }),
   30_000,
 )
@@ -2534,6 +2637,178 @@ it.instance("static loop consumes queued replies across turns", () =>
   }),
 )
 
+it.instance("model switch hooks refuse before persistence and attach only the latest target context", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const base = providerCfg(url)
+      return {
+        ...base,
+        provider: {
+          ...base.provider,
+          test: {
+            ...base.provider.test,
+            models: {
+              ...base.provider.test.models,
+              second: { ...base.provider.test.models["test-model"], id: "second", name: "Second model" },
+              third: { ...base.provider.test.models["test-model"], id: "third", name: "Third model" },
+            },
+          },
+        },
+      }
+    })
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const { db } = yield* Database.Service
+    const chat = yield* sessions.create({ title: "Model switch" })
+    yield* prompt.prompt({ sessionID: chat.id, model: ref, noReply: true, parts: [{ type: "text", text: "seed" }] })
+    const current = () =>
+      db
+        .select({ model: SessionTable.model })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, chat.id))
+        .get()
+        .pipe(Effect.orDie)
+    let decision: "deny" | "ask" | "allow" = "deny"
+    hookOverride = (payload) => {
+      if (payload.event === "PreModelSwitch")
+        return {
+          additionalContexts: [],
+          systemMessages: [],
+          modelSwitchDecision: decision,
+          modelSwitchDecisionReason: "Model policy gate",
+        }
+      if (payload.event === "PostModelSwitch")
+        return {
+          additionalContexts: [`context for target ${payload.toModel}`],
+          systemMessages: ["visible warning, not model context"],
+        }
+      return undefined
+    }
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        hookOverride = undefined
+      }),
+    )
+    const second = { providerID: ref.providerID, modelID: ModelV2.ID.make("second") }
+    const denied = yield* prompt
+      .setModel({ sessionID: chat.id, model: second, source: "picker", hookMode: "interactive" })
+      .pipe(Effect.exit)
+    expect(Exit.isFailure(denied)).toBe(true)
+    expect((yield* current())?.model?.id).toBe(ref.modelID)
+    decision = "ask"
+    const asked = yield* prompt
+      .setModel({ sessionID: chat.id, model: second, source: "sdk", hookMode: "noninteractive" })
+      .pipe(Effect.exit)
+    expect(Exit.isFailure(asked)).toBe(true)
+    expect((yield* current())?.model?.id).toBe(ref.modelID)
+    decision = "allow"
+    yield* prompt.setModel({ sessionID: chat.id, model: second, source: "picker", hookMode: "interactive" })
+    yield* prompt.setModel({
+      sessionID: chat.id,
+      model: { providerID: ref.providerID, modelID: ModelV2.ID.make("third") },
+      source: "sdk",
+    })
+    expect((yield* current())?.model?.id).toBe("third")
+    yield* llm.text("Selected target responded.")
+    yield* prompt.prompt({ sessionID: chat.id, parts: [{ type: "text", text: "Use the selected model." }] })
+    const [request] = yield* llm.inputs
+    expect(request.model).toBe("third")
+    expect(JSON.stringify(request.messages).includes("context for target third")).toBe(true)
+    expect(JSON.stringify(request.messages).includes("context for target second")).toBe(false)
+    expect(JSON.stringify(request.messages).includes("visible warning, not model context")).toBe(false)
+  }),
+)
+
+it.instance("saved hook followup rejects corrupt metadata and never repeats an uncertain started input", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Interrupted followup record" })
+    yield* llm.text("Initial completed")
+    yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "INITIAL" }] })
+    yield* sessions.setMetadata({ sessionID: chat.id, metadata: { hookPendingInput: { version: 999 } } })
+    const corrupt = yield* prompt.resume({ sessionID: chat.id }).pipe(Effect.exit)
+    expect(Exit.isFailure(corrupt)).toBe(true)
+    if (Exit.isFailure(corrupt)) {
+      expect(Cause.hasFails(corrupt.cause)).toBe(true)
+      expect(Cause.squash(corrupt.cause)).toMatchObject({ _tag: "NoPendingHookInput" })
+    }
+    const pending = {
+      version: 1,
+      messageID: MessageID.ascending(),
+      phase: "started",
+      input: {
+        kind: "prompt",
+        parts: [{ type: "text", text: "MUST_NOT_REPEAT" }],
+      },
+    }
+    yield* sessions.setMetadata({ sessionID: chat.id, metadata: { hookPendingInput: pending } })
+    const uncertain = yield* prompt.resume({ sessionID: chat.id }).pipe(Effect.exit)
+    expect(Exit.isFailure(uncertain)).toBe(true)
+    if (Exit.isFailure(uncertain)) expect(String(Cause.squash(uncertain.cause))).toContain("already started")
+    expect(yield* llm.calls).toBe(1)
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toEqual(pending)
+    expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("MUST_NOT_REPEAT")
+  }),
+)
+
+it.instance("model switch ask uses the interactive command question before committing", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const base = providerCfg(url)
+      return {
+        ...base,
+        provider: {
+          ...base.provider,
+          test: {
+            ...base.provider.test,
+            models: {
+              ...base.provider.test.models,
+              second: { ...base.provider.test.models["test-model"], id: "second" },
+            },
+          },
+        },
+      }
+    })
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const questions = yield* Question.Service
+    const chat = yield* sessions.create({ title: "Question gate" })
+    yield* prompt.prompt({ sessionID: chat.id, model: ref, noReply: true, parts: [{ type: "text", text: "seed" }] })
+    hookOverride = (payload) =>
+      payload.event === "PreModelSwitch"
+        ? {
+            additionalContexts: [],
+            systemMessages: [],
+            modelSwitchDecision: "ask",
+            modelSwitchDecisionReason: "Confirm this model",
+          }
+        : undefined
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        hookOverride = undefined
+      }),
+    )
+    const switching = yield* prompt
+      .setModel({
+        sessionID: chat.id,
+        model: { providerID: ref.providerID, modelID: ModelV2.ID.make("second") },
+        source: "command",
+        hookMode: "interactive",
+      })
+      .pipe(Effect.forkChild)
+    const asked = yield* pollWithTimeout(
+      questions.list().pipe(Effect.map((items) => (items.length === 1 ? items : undefined))),
+      "model switch question missing",
+    )
+    expect(asked[0].questions[0].question).toBe("Confirm this model")
+    yield* questions.reply({ requestID: asked[0].id, answers: [["Switch"]] })
+    expect((yield* Fiber.join(switching)).modelID).toBe(ModelV2.ID.make("second"))
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
 it.instance("loop continues when finish is tool-calls", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
@@ -2566,6 +2841,187 @@ for (const [runtime, runner] of [
   ["ai-sdk", it],
   ["native", nativeIt],
 ] as const) {
+  runner.instance(`deferred tool survives repeated resume and executes only after allow (${runtime})`, () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const fs = yield* FSUtil.Service
+      const chat = yield* sessions.create({
+        title: "Deferred",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const filePath = path.join(dir, "deferred.txt")
+      let decision: "defer" | "allow" = "defer"
+      const observed: Array<{ id?: string; input: Record<string, unknown> }> = []
+      hookOverride = (payload) => {
+        if (payload.event !== "PreToolUse" || payload.toolName !== "write") return undefined
+        observed.push({ id: payload.toolUseID, input: payload.toolInput })
+        return {
+          additionalContexts: [],
+          systemMessages: [],
+          permissionDecision: decision,
+          updatedInput: { filePath, content: "approved replacement" },
+        }
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          hookOverride = undefined
+        }),
+      )
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        noReply: true,
+        hookMode: "noninteractive",
+        parts: [{ type: "text", text: "Write the file." }],
+      })
+      yield* llm.tool("write", { filePath, content: "original input" })
+      yield* llm.text("The deferred write completed.")
+      const first = yield* prompt.loop({ sessionID: chat.id })
+      expect(first.info.role === "assistant" && first.info.finish).toBe("tool_deferred")
+      const pending = toolPart(first.parts)
+      expect(pending?.state.status).toBe("pending")
+      expect(pending?.state.input).toEqual({ filePath, content: "original input" })
+      expect(yield* fs.exists(filePath)).toBe(false)
+      expect(yield* llm.calls).toBe(1)
+      const second = yield* prompt.loop({ sessionID: chat.id })
+      expect(second.info.id).toBe(first.info.id)
+      expect(second.info.role === "assistant" && second.info.finish).toBe("tool_deferred")
+      expect(yield* llm.calls).toBe(1)
+      expect(yield* fs.exists(filePath)).toBe(false)
+      decision = "allow"
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role === "assistant" && result.info.finish).toBe("stop")
+      expect(yield* fs.readFileString(filePath)).toBe("approved replacement")
+      expect(yield* llm.calls).toBe(2)
+      expect(observed).toHaveLength(3)
+      expect(new Set(observed.map((x) => x.id)).size).toBe(1)
+      expect(observed.every((x) => x.input.content === "original input")).toBe(true)
+      const history = yield* sessions.messages({ sessionID: chat.id })
+      expect(history.filter((x) => x.info.role === "user")).toHaveLength(1)
+      expect(toolPart(history.find((x) => x.info.id === first.info.id)!.parts)?.state.status).toBe("completed")
+      expect(JSON.stringify((yield* llm.inputs)[1].messages)).toContain("approved replacement")
+    }),
+  )
+
+  runner.instance(`SDK prompt automatically finishes the initial hook turn before supplied input (${runtime})`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const lifecycle = yield* HookLifecycle.Service
+      const chat = yield* sessions.create({ title: "SDK initial hook input" })
+      yield* lifecycle.queueInitial(chat.id, "HOOK_INITIAL_ONLY")
+      yield* llm.text("Initial answer")
+      yield* llm.text("Supplied answer")
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        model: ref,
+        parts: [{ type: "text", text: "SDK_SUPPLIED_INPUT" }],
+        hookMode: "noninteractive",
+      })
+      expect(result.parts.some((part) => part.type === "text" && part.text === "Supplied answer")).toBe(true)
+      const requests = yield* llm.inputs
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0].messages)).toContain("HOOK_INITIAL_ONLY")
+      expect(JSON.stringify(requests[0].messages)).not.toContain("SDK_SUPPLIED_INPUT")
+      expect(JSON.stringify(requests[1].messages)).toContain("SDK_SUPPLIED_INPUT")
+      expect(
+        (yield* sessions.messages({ sessionID: chat.id })).filter((message) => message.info.role === "user"),
+      ).toHaveLength(2)
+      expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+    }),
+  )
+
+  runner.instance(`explicit cancel discards a saved initial-hook followup and accepts a new prompt (${runtime})`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const lifecycle = yield* HookLifecycle.Service
+      const chat = yield* sessions.create({ title: "Cancel initial followup" })
+      yield* lifecycle.queueInitial(chat.id, "CANCEL_INITIAL")
+      yield* llm.hang
+      const running = yield* prompt
+        .prompt({
+          sessionID: chat.id,
+          model: ref,
+          hookMode: "noninteractive",
+          parts: [{ type: "text", text: "CANCEL_QUEUED_FOLLOWUP" }],
+        })
+        .pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeDefined()
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.join(running)
+      expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+      yield* llm.text("NEW_PROMPT_DONE")
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        model: ref,
+        hookMode: "noninteractive",
+        parts: [{ type: "text", text: "NEW_PROMPT" }],
+      })
+      expect(result.parts.some((part) => part.type === "text" && part.text === "NEW_PROMPT_DONE")).toBe(true)
+      const calls = yield* llm.inputs
+      expect(calls).toHaveLength(2)
+      expect(JSON.stringify(calls)).not.toContain("CANCEL_QUEUED_FOLLOWUP")
+      expect(JSON.stringify(calls[1])).toContain("NEW_PROMPT")
+    }),
+  )
+
+  runner.instance(`initial hook turn keeps a supplied followup until deferred work finishes (${runtime})`, () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const lifecycle = yield* HookLifecycle.Service
+      const fs = yield* FSUtil.Service
+      const chat = yield* sessions.create({
+        title: "Initial followup",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const filePath = path.join(dir, "initial-followup.txt")
+      let deferred = true
+      hookOverride = (payload) =>
+        payload.event === "PreToolUse" && payload.toolName === "write"
+          ? { additionalContexts: [], systemMessages: [], permissionDecision: deferred ? "defer" : "allow" }
+          : undefined
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          hookOverride = undefined
+        }),
+      )
+      yield* lifecycle.queueInitial(chat.id, "INITIAL_MESSAGE")
+      yield* llm.tool("write", { filePath, content: "initial completed" })
+      yield* llm.text("INITIAL_FINISHED")
+      yield* llm.text("FOLLOWUP_FINISHED")
+      const first = yield* prompt.resume({
+        sessionID: chat.id,
+        hookMode: "noninteractive",
+        initialOnly: true,
+        followup: { kind: "prompt", parts: [{ type: "text", text: "SUPPLIED_FOLLOWUP" }] },
+      })
+      expect(first?.info.role === "assistant" && first.info.finish).toBe("tool_deferred")
+      let history = yield* sessions.messages({ sessionID: chat.id })
+      expect(history.filter((message) => message.info.role === "user")).toHaveLength(1)
+      expect(JSON.stringify(history)).not.toContain("SUPPLIED_FOLLOWUP")
+      expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput?.phase).toBe("pending")
+      expect(yield* fs.exists(filePath)).toBe(false)
+      deferred = false
+      const resumed = yield* prompt.resume({ sessionID: chat.id, hookMode: "noninteractive" })
+      expect(resumed?.parts.some((part) => part.type === "text" && part.text === "FOLLOWUP_FINISHED")).toBe(true)
+      expect(yield* fs.readFileString(filePath)).toBe("initial completed")
+      expect(yield* llm.calls).toBe(3)
+      history = yield* sessions.messages({ sessionID: chat.id })
+      expect(history.filter((message) => message.info.role === "user")).toHaveLength(2)
+      const requests = yield* llm.inputs
+      expect(JSON.stringify(requests[1].messages)).not.toContain("SUPPLIED_FOLLOWUP")
+      expect(JSON.stringify(requests[2].messages)).toContain("SUPPLIED_FOLLOWUP")
+      expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+    }),
+  )
+
   runner.instance(`step limit disables execution tools and stops a provider tool call (${runtime})`, () =>
     Effect.gen(function* () {
       const { dir, llm } = yield* useServerConfig((url) => ({
@@ -6055,7 +6511,7 @@ noLLMServer.instance(
       const other = yield* prompt.prompt({
         sessionID: session.id,
         agent: "build",
-        model: { providerID: ProviderV2.ID.make("opencode"), modelID: ModelV2.ID.make("kimi-k2.5-free") },
+        model: { providerID: ref.providerID, modelID: ModelV2.ID.make("other-test-model") },
         noReply: true,
         parts: [{ type: "text", text: "hello" }],
       })
@@ -6096,6 +6552,11 @@ noLLMServer.instance(
         test: {
           ...cfg.provider.test,
           models: {
+            "other-test-model": {
+              ...cfg.provider.test.models["test-model"],
+              id: "other-test-model",
+              name: "Isolated variant alternative",
+            },
             "test-model": {
               ...cfg.provider.test.models["test-model"],
               variants: { xhigh: {}, high: {} },
@@ -7510,3 +7971,209 @@ for (const native of [false, true]) {
       }),
   )
 }
+
+const wrapperReads: Array<Parameters<Session.Interface["messages"]>[0]> = []
+const wrapperLookups: Array<{ event: string; sessionID?: string }> = []
+const wrapperTriggers: string[] = []
+const realWrapperHooks = Layer.effect(
+  SettingsHook.Service,
+  Effect.gen(function* () {
+    const service = yield* SettingsHook.Service
+    return SettingsHook.Service.of({
+      ...service,
+      hasEvent: (event, sessionID) =>
+        Effect.suspend(() => {
+          wrapperLookups.push({ event, sessionID })
+          return service.hasEvent ? service.hasEvent(event, sessionID) : Effect.succeed(true)
+        }),
+      trigger: (payload, context) =>
+        Effect.suspend(() => {
+          wrapperTriggers.push(payload.event)
+          return service.trigger(payload, context)
+        }),
+    })
+  }),
+).pipe(Layer.provide(SettingsHook.defaultLayer))
+const wrapperIt = testEffect(
+  makeHttp({ settingsHookLayer: realWrapperHooks, observeMessages: (input) => wrapperReads.push(input) }),
+)
+const wrapperUnix = process.platform !== "win32" ? wrapperIt.instance : wrapperIt.instance.skip
+
+wrapperUnix(
+  "SessionPrompt wrapper without hooks calls trigger without a full history read or transcript snapshot",
+  () =>
+    Effect.gen(function* () {
+      yield* useServerConfig(providerCfg)
+      const sessions = yield* Session.Service
+      const prompt = yield* SessionPrompt.Service
+      const chat = yield* sessions.create({ title: "no-hook wrapper" })
+      const file = path.join(
+        Global.Path.data,
+        "hooks",
+        "transcripts",
+        createHash("sha256").update(chat.id).digest("hex") + ".jsonl",
+      )
+      wrapperReads.length = 0
+      wrapperTriggers.length = 0
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "No hook IO" }],
+      })
+      expect(wrapperTriggers).toContain("UserPromptSubmit")
+      expect(wrapperReads.filter((read) => read.sessionID === chat.id && read.limit === undefined)).toEqual([])
+      expect(yield* Effect.promise(() => Bun.file(file).exists())).toBe(false)
+    }),
+)
+
+wrapperUnix("SessionPrompt wrapper command receives truthful JSONL and exported/unset session environment", () =>
+  Effect.gen(function* () {
+    yield* useServerConfig(providerCfg)
+    const instance = yield* TestInstance
+    const script = path.join(instance.directory, "wrapper-hook.ts")
+    const audit = path.join(instance.directory, "wrapper-audit.json")
+    yield* writeText(
+      script,
+      `const input=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},JSON.stringify({input,value:process.env.PROMPT_WRAPPER_VALUE,removed:!("PROMPT_WRAPPER_REMOVE" in process.env)}))`,
+    )
+    yield* writeText(
+      path.join(instance.directory, ".opencode/hooks.json"),
+      JSON.stringify({
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
+      }),
+    )
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const chat = yield* sessions.create({ title: "hook wrapper context" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "WRAPPER_PRIOR_USER" }],
+    })
+    const file = yield* HookTranscript.environmentFile(chat.id)
+    yield* writeText(file, "export PROMPT_WRAPPER_VALUE=SESSION_EXPORT\nunset PROMPT_WRAPPER_REMOVE\n")
+    const previous = process.env.PROMPT_WRAPPER_REMOVE
+    process.env.PROMPT_WRAPPER_REMOVE = "HOST_BASELINE"
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.PROMPT_WRAPPER_REMOVE
+        else process.env.PROMPT_WRAPPER_REMOVE = previous
+      }),
+    )
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "WRAPPER_NEXT_USER" }],
+    })
+    const result = decodeRecord(JSON.parse(yield* Effect.promise(() => Bun.file(audit).text())))
+    expect(result).toMatchObject({ value: "SESSION_EXPORT", removed: true })
+    const input = decodeRecord(result.input)
+    const rows = (yield* Effect.promise(() => Bun.file(decodeString(input.transcript_path)).text()))
+      .trim()
+      .split("\n")
+      .map((line) => decodeRecord(JSON.parse(line)))
+    expect(rows.some((row) => row.type === "user" && JSON.stringify(row.message).includes("WRAPPER_PRIOR_USER"))).toBe(
+      true,
+    )
+    expect(rows.every((row) => row.sessionId === chat.id)).toBe(true)
+  }),
+)
+
+wrapperUnix("SessionPrompt wrapper materializes parent context for child-scoped SubagentStop", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const instance = yield* TestInstance
+    const script = path.join(instance.directory, "child-stop-hook.ts")
+    const audit = path.join(instance.directory, "child-stop-audit.json")
+    yield* writeText(script, `await Bun.write(${JSON.stringify(audit)},await Bun.stdin.text())`)
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    const hooks = yield* SettingsHook.Service
+    const parent = yield* sessions.create({ title: "child hook owner" })
+    const child = yield* sessions.create({ parentID: parent.id, title: "scoped child" })
+    if (!hooks.registerScoped || !hooks.hasEvent) throw new Error("production hook service lacks scoped registration")
+    yield* hooks.registerScoped(child.id, {
+      kind: "agent",
+      origin: script,
+      source: "builtin",
+      child: true,
+      hooks: { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] },
+    })
+    expect(yield* hooks.hasEvent("SubagentStop", parent.id)).toBe(false)
+    expect(yield* hooks.hasEvent("SubagentStop", child.id)).toBe(true)
+    wrapperLookups.length = 0
+    yield* llm.text("SCOPED_CHILD_DONE")
+    yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "Finish the child" }] })
+    const result = decodeRecord(JSON.parse(yield* Effect.promise(() => Bun.file(audit).text())))
+    expect(result.agent_id).toBe(child.id)
+    expect(wrapperLookups).toContainEqual({ event: "SubagentStop", sessionID: child.id })
+    expect(decodeString(result.transcript_path).length).toBeGreaterThan(0)
+    expect(yield* Effect.promise(() => Bun.file(decodeString(result.transcript_path)).exists())).toBe(true)
+    const rows = (yield* Effect.promise(() => Bun.file(decodeString(result.agent_transcript_path)).text()))
+      .trim()
+      .split("\n")
+      .map((line) => decodeRecord(JSON.parse(line)))
+    expect(rows.some((row) => JSON.stringify(row.message).includes("SCOPED_CHILD_DONE"))).toBe(true)
+  }),
+)
+
+wrapperUnix(
+  "SessionPrompt wrapper full child completion without hooks creates neither parent nor child snapshots",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const sessions = yield* Session.Service
+      const prompt = yield* SessionPrompt.Service
+      const parent = yield* sessions.create({ title: "no-hook parent" })
+      const child = yield* sessions.create({ parentID: parent.id, title: "no-hook child" })
+      wrapperTriggers.length = 0
+      wrapperReads.length = 0
+      yield* llm.text("NO_HOOK_CHILD_COMPLETED")
+      const result = yield* prompt.prompt({
+        sessionID: child.id,
+        agent: "build",
+        parts: [{ type: "text", text: "Complete without hooks" }],
+      })
+      expect(result.parts.some((part) => part.type === "text" && part.text === "NO_HOOK_CHILD_COMPLETED")).toBe(true)
+      expect(wrapperTriggers).toContain("SubagentStop")
+      expect(wrapperReads.filter((read) => read.sessionID === parent.id && read.limit === undefined)).toEqual([])
+      for (const id of [parent.id, child.id]) {
+        const snapshot = path.join(
+          Global.Path.data,
+          "hooks",
+          "transcripts",
+          createHash("sha256").update(id).digest("hex") + ".jsonl",
+        )
+        expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(false)
+      }
+    }),
+)
+
+unix("SessionPrompt wrapper keeps transcript compatibility when a legacy hook service has no hasEvent", () =>
+  Effect.gen(function* () {
+    yield* useServerConfig(providerCfg)
+    const hooks = yield* SettingsHook.Service
+    const sessions = yield* Session.Service
+    const prompt = yield* SessionPrompt.Service
+    expect(hooks.hasEvent).toBeUndefined()
+    const chat = yield* sessions.create({ title: "legacy hook interface" })
+    const before = hookRecorded.length
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Legacy hook adapter" }],
+    })
+    expect(hookRecorded.slice(before).some((payload) => payload.event === "UserPromptSubmit")).toBe(true)
+    const snapshot = path.join(
+      Global.Path.data,
+      "hooks",
+      "transcripts",
+      createHash("sha256").update(chat.id).digest("hex") + ".jsonl",
+    )
+    expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(true)
+  }),
+)

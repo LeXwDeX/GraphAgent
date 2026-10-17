@@ -12,7 +12,7 @@
 //   3. starts the stream transport (SDK event subscription), lazily for fresh
 //      local sessions,
 //   4. runs the prompt queue until the footer closes.
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { createOpencodeClient, createSessionAttention } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { MessageID } from "@/session/schema"
 import { createRunDemo } from "./demo"
@@ -208,6 +208,13 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
     sessionTitle: ctx.sessionTitle,
     agent: ctx.agent,
   }
+  let backgroundView = false
+  const attention = createSessionAttention({
+    clientType: "terminal",
+    send: (payload, signal) =>
+      ctx.sdk.session.attention({ ...payload, directory: ctx.directory }, { throwOnError: true, signal }),
+  })
+  attention.select(state.sessionID || undefined, backgroundView)
   const ensureSession = () => {
     if (!input.resolveSession || state.sessionID) {
       return Promise.resolve()
@@ -221,6 +228,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       state.sessionID = next.sessionID
       state.sessionTitle = next.sessionTitle ?? state.sessionTitle
       state.agent = next.agent
+      attention.select(state.sessionID || undefined, backgroundView)
     })
     return state.session
   }
@@ -359,14 +367,25 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       if (!hasSession(input, state)) return
       void ctx.sdk.experimental.session.background({ sessionID: state.sessionID }).catch(() => {})
     },
+    onActivity: () => attention.activity(),
+    onBackgroundView: (visible) => {
+      backgroundView = visible
+      attention.view(visible)
+    },
     onSubagentSelect: (sessionID) => {
       state.selectSubagent?.(sessionID)
       log?.write("subagent.select", {
         sessionID,
       })
     },
+  }).catch(async (error: unknown) => {
+    await attention.close()
+    throw error
   })
   const footer = shell.footer
+  const offAttentionClose = footer.onClose(() => {
+    void attention.close()
+  })
   const rememberLocal = (commit: StreamCommit, after?: LocalReplayAnchor) => {
     state.localRows = [...state.localRows, { commit, after }].slice(-LOCAL_REPLAY_ROW_LIMIT)
   }
@@ -578,6 +597,8 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
               state.selectSubagent = undefined
               state.shown = false
               state.sessionID = created.sessionID
+              backgroundView = false
+              attention.select(state.sessionID, backgroundView)
               state.sessionTitle = created.sessionTitle
               state.agent = created.agent ?? state.agent
               state.history = []
@@ -722,6 +743,8 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       await state.stream?.then((item) => item.handle.close()).catch(() => {})
     }
   } finally {
+    offAttentionClose()
+    await attention.close()
     const title = await resolveExitTitle(ctx, input, state)
 
     await shell.close({
@@ -735,7 +758,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
 // Local in-process mode. Creates an SDK client backed by a direct fetch to
 // the in-process server, so no external HTTP server is needed.
-export async function runInteractiveLocalMode(input: RunLocalInput): Promise<void> {
+export async function runInteractiveLocalMode(input: RunLocalInput, deps?: RunRuntimeDeps): Promise<void> {
   const sdk = createOpencodeClient({
     baseUrl: "http://opencode.internal",
     fetch: input.fetch,
@@ -743,47 +766,50 @@ export async function runInteractiveLocalMode(input: RunLocalInput): Promise<voi
   })
   let session: Promise<ResolvedSession> | undefined
 
-  return runInteractiveRuntime({
-    files: input.files,
-    initialInput: input.initialInput,
-    thinking: input.thinking,
-    backgroundSubagents: input.backgroundSubagents,
-    replay: input.replay,
-    replayLimit: input.replayLimit,
-    demo: input.demo,
-    resolveSession: () => {
-      if (session) {
+  return runInteractiveRuntime(
+    {
+      files: input.files,
+      initialInput: input.initialInput,
+      thinking: input.thinking,
+      backgroundSubagents: input.backgroundSubagents,
+      replay: input.replay,
+      replayLimit: input.replayLimit,
+      demo: input.demo,
+      resolveSession: () => {
+        if (session) {
+          return session
+        }
+
+        session = Promise.all([input.resolveAgent(), input.session(sdk)]).then(([agent, next]) => {
+          if (!next?.id) {
+            throw new Error("Session not found")
+          }
+
+          void input.share(sdk, next.id).catch(() => {})
+          return {
+            sessionID: next.id,
+            sessionTitle: next.title,
+            agent,
+          }
+        })
         return session
-      }
-
-      session = Promise.all([input.resolveAgent(), input.session(sdk)]).then(([agent, next]) => {
-        if (!next?.id) {
-          throw new Error("Session not found")
-        }
-
-        void input.share(sdk, next.id).catch(() => {})
+      },
+      createSession: createSessionResolver(input.createSession),
+      boot: async () => {
         return {
-          sessionID: next.id,
-          sessionTitle: next.title,
-          agent,
+          sdk,
+          directory: input.directory,
+          sessionID: "",
+          sessionTitle: undefined,
+          resume: false,
+          agent: input.agent,
+          model: input.model,
+          variant: input.variant,
         }
-      })
-      return session
+      },
     },
-    createSession: createSessionResolver(input.createSession),
-    boot: async () => {
-      return {
-        sdk,
-        directory: input.directory,
-        sessionID: "",
-        sessionTitle: undefined,
-        resume: false,
-        agent: input.agent,
-        model: input.model,
-        variant: input.variant,
-      }
-    },
-  })
+    deps,
+  )
 }
 
 // Attach mode. Uses the caller-provided SDK client directly.

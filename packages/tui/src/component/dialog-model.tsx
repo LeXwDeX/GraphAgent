@@ -139,8 +139,8 @@ export function DialogModel(props: { providerID?: string }) {
     return value.name
   })
 
-  function onSelect(providerID: string, modelID: string) {
-    local.model.set({ providerID, modelID }, { recent: true })
+  async function onSelect(providerID: string, modelID: string) {
+    if (!(await local.model.set({ providerID, modelID }, { recent: true, source: "picker" }))) return
     const list = local.model.variant.list()
     const cur = local.model.variant.selected()
     if (cur === "default" || (cur && list.includes(cur))) {

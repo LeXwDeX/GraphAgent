@@ -1,3 +1,8 @@
+import { HookStartContext } from "@/hook/start-context"
+import { HookLifecycle } from "@/hook/lifecycle"
+import { HookFileWatch } from "@/hook/file-watch"
+import { HookConfigChange } from "@/hook/config-change"
+import { HookCwd } from "@/hook/cwd"
 import { Config as EffectConfig, Context, Effect, Layer } from "effect"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
@@ -8,6 +13,7 @@ import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
+import { DagStore } from "@opencode-ai/core/dag/store"
 import { Command } from "@/command"
 import { Config } from "@/config/config"
 import { Workspace } from "@/control-plane/workspace"
@@ -52,6 +58,15 @@ import { Goal } from "@/goal/goal"
 import { GoalLoop } from "@/goal/loop"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventResidueSweep } from "@opencode-ai/core/event/residue-sweep"
+import { HookModelSwitch } from "@/hook/model-switch"
+import { HookAttentionHost } from "@/notification/attention-host"
+import { SessionAttention } from "@/notification/attention"
+import { Notification } from "@/notification"
+import { HookV2Conversation } from "@/hook/v2-conversation"
+import { HookV2Turn } from "@/hook/v2-turn"
+import { HookV2Compaction } from "@/hook/v2-compaction"
+import { HookV2Lifecycle } from "@/hook/v2-lifecycle"
+import { HookTodo } from "@/hook/todo"
 import { SettingsHook } from "@/hook/settings"
 import { HookRewakeLive } from "@/hook/rewake-live"
 import { SessionHooks } from "@/hook/session-hooks"
@@ -71,6 +86,7 @@ import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionRewakeBridge } from "@opencode-ai/core/session/execution/rewake-bridge"
 import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@opencode-ai/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
@@ -237,11 +253,14 @@ export const app = LayerNode.group([
   Discovery.node,
   Question.node,
   Permission.node,
+  Notification.node,
+  SessionAttention.node,
   Todo.node,
   Session.node,
   SessionProjector.node,
   SessionStatus.node,
   BackgroundJob.node,
+  DagStore.node,
   RuntimeFlags.node,
   EventV2Bridge.node,
   Dag.node,
@@ -287,7 +306,52 @@ export const app = LayerNode.group([
   // consumers see the service (per-consumer node additions would miss
   // Permission.node / Compaction.node / ShareSession.node etc.).
   SettingsHook.node,
+  LayerNode.make(HookAttentionHost.layer, [InstanceStore.node, SessionAttention.node]),
+  LayerNode.make(HookTodo.layer, [SettingsHook.node, Session.node, InstanceStore.node]),
+  LayerNode.make(HookCwd.layer, [
+    SettingsHook.node,
+    Session.node,
+    InstanceStore.node,
+    HookLifecycle.node,
+    HookFileWatch.node,
+    HookConfigChange.node,
+  ]),
+  LayerNode.make(HookV2Conversation.layer, [
+    SettingsHook.node,
+    Session.node,
+    InstanceStore.node,
+    Permission.node,
+    SessionAttention.node,
+  ]),
+  LayerNode.make(HookV2Turn.layer, [
+    SessionAttention.node,
+    Notification.node,
+    SettingsHook.node,
+    Session.node,
+    InstanceStore.node,
+    SessionPrompt.node,
+    BackgroundJob.node,
+    DagStore.node,
+    Permission.node,
+    SessionStatus.node,
+  ]),
+  LayerNode.make(HookV2Compaction.layer, [SettingsHook.node, Session.node, InstanceStore.node]),
+  LayerNode.make(HookV2Lifecycle.layer, [
+    SettingsHook.node,
+    Session.node,
+    SessionPrompt.node,
+    InstanceStore.node,
+    HookLifecycle.node,
+    HookStartContext.node,
+    HookFileWatch.node,
+    HookConfigChange.node,
+    Skill.node,
+  ]),
+  LayerNode.make(HookModelSwitch.layer, [SessionPrompt.node, Session.node, InstanceStore.node]),
   SessionHooks.node,
+  // The V2 handler graph registers its scoped execution callback here; hook
+  // callbacks in the sibling app graph can then wake the same coordinator.
+  SessionRewakeBridge.node,
   // HookRewake live node: async hook rewake delivery (hook-async-rewake).
   // Same app-graph-level placement rationale as SettingsHook above — settings.ts
   // resolves HookRewake.Service via serviceOption from the ambient request

@@ -17,7 +17,7 @@ const it = testEffect(testLayer)
 
 // A PostToolUse validator (lint / typecheck) that reports the same failure
 // each time the model makes the same mistake. Only tool events skip per-session
-// dedup; other events (SessionStart, Stop, ...) keep it (see settings-dedup.test.ts).
+// dedup; SessionStart keeps session dedup (see settings-dedup.test.ts).
 const FEEDBACK = "lint: missing semicolon at src/a.ts:3"
 const write = (dir: string) =>
   Effect.promise(async () => {
@@ -27,7 +27,7 @@ const write = (dir: string) =>
       JSON.stringify({
         PostToolUse: [
           {
-            matcher: "edit",
+            matcher: "Edit",
             hooks: [
               {
                 type: "command",
@@ -83,7 +83,7 @@ describe("additionalContext dedup scope", () => {
             JSON.stringify({
               PostToolUse: [
                 {
-                  matcher: "edit",
+                  matcher: "Edit",
                   hooks: [
                     { type: "command", command: output("a") },
                     { type: "command", command: output("b") },
@@ -96,14 +96,14 @@ describe("additionalContext dedup scope", () => {
     },
   )
   it.instance(
-    "a Stop hook repeating the same context is injected once per session",
+    "a Stop hook repeating the same context can continue each turn",
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
         const stop = { event: "Stop", stopHookActive: false } as const
         const ctx = { sessionID: "ses_context_dedup_stop", transcriptPath: "" }
         expect((yield* hook.trigger(stop, ctx)).additionalContexts).toEqual(["stop-feedback"])
-        expect((yield* hook.trigger(stop, ctx)).additionalContexts).toEqual([])
+        expect((yield* hook.trigger(stop, ctx)).additionalContexts).toEqual(["stop-feedback"])
       }),
     {
       init: (dir) =>

@@ -14,7 +14,16 @@ import { MessageID, PartID, SessionID } from "../../../src/session/schema"
 import { call, callAuthProbe, disposeApps } from "./backend"
 import { original } from "./environment"
 import { runtime } from "./runtime"
-import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, ScenarioContext, SeededContext, DagNodeSeed } from "./types"
+import type {
+  ActiveScenario,
+  Options,
+  ProjectOptions,
+  Result,
+  Scenario,
+  ScenarioContext,
+  SeededContext,
+  DagNodeSeed,
+} from "./types"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -142,7 +151,17 @@ function withContext<A, E>(
               return Bun.write(`${directory()}/${name}`, content)
             }).pipe(Effect.asVoid),
           session: (input) =>
-            run(modules.Session.Service.use((svc) => svc.create({ title: input?.title, parentID: input?.parentID, model: input?.model as never }))),
+            run(
+              modules.Session.Service.use((svc) =>
+                svc.create({
+                  title: input?.title,
+                  parentID: input?.parentID,
+                  model: input?.model
+                    ? { id: ModelV2.ID.make(input.model.id), providerID: ProviderV2.ID.make(input.model.providerID) }
+                    : undefined,
+                }),
+              ),
+            ),
           sessionGet: (sessionID) =>
             run(modules.Session.Service.use((svc) => svc.get(sessionID))).pipe(
               Effect.catchCause(() => Effect.succeed(undefined)),
@@ -184,7 +203,8 @@ function withContext<A, E>(
             }),
           messages: (sessionID) =>
             run(modules.Session.Service.use((svc) => svc.messages({ sessionID }).pipe(Effect.orDie))),
-          todos: (sessionID, todos) => run(modules.Todo.Service.use((svc) => svc.update({ sessionID, todos }))),
+          todos: (sessionID, todos) =>
+            run(modules.Todo.Service.use((svc) => svc.update({ sessionID, todos }).pipe(Effect.orDie))),
           goal: (sessionID, goalText, maxTurns) =>
             run(modules.Goal.Service.use((svc) => svc.set(sessionID, goalText, maxTurns))).pipe(Effect.asVoid),
           worktree: (input) => run(modules.Worktree.Service.use((svc) => svc.create(input).pipe(Effect.orDie))),
@@ -194,7 +214,8 @@ function withContext<A, E>(
           llmWait: (count) => Effect.suspend(() => llm().wait(count)),
           tuiRequest: (request) => Effect.sync(() => modules.Tui.submitTuiRequest(request)),
           dag: (input) => run(createDagFixture(input.sessionID, input.title, input.nodes)),
-          dagFailNode: (dagID, nodeID, reason, errorClass) => run(failDagNodeFixture(dagID, nodeID, reason, errorClass)),
+          dagFailNode: (dagID, nodeID, reason, errorClass) =>
+            run(failDagNodeFixture(dagID, nodeID, reason, errorClass)),
           dagAgentMessage: (dagID, nodeID, ownerSessionID) => run(seedDagAgentMessage(dagID, nodeID, ownerSessionID)),
           foreignDag: (input) => run(createForeignDagFixture(input.title, input.nodes)),
         }
@@ -314,7 +335,12 @@ export async function bounded(label: string, work: () => Promise<unknown>, ms = 
 }
 
 /** Fail a seeded DAG node through the Dag service so error_class lands on the wire. */
-function failDagNodeFixture(dagID: string, nodeID: string, reason: string, errorClass: "timeout" | "exec_failed" | "verdict_fail") {
+function failDagNodeFixture(
+  dagID: string,
+  nodeID: string,
+  reason: string,
+  errorClass: "timeout" | "exec_failed" | "verdict_fail",
+) {
   return Effect.gen(function* () {
     const modules = yield* Effect.promise(() => runtime())
     const dag = yield* modules.Dag.Service
@@ -359,22 +385,24 @@ function createDagFixture(sessionID: SessionID, title: string | undefined, nodes
     const modules = yield* Effect.promise(() => runtime())
     const dag = yield* modules.Dag.Service
     const project = (yield* modules.InstanceRef)!.project
-    const dagID = yield* dag.create({
-      projectID: project.id,
-      sessionID,
-      title: title ?? "DAG fixture",
-      config: {
-        name: title ?? "DAG fixture",
-        nodes: nodes.map((n) => ({
-          id: n.id,
-          name: n.name,
-          worker_type: n.worker_type,
-          depends_on: n.depends_on,
-          required: n.required,
-          prompt_template: { inline: n.id },
-        })),
-      },
-    }).pipe(Effect.orDie)
+    const dagID = yield* dag
+      .create({
+        projectID: project.id,
+        sessionID,
+        title: title ?? "DAG fixture",
+        config: {
+          name: title ?? "DAG fixture",
+          nodes: nodes.map((n) => ({
+            id: n.id,
+            name: n.name,
+            worker_type: n.worker_type,
+            depends_on: n.depends_on,
+            required: n.required,
+            prompt_template: { inline: n.id },
+          })),
+        },
+      })
+      .pipe(Effect.orDie)
     return { dagID, sessionID } as const
   })
 }
@@ -386,35 +414,46 @@ function createForeignDagFixture(title: string | undefined, nodes: DagNodeSeed[]
     const { db } = yield* Database.Service
     const projectID = Project.ID.make("prj_httpapi_foreign")
     const sessionID = SessionID.make("ses_httpapi_foreign")
-    yield* db.insert(ProjectTable).values({
-      id: projectID,
-      worktree: AbsolutePath.make("/foreign-httpapi-project"),
-      sandboxes: [],
-    }).onConflictDoNothing().run().pipe(Effect.orDie)
-    yield* db.insert(SessionTable).values({
-      id: sessionID,
-      project_id: projectID,
-      slug: "foreign-httpapi",
-      directory: AbsolutePath.make("/foreign-httpapi-project"),
-      title: "Foreign HTTP API session",
-      version: "test",
-    }).run().pipe(Effect.orDie)
-    const dagID = yield* dag.create({
-      projectID,
-      sessionID,
-      title: title ?? "Foreign DAG fixture",
-      config: {
-        name: title ?? "Foreign DAG fixture",
-        nodes: nodes.map((item) => ({
-          id: item.id,
-          name: item.name,
-          worker_type: item.worker_type,
-          depends_on: item.depends_on,
-          required: item.required,
-          prompt_template: { inline: item.id },
-        })),
-      },
-    }).pipe(Effect.orDie)
+    yield* db
+      .insert(ProjectTable)
+      .values({
+        id: projectID,
+        worktree: AbsolutePath.make("/foreign-httpapi-project"),
+        sandboxes: [],
+      })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id: sessionID,
+        project_id: projectID,
+        slug: "foreign-httpapi",
+        directory: AbsolutePath.make("/foreign-httpapi-project"),
+        title: "Foreign HTTP API session",
+        version: "test",
+      })
+      .run()
+      .pipe(Effect.orDie)
+    const dagID = yield* dag
+      .create({
+        projectID,
+        sessionID,
+        title: title ?? "Foreign DAG fixture",
+        config: {
+          name: title ?? "Foreign DAG fixture",
+          nodes: nodes.map((item) => ({
+            id: item.id,
+            name: item.name,
+            worker_type: item.worker_type,
+            depends_on: item.depends_on,
+            required: item.required,
+            prompt_template: { inline: item.id },
+          })),
+        },
+      })
+      .pipe(Effect.orDie)
     return { dagID, sessionID } as const
   })
 }

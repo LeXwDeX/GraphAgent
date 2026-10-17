@@ -19,7 +19,15 @@ const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap
 const noopSettingsHook = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
-    trigger: () => Effect.succeed({ blocked: undefined, permissionDecision: undefined, permissionDecisionReason: undefined, additionalContexts: [], systemMessages: [], hookSpecificOutput: undefined }),
+    trigger: () =>
+      Effect.succeed({
+        blocked: undefined,
+        permissionDecision: undefined,
+        permissionDecisionReason: undefined,
+        additionalContexts: [],
+        systemMessages: [],
+        hookSpecificOutput: undefined,
+      }),
     list: () => Effect.succeed([]),
   }),
 )
@@ -815,7 +823,7 @@ it.instance(
       yield* Fiber.join(fiber)
 
       const result = yield* ask({
-        sessionID: SessionID.make("session_test2"),
+        sessionID: SessionID.make("session_test"),
         permission: "bash",
         patterns: ["ls"],
         metadata: {},
@@ -823,6 +831,20 @@ it.instance(
         ruleset: [],
       })
       expect(result).toBeUndefined()
+      const other = yield* ask({
+        sessionID: SessionID.make("session_test2"),
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [],
+      }).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+      const permissions = yield* Permission.Service
+      const [pending] = yield* permissions.list()
+      expect(pending?.sessionID).toBe(SessionID.make("session_test2"))
+      if (pending) yield* reply({ requestID: pending.id, reply: "reject" })
+      expect(Exit.isFailure(yield* Fiber.await(other))).toBe(true)
     }),
   { git: true },
 )

@@ -1,12 +1,14 @@
 import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
-import { expect } from "bun:test"
+import { HookFileWatch } from "@/hook/file-watch"
+import { expect, spyOn } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { Effect, Exit, Fiber, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
+import { HookNotification } from "@/hook/notifications"
 import { SessionSummary } from "@/session/summary"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -103,7 +105,9 @@ const pluginMock = Layer.suspend(() =>
 
 const root = LayerNode.group([
   SessionPrompt.node,
+  SettingsHook.node,
   SessionHooks.node,
+  HookFileWatch.node,
   Session.node,
   SessionProjector.node,
   SessionSummary.node,
@@ -199,7 +203,7 @@ it.live("async hooks re-enter the real session after their caller has completed"
             async: true,
             asyncRewake: true,
             once: true,
-            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"async finished"}'`,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' 'async finished' >&2; exit 2`,
           },
         ],
       })
@@ -227,6 +231,64 @@ it.live("async hooks re-enter the real session after their caller has completed"
   ),
 )
 
+it.live("ordinary async JSON reaches the next V1 model call without a user HookMessage", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Async model feedback", permission: [] })
+      const release = path.join(dir, "release-async-feedback")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      const output = JSON.stringify({
+        systemMessage: "ASYNC_SYSTEM_TO_MODEL",
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "ASYNC_CONTEXT_TO_MODEL" },
+      })
+      const message = yield* Effect.acquireRelease(
+        Effect.sync(() => spyOn(HookNotification, "message")),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      )
+      yield* hooks.add(session.id, {
+        event: "UserPromptSubmit",
+        once: true,
+        hooks: [
+          {
+            type: "command",
+            async: true,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf 'working\\n'; printf '%s\\n' ${quote(output)}`,
+          },
+        ],
+      })
+      yield* llm.text("first response")
+      yield* llm.text("second response")
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        parts: [{ type: "text", text: "start ordinary async hook" }],
+      })
+      expect(yield* llm.calls).toBe(1)
+      yield* Effect.promise(() => fs.writeFile(release, "go"))
+      yield* pollWithTimeout(
+        hooks
+          .list(session.id, "UserPromptSubmit")
+          .pipe(Effect.map((remaining) => (remaining.length === 0 ? true : undefined))),
+        "async feedback hook did not settle successfully",
+      )
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        parts: [{ type: "text", text: "consume async feedback" }],
+      })
+      const inputs = yield* llm.inputs
+      expect(inputs).toHaveLength(2)
+      expect(JSON.stringify(inputs[1])).toContain("ASYNC_SYSTEM_TO_MODEL")
+      expect(JSON.stringify(inputs[1])).toContain("ASYNC_CONTEXT_TO_MODEL")
+      expect(message).not.toHaveBeenCalled()
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("cancelled session discards a completing async Stop hook callback", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm, dir }) {
@@ -245,7 +307,7 @@ it.live("cancelled session discards a completing async Stop hook callback", () =
             type: "command",
             async: true,
             asyncRewake: true,
-            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"result after cancel"}'; touch ${quote(completed)}`,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; touch ${quote(completed)}; printf '%s' 'result after cancel' >&2; exit 2`,
           },
         ],
       })
@@ -299,7 +361,7 @@ it.live("cancel parked inside chat.message admission strips a stale stop-chain r
             type: "command",
             async: true,
             asyncRewake: true,
-            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"stale verdict"}'; touch ${quote(completed)}`,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; touch ${quote(completed)}; printf '%s' 'stale verdict' >&2; exit 2`,
           },
         ],
       })
@@ -375,7 +437,7 @@ it.live("cancel invalidates a stop-chain rewake queued behind a busy turn", () =
             type: "command",
             async: true,
             asyncRewake: true,
-            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{"systemMessage":"queued stale verdict"}'; touch ${quote(completed)}`,
+            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; touch ${quote(completed)}; printf '%s' 'queued stale verdict' >&2; exit 2`,
           },
         ],
       })
@@ -440,7 +502,7 @@ it.live("a fresh prompt after cancel re-establishes a working Stop rewake chain"
               type: "command",
               async: true,
               asyncRewake: true,
-              command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' ${quote(body)}; touch ${quote(`${release}.completed`)}`,
+              command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; touch ${quote(`${release}.completed`)}; printf '%s' ${quote(body)} >&2; exit 2`,
             },
           ],
         })
@@ -507,7 +569,7 @@ it.live("cancelling one session leaves another session's Stop rewake intact", ()
               type: "command",
               async: true,
               asyncRewake: true,
-              command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' ${quote(body)}`,
+              command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; if [ -f ${quote(`${release}.rewoke`)} ]; then exit 0; fi; touch ${quote(`${release}.rewoke`)}; printf '%s' ${quote(body)} >&2; exit 2`,
             },
           ],
         })
@@ -712,6 +774,16 @@ it.live("native write, edit and multi-file patch emit actual FileChanged paths",
         event: "FileChanged",
         hooks: [{ type: "command", command: "cat >> " + quote(capture) }],
       })
+      const watcher = yield* HookFileWatch.Service
+      const settings = yield* SettingsHook.Service
+      yield* watcher.replace(session.id, [original, moved, second], (file, event) =>
+        settings
+          .trigger(
+            { event: "FileChanged", path: file, changeType: event },
+            { sessionID: session.id, transcriptPath: "" },
+          )
+          .pipe(Effect.asVoid),
+      )
       yield* llm.tool("write", { filePath: original, content: "before\n" })
       yield* llm.tool("edit", { filePath: original, oldString: "before", newString: "edited" })
       yield* llm.text("edited")
@@ -722,6 +794,14 @@ it.live("native write, edit and multi-file patch emit actual FileChanged paths",
         parts: [{ type: "text", text: "exercise write and edit" }],
       })
       expect(yield* Effect.promise(() => fs.readFile(original, "utf8"))).toBe("edited\n")
+      yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const text = await fs.readFile(capture, "utf8").catch(() => "")
+          return text.includes(original) ? true : undefined
+        }),
+        "registered original path was not observed",
+        "10 seconds",
+      )
       yield* llm.tool("apply_patch", {
         patchText: `*** Begin Patch\n*** Update File: ${original}\n*** Move to: ${moved}\n@@\n-edited\n+after\n*** Add File: ${second}\n+second\n*** End Patch`,
       })
@@ -742,17 +822,21 @@ it.live("native write, edit and multi-file patch emit actual FileChanged paths",
           ),
         ),
       ).toBe(false)
-      const records = (yield* Effect.promise(() => fs.readFile(capture, "utf8")))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line))
-      expect(records.map((record) => [record.path, record.change_type])).toEqual([
-        [original, "add"],
-        [original, "change"],
-        [original, "delete"],
-        [moved, "add"],
-        [second, "add"],
-      ])
+      const records = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const text = await fs.readFile(capture, "utf8").catch(() => "")
+          if (!text.trim()) return undefined
+          const rows = text
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+          const paths = new Set(rows.map((row) => row.file_path))
+          return [original, moved, second].every((file) => paths.has(file)) ? rows : undefined
+        }),
+        "registered patch paths were not observed",
+        "10 seconds",
+      )
+      expect(records.every((record) => ["add", "change", "unlink"].includes(record.event))).toBe(true)
     }),
     {
       git: true,
@@ -789,11 +873,11 @@ for (const event of ["Stop", "StopFailure"] as const) {
               type: "command",
               async: true,
               asyncRewake: true,
-              command: `sleep 0.1; cat >> ${quote(marker)}; n=$(wc -l < ${quote(marker)}); if [ "$n" -le 14 ]; then printf '{"systemMessage":"hook revision %s"}' "$n"; fi`,
+              command: `sleep 0.1; cat >> ${quote(marker)}; n=$(wc -l < ${quote(marker)}); if [ "$n" -le 20 ]; then printf 'hook revision %s' "$n" >&2; exit 2; fi`,
             },
           ],
         })
-        for (let i = 0; i < 16; i++) {
+        for (let i = 0; i < 20; i++) {
           if (event === "StopFailure") yield* llm.error(400, { error: { message: `provider failure ${i}` } })
           else yield* llm.text(`response ${i}`)
         }

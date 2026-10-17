@@ -64,11 +64,11 @@ const ModelList: Component<{
           {node}
         </Tooltip>
       )}
-      onSelect={(x) => {
-        model.set(x ? { modelID: x.id, providerID: x.provider.id } : undefined, {
+      onSelect={async (x) => {
+        const accepted = await model.set(x ? { modelID: x.id, providerID: x.provider.id } : undefined, {
           recent: true,
         })
-        props.onSelect()
+        if (accepted) props.onSelect()
       }}
     >
       {(i) => (

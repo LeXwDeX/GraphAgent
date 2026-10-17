@@ -26,6 +26,7 @@ import {
   INCOMPLETE_REASONING_RESPONSE_MESSAGE,
 } from "./retry"
 import { ToolInputRejectedError } from "./llm/ai-sdk"
+import { hookToolStop } from "@/hook/trigger-result"
 import { CompactionTimeoutError, watchCompactionStream } from "./compaction-timeout"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
@@ -44,7 +45,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMError, Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
-export type Result = "compact" | "stop" | "continue" | "timeout"
+export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
@@ -61,6 +62,7 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
+  readonly resumeToolCall: (part: SessionV1.ToolPart, execute: Effect.Effect<unknown, unknown>) => Effect.Effect<void>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
 }
 
@@ -70,6 +72,8 @@ type Input = {
   model: Provider.Model
   /** Called once per reasoning part that ended normally, after it is persisted. Must not block the stream. */
   onReasoningSettled?: (part: SessionV1.ReasoningPart) => Effect.Effect<void>
+  displayMode?: "interactive" | "noninteractive"
+  onTextDisplay?: (batch: { delta: string; index: number; final: boolean }) => Effect.Effect<string>
 }
 
 export interface Interface {
@@ -208,8 +212,45 @@ export const layer = Layer.effect(
         attemptSuppressedActivity: false,
         attemptRetryBlockingSuppressedActivity: false,
       }
-      const mirrorAssistant = flags.experimentalEventSystem && !input.assistantMessage.summary
+      let mirrorAssistant = flags.experimentalEventSystem && !input.assistantMessage.summary
       let aborted = false
+      let deferred = false
+      let displayPending = ""
+      let displayIndex = 0
+      let displayFinished = false
+      const displayParts: SessionV1.TextPart[] = []
+      let displaySegments: Array<{ part: SessionV1.TextPart; length: number }> = []
+      let lastDisplayPart: SessionV1.TextPart | undefined
+      const display = Effect.fn("SessionProcessor.display")(function* (final: boolean) {
+        if (!input.onTextDisplay || displayFinished) return
+        if (final && input.displayMode !== "interactive") {
+          // Noninteractive consumers receive the completed message once,
+          // including changes made by experimental.text.complete.
+          displayPending = displayParts.map((part) => part.text).join("")
+          displaySegments = displayParts
+            .filter((part) => part.text.length > 0)
+            .map((part) => ({ part, length: part.text.length }))
+        }
+        const target = displaySegments[0]?.part ?? lastDisplayPart
+        if (!target) return
+        const end = final ? displayPending.length : displayPending.lastIndexOf("\n") + 1
+        if (!final && (input.displayMode !== "interactive" || end === 0)) return
+        const delta = displayPending.slice(0, end)
+        displayPending = displayPending.slice(end)
+        let remaining = end
+        while (remaining > 0 && displaySegments.length > 0) {
+          const first = displaySegments[0]
+          const consumed = Math.min(remaining, first.length)
+          first.length -= consumed
+          remaining -= consumed
+          if (first.length === 0) displaySegments.shift()
+        }
+        const text = yield* input.onTextDisplay({ delta, index: displayIndex++, final })
+        target.displayText = (target.displayText ?? "") + text
+        yield* session.updatePart(target)
+        lastDisplayPart = target
+        displayFinished = final
+      })
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -415,6 +456,7 @@ export const layer = Layer.effect(
           callID: input.id,
           state: { status: "pending", input: {}, raw: "" },
           metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
+          ...(assistantMessageID ? { v2: { messageID: assistantMessageID } } : {}),
         } satisfies SessionV1.ToolPart)
         ctx.toolcalls[input.id] = {
           assistantMessageID,
@@ -643,6 +685,7 @@ export const layer = Layer.effect(
             }
 
             const agent = yield* agents.get(ctx.assistantMessage.agent)
+            if (!agent) return yield* Effect.die(new Error(`Agent ${ctx.assistantMessage.agent} is unavailable`))
             yield* permission.ask({
               permission: "doom_loop",
               patterns: [value.name],
@@ -680,6 +723,31 @@ export const layer = Layer.effect(
               return
             }
             const rawOutput = toolResultOutput(value)
+            if (rawOutput.metadata.hookDeferred === true && toolCall) {
+              deferred = true
+              ctx.pendingToolExecutions.delete(value.id)
+              if (mirrorAssistant) {
+                yield* events.publish(SessionEvent.Tool.Progress, {
+                  sessionID: ctx.sessionID,
+                  assistantMessageID: yield* requireV2AssistantMessage(toolCall.call),
+                  callID: value.id,
+                  structured: { hookDeferred: true },
+                  content: [],
+                  timestamp: DateTime.makeUnsafe(Date.now()),
+                })
+              }
+              yield* session.updatePart({
+                ...toolCall.part,
+                state: {
+                  status: "pending",
+                  input: toolCall.part.state.input,
+                  raw: JSON.stringify(toolCall.part.state.input),
+                  deferred: true,
+                },
+              })
+              yield* settleToolCall(value.id)
+              return
+            }
             const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
               attachment.mime.startsWith("image/")
                 ? image.normalize(attachment).pipe(
@@ -792,6 +860,8 @@ export const layer = Layer.effect(
               })
             }
             yield* failToolCall(value.id, value.error ?? new Error(value.message))
+            // A PostToolUseFailure `continue:false` ends the agent turn once the error is recorded.
+            if (hookToolStop(value.error)) ctx.blocked = true
             return
           }
 
@@ -907,10 +977,12 @@ export const layer = Layer.effect(
               sessionID: ctx.assistantMessage.sessionID,
               type: "text",
               text: "",
+              ...(input.onTextDisplay ? { displayText: "" } : {}),
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
             ctx.currentTextID = value.id
+            if (input.onTextDisplay) displayParts.push(ctx.currentText)
             yield* session.updatePart(ctx.currentText)
             return
 
@@ -918,6 +990,10 @@ export const layer = Layer.effect(
             ctx.attemptTextLength += value.text.length
             if (!ctx.currentText) return
             ctx.currentText.text += value.text
+            if (input.onTextDisplay) {
+              displayPending += value.text
+              if (value.text.length > 0) displaySegments.push({ part: ctx.currentText, length: value.text.length })
+            }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
             if (mirrorAssistant) {
               yield* events.publish(SessionEvent.Text.Delta, {
@@ -935,6 +1011,7 @@ export const layer = Layer.effect(
               field: "text",
               delta: value.text,
             })
+            yield* display(false)
             return
 
           case "text-end":
@@ -1118,6 +1195,8 @@ export const layer = Layer.effect(
           yield* forceAbortToolCall(toolCallID)
         }
         ctx.toolcalls = {}
+        if (deferred) ctx.assistantMessage.finish = "tool_deferred"
+        yield* display(true)
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })
@@ -1428,16 +1507,61 @@ export const layer = Layer.effect(
           )
 
           if (timedOut) return "timeout"
+          if (deferred) return "deferred"
           if (ctx.needsCompaction) return "compact"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })
       })
 
+      const resumeToolCall: Handle["resumeToolCall"] = Effect.fn("SessionProcessor.resumeToolCall")(
+        function* (part, execute) {
+          const messageID = part.v2 ? SessionMessage.ID.make(part.v2.messageID) : undefined
+          // A deferred call created while V2 mirroring was disabled has no durable V2 owner.
+          mirrorAssistant = mirrorAssistant && messageID !== undefined
+          ctx.v2AssistantMessageID = messageID
+          ctx.toolcalls[part.callID] = {
+            assistantMessageID: messageID,
+            partID: part.id,
+            messageID: part.messageID,
+            sessionID: part.sessionID,
+            done: yield* Deferred.make<void>(),
+            inputEnded: true,
+            raw: JSON.stringify(part.state.input),
+          }
+          yield* session.updatePart({
+            ...part,
+            state: { status: "running", input: part.state.input, time: { start: Date.now() } },
+          })
+          const result = yield* execute.pipe(Effect.exit)
+          if (Exit.isSuccess(result)) {
+            yield* handleEvent({
+              type: "tool-result",
+              id: part.callID,
+              name: part.tool,
+              result: { type: "json", value: result.value },
+            }).pipe(Effect.orDie)
+          } else {
+            const error = Cause.squash(result.cause)
+            yield* handleEvent({
+              type: "tool-error",
+              id: part.callID,
+              name: part.tool,
+              error,
+              message: errorMessage(error),
+            }).pipe(Effect.orDie)
+            if (Cause.hasInterrupts(result.cause)) return yield* Effect.failCause(result.cause).pipe(Effect.orDie)
+          }
+          ctx.assistantMessage.finish = deferred ? "tool_deferred" : "tool-calls"
+          yield* cleanup()
+          return undefined
+        },
+      )
       return {
         get message() {
           return ctx.assistantMessage
         },
+        resumeToolCall,
         updateToolCall,
         completeToolCall,
         process,

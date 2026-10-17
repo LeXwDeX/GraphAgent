@@ -357,9 +357,13 @@ export function Prompt(props: PromptProps) {
       if (msg.agent && isPrimaryAgent) {
         // Keep command line --agent if specified.
         if (!args.agent) local.agent.set(msg.agent)
-        if (msg.model) {
-          local.model.set(msg.model)
-          local.model.variant.set(msg.model.variant)
+        // The session's persisted model is authoritative; the last user message is only a fallback.
+        // Restoring is local-only so it neither runs model-switch hooks nor overwrites the saved model.
+        const saved = sync.session.get(sessionID)?.model
+        const restored = saved ? { providerID: saved.providerID, modelID: saved.id, variant: saved.variant } : msg.model
+        if (restored) {
+          local.model.restore(restored)
+          local.model.variant.set(restored.variant)
         }
       }
     }
@@ -1201,6 +1205,7 @@ export function Prompt(props: PromptProps) {
         .shell(
           {
             sessionID,
+            hookMode: "interactive",
             agent: agent.name,
             model: {
               providerID: selectedModel.providerID,
@@ -1231,6 +1236,7 @@ export function Prompt(props: PromptProps) {
         .command(
           {
             sessionID,
+            hookMode: "interactive",
             command: command.slice(1),
             arguments: args,
             agent: agent.name,
@@ -1257,6 +1263,7 @@ export function Prompt(props: PromptProps) {
         .prompt(
           {
             sessionID,
+            hookMode: "interactive",
             ...selectedModel,
             messageID,
             agent: agent.name,
@@ -1507,7 +1514,6 @@ export function Prompt(props: PromptProps) {
     }
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
-  const moveLabelWidth = createMemo(() => Math.max(12, Math.min(44, dimensions().width - 48)))
 
   return (
     <>

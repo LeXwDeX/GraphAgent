@@ -153,10 +153,6 @@ it.instance(
       yield* permission.reply({ requestID: pending[0].id, reply: "once" })
       yield* Fiber.join(fiber)
       yield* hookAsk([{ permission: "edit", pattern: "*", action: "deny" }]).pipe(Effect.exit)
-      yield* pollWithTimeout(
-        Effect.sync(() => (triggered.some((t) => t.payload.event === "Notification") ? true : undefined)),
-        "Notification hook did not fire",
-      )
 
       const request = triggered.find((t) => t.payload.event === "PermissionRequest")
       expect(request?.payload).toMatchObject({
@@ -171,16 +167,8 @@ it.instance(
         metadata: { hookAsk: true, reason: "migration file: confirm" },
         always: [],
       })
-      const denied = triggered.find((t) => t.payload.event === "PermissionDenied")
-      expect(denied?.payload).toMatchObject({
-        toolName: "edit",
-        toolInput: { filePath: "db/migration.sql", permission: "edit", pattern: "edit" },
-        toolUseID: "call_hook_ask",
-      })
-      expect(denied?.payload).toHaveProperty("reason")
-      const notification = triggered.find((t) => t.payload.event === "Notification")
-      expect(notification?.payload).toMatchObject({ notificationType: "permission" })
-      expect(notification?.ctx.sessionID).toBe(sessionID)
+      expect(triggered.find((t) => t.payload.event === "PermissionDenied")).toBeUndefined()
+      expect(triggered.find((t) => t.payload.event === "Notification")).toBeUndefined()
     }),
   { git: true },
 )

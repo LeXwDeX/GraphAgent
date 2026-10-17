@@ -100,17 +100,21 @@ const hidden = new Set(["todowrite"])
 
 function partState(part: PartType, showReasoningSummaries: boolean) {
   if (part.type === "tool") {
-    if (hidden.has(part.tool)) return
-    if (part.tool === "question" && (part.state.status === "pending" || part.state.status === "running")) return
+    if (hidden.has(part.tool)) return undefined
+    if (part.tool === "question" && (part.state.status === "pending" || part.state.status === "running"))
+      return undefined
     return "visible" as const
   }
-  if (part.type === "text") return part.text?.trim() ? ("visible" as const) : undefined
+  if (part.type === "text")
+    return ("displayText" in part && typeof part.displayText === "string" ? part.displayText : part.text)?.trim()
+      ? ("visible" as const)
+      : undefined
   if (part.type === "reasoning") {
     if (showReasoningSummaries && part.text?.trim()) return "visible" as const
-    return
+    return undefined
   }
   if (PART_MAPPING[part.type]) return "visible" as const
-  return
+  return undefined
 }
 
 function clean(value: string) {
@@ -307,7 +311,12 @@ export function SessionTurn(
       const parts = list(data.store.part?.[message.id], emptyParts)
       for (let j = parts.length - 1; j >= 0; j--) {
         const part = parts[j]
-        if (!part || part.type !== "text" || !part.text?.trim()) continue
+        if (
+          !part ||
+          part.type !== "text" ||
+          !("displayText" in part && typeof part.displayText === "string" ? part.displayText : part.text)?.trim()
+        )
+          continue
         return part.id
       }
     }

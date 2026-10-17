@@ -1,6 +1,9 @@
 export * as InstructionContext from "./instruction-context"
 
-import { Array, Effect, Layer, Schema } from "effect"
+import { createHash } from "node:crypto"
+import { SessionHookContext } from "./session/hook-context"
+import { SessionSourceHooks } from "./session/source-hooks"
+import { Array, Effect, Layer, Schema, Option, Scope } from "effect"
 import { isAbsolute, join, relative, sep } from "path"
 import { FSUtil } from "./fs-util"
 import { Flag } from "./flag/flag"
@@ -24,6 +27,9 @@ export const layer = Layer.effectDiscard(
     const global = yield* Global.Service
     const location = yield* Location.Service
     const registry = yield* SystemContextRegistry.Service
+    // InstructionsLoaded is background observation (the official event is asynchronous), so dispatch is bound to
+    // this layer's scope, which the Location/registry owner releases, rather than to one context load.
+    const scope = yield* Scope.Scope
 
     const source = (value: ReadonlyArray<File> | SystemContext.Unavailable) =>
       SystemContext.make({
@@ -35,6 +41,8 @@ export const layer = Layer.effectDiscard(
           `These instructions replace all previously loaded ambient instructions.\n\n${render(current)}`,
         removed: () => "Previously loaded instructions no longer apply.",
       })
+
+    const admitted = new Map<string, Map<string, string>>()
 
     const observe = Effect.fn("InstructionContext.observe")(function* () {
       const start = FSUtil.resolve(location.directory)
@@ -67,7 +75,37 @@ export const layer = Layer.effectDiscard(
       )
       if (files.some((file, index) => file === undefined && discovered.has(paths[index])))
         return SystemContext.unavailable
-      return files.filter((file): file is File => file !== undefined)
+      const loaded = files.filter((file): file is File => file !== undefined)
+      const session = Option.getOrUndefined(yield* Effect.serviceOption(SessionHookContext.Service))
+      const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SessionSourceHooks.Service))
+      if (session && hooks) {
+        let versions = admitted.get(session.sessionID)
+        if (!versions) admitted.set(session.sessionID, (versions = new Map()))
+        const reason = session.loadReason ?? "session_start"
+        const pending: Array<Omit<Parameters<typeof hooks.instructionsLoaded>[0], "sessionID">> = []
+        for (const file of loaded) {
+          const version = createHash("sha256").update(file.content).digest("hex")
+          const key =
+            reason + ":" + (reason === "compact" ? (session.loadBatch ?? "compact") : "initial") + ":" + file.path
+          if (versions.get(key) === version) continue
+          versions.set(key, version)
+          pending.push({
+            filePath: file.path,
+            memoryType: file.path === FSUtil.resolve(join(global.config, "AGENTS.md")) ? "User" : "Project",
+            loadReason: reason,
+          })
+        }
+        if (pending.length > 0)
+          yield* Effect.forEach(
+            pending,
+            (item) => hooks.instructionsLoaded({ sessionID: session.sessionID, ...item }).pipe(Effect.ignore),
+            { discard: true },
+          ).pipe(
+            Effect.catchDefect(() => Effect.void),
+            Effect.forkIn(scope),
+          )
+      }
+      return loaded
     })
 
     yield* registry.register({

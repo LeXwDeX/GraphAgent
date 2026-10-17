@@ -43,7 +43,10 @@ describe("applyPreHookDecision — no-op / passthrough", () => {
 
 describe("applyPreHookDecision — deny / blocked", () => {
   test("permissionDecision:'deny' yields deniedReason from permissionDecisionReason", () => {
-    const out = applyPreHookDecision({ command: "x" }, { ...base, permissionDecision: "deny", permissionDecisionReason: "policy" })
+    const out = applyPreHookDecision(
+      { command: "x" },
+      { ...base, permissionDecision: "deny", permissionDecisionReason: "policy" },
+    )
     expect(out.deniedReason).toBe("policy")
     expect(out.stopReason).toBeUndefined()
   })
@@ -59,34 +62,47 @@ describe("applyPreHookDecision — deny / blocked", () => {
   })
 
   test("blocked without reason falls back to default message", () => {
-    const out = applyPreHookDecision({ command: "x" }, { ...base, blocked: { reason: undefined as unknown as string, command: "x" } })
+    const malformed = { ...base, blocked: { reason: "placeholder", command: "x" } }
+    Reflect.set(malformed.blocked, "reason", undefined)
+    const out = applyPreHookDecision({ command: "x" }, malformed)
     expect(out.deniedReason).toBe("Denied by PreToolUse hook")
   })
 
   test("deny reason takes precedence over blocked reason", () => {
     const out = applyPreHookDecision(
       { command: "x" },
-      { ...base, permissionDecision: "deny", permissionDecisionReason: "deny-wins", blocked: { reason: "blocked-loses", command: "x" } },
+      {
+        ...base,
+        permissionDecision: "deny",
+        permissionDecisionReason: "deny-wins",
+        blocked: { reason: "blocked-loses", command: "x" },
+      },
     )
     expect(out.deniedReason).toBe("deny-wins")
   })
 
-  test("deny suppresses updatedInput and preventContinuation", () => {
-    // A denied tool must not also rewrite args or appear stopped.
+  test("stop suppresses deny and updatedInput", () => {
+    // A global stop outranks the tool-specific verdict and cannot replace input.
     const args = { command: "x" }
-    const out = applyPreHookDecision(
-      args,
-      { ...base, permissionDecision: "deny", permissionDecisionReason: "no", updatedInput: { command: "rewritten" }, preventContinuation: true },
-    )
-    expect(out.deniedReason).toBe("no")
-    expect(out.stopReason).toBeUndefined()
+    const out = applyPreHookDecision(args, {
+      ...base,
+      permissionDecision: "deny",
+      permissionDecisionReason: "no",
+      updatedInput: { command: "rewritten" },
+      preventContinuation: true,
+    })
+    expect(out.deniedReason).toBeUndefined()
+    expect(out.stopReason).toBe("Hook requested stop")
     expect(out.effectiveArgs).toBe(args)
   })
 })
 
 describe("applyPreHookDecision — preventContinuation (continue:false)", () => {
   test("preventContinuation yields stopReason from stopReason field", () => {
-    const out = applyPreHookDecision({ command: "x" }, { ...base, preventContinuation: true, stopReason: "Policy violation" })
+    const out = applyPreHookDecision(
+      { command: "x" },
+      { ...base, preventContinuation: true, stopReason: "Policy violation" },
+    )
     expect(out.stopReason).toBe("Policy violation")
     expect(out.deniedReason).toBeUndefined()
   })
@@ -98,17 +114,21 @@ describe("applyPreHookDecision — preventContinuation (continue:false)", () => 
 
   test("preventContinuation suppresses updatedInput", () => {
     const args = { command: "x" }
-    const out = applyPreHookDecision(args, { ...base, preventContinuation: true, updatedInput: { command: "rewritten" } })
+    const out = applyPreHookDecision(args, {
+      ...base,
+      preventContinuation: true,
+      updatedInput: { command: "rewritten" },
+    })
     expect(out.stopReason).toBe("Hook requested stop")
     expect(out.effectiveArgs).toBe(args)
   })
 })
 
 describe("applyPreHookDecision — updatedInput", () => {
-  test("updatedInput shallow-merges into effectiveArgs (hook overrides original)", () => {
+  test("updatedInput replaces the complete input object", () => {
     const args = { command: "echo ORIGINAL", cwd: "/tmp" }
     const out = applyPreHookDecision(args, { ...base, updatedInput: { command: "echo REWRITTEN" } })
-    expect(out.effectiveArgs).toEqual({ command: "echo REWRITTEN", cwd: "/tmp" })
+    expect(out.effectiveArgs).toEqual({ command: "echo REWRITTEN" })
   })
 
   test("updatedInput absent returns the same args reference (no clone)", () => {
@@ -131,9 +151,9 @@ describe("applyPreHookDecision — updatedInput", () => {
 })
 
 describe("applyPreHookDecision — decision precedence", () => {
-  test("deny > preventContinuation > updatedInput ordering", () => {
+  test("preventContinuation > deny > updatedInput ordering", () => {
     const args = { command: "x" }
-    // All three present → deny wins.
+    // All three present → the global stop wins.
     expect(
       applyPreHookDecision(args, {
         ...base,
@@ -142,8 +162,8 @@ describe("applyPreHookDecision — decision precedence", () => {
         preventContinuation: true,
         stopReason: "s",
         updatedInput: { command: "u" },
-      }).deniedReason,
-    ).toBe("d")
+      }).stopReason,
+    ).toBe("s")
 
     // No deny → preventContinuation wins over updatedInput.
     expect(
@@ -156,9 +176,9 @@ describe("applyPreHookDecision — decision precedence", () => {
     ).toBe("s")
 
     // No deny, no stop → updatedInput applies.
-    expect(
-      applyPreHookDecision(args, { ...base, updatedInput: { command: "u" } }).effectiveArgs,
-    ).toEqual({ command: "u" })
+    expect(applyPreHookDecision(args, { ...base, updatedInput: { command: "u" } }).effectiveArgs).toEqual({
+      command: "u",
+    })
   })
 })
 
@@ -222,7 +242,9 @@ describe("classifyPermissionAsk — wired through a mocked Permission service", 
   })
 
   test("ask auto-denies (DeniedError) → denied", async () => {
-    const deny = Layer.mock(Permission.Service, { ask: () => Effect.fail(new PermissionV1.DeniedError({ ruleset: [] })) })
+    const deny = Layer.mock(Permission.Service, {
+      ask: () => Effect.fail(new PermissionV1.DeniedError({ ruleset: [] })),
+    })
     expect(await run(deny)).toBe("denied")
   })
 
@@ -232,4 +254,17 @@ describe("classifyPermissionAsk — wired through a mocked Permission service", 
     expect(out).not.toBe("approved")
     expect(out).not.toBe("denied")
   })
+})
+
+test("continue:false wins over defer and never replaces the input", () => {
+  const original = { command: "original" }
+  expect(
+    applyPreHookDecision(original, {
+      ...base,
+      permissionDecision: "defer",
+      preventContinuation: true,
+      stopReason: "stop",
+      updatedInput: { command: "changed" },
+    }),
+  ).toEqual({ effectiveArgs: original, stopReason: "stop" })
 })

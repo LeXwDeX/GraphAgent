@@ -40,7 +40,10 @@ describe("ConfigSkillPlugin.Plugin", () => {
         }),
       ).pipe(
         Effect.provideService(Global.Service, Global.Service.of({ ...Global.make(), home: "/home/test" })),
-        Effect.provideService(Location.Service, Location.Service.of(location({ directory }))),
+        Effect.provideService(
+          Location.Service,
+          Location.Service.of(location({ directory }, { projectDirectory: AbsolutePath.make("/repo") })),
+        ),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
@@ -66,6 +69,16 @@ describe("ConfigSkillPlugin.Plugin", () => {
         SkillV2.DirectorySource.make({
           type: "directory",
           path: AbsolutePath.make(path.join("/repo/.opencode", "skills")),
+        }),
+        // Register both standard candidates even when the directories do not
+        // exist yet, so a hook-created skill can be discovered after reload.
+        SkillV2.DirectorySource.make({
+          type: "directory",
+          path: AbsolutePath.make(path.join(directory, ".opencode", "skill")),
+        }),
+        SkillV2.DirectorySource.make({
+          type: "directory",
+          path: AbsolutePath.make(path.join(directory, ".opencode", "skills")),
         }),
         SkillV2.DirectorySource.make({ type: "directory", path: AbsolutePath.make(path.join(directory, "skills")) }),
         SkillV2.DirectorySource.make({

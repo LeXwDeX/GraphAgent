@@ -98,6 +98,35 @@ describe("SessionRunCoordinator", () => {
     ),
   )
 
+  it.effect("preserves a forced rewake when coalescing with an ordinary wake", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const followUp = yield* Deferred.make<void>()
+        const forces: boolean[] = []
+        const coordinator = yield* SessionRunCoordinator.make<string, never>({
+          drain: (_key, force) =>
+            Effect.sync(() => forces.push(force)).pipe(
+              Effect.flatMap(() =>
+                forces.length === 1
+                  ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                  : Deferred.succeed(followUp, undefined),
+              ),
+            ),
+        })
+
+        yield* coordinator.wake("session")
+        yield* Deferred.await(started)
+        yield* coordinator.wake("session")
+        yield* coordinator.wake("session", true)
+        yield* Deferred.succeed(release, undefined)
+        yield* Deferred.await(followUp)
+        expect(forces).toEqual([false, true])
+      }),
+    ),
+  )
+
   it.effect("runs again when woken during the follow-up", () =>
     Effect.scoped(
       Effect.gen(function* () {

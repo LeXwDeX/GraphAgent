@@ -19,7 +19,7 @@ import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
-import { awaitWithTimeout, testEffect } from "../lib/effect"
+import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -1607,3 +1607,183 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
     { config: cfg },
   ),
 )
+
+const displayLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    organizer: () => Effect.succeed(undefined),
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "display-first" }),
+        LLMEvent.textDelta({ id: "display-first", text: "alpha" }),
+        LLMEvent.textEnd({ id: "display-first" }),
+        LLMEvent.textStart({ id: "display-second" }),
+        LLMEvent.textDelta({ id: "display-second", text: "beta\nlast" }),
+        LLMEvent.textEnd({ id: "display-second" }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ),
+  }),
+)
+const displayIt = testEffect(
+  LayerNode.buildLayer(root, {
+    replacements: [...replacements, LayerNode.replace(LLM.node, displayLLM)],
+  }),
+)
+for (const mode of ["interactive", "noninteractive"] as const) {
+  displayIt.live(`MessageDisplay holds cross-part lines in their original display position (${mode})`, () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "hi")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const model = yield* provider.getModel(ref.providerID, ref.modelID)
+          const calls: Array<{ delta: string; index: number; final: boolean }> = []
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model,
+            displayMode: mode,
+            onTextDisplay: (batch) =>
+              Effect.sync(() => {
+                calls.push(batch)
+                return batch.delta.toUpperCase()
+              }),
+          })
+          yield* handle.process({
+            user: parent as SessionV1.User,
+            sessionID: chat.id,
+            model,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "hi" }],
+            tools: {},
+          })
+          const parts = (yield* MessageV2.parts(msg.id)).filter(
+            (part): part is SessionV1.TextPart => part.type === "text",
+          )
+          expect(parts.map((part) => part.text)).toEqual(["alpha", "beta\nlast"])
+          expect(parts.map((part) => part.displayText)).toEqual(
+            mode === "interactive" ? ["ALPHABETA\n", "LAST"] : ["ALPHABETA\nLAST", ""],
+          )
+          expect(calls).toEqual(
+            mode === "interactive"
+              ? [
+                  { delta: "alphabeta\n", index: 0, final: false },
+                  { delta: "last", index: 1, final: true },
+                ]
+              : [{ delta: "alphabeta\nlast", index: 0, final: true }],
+          )
+        }),
+      { config: cfg },
+    ),
+  )
+}
+
+for (const mode of ["interactive", "noninteractive"] as const) {
+  it.live(`MessageDisplay finalizes partial text once after cancellation (${mode})`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          yield* llm.push(reply().text("partial tail").hang())
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "cancel display")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const model = yield* provider.getModel(ref.providerID, ref.modelID)
+          const calls: Array<{ delta: string; index: number; final: boolean }> = []
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model,
+            displayMode: mode,
+            onTextDisplay: (batch) =>
+              Effect.sync(() => {
+                calls.push(batch)
+                return batch.delta.toUpperCase()
+              }),
+          })
+          const events = yield* EventV2Bridge.Service
+          let textArrived = false
+          const off = yield* events.listen((event) =>
+            Effect.sync(() => {
+              if (event.type !== MessageV2.Event.PartDelta.type) return
+              const data = Schema.decodeUnknownSync(MessageV2.Event.PartDelta.data)(event.data)
+              if (data.messageID === msg.id && data.delta === "partial tail") textArrived = true
+            }),
+          )
+          yield* Effect.addFinalizer(() => off)
+          const work = yield* handle
+            .process({
+              user: parent as SessionV1.User,
+              sessionID: chat.id,
+              model,
+              agent: agent(),
+              system: [],
+              messages: [{ role: "user", content: "cancel display" }],
+              tools: {},
+            })
+            .pipe(Effect.forkChild)
+          yield* pollWithTimeout(
+            Effect.sync(() => (textArrived ? true : undefined)),
+            "partial output did not arrive",
+          )
+          yield* Fiber.interrupt(work)
+          const parts = (yield* MessageV2.parts(msg.id)).filter(
+            (part): part is SessionV1.TextPart => part.type === "text",
+          )
+          expect(parts.map((part) => part.text).join("")).toBe("partial tail")
+          expect(parts.map((part) => part.displayText).join("")).toBe("PARTIAL TAIL")
+          expect(calls).toEqual([{ delta: "partial tail", index: 0, final: true }])
+          expect(handle.message.error?.name).toBe("MessageAbortedError")
+        }),
+      { config: providerCfg },
+    ),
+  )
+  it.live(`MessageDisplay emits only accepted text after a provider retry (${mode})`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          yield* llm.error(429, { type: "error", error: { type: "too_many_requests" } })
+          yield* llm.text("after retry")
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "retry display")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const model = yield* provider.getModel(ref.providerID, ref.modelID)
+          const calls: Array<{ delta: string; index: number; final: boolean }> = []
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model,
+            displayMode: mode,
+            onTextDisplay: (batch) =>
+              Effect.sync(() => {
+                calls.push(batch)
+                return batch.delta.toUpperCase()
+              }),
+          })
+          yield* handle.process({
+            user: parent as SessionV1.User,
+            sessionID: chat.id,
+            model,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "retry display" }],
+            tools: {},
+          })
+          const parts = (yield* MessageV2.parts(msg.id)).filter(
+            (part): part is SessionV1.TextPart => part.type === "text",
+          )
+          expect(parts.map((part) => part.text).join("")).toBe("after retry")
+          expect(parts.map((part) => part.displayText).join("")).toBe("AFTER RETRY")
+          expect(calls).toEqual([{ delta: "after retry", index: 0, final: true }])
+          expect(yield* llm.calls).toBe(2)
+        }),
+      { config: providerCfg },
+    ),
+  )
+}

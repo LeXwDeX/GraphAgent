@@ -5,6 +5,8 @@ import type {
   SessionsCreateOutput,
   SessionsGetInput,
   SessionsGetOutput,
+  SessionsAttentionInput,
+  SessionsAttentionOutput,
   SessionsSwitchAgentInput,
   SessionsSwitchAgentOutput,
   SessionsSwitchModelInput,
@@ -13,6 +15,10 @@ import type {
   SessionsPromptOutput,
   SessionsCompactInput,
   SessionsCompactOutput,
+  SessionsResumeInput,
+  SessionsResumeOutput,
+  SessionsInterruptInput,
+  SessionsInterruptOutput,
   SessionsWaitInput,
   SessionsWaitOutput,
   SessionsStageInput,
@@ -203,6 +209,24 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ).then((value) => value.data),
+      attention: (input: SessionsAttentionInput, requestOptions?: RequestOptions) =>
+        request<SessionsAttentionOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/attention`,
+            body: {
+              clientID: input.clientID,
+              clientType: input.clientType,
+              activity: input.activity,
+              backgroundView: input.backgroundView,
+              closed: input.closed,
+            },
+            successStatus: 204,
+            declaredStatuses: [404, 503, 400, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
       switchAgent: (input: SessionsSwitchAgentInput, requestOptions?: RequestOptions) =>
         request<SessionsSwitchAgentOutput>(
           {
@@ -232,7 +256,13 @@ export function make(options: ClientOptions) {
           {
             method: "POST",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/prompt`,
-            body: { id: input.id, prompt: input.prompt, delivery: input.delivery, resume: input.resume },
+            body: {
+              id: input.id,
+              prompt: input.prompt,
+              hookMode: input.hookMode,
+              delivery: input.delivery,
+              resume: input.resume,
+            },
             successStatus: 200,
             declaredStatuses: [409, 404, 400, 401],
             empty: false,
@@ -246,6 +276,28 @@ export function make(options: ClientOptions) {
             path: `/api/session/${encodeURIComponent(input.sessionID)}/compact`,
             successStatus: 204,
             declaredStatuses: [404, 503, 400, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
+      resume: (input: SessionsResumeInput, requestOptions?: RequestOptions) =>
+        request<SessionsResumeOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/resume`,
+            successStatus: 204,
+            declaredStatuses: [404, 400, 500, 401],
+            empty: true,
+          },
+          requestOptions,
+        ),
+      interrupt: (input: SessionsInterruptInput, requestOptions?: RequestOptions) =>
+        request<SessionsInterruptOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/interrupt`,
+            successStatus: 204,
+            declaredStatuses: [404, 400, 401],
             empty: true,
           },
           requestOptions,

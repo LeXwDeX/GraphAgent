@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
+import { SettingsHook } from "@/hook/settings"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import path from "path"
 import { Effect, FileSystem, Layer } from "effect"
@@ -8,12 +10,11 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 
 import { Instruction } from "../../src/session/instruction"
-import type { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Global } from "@opencode-ai/core/global"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { provideInstance, provideTmpdirInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -254,3 +255,52 @@ describe("Instruction.systemPaths global config", () => {
     }),
   )
 })
+
+it.live(
+  "InstructionsLoaded without handlers keeps raw triggers but creates no environment file or nested snapshot",
+  () =>
+    withFiles({ "AGENTS.md": "# Root", "subdir/AGENTS.md": "# Nested", "subdir/file.ts": "fixture" }, (dir) =>
+      Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const sessionID = SessionID.descending()
+        const messages = loaded("unrelated-instruction.md")
+        messages[0].info.sessionID = sessionID
+        const events: string[] = []
+        const program = Effect.gen(function* () {
+          yield* svc.system({ sessionID, transcriptPath: "unused-no-handler-path" })
+          const nested = yield* svc.resolve(messages, path.join(dir, "subdir/file.ts"), MessageID.ascending())
+          expect(nested).toHaveLength(1)
+        }).pipe(
+          Effect.provide(
+            Layer.mock(SettingsHook.Service, {
+              hasEvent: () => Effect.succeed(false),
+              trigger: (payload) =>
+                Effect.sync(() => {
+                  events.push(payload.event)
+                  return { additionalContexts: [], systemMessages: [] }
+                }),
+            }),
+          ),
+        )
+        yield* program
+        // Background observation: wait for both raw triggers instead of assuming they ran before return.
+        yield* pollWithTimeout(
+          Effect.sync(() => (events.length >= 2 ? true : undefined)),
+          "InstructionsLoaded raw triggers were not observed",
+          "5 seconds",
+        )
+        expect(events).toEqual(["InstructionsLoaded", "InstructionsLoaded"])
+        const hash = createHash("sha256").update(sessionID).digest("hex")
+        expect(
+          yield* Effect.promise(() =>
+            Bun.file(path.join(Global.Path.data, "hooks/environment", hash + ".sh")).exists(),
+          ),
+        ).toBe(false)
+        expect(
+          yield* Effect.promise(() =>
+            Bun.file(path.join(Global.Path.data, "hooks/transcripts", hash + ".jsonl")).exists(),
+          ),
+        ).toBe(false)
+      }),
+    ),
+)

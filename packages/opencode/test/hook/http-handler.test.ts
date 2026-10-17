@@ -10,8 +10,7 @@ import { testEffect } from "../lib/effect"
 
 // httpHandler runtime contract against a real local server: configured
 // entry.headers MUST reach the wire (auth tokens were silently dropped before
-// this fix), and non-2xx responses MUST surface as the synthetic exitBlock so
-// the trigger aggregator reports a block.
+// this fix). A non-2xx response follows the handler's onFailure policy.
 
 const testLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
@@ -113,7 +112,7 @@ describe("SettingsHook http handler", () => {
     }),
   )
 
-  it.instance("non-2xx response surfaces as exitBlock", () =>
+  it.instance("non-2xx response continues by default and blocks when configured", () =>
     Effect.gen(function* () {
       const sessionHooks = yield* SessionHooks.Service
       const hook = yield* SettingsHook.Service
@@ -130,8 +129,16 @@ describe("SettingsHook http handler", () => {
               { event: "UserPromptSubmit", prompt: "hi" },
               { sessionID, transcriptPath: "" },
             )
-            expect(r.blocked).toBeDefined()
-            expect(r.blocked?.reason).toContain("500")
+            expect(r.blocked).toBeUndefined()
+            yield* sessionHooks.add(sessionID, {
+              event: "UserPromptSubmit",
+              hooks: [{ type: "http", url, onFailure: "block" }],
+            })
+            const blocked = yield* hook.trigger(
+              { event: "UserPromptSubmit", prompt: "hi" },
+              { sessionID, transcriptPath: "" },
+            )
+            expect(blocked.blocked?.reason).toContain("500")
           }),
       )
     }),

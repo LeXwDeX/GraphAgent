@@ -72,6 +72,7 @@ const it = testEffect(
       Layer.succeed(
         Skill.Service,
         Skill.Service.of({
+          reload: () => Effect.void,
           get: (name) => Effect.succeed(skills.find((skill) => skill.name === name)),
           require: (name) => {
             const info = skills.find((skill) => skill.name === name)
@@ -222,6 +223,7 @@ const integrationLayer = Layer.mergeAll(
       Layer.succeed(
         Skill.Service,
         Skill.Service.of({
+          reload: () => Effect.void,
           get: () => Effect.succeed(undefined),
           require: (name) => Effect.fail(new Skill.NotFoundError({ name, available: [] })),
           all: () => Effect.succeed(skills),

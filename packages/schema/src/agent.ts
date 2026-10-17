@@ -21,6 +21,7 @@ export const Info = Schema.Struct({
   model: Model.Ref.pipe(Schema.optional),
   request: Provider.Request,
   system: Schema.String.pipe(Schema.optional),
+  hooks: Schema.Record(Schema.String, Schema.Any).pipe(Schema.optional),
   description: Schema.String.pipe(Schema.optional),
   mode: Schema.Literals(["subagent", "primary", "all"]),
   hidden: Schema.Boolean,

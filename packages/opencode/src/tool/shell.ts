@@ -1,3 +1,4 @@
+import { HookTranscript } from "@/hook/transcript"
 import { Effect, Fiber, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
@@ -303,6 +304,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
       cwd,
       env,
+      extendEnv: false,
       stdin: "ignore",
       detached: false,
       stdout: "pipe",
@@ -314,6 +316,7 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     shell,
     cwd,
     env,
+    extendEnv: false,
     stdin: "ignore",
     detached: process.platform !== "win32",
     stdout: "pipe",
@@ -432,10 +435,11 @@ export const ShellTool = Tool.define(
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
         { env: {} },
       )
-      return {
-        ...process.env,
-        ...extra.env,
-      }
+      const base = { ...process.env, ...extra.env }
+      return HookTranscript.applyEnvironment(
+        base,
+        yield* HookTranscript.environment(ctx.sessionID, undefined, base).pipe(Effect.orDie),
+      )
     })
 
     const run = Effect.fn("ShellTool.run")(function* (

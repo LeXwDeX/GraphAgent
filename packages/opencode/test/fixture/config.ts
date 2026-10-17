@@ -8,6 +8,7 @@ export function make(overrides: Partial<Config.Interface> = {}) {
     getGlobal: () => Effect.succeed({}),
     getConsoleState: () => Effect.succeed(emptyConsoleState),
     update: () => Effect.void,
+    updateHookPermissions: () => Effect.succeed({}),
     updateGlobal: (config) => Effect.succeed({ info: config, changed: false }),
     invalidate: () => Effect.void,
     directories: () => Effect.succeed([]),

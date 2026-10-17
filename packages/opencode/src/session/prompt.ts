@@ -1,3 +1,12 @@
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
+import { randomUUID } from "node:crypto"
+import { Question } from "@/question"
+import { HookToolBatch } from "@/hook/tool-batch"
+import { HookSessionContext } from "@/hook/session-context"
+import { HookLifecycle } from "@/hook/lifecycle"
+import { SessionAttention } from "@/notification/attention"
+import { HookModelMetrics } from "@/hook/model-metrics"
+import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Logging } from "@opencode-ai/core/observability/logging"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import {
@@ -9,7 +18,6 @@ import {
 } from "@opencode-ai/core/session/reasoning-distillation"
 import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-distillation"
 import { adoptReasoning } from "./reasoning-adoption"
-import { withHookFeedback } from "@/hook/trigger-result"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
@@ -43,7 +51,7 @@ import { Session } from "./session"
 import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
 
-import { type Tool as AITool, tool, jsonSchema } from "ai"
+import { type Tool as AITool, tool, jsonSchema, asSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
@@ -75,7 +83,21 @@ import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
-import { Cause, Deferred, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Latch,
+  Layer,
+  Option,
+  Scope,
+  Context,
+  Schema,
+  Struct,
+  Types,
+} from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
@@ -96,11 +118,15 @@ import { TodoReminders } from "./todo-reminders"
 import { SessionTools } from "./tools"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { LLMEvent } from "@opencode-ai/llm"
-import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult } from "@/hook/settings"
+import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult, type HookPayload } from "@/hook/settings"
 import { TaskSubagents } from "@/hook/task-subagents"
-import { applyPreHookDecision } from "@/hook/pre-hook-decision"
+import { BackgroundJob } from "@/background/job"
+import { DagStore } from "@opencode-ai/core/dag/store"
+import { HookTurnContext } from "@/hook/turn-context"
 import { dispatchTrust } from "@/hook/workspace-trust"
 import { HookStartContext } from "@/hook/start-context"
+import { HookTranscript } from "@/hook/transcript"
+import { Skill } from "@/skill"
 import { HookRewake } from "@/hook/rewake"
 import { Goal } from "@/goal/goal"
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
@@ -155,6 +181,15 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 export interface AdmissionOptions {
   /** Internal follow-ups retain the current input's tool budget. */
   readonly continueToolBudget?: boolean
+  /** A previously persisted followup is already past initial-hook admission. */
+  readonly skipHookStart?: boolean
+  /**
+   * Task and DAG runtimes feeding their own child session (initial prompt, Stop continuation, nudge, recovery).
+   * Such input is not a user submission, so UserPromptSubmit does not run. Never part of a public body: only
+   * runtime callers set it, and a persisted hook followup carries it in `HookPendingInput.internalDelegation`.
+   * A report back to a parent session, a DAG wake, a goal continuation and agent messages are not delegation.
+   */
+  readonly internalDelegation?: true
   /**
    * Opaque SettingsHook stop-chain token riding on an async Stop-hook rewake.
    * When set, admission re-validates the chain before commit and the run path
@@ -167,7 +202,7 @@ export interface AdmissionOptions {
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
-  readonly prompt: (input: PromptInput, options?: AdmissionOptions) => Effect.Effect<SessionV1.WithParts, Image.Error>
+  readonly prompt: (input: PromptInput, options?: AdmissionOptions) => Effect.Effect<SessionV1.WithParts, PromptError>
   /** Run a short commit while idle, serialized with prompt admission. Never start or await a turn here. */
   readonly withIdle: <A, E, R>(
     sessionID: SessionID,
@@ -177,14 +212,25 @@ export interface Interface {
     input: PromptInput,
     persistAdmission?: Effect.Effect<void>,
     options?: AdmissionOptions,
-  ) => Effect.Effect<Option.Option<IdleAdmission>, Image.Error>
+  ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
   readonly promptIfIdle: (
     input: PromptInput,
     options?: AdmissionOptions,
-  ) => Effect.Effect<Option.Option<SessionV1.WithParts>, Image.Error>
+  ) => Effect.Effect<Option.Option<SessionV1.WithParts>, PromptError>
+  readonly setModel: (input: SetModelInput) => Effect.Effect<typeof ModelRef.Type, ModelSwitchBlocked>
+  /** Drain guidance only for the actual target model at a provider request boundary. */
+  readonly restoreModelContext: (sessionID: SessionID) => Effect.Effect<void>
+  readonly takeModelSwitchContext: (input: {
+    sessionID: SessionID
+    apiModelID: string
+  }) => Effect.Effect<readonly string[]>
+  readonly resume: (
+    input: ResumeInput,
+    options?: Pick<AdmissionOptions, "internalDelegation">,
+  ) => Effect.Effect<SessionV1.WithParts | null, PromptError | NoPendingHookInput>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
-  readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
+  readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, PromptError>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
   readonly editQueuedMessage: (input: QueuedMessageEditInput) => Effect.Effect<SessionV1.WithParts, QueuedMessageError>
   readonly deleteQueuedMessage: (input: QueuedMessageDeleteInput) => Effect.Effect<boolean, QueuedMessageError>
@@ -210,6 +256,15 @@ export const QueuedMessageDeleteInput = Schema.Struct({
   ...QueuedMessageExpected.fields,
 })
 export type QueuedMessageDeleteInput = typeof QueuedMessageDeleteInput.Type
+
+export class ModelSwitchBlocked extends Schema.TaggedErrorClass<ModelSwitchBlocked>()("ModelSwitchBlocked", {
+  message: Schema.String,
+}) {}
+export type PromptError = Image.Error | ModelSwitchBlocked | NoPendingHookInput
+
+export class NoPendingHookInput extends Schema.TaggedErrorClass<NoPendingHookInput>()("NoPendingHookInput", {
+  message: Schema.String,
+}) {}
 
 export class QueuedMessageNotFound extends Schema.TaggedErrorClass<QueuedMessageNotFound>()("QueuedMessageNotFound", {
   messageID: MessageID,
@@ -385,6 +440,8 @@ export const layer = Layer.effect(
           : message,
       )
     })
+    const backgroundJobs = yield* BackgroundJob.Service
+    const workflowStore = yield* DagStore.Service
     const agentMessages = Option.getOrUndefined(yield* Effect.serviceOption(DagMessages.Service))
     const { db } = database
     const rawSettingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
@@ -394,16 +451,174 @@ export const layer = Layer.effect(
         prompt({ sessionID, parts: [{ type: "text", text }] }, { continueToolBudget: true, stopChainToken: stopChain }),
       ),
     )
+    const hasSettingsEvent = Effect.fnUntraced(function* (
+      event: HookPayload["event"],
+      sessionID: string,
+      childSessionID?: string,
+    ) {
+      if (!rawSettingsHook?.hasEvent) return true
+      if (yield* rawSettingsHook.hasEvent(event, sessionID)) return true
+      return event === "SubagentStop" && !!childSessionID && (yield* rawSettingsHook.hasEvent(event, childSessionID))
+    })
     const settingsHook: SettingsHook.Interface | undefined = rawSettingsHook && {
       ...rawSettingsHook,
       trigger: (payload, context) =>
-        rawSettingsHook
-          .trigger(payload, context)
-          .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(rewake, current))),
+        Effect.gen(function* () {
+          const configured = yield* hasSettingsEvent(
+            payload.event,
+            context.sessionID,
+            payload.event === "SubagentStop" ? payload.agentID : undefined,
+          )
+          // The raw trigger also owns lifecycle cleanup when no hook matches.
+          if (!configured) return yield* rawSettingsHook.trigger(payload, context)
+          const instance = yield* InstanceState.context
+          const messages = yield* sessions.messages({ sessionID: SessionID.make(context.sessionID) }).pipe(Effect.orDie)
+          const transcriptPath = yield* HookTranscript.materialize({
+            sessionID: context.sessionID,
+            directory: instance.directory,
+            messages,
+          }).pipe(Effect.orDie)
+          const environmentFile = yield* HookTranscript.environmentFile(context.sessionID).pipe(Effect.orDie)
+          const policy = yield* permission.hookPolicy(context.sessionID)
+          const permissionMode = policy.mode === "manual" ? "default" : policy.mode
+          return yield* rawSettingsHook.trigger(payload, {
+            ...context,
+            transcriptPath,
+            environmentFile,
+            environment: yield* HookTranscript.environment(context.sessionID).pipe(Effect.orDie),
+            ...(permissionMode ? { permissionMode } : {}),
+          })
+        }).pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(rewake, current))),
     }
+    // PostToolBatch for one assistant message's settled tool calls. Returns true when a hook stopped the turn.
+    // Feedback is hidden model context attached to the turn's user message as synthetic parts.
+    const postToolBatch = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      batch: readonly SessionV1.ToolPart[]
+      feedbackMessageID: MessageID
+    }) {
+      if (!settingsHook) return false
+      const afterBatch = yield* settingsHook.trigger(
+        {
+          event: "PostToolBatch",
+          toolCalls: input.batch.map((part) => ({
+            toolName: part.tool,
+            toolInput: part.state.input,
+            toolUseID: part.callID,
+            toolResponse:
+              part.state.status === "completed"
+                ? part.state.output
+                : part.state.status === "error"
+                  ? part.state.error
+                  : "",
+          })),
+        },
+        { sessionID: input.sessionID, transcriptPath: "" },
+      )
+      yield* SettingsHook.landSystemMessages(afterBatch, { sessionID: input.sessionID })
+      const feedback = [...afterBatch.additionalContexts]
+      const stop = !!(afterBatch.blocked || afterBatch.preventContinuation)
+      if (stop) feedback.push(afterBatch.stopReason ?? afterBatch.blocked?.reason ?? "Hook requested stop")
+      for (const text of feedback) {
+        yield* sessions.updatePart({
+          id: PartID.ascending(),
+          messageID: input.feedbackMessageID,
+          sessionID: input.sessionID,
+          type: "text",
+          text,
+          synthetic: true,
+        })
+      }
+      return stop
+    })
+    const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
+    const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
+    const hookSkills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
+    const hookQuestions = Option.getOrUndefined(yield* Effect.serviceOption(Question.Service))
     const startContext = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const goal = Option.getOrUndefined(yield* Effect.serviceOption(Goal.Service))
+    const modelSwitches = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        const pending = new Map<SessionID, { target: string; fiber: Fiber.Fiber<TriggerResult> }>()
+        yield* Effect.acquireRelease(
+          events.listen((event) =>
+            Effect.gen(function* () {
+              if (event.type !== Session.Event.Deleted.type) return
+              const data = event.data
+              if (typeof data !== "object" || data === null || !("info" in data)) return
+              if (
+                typeof data.info !== "object" ||
+                data.info === null ||
+                !("id" in data.info) ||
+                typeof data.info.id !== "string"
+              )
+                return
+              const id = SessionID.make(data.info.id)
+              const entry = pending.get(id)
+              pending.delete(id)
+              if (entry) yield* Fiber.interrupt(entry.fiber)
+            }),
+          ),
+          (unsubscribe) => unsubscribe,
+        )
+        return pending
+      }),
+    )
+    const queueModelSwitch = Effect.fn("SessionPrompt.queueModelSwitch")(function* (
+      sessionID: SessionID,
+      payload: Extract<HookPayload, { event: "PreModelSwitch" | "PostModelSwitch" }>,
+    ) {
+      if (!settingsHook) return
+      const pending = yield* InstanceState.get(modelSwitches)
+      const prior = pending.get(sessionID)
+      if (prior) yield* Fiber.interrupt(prior.fiber)
+      const fiber = yield* settingsHook
+        .trigger({ ...payload, event: "PostModelSwitch" }, { sessionID, transcriptPath: "" })
+        .pipe(
+          Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
+          Effect.forkIn(scope),
+        )
+      pending.set(sessionID, { target: payload.toModel, fiber })
+    })
+    const modelSwitchContext = Effect.fn("SessionPrompt.modelSwitchContext")(function* (
+      sessionID: SessionID,
+      apiModelID: string,
+    ) {
+      const pending = yield* InstanceState.get(modelSwitches)
+      const entry = pending.get(sessionID)
+      if (!entry || entry.target !== apiModelID) return [] as string[]
+      const result = yield* Fiber.join(entry.fiber).pipe(Effect.timeoutOption("5 seconds"))
+      if (Option.isNone(result) || pending.get(sessionID) !== entry) return [] as string[]
+      pending.delete(sessionID)
+      yield* SettingsHook.landSystemMessages(result.value, { sessionID })
+      return result.value.additionalContexts
+    })
+    const scopedAgents = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, string>()))
+    const activateAgentHooks = Effect.fn("SessionPrompt.activateAgentHooks")(function* (
+      session: Session.Info,
+      name?: string,
+    ) {
+      if (!settingsHook?.registerScoped) return
+      const selected = name ? yield* agents.get(name) : yield* agents.defaultInfo()
+      if (!selected) return
+      const origin = selected.hookOrigin ? `agent:${selected.hookOrigin}` : `agent-config:${selected.name}`
+      const active = yield* InstanceState.get(scopedAgents)
+      const previous = active.get(session.id)
+      if (previous && (previous !== origin || selected.hooks === undefined) && settingsHook.unregisterScoped)
+        yield* settingsHook.unregisterScoped(session.id, previous)
+      if (selected.hooks !== undefined) {
+        yield* settingsHook.registerScoped(session.id, {
+          kind: "agent",
+          origin,
+          source: selected.hookSource,
+          hooks: selected.hooks,
+          child: !!session.parentID,
+        })
+        active.set(session.id, origin)
+      } else active.delete(session.id)
+    })
     const promptLocks = KeyedMutex.makeUnsafe<SessionID>()
+    const followupAdmissions = yield* InstanceState.make(() => Effect.sync(SessionAdmission.make))
     const toolBudgets = yield* InstanceState.make(() =>
       Effect.gen(function* () {
         const budgets = new Map<SessionID, { active?: ToolBudget.Budget; pending: Map<MessageID, ToolBudget.Budget> }>()
@@ -601,36 +816,63 @@ export const layer = Layer.effect(
     })
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
-      yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
-      yield* Effect.logInfo("cancel", { "session.id": sessionID })
-      // A user abort invalidates any pending async Stop-hook rewake chain;
-      // otherwise a callback completing afterwards would silently restart the
-      // cancelled session. Lock-free on purpose: admission can block for a
-      // long time inside the prompt lock (hook gates), so cancel must always
-      // make progress. Stale rewakes are fenced in admitPrompt (pre-commit
-      // and post-commit) and again on the run path before runLoop.
-      // Invalidation failure must never block the cancel itself.
-      if (settingsHook?.invalidateStopRewakeChain) {
-        yield* settingsHook.invalidateStopRewakeChain(sessionID).pipe(Effect.ignore)
-      }
-      // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
-      // working on the goal", not just "stop this turn". Without this, the idle
-      // event after cancel re-enters afterIdle, shouldPreempt returns false (the
-      // last user message is the /goal command itself, necessarily older than
-      // this turn's assistant output), and the judge auto-resurrects the goal
-      // with a continuation the user just tried to abort. Pause instead.
-      if (goal && (yield* goal.isTurnDriven(sessionID))) {
-        yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
-      }
-      if (agentMessages) {
-        const context = yield* InstanceState.context
-        const identity = { projectID: context.project.id, directory: context.directory, sessionID }
-        const input = yield* agentMessages.revisions(identity)
-        if (input.ok && input.value.snapshotID)
-          yield* agentMessages.markStopped(identity, input.value.snapshotID, "cancelled")
-        yield* agentMessages.discardPending(identity, "cancelled")
-      }
-      yield* state.cancel(sessionID)
+      const admissions = yield* InstanceState.get(followupAdmissions)
+      return yield* admissions.cancel(
+        sessionID,
+        Effect.gen(function* () {
+          yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
+          yield* Effect.logInfo("cancel", { "session.id": sessionID })
+          // Explicit cancellation abandons a supplied followup. Crash/restart recovery
+          // keeps it, but cancel must not make a later prompt replay or reject it.
+          // This short transaction runs before any cancellation wait and clears only
+          // the input present now; a later admission can persist its own followup.
+          yield* db
+            .transaction(
+              () =>
+                Effect.gen(function* () {
+                  const target = yield* sessions.get(sessionID).pipe(Effect.option)
+                  if (Option.isNone(target) || target.value.metadata?.hookPendingInput === undefined) return
+                  const metadata = { ...target.value.metadata }
+                  delete metadata.hookPendingInput
+                  yield* sessions.setMetadata({ sessionID, metadata })
+                }),
+              { behavior: "immediate" },
+            )
+            .pipe(Effect.orDie)
+          // A user abort invalidates any pending async Stop-hook rewake chain;
+          // otherwise a callback completing afterwards would silently restart the
+          // cancelled session. Lock-free on purpose: admission can block for a
+          // long time inside the prompt lock (hook gates), so cancel must always
+          // make progress. Stale rewakes are fenced in admitPrompt (pre-commit
+          // and post-commit) and again on the run path before runLoop.
+          // Invalidation failure must never block the cancel itself.
+          if (settingsHook?.invalidateStopRewakeChain) {
+            yield* settingsHook.invalidateStopRewakeChain(sessionID).pipe(Effect.ignore)
+          }
+          const pendingSwitches = yield* InstanceState.get(modelSwitches)
+          const pendingSwitch = pendingSwitches.get(sessionID)
+          pendingSwitches.delete(sessionID)
+          if (pendingSwitch) yield* Fiber.interrupt(pendingSwitch.fiber)
+          // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
+          // working on the goal", not just "stop this turn". Without this, the idle
+          // event after cancel re-enters afterIdle, shouldPreempt returns false (the
+          // last user message is the /goal command itself, necessarily older than
+          // this turn's assistant output), and the judge auto-resurrects the goal
+          // with a continuation the user just tried to abort. Pause instead.
+          if (goal && (yield* goal.isTurnDriven(sessionID))) {
+            yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
+          }
+          if (agentMessages) {
+            const context = yield* InstanceState.context
+            const identity = { projectID: context.project.id, directory: context.directory, sessionID }
+            const input = yield* agentMessages.revisions(identity)
+            if (input.ok && input.value.snapshotID)
+              yield* agentMessages.markStopped(identity, input.value.snapshotID, "cancelled")
+            yield* agentMessages.discardPending(identity, "cancelled")
+          }
+          yield* state.cancel(sessionID)
+        }),
+      )
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -730,7 +972,7 @@ export const layer = Layer.effect(
       if (!cleaned) return
       const t = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
       yield* sessions
-        .setTitle({ sessionID: input.session.id, title: t })
+        .setTitle({ sessionID: input.session.id, title: t, source: "generated" })
         .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
     })
 
@@ -745,7 +987,6 @@ export const layer = Layer.effect(
       const { task, model, lastUser, sessionID, session, msgs } = input
       const ctx = yield* InstanceState.context
       const promptOps = yield* ops()
-      const { task: taskTool } = yield* registry.named()
       const taskModel = task.model ? yield* getModel(task.model.providerID, task.model.modelID, sessionID) : model
       const assistantMessage: SessionV1.Assistant = yield* sessions.updateMessage({
         id: MessageID.ascending(),
@@ -786,181 +1027,86 @@ export const layer = Layer.effect(
         subagent_type: task.agent,
         command: task.command,
       }
-      yield* plugin.trigger(
-        "tool.execute.before",
-        { tool: TaskTool.id, sessionID, callID: part.id },
-        { args: taskArgs },
-      )
-
-      // SettingsHook: PreToolUse for task tool
-      if (settingsHook) {
-        const preResult = yield* settingsHook
-          .trigger({ event: "PreToolUse", toolName: TaskTool.id, toolInput: taskArgs, toolUseID: part.callID } as any, {
-            sessionID,
-            transcriptPath: "",
-          })
-          .pipe(
-            Effect.catch(() =>
-              Effect.succeed({
-                blocked: undefined,
-                permissionDecision: undefined as "allow" | "deny" | "ask" | undefined,
-                permissionDecisionReason: undefined as string | undefined,
-              } as any),
-            ),
-          )
-        yield* SettingsHook.landSystemMessages(preResult as TriggerResult, { sessionID })
-        const decision = applyPreHookDecision(taskArgs, preResult)
-        // deny / blocked → error part
-        if (decision.deniedReason) {
-          if (part.state.status === "running") {
-            part = yield* sessions.updatePart({
-              ...part,
-              state: {
-                ...part.state,
-                status: "error",
-                error: decision.deniedReason,
-                time: { ...part.state.time, end: Date.now() },
-              },
-            } satisfies SessionV1.ToolPart)
-          }
-          return { info: assistantMessage, parts: [part] }
-        }
-        // preventContinuation → stop; reflect the stop message as the part output so the agent sees it
-        if (decision.stopReason) {
-          if (part.state.status === "running") {
-            part = yield* sessions.updatePart({
-              ...part,
-              state: {
-                ...part.state,
-                status: "error",
-                error: `[Hook stopped] ${decision.stopReason}`,
-                time: { ...part.state.time, end: Date.now() },
-              },
-            } satisfies SessionV1.ToolPart)
-          }
-          return { info: assistantMessage, parts: [part] }
-        }
-        // permissionDecision:"ask" — task-tool dispatch has no permission dialog; degrade to deny.
-        if (preResult.permissionDecision === "ask") {
-          const reason = "Hook requested confirmation but no dialog available"
-          yield* Effect.logWarning("PreToolUse hook asked for confirmation on task-tool path; degrading to deny", {
-            agent: task.agent,
-            reason,
-            hookReason: preResult.permissionDecisionReason,
-          })
-          if (part.state.status === "running") {
-            part = yield* sessions.updatePart({
-              ...part,
-              state: { ...part.state, status: "error", error: reason, time: { ...part.state.time, end: Date.now() } },
-            } satisfies SessionV1.ToolPart)
-          }
-          return { info: assistantMessage, parts: [part] }
-        }
-        // updatedInput → shallow-merge into taskArgs before dispatch
-        if (decision.effectiveArgs !== taskArgs) {
-          Object.assign(taskArgs, decision.effectiveArgs)
-        }
-      }
-
-      const taskAgent = yield* agents.get(task.agent)
-      if (!taskAgent) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
-        const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Agent not found: "${task.agent}".${hint}` })
-        yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
-        throw error
-      }
-
-      let error: Error | undefined
-      const taskAbort = new AbortController()
-      const result = yield* taskTool
-        .execute(taskArgs, {
-          agent: task.agent,
-          messageID: assistantMessage.id,
-          sessionID,
-          abort: taskAbort.signal,
-          callID: part.callID,
-          extra: { bypassAgentCheck: true, promptOps },
-          messages: msgs,
-          metadata: (val: { title?: string; metadata?: Record<string, any> }) =>
+      const parentAgent = yield* agents.get(lastUser.agent)
+      if (!parentAgent) throw new Error(`Agent not found: "${lastUser.agent}"`)
+      const tools = yield* SessionTools.resolve({
+        agent: parentAgent,
+        session,
+        model: taskModel,
+        messages: msgs,
+        promptOps,
+        bypassAgentCheck: true,
+        hooks: settingsHook,
+        sourceLedger: toolSources,
+        processor: {
+          message: assistantMessage,
+          updateToolCall: (_id, update) =>
             Effect.gen(function* () {
+              part = yield* sessions.updatePart(update(part))
+              return part
+            }),
+          completeToolCall: (_id, result) =>
+            Effect.gen(function* () {
+              if (part.state.status !== "running") return
               part = yield* sessions.updatePart({
                 ...part,
-                type: "tool",
-                state: { ...part.state, ...val },
-              } satisfies SessionV1.ToolPart)
-            }),
-          ask: (req: any) =>
-            permission
-              .ask({
-                ...req,
-                sessionID,
-                ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                state: {
+                  status: "completed",
+                  input: part.state.input,
+                  ...result,
+                  time: { ...part.state.time, end: Date.now() },
+                },
               })
-              .pipe(Effect.orDie),
-        })
-        .pipe(
-          Effect.catchCause((cause) => {
-            const defect = Cause.squash(cause)
-            error = defect instanceof Error ? defect : new Error(String(defect))
-            return Effect.logError("subtask execution failed", {
-              error,
-              agent: task.agent,
-              description: task.description,
-            })
-          }),
-          Effect.onInterrupt(() =>
-            Effect.gen(function* () {
-              taskAbort.abort()
-              assistantMessage.finish = "tool-calls"
-              assistantMessage.time.completed = Date.now()
-              yield* sessions.updateMessage(assistantMessage)
-              if (part.state.status === "running") {
-                yield* sessions.updatePart({
-                  ...part,
-                  state: {
-                    status: "error",
-                    error: "Cancelled",
-                    time: { start: part.state.time.start, end: Date.now() },
-                    metadata: part.state.metadata,
-                    input: part.state.input,
-                  },
-                } satisfies SessionV1.ToolPart)
-              }
+            }),
+        },
+      }).pipe(
+        Effect.provideService(Plugin.Service, plugin),
+        Effect.provideService(Permission.Service, permission),
+        Effect.provideService(ToolRegistry.Service, registry),
+        Effect.provideService(MCP.Service, mcp),
+        Effect.provideService(Truncate.Service, truncate),
+      )
+      const callable = tools[TaskTool.id]
+      if (!callable?.execute) throw new Error("Task tool unavailable")
+      let error: Error | undefined
+      const result = yield* Effect.tryPromise({
+        try: (signal) =>
+          Promise.resolve(
+            callable.execute!(taskArgs, {
+              toolCallId: part.callID,
+              messages: [],
+              abortSignal: signal,
             }),
           ),
-        )
-
-      const attachments = result?.attachments?.map((attachment) => ({
-        ...attachment,
-        id: PartID.ascending(),
-        sessionID,
-        messageID: assistantMessage.id,
-      }))
-
-      yield* plugin.trigger(
-        "tool.execute.after",
-        { tool: TaskTool.id, sessionID, callID: part.id, args: taskArgs },
-        result,
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasDies(cause)) return Effect.die(Cause.squash(cause))
+          if (Cause.hasInterrupts(cause)) return Effect.interrupt
+          const failure = Cause.squash(cause)
+          error = failure instanceof Error ? failure : new Error(String(failure))
+          return Effect.succeed(undefined)
+        }),
+        Effect.onInterrupt(() =>
+          Effect.gen(function* () {
+            assistantMessage.finish = "tool-calls"
+            assistantMessage.time.completed = Date.now()
+            yield* sessions.updateMessage(assistantMessage)
+            if (part.state.status === "running")
+              yield* sessions.updatePart({
+                ...part,
+                state: {
+                  status: "error",
+                  error: "Cancelled",
+                  input: part.state.input,
+                  metadata: part.state.metadata,
+                  time: { start: part.state.time.start, end: Date.now() },
+                },
+              })
+          }),
+        ),
       )
-
-      // SettingsHook: PostToolUse for task tool
-      if (settingsHook) {
-        const postResult: any = yield* settingsHook
-          .trigger(
-            {
-              event: "PostToolUse",
-              toolName: TaskTool.id,
-              toolInput: taskArgs,
-              toolResponse: result?.output ?? "",
-              toolUseID: part.callID,
-            } as any,
-            { sessionID, transcriptPath: "" },
-          )
-          .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
-        yield* SettingsHook.landSystemMessages(postResult as TriggerResult, { sessionID })
-        if (result) result.output = withHookFeedback(result.output ?? "", postResult)
-      }
+      const attachments = result?.attachments
 
       assistantMessage.finish = "tool-calls"
       assistantMessage.time.completed = Date.now()
@@ -1109,7 +1255,8 @@ export const layer = Layer.effect(
           let args = Shell.args(sh, effectiveCommand, cwd)
           let output = ""
           let aborted = false
-          let shellHookDenied = false
+          let finalMetadata: Record<string, unknown> = {}
+          let finalAttachments: SessionV1.FilePart[] | undefined
 
           const finish = Effect.uninterruptible(
             Effect.gen(function* () {
@@ -1135,7 +1282,8 @@ export const layer = Layer.effect(
                   time: { ...mutablePart.state.time, end: completed },
                   input: mutablePart.state.input,
                   title: "",
-                  metadata: { output },
+                  metadata: { ...finalMetadata, output },
+                  attachments: finalAttachments,
                   output,
                 }
                 yield* sessions.updatePart(mutablePart)
@@ -1145,131 +1293,121 @@ export const layer = Layer.effect(
 
           const exit = yield* restore(
             Effect.gen(function* () {
-              const shellEnv = yield* plugin.trigger(
-                "shell.env",
-                { cwd, sessionID: input.sessionID, callID: mutablePart.callID },
-                { env: {} },
-              )
-              // SettingsHook: PreToolUse for shell — can deny/block/stop execution or rewrite the command
-              if (settingsHook) {
-                const preResult = yield* settingsHook
-                  .trigger(
-                    {
-                      event: "PreToolUse",
-                      toolName: "bash",
-                      toolInput: { command: input.command },
-                      toolUseID: mutablePart.callID,
-                    } as any,
-                    { sessionID: input.sessionID, transcriptPath: "" },
-                  )
-                  .pipe(
-                    Effect.catch(() =>
-                      Effect.succeed({
-                        blocked: undefined,
-                        permissionDecision: undefined as "allow" | "deny" | "ask" | undefined,
-                        permissionDecisionReason: undefined as string | undefined,
-                      } as any),
-                    ),
-                  )
-                yield* SettingsHook.landSystemMessages(preResult as TriggerResult, { sessionID: input.sessionID })
-                const decision = applyPreHookDecision({ command: input.command }, preResult)
-                // deny / blocked / stop / ask-degrade all skip execution; each surfaces its own message.
-                let skipReason: string | undefined
-                if (decision.deniedReason) {
-                  shellHookDenied = true
-                  skipReason = decision.deniedReason
-                } else if (decision.stopReason) {
-                  shellHookDenied = true
-                  skipReason = `[Hook stopped] ${decision.stopReason}`
-                } else if (preResult.permissionDecision === "ask") {
-                  // Shell dispatch has no permission dialog — degrade ask to deny (design D3).
-                  shellHookDenied = true
-                  skipReason = "Hook requested confirmation but no dialog available"
-                  yield* Effect.logWarning("PreToolUse hook asked for confirmation on shell path; degrading to deny", {
-                    reason: skipReason,
-                    hookReason: preResult.permissionDecisionReason,
-                  })
-                }
-                if (skipReason !== undefined) {
-                  const errorState = {
-                    status: "error" as const,
-                    error: skipReason,
-                    time: { start: (mutablePart.state as any).time?.start ?? Date.now(), end: Date.now() },
-                    input: mutablePart.state.input,
-                  }
-                  mutablePart = yield* sessions.updatePart({
-                    ...mutablePart,
-                    state: errorState as any,
-                  } satisfies SessionV1.ToolPart)
-                } else if (
-                  decision.effectiveArgs.command !== undefined &&
-                  decision.effectiveArgs.command !== input.command
-                ) {
-                  // updatedInput rewrote the command — sync execution (args), TUI display (part.state.input),
-                  // and PostToolUse toolInput (which reads effectiveCommand below). `!== undefined` (not
-                  // truthiness) so a hook that clears the command to "" is honored rather than ignored.
-                  effectiveCommand = decision.effectiveArgs.command as string
-                  args = Shell.args(sh, effectiveCommand, cwd)
-                  mutablePart.state.input = { ...mutablePart.state.input, command: effectiveCommand }
-                  yield* sessions.updatePart(mutablePart)
-                }
-              }
-              if (!shellHookDenied) {
-                const cmd = ChildProcess.make(sh, args, {
-                  cwd,
-                  extendEnv: true,
-                  env: { ...shellEnv.env, TERM: "dumb" },
-                  stdin: "ignore",
-                  forceKillAfter: "3 seconds",
-                })
-                const handle = yield* spawner.spawn(cmd)
-                yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+              const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+              const agent = yield* agents.get(input.agent)
+              if (!agent) throw new Error(`Agent not found: "${input.agent}"`)
+              // Keep explicit-shell spawning and streaming, but use the same
+              // validated hook/permission boundary as model-invoked tools.
+              const definition = {
+                id: "bash",
+                description: "Execute an explicit user shell command",
+                parameters: Schema.Struct({ command: Schema.String }),
+                execute: (parameters: { command: string }, context: import("./tools").DirectToolContext) =>
                   Effect.gen(function* () {
-                    output += chunk
-                    if (mutablePart.state.status === "running") {
-                      mutablePart.state.metadata = { output }
-                      yield* sessions.updatePart(mutablePart)
-                    }
-                  }),
-                )
-                yield* handle.exitCode
-              } // end if (!shellHookDenied)
-            }).pipe(Effect.scoped, Effect.orDie),
+                    yield* context.ask({
+                      permission: "bash",
+                      patterns: [parameters.command],
+                      always: ["*"],
+                      metadata: {},
+                    })
+                    effectiveCommand = parameters.command
+                    args = Shell.args(sh, effectiveCommand, cwd)
+                    const shellEnv = yield* plugin.trigger(
+                      "shell.env",
+                      { cwd, sessionID: input.sessionID, callID: mutablePart.callID },
+                      { env: {} },
+                    )
+                    const baseEnvironment = { ...process.env, ...shellEnv.env }
+                    const sessionEnvironment = HookTranscript.applyEnvironment(
+                      baseEnvironment,
+                      yield* HookTranscript.environment(input.sessionID, undefined, baseEnvironment),
+                    )
+                    const command = ChildProcess.make(sh, args, {
+                      cwd,
+                      extendEnv: false,
+                      env: { ...sessionEnvironment, TERM: "dumb" },
+                      stdin: "ignore",
+                      forceKillAfter: "3 seconds",
+                    })
+                    const handle = yield* spawner.spawn(command)
+                    yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+                      Effect.gen(function* () {
+                        output += chunk
+                        if (mutablePart.state.status === "running") {
+                          mutablePart.state.metadata = { output }
+                          yield* sessions.updatePart(mutablePart)
+                        }
+                      }),
+                    )
+                    const code = yield* handle.exitCode
+                    return { title: "", output, metadata: { output, exit: code } }
+                  }).pipe(Effect.scoped),
+              }
+              const tools = yield* SessionTools.resolve({
+                agent,
+                session,
+                messages: [],
+                promptOps: yield* ops(),
+                bypassAgentCheck: false,
+                hooks: settingsHook,
+                sourceLedger: toolSources,
+                directTool: definition,
+                processor: {
+                  message: msg,
+                  updateToolCall: (_id, update) =>
+                    Effect.gen(function* () {
+                      mutablePart = yield* sessions.updatePart(update(mutablePart))
+                      return mutablePart
+                    }),
+                  completeToolCall: () => Effect.void,
+                },
+              }).pipe(
+                Effect.provideService(Plugin.Service, plugin),
+                Effect.provideService(Permission.Service, permission),
+                Effect.provideService(ToolRegistry.Service, registry),
+                Effect.provideService(MCP.Service, mcp),
+                Effect.provideService(Truncate.Service, truncate),
+              )
+              const result = yield* Effect.tryPromise({
+                try: (signal) =>
+                  Promise.resolve(
+                    tools.bash.execute!(
+                      { command: input.command },
+                      {
+                        toolCallId: mutablePart.callID,
+                        messages: [],
+                        abortSignal: signal,
+                      },
+                    ),
+                  ),
+                catch: (error) => error,
+              })
+              output = result.output
+              finalMetadata = result.metadata
+              finalAttachments = result.attachments
+            }).pipe(Effect.scoped),
           ).pipe(Effect.exit)
 
           if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause) && !Cause.hasDies(exit.cause)) {
             aborted = true
           }
-          yield* finish
-
-          // SettingsHook: PostToolUse for shell command (skip if hook denied)
-          if (settingsHook && !shellHookDenied) {
-            const postResult: any = yield* settingsHook
-              .trigger(
-                {
-                  event: "PostToolUse",
-                  toolName: "bash",
-                  toolInput: { command: effectiveCommand },
-                  toolResponse: output,
-                  toolUseID: mutablePart.callID,
-                } as any,
-                { sessionID: input.sessionID, transcriptPath: "" },
-              )
-              .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
-            yield* SettingsHook.landSystemMessages(postResult as TriggerResult, { sessionID: input.sessionID })
-            const annotated = withHookFeedback(output, postResult)
-            if (annotated !== output) {
-              output = annotated
-              if (mutablePart.state.status === "completed") {
-                mutablePart.state = { ...mutablePart.state, output, metadata: { output } }
-                yield* sessions.updatePart(mutablePart)
-              }
-            }
-          }
-
           if (Exit.isFailure(exit) && !aborted && !Cause.hasInterruptsOnly(exit.cause)) {
-            return yield* Effect.failCause(exit.cause)
+            if (Cause.hasDies(exit.cause)) {
+              yield* finish
+              return yield* Effect.die(Cause.squash(exit.cause))
+            }
+            mutablePart = yield* sessions.updatePart({
+              ...mutablePart,
+              state: {
+                status: "error",
+                input: mutablePart.state.input,
+                error: String(Cause.squash(exit.cause)),
+                time: { start: part.state.status === "running" ? part.state.time.start : Date.now(), end: Date.now() },
+              },
+            })
           }
+
+          yield* finish
 
           return { info: msg, parts: [mutablePart] }
         }),
@@ -1326,6 +1464,142 @@ export const layer = Layer.effect(
       return yield* Effect.die(err)
     })
 
+    const applyModelSwitch = Effect.fn("SessionPrompt.applyModelSwitch")(function* (
+      input: Omit<SetModelInput, "source"> & { source?: "command" | "picker" | "sdk" | "auto" | "resume" },
+    ) {
+      const previous = yield* currentModel(input.sessionID)
+      const selected = input.model ?? (yield* provider.defaultModel().pipe(Effect.orDie))
+      const target = yield* getModel(selected.providerID, selected.modelID, input.sessionID)
+      const current = yield* db
+        .select({ model: SessionTable.model, agent: SessionTable.agent })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, input.sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      const changed = previous.providerID !== selected.providerID || previous.modelID !== selected.modelID
+      const variantChanged = ("variant" in previous ? previous.variant : undefined) !== input.variant
+      const source = input.source ?? "sdk"
+      const history =
+        (changed || source === "resume") && settingsHook
+          ? yield* HookTranscript.history(
+              input.sessionID,
+              yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie),
+            )
+          : []
+      const agentName = history.findLast((message) => message.info.role === "user")?.info.agent ?? current?.agent
+      const activeAgent = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
+      const configuration = yield* config.get()
+      const priorModel = Option.getOrUndefined(
+        yield* provider.getModel(previous.providerID, previous.modelID).pipe(Effect.option),
+      )
+      const targetProvider = yield* provider.getProvider(target.providerID)
+      const priorProvider = priorModel ? yield* provider.getProvider(priorModel.providerID) : undefined
+      const catalogService = Option.getOrUndefined(yield* Effect.serviceOption(ModelsDev.Service))
+      const catalog = catalogService ? yield* catalogService.get() : undefined
+      const metrics = yield* HookModelMetrics.snapshot({
+        sessionID: input.sessionID,
+        target,
+        previous: priorModel,
+        history,
+        providerOptions: targetProvider?.options,
+        previousProviderOptions: priorProvider?.options,
+        agentOptions: activeAgent?.options,
+        previousAgentOptions: activeAgent?.options,
+        variant: input.variant,
+        previousVariant: "variant" in previous && typeof previous.variant === "string" ? previous.variant : undefined,
+        configuredCost: configuration.provider?.[target.providerID]?.models?.[target.id]?.cost,
+        catalogCost:
+          catalog?.[target.providerID]?.models[target.id]?.cost ??
+          catalog?.[target.providerID]?.models[target.api.id]?.cost,
+      })
+      const payload: Extract<HookPayload, { event: "PreModelSwitch" | "PostModelSwitch" }> = {
+        event: "PreModelSwitch",
+        fromModel: priorModel?.api.id ?? previous.modelID,
+        toModel: target.api.id,
+        requestedModel: source === "auto" ? null : (input.model?.modelID ?? null),
+        source,
+        ...metrics,
+      }
+      // Restoring a saved model is a runtime lifecycle event. It must not
+      // rewrite durable state or rerun PreModelSwitch for an already saved choice.
+      if (source === "resume") {
+        yield* queueModelSwitch(input.sessionID, { ...payload, event: "PostModelSwitch" })
+        return { providerID: selected.providerID, modelID: selected.modelID }
+      }
+      if (changed && current?.model && settingsHook && source !== "auto") {
+        const result = yield* settingsHook.trigger(payload, { sessionID: input.sessionID, transcriptPath: "" })
+        yield* SettingsHook.landSystemMessages(result, { sessionID: input.sessionID })
+        const reason =
+          result.modelSwitchDecisionReason ??
+          result.blocked?.reason ??
+          result.stopReason ??
+          "Model switch blocked by hook"
+        if (result.blocked || result.preventContinuation || result.modelSwitchDecision === "deny")
+          return yield* Effect.fail(new ModelSwitchBlocked({ message: reason }))
+        if (result.modelSwitchDecision === "ask") {
+          if (source !== "command" || input.hookMode !== "interactive")
+            return yield* Effect.fail(new ModelSwitchBlocked({ message: reason }))
+          const questions = hookQuestions
+          if (!questions) return yield* Effect.fail(new ModelSwitchBlocked({ message: reason }))
+          const answer = yield* questions
+            .ask({
+              sessionID: input.sessionID,
+              questions: [
+                {
+                  question: reason,
+                  header: "Switch model",
+                  custom: false,
+                  options: [
+                    { label: "Switch", description: `Use ${target.name}` },
+                    { label: "Keep current", description: "Keep the current model" },
+                  ],
+                },
+              ],
+            })
+            .pipe(Effect.option)
+          if (Option.isNone(answer) || answer.value[0]?.[0] !== "Switch")
+            return yield* Effect.fail(new ModelSwitchBlocked({ message: reason }))
+        }
+      }
+      if (!current?.model || changed || variantChanged) {
+        yield* events.publish(SessionEvent.ModelSwitched, {
+          sessionID: input.sessionID,
+          messageID: SessionMessage.ID.create(),
+          timestamp: yield* DateTime.now,
+          model: {
+            id: selected.modelID,
+            providerID: selected.providerID,
+            variant: ModelV2.VariantID.make(input.variant ?? "default"),
+          },
+        })
+        if (changed && current?.model)
+          yield* queueModelSwitch(input.sessionID, { ...payload, event: "PostModelSwitch" })
+      }
+      return { providerID: selected.providerID, modelID: selected.modelID }
+    })
+    const restoreModelContext: Interface["restoreModelContext"] = Effect.fn("SessionPrompt.restoreModelContext")(
+      function* (sessionID) {
+        if (!settingsHook) return
+        const saved = yield* currentModel(sessionID)
+        // A removed historical model was not initialized in this process.
+        // Skip its restore notification; an explicit next selection is still
+        // validated through the normal model-switch path.
+        const available = yield* provider
+          .getModel(saved.providerID, saved.modelID)
+          .pipe(Effect.catchTag("ProviderModelNotFoundError", () => Effect.succeed(undefined)))
+        if (!available) return
+        yield* applyModelSwitch({
+          sessionID,
+          model: saved,
+          source: "resume",
+          ...("variant" in saved && typeof saved.variant === "string" ? { variant: saved.variant } : {}),
+        }).pipe(Effect.orDie)
+      },
+    )
+    const setModel: Interface["setModel"] = Effect.fn("SessionPrompt.setModel")((input) =>
+      promptLocks.withLock(input.sessionID)(applyModelSwitch(input)),
+    )
+
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (
       input: PromptInput,
       persistAdmission?: Effect.Effect<void>,
@@ -1359,6 +1633,7 @@ export const layer = Layer.effect(
       const info: SessionV1.User = {
         id: input.messageID ?? MessageID.ascending(),
         role: "user",
+        hookMode: input.hookMode,
         sessionID: input.sessionID,
         time: { created: Date.now() },
         tools: input.tools,
@@ -1372,28 +1647,19 @@ export const layer = Layer.effect(
         format: input.format,
       }
 
+      yield* applyModelSwitch({
+        sessionID: input.sessionID,
+        model: info.model,
+        variant,
+        hookMode: input.hookMode,
+        source: "sdk",
+      })
       if (current?.agent !== info.agent) {
         yield* events.publish(SessionEvent.AgentSwitched, {
           sessionID: input.sessionID,
           messageID: SessionMessage.ID.create(),
           timestamp: DateTime.makeUnsafe(info.time.created),
           agent: info.agent,
-        })
-      }
-      if (
-        current?.model?.providerID !== info.model.providerID ||
-        current.model.id !== info.model.modelID ||
-        (current.model.variant === "default" ? undefined : current.model.variant) !== info.model.variant
-      ) {
-        yield* events.publish(SessionEvent.ModelSwitched, {
-          sessionID: input.sessionID,
-          messageID: SessionMessage.ID.create(),
-          timestamp: DateTime.makeUnsafe(info.time.created),
-          model: {
-            id: ModelV2.ID.make(info.model.modelID),
-            providerID: ProviderV2.ID.make(info.model.providerID),
-            variant: ModelV2.VariantID.make(info.model.variant ?? "default"),
-          },
         })
       }
 
@@ -1871,9 +2137,33 @@ export const layer = Layer.effect(
       if (!(yield* startContext.claimResume(target.id))) return [] as string[]
       const prior = yield* sessions.messages({ sessionID: target.id, limit: 1 }).pipe(Effect.orDie)
       if (prior.length === 0) return [] as string[]
+      const current = yield* sessions.get(target.id).pipe(Effect.orDie)
+      yield* restoreModelContext(target.id)
+      const history = yield* HookTranscript.history(
+        target.id,
+        yield* sessions.messages({ sessionID: target.id }).pipe(Effect.orDie),
+      )
+      const metrics = yield* HookModelMetrics.forSession({
+        source: "resume",
+        sessionID: target.id,
+        title: current.title,
+        titleSource: current.metadata?.hookTitleSource,
+        model: current.model,
+        agent: current.agent,
+        history,
+      })
       const result = yield* settingsHook
-        .trigger({ event: "SessionStart", source: "resume" }, { sessionID: target.id, transcriptPath: "" })
+        .trigger({ event: "SessionStart", source: "resume", ...metrics }, { sessionID: target.id, transcriptPath: "" })
         .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+      const instance = yield* InstanceState.context
+      const skills = hookSkills
+      yield* HookSessionContext.applyStart({
+        session: { id: target.id, directory: instance.directory },
+        sessions,
+        settings: settingsHook,
+        result,
+        reloadSkills: skills?.reload(),
+      })
       yield* SettingsHook.landSystemMessages(result, { sessionID: target.id })
       return (result.additionalContexts ?? []).filter((ctx) => ctx.length > 0)
     })
@@ -1885,6 +2175,7 @@ export const layer = Layer.effect(
     ) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
+      yield* activateAgentHooks(session, input.agent)
 
       // SettingsHook: UserPromptSubmit — gives hooks a chance to block or modify the turn.
       // Runs BEFORE the prompt is persisted: a blocked prompt (e.g. a secret scanner)
@@ -1921,23 +2212,35 @@ export const layer = Layer.effect(
           return { message, run: false as const }
         }
       }
-      if (settingsHook && !isRewake) {
+      if (settingsHook && !isRewake && options?.internalDelegation !== true) {
+        // session_title is present only for a title the user or a hook chose, never for a generated one.
+        const titled = session.metadata?.hookTitleSource === "custom" && session.title ? session.title : undefined
         hookResult = yield* settingsHook
           .trigger(
-            { event: "UserPromptSubmit", prompt: promptText },
+            {
+              event: "UserPromptSubmit",
+              prompt: promptText,
+              ...(titled !== undefined ? { sessionTitle: titled } : {}),
+            },
             { sessionID: input.sessionID, transcriptPath: "" },
           )
           .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
         hookAdditionalContexts = hookResult.additionalContexts ?? []
       }
 
+      if (hookResult?.sessionTitle !== undefined) {
+        yield* sessions.setTitle({ sessionID: input.sessionID, title: hookResult.sessionTitle })
+      }
       if (hookResult && (hookResult.blocked || hookResult.preventContinuation)) {
         const reason = hookResult.stopReason ?? hookResult.blocked?.reason ?? "Hook requested stop"
         // The submitted parts are replaced by one user-visible notice. `ignored`
         // keeps it out of model input (and makes the message no model work
         // boundary); it is not synthetic so clients render it in the transcript.
+        // The block message ends with the submitted text unless the hook set suppressOriginalPrompt. This changes
+        // only the message: the text stays in local storage either way and never reaches the model.
+        const original = hookResult.suppressOriginalPrompt === true ? "" : `\n\nOriginal prompt: ${promptText}`
         const message = yield* createUserMessage(
-          { ...input, parts: [{ type: "text", text: `[Hook stopped] ${reason}`, ignored: true }] },
+          { ...input, parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }] },
           persistAdmission,
         )
         yield* sessions.touch(input.sessionID)
@@ -2024,6 +2327,28 @@ export const layer = Layer.effect(
       input: PromptInput,
       options?: AdmissionOptions,
     ) {
+      if (attention) yield* attention.input(input.sessionID)
+      if (
+        !options?.skipHookStart &&
+        !options?.continueToolBudget &&
+        input.noReply !== true &&
+        input.hookMode !== "interactive"
+      ) {
+        const { sessionID, ...followup } = input
+        const initial = yield* resume(
+          {
+            sessionID,
+            model: input.model,
+            agent: input.agent,
+            variant: input.variant,
+            hookMode: "noninteractive",
+            initialOnly: true,
+            followup: { kind: "prompt", ...followup },
+          },
+          options?.internalDelegation ? { internalDelegation: true } : undefined,
+        )
+        if (initial) return initial
+      }
       const wait = yield* promptLocks.withLock(input.sessionID)(
         Effect.gen(function* () {
           if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
@@ -2068,7 +2393,7 @@ export const layer = Layer.effect(
             const activation = yield* Deferred.make<void>()
             const admission =
               yield* Deferred.make<
-                Exit.Exit<{ readonly message: SessionV1.WithParts; readonly run: boolean }, Image.Error>
+                Exit.Exit<{ readonly message: SessionV1.WithParts; readonly run: boolean }, PromptError>
               >()
             const wait = yield* state.startIfIdle(
               input.sessionID,
@@ -2129,6 +2454,7 @@ export const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        const displayTurnID = randomUUID()
         // Error carried by the assistant message when the turn loop breaks — drives
         // Stop vs StopFailure hook selection at loop exit.
         let turnError: SessionV1.Assistant["error"]
@@ -2152,6 +2478,8 @@ export const layer = Layer.effect(
         let agentBoundaryApproved = false
         let nextAutoCompactionMinimum: number | undefined
         let autoCompactionPending = false
+        // A PreCompact veto of proactive compaction holds for the rest of this run; do not ask again each step.
+        let autoCompactionDeclined = false
         let awaitingPostCompactionUsage = false
         let consecutiveAutoCompactions = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
@@ -2256,6 +2584,76 @@ export const layer = Layer.effect(
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
+          const pendingDeferred = lastAssistantMsg?.parts.find(
+            (part): part is SessionV1.ToolPart =>
+              part.type === "tool" && part.state.status === "pending" && part.state.deferred === true,
+          )
+          if (
+            pendingDeferred &&
+            lastAssistant &&
+            ["tool_deferred", "tool_deferred_unavailable"].includes(lastAssistant.finish ?? "")
+          ) {
+            const model = yield* getModel(lastAssistant.providerID, lastAssistant.modelID, sessionID)
+            const agent = yield* agents.get(lastAssistant.agent)
+            if (!agent) throw new Error(`Agent not found: "${lastAssistant.agent}"`)
+            const handle = yield* processor.create({ assistantMessage: lastAssistant, sessionID, model })
+            const tools = yield* SessionTools.resolve({
+              agent,
+              session,
+              model,
+              processor: handle,
+              bypassAgentCheck: false,
+              messages: msgs,
+              promptOps: yield* ops(),
+              hooks: settingsHook,
+              canDefer: !session.parentID && lastUser.hookMode !== "interactive" ? () => true : undefined,
+              sourceLedger: toolSources,
+            }).pipe(
+              Effect.provideService(Plugin.Service, plugin),
+              Effect.provideService(Permission.Service, permission),
+              Effect.provideService(ToolRegistry.Service, registry),
+              Effect.provideService(MCP.Service, mcp),
+              Effect.provideService(Truncate.Service, truncate),
+            )
+            const tool = tools[pendingDeferred.tool]
+            if (!tool?.execute) {
+              lastAssistant.finish = "tool_deferred_unavailable"
+              yield* sessions.updateMessage(lastAssistant)
+              return yield* getLastAssistant(sessionID)
+            }
+            yield* handle.resumeToolCall(
+              pendingDeferred,
+              Effect.tryPromise({
+                try: async (signal) => {
+                  const schema = asSchema(tool.inputSchema)
+                  const validation = await schema.validate?.(pendingDeferred.state.input)
+                  if (validation && !validation.success) throw validation.error
+                  return await tool.execute!(pendingDeferred.state.input, {
+                    toolCallId: pendingDeferred.callID,
+                    messages: [],
+                    abortSignal: signal,
+                  })
+                },
+                catch: (error) => error,
+              }),
+            )
+            if (handle.message.finish === "tool_deferred") return yield* getLastAssistant(sessionID)
+            // The resumed call completes the assistant's tool batch, which never ran PostToolBatch while deferred.
+            const settledBatch = (yield* MessageV2.parts(lastAssistant.id).pipe(
+              Effect.provideService(Database.Service, database),
+            )).filter(
+              (part): part is SessionV1.ToolPart =>
+                part.type === "tool" && (part.state.status === "completed" || part.state.status === "error"),
+            )
+            if (
+              settledBatch.length > 0 &&
+              (yield* postToolBatch({ sessionID, batch: settledBatch, feedbackMessageID: lastUser.id }))
+            ) {
+              turnStopped = true
+            }
+            // Re-read persisted input and settlement before the next model request.
+            continue
+          }
           // Some providers return "stop" even when the assistant message contains
           // tool calls. Keep the loop running so tool results can be sent back to
           // the model, but ignore cleanup-marked interrupted orphans.
@@ -2305,17 +2703,52 @@ export const layer = Layer.effect(
                     .filter((part): part is SessionV1.TextPart => part.type === "text")
                     .map((part) => part.text)
                     .join("") || undefined
-                const turnErrorMessage = (turnError as { data?: { message?: unknown } } | undefined)?.data?.message
                 const stopPayload = turnError
                   ? ({
                       event: "StopFailure",
                       stopHookActive: stopHookBlocked,
-                      error: typeof turnErrorMessage === "string" ? turnErrorMessage : JSON.stringify(turnError),
-                      lastAssistantMessage,
+                      ...HookTurnContext.failure(
+                        turnError,
+                        "message" in turnError.data && typeof turnError.data.message === "string"
+                          ? turnError.data.message
+                          : undefined,
+                      ),
                     } as const)
-                  : ({ event: "Stop", stopHookActive: stopHookBlocked, lastAssistantMessage } as const)
+                  : session.parentID
+                    ? ({
+                        event: "SubagentStop",
+                        stopHookActive: stopHookBlocked,
+                        lastAssistantMessage,
+                        agentID: sessionID,
+                        agentType: lastUser.agent,
+                        backgroundTasks: yield* HookTurnContext.backgroundTasks(session.parentID, {
+                          jobs: backgroundJobs,
+                          workflows: workflowStore,
+                        }),
+                        sessionCrons: [],
+                        agentTranscriptPath: (yield* hasSettingsEvent("SubagentStop", session.parentID, sessionID))
+                          ? yield* HookTranscript.materialize({
+                              sessionID,
+                              directory: ctx.directory,
+                              messages: msgs,
+                            }).pipe(Effect.orDie)
+                          : undefined,
+                      } as const)
+                    : ({
+                        event: "Stop",
+                        stopHookActive: stopHookBlocked,
+                        lastAssistantMessage,
+                        backgroundTasks: yield* HookTurnContext.backgroundTasks(sessionID, {
+                          jobs: backgroundJobs,
+                          workflows: workflowStore,
+                        }),
+                        sessionCrons: [],
+                      } as const)
                 const stopResult = yield* settingsHook
-                  .trigger(stopPayload, { sessionID, transcriptPath: "" })
+                  .trigger(stopPayload, {
+                    sessionID: session.parentID && !turnError ? session.parentID : sessionID,
+                    transcriptPath: "",
+                  })
                   .pipe(
                     Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)),
                   )
@@ -2333,7 +2766,7 @@ export const layer = Layer.effect(
                 const continuing =
                   !agentInputBlocked &&
                   !turnError &&
-                  stopResult.blocked !== undefined &&
+                  (stopResult.blocked !== undefined || stopResult.additionalContexts.some((text) => text.length > 0)) &&
                   !stopResult.preventContinuation &&
                   stopContinuationCount < SettingsHook.MAX_STOP_CONTINUATIONS
                 // Consume Stop-hook outputs so nothing is silently dropped. On a
@@ -2346,7 +2779,7 @@ export const layer = Layer.effect(
                   sessionID,
                   inject: (message) => Effect.sync(() => feedback.push(message)),
                 })
-                if (continuing) feedback.push(stopResult.blocked?.reason || "Continue.")
+                if (continuing && stopResult.blocked) feedback.push(stopResult.blocked.reason || "Continue.")
                 const target = continuing ? MessageID.ascending() : lastUser.id
                 if (target !== lastUser.id) {
                   yield* sessions.updateMessage({
@@ -2371,7 +2804,12 @@ export const layer = Layer.effect(
                     synthetic: true,
                   } satisfies SessionV1.TextPart)
                 }
-                if (!agentInputBlocked && !turnError && stopResult.blocked && !stopResult.preventContinuation) {
+                if (
+                  !agentInputBlocked &&
+                  !turnError &&
+                  (stopResult.blocked || stopResult.additionalContexts.some((text) => text.length > 0)) &&
+                  !stopResult.preventContinuation
+                ) {
                   if (continuing) {
                     stopContinuationCount++
                     stopHookBlocked = true
@@ -2432,6 +2870,10 @@ export const layer = Layer.effect(
               overflow: task.overflow,
             })
             if (result === "stop") break
+            if (result === "declined") {
+              autoCompactionDeclined = true
+              autoCompactionPending = false
+            }
             continue
           }
 
@@ -2496,7 +2938,7 @@ export const layer = Layer.effect(
               lastFinished.summary !== true &&
               enoughNewContext &&
               (yield* compaction.isOverflow({ tokens, model, estimatedInputTokens, threshold: "auto" }))
-            if (hardOverflow || proactiveOverflow) {
+            if (hardOverflow || (proactiveOverflow && !autoCompactionDeclined)) {
               if (consecutiveAutoCompactions >= 3) {
                 const error = new SessionV1.ContextOverflowError({
                   message: "Context still exceeds the model limit after repeated automatic compaction",
@@ -2589,12 +3031,34 @@ export const layer = Layer.effect(
             }
           })
 
+          const toolBatch = HookToolBatch.create()
+          const displayEnabled = settingsHook?.hasEvent
+            ? yield* settingsHook.hasEvent("MessageDisplay", sessionID)
+            : false
+          const displayMessageID = randomUUID()
           const handle = yield* processor
             .create({
               assistantMessage: msg,
               sessionID,
               model,
               onReasoningSettled: (part) => submitReasoningRewrite({ sessionID, part, model }),
+              displayMode: lastUser.hookMode ?? "noninteractive",
+              ...(displayEnabled && settingsHook
+                ? {
+                    onTextDisplay: (batch: { delta: string; index: number; final: boolean }) =>
+                      settingsHook
+                        .trigger(
+                          {
+                            event: "MessageDisplay",
+                            turnID: displayTurnID,
+                            messageID: displayMessageID,
+                            ...batch,
+                          },
+                          { sessionID, transcriptPath: "" },
+                        )
+                        .pipe(Effect.map((result) => result.displayContent ?? batch.delta)),
+                  }
+                : {}),
             })
             .pipe(
               Effect.onError(finalizeFailedAssistant),
@@ -2622,6 +3086,10 @@ export const layer = Layer.effect(
                     messages: msgs,
                     promptOps,
                     hooks: settingsHook,
+                    canDefer:
+                      !session.parentID && lastUser.hookMode !== "interactive"
+                        ? (id, signal) => toolBatch.isSingle(id, signal)
+                        : undefined,
                     sourceLedger: toolSources,
                   }).pipe(
                     Effect.provideService(Plugin.Service, plugin),
@@ -2646,6 +3114,12 @@ export const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            const transcriptPath =
+              settingsHook && (yield* hasSettingsEvent("InstructionsLoaded", sessionID))
+                ? yield* HookTranscript.materialize({ sessionID, directory: ctx.directory, messages: msgs }).pipe(
+                    Effect.orDie,
+                  )
+                : undefined
             const [
               skills,
               env,
@@ -2660,7 +3134,7 @@ export const layer = Layer.effect(
               [
                 sys.skills(agent),
                 sys.environment(model),
-                instruction.system().pipe(Effect.orDie),
+                instruction.system({ sessionID, transcriptPath }).pipe(Effect.orDie),
                 sys.mcp(agent, session.permission),
                 sys.goal(sessionID),
                 sys.hooks(),
@@ -2703,6 +3177,7 @@ export const layer = Layer.effect(
               ],
               tools,
               toolBudget: budget,
+              toolBatch,
               model,
               toolChoice: toolsDisabled ? "none" : format.type === "json_schema" ? "required" : undefined,
               purpose: "conversation",
@@ -2731,8 +3206,14 @@ export const layer = Layer.effect(
               if (endpoint.ok && endpoint.value.endpoint.kind === "node")
                 setCaptureSnapshot(sessionID, agentSnapshot.id)
             }
+            processInput.system.push(...(yield* modelSwitchContext(sessionID, model.api.id)))
+            // Async hooks contribute at the next model boundary without manufacturing a user turn.
+            if (settingsHook?.drainAsync) {
+              const queued = yield* settingsHook.drainAsync(sessionID)
+              processInput.system.push(...queued.additionalContexts)
+            }
             const modelStarted = performance.now()
-            const result = yield* handle.process(processInput).pipe(
+            let result = yield* handle.process(processInput).pipe(
               Effect.onExit((exit) =>
                 Effect.logDebug("session model request", {
                   "session.id": sessionID,
@@ -2745,6 +3226,18 @@ export const layer = Layer.effect(
                 }),
               ),
             )
+            if (result === "deferred") return "break" as const
+            const settledParts = yield* MessageV2.parts(msg.id).pipe(Effect.provideService(Database.Service, database))
+            const batch = settledParts.filter(
+              (part): part is SessionV1.ToolPart =>
+                part.type === "tool" && (part.state.status === "completed" || part.state.status === "error"),
+            )
+            if (batch.length > 0) {
+              // The cap counts consecutive Stop continuations with no tool work.
+              stopContinuationCount = 0
+              if (settingsHook && (yield* postToolBatch({ sessionID, batch, feedbackMessageID: lastUser.id })))
+                result = "stop"
+            }
             if (result === "stop" || handle.message.error) {
               agentInputBlocked = true
               const reason = handle.message.error ? "model_error" : "turn_blocked"
@@ -2836,6 +3329,8 @@ export const layer = Layer.effect(
               yield* agentMessages.discardPending(identity, reason)
             }
           }
+          if (handle.message.finish === "tool_deferred") return yield* getLastAssistant(sessionID)
+
           // The turn finished (outcome "break") or is ongoing (tool calls). Either way
           // loop back: the finished-check at the top of the next iteration fires the
           // Stop hook and returns once the agent is truly done. turnStopped covers
@@ -2852,6 +3347,16 @@ export const layer = Layer.effect(
 
     const runLoop = (sessionID: SessionID): Effect.Effect<SessionV1.WithParts> =>
       runLoopImpl(sessionID).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const session = yield* sessions.get(sessionID).pipe(Effect.option)
+            if (Option.isNone(session) || !session.value.parentID || TaskSubagents.delegateStop(sessionID)) return
+            const active = yield* InstanceState.get(scopedAgents)
+            const origin = active.get(sessionID)
+            if (origin && settingsHook?.unregisterScoped) yield* settingsHook.unregisterScoped(sessionID, origin)
+            active.delete(sessionID)
+          }),
+        ),
         Effect.onError((cause: Cause.Cause<never>) =>
           db
             .transaction(
@@ -2916,6 +3421,158 @@ export const layer = Layer.effect(
       return yield* result
     })
 
+    const writePendingInput = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      pending: typeof HookPendingInput.Type | undefined,
+    ) {
+      const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
+      const metadata = { ...current.metadata }
+      if (pending) metadata.hookPendingInput = pending
+      else delete metadata.hookPendingInput
+      yield* sessions.setMetadata({ sessionID, metadata })
+    })
+    const pendingInput = (metadata: Session.Info["metadata"]) =>
+      metadata?.hookPendingInput === undefined
+        ? Effect.succeed(undefined)
+        : Schema.decodeUnknownEffect(HookPendingInput)(metadata.hookPendingInput).pipe(
+            Effect.mapError(
+              () =>
+                new NoPendingHookInput({
+                  message:
+                    "The saved hook followup has an unsupported or corrupt format. Inspect it before resubmitting.",
+                }),
+            ),
+          )
+    const finishPendingInput = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      completed: SessionV1.WithParts | null,
+    ) {
+      if (
+        !completed ||
+        completed.info.role !== "assistant" ||
+        completed.info.error ||
+        completed.info.finish === "tool_deferred" ||
+        completed.info.finish === "tool_deferred_unavailable"
+      )
+        return completed
+      const admissions = yield* InstanceState.get(followupAdmissions)
+      return yield* admissions
+        .run(sessionID, (commit) =>
+          Effect.gen(function* () {
+            const pending = yield* promptLocks.withLock(sessionID)(
+              commit(
+                Effect.gen(function* () {
+                  const item = yield* pendingInput((yield* sessions.get(sessionID).pipe(Effect.orDie)).metadata)
+                  if (!item) return undefined
+                  const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+                  if (history.some((message) => message.info.id === item.messageID)) {
+                    yield* writePendingInput(sessionID, undefined)
+                    return undefined
+                  }
+                  // A crash after claiming a command may have happened before its message was
+                  // recorded. Preserve that uncertain outcome instead of repeating side effects.
+                  if (item.phase === "started")
+                    return yield* new NoPendingHookInput({
+                      message:
+                        "The saved followup was already started but has no recorded message. Inspect the session before resubmitting it.",
+                    })
+                  yield* writePendingInput(sessionID, { ...item, phase: "started" })
+                  return item
+                }),
+              ),
+            )
+            if (!pending) return completed
+            const shared = { sessionID, messageID: pending.messageID, hookMode: "noninteractive" as const }
+            return yield* (
+              pending.input.kind === "command"
+                ? command({ ...pending.input, ...shared }, { skipHookStart: true })
+                : prompt(
+                    { ...pending.input, ...shared },
+                    {
+                      skipHookStart: true,
+                      ...(pending.internalDelegation ? { internalDelegation: true as const } : {}),
+                    },
+                  )
+            ).pipe(
+              Effect.ensuring(
+                promptLocks.withLock(sessionID)(
+                  Effect.gen(function* () {
+                    const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
+                    const saved = yield* pendingInput(current.metadata).pipe(Effect.option)
+                    if (Option.isNone(saved) || saved.value?.messageID !== pending.messageID) return
+                    const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+                    if (history.some((message) => message.info.id === pending.messageID))
+                      yield* writePendingInput(sessionID, undefined)
+                  }),
+                ),
+              ),
+            )
+          }),
+        )
+        .pipe(Effect.catchTag("SessionConversationHookBlocked", () => Effect.succeed(completed)))
+    })
+
+    const resume: Interface["resume"] = Effect.fn("SessionPrompt.resume")(function* (input, options) {
+      const result = yield* promptLocks.withLock(input.sessionID)(
+        Effect.gen(function* () {
+          const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+          const contexts = yield* resumeContexts(target)
+          if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
+          const initial =
+            input.hookMode !== "interactive" && hookLifecycle
+              ? yield* hookLifecycle.consumeInitial(input.sessionID)
+              : undefined
+          const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+          const initialTurn = initial && !history.some((message) => message.info.role === "user")
+          const latest = history.findLast((message) => message.info.role === "assistant")
+          const deferred = latest?.parts.some(
+            (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
+          )
+          const saved = yield* pendingInput(target.metadata)
+          if (!initialTurn && !deferred && !saved) {
+            if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
+            return yield* new NoPendingHookInput({
+              message: "No initial hook message or deferred tool call is pending",
+            })
+          }
+          if (input.followup) {
+            if (saved)
+              return yield* new NoPendingHookInput({ message: "A supplied followup is already saved for this session" })
+            yield* writePendingInput(input.sessionID, {
+              version: 1,
+              messageID: input.followup.messageID ?? MessageID.ascending(),
+              phase: "pending",
+              input: input.followup,
+              ...(options?.internalDelegation ? { internalDelegation: true } : {}),
+            })
+          }
+          if (initialTurn) {
+            const admitted = yield* admitPrompt(
+              {
+                ...input,
+                parts: [{ type: "text", text: initial }],
+                hookMode: input.hookMode ?? "noninteractive",
+              },
+              undefined,
+              options?.internalDelegation ? { internalDelegation: true } : undefined,
+            )
+            if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
+          } else if (input.hookMode) {
+            const user = history.findLast((message) => message.info.role === "user")?.info
+            if (user?.role === "user" && user.hookMode !== input.hookMode)
+              yield* sessions.updateMessage({ ...user, hookMode: input.hookMode })
+          }
+          if (!initialTurn && !deferred) return lastAssistant(input.sessionID)
+          return yield* state.ensureRunningHandle(
+            input.sessionID,
+            lastAssistant(input.sessionID),
+            runLoop(input.sessionID),
+          )
+        }),
+      )
+      return yield* finishPendingInput(input.sessionID, yield* result)
+    })
+
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
@@ -2940,7 +3597,23 @@ export const layer = Layer.effect(
       )
     })
 
-    const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
+    const command = Effect.fn("SessionPrompt.command")(function* (
+      input: CommandInput,
+      options?: { skipHookStart?: boolean },
+    ) {
+      if (attention) yield* attention.input(input.sessionID)
+      if (!options?.skipHookStart && input.hookMode !== "interactive") {
+        const { sessionID, ...followup } = input
+        const initial = yield* resume({
+          sessionID,
+          agent: input.agent,
+          variant: input.variant,
+          hookMode: "noninteractive",
+          initialOnly: true,
+          followup: { kind: "command", ...followup },
+        })
+        if (initial) return initial
+      }
       yield* Effect.logInfo("command", {
         "session.id": input.sessionID,
         command: input.command,
@@ -3198,6 +3871,36 @@ export const layer = Layer.effect(
         throw error
       }
       const agentName = cmd.agent ?? input.agent
+      const expansion = settingsHook
+        ? yield* settingsHook.trigger(
+            {
+              event: "UserPromptExpansion",
+              commandName: input.command,
+              commandArgs: input.arguments,
+              commandSource: cmd.source ?? "command",
+              expansionType: cmd.source === "mcp" ? "mcp_prompt" : "slash_command",
+              prompt: `/${input.command}${input.arguments ? ` ${input.arguments}` : ""}`,
+            },
+            { sessionID: input.sessionID, transcriptPath: "" },
+          )
+        : undefined
+      if (expansion?.blocked || expansion?.preventContinuation) {
+        return yield* commandTurn(
+          input.sessionID,
+          createUserMessage({
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            agent: input.agent,
+            parts: [
+              {
+                type: "text",
+                text: `[Hook stopped] ${expansion.stopReason ?? expansion.blocked?.reason ?? "Command expansion blocked"}`,
+                ignored: true,
+              },
+            ],
+          }).pipe(Effect.orDie),
+        )
+      }
 
       const templateCommand = yield* Effect.promise(async () => cmd.template)
       let template = expandCommandTemplate(templateCommand, input.arguments)
@@ -3267,6 +3970,12 @@ export const layer = Layer.effect(
             ...(input.parts ?? []),
           ]
 
+      if (expansion) {
+        yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
+        for (const text of expansion.additionalContexts) {
+          parts.push({ type: "text", text, synthetic: true } as (typeof parts)[number])
+        }
+      }
       const userAgent = isSubtask ? (input.agent ?? (yield* agents.defaultInfo()).name) : agent.name
       const userModel = isSubtask
         ? input.model
@@ -3280,14 +3989,18 @@ export const layer = Layer.effect(
         { parts },
       )
 
-      const result = yield* prompt({
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-        model: userModel,
-        agent: userAgent,
-        parts,
-        variant: input.variant,
-      })
+      const result = yield* prompt(
+        {
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          model: userModel,
+          agent: userAgent,
+          parts,
+          variant: input.variant,
+          hookMode: input.hookMode,
+        },
+        { skipHookStart: true },
+      )
       yield* events.publish(Command.Event.Executed, {
         name: input.command,
         sessionID: input.sessionID,
@@ -3303,6 +4016,10 @@ export const layer = Layer.effect(
       withIdle,
       prepareIfIdle,
       promptIfIdle,
+      setModel,
+      restoreModelContext,
+      takeModelSwitchContext: (input) => modelSwitchContext(input.sessionID, input.apiModelID),
+      resume,
       loop,
       shell,
       command,
@@ -3339,12 +4056,18 @@ export const defaultLayer = Layer.suspend(() =>
         Agent.defaultLayer,
         Database.defaultLayer,
         DagMessages.defaultLayer,
+        DagStore.defaultLayer,
+        BackgroundJob.defaultLayer,
         SystemPrompt.defaultLayer,
         LLM.defaultLayer,
         CrossSpawnSpawner.defaultLayer,
         RuntimeFlags.defaultLayer,
         EventV2Bridge.defaultLayer,
         HookStartContext.defaultLayer,
+        HookLifecycle.defaultLayer,
+        SessionAttention.layer,
+        Skill.defaultLayer,
+        Question.defaultLayer,
         SettingsHook.defaultLayer,
         Todo.defaultLayer,
         ToolSourceLedger.defaultLayer,
@@ -3363,6 +4086,7 @@ export const PromptInput = Schema.Struct({
   model: Schema.optional(ModelRef),
   agent: Schema.optional(Schema.String),
   noReply: Schema.optional(Schema.Boolean),
+  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
     description:
       "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
@@ -3381,6 +4105,15 @@ export const PromptInput = Schema.Struct({
 })
 export type PromptInput = Schema.Schema.Type<typeof PromptInput>
 
+export const SetModelInput = Schema.Struct({
+  sessionID: SessionID,
+  model: Schema.optional(ModelRef),
+  variant: Schema.optional(Schema.String),
+  source: Schema.optional(Schema.Literals(["command", "picker", "sdk"])),
+  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
+})
+export type SetModelInput = typeof SetModelInput.Type
+
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
   sessionID: SessionID,
 }) {}
@@ -3391,6 +4124,7 @@ export const ShellInput = Schema.Struct({
   agent: Schema.String,
   model: Schema.optional(ModelRef),
   command: Schema.String,
+  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
 })
 export type ShellInput = Schema.Schema.Type<typeof ShellInput>
 
@@ -3399,6 +4133,7 @@ export const CommandInput = Schema.Struct({
   sessionID: SessionID,
   agent: Schema.optional(Schema.String),
   model: Schema.optional(Schema.String),
+  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
   arguments: Schema.String,
   command: Schema.String,
   variant: Schema.optional(Schema.String),
@@ -3421,6 +4156,31 @@ export const CommandInput = Schema.Struct({
   ),
 })
 export type CommandInput = Schema.Schema.Type<typeof CommandInput>
+
+export const HookFollowupInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("prompt"), ...Struct.omit(PromptInput.fields, ["sessionID"]) }),
+  Schema.Struct({ kind: Schema.Literal("command"), ...Struct.omit(CommandInput.fields, ["sessionID"]) }),
+])
+export const HookPendingInput = Schema.Struct({
+  version: Schema.Literal(1),
+  messageID: MessageID,
+  phase: Schema.Literals(["pending", "started"]),
+  input: HookFollowupInput,
+  /** Runtime-delegated child input skips UserPromptSubmit when replayed. Records without it replay as user input. */
+  internalDelegation: Schema.optional(Schema.Boolean),
+})
+
+export const ResumeInput = Schema.Struct({
+  sessionID: SessionID,
+  messageID: Schema.optional(MessageID),
+  model: Schema.optional(ModelRef),
+  agent: Schema.optional(Schema.String),
+  variant: Schema.optional(Schema.String),
+  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
+  initialOnly: Schema.optional(Schema.Boolean),
+  followup: Schema.optional(HookFollowupInput),
+})
+export type ResumeInput = typeof ResumeInput.Type
 
 /** @internal Exported for testing */
 export function createStructuredOutputTool(input: {
@@ -3503,9 +4263,15 @@ export const node = LayerNode.make(layer, [
   RuntimeFlags.node,
   Database.node,
   DagMessages.node,
+  DagStore.node,
+  BackgroundJob.node,
   Memory.node,
   Todo.node,
   HookStartContext.node,
+  HookLifecycle.node,
+  SessionAttention.node,
+  Skill.node,
+  Question.node,
   SettingsHook.node,
   Goal.node,
   ToolSourceLedger.node,
@@ -3517,7 +4283,7 @@ export function admitIfIdle(
   token: SessionAutomationLease.Token,
   input: PromptInput,
   options?: AdmissionOptions,
-): Effect.Effect<Option.Option<Effect.Effect<SessionV1.WithParts>>, Image.Error> {
+): Effect.Effect<Option.Option<Effect.Effect<SessionV1.WithParts>>, PromptError> {
   return automation.handoff(token, service.prepareIfIdle(input, undefined, options))
 }
 

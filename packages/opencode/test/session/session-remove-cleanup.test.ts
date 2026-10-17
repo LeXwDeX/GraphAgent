@@ -10,6 +10,7 @@ import { GoalOutcomeTable, GoalStateTable } from "@opencode-ai/core/goal/sql"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session as SessionNs } from "@/session/session"
+import { SessionAttention } from "@/notification/attention"
 import { SessionAutomationLease } from "@/session/automation-lease"
 import { Goal } from "@/goal/goal"
 import { Dag } from "@/dag/dag"
@@ -289,3 +290,22 @@ describe("Session.remove dag aggregate scrub interrupt contract (#524)", () => {
     }),
   )
 })
+
+// Instance fixture layers close before acquireRelease finalizers. Cleanup must
+// use the captured directory instead of reopening the already-closed store.
+const finalizerIt = testEffect(Layer.mergeAll(testLayer, SessionAttention.defaultLayer))
+finalizerIt.instance("session deletion clears attention from a release finalizer without reloading its directory", () =>
+  Effect.gen(function* () {
+    const sessions = yield* SessionNs.Service
+    const attention = yield* SessionAttention.Service
+    const session = yield* Effect.acquireRelease(sessions.create({ title: "finalizer cleanup" }), (info) =>
+      Effect.gen(function* () {
+        yield* sessions.remove(info.id).pipe(Effect.orDie)
+        expect(yield* attention.viewing(info.id)).toBe(false)
+        expect((yield* sessions.get(info.id).pipe(Effect.exit))._tag).toBe("Failure")
+      }),
+    )
+    yield* attention.update(session.id, { clientID: "finalizer-client", clientType: "terminal", backgroundView: true })
+    expect(yield* attention.viewing(session.id)).toBe(true)
+  }),
+)

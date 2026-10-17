@@ -1,3 +1,4 @@
+import { Notification, type NotifyInput } from "@/notification"
 import { expect, mock, beforeEach, afterAll } from "bun:test"
 import { Effect, Layer } from "effect"
 import { testEffect } from "../lib/effect"
@@ -23,6 +24,7 @@ let simulateAuthFlow = true
 let connectSucceedsImmediately = false
 let serverCapabilities: { tools?: object; resources?: object } = { tools: {} }
 let listToolsCalls = 0
+const authNotifications: NotifyInput[] = []
 
 // v2 packs Client, StreamableHTTPClientTransport, and UnauthorizedError into
 // the single package root, so one mock.module covers the whole surface. The
@@ -102,6 +104,7 @@ void mock.module("@modelcontextprotocol/client", () => ({
 }))
 
 beforeEach(() => {
+  authNotifications.length = 0
   transportCalls.length = 0
   simulateAuthFlow = true
   connectSucceedsImmediately = false
@@ -134,6 +137,15 @@ const mcpTest = testEffect(
       Layer.provide(FSUtil.defaultLayer),
     ),
     McpAuth.defaultLayer,
+    Layer.succeed(
+      Notification.Service,
+      Notification.Service.of({
+        notify: (input) =>
+          Effect.sync(() => {
+            authNotifications.push(input)
+          }),
+      }),
+    ),
   ),
 )
 
@@ -230,8 +242,12 @@ mcpTest.instance(
         simulateAuthFlow = false
         connectSucceedsImmediately = true
 
+        expect(authNotifications).toHaveLength(0)
         const result = yield* mcp.authenticate("test-oauth-connect")
         expect(result.status).toBe("connected")
+        expect(authNotifications).toEqual([
+          { notificationType: "auth_success", message: "MCP authentication completed" },
+        ])
 
         const after = yield* mcp.status()
         expect(after["test-oauth-connect"]?.status).toBe("connected")
@@ -263,4 +279,21 @@ mcpTest.instance(
       }),
     ),
   { config: config("test-oauth-resources") },
+)
+
+mcpTest.instance(
+  "finishAuth emits auth_success only after a successful connected result",
+  () =>
+    Effect.gen(function* () {
+      const { McpOAuthCallback } = yield* Effect.promise(() => import("../../src/mcp/oauth-callback"))
+      yield* Effect.addFinalizer(() => Effect.promise(() => McpOAuthCallback.stop()))
+      const mcp = yield* MCP.Service
+      yield* mcp.startAuth("finish-auth-notification")
+      expect(authNotifications).toHaveLength(0)
+      simulateAuthFlow = false
+      connectSucceedsImmediately = true
+      expect((yield* mcp.finishAuth("finish-auth-notification", "synthetic-code")).status).toBe("connected")
+      expect(authNotifications).toEqual([{ notificationType: "auth_success", message: "MCP authentication completed" }])
+    }),
+  { config: config("finish-auth-notification") },
 )

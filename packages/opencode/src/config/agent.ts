@@ -25,6 +25,7 @@ export async function load(dir: string) {
       name,
       ...md.data,
       prompt: md.content.trim(),
+      hookOrigin: item,
     }
     result[config.name] = ConfigParse.schema(ConfigAgentV1.Info, config, item)
   }
@@ -46,6 +47,7 @@ export async function loadMode(dir: string) {
       name: configEntryNameFromPath(path.relative(dir, item), ["mode/", "modes/"]),
       ...md.data,
       prompt: md.content.trim(),
+      hookOrigin: item,
     }
     const parsed = Schema.decodeUnknownExit(ConfigAgentV1.Info)(config, { errors: "all", propertyOrder: "original" })
     if (Exit.isSuccess(parsed)) {

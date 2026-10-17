@@ -1,3 +1,4 @@
+import { decodeRecord } from "../lib/hook-json"
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Fiber, Layer, Schema } from "effect"
 import path from "node:path"
@@ -109,7 +110,7 @@ const setupWith = (hookOutput: Record<string, unknown>, agentName: string, rules
       messages: [],
       promptOps: {} as any,
     })
-    return { tools: tools as Record<string, any>, directory }
+    return { tools: tools as Record<string, any>, directory, id }
   })
 
 const setup = setupWith(
@@ -216,8 +217,11 @@ describe("hook permissionDecision ask confirms the effective input once", () => 
       const exit = yield* Fiber.await(fiber)
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isSuccess(exit)) expect(JSON.stringify(exit.value)).toContain("BASH_COMPLETE git log --oneline")
-      // The tool part keeps the model's own input; the rewrite is what ran.
-      expect(recordedInputs).toEqual([{ command: "make clean" }])
+      // The tool part records what actually ran, including the full hook replacement.
+      expect(recordedInputs.length).toBeGreaterThan(0)
+      expect(
+        recordedInputs.every((input) => JSON.stringify(input) === JSON.stringify({ command: "git log --oneline" })),
+      ).toBe(true)
       expect((yield* permission.list()).length).toBe(0)
     }),
   )
@@ -332,4 +336,337 @@ describe("hook permissionDecision ask on MCP tools", () => {
       expect(remaining).toHaveLength(0)
     }),
   )
+})
+
+describe("PermissionRequest nested command decisions govern tool execution", () => {
+  for (const interrupt of [false, true]) {
+    it.instance(`deny message preserves interrupt=${interrupt} meaning`, () =>
+      Effect.gen(function* () {
+        const { tools, id } = yield* setupWith({}, "build", [{ permission: "*", pattern: "*", action: "ask" }])
+        const hooks = yield* SessionHooks.Service
+        yield* hooks.add(id, {
+          event: "PermissionRequest",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "printf '%s' " +
+                quote(
+                  JSON.stringify({
+                    hookSpecificOutput: {
+                      hookEventName: "PermissionRequest",
+                      decision: { behavior: "deny", message: "permission-fixture", interrupt },
+                    },
+                  }),
+                ),
+            },
+          ],
+        })
+        const exit = yield* Effect.tryPromise(() =>
+          tools.bash.execute(
+            { command: "echo old" },
+            {
+              toolCallId: "nested-deny",
+              messages: [],
+              abortSignal: new AbortController().signal,
+            },
+          ),
+        ).pipe(Effect.exit)
+        if (interrupt) {
+          expect(exit._tag).toBe("Success")
+          if (Exit.isSuccess(exit))
+            expect(decodeRecord(exit.value).metadata).toMatchObject({
+              hookStopped: true,
+              stopReason: "permission-fixture",
+            })
+        } else expect(exit._tag).toBe("Failure")
+      }),
+    )
+  }
+  it.instance("complete replacement restarts only the pre-side-effect builtin and executes rewritten input", () =>
+    Effect.gen(function* () {
+      const { tools, id } = yield* setupWith({}, "build", [{ permission: "*", pattern: "*", action: "ask" }])
+      const hooks = yield* SessionHooks.Service
+      yield* hooks.add(id, {
+        event: "PermissionRequest",
+        hooks: [
+          {
+            type: "command",
+            command:
+              "printf '%s' " +
+              quote(
+                JSON.stringify({
+                  hookSpecificOutput: {
+                    hookEventName: "PermissionRequest",
+                    decision: { behavior: "allow", updatedInput: { command: "echo replacement" } },
+                  },
+                }),
+              ),
+          },
+        ],
+      })
+      const result = yield* Effect.promise(() =>
+        tools.bash.execute(
+          { command: "echo old", obsolete: "remove" },
+          {
+            toolCallId: "nested-rewrite",
+            messages: [],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      )
+      expect(decodeRecord(result).output).toContain("BASH_COMPLETE echo replacement")
+      expect(yield* Permission.Service.use((permission) => permission.list())).toHaveLength(0)
+    }),
+  )
+})
+
+describe("configured deny remains authoritative over hook allow", () => {
+  it.instance("PreToolUse allow cannot bypass a command deny", () =>
+    Effect.gen(function* () {
+      const { tools } = yield* setupWith(
+        { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } },
+        "build",
+        [{ permission: "bash", pattern: "dangerous *", action: "deny" }],
+      )
+      const exit = yield* Effect.tryPromise(() =>
+        tools.bash.execute(
+          { command: "dangerous command" },
+          {
+            toolCallId: "deny-preserved",
+            messages: [],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      ).pipe(Effect.exit)
+      expect(exit._tag).toBe("Failure")
+    }),
+  )
+})
+
+describe("hook allow boundaries", () => {
+  it.instance("allow skips only an implicit default permission question", () =>
+    Effect.gen(function* () {
+      const { tools } = yield* setupWith(
+        { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } },
+        "build",
+        [],
+      )
+      const exit = yield* Effect.tryPromise(() =>
+        tools.bash.execute(
+          { command: "echo safe" },
+          {
+            toolCallId: "default-allow",
+            messages: [],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      ).pipe(Effect.timeout(200), Effect.exit)
+      expect(exit._tag).toBe("Success")
+    }),
+  )
+  it.instance("a PermissionRequest rewrite is re-evaluated against configured deny before effects", () =>
+    Effect.gen(function* () {
+      const { tools, id } = yield* setupWith({}, "build", [
+        { permission: "bash", pattern: "dangerous *", action: "deny" },
+      ])
+      yield* (yield* SessionHooks.Service).add(id, {
+        event: "PermissionRequest",
+        hooks: [
+          {
+            type: "command",
+            command:
+              "printf '%s' " +
+              quote(
+                JSON.stringify({
+                  hookSpecificOutput: {
+                    hookEventName: "PermissionRequest",
+                    decision: { behavior: "allow", updatedInput: { command: "dangerous replacement" } },
+                  },
+                }),
+              ),
+          },
+        ],
+      })
+      const exit = yield* Effect.tryPromise(() =>
+        tools.bash.execute(
+          { command: "echo safe" },
+          {
+            toolCallId: "rewrite-deny",
+            messages: [],
+            abortSignal: new AbortController().signal,
+          },
+        ),
+      ).pipe(Effect.exit)
+      expect(exit._tag).toBe("Failure")
+      expect(yield* Permission.Service.use((permission) => permission.list())).toHaveLength(0)
+    }),
+  )
+  it.instance("native deny cannot be overridden by a mutable permission layer", () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      const id = SessionID.descending()
+      const exit = yield* permission
+        .ask(
+          { sessionID: id, permission: "bash", patterns: ["dangerous command"], always: [], metadata: {}, ruleset: [] },
+          {
+            resolveRuleset: () =>
+              Effect.succeed({
+                native: [{ permission: "bash", pattern: "dangerous *", action: "deny" }],
+                rules: [{ permission: "bash", pattern: "*", action: "allow" }],
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+      expect(exit._tag).toBe("Failure")
+      expect(yield* permission.list()).toHaveLength(0)
+    }),
+  )
+})
+
+describe("MCP permission input replacement has a single external execution", () => {
+  for (const valid of [true, false]) {
+    it.instance(`rewritten schema valid=${valid} is checked before the MCP call`, () =>
+      Effect.gen(function* () {
+        const mcp = yield* MCP.Service
+        let calls = 0
+        let executed: unknown
+        const { tools, id } = yield* setupWith({}, "build", []).pipe(
+          Effect.provideService(MCP.Service, {
+            ...mcp,
+            tools: () =>
+              Effect.succeed({
+                fixture_mcp: tool({
+                  inputSchema: jsonSchema({
+                    type: "object",
+                    properties: { value: { type: "string" } },
+                    required: ["value"],
+                  }),
+                  execute: async (args) => {
+                    calls++
+                    executed = args
+                    return { content: [{ type: "text", text: "finished" }] }
+                  },
+                }),
+              }),
+          }),
+          Effect.provide(
+            Layer.mock(Truncate.Service, {
+              output: (text: string) => Effect.succeed({ content: text, truncated: false }),
+            }),
+          ),
+        )
+        yield* (yield* SessionHooks.Service).add(id, {
+          event: "PermissionRequest",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "printf '%s' " +
+                quote(
+                  JSON.stringify({
+                    hookSpecificOutput: {
+                      hookEventName: "PermissionRequest",
+                      decision: {
+                        behavior: "allow",
+                        updatedInput: valid ? { value: "replacement" } : {},
+                      },
+                    },
+                  }),
+                ),
+            },
+          ],
+        })
+        const result = yield* Effect.tryPromise(() =>
+          tools.fixture_mcp.execute(
+            { value: "original", obsolete: "remove" },
+            {
+              toolCallId: "mcp-rewrite",
+              messages: [],
+              abortSignal: new AbortController().signal,
+            },
+          ),
+        ).pipe(Effect.exit)
+        expect(Exit.isSuccess(result)).toBe(valid)
+        expect(calls).toBe(valid ? 1 : 0)
+        if (valid) expect(executed).toEqual({ value: "replacement" })
+      }),
+    )
+  }
+})
+
+describe("MCP replacement validates dependentRequired without losing constraints", () => {
+  for (const valid of [true, false]) {
+    it.instance(`dependentRequired schema valid=${valid} is checked before the MCP call`, () =>
+      Effect.gen(function* () {
+        const mcp = yield* MCP.Service
+        let calls = 0
+        let executed: unknown
+        const { tools, id } = yield* setupWith({}, "build", []).pipe(
+          Effect.provideService(MCP.Service, {
+            ...mcp,
+            tools: () =>
+              Effect.succeed({
+                fixture_mcp: tool({
+                  inputSchema: jsonSchema(
+                    Object.assign(
+                      {
+                        type: "object" as const,
+                        properties: { value: { type: "string" as const }, companion: { type: "string" as const } },
+                        required: ["value"],
+                      },
+                      { dependentRequired: { value: ["companion"] } },
+                    ),
+                  ),
+                  execute: async (args) => {
+                    calls++
+                    executed = args
+                    return { content: [{ type: "text", text: "finished" }] }
+                  },
+                }),
+              }),
+          }),
+          Effect.provide(
+            Layer.mock(Truncate.Service, {
+              output: (text: string) => Effect.succeed({ content: text, truncated: false }),
+            }),
+          ),
+        )
+        yield* (yield* SessionHooks.Service).add(id, {
+          event: "PermissionRequest",
+          hooks: [
+            {
+              type: "command",
+              command:
+                "printf '%s' " +
+                quote(
+                  JSON.stringify({
+                    hookSpecificOutput: {
+                      hookEventName: "PermissionRequest",
+                      decision: {
+                        behavior: "allow",
+                        updatedInput: valid ? { value: "replacement", companion: "new" } : { value: "replacement" },
+                      },
+                    },
+                  }),
+                ),
+            },
+          ],
+        })
+        const result = yield* Effect.tryPromise(() =>
+          tools.fixture_mcp.execute(
+            { value: "original", companion: "original", obsolete: "remove" },
+            {
+              toolCallId: "mcp-rewrite",
+              messages: [],
+              abortSignal: new AbortController().signal,
+            },
+          ),
+        ).pipe(Effect.exit)
+        expect(Exit.isSuccess(result)).toBe(valid)
+        expect(calls).toBe(valid ? 1 : 0)
+        if (valid) expect(executed).toEqual({ value: "replacement", companion: "new" })
+      }),
+    )
+  }
 })

@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto"
+import { HookTranscript } from "@/hook/transcript"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Effect, Layer, Context, Option } from "effect"
+import { Effect, Layer, Context, Option, Scope } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Config } from "@/config/config"
 import { SettingsHook } from "@/hook/settings"
@@ -12,7 +14,6 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@opencode-ai/core/global"
-import type { MessageV2 } from "./message-v2"
 import type { MessageID } from "./schema"
 
 function extract(messages: SessionV1.WithParts[]) {
@@ -34,8 +35,10 @@ function extract(messages: SessionV1.WithParts[]) {
 
 export interface Interface {
   readonly clear: (messageID: MessageID) => Effect.Effect<void>
+  /** A committed compaction: the next system prompt reloads instruction files and announces them as "compact". */
+  readonly markCompacted: (sessionID: string) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
-  readonly system: () => Effect.Effect<string[], FSUtil.Error>
+  readonly system: (input?: { sessionID: string; transcriptPath?: string }) => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
   readonly resolve: (
     messages: SessionV1.WithParts[],
@@ -70,15 +73,33 @@ export const layer: Layer.Layer<
     ]
 
     const state = yield* InstanceState.make(
-      Effect.fn("Instruction.state")(() =>
-        Effect.succeed({
+      Effect.fn("Instruction.state")(function* () {
+        // InstructionsLoaded is background observation; it lives and dies with this directory instance.
+        const scope = yield* Scope.Scope
+        return {
           // Track which instruction files have already been attached for a given assistant message.
           claims: new Map<MessageID, Set<string>>(),
           // Instruction files already announced via the InstructionsLoaded hook (once per instance).
           announced: new Set<string>(),
-        }),
-      ),
+          compactions: 0,
+          compacted: new Set<string>(),
+          scope,
+        }
+      }),
     )
+
+    const userRoots = [global.config, path.join(global.home, ".claude")].map((item) => path.resolve(item))
+    // User scope: the global instruction files and anything under the user's config or ~/.claude. Everything
+    // else, including nested and config-listed project files, is project scope. Managed/Local are never guessed.
+    const memoryType = (file: string): "User" | "Project" => {
+      const target = path.resolve(file)
+      return userRoots.some((root) => {
+        const relative = path.relative(root, target)
+        return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+      })
+        ? "User"
+        : "Project"
+    }
 
     const relative = Effect.fnUntraced(function* (instruction: string) {
       const ctx = yield* InstanceState.context
@@ -104,6 +125,10 @@ export const layer: Layer.Layer<
       if (!res) return ""
       const body = yield* res.arrayBuffer.pipe(Effect.catch(() => Effect.succeed(new ArrayBuffer(0))))
       return new TextDecoder().decode(body)
+    })
+
+    const markCompacted = Effect.fn("Instruction.markCompacted")(function* (sessionID: string) {
+      ;(yield* InstanceState.get(state)).compacted.add(sessionID)
     })
 
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {
@@ -156,7 +181,8 @@ export const layer: Layer.Layer<
       return paths
     })
 
-    const system = Effect.fn("Instruction.system")(function* () {
+    const system = Effect.fn("Instruction.system")(function* (input?: { sessionID: string; transcriptPath?: string }) {
+      const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
       const urls = (config.instructions ?? []).filter(
@@ -166,22 +192,55 @@ export const layer: Layer.Layer<
       const files = yield* Effect.forEach(Array.from(paths), read, { concurrency: 8 })
       const remote = yield* Effect.forEach(urls, fetch, { concurrency: 4 })
 
-      // SettingsHook: InstructionsLoaded — once per instruction file per instance,
-      // content truncated to 32KB to bound hook stdin size.
-      if (settingsHook) {
+      // SettingsHook: InstructionsLoaded — observation only (the official event runs in the background), so it
+      // never delays the model request. Once per file/version; after a committed compaction the files actually
+      // reloaded here are announced again with load_reason "compact".
+      if (callSettings && input?.sessionID && input.transcriptPath) {
+        const sessionID = input.sessionID
+        const transcriptPath = input.transcriptPath
         const s = yield* InstanceState.get(state)
+        const compact = s.compacted.delete(sessionID)
+        const batch = compact ? ++s.compactions : 0
         const loaded = Array.from(paths).flatMap((item, i) => (files[i] ? [{ path: item, content: files[i] }] : []))
+        const pending: typeof loaded = []
         for (const file of loaded) {
-          if (s.announced.has(file.path)) continue
-          s.announced.add(file.path)
-          const ilResult = yield* settingsHook
-            .trigger(
-              { event: "InstructionsLoaded", path: file.path, content: file.content.slice(0, 32 * 1024) },
-              { sessionID: "", transcriptPath: "" },
-            )
-            .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-          yield* SettingsHook.landSystemMessages(ilResult, { sessionID: "" })
+          const key = compact
+            ? `${sessionID}:compact:${batch}:${file.path}`
+            : `${sessionID}:${file.path}:${createHash("sha256").update(file.content).digest("hex")}`
+          if (s.announced.has(key)) continue
+          s.announced.add(key)
+          pending.push(file)
         }
+        if (pending.length)
+          yield* Effect.forEach(
+            pending,
+            (file) =>
+              Effect.gen(function* () {
+                const eligible =
+                  !callSettings.hasEvent || (yield* callSettings.hasEvent("InstructionsLoaded", sessionID))
+                // Without a matching handler the raw trigger still runs, but no environment is materialized.
+                const environment = eligible
+                  ? yield* HookTranscript.environment(sessionID).pipe(Effect.orDie)
+                  : undefined
+                const ilResult = yield* callSettings
+                  .trigger(
+                    {
+                      event: "InstructionsLoaded",
+                      loadReason: compact ? "compact" : "session_start",
+                      memoryType: memoryType(file.path),
+                      path: file.path,
+                      content: file.content.slice(0, 32 * 1024),
+                    },
+                    { sessionID, transcriptPath, ...(environment ? { environment } : {}) },
+                  )
+                  .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
+                yield* SettingsHook.landSystemMessages(ilResult, { sessionID })
+              }),
+            { discard: true },
+          ).pipe(
+            Effect.catchDefect(() => Effect.void),
+            Effect.forkIn(s.scope),
+          )
       }
 
       return [
@@ -203,6 +262,7 @@ export const layer: Layer.Layer<
       filepath: string,
       messageID: MessageID,
     ) {
+      const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const sys = yield* systemPaths()
       const already = extract(messages)
       const results: { filepath: string; content: string }[] = []
@@ -234,6 +294,34 @@ export const layer: Layer.Layer<
         const content = yield* read(found)
         if (content) {
           results.push({ filepath: found, content: `Instructions from: ${found}\n${content}` })
+          const sessionID = messages.at(-1)?.info.sessionID
+          const key = `${sessionID}:${found}:${createHash("sha256").update(content).digest("hex")}`
+          if (callSettings && sessionID && !s.announced.has(key)) {
+            s.announced.add(key)
+            // Background observation: the read tool result must not wait for the hook.
+            yield* Effect.gen(function* () {
+              const eligible = !callSettings.hasEvent || (yield* callSettings.hasEvent("InstructionsLoaded", sessionID))
+              const transcriptPath = eligible
+                ? yield* HookTranscript.materialize({ sessionID, directory: root, messages }).pipe(Effect.orDie)
+                : ""
+              const environment = eligible ? yield* HookTranscript.environment(sessionID).pipe(Effect.orDie) : undefined
+              const result = yield* callSettings.trigger(
+                {
+                  event: "InstructionsLoaded",
+                  loadReason: "nested_traversal",
+                  memoryType: memoryType(found),
+                  path: found,
+                  triggerFilePath: target,
+                  content: content.slice(0, 32 * 1024),
+                },
+                { sessionID, transcriptPath, ...(environment ? { environment } : {}) },
+              )
+              yield* SettingsHook.landSystemMessages(result, { sessionID })
+            }).pipe(
+              Effect.catchDefect(() => Effect.void),
+              Effect.forkIn(s.scope),
+            )
+          }
         }
 
         current = path.dirname(current)
@@ -242,7 +330,7 @@ export const layer: Layer.Layer<
       return results
     })
 
-    return Service.of({ clear, systemPaths, system, find, resolve })
+    return Service.of({ clear, markCompacted, systemPaths, system, find, resolve })
   }),
 )
 

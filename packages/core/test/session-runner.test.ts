@@ -1305,7 +1305,8 @@ describe("SessionRunnerLLM", () => {
       while (requests.length < 2) yield* Effect.yieldNow
 
       yield* session.interrupt(sessionID)
-      expect(yield* Fiber.await(run)).toMatchObject({ _tag: "Failure" })
+      const interrupted = yield* Fiber.await(run)
+      expect(Exit.isFailure(interrupted) && Cause.hasInterruptsOnly(interrupted.cause)).toBe(true)
       streamGate = undefined
       expect(requests).toHaveLength(2)
       expect((yield* session.context(sessionID)).some((message) => message.type === "compaction")).toBe(false)
@@ -2752,7 +2753,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.interrupt(sessionID)
       toolExecutionGate = undefined
 
-      expect(yield* Fiber.await(run)).toMatchObject({ _tag: "Failure" })
+      const interrupted = yield* Fiber.await(run)
+      expect(Exit.isFailure(interrupted) && Cause.hasInterruptsOnly(interrupted.cause)).toBe(true)
       yield* session.interrupt(sessionID)
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Interrupt blocked tool" },
