@@ -353,8 +353,6 @@ export const layer = Layer.effect(
               disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
               enabled: cfg.reasoningDistillation?.enabled,
               modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
-              modelID: model.id,
-              apiModelID: model.api.id,
             }).enabled,
         ),
       )

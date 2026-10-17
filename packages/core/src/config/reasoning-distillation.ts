@@ -21,9 +21,11 @@ export class Model extends Schema.Class<Model>("ConfigV2.Model.ReasoningDistilla
 }) {}
 
 /**
- * Global reasoning-distillation switch (default-on except for GPT/Claude models). When enabled, each settled part whose carrier is
+ * Global reasoning-distillation switch (default-on for every model). When enabled, each settled part whose carrier is
  * plain or a plaintext mirror is organized by the small model as soon as it ends, and the result replaces the stored
- * text before the part is first resent. `compatibility` is accepted for older configurations and ignored.
+ * text before the part is first resent. Signed, encrypted, referenced and unknown carriers are never rewritten; the
+ * per-part carrier check, not the model family, decides eligibility. `compatibility` is accepted for older
+ * configurations and ignored.
  */
 export class Info extends Schema.Class<Info>("ConfigV2.ReasoningDistillation")({
   enabled: Schema.Boolean.pipe(Schema.optional),
@@ -36,7 +38,7 @@ export class Info extends Schema.Class<Info>("ConfigV2.ReasoningDistillation")({
 /** Organizer language; Chinese by default because it is shorter for the same content. */
 export const resolveLanguage = (info: Pick<Info, "language"> | undefined): Language => info?.language ?? "zh"
 
-export type EnableSource = "environment" | "model" | "model-default" | "config" | "default"
+export type EnableSource = "environment" | "model" | "config" | "default"
 
 export type EnableResolution = Readonly<{
   enabled: boolean
@@ -50,21 +52,12 @@ export type EnableInput = Readonly<{
   enabled?: boolean
   /** A per-model override, when present. */
   modelEnabled?: boolean
-  /** The configured catalog model identifier. */
-  modelID?: string
-  /** The API-facing model identifier, when it differs from the catalog identifier. */
-  apiModelID?: string
 }>
 
-const modelDefaultsOff = (identifier: string | undefined) =>
-  identifier !== undefined && identifier.split(/[/.]/).some((part) => /^(?:gpt|claude)/i.test(part))
-
-/** Resolve the effective switch without mutating persisted config. GPT and Claude families default off. */
+/** Resolve the effective switch without mutating persisted config. Every model family defaults on. */
 export function resolveEnabled(input: EnableInput): EnableResolution {
   if (input.disabledByEnvironment) return { enabled: false, source: "environment" }
   if (input.modelEnabled !== undefined) return { enabled: input.modelEnabled, source: "model" }
-  if (modelDefaultsOff(input.modelID) || modelDefaultsOff(input.apiModelID))
-    return { enabled: false, source: "model-default" }
   if (input.enabled !== undefined) return { enabled: input.enabled, source: "config" }
   return { enabled: true, source: "default" }
 }

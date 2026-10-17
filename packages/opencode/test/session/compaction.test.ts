@@ -1526,9 +1526,9 @@ describe("session.compaction.process", () => {
               expect(captured).toHaveLength(1)
               expect(captured[0]).not.toContain("original reasoning")
               const part = yield* readCompactionPart(session.id)
-              expect(part?.tail_start_id).toBe(enabled ? tail.id : suffixID)
+              expect(part?.tail_start_id).toBe((enabled ?? true) ? tail.id : suffixID)
               const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
-              expect(retained.some((message) => message.info.id === tail.id)).toBe(enabled === true)
+              expect(retained.some((message) => message.info.id === tail.id)).toBe((enabled ?? true) === true)
               if (suffixID) expect(retained.some((message) => message.info.id === suffixID)).toBe(true)
               const wire = yield* MessageV2.toModelMessagesEffect(retained, main, {
                 stripMedia: true,
@@ -1536,7 +1536,6 @@ describe("session.compaction.process", () => {
                   disabledByEnvironment: false,
                   enabled: true,
                   modelEnabled: enabled,
-                  modelID: main.id,
                 }).enabled,
               })
               expect(JSON.stringify(wire)).not.toContain("original reasoning")
@@ -1682,12 +1681,14 @@ describe("session.compaction.process", () => {
               expect(captured).toHaveLength(2)
               const part = yield* readCompactionPart(session.id)
               expect(part?.type).toBe("compaction")
-              expect(part?.tail_start_id).toBe(enabled ? tailID : suffixID)
+              expect(part?.tail_start_id).toBe((enabled ?? true) ? tailID : suffixID)
               expect(captured[0]).toContain("head distilled reasoning")
               expect(captured[0]).not.toContain("head original reasoning")
-              expect(captured[1]).toContain(enabled ? "head distilled reasoning" : "head original reasoning")
-              expect(captured[1]).not.toContain(enabled ? "head original reasoning" : "head distilled reasoning")
-              if (enabled) {
+              expect(captured[1]).toContain((enabled ?? true) ? "head distilled reasoning" : "head original reasoning")
+              expect(captured[1]).not.toContain(
+                (enabled ?? true) ? "head original reasoning" : "head distilled reasoning",
+              )
+              if (enabled ?? true) {
                 expect(captured[1]).not.toContain("tail distilled reasoning")
                 expect(recent).toContain("tail distilled reasoning")
                 expect(recent).not.toContain("tail original reasoning")
@@ -1701,7 +1702,7 @@ describe("session.compaction.process", () => {
               }
               expect(Token.estimate(recent)).toBeLessThanOrEqual(300)
               const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
-              expect(retained.some((message) => message.info.id === tailID)).toBe(enabled === true)
+              expect(retained.some((message) => message.info.id === tailID)).toBe((enabled ?? true) === true)
               if (suffixID) expect(retained.some((message) => message.info.id === suffixID)).toBe(true)
             }).pipe(
               withCompaction({
