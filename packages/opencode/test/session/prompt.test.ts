@@ -7239,6 +7239,69 @@ distillationIt.instance("does not split encrypted OpenAI reasoning", () =>
   }),
 )
 
+distillationIt.instance("does not split signed Gemini reasoning", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const config = providerCfg(url)
+      const origin = new URL(url).origin
+      return {
+        ...config,
+        reasoningDistillation: { enabled: true },
+        provider: {
+          test: {
+            ...config.provider.test,
+            npm: "@ai-sdk/google",
+            models: {
+              "test-model": {
+                ...config.provider.test.models["test-model"],
+                id: "gemini-2.5-flash",
+                reasoning: true,
+              },
+            },
+            options: {
+              ...config.provider.test.options,
+              baseURL: `${origin}/v1beta`,
+            },
+          },
+        },
+      }
+    })
+    const { prompt, sessions, chat } = yield* boot()
+    let organizerCalls = 0
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          organizerCalls++
+          return { text: "must-not-adopt", finishReason: "stop" }
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "answer directly" }],
+    })
+    yield* llm.push(
+      reply().reason(longThought("gemini-thinking")).signedReason("gemini-signature").text("gemini-answer").stop(),
+    )
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(organizerCalls).toBe(0)
+    const hits = (yield* llm.hits).filter(
+      (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+    )
+    expect(hits).toHaveLength(1)
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    const reasoning = parts.find((part) => part.type === "reasoning")
+    expect(reasoning?.type === "reasoning" ? reasoning.text : undefined).toBe(longThought("gemini-thinking"))
+    expect(reasoning?.type === "reasoning" ? reasoning.metadata?.google?.thoughtSignature : undefined).toBe(
+      "gemini-signature",
+    )
+    expect(parts.some((part) => part.type === "text" && part.text === "gemini-answer")).toBe(true)
+  }),
+)
+
 distillationIt.instance("falls back to the original reasoning when synchronous organization fails", () =>
   withSettleWindow(
     "10000",

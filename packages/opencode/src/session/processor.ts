@@ -1547,10 +1547,10 @@ export const layer = Layer.effect(
             Effect.ensuring(cleanup()),
           )
 
+          if (ctx.needsCompaction) return "compact"
           if (ctx.splitForContinuation) return "split"
           if (timedOut) return "timeout"
           if (deferred) return "deferred"
-          if (ctx.needsCompaction) return "compact"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })

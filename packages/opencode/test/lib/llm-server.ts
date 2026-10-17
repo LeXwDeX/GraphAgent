@@ -41,6 +41,7 @@ type Sse = {
   error?: unknown
   reset?: boolean
   encryptedReasoning?: string
+  signedReasoning?: string
 }
 
 type HttpError = {
@@ -330,6 +331,44 @@ function flow(item: Sse) {
   return out
 }
 
+function gemini(item: Sse) {
+  const parts: unknown[] = []
+  let usage: Usage | undefined
+  for (const part of flow(item)) {
+    if (part.type === "text") {
+      parts.push({ text: part.text })
+      continue
+    }
+    if (part.type === "reason") {
+      parts.push({
+        text: part.text,
+        thought: true,
+        ...(item.signedReasoning ? { thoughtSignature: item.signedReasoning } : {}),
+      })
+      continue
+    }
+    usage = part.usage
+  }
+  return {
+    ...item,
+    head: [
+      {
+        candidates: [{ content: { parts, role: "model" }, finishReason: "STOP" }],
+        ...(usage
+          ? {
+              usageMetadata: {
+                promptTokenCount: usage.input,
+                candidatesTokenCount: usage.output,
+                totalTokenCount: usage.input + usage.output,
+              },
+            }
+          : {}),
+      },
+    ],
+    tail: [],
+  } satisfies Sse
+}
+
 function responses(item: Sse, model: string) {
   let seq = 1
   let msg: string | undefined
@@ -461,6 +500,7 @@ export class Reply {
   #reset = false
   #seq = 0
   #encryptedReasoning: string | undefined
+  #signedReasoning: string | undefined
 
   #id() {
     this.#seq += 1
@@ -479,6 +519,11 @@ export class Reply {
 
   encryptedReason(value: string) {
     this.#encryptedReasoning = value
+    return this
+  }
+
+  signedReason(value: string) {
+    this.#signedReasoning = value
     return this
   }
 
@@ -568,6 +613,7 @@ export class Reply {
       error: this.#error,
       reset: this.#reset,
       encryptedReasoning: this.#encryptedReasoning,
+      signedReasoning: this.#signedReasoning,
     }
   }
 }
@@ -680,7 +726,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         return first.item
       }
 
-      const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses") {
+      const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses" | "gemini") {
         const req = yield* HttpServerRequest.HttpServerRequest
         const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
         const current = hit(req.originalUrl, body)
@@ -689,6 +735,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("E2E Title"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
+          if (mode === "gemini") return send(gemini(auto))
           return send(auto)
         }
         const next = pull(current)
@@ -697,12 +744,14 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("ok"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
+          if (mode === "gemini") return send(gemini(auto))
           return send(auto)
         }
         hits = [...hits, current]
         yield* notify()
         if (next.type !== "sse") return fail(next)
         if (mode === "responses") return send(responses(next, modelFrom(body)))
+        if (mode === "gemini") return send(gemini(next))
         if (next.reset) {
           yield* reset(next)
           return HttpServerResponse.empty()
@@ -713,6 +762,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
       yield* router.add("POST", "/v1/chat/completions", handle("chat"))
       yield* router.add("POST", "/v1/messages", handle("chat"))
       yield* router.add("POST", "/v1/responses", handle("responses"))
+      yield* router.add("POST", "/v1beta/*", handle("gemini"))
 
       yield* server.serve(router.asHttpEffect())
 
