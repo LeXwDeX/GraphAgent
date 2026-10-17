@@ -4,7 +4,7 @@ Summarize the conversation's completed work like a pull request description.
 - Use at most 2-3 sentences.
 - Describe changes, not the process or the user's request.
 - Use first person, such as "I added" or "I fixed".
-- Do not mention tests, builds, or validation.
+- Mention verification only when it materially changes what the user needs to know.
 - Do not ask new questions.
 - If the conversation ends with an unanswered question, preserve it exactly.
 - If it ends with an instruction or request to the user, include that request exactly.

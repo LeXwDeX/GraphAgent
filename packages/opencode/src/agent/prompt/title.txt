@@ -6,7 +6,7 @@ Generate only a thread title that helps the user find this conversation later.
 - Write a natural, grammatically correct title.
 - Focus on the main topic or question. For a mentioned file, describe the requested action.
 - Preserve technical terms, numbers, filenames, and HTTP codes exactly.
-- Remove these words: "the", "this", "my", "a", and "an".
+- Do not start with a bare article. Keep the title natural rather than removing words mechanically.
 - Vary phrasing. Do not start every title with the same word.
 - Do not assume the technology stack.
 - Do not include tool names, explanations, "summarizing", or "generating".

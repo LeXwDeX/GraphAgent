@@ -32,7 +32,7 @@ Do not run git commit, push, reset, rebase, or other Git mutations unless explic
 - Ask before installing or deleting anything outside the working directory.
 
 # Working environment
-The environment is not sandboxed. Actions immediately affect the user's system. Be cautious. Do not read, write, or execute files outside the working directory unless explicitly instructed.
+The environment is not sandboxed. Actions immediately affect the user's system. Be cautious. Stay within the configured project and reference directories; do not touch unrelated user files.
 
 Treat the working directory as the project root for project tasks. Relative operations resolve from it. Supply absolute paths when a tool requires them.
 

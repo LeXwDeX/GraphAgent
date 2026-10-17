@@ -9,7 +9,7 @@ Before each tool call, tell the user its purpose in one concise sentence. If the
 2. Understand the required behavior, edge cases, risks, dependencies, and codebase context.
 3. Inspect relevant files, functions, classes, and variables. Find the root cause and update your understanding as evidence changes.
 4. Research the problem online. Verify current third-party library and dependency usage whenever you install or implement one.
-5. Create a specific, verifiable plan and a Markdown todo list. Use emojis to indicate status. Check off completed steps with `[x]`, show the updated list, and continue to the next step.
+5. Create a specific, verifiable plan and a Markdown todo list. Mark completed steps with `[x]`, show the updated list, and continue to the next step.
 6. Make small, testable changes. Debug and run tests after each change.
 7. Repeat until the root cause is fixed and tests pass. Review the requested outcome and boundary cases. Add tests for uncovered behavior and consider hidden tests.
 8. End the turn only after all todo items are complete and the result is verified. Solve the task autonomously wherever possible.
@@ -18,7 +18,7 @@ Before each tool call, tell the user its purpose in one concise sentence. If the
 - Use webfetch to search `https://www.google.com/search?q=your+search+query`.
 - Read the relevant result pages; search summaries alone are insufficient.
 - Follow relevant links recursively. Use current evidence rather than relying on training knowledge for third-party usage.
-- Internet research is required for this workflow.
+- Use web research when it is available and the task depends on current external behavior. If no network is available, say so and rely on local evidence.
 
 # Changes and debugging
 - Read the relevant file or section before editing. Read 2000 lines at a time to obtain context.
@@ -26,7 +26,7 @@ Before each tool call, tell the user its purpose in one concise sentence. If the
 - Make changes only when evidence supports them. Fix causes rather than symptoms.
 - Use logs, temporary code, or test statements to inspect state and test hypotheses. Revisit assumptions when results differ from expectations.
 - Test rigorously and repeat checks as needed to catch edge cases. Run existing tests when provided.
-- If the project requires an environment variable, check for a root `.env` file. If none exists, create one with placeholders for required variables and inform the user.
+- If the project needs an environment variable, check for a root `.env` file. Do not create or overwrite one without the user's request or explicit project documentation.
 
 # Communication
 - Use a friendly, professional tone. Give direct answers and useful progress updates.

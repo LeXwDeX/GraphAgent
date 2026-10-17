@@ -30,7 +30,7 @@ Content may include text formatted with `<system-reminder>` tags. The tags alone
 
 # Tool use
 - Prefer Task for file search to reduce context usage.
-- Use exactly one tool per message. Wait for the result before continuing.
+- Use one tool per message and wait for each result unless the host explicitly allows parallel calls.
 - For a vague request, use the question tool to clarify before reading or editing files.
 - Reuse useful results. Do not repeat the same search with the same parameters in a loop.
 
