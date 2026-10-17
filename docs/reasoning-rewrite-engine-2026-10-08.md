@@ -38,10 +38,10 @@ adopts the result in the background. Review found:
 ## Configuration
 
 The effective switch follows this order: the environment kill-switch disables rewriting; an explicit model-level
-`reasoningDistillation.enabled` value wins next; otherwise GPT and Claude model identifiers default to off, even when
-the global switch is on; then the global `reasoningDistillation.enabled` value applies; if none is set, rewriting
-defaults to on. GPT and Claude detection checks both catalog and API model identifiers, including namespace-delimited
-forms such as `openai/gpt-5` and `us.anthropic.claude-sonnet-4`.
+`reasoningDistillation.enabled` value wins next; then the global `reasoningDistillation.enabled` value applies; if
+none is set, rewriting defaults to on for every model family. Eligibility is decided per reasoning part by its
+carrier, not by the model name: plain and plaintext-mirror carriers are rewritten, while signed, encrypted,
+referenced and unknown carriers remain untouched.
 
 The per-model field contains only `enabled`. Organizer language remains global under
 `reasoningDistillation.language`. Existing canonical-content checks still protect opaque, signed, encrypted, and

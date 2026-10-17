@@ -234,8 +234,6 @@ export const layer = Layer.effect(
                       ?.enabled,
                 )
                 .findLast((enabled) => enabled !== undefined),
-              modelID: model.configID ?? model.id,
-              apiModelID: model.id,
             }).enabled,
         ),
       )

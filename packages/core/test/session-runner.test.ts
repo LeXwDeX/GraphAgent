@@ -3548,8 +3548,8 @@ const withSettleWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =
   )
 
 for (const scenario of [
-  { id: "gpt-test", global: true, enabled: undefined, expected: false },
-  { id: "anthropic/claude-test", global: true, enabled: undefined, expected: false },
+  { id: "gpt-test", global: true, enabled: undefined, expected: true },
+  { id: "anthropic/claude-test", global: true, enabled: undefined, expected: true },
   { id: "qwen-test", global: false, enabled: true, expected: true },
   { id: "qwen-test", global: true, enabled: false, expected: false },
   { id: "gpt-test", global: false, enabled: true, expected: true },
@@ -3607,7 +3607,8 @@ for (const scenario of [
         expect(sent).toContain(scenario.expected ? "adopted-model-reasoning" : "original-r-1")
         expect(sent).not.toContain(scenario.expected ? "original-r-1" : "adopted-model-reasoning")
         if (!scenario.expected) return
-        // A new request to a default-off model must restore the original stored source.
+        // A new request to a model with distillation disabled must restore the original stored source.
+        reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: false })
         currentModel = Model.make({ id: "gpt-other", provider: "fake", route: OpenAIChat.route })
         responses = [[]]
         yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
