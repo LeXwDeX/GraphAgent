@@ -2516,8 +2516,9 @@ backgroundUnix(
           message.parts.some((part) => part.type === "text" && part.text === "dispatched"),
         ),
       ).toBe(true)
-      expect([3, 4]).toContain(yield* llm.calls)
-      expect([0, 1]).toContain(yield* llm.pending)
+      const calls = yield* llm.calls
+      expect(calls + (yield* llm.pending)).toBe(4)
+      expect(calls === 3 || calls === 4).toBe(true)
     }),
   30_000,
 )

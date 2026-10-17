@@ -2938,7 +2938,7 @@ export const layer = Layer.effect(
               lastFinished.summary !== true &&
               enoughNewContext &&
               (yield* compaction.isOverflow({ tokens, model, estimatedInputTokens, threshold: "auto" }))
-            if ((hardOverflow || proactiveOverflow) && !autoCompactionDeclined) {
+            if (hardOverflow || (proactiveOverflow && !autoCompactionDeclined)) {
               if (consecutiveAutoCompactions >= 3) {
                 const error = new SessionV1.ContextOverflowError({
                   message: "Context still exceeds the model limit after repeated automatic compaction",
