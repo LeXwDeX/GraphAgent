@@ -18,7 +18,7 @@ import { testEffect } from "../lib/effect"
 
 const adapter = HookCwd.layer.pipe(
   Layer.provideMerge(Session.defaultLayer),
-  Layer.provide(SettingsHook.layer.pipe(Layer.provide(SessionHooks.defaultLayer))),
+  Layer.provideMerge(SettingsHook.layer.pipe(Layer.provideMerge(SessionHooks.defaultLayer))),
   Layer.provide(testInstanceStoreLayer),
   Layer.provide(HookLifecycle.defaultLayer),
   Layer.provide(HookFileWatch.defaultLayer),

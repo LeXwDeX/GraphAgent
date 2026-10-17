@@ -3,6 +3,7 @@ export * as HookCwd from "./cwd"
 import { Effect, Layer } from "effect"
 import { SessionCwdHooks } from "@opencode-ai/core/session/cwd-hooks"
 import { SettingsHook } from "./settings"
+import { SessionHooks } from "./session-hooks"
 import { Session } from "@/session/session"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
@@ -23,6 +24,7 @@ export const layer = Layer.effect(
     const lifecycle = yield* HookLifecycle.Service
     const watcher = yield* HookFileWatch.Service
     const config = yield* HookConfigChange.Service
+    const sessionHooks = yield* SessionHooks.Service
     return SessionCwdHooks.Service.of({
       changed: (change) =>
         Effect.gen(function* () {
@@ -35,9 +37,14 @@ export const layer = Layer.effect(
           // A CwdChanged result without watchPaths keeps the dynamic list; only [] clears it.
           const watched = yield* watcher.paths(sessionID).pipe(Effect.provideService(InstanceRef, old))
           yield* watcher.clear(sessionID).pipe(Effect.provideService(InstanceRef, old))
+          // Session hooks are stored per directory. Carry the whole session bucket
+          // (entries, once-reservations, scoped origins) across the move, or every
+          // skill/runtime hook attached before it stops firing for the rest of the session.
+          const sessionHookState = yield* sessionHooks.take(sessionID).pipe(Effect.provideService(InstanceRef, old))
           yield* config.clear(sessionID)
           const instance = yield* instances.load({ directory: change.directory })
           yield* Effect.gen(function* () {
+            yield* sessionHooks.restore(sessionID, sessionHookState)
             if (initial) yield* lifecycle.queueInitial(sessionID, initial)
             const messages = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
             const transcriptPath = yield* HookTranscript.materialize({

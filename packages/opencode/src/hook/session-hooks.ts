@@ -14,6 +14,8 @@
  *   - `list(sessionID, event)` — query active entries for one event
  *   - `listAll(sessionID)` — query all active entries for a session (HTTP GET)
  *   - `remove(sessionID, id)` — drop a single entry (used by `once: true` cleanup)
+ *   - `take` / `restore` — detach and re-attach the whole bucket when the
+ *     session's directory changes; reservations and origins travel with it
  *   - `clear(sessionID)` — drop the whole session bucket (call on session end)
  *
  * Uses `InstanceState` for per-directory isolation (mirrors `start-context.ts`).
@@ -68,6 +70,18 @@ export interface SessionHookEntry extends SessionHookEntryInput {
   id: string
 }
 
+/**
+ * One session's complete hook state, detached from a directory instance so it
+ * can follow the session when CwdChanged moves it. Entries keep their ids
+ * (remove/claim still address the same hook), reservations keep in-flight
+ * `once` ownership, and scoped origins keep skill/agent registration idempotent.
+ */
+export interface SessionHookTransfer {
+  readonly entries: readonly SessionHookEntry[]
+  readonly reservations: ReadonlyMap<string, string>
+  readonly origins: readonly string[]
+}
+
 export interface Interface {
   readonly add: (sessionID: SessionID, entry: SessionHookEntryInput) => Effect.Effect<string, InvalidHookError>
   /** Atomically reserve a once registration; returns a unique ownership token. */
@@ -86,6 +100,15 @@ export interface Interface {
    * when no session-scoped hook (and no on-disk hook) targets the current event.
    */
   readonly hasForEvent: (sessionID: SessionID, event: HookEvent) => Effect.Effect<boolean>
+  /**
+   * Detach one session's entries, reservations and scoped origins from the
+   * ambient directory instance. Used by CwdChanged to move them to the new
+   * directory; the read and the delete happen in one synchronous step so a
+   * concurrent registration cannot be dropped between them.
+   */
+  readonly take: (sessionID: SessionID) => Effect.Effect<SessionHookTransfer>
+  /** Attach a taken transfer to the ambient directory instance. */
+  readonly restore: (sessionID: SessionID, transfer: SessionHookTransfer) => Effect.Effect<void>
   readonly clear: (sessionID: SessionID) => Effect.Effect<void>
 }
 
@@ -258,6 +281,43 @@ export const layerWithTrustFile = (trustFile?: string) =>
         registered.delete(sessionID)
       })
 
+      const take = Effect.fn("SessionHooks.take")(function* (sessionID: SessionID) {
+        const data = yield* InstanceState.get(state)
+        const entries = data.get(sessionID) ?? []
+        data.delete(sessionID)
+        const locks = yield* InstanceState.get(reservations)
+        // Never name this `reservations`: that would shadow the InstanceState
+        // above and hit its TDZ on the `InstanceState.get(reservations)` call.
+        const reservationState = locks.get(sessionID) ?? new Map<string, string>()
+        locks.delete(sessionID)
+        const registered = yield* InstanceState.get(scopedOrigins)
+        const origins = registered.get(sessionID) ?? new Set<string>()
+        registered.delete(sessionID)
+        // Copy the mutable containers: the caller owns the result after this
+        // point and the next mutation of the source map must not reach it.
+        return { entries, reservations: new Map(reservationState), origins: [...origins] }
+      })
+
+      const restore = Effect.fn("SessionHooks.restore")(function* (
+        sessionID: SessionID,
+        transfer: SessionHookTransfer,
+      ) {
+        const data = yield* InstanceState.get(state)
+        if (transfer.entries.length) data.set(sessionID, [...(data.get(sessionID) ?? []), ...transfer.entries])
+        const locks = yield* InstanceState.get(reservations)
+        if (transfer.reservations.size) {
+          const owned = locks.get(sessionID) ?? new Map<string, string>()
+          for (const [id, token] of transfer.reservations) owned.set(id, token)
+          locks.set(sessionID, owned)
+        }
+        const registered = yield* InstanceState.get(scopedOrigins)
+        if (transfer.origins.length) {
+          const origins = registered.get(sessionID) ?? new Set<string>()
+          for (const origin of transfer.origins) origins.add(origin)
+          registered.set(sessionID, origins)
+        }
+      })
+
       return Service.of({
         add,
         claim,
@@ -268,6 +328,8 @@ export const layerWithTrustFile = (trustFile?: string) =>
         list,
         listAll,
         hasForEvent,
+        take,
+        restore,
         clear,
       })
     }),
