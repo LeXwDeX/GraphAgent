@@ -2,6 +2,15 @@
 
 Branch: `refactor/reasoning-rewrite-engine`. Baseline: `main` at `1b69adcdcf`.
 
+> **2026-10-17 update — synchronous continuation is now the default.** For editable (unsigned/plaintext-mirror)
+> reasoning, when a reasoning part ends before any content or tool call starts, the host stops that stream, organizes
+> the part, adopts it, and sends a continuation request in the same user turn. The continuation reuses the same
+> assistant message and asks the model to answer from the organized reasoning. Signed, encrypted, referenced and
+> unknown carriers never enter this path. Set `reasoningDistillation.sync: false` to keep the older asynchronous
+> next-request behavior described below; that path also remains the fallback when content or tools already started,
+> no organizer is available, or organization fails. This document's barrier details apply to the `sync: false`
+> fallback unless explicitly stated otherwise.
+
 ## Why
 
 The 1.0.54+ reasoning distillation ("重塑思考") organizes a completed turn's reasoning once, after the turn ends, and

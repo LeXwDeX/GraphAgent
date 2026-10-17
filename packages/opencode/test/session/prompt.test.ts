@@ -6153,6 +6153,8 @@ unix(
         }),
         "timed out waiting for truncated shell output",
       )
+      // Let the shell reader publish its final truncation metadata before cancellation races it.
+      yield* Effect.sleep(50)
       yield* prompt.cancel(chat.id)
 
       const exit = yield* Fiber.await(run)
@@ -6162,7 +6164,7 @@ unix(
       const tool = completedTool(exit.value.parts)
       if (!tool) return
 
-      expect(tool.state.metadata.truncated).toBe(true)
+      expect(tool.state.metadata.truncated, JSON.stringify(tool.state.metadata)).toBe(true)
       expect(typeof tool.state.metadata.outputPath).toBe("string")
       expect(tool.state.output).toMatch(/\.\.\.output truncated\.\.\./)
       expect(tool.state.output).toMatch(/Full output saved to:\s+\S+/)
@@ -7068,13 +7070,224 @@ for (const scenario of [
   )
 }
 
-distillationIt.instance("each step's reasoning is rewritten before its first resend", () =>
+distillationIt.instance("organizes unsigned reasoning before content and continues with it", () =>
+  withSettleWindow(
+    "10000",
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        reasoningDistillation: { enabled: true },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Sync shaping",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      let organizerCalls = 0
+      controlledOrganizer = () =>
+        Effect.succeed({
+          transport: "engine" as const,
+          model: "test/small",
+          call: () => async () => {
+            organizerCalls++
+            return { text: "adopted-sync", finishReason: "stop" }
+          },
+        })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "answer directly" }],
+      })
+      yield* llm.push(
+        reply().reason(longThought("sync-thinking")).text("phase-one-content").stop(),
+        reply().text("final-answer").stop(),
+      )
+      yield* prompt.loop({ sessionID: chat.id })
+      expect(organizerCalls).toBe(1)
+      const hits = (yield* llm.hits).filter(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+      )
+      expect(hits).toHaveLength(2)
+      const sent = JSON.stringify(hits.at(-1)?.body)
+      expect(sent).toContain("adopted-sync")
+      expect(sent).not.toContain("sync-thinking")
+      const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+      expect(parts.some((part) => part.type === "reasoning" && part.text === "adopted-sync")).toBe(true)
+      expect(parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(true)
+      expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
+    }),
+  ),
+)
+
+distillationIt.instance("leaves signed reasoning untouched in the same turn", () =>
+  withSettleWindow(
+    "10000",
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => {
+        const config = providerCfg(url)
+        return {
+          ...config,
+          reasoningDistillation: { enabled: true },
+          provider: {
+            test: {
+              ...config.provider.test,
+              npm: "@ai-sdk/anthropic",
+              models: {
+                "test-model": {
+                  ...config.provider.test.models["test-model"],
+                  id: "claude-fable-5-1",
+                  reasoning: true,
+                },
+              },
+            },
+          },
+        }
+      })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Signed reasoning",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      let organizerCalls = 0
+      controlledOrganizer = () =>
+        Effect.succeed({
+          transport: "engine" as const,
+          model: "test/small",
+          call: () => async () => {
+            organizerCalls++
+            return { text: "must-not-adopt", finishReason: "stop" }
+          },
+        })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "answer directly" }],
+      })
+      yield* llm.push(thinkingPrefixReply("signed-signature", longThought("signed-thinking")))
+      yield* prompt.loop({ sessionID: chat.id })
+      expect(organizerCalls).toBe(0)
+      const hits = (yield* llm.hits).filter(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+      )
+      expect(hits).toHaveLength(1)
+      const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+      const reasoning = parts.find((part) => part.type === "reasoning")
+      expect(reasoning?.type === "reasoning" ? reasoning.text : undefined).toBe(longThought("signed-thinking"))
+      expect(reasoning?.type === "reasoning" ? reasoning.metadata?.anthropic?.signature : undefined).toBe(
+        "signed-signature",
+      )
+      expect(parts.some((part) => part.type === "text" && part.text === "fixture answer")).toBe(true)
+      expect(parts.some((part) => part.type === "reasoning" && part.text === "must-not-adopt")).toBe(false)
+    }),
+  ),
+)
+
+distillationIt.instance("falls back to the original reasoning when synchronous organization fails", () =>
+  withSettleWindow(
+    "10000",
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        reasoningDistillation: { enabled: true },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Sync fallback",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      let organizerCalls = 0
+      controlledOrganizer = () =>
+        Effect.succeed({
+          transport: "engine" as const,
+          model: "test/small",
+          call: () => async () => {
+            organizerCalls++
+            throw new Error("organizer unavailable")
+          },
+        })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "answer directly" }],
+      })
+      yield* llm.push(
+        reply().reason(longThought("fallback-thinking")).text("phase-one-content").stop(),
+        reply().text("fallback-answer").stop(),
+      )
+      yield* prompt.loop({ sessionID: chat.id })
+      expect(organizerCalls).toBe(1)
+      const hits = (yield* llm.hits).filter(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+      )
+      expect(hits).toHaveLength(2)
+      expect(JSON.stringify(hits.at(-1)?.body)).toContain("fallback-thinking")
+      const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+      expect(parts.some((part) => part.type === "text" && part.text === "fallback-answer")).toBe(true)
+      expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
+    }),
+  ),
+)
+
+distillationIt.instance("runs local hooks once around a synchronous continuation", () =>
   withSettleWindow(
     "10000",
     Effect.gen(function* () {
       const { llm, dir } = yield* useServerConfig((url) => ({
         ...providerCfg(url),
         reasoningDistillation: { enabled: true },
+      }))
+      yield* writeText(path.join(dir, "distillation-source.txt"), "source data")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Sync hooks",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const before = hookRecorded.length
+      const calls: string[] = []
+      controlledOrganizer = organizedAs(calls)
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "read and explain" }],
+      })
+      yield* llm.push(
+        reply().reason(longThought("tool-thinking")).text("phase-one-content").stop(),
+        reply().tool("read", { filePath: path.join(dir, "distillation-source.txt") }, "read-sync"),
+        reply().text("hook-final").stop(),
+      )
+      yield* prompt.loop({ sessionID: chat.id })
+      const events = hookRecorded.slice(before).map((payload) => payload.event)
+      expect(events.filter((event) => event === "UserPromptSubmit")).toHaveLength(1)
+      expect(events.filter((event) => event === "PreToolUse")).toHaveLength(1)
+      expect(events.filter((event) => event === "PostToolUse")).toHaveLength(1)
+      expect(events.filter((event) => event === "Stop")).toHaveLength(1)
+      expect(calls).toEqual(["tool"])
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const reasoningParts = messages.flatMap((message) => message.parts).filter((part) => part.type === "reasoning")
+      expect(reasoningParts).toHaveLength(1)
+      expect(reasoningParts[0].type === "reasoning" ? reasoningParts[0].text : undefined).toBe("adopted-tool")
+      const parts = messages.flatMap((message) => message.parts)
+      expect(parts.some((part) => part.type === "text" && part.text === "hook-final")).toBe(true)
+      expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
+    }),
+  ),
+)
+
+distillationIt.instance("each step's reasoning is rewritten before its first resend", () =>
+  withSettleWindow(
+    "10000",
+    Effect.gen(function* () {
+      const { llm, dir } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        reasoningDistillation: { enabled: true, sync: false },
       }))
       yield* writeText(path.join(dir, "distillation-source.txt"), "source data")
       const prompt = yield* SessionPrompt.Service
@@ -7136,7 +7349,7 @@ distillationIt.instance("disposing the directory cancels pending rewrites", () =
   Effect.gen(function* () {
     const { llm, dir } = yield* useServerConfig((url) => ({
       ...providerCfg(url),
-      reasoningDistillation: { enabled: true },
+      reasoningDistillation: { enabled: true, sync: false },
     }))
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
@@ -7174,7 +7387,7 @@ distillationIt.instance("deleting a session cancels its pending rewrites", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
       ...providerCfg(url),
-      reasoningDistillation: { enabled: true },
+      reasoningDistillation: { enabled: true, sync: false },
     }))
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
@@ -7271,7 +7484,7 @@ distillationIt.instance("a rewrite that misses the settle window is sealed and n
     Effect.gen(function* () {
       const { llm, dir } = yield* useServerConfig((url) => ({
         ...providerCfg(url),
-        reasoningDistillation: { enabled: true },
+        reasoningDistillation: { enabled: true, sync: false },
       }))
       yield* writeText(path.join(dir, "distillation-source.txt"), "source data")
       const prompt = yield* SessionPrompt.Service
@@ -7419,7 +7632,7 @@ distillationIt.instance("a started organizer stream finishes before resend even 
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig((url) => ({
         ...providerCfg(url),
-        reasoningDistillation: { enabled: true },
+        reasoningDistillation: { enabled: true, sync: false },
       }))
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
@@ -7508,7 +7721,7 @@ distillationIt.instance("cancelling a foreground reasoning barrier seals late or
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig((url) => ({
         ...providerCfg(url),
-        reasoningDistillation: { enabled: true },
+        reasoningDistillation: { enabled: true, sync: false },
       }))
       const { prompt, sessions, chat } = yield* boot()
       const started = yield* Deferred.make<void>()
@@ -7583,7 +7796,7 @@ const thinkingPrefixMemory = ["Replay fixture memory before"]
 const thinkingPrefixIt = testEffect(makeHttp({ memoryContext: thinkingPrefixMemory }))
 const nativeThinkingPrefixIt = testEffect(makeHttp({ memoryContext: thinkingPrefixMemory, native: true }))
 
-function thinkingPrefixReply(signature?: string) {
+function thinkingPrefixReply(signature?: string, thinking = "") {
   return raw({
     chunks: [
       {
@@ -7600,6 +7813,7 @@ function thinkingPrefixReply(signature?: string) {
         },
       },
       { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      ...(thinking ? [{ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking } }] : []),
       { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
       { type: "content_block_stop", index: 0 },
       { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },

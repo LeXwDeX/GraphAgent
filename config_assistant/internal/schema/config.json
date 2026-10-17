@@ -778,6 +778,9 @@
         "enabled": {
           "type": "boolean"
         },
+        "sync": {
+          "type": "boolean"
+        },
         "language": {
           "type": "string",
           "enum": ["zh", "en"]

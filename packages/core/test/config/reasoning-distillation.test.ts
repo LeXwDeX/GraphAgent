@@ -100,3 +100,12 @@ describe("ConfigReasoningDistillation language", () => {
     expect(() => decode({ language: "fr" })).toThrow()
   })
 })
+
+describe("ConfigReasoningDistillation sync", () => {
+  test("defaults to synchronous continuation and accepts an explicit fallback", () => {
+    expect(ConfigReasoningDistillation.resolveSync(undefined)).toBe(true)
+    expect(ConfigReasoningDistillation.resolveSync({})).toBe(true)
+    expect(ConfigReasoningDistillation.resolveSync({ sync: true })).toBe(true)
+    expect(ConfigReasoningDistillation.resolveSync({ sync: false })).toBe(false)
+  })
+})

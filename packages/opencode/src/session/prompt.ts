@@ -13,6 +13,7 @@ import {
   assessCanonicalReasoning,
   makeRewriteBudget,
   makeRewriteScheduler,
+  ReasoningDistillationPolicy,
   rewriteLogFields,
   runReasoningRewrite,
 } from "@opencode-ai/core/session/reasoning-distillation"
@@ -419,6 +420,106 @@ export const layer = Layer.effect(
               return outcome.adopted && { messageID: outcome.adopted.messageID, partID: outcome.adopted.id }
             }),
         }),
+      )
+    // Organize one settled part before the next request in the same turn. No send barrier exists here: the caller
+    // waits for this effect, and the continuation request is built only after adoption has committed.
+    const rewriteReasoningNow = (input: {
+      sessionID: SessionID
+      part: SessionV1.ReasoningPart
+      model: Provider.Model
+    }) =>
+      InstanceState.useEffect(rewriteState, ({ budget }) =>
+        Effect.gen(function* () {
+          const part = yield* sessions.getPart({
+            sessionID: input.sessionID,
+            messageID: input.part.messageID,
+            partID: input.part.id,
+          })
+          if (part?.type !== "reasoning") return false
+          const editability = assessCanonicalReasoning({
+            text: part.text,
+            metadata: part.metadata,
+            settled: part.time.end !== undefined,
+            distilled: part.distillation !== undefined,
+          })
+          if (!editability.editable) return false
+          const cfg = yield* config.get()
+          const organizer = yield* llm.organizer({ model: input.model })
+          if (!organizer) return false
+          const outcome = yield* runReasoningRewrite({
+            budget,
+            sessionID: input.sessionID,
+            slot: { messageID: part.messageID, partID: part.id, text: part.text },
+            language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
+            call: organizer.call,
+            adopt: (replacement) =>
+              adoptReasoning({
+                sessionID: input.sessionID,
+                part,
+                replacement,
+                canAdopt: reasoningDistillationEnabled(input.model),
+              }).pipe(
+                Effect.provideService(Database.Service, database),
+                Effect.provideService(Session.Service, sessions),
+                Effect.provideService(EventV2Bridge.Service, events),
+              ),
+          })
+          yield* Effect.logInfo(
+            "reasoning distillation",
+            rewriteLogFields(outcome, {
+              runtime: "opencode",
+              mode: "sync",
+              "session.id": input.sessionID,
+              model: organizer.model,
+              transport: organizer.transport,
+            }),
+          )
+          return outcome.status === "adopted"
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("reasoning sync distillation failed; using original reasoning", {
+                  "session.id": input.sessionID,
+                  error: Cause.squash(cause),
+                }).pipe(Effect.as(false)),
+          ),
+        ),
+      )
+    // Decide before stopping the stream: only editable, large-enough reasoning with an available organizer and budget
+    // may request a synchronous continuation.
+    const canSplitReasoning = (input: {
+      sessionID: SessionID
+      part: SessionV1.ReasoningPart
+      model: Provider.Model
+    }): Effect.Effect<"split" | "continue"> =>
+      InstanceState.useEffect(rewriteState, ({ budget }) =>
+        Effect.gen(function* () {
+          if (!(yield* reasoningDistillationEnabled(input.model))) return "continue" as const
+          const cfg = yield* config.get()
+          if (!ConfigReasoningDistillation.resolveSync(cfg.reasoningDistillation)) return "continue" as const
+          const editability = assessCanonicalReasoning({
+            text: input.part.text,
+            metadata: input.part.metadata,
+            settled: input.part.time.end !== undefined,
+            distilled: input.part.distillation !== undefined,
+          })
+          if (!editability.editable) return "continue" as const
+          if (Token.estimate(input.part.text) < ReasoningDistillationPolicy.tokens.minimumInputTokens)
+            return "continue" as const
+          if (budget.admit(input.sessionID) !== "ok") return "continue" as const
+          const organizer = yield* llm.organizer({ model: input.model })
+          return organizer ? ("split" as const) : ("continue" as const)
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("reasoning split decision failed; continuing the stream", {
+                  "session.id": input.sessionID,
+                  error: Cause.squash(cause),
+                }).pipe(Effect.as("continue" as const)),
+          ),
+        ),
       )
     // Replace reasoning parts in history already held in memory with their stored versions.
     const withStoredReasoning = Effect.fnUntraced(function* (
@@ -3039,7 +3140,15 @@ export const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
-              onReasoningSettled: (part) => submitReasoningRewrite({ sessionID, part, model }),
+              onReasoningSettled: (part) =>
+                Effect.gen(function* () {
+                  const decision =
+                    toolsDisabled || isLastStep
+                      ? ("continue" as const)
+                      : yield* canSplitReasoning({ sessionID, part, model })
+                  if (decision === "continue") yield* submitReasoningRewrite({ sessionID, part, model })
+                  return decision
+                }),
               displayMode: lastUser.hookMode ?? "noninteractive",
               ...(displayEnabled && settingsHook
                 ? {
@@ -3224,6 +3333,44 @@ export const layer = Layer.effect(
                 }),
               ),
             )
+            if (result === "split") {
+              const phase1 = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+              const assistant = phase1.findLast((message) => message.info.id === handle.message.id)
+              const reasoningParts =
+                assistant?.parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning") ?? []
+              for (const part of reasoningParts) {
+                const adopted = yield* rewriteReasoningNow({ sessionID, part, model })
+                yield* Effect.logInfo("reasoning sync continuation", {
+                  "session.id": sessionID,
+                  "message.id": handle.message.id,
+                  "reasoning.part": part.id,
+                  adopted,
+                })
+              }
+              const continuationMsgs = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+              const continuationModelMsgs = yield* MessageV2.toModelMessagesEffect(continuationMsgs, model, {
+                reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
+              })
+              const continuationFolding = yield* MessageV2.contextFoldingHistory({
+                messages: continuationMsgs,
+                ledger: toolSources,
+              })
+              result = yield* handle.process(
+                {
+                  ...processInput,
+                  messages: [
+                    ...continuationModelMsgs,
+                    {
+                      role: "user",
+                      content:
+                        "Continue from the reasoning above. Produce the final answer now. Do not repeat the reasoning.",
+                    },
+                  ],
+                  contextFolding: continuationFolding,
+                },
+                { allowSplit: false },
+              )
+            }
             if (result === "deferred") return "break" as const
             const settledParts = yield* MessageV2.parts(msg.id).pipe(Effect.provideService(Database.Service, database))
             const batch = settledParts.filter(

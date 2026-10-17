@@ -29,6 +29,11 @@ export class Model extends Schema.Class<Model>("ConfigV2.Model.ReasoningDistilla
  */
 export class Info extends Schema.Class<Info>("ConfigV2.ReasoningDistillation")({
   enabled: Schema.Boolean.pipe(Schema.optional),
+  /**
+   * Organize editable reasoning synchronously before content continues in the same user turn. Defaults to `true`.
+   * Set to `false` to organize after the turn and apply the result on the next request.
+   */
+  sync: Schema.Boolean.pipe(Schema.optional),
   /** Language of the organized prose; literals such as paths and commands stay verbatim. Defaults to `zh`. */
   language: Language.pipe(Schema.optional),
   /** @deprecated Ignored; retained so existing configurations still load. */
@@ -37,6 +42,9 @@ export class Info extends Schema.Class<Info>("ConfigV2.ReasoningDistillation")({
 
 /** Organizer language; Chinese by default because it is shorter for the same content. */
 export const resolveLanguage = (info: Pick<Info, "language"> | undefined): Language => info?.language ?? "zh"
+
+/** Synchronous continuation defaults on; `false` restores the asynchronous next-request path. */
+export const resolveSync = (info: Pick<Info, "sync"> | undefined): boolean => info?.sync !== false
 
 export type EnableSource = "environment" | "model" | "config" | "default"
 
