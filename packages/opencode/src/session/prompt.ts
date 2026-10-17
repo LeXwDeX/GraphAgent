@@ -3998,6 +3998,9 @@ export const layer = Layer.effect(
           )
         : undefined
       if (expansion?.blocked || expansion?.preventContinuation) {
+        // This branch returns before the normal landing point below, so notices
+        // from the hook that stopped the command must be published here.
+        if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
         return yield* commandTurn(
           input.sessionID,
           createUserMessage({
