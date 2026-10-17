@@ -33,6 +33,8 @@ describe("`if` conditions gate hooks on real tool inputs", () => {
     ["Bash(npm install *)", "bash", { command: "npm install @scope/pkg" }],
     ["Write(*.env)", "write", { filePath: "/repo/.env", content: "X=1" }],
     ["Edit(*.ts)", "edit", { filePath: "/repo/src/a.ts", oldString: "a", newString: "b" }],
+    // Core tools (V2) use `path`; the guard must fire for them too.
+    ["Edit(*.ts)", "edit", { path: "/repo/src/a.ts", oldString: "a", newString: "b" }],
   ]
   for (const [cond, tool, input] of cases) {
     it.instance(
@@ -59,4 +61,33 @@ describe("`if` conditions gate hooks on real tool inputs", () => {
       },
     )
   }
+
+  // A non-matching condition on a native `path` input must NOT fire. Before the
+  // evaluator read `path`, the lookup was undefined and every file guard ran.
+  it.instance(
+    "Edit(*.py) deny guard stays silent for a native `path` .ts edit",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const r = yield* hook.trigger(
+          {
+            event: "PreToolUse",
+            toolName: "edit",
+            toolInput: { path: "/repo/src/a.ts", oldString: "a", newString: "b" },
+          },
+          { sessionID: "ses_if_condition_path", transcriptPath: "" },
+        )
+        expect(r.permissionDecision).toBeUndefined()
+      }),
+    {
+      init: (dir) =>
+        Effect.promise(async () => {
+          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.writeFile(
+            path.join(dir, ".opencode", "hooks.json"),
+            JSON.stringify({ PreToolUse: [{ hooks: [deny("Edit(*.py)")] }] }),
+          )
+        }),
+    },
+  )
 })

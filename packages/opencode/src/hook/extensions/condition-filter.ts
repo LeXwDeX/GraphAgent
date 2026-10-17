@@ -85,7 +85,10 @@ export function evaluate(
     return bashMatch(condPattern, command)
   }
   if (is("edit", "write", "read", "multiedit", "notebookedit")) {
-    const file = toolInput.filePath ?? toolInput.file_path ?? toolInput.notebook_path
+    // `path` is the native argument of the core Edit/Write/Read tools; the
+    // camelCase and notebook aliases cover the V1 tools. A miss used to fail
+    // open, so a core-tool edit matched every condition and its negation never.
+    const file = toolInput.filePath ?? toolInput.file_path ?? toolInput.path ?? toolInput.notebook_path
     if (typeof file !== "string" || !file) return true // No extractable arg — fail open
     return fileMatch(condPattern, file, typeof envelope.cwd === "string" ? envelope.cwd : undefined)
   }
