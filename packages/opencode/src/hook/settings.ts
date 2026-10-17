@@ -1430,6 +1430,24 @@ function timeoutFor(entry: HookCommand, event: HookEvent): number {
 const KILL_GRACE_MS = 2_000
 const DRAIN_MS = 500
 
+/**
+ * A deleted working directory must not disable hooks for the rest of the
+ * session: the reference falls back to the session-start directory, the
+ * project root, home, then temp. The instance directory (`cwd`) is already
+ * the first candidate; the stable worktree root survives its deletion.
+ */
+function resolveHookCwd(candidates: readonly (string | undefined)[]): string {
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      if (statSync(candidate).isDirectory()) return candidate
+    } catch {
+      // Missing or unreadable: try the next fallback.
+    }
+  }
+  return os.tmpdir()
+}
+
 function execShell(
   entry: HookCommand,
   stdinJSON: string,
@@ -2266,6 +2284,8 @@ interface StopRewakeChain {
 interface State {
   settings: Settings
   cwd: string
+  /** Stable project root; survives deletion of `cwd`, so hooks can fall back to it. */
+  worktree: string
   /**
    * Deduplicated additionalContext strings, bucketed per sessionID. Each
    * session sees every distinct context once; a second session is NOT
@@ -3005,6 +3025,7 @@ export const layer = Layer.effect(
           settings: chain.settings,
           hooksList: chain.summaries,
           cwd: instCtx.directory,
+          worktree: instCtx.worktree,
           seen: new Map<string, Set<string>>(),
           once: new Map<string, WeakSet<HookCommand>>(),
           onceRunning: new Map<string, WeakMap<HookCommand, string>>(),
@@ -3119,8 +3140,12 @@ export const layer = Layer.effect(
       environmentFile?: string,
       environment?: Record<string, string | undefined>,
       canonicalName?: string,
+      projectDir?: string,
     ) {
       using _ = log.time("runEntry", { type: entry.type, command: commandText(entry).slice(0, 80) })
+      const resolvedCwd = resolveHookCwd([cwd, projectDir, os.homedir(), os.tmpdir()])
+      if (resolvedCwd !== cwd)
+        log.warn("hook working directory unavailable; using fallback", { cwd, fallback: resolvedCwd })
       if (entry.type === "http") {
         const settings = (yield* InstanceState.get(state)).settings
         if (!httpHookUrlAllowed(httpUrl(entry), settings.allowedHttpHookUrls)) {
@@ -3151,7 +3176,7 @@ export const layer = Layer.effect(
         }
       }
       const result = yield* handler
-        .run(entry, envelope, cwd, inHook, environmentFile, environment, canonicalName)
+        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName)
         .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(handlerContext, current)))
       return result
     })
@@ -3480,6 +3505,7 @@ export const layer = Layer.effect(
             ctx.environmentFile,
             ctx.environment,
             ctx.canonicalToolName,
+            s.worktree,
           ).pipe(
             Effect.ensuring(
               entry.statusMessage && ctx.sessionID
