@@ -51,6 +51,40 @@ export function isOverflow(input: {
   return Math.max(count, input.estimatedInputTokens ?? 0) >= triggerLimit(input)
 }
 
+// AI SDK tools expose their JSON schema as `inputSchema` (usually an object with a `jsonSchema`
+// property). Older shapes used `parameters`. Serialize whichever is present so the estimate counts
+// the schema the provider receives, not just the description.
+function toolSchema(tool: unknown) {
+  if (typeof tool !== "object" || tool === null) return undefined
+  const value = tool as { inputSchema?: unknown; parameters?: unknown }
+  if (value.parameters !== undefined) return value.parameters
+  const schema = value.inputSchema
+  if (typeof schema === "object" && schema !== null && "jsonSchema" in schema) {
+    return (schema as { jsonSchema: unknown }).jsonSchema
+  }
+  return schema
+}
+
+function serializedTools(tools: Record<string, unknown> | undefined) {
+  return tools
+    ? Object.entries(tools).map(([name, tool]) => ({
+        name,
+        description:
+          typeof tool === "object" && tool !== null ? (tool as { description?: unknown }).description : undefined,
+        parameters: toolSchema(tool),
+      }))
+    : undefined
+}
+
+/**
+ * Conservative estimate of the parts a conversation request carries besides its messages: system text
+ * and tool schemas. The main loop checks the context limit before it prepares a request, so it reuses
+ * the overhead measured on the previous request instead of omitting these parts.
+ */
+export function estimateOverhead(input: { system: readonly string[]; tools?: Record<string, unknown> }) {
+  return Token.estimateReserve(JSON.stringify({ system: input.system, tools: serializedTools(input.tools) }))
+}
+
 /**
  * Conservative estimate of one prepared provider request. A context gate must include every part the
  * provider receives (system, tool schemas, messages) and must not undercount CJK text: undercounting
@@ -59,14 +93,9 @@ export function isOverflow(input: {
 export function estimateRequest(input: {
   system: readonly string[]
   messages: unknown
-  tools?: Record<string, { description?: string; parameters?: unknown }>
+  tools?: Record<string, unknown>
 }) {
-  const tools = input.tools
-    ? Object.entries(input.tools).map(([name, tool]) => ({
-        name,
-        description: tool.description,
-        parameters: tool.parameters,
-      }))
-    : undefined
-  return Token.estimateReserve(JSON.stringify({ system: input.system, tools, messages: input.messages }))
+  return Token.estimateReserve(
+    JSON.stringify({ system: input.system, tools: serializedTools(input.tools), messages: input.messages }),
+  )
 }

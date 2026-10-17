@@ -476,6 +476,17 @@ const withMcpReadOverride = testEffect(
   }),
 )
 const noLLMServer = testEffect(makeHttpNoLLMServer())
+const withOversizedToolSchema = testEffect(
+  makeHttp({
+    mcpTools: {
+      oversized_schema: aiTool({
+        description: "oversized tool ".repeat(6_000),
+        inputSchema: jsonSchema({ type: "object", properties: {}, additionalProperties: false }),
+        execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+      }),
+    },
+  }),
+)
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
 const snapshotFenceNoLLMServer = testEffect(makeHttpNoLLMServer({ agentLayer: snapshotFenceAgentLayer }))
 const withMcpInstructions = testEffect(
@@ -1676,6 +1687,58 @@ it.instance("checks a smaller switched model after an earlier compaction summary
     expect(messages.filter((message) => message.parts.some((part) => part.type === "compaction"))).toHaveLength(1)
     expect(yield* llm.hits).toHaveLength(2)
   }),
+)
+
+withOversizedToolSchema.instance(
+  "counts the previous request's system and tool overhead when provider usage is unavailable",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => {
+        const config = providerCfg(url)
+        return {
+          ...config,
+          compaction: { auto: true, max_context_tokens: 50_000, tail_turns: 1 },
+          provider: {
+            ...config.provider,
+            test: {
+              ...config.provider.test,
+              models: {
+                ...config.provider.test.models,
+                "small-model": {
+                  ...config.provider.test.models["test-model"],
+                  id: "small-model",
+                  name: "Small Model",
+                  limit: { context: 200_000, output: 10_000 },
+                },
+              },
+            },
+          },
+        }
+      })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Request overhead" })
+      yield* seed(chat.id, { finish: "stop" })
+      yield* user(chat.id, "large request ".repeat(12_000))
+      yield* llm.text("first answer")
+      // The first request has no prior usage to check; it records the overhead it carries.
+      yield* prompt.loop({ sessionID: chat.id })
+
+      // A switched model discards provider usage, so the check falls back to the history estimate plus
+      // the recorded overhead. Their sum exceeds max_context_tokens even though history alone does not.
+      const next = yield* user(chat.id, "continue with the smaller model")
+      yield* sessions.updateMessage({
+        ...next,
+        model: { providerID: ref.providerID, modelID: ModelV2.ID.make("small-model") },
+      })
+      yield* llm.text("short summary")
+      yield* llm.text("continued answer")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      expect(messages.filter((message) => message.parts.some((part) => part.type === "compaction"))).toHaveLength(1)
+    }),
 )
 
 it.instance("uses the new model projection instead of stale usage from the previous model", () =>
@@ -7712,6 +7775,62 @@ distillationIt.instance("compacts instead of sending an oversized synchronous co
     expect(
       reasoningAssistant?.info.role === "assistant" ? reasoningAssistant.info.time.completed : undefined,
     ).toBeDefined()
+  }),
+)
+
+distillationIt.instance("charges the split request whose finish chunk was cut", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => ({ text: "adopted", finishReason: "stop" }),
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "think carefully" }],
+    })
+    yield* llm.push(reply().reason(longThought("step-1")).stop(), reply().text("final-answer").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    const assistant = (yield* sessions.messages({ sessionID: chat.id })).findLast(
+      (message) => message.info.role === "assistant",
+    )
+    if (assistant?.info.role !== "assistant") throw new Error("missing assistant")
+    expect(assistant.parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(true)
+    expect(assistant.info.tokens.input).toBeGreaterThan(0)
+    expect(assistant.info.tokens.reasoning).toBeGreaterThan(0)
+  }),
+)
+
+distillationIt.instance("surfaces an organizer infrastructure defect instead of continuing silently", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    controlledOrganizer = () => Effect.die(new Error("organizer infrastructure failure"))
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "think carefully" }],
+    })
+    yield* llm.push(reply().reason(longThought("step-1")).stop(), reply().text("final-answer").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    const assistant = (yield* sessions.messages({ sessionID: chat.id })).findLast(
+      (message) => message.info.role === "assistant",
+    )
+    if (assistant?.info.role !== "assistant") throw new Error("missing assistant")
+    expect(assistant.info.error).toBeDefined()
+    expect(assistant.parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(false)
   }),
 )
 

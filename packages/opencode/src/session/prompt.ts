@@ -26,7 +26,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { Token } from "@/util/token"
-import { estimateRequest, measured, triggerLimit } from "./overflow"
+import { estimateOverhead, estimateRequest, measured, triggerLimit } from "./overflow"
 import { SessionRevert } from "./revert"
 
 function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messageIndex: number) {
@@ -407,13 +407,15 @@ export const layer = Layer.effect(
           )
           return outcome.status === "adopted"
         }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("reasoning sync distillation failed; using original reasoning", {
-                  "session.id": input.sessionID,
-                  error: Cause.squash(cause),
-                }).pipe(Effect.as(false)),
+          // Model failures already resolve to a skipped outcome. What remains is infrastructure: a typed
+          // failure may degrade to the original reasoning, but a defect (database/schema) must reach the turn.
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause) && !Cause.hasDies(cause),
+            (cause) =>
+              Effect.logWarning("reasoning sync distillation failed; using original reasoning", {
+                "session.id": input.sessionID,
+                error: Cause.squash(cause),
+              }).pipe(Effect.as(false)),
           ),
         ),
       )
@@ -441,13 +443,14 @@ export const layer = Layer.effect(
           const organizer = yield* llm.organizer({ model: input.model })
           return organizer ? ("split" as const) : ("continue" as const)
         }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("reasoning split decision failed; continuing the stream", {
-                  "session.id": input.sessionID,
-                  error: Cause.squash(cause),
-                }).pipe(Effect.as("continue" as const)),
+          // A typed failure keeps the stream; a defect must not be mistaken for "no organizer".
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterrupts(cause) && !Cause.hasDies(cause),
+            (cause) =>
+              Effect.logWarning("reasoning split decision failed; continuing the stream", {
+                "session.id": input.sessionID,
+                error: Cause.squash(cause),
+              }).pipe(Effect.as("continue" as const)),
           ),
         ),
       )
@@ -623,6 +626,10 @@ export const layer = Layer.effect(
       return result.value.additionalContexts
     })
     const scopedAgents = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, string>()))
+    // The loop checks the context limit before it prepares a request, so the system text and tool schemas
+    // of the request it is about to send do not exist yet. Keep the measured overhead of the previous
+    // prepared request per session, and include it when provider usage cannot cover it.
+    const requestOverheads = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, number>()))
     const activateAgentHooks = Effect.fn("SessionPrompt.activateAgentHooks")(function* (
       session: Session.Info,
       name?: string,
@@ -2506,12 +2513,12 @@ export const layer = Layer.effect(
         let agentInputBlocked = false
         let agentBoundaryApproved = false
         let nextAutoCompactionMinimum: number | undefined
-        let autoCompactionPending = false
         // A PreCompact veto of proactive compaction holds for the rest of this run; do not ask again each step.
         let autoCompactionDeclined = false
         let awaitingPostCompactionUsage = false
         let consecutiveAutoCompactions = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        const requestOverheadBySession = yield* InstanceState.get(requestOverheads)
         // Capture the lastAssistant helper before the loop's destructured `lastAssistant`
         // (the latest assistant info) shadows it inside the step body.
         const getLastAssistant = lastAssistant
@@ -2890,10 +2897,7 @@ export const layer = Layer.effect(
               overflow: task.overflow,
             })
             if (result === "stop") break
-            if (result === "declined") {
-              autoCompactionDeclined = true
-              autoCompactionPending = false
-            }
+            if (result === "declined") autoCompactionDeclined = true
             continue
           }
 
@@ -2908,9 +2912,10 @@ export const layer = Layer.effect(
             // Same-model usage reflects the prior prepared request, including folding. Add new user text and
             // pending tool results below. On a model switch, estimate the active projected history.
             // Media is stripped before either estimate and never logged.
-            const estimateMessages = switchedModel || lastFinished.summary === true ? msgs : newUsers
+            const freshEstimate = switchedModel || lastFinished.summary === true
+            const estimateMessages = freshEstimate ? msgs : newUsers
             const estimatedTextTokens = estimateMessages.length
-              ? Token.estimate(
+              ? Token.estimateReserve(
                   JSON.stringify(
                     yield* MessageV2.toModelMessagesEffect(estimateMessages, model, {
                       stripMedia: true,
@@ -2919,21 +2924,25 @@ export const layer = Layer.effect(
                   ),
                 )
               : 0
+            // Provider usage already covers the system text and tool schemas of the previous request, but a
+            // switch or post-compaction summary discards it. Reuse the overhead measured on the last prepared
+            // request so that estimate still includes what the provider actually receives.
+            const estimatedRequestOverhead = freshEstimate ? (requestOverheadBySession.get(sessionID) ?? 0) : 0
             // Provider usage covers the request that produced lastFinished, but not tool results that completed
             // afterward. Each result is still present until a projection actually folds it; text equality alone
             // does not authorize a budget deduction (e.g. bash results are protected from folding).
-            const pendingToolOutputTokens =
-              switchedModel || lastFinished.summary === true
-                ? 0
-                : estimatePendingToolOutputTokens(msgs, lastFinishedIndex)
-            const estimatedInputTokens =
-              switchedModel || lastFinished.summary === true
-                ? estimatedTextTokens
-                : observedTokens + estimatedTextTokens + pendingToolOutputTokens
-            if (lastFinished.summary === true && autoCompactionPending) {
-              autoCompactionPending = false
-              awaitingPostCompactionUsage = true
-            }
+            const pendingToolOutputTokens = freshEstimate ? 0 : estimatePendingToolOutputTokens(msgs, lastFinishedIndex)
+            const estimatedInputTokens = freshEstimate
+              ? estimatedTextTokens + estimatedRequestOverhead
+              : observedTokens + estimatedTextTokens + pendingToolOutputTokens
+            // A compaction leaves only its summary for the next estimate, and compaction cannot shrink the
+            // fixed system and tool overhead. Judge only the message portion after a summary: a summary that
+            // fits is sent once for its real usage, and a retained tail that still does not fit is compacted
+            // again. When the overhead alone exceeds the limit, the provider rejects the request and the
+            // overflow recovery path handles it. This also covers a pending compaction task from an earlier
+            // loop, whose summary would otherwise re-trigger compaction immediately.
+            const overflowEstimate = lastFinished.summary === true ? estimatedTextTokens : estimatedInputTokens
+            if (lastFinished.summary === true) awaitingPostCompactionUsage = true
             const effectiveTokens = Math.max(observedTokens, estimatedInputTokens)
             const afterCompaction = lastFinished.summary !== true && awaitingPostCompactionUsage
             if (afterCompaction) {
@@ -2949,7 +2958,7 @@ export const layer = Layer.effect(
             const hardOverflow = yield* compaction.isOverflow({
               tokens,
               model,
-              estimatedInputTokens,
+              estimatedInputTokens: overflowEstimate,
               threshold: "model",
             })
             if (afterCompaction && !hardOverflow) consecutiveAutoCompactions = 0
@@ -2957,7 +2966,12 @@ export const layer = Layer.effect(
               !hardOverflow &&
               lastFinished.summary !== true &&
               enoughNewContext &&
-              (yield* compaction.isOverflow({ tokens, model, estimatedInputTokens, threshold: "auto" }))
+              (yield* compaction.isOverflow({
+                tokens,
+                model,
+                estimatedInputTokens: overflowEstimate,
+                threshold: "auto",
+              }))
             if (hardOverflow || (proactiveOverflow && !autoCompactionDeclined)) {
               if (consecutiveAutoCompactions >= 3) {
                 const error = new SessionV1.ContextOverflowError({
@@ -2967,7 +2981,6 @@ export const layer = Layer.effect(
                 throw error
               }
               consecutiveAutoCompactions++
-              autoCompactionPending = true
               yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
               continue
             }
@@ -3244,6 +3257,12 @@ export const layer = Layer.effect(
               const queued = yield* settingsHook.drainAsync(sessionID)
               processInput.system.push(...queued.additionalContexts)
             }
+            // Record what this request carries besides its messages. The next limit check runs before the
+            // next request is prepared, when system text and tool schemas are not available yet.
+            requestOverheadBySession.set(
+              sessionID,
+              estimateOverhead({ system: processInput.system, tools: processInput.tools }),
+            )
             const modelStarted = performance.now()
             let result = yield* handle.process(processInput).pipe(
               Effect.onExit((exit) =>
