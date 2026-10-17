@@ -382,14 +382,15 @@ export const layer = Layer.effect(
         allowSplit: boolean,
       ) {
         if (!(reasoningID in ctx.reasoningMap)) return
+        const part = ctx.reasoningMap[reasoningID]
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
         if (mirrorAssistant) {
           yield* events.publish(SessionEvent.Reasoning.Ended, {
             sessionID: ctx.sessionID,
             assistantMessageID: yield* currentV2AssistantMessage(),
-            reasoningID,
-            text: ctx.reasoningMap[reasoningID].text,
-            providerMetadata: ctx.reasoningMap[reasoningID].metadata,
+            reasoningID: part.v2?.reasoningID ?? reasoningID,
+            text: part.text,
+            providerMetadata: part.metadata,
             timestamp: DateTime.makeUnsafe(Date.now()),
           })
         }
@@ -428,7 +429,7 @@ export const layer = Layer.effect(
               events.publish(SessionEvent.Reasoning.Ended, {
                 sessionID: ctx.sessionID,
                 assistantMessageID,
-                reasoningID,
+                reasoningID: part.v2?.reasoningID ?? reasoningID,
                 text: part.text,
                 providerMetadata: part.metadata,
                 timestamp: DateTime.makeUnsafe(Date.now()),
@@ -517,38 +518,44 @@ export const layer = Layer.effect(
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
-          case "reasoning-start":
+          case "reasoning-start": {
             ctx.attemptReasoningActivity = true
             if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
             if (value.id in ctx.reasoningMap) return
-            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            if (mirrorAssistant) {
-              yield* events.publish(SessionEvent.Reasoning.Started, {
-                sessionID: ctx.sessionID,
-                assistantMessageID: yield* ensureV2AssistantMessage(),
-                reasoningID: value.id,
-                providerMetadata: value.providerMetadata,
-                timestamp: DateTime.makeUnsafe(Date.now()),
-              })
-            }
-            ctx.reasoningMap[value.id] = {
-              id: PartID.ascending(),
+            // The provider restarts its stream-local ids for every request. A continuation reuses this assistant
+            // message, so the v2 mirror identity must come from the globally unique part id instead.
+            const partID = PartID.ascending()
+            const v2AssistantMessageID = mirrorAssistant ? yield* ensureV2AssistantMessage() : undefined
+            const part: SessionV1.ReasoningPart = {
+              id: partID,
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "reasoning",
               text: "",
-              ...(ctx.v2AssistantMessageID
-                ? { v2: { messageID: ctx.v2AssistantMessageID, reasoningID: value.id } }
+              ...(v2AssistantMessageID
+                ? { v2: { messageID: v2AssistantMessageID, reasoningID: partID } }
                 : {}),
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            ctx.attemptReasoningParts.set(ctx.reasoningMap[value.id].id, {
-              reasoningID: value.id,
-              assistantMessageID: ctx.v2AssistantMessageID,
+            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            if (v2AssistantMessageID) {
+              yield* events.publish(SessionEvent.Reasoning.Started, {
+                sessionID: ctx.sessionID,
+                assistantMessageID: v2AssistantMessageID,
+                reasoningID: partID,
+                providerMetadata: value.providerMetadata,
+                timestamp: DateTime.makeUnsafe(Date.now()),
+              })
+            }
+            ctx.reasoningMap[value.id] = part
+            ctx.attemptReasoningParts.set(partID, {
+              reasoningID: partID,
+              assistantMessageID: v2AssistantMessageID,
             })
-            yield* session.updatePart(ctx.reasoningMap[value.id])
+            yield* session.updatePart(part)
             return
+          }
 
           case "reasoning-delta":
             ctx.attemptReasoningActivity = true
@@ -562,7 +569,7 @@ export const layer = Layer.effect(
               yield* events.publish(SessionEvent.Reasoning.Delta, {
                 sessionID: ctx.sessionID,
                 assistantMessageID: yield* currentV2AssistantMessage(),
-                reasoningID: value.id,
+                reasoningID: ctx.reasoningMap[value.id].v2?.reasoningID ?? value.id,
                 delta: value.text,
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })

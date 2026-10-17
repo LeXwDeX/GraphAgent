@@ -2,14 +2,15 @@
 
 Branch: `refactor/reasoning-rewrite-engine`. Baseline: `main` at `1b69adcdcf`.
 
-> **2026-10-17 update — synchronous continuation is now the default.** For editable (unsigned/plaintext-mirror)
-> reasoning, when a reasoning part ends before any content or tool call starts, the host stops that stream, organizes
-> the part, adopts it, and sends a continuation request in the same user turn. The continuation reuses the same
-> assistant message and asks the model to answer from the organized reasoning. Signed, encrypted, referenced and
-> unknown carriers never enter this path. Set `reasoningDistillation.sync: false` to keep the older asynchronous
-> next-request behavior described below; that path also remains the fallback when content or tools already started,
-> no organizer is available, or organization fails. This document's barrier details apply to the `sync: false`
-> fallback unless explicitly stated otherwise.
+> **2026-10-17 update — synchronous organization only.** There is no asynchronous rewrite fallback. Each editable
+> (unsigned/plaintext-mirror) reasoning part is organized synchronously when it ends. If no content or tool call has
+> started, the host stops the stream, organizes and adopts the part, and continues the same assistant message in the
+> same user turn, repeating for each new reasoning part until content/tools start or a bounded continuation limit is
+> reached. The continuation reuses the phase-one request prefix so the provider can reuse its KV cache. The organizer
+> is awaited directly; an unresponsive call is bounded by `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`, and a
+> failed or timed-out call keeps that part's original reasoning. Signed, encrypted, referenced and unknown carriers are
+> never changed. The scheduler, send barriers, adaptive first-frame window and sealing rules below describe the retired
+> asynchronous implementation and are retained only as historical design notes.
 
 ## Why
 

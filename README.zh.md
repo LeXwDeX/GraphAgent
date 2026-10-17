@@ -23,14 +23,14 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 以下功能都是本 fork 在 opencode 之上自行开发的，各自可选或自成体系；opencode 的其余部分（多 Provider、LSP、客户端/服务器、TUI/桌面/Web 客户端）与上游一致。
 
-| 功能                                  | 作用                                                                   | 怎么用                                                                         |
-| ------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| [思考自动塑形](#思考自动塑形)         | 思考结束后先由小模型同步整理，再用整理后的内容继续生成正文（默认开启） | `reasoningDistillation.enabled` + `reasoningDistillation.sync` + `small_model` |
-| [DAG 工作流](#dag-工作流)             | 把任务拆成可持久化的子智能体依赖图并跑完                               | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc`                            |
-| [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语                                 | `/memory on`                                                                   |
-| [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标                             | `/goal`、`/subgoal`                                                            |
-| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                                      | `hooks.json`、`/create-hook`、`/import-claude-hooks`                           |
-| [上下文管理](#上下文管理)             | 折叠重复工具输出、限制工具调用、压缩长会话                             | `compaction`、`maxToolCalls`                                                   |
+| 功能                                  | 作用                                                                   | 怎么用                                               |
+| ------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
+| [思考自动塑形](#思考自动塑形)         | 思考结束后先由小模型同步整理，再用整理后的内容继续生成正文（默认开启） | `reasoningDistillation.enabled` + `small_model`      |
+| [DAG 工作流](#dag-工作流)             | 把任务拆成可持久化的子智能体依赖图并跑完                               | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc`  |
+| [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语                                 | `/memory on`                                         |
+| [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标                             | `/goal`、`/subgoal`                                  |
+| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                                      | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
+| [上下文管理](#上下文管理)             | 折叠重复工具输出、限制工具调用、压缩长会话                             | `compaction`、`maxToolCalls`                         |
 
 ---
 
@@ -43,7 +43,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 整理时优先用配置的 `small_model`，否则用当前服务商自带的小模型；两者都没有时不改写。整理时保留最终的事实、数值、计算结果、约束、真实执行结果和待办，以及思考中积累的工作状态：已排除的假设及其依据、已检查的位置及结果（包括“未发现”）、已确认的指代；删掉重复、已被否定的猜测和空话；路径、命令、代码、URL、配置键和数值逐字保留。
 
 - **只改安全的载体。** 只整理普通思考和明文镜像；带签名、加密或服务端引用的思考（Anthropic thinking 签名、OpenAI 加密推理、Gemini thought 签名）一律不动，也不触发同步暂停。
-- **正文或工具已开始时不打断。** 如果思考结束时正文或工具调用已经开始，保留当前响应；整理改为后台进行，并在下一次请求前生效。
+- **正文或工具已开始时不打断。** 如果思考结束时正文或工具调用已经开始，保留当前响应；思考仍会立即同步整理，但不会为了整理而中断已开始的输出。
 - **失败回退。** 整理失败、超时或没有可用的小模型时，使用原始思考继续生成正文，用户仍能得到回答。
 - **可还原。** 原文和原始 metadata 随思考一起保存；关闭功能后回放的就是原文。
 - **走引擎层。** 整理请求通过内置的 `@opencode-ai/llm` 引擎发送：不带工具、不自动重试、推理档位用 `none`/`low`；只有整理结果确实更省 token 才会采用。
@@ -54,13 +54,12 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
   "small_model": "provider/small-model", // 建议选有 `none` 推理档位的模型
   "reasoningDistillation": {
     "enabled": true, // 默认值；设为 false 关闭
-    "sync": true, // 默认值；同步整理并影响后续输出。设为 false 使用旧的“后台整理、下一次请求生效”模式
     "language": "zh", // 整理后说明文字的语言："zh"（默认）或 "en"
   },
 }
 ```
 
-`sync: false` 时保留旧模式：每次向模型发请求前，会话最多等待一个很短的窗口（`OPENCODE_REASONING_DISTILLATION_SETTLE_MS`，默认 3000 ms）；没整理完的部分被封存，永久保留原文，因此不会让之前请求已经写入的提示缓存前缀失效。
+每段思考结束后都会同步等待整理结果；没有后台整理任务，也没有首帧等待窗口。整理调用没有响应时，受 `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 超时约束，超时后使用原始思考继续。
 
 `OPENCODE_DISABLE_REASONING_DISTILLATION=1` 可以无视配置直接关闭；`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 限制单次整理调用的时长。日志会记录每一次整理（`reasoning distillation`）和每一次封存（`reasoning rewrite sealed`）。
 

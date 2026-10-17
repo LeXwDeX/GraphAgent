@@ -1,5 +1,7 @@
 # 内化推理蒸馏：开发设计与验收规格
 
+> **2026-10-17 修订（仅同步整理）：** 不再有异步整理任务、发送屏障或首帧等待窗口。每段可编辑思考在结束时同步整理；正文或工具尚未开始时，宿主暂停当前响应，采用整理结果后继续同一条 assistant 消息，最多 3 次 continuation。正文或工具已开始时，等待整理完成后继续。`reasoningDistillation.sync` 与 `OPENCODE_REASONING_DISTILLATION_SETTLE_MS` 已移除；未响应的整理调用仅受 `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 约束，失败或超时保留原文。下方 2026-10-08 异步契约保留为历史背景。
+>
 > **2026-10-09 修订（#728）：** 小模型的噪声判定不再无条件采信。只有原文不含具体内容（数字、URL、路径或文件名、代码片段、代码标识符、中文里的拉丁名称、明确的决定/待办/状态词）时，`<<NO_USEFUL_REASONING>>` 才替换为“（无有效推理）”；否则跳过（`rejected-noise-verdict`）并保留原文。标记与其他文字混在一起的输出视为无效（`invalid-output`），同样保留原文。
 >
 > **2026-10-09 修订（#726）：** 默认开启，`enabled: false` 或 `OPENCODE_DISABLE_REASONING_DISTILLATION` 可关闭。整理指令区分有依据的排除与被否定的猜测：已排除的假设及其依据、已检查的位置及结果（包括“未发现”）、已确认的指代都要保留。下方契约中与此冲突的“默认关闭”已被取代。

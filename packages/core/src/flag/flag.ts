@@ -63,20 +63,6 @@ export const Flag = {
     const parsed = Number(process.env["OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS"])
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30_000
   },
-  /** Override the synchronous organizer's first-frame window. Unset values use the adaptive token-based budget. */
-  get OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS() {
-    const raw = process.env["OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS"]
-    if (raw === undefined || raw.trim() === "") return undefined
-    const parsed = Number(raw)
-    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
-  },
-  /** Extra wait for pending rewrites to start responding before a provider request. Started streams finish; waiting
-   * jobs are sealed. Unset/invalid values use adaptive 3–15s; 0 immediately seals only jobs without a response. */
-  get OPENCODE_REASONING_DISTILLATION_SETTLE_MS() {
-    const raw = process.env["OPENCODE_REASONING_DISTILLATION_SETTLE_MS"]
-    const parsed = Number(raw)
-    return raw !== undefined && raw.trim() !== "" && Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
-  },
   get OPENCODE_EXPERIMENTAL_REFERENCES() {
     return enabledByExperimental("OPENCODE_EXPERIMENTAL_REFERENCES")
   },
