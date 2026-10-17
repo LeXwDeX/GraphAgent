@@ -65,17 +65,25 @@ cliIt.live(
       expect(submitted).toEqual([
         expect.objectContaining({ session_id: id, prompt: "CANONICAL_USER_INPUT", env: "real-startup" }),
       ])
+      const fileChanged = () =>
+        rows().pipe(Effect.map((records) => records.filter((row) => row.hook_event_name === "FileChanged")))
       yield* Effect.promise(() => fs.writeFile(watched, "external V2 write"))
       yield* pollWithTimeout(
-        rows().pipe(Effect.map((records) => records.find((row) => row.hook_event_name === "FileChanged"))),
+        fileChanged().pipe(Effect.map((records) => (records.length > 0 ? records : undefined))),
         "V2 startup file watcher did not fire",
         "5 seconds",
       )
+      // A single write may report a rename/change pair asynchronously. Let the first
+      // write settle so the post-delete assertion measures new events, not old ones.
+      yield* Effect.sleep("300 millis")
+      const before = (yield* fileChanged()).length
       yield* request(`/session/${id}`, "DELETE")
       expect((yield* rows()).filter((row) => row.hook_event_name === "SessionEnd")).toHaveLength(1)
+      // Session removal clears the dynamic watch; give the clear a CI-sized window.
+      yield* Effect.sleep("300 millis")
       yield* Effect.promise(() => fs.writeFile(watched, "after deletion"))
-      yield* Effect.sleep("100 millis")
-      expect((yield* rows()).filter((row) => row.hook_event_name === "FileChanged")).toHaveLength(1)
+      yield* Effect.sleep("500 millis")
+      expect((yield* fileChanged()).length).toBe(before)
     }),
 )
 
