@@ -3061,16 +3061,17 @@ export const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
-              onReasoningSettled: (part) =>
+              onReasoningSettled: (part, canSplit) =>
                 Effect.gen(function* () {
                   if (toolsDisabled || isLastStep) {
                     yield* rewriteReasoningNow({ sessionID, part, model })
                     return "continue" as const
                   }
                   const decision = yield* canSplitReasoning({ sessionID, part, model })
-                  // A split rewrites this and any other reasoning part in the continuation loop, after the stream
-                  // stops. Only a non-split part is rewritten here, so one part never pays for two organizer calls.
-                  if (decision === "continue") yield* rewriteReasoningNow({ sessionID, part, model })
+                  // A real split rewrites this and any other reasoning part in the continuation loop, after the
+                  // stream stops. A part that cannot split is rewritten here, so one part never pays twice and the
+                  // last part after the continuation limit is still organized.
+                  if (!canSplit || decision === "continue") yield* rewriteReasoningNow({ sessionID, part, model })
                   return decision
                 }),
               displayMode: lastUser.hookMode ?? "noninteractive",
@@ -3265,6 +3266,7 @@ export const layer = Layer.effect(
               const reasoningParts =
                 assistant?.parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning") ?? []
               for (const part of reasoningParts) {
+                if (part.distillation) continue
                 const adopted = yield* rewriteReasoningNow({ sessionID, part, model })
                 yield* Effect.logInfo("reasoning sync continuation", {
                   "session.id": sessionID,

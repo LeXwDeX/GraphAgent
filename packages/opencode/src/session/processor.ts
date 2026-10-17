@@ -71,10 +71,11 @@ type Input = {
   sessionID: SessionID
   model: Provider.Model
   /**
-   * Called once per reasoning part that ended normally, after it is persisted. Returns `split` when the host wants
+   * Called once per reasoning part that ended normally, after it is persisted. `canSplit` is false when this request
+   * may not stop for a continuation, so the host must organize the part in place. Returns `split` when the host wants
    * to stop this stream before content or tools start, organize the reasoning, and continue in a second request.
    */
-  onReasoningSettled?: (part: SessionV1.ReasoningPart) => Effect.Effect<"split" | "continue">
+  onReasoningSettled?: (part: SessionV1.ReasoningPart, canSplit: boolean) => Effect.Effect<"split" | "continue">
   displayMode?: "interactive" | "noninteractive"
   onTextDisplay?: (batch: { delta: string; index: number; final: boolean }) => Effect.Effect<string>
 }
@@ -400,7 +401,7 @@ export const layer = Layer.effect(
         const settled = yield* session.updatePart(ctx.reasoningMap[reasoningID])
         delete ctx.reasoningMap[reasoningID]
         if (!input.onReasoningSettled || ctx.assistantMessage.summary) return
-        const decision = yield* input.onReasoningSettled(settled)
+        const decision = yield* input.onReasoningSettled(settled, allowSplit && ctx.allowSplit)
         if (
           allowSplit &&
           ctx.allowSplit &&

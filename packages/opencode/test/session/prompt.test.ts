@@ -7661,6 +7661,54 @@ for (const stage of ["memory", "tools"] as const) {
   )
 }
 
+distillationIt.instance("organizes the last reasoning part when the continuation limit is exhausted", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    let organizerCalls = 0
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          organizerCalls++
+          return { text: `adopted-${organizerCalls}`, finishReason: "stop" }
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "think carefully" }],
+    })
+    // Each request emits only reasoning until the fourth one, so the first three split and the last must be
+    // organized in place after the continuation limit is reached.
+    yield* llm.push(
+      reply().reason(longThought("step-1")).stop(),
+      reply().reason(longThought("step-2")).stop(),
+      reply().reason(longThought("step-3")).stop(),
+      reply().reason(longThought("step-4")).text("final-answer").stop(),
+    )
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(organizerCalls).toBe(4)
+    const hits = (yield* llm.hits).filter(
+      (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+    )
+    expect(hits).toHaveLength(4)
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.filter((part) => part.type === "reasoning").map((part) => part.text)).toEqual([
+      "adopted-1",
+      "adopted-2",
+      "adopted-3",
+      "adopted-4",
+    ])
+    expect(parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(true)
+  }),
+)
+
 distillationIt.instance("does not split reasoning below the organizer minimum", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
