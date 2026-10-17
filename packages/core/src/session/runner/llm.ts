@@ -731,7 +731,7 @@ export const layer = Layer.effect(
               yield* renderDisplay(displayBuffer.append(event.id, event.text))
             }
             if (event.type === "reasoning-end" && reasoningEnabled) {
-              // Persist the settled part before its rewrite job reads it.
+              // Persist the settled part before the synchronous rewrite reads it.
               yield* withPublication(batch.flush())
               yield* rewriteReasoningNow({
                 sessionID: session.id,

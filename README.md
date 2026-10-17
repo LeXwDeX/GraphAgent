@@ -46,19 +46,23 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 Thinking models send their earlier reasoning back to the provider on later steps. Long reasoning is full of restated
 requests, abandoned guesses and correction narrative, and every later request pays for it again.
 
-Reasoning shaping is on by default. Each reasoning part is handed to the small model **as soon as it ends**: the
-configured `small_model`, otherwise the provider's own small model; with neither, nothing is rewritten. The organizer
-keeps final facts, values, calculations, constraints, real execution results and open items, plus the working state the
-reasoning built: excluded hypotheses with their evidence, checked locations with their results (including "nothing
-found") and confirmed references. It removes duplicates, refuted guesses and filler; paths, commands, code, URLs,
-configuration keys and numbers stay verbatim. The rewrite runs while the step's tools execute, and the next request
-carries it.
+Reasoning shaping is on by default and is fully synchronous. A thinking model first emits its reasoning; if the
+reasoning has no signature and no content or tool call has started, the session pauses the response, organizes the
+reasoning with the small model, then continues the same assistant message with the organized text. The user still sees
+one turn, but the rest of the model output is based on the organized reasoning. The organizer is the configured
+`small_model`, otherwise the provider's own small model; with neither, nothing is rewritten.
 
-- **Rewrite before first resend, or never.** Before every provider request, the session waits for unfinished rewrites
-  up to a short window (`OPENCODE_REASONING_DISTILLATION_SETTLE_MS`, default 3000 ms). Anything not ready is sealed and
-  keeps its original text for good, so provider prompt-cache prefixes from earlier requests are never invalidated.
+The organizer keeps final facts, values, calculations, constraints, real execution results and open items, plus the
+working state the reasoning built: excluded hypotheses with their evidence, checked locations with their results
+(including "nothing found") and confirmed references. It removes duplicates, refuted guesses and filler; paths,
+commands, code, URLs, configuration keys and numbers stay verbatim.
+
 - **Only safe carriers.** Plain reasoning and plaintext mirrors are rewritten. Signed, encrypted or referenced reasoning
   (Anthropic thinking signatures, OpenAI encrypted reasoning, Gemini thought signatures) is never touched.
+- **No interruption after output starts.** If content or a tool call has already started, the response is not paused;
+  the reasoning is still organized in place before the stream continues.
+- **Fallback.** If organization fails, times out or no organizer is available, the original reasoning continues and the
+  user still gets an answer.
 - **Reversible.** The original text and metadata are stored with the part; turning the feature off replays originals.
 - **Engine-level.** The organizer call goes through the built-in `@opencode-ai/llm` engine with no tools, no retries and
   `none`/`low` reasoning effort; a rewrite is adopted only if it is actually smaller.
@@ -74,9 +78,10 @@ carries it.
 }
 ```
 
-`OPENCODE_DISABLE_REASONING_DISTILLATION=1` turns it off regardless of configuration;
-`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` bounds each organizer call. Logs report every rewrite
-(`reasoning distillation`) and every sealed barrier (`reasoning rewrite sealed`).
+Every reasoning part is organized synchronously; there is no background job and no first-frame window. An
+unresponsive organizer call is bounded by `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`.
+`OPENCODE_DISABLE_REASONING_DISTILLATION=1` turns the feature off regardless of configuration. Logs report every
+rewrite (`reasoning distillation`) and fallbacks that keep the original reasoning.
 
 ---
 

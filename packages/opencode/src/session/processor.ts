@@ -401,16 +401,19 @@ export const layer = Layer.effect(
         const settled = yield* session.updatePart(ctx.reasoningMap[reasoningID])
         delete ctx.reasoningMap[reasoningID]
         if (!input.onReasoningSettled || ctx.assistantMessage.summary) return
-        const decision = yield* input.onReasoningSettled(settled, allowSplit && ctx.allowSplit)
-        if (
+        // A part may only stop the stream while this attempt has produced no visible text or tool activity. The host
+        // uses the same flag to decide whether it can defer organization to the continuation loop or must organize
+        // the part in place.
+        const canSplit =
           allowSplit &&
           ctx.allowSplit &&
-          decision === "split" &&
           ctx.currentText === undefined &&
+          ctx.attemptTextLength === 0 &&
           Object.keys(ctx.toolcalls).length === 0 &&
-          ctx.admittedToolCalls === 0
-        )
-          ctx.splitForContinuation = true
+          ctx.admittedToolCalls === 0 &&
+          !ctx.attemptToolActivity
+        const decision = yield* input.onReasoningSettled(settled, canSplit)
+        if (canSplit && decision === "split") ctx.splitForContinuation = true
       })
 
       const flushV2Fragments = Effect.fn("SessionProcessor.flushV2Fragments")(function* () {
