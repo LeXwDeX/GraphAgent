@@ -3532,21 +3532,7 @@ const reasoningStep = (id: string, final: boolean) => [
       ]),
 ]
 
-const withSettleWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =>
-  Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const previous = process.env.OPENCODE_REASONING_DISTILLATION_SETTLE_MS
-      process.env.OPENCODE_REASONING_DISTILLATION_SETTLE_MS = ms
-      return previous
-    }),
-    () => effect,
-    (previous) =>
-      Effect.sync(() => {
-        if (previous === undefined) delete process.env.OPENCODE_REASONING_DISTILLATION_SETTLE_MS
-        else process.env.OPENCODE_REASONING_DISTILLATION_SETTLE_MS = previous
-      }),
-  )
-
+// Shaping is synchronous; keep the old fixtures without a timing environment variable.
 for (const scenario of [
   { id: "gpt-test", global: true, enabled: undefined, expected: true },
   { id: "anthropic/claude-test", global: true, enabled: undefined, expected: true },
@@ -3555,149 +3541,105 @@ for (const scenario of [
   { id: "gpt-test", global: false, enabled: true, expected: true },
 ]) {
   it.effect(`Core runner model distillation ${scenario.id} global=${scenario.global} model=${scenario.enabled}`, () =>
-    withSettleWindow(
-      "5000",
-      Effect.gen(function* () {
-        yield* setup
-        currentModel = Object.assign(Model.make({ id: scenario.id, provider: "fake", route: OpenAIChat.route }), {
-          configID: ModelV2.ID.make("friendly-alias"),
-        })
-        reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: scenario.global })
-        modelReasoningConfig = Schema.decodeUnknownSync(Config.Info)({
-          providers: {
-            fake: {
-              models: {
-                "friendly-alias": {
-                  reasoningDistillation: scenario.enabled === undefined ? undefined : { enabled: scenario.enabled },
-                },
+    Effect.gen(function* () {
+      yield* setup
+      currentModel = Object.assign(Model.make({ id: scenario.id, provider: "fake", route: OpenAIChat.route }), {
+        configID: ModelV2.ID.make("friendly-alias"),
+      })
+      reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: scenario.global })
+      modelReasoningConfig = Schema.decodeUnknownSync(Config.Info)({
+        providers: {
+          fake: {
+            models: {
+              "friendly-alias": {
+                reasoningDistillation: scenario.enabled === undefined ? undefined : { enabled: scenario.enabled },
               },
             },
           },
-        }).providers
-        // A later config document editing another property/model must not erase the lower-level model switch.
-        extraConfigEntries = [
-          new Config.Document({
-            type: "document",
-            info: Schema.decodeUnknownSync(Config.Info)({
-              providers: {
-                fake: {
-                  models: {
-                    "friendly-alias": { name: "Display name" },
-                    unrelated: { reasoningDistillation: { enabled: !scenario.enabled } },
-                  },
+        },
+      }).providers
+      // A later config document editing another property/model must not erase the lower-level model switch.
+      extraConfigEntries = [
+        new Config.Document({
+          type: "document",
+          info: Schema.decodeUnknownSync(Config.Info)({
+            providers: {
+              fake: {
+                models: {
+                  "friendly-alias": { name: "Display name" },
+                  unrelated: { reasoningDistillation: { enabled: !scenario.enabled } },
                 },
               },
-            }),
+            },
           }),
-        ]
-        const organized: string[] = []
-        auxiliary = (request) =>
-          Effect.sync(() => {
-            organized.push(String(request.model.id))
-            return auxiliaryResponse("adopted-model-reasoning")
-          })
-        const session = yield* SessionV2.Service
-        requests.length = 0
-        yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "first" }), resume: false })
-        responses = [reasoningStep("r-1", false), []]
-        yield* session.resume(sessionID)
-        expect(requests).toHaveLength(2)
-        const sent = JSON.stringify(requests[1].messages)
-        expect(organized).toHaveLength(scenario.expected ? 1 : 0)
-        expect(sent).toContain(scenario.expected ? "adopted-model-reasoning" : "original-r-1")
-        expect(sent).not.toContain(scenario.expected ? "original-r-1" : "adopted-model-reasoning")
-        if (!scenario.expected) return
-        // A new request to a model with distillation disabled must restore the original stored source.
-        reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: false })
-        currentModel = Model.make({ id: "gpt-other", provider: "fake", route: OpenAIChat.route })
-        responses = [[]]
-        yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
-        yield* session.resume(sessionID)
-        const switched = JSON.stringify(requests.at(-1)?.messages)
-        expect(switched).toContain("original-r-1")
-        expect(switched).not.toContain("adopted-model-reasoning")
-      }),
-    ),
+        }),
+      ]
+      const organized: string[] = []
+      auxiliary = (request) =>
+        Effect.sync(() => {
+          organized.push(String(request.model.id))
+          return auxiliaryResponse("adopted-model-reasoning")
+        })
+      const session = yield* SessionV2.Service
+      requests.length = 0
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "first" }), resume: false })
+      responses = [reasoningStep("r-1", false), []]
+      yield* session.resume(sessionID)
+      expect(requests).toHaveLength(2)
+      const sent = JSON.stringify(requests[1].messages)
+      expect(organized).toHaveLength(scenario.expected ? 1 : 0)
+      expect(sent).toContain(scenario.expected ? "adopted-model-reasoning" : "original-r-1")
+      expect(sent).not.toContain(scenario.expected ? "original-r-1" : "adopted-model-reasoning")
+      if (!scenario.expected) return
+      // A new request to a model with distillation disabled must restore the original stored source.
+      reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: false })
+      currentModel = Model.make({ id: "gpt-other", provider: "fake", route: OpenAIChat.route })
+      responses = [[]]
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
+      yield* session.resume(sessionID)
+      const switched = JSON.stringify(requests.at(-1)?.messages)
+      expect(switched).toContain("original-r-1")
+      expect(switched).not.toContain("adopted-model-reasoning")
+    }),
   )
 }
 
 it.effect("Core runner rewrites each step's reasoning before its first resend", () =>
-  withSettleWindow(
-    "5000",
-    Effect.gen(function* () {
-      yield* setup
-      currentModel = Model.make({
-        id: "distillation",
-        provider: "fake",
-        route: OpenAIChat.route.with({ limits: { context: 100_000, output: 4096 } }),
+  Effect.gen(function* () {
+    yield* setup
+    currentModel = Model.make({
+      id: "distillation",
+      provider: "fake",
+      route: OpenAIChat.route.with({ limits: { context: 100_000, output: 4096 } }),
+    })
+    reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: true })
+    const organized: string[] = []
+    auxiliary = (request) =>
+      Effect.sync(() => {
+        expect(String(request.model.id)).toBe("small-distillation")
+        const source = JSON.stringify(request.messages).match(/original-(r-\d)/)?.[1] ?? "unknown"
+        organized.push(source)
+        return auxiliaryResponse(`采用-${source}`)
       })
-      reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: true })
-      const organized: string[] = []
-      auxiliary = (request) =>
-        Effect.sync(() => {
-          expect(String(request.model.id)).toBe("small-distillation")
-          const source = JSON.stringify(request.messages).match(/original-(r-\d)/)?.[1] ?? "unknown"
-          organized.push(source)
-          return auxiliaryResponse(`采用-${source}`)
-        })
-      const session = yield* SessionV2.Service
-      requests.length = 0
-      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "first" }), resume: false })
-      responses = [reasoningStep("r-1", false), reasoningStep("r-2", true)]
-      yield* session.resume(sessionID)
-      // The second step is the first resend of r-1: it already carries the rewrite.
-      expect(requests).toHaveLength(2)
-      expect(JSON.stringify(requests[1].messages)).toContain("采用-r-1")
-      expect(JSON.stringify(requests[1].messages)).not.toContain("original-r-1")
+    const session = yield* SessionV2.Service
+    requests.length = 0
+    yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "first" }), resume: false })
+    responses = [reasoningStep("r-1", false), reasoningStep("r-2", true)]
+    yield* session.resume(sessionID)
+    // The second step is the first resend of r-1: it already carries the rewrite.
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[1].messages)).toContain("采用-r-1")
+    expect(JSON.stringify(requests[1].messages)).not.toContain("original-r-1")
+    // The turn waits for the final rewrite too, so both steps are organized before it returns.
+    expect(organized.toSorted()).toEqual(["r-1", "r-2"])
 
-      // r-2 ended with the turn; the next turn's request settles it first.
-      responses = [[]]
-      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
-      yield* session.resume(sessionID)
-      expect(requests).toHaveLength(3)
-      expect(JSON.stringify(requests[2].messages)).toContain("采用-r-2")
-      expect(JSON.stringify(requests[2].messages)).not.toContain("original-r-")
-      expect(organized.toSorted()).toEqual(["r-1", "r-2"])
-      expect(JSON.stringify(yield* session.context(sessionID))).toContain('"originalText"')
-    }),
-  ),
-)
-
-it.live("Core runner seals a rewrite that misses the settle window and keeps the original", () =>
-  withSettleWindow(
-    "20",
-    Effect.gen(function* () {
-      yield* setup
-      currentModel = Model.make({
-        id: "distillation",
-        provider: "fake",
-        route: OpenAIChat.route.with({ limits: { context: 100_000, output: 4096 } }),
-      })
-      reasoningConfig = new ConfigReasoningDistillation.Info({ enabled: true })
-      const started = yield* Deferred.make<void>()
-      const interrupted = yield* Deferred.make<void>()
-      auxiliary = () =>
-        Deferred.succeed(started, undefined).pipe(
-          Effect.andThen(Effect.never),
-          Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
-        )
-      const session = yield* SessionV2.Service
-      requests.length = 0
-      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "first" }), resume: false })
-      responses = [reasoningStep("r-1", false), reasoningStep("r-2", true)]
-      yield* session.resume(sessionID)
-      // Depending on timing the job is sealed before or during its model call; a started call is cancelled.
-      if (yield* Deferred.isDone(started)) yield* Deferred.await(interrupted)
-      expect(requests).toHaveLength(2)
-      expect(JSON.stringify(requests[1].messages)).toContain("original-r-1")
-      expect(JSON.stringify(requests[1].messages)).not.toContain("采用")
-      // A sealed part is never rewritten later, so the next turn resends the same prefix.
-      responses = [[]]
-      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
-      yield* session.resume(sessionID)
-      expect(JSON.stringify(requests[2].messages)).toContain("original-r-1")
-      expect(JSON.stringify(requests[2].messages)).toContain("original-r-2")
-      expect(JSON.stringify(yield* session.context(sessionID))).not.toContain('"originalText"')
-    }),
-  ),
+    responses = [[]]
+    yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "second" }), resume: false })
+    yield* session.resume(sessionID)
+    expect(requests).toHaveLength(3)
+    expect(JSON.stringify(requests[2].messages)).toContain("采用-r-2")
+    expect(JSON.stringify(requests[2].messages)).not.toContain("original-r-")
+    expect(organized.toSorted()).toEqual(["r-1", "r-2"])
+    expect(JSON.stringify(yield* session.context(sessionID))).toContain('"originalText"')
+  }),
 )

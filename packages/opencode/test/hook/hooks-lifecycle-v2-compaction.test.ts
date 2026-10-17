@@ -125,6 +125,10 @@ cliIt.live(
           if (
             rows.some(
               (row: { event: string; source?: string }) => row.event === "SessionStart" && row.source === "compact",
+            ) &&
+            rows.some(
+              (row: { event: string; reason?: string }) =>
+                row.event === "InstructionsLoaded" && row.reason === "compact",
             )
           )
             return rows
@@ -144,7 +148,7 @@ cliIt.live(
       const compactLoads = rows.filter(
         (row: { event: string; reason?: string }) => row.event === "InstructionsLoaded" && row.reason === "compact",
       )
-      expect(compactLoads).toHaveLength(1)
+      expect(compactLoads, JSON.stringify(rows)).toHaveLength(1)
       expect(compactLoads[0].file).toBe(
         path.join(yield* Effect.promise(() => fs.realpath(home)), ".config/opencode/AGENTS.md"),
       )

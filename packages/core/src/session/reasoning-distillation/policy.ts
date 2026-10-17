@@ -4,8 +4,6 @@
 export const ReasoningDistillationPolicy = {
   version: "reasoning-rewrite-v3-per-step",
   calls: {
-    /** Concurrent organizer calls per session; further parts wait for a free slot. */
-    maxConcurrentPerSession: 4,
     /** Consecutive organizer failures without a response before a session stops calling until restart. */
     maxConsecutiveFailures: 3,
   },

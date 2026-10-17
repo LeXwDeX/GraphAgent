@@ -75,7 +75,7 @@ export type RewriteOutcome<A> = Readonly<{
 
 /**
  * Organize one settled reasoning part and adopt the result. `call` receives an abort signal tied to this effect, so
- * interrupting the job (for example when a barrier seals it) cancels the model request.
+ * interrupting the caller (for example when the turn is cancelled) cancels the model request.
  */
 export const runReasoningRewrite = <A>(input: {
   budget: RewriteBudget

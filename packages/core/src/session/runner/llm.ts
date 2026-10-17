@@ -2,7 +2,6 @@ import { adoptReasoning } from "../reasoning-distillation/adopt"
 import { assessCanonicalReasoning } from "../reasoning-distillation/canonical"
 import { declaresNoReasoning, engineOrganizerCall } from "../reasoning-distillation/engine"
 import { makeRewriteBudget, rewriteLogFields, runReasoningRewrite } from "../reasoning-distillation/rewrite"
-import { makeRewriteScheduler } from "../reasoning-distillation/schedule"
 import {
   LLM,
   LLMClient,
@@ -27,7 +26,6 @@ import {
   Layer,
   Option,
   Predicate,
-  Scope,
   Semaphore,
   Stream,
 } from "effect"
@@ -172,10 +170,6 @@ const modelToolResponse = (settlement: { readonly output?: ToolOutput; readonly 
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const scope = yield* Scope.Scope
-    const rewrites = makeRewriteScheduler<true>(scope, {
-      settleMs: () => Flag.OPENCODE_REASONING_DISTILLATION_SETTLE_MS,
-    })
     const rewriteBudget = makeRewriteBudget()
     const events = yield* EventV2.Service
     const llm = yield* LLMClient.Service
@@ -238,94 +232,77 @@ export const layer = Layer.effect(
         ),
       )
 
-    // Start rewriting a reasoning part as soon as it ends, overlapping the rest of the step and its tools. The next
-    // provider request of the session settles these jobs first (see runTurnAttempt).
-    const scheduleReasoningRewrite = Effect.fnUntraced(function* (input: {
+    // Every reasoning part is organized synchronously before the next provider event. There is no background job or
+    // send barrier: the stream waits for the organizer result (or its auxiliary timeout) and then continues.
+    const rewriteReasoningNow = Effect.fnUntraced(function* (input: {
       sessionID: SessionSchema.ID
       messageID: SessionMessage.ID
       reasoningID: string
       model: SessionRunnerModel.ResolvedModel
     }) {
-      const source = yield* store.message(input.messageID)
-      const reasoning =
-        source?.sessionID === input.sessionID && source.message.type === "assistant"
-          ? source.message.content.find((part) => part.id === input.reasoningID && part.type === "reasoning")
-          : undefined
-      if (reasoning?.type !== "reasoning") return
-      yield* rewrites.submit({
-        sessionID: input.sessionID,
-        key: JSON.stringify([input.messageID, input.reasoningID]),
-        inputCharacters: reasoning.text.length,
-        enabled: reasoningRewriteEnabled(input.model),
-        run: (canAdopt, onResponseStarted) =>
-          Effect.gen(function* () {
-            const stored = yield* store.message(input.messageID)
-            const parts =
-              stored?.sessionID === input.sessionID && stored.message.type === "assistant"
-                ? stored.message.content.filter((item) => item.id === input.reasoningID)
-                : []
-            const part = parts.length === 1 && parts[0].type === "reasoning" ? parts[0] : undefined
-            if (!part) return undefined
-            const editability = assessCanonicalReasoning({
-              text: part.text,
-              metadata: part.providerMetadata,
-              settled: true,
-              distilled: part.distillation !== undefined,
-            })
-            if (!editability.editable) {
-              yield* Effect.logDebug("reasoning distillation skipped", {
-                "reasoning_distillation.runtime": "core-runner",
-                "reasoning_distillation.reason": editability.reason,
-              })
-              return undefined
-            }
-            const entries = yield* config.entries()
-            const auxiliaryModel = yield* models
-              // A declared no-reasoning variant keeps the organizer fast; otherwise it requests low effort.
-              .resolveSmall(
-                ProviderV2.ID.make(input.model.provider),
-                Config.latest(entries, "small_model"),
-                ModelV2.VariantID.make("none"),
-              )
-              .pipe(Effect.catch(() => Effect.succeed(undefined)))
-            const outcome = yield* runReasoningRewrite({
-              onResponseStarted,
-              budget: rewriteBudget,
-              sessionID: input.sessionID,
-              slot: { messageID: input.messageID, partID: part.id, text: part.text },
-              language: ConfigReasoningDistillation.resolveLanguage(Config.latest(entries, "reasoningDistillation")),
-              call: auxiliaryModel
-                ? (signal, onResponseStarted) =>
-                    engineOrganizerCall({
-                      llm,
-                      model: auxiliaryModel,
-                      effort: declaresNoReasoning(auxiliaryModel) ? "default" : "low",
-                      timeoutMs: Flag.OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS,
-                      signal,
-                      onResponseStarted,
-                    })
-                : undefined,
-              adopt: (replacement) =>
-                adoptReasoning({
-                  events,
-                  db,
-                  sessionID: input.sessionID,
-                  messageID: input.messageID,
-                  part,
-                  replacement,
-                  canAdopt,
-                }).pipe(Effect.map((adopted) => (adopted ? (true as const) : undefined))),
-            })
-            yield* Effect.logInfo(
-              "reasoning distillation",
-              rewriteLogFields(outcome, {
-                runtime: "core-runner",
-                ...(auxiliaryModel ? { model: String(auxiliaryModel.id) } : {}),
-              }),
-            )
-            return outcome.adopted
-          }),
+      const stored = yield* store.message(input.messageID)
+      const parts =
+        stored?.sessionID === input.sessionID && stored.message.type === "assistant"
+          ? stored.message.content.filter((item) => item.id === input.reasoningID)
+          : []
+      const part = parts.length === 1 && parts[0].type === "reasoning" ? parts[0] : undefined
+      if (!part) return
+      const editability = assessCanonicalReasoning({
+        text: part.text,
+        metadata: part.providerMetadata,
+        settled: true,
+        distilled: part.distillation !== undefined,
       })
+      if (!editability.editable) {
+        yield* Effect.logDebug("reasoning distillation skipped", {
+          "reasoning_distillation.runtime": "core-runner",
+          "reasoning_distillation.reason": editability.reason,
+        })
+        return
+      }
+      const entries = yield* config.entries()
+      const auxiliaryModel = yield* models
+        // A declared no-reasoning variant keeps the organizer fast; otherwise it requests low effort.
+        .resolveSmall(
+          ProviderV2.ID.make(input.model.provider),
+          Config.latest(entries, "small_model"),
+          ModelV2.VariantID.make("none"),
+        )
+        .pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const outcome = yield* runReasoningRewrite({
+        budget: rewriteBudget,
+        sessionID: input.sessionID,
+        slot: { messageID: input.messageID, partID: part.id, text: part.text },
+        language: ConfigReasoningDistillation.resolveLanguage(Config.latest(entries, "reasoningDistillation")),
+        call: auxiliaryModel
+          ? (signal, onResponseStarted) =>
+              engineOrganizerCall({
+                llm,
+                model: auxiliaryModel,
+                effort: declaresNoReasoning(auxiliaryModel) ? "default" : "low",
+                timeoutMs: Flag.OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS,
+                signal,
+                onResponseStarted,
+              })
+          : undefined,
+        adopt: (replacement) =>
+          adoptReasoning({
+            events,
+            db,
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            part,
+            replacement,
+            canAdopt: reasoningRewriteEnabled(input.model),
+          }).pipe(Effect.map((adopted) => (adopted ? (true as const) : undefined))),
+      })
+      yield* Effect.logInfo(
+        "reasoning distillation",
+        rewriteLogFields(outcome, {
+          runtime: "core-runner",
+          ...(auxiliaryModel ? { model: String(auxiliaryModel.id) } : {}),
+        }),
+      )
     })
 
     type HistoryCursor = {
@@ -513,7 +490,6 @@ export const layer = Layer.effect(
           pendingRequestContext.delete(sessionID)
           // Pending reasoning rewrites of a deleted session can never adopt; stop their model calls now.
           rewriteBudget.forget(sessionID)
-          yield* rewrites.cancel(sessionID)
         }),
       ),
       Effect.forkScoped,
@@ -617,9 +593,6 @@ export const layer = Layer.effect(
             feedback.additionalContext,
           ])
       }
-      // Send barrier: adopt finished reasoning rewrites before this request reads history; seal the rest so a part is
-      // rewritten before its first resend or never. Adoption changes earlier messages, so drop the incremental cursor.
-      if ((yield* rewrites.settle(session.id)).length > 0) cursors.delete(session.id)
       const history = yield* readHistory(session.id, system.baselineSeq)
       const entries = history.entries
       const context = entries.map((entry) => entry.message)
@@ -758,9 +731,9 @@ export const layer = Layer.effect(
               yield* renderDisplay(displayBuffer.append(event.id, event.text))
             }
             if (event.type === "reasoning-end" && reasoningEnabled) {
-              // Persist the settled part before its rewrite job reads it.
+              // Persist the settled part before the synchronous rewrite reads it.
               yield* withPublication(batch.flush())
-              yield* scheduleReasoningRewrite({
+              yield* rewriteReasoningNow({
                 sessionID: session.id,
                 messageID: yield* publisher.startAssistant(),
                 reasoningID: event.id,

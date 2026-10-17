@@ -2,6 +2,16 @@
 
 Branch: `refactor/reasoning-rewrite-engine`. Baseline: `main` at `1b69adcdcf`.
 
+> **2026-10-17 update — synchronous organization only.** There is no asynchronous rewrite fallback. Each editable
+> (unsigned/plaintext-mirror) reasoning part is organized synchronously when it ends. If no content or tool call has
+> started, the host stops the stream, organizes and adopts the part, and continues the same assistant message in the
+> same user turn, repeating for each new reasoning part until content/tools start or a bounded continuation limit is
+> reached. The continuation reuses the phase-one request prefix so the provider can reuse its KV cache. The organizer
+> is awaited directly; an unresponsive call is bounded by `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`, and a
+> failed or timed-out call keeps that part's original reasoning. Signed, encrypted, referenced and unknown carriers are
+> never changed. The scheduler, send barriers, adaptive first-frame window and sealing rules below describe the retired
+> asynchronous implementation and are retained only as historical design notes.
+
 ## Why
 
 The 1.0.54+ reasoning distillation ("重塑思考") organizes a completed turn's reasoning once, after the turn ends, and

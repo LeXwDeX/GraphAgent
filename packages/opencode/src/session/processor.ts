@@ -45,7 +45,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMError, Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
-export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
+export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred" | "split"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
@@ -63,15 +63,19 @@ export interface Handle {
     },
   ) => Effect.Effect<void>
   readonly resumeToolCall: (part: SessionV1.ToolPart, execute: Effect.Effect<unknown, unknown>) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  readonly process: (streamInput: LLM.StreamInput, options?: { allowSplit?: boolean }) => Effect.Effect<Result>
 }
 
 type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
-  /** Called once per reasoning part that ended normally, after it is persisted. Must not block the stream. */
-  onReasoningSettled?: (part: SessionV1.ReasoningPart) => Effect.Effect<void>
+  /**
+   * Called once per reasoning part that ended normally, after it is persisted. `canSplit` is false when this request
+   * may not stop for a continuation, so the host must organize the part in place. Returns `split` when the host wants
+   * to stop this stream before content or tools start, organize the reasoning, and continue in a second request.
+   */
+  onReasoningSettled?: (part: SessionV1.ReasoningPart, canSplit: boolean) => Effect.Effect<"split" | "continue">
   displayMode?: "interactive" | "noninteractive"
   onTextDisplay?: (batch: { delta: string; index: number; final: boolean }) => Effect.Effect<string>
 }
@@ -96,6 +100,10 @@ interface ProcessorContext extends Input {
   snapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
+  /** Stop the current stream at a settled reasoning part so the host can organize it before content starts. */
+  splitForContinuation: boolean
+  /** Whether this attempt may split; the continuation request disables further splits. */
+  allowSplit: boolean
   currentText: SessionV1.TextPart | undefined
   currentTextID: string | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
@@ -195,6 +203,8 @@ export const layer = Layer.effect(
         snapshot: initialSnapshot,
         blocked: false,
         needsCompaction: false,
+        splitForContinuation: false,
+        allowSplit: true,
         currentText: undefined,
         currentTextID: undefined,
         reasoningMap: {},
@@ -368,16 +378,20 @@ export const layer = Layer.effect(
         return true
       })
 
-      const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
+      const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (
+        reasoningID: string,
+        allowSplit: boolean,
+      ) {
         if (!(reasoningID in ctx.reasoningMap)) return
+        const part = ctx.reasoningMap[reasoningID]
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
         if (mirrorAssistant) {
           yield* events.publish(SessionEvent.Reasoning.Ended, {
             sessionID: ctx.sessionID,
             assistantMessageID: yield* currentV2AssistantMessage(),
-            reasoningID,
-            text: ctx.reasoningMap[reasoningID].text,
-            providerMetadata: ctx.reasoningMap[reasoningID].metadata,
+            reasoningID: part.v2?.reasoningID ?? reasoningID,
+            text: part.text,
+            providerMetadata: part.metadata,
             timestamp: DateTime.makeUnsafe(Date.now()),
           })
         }
@@ -386,7 +400,20 @@ export const layer = Layer.effect(
         ctx.reasoningMap[reasoningID].time = { ...ctx.reasoningMap[reasoningID].time, end: Date.now() }
         const settled = yield* session.updatePart(ctx.reasoningMap[reasoningID])
         delete ctx.reasoningMap[reasoningID]
-        if (input.onReasoningSettled && !ctx.assistantMessage.summary) yield* input.onReasoningSettled(settled)
+        if (!input.onReasoningSettled || ctx.assistantMessage.summary) return
+        // A part may only stop the stream while this attempt has produced no visible text or tool activity. The host
+        // uses the same flag to decide whether it can defer organization to the continuation loop or must organize
+        // the part in place.
+        const canSplit =
+          allowSplit &&
+          ctx.allowSplit &&
+          ctx.currentText === undefined &&
+          ctx.attemptTextLength === 0 &&
+          Object.keys(ctx.toolcalls).length === 0 &&
+          ctx.admittedToolCalls === 0 &&
+          !ctx.attemptToolActivity
+        const decision = yield* input.onReasoningSettled(settled, canSplit)
+        if (canSplit && decision === "split") ctx.splitForContinuation = true
       })
 
       const flushV2Fragments = Effect.fn("SessionProcessor.flushV2Fragments")(function* () {
@@ -406,7 +433,7 @@ export const layer = Layer.effect(
               events.publish(SessionEvent.Reasoning.Ended, {
                 sessionID: ctx.sessionID,
                 assistantMessageID,
-                reasoningID,
+                reasoningID: part.v2?.reasoningID ?? reasoningID,
                 text: part.text,
                 providerMetadata: part.metadata,
                 timestamp: DateTime.makeUnsafe(Date.now()),
@@ -495,38 +522,44 @@ export const layer = Layer.effect(
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
-          case "reasoning-start":
+          case "reasoning-start": {
             ctx.attemptReasoningActivity = true
             if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
             if (value.id in ctx.reasoningMap) return
-            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            if (mirrorAssistant) {
-              yield* events.publish(SessionEvent.Reasoning.Started, {
-                sessionID: ctx.sessionID,
-                assistantMessageID: yield* ensureV2AssistantMessage(),
-                reasoningID: value.id,
-                providerMetadata: value.providerMetadata,
-                timestamp: DateTime.makeUnsafe(Date.now()),
-              })
-            }
-            ctx.reasoningMap[value.id] = {
-              id: PartID.ascending(),
+            // The provider restarts its stream-local ids for every request. A continuation reuses this assistant
+            // message, so the v2 mirror identity must come from the globally unique part id instead.
+            const partID = PartID.ascending()
+            const v2AssistantMessageID = mirrorAssistant ? yield* ensureV2AssistantMessage() : undefined
+            const part: SessionV1.ReasoningPart = {
+              id: partID,
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "reasoning",
               text: "",
-              ...(ctx.v2AssistantMessageID
-                ? { v2: { messageID: ctx.v2AssistantMessageID, reasoningID: value.id } }
+              ...(v2AssistantMessageID
+                ? { v2: { messageID: v2AssistantMessageID, reasoningID: partID } }
                 : {}),
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            ctx.attemptReasoningParts.set(ctx.reasoningMap[value.id].id, {
-              reasoningID: value.id,
-              assistantMessageID: ctx.v2AssistantMessageID,
+            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            if (v2AssistantMessageID) {
+              yield* events.publish(SessionEvent.Reasoning.Started, {
+                sessionID: ctx.sessionID,
+                assistantMessageID: v2AssistantMessageID,
+                reasoningID: partID,
+                providerMetadata: value.providerMetadata,
+                timestamp: DateTime.makeUnsafe(Date.now()),
+              })
+            }
+            ctx.reasoningMap[value.id] = part
+            ctx.attemptReasoningParts.set(partID, {
+              reasoningID: partID,
+              assistantMessageID: v2AssistantMessageID,
             })
-            yield* session.updatePart(ctx.reasoningMap[value.id])
+            yield* session.updatePart(part)
             return
+          }
 
           case "reasoning-delta":
             ctx.attemptReasoningActivity = true
@@ -540,7 +573,7 @@ export const layer = Layer.effect(
               yield* events.publish(SessionEvent.Reasoning.Delta, {
                 sessionID: ctx.sessionID,
                 assistantMessageID: yield* currentV2AssistantMessage(),
-                reasoningID: value.id,
+                reasoningID: ctx.reasoningMap[value.id].v2?.reasoningID ?? value.id,
                 delta: value.text,
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
@@ -560,7 +593,7 @@ export const layer = Layer.effect(
             if (value.providerMetadata && value.id in ctx.reasoningMap) {
               ctx.reasoningMap[value.id].metadata = value.providerMetadata
             }
-            yield* finishReasoning(value.id)
+            yield* finishReasoning(value.id, true)
             return
 
           case "tool-input-start":
@@ -888,7 +921,7 @@ export const layer = Layer.effect(
 
           case "step-finish": {
             const completedSnapshot = yield* snapshot.track()
-            yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
+            yield* Effect.forEach(Object.keys(ctx.reasoningMap), (reasoningID) => finishReasoning(reasoningID, false))
             const usage = Session.getUsage({
               model: ctx.model,
               usage: value.usage ?? new Usage({}),
@@ -918,7 +951,17 @@ export const layer = Layer.effect(
             if (suppressed && !ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
             ctx.attemptSuppressedActivity ||= suppressed
             ctx.assistantMessage.cost += usage.cost
-            ctx.assistantMessage.tokens = usage.tokens
+            // A synchronous continuation reuses this message for a second provider request. Accumulate both
+            // requests so the persisted message reports the full cost and usage of the visible turn.
+            ctx.assistantMessage.tokens = {
+              input: ctx.assistantMessage.tokens.input + usage.tokens.input,
+              output: ctx.assistantMessage.tokens.output + usage.tokens.output,
+              reasoning: ctx.assistantMessage.tokens.reasoning + usage.tokens.reasoning,
+              cache: {
+                read: ctx.assistantMessage.tokens.cache.read + usage.tokens.cache.read,
+                write: ctx.assistantMessage.tokens.cache.write + usage.tokens.cache.write,
+              },
+            }
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -1197,6 +1240,7 @@ export const layer = Layer.effect(
         ctx.toolcalls = {}
         if (deferred) ctx.assistantMessage.finish = "tool_deferred"
         yield* display(true)
+        if (ctx.splitForContinuation) return
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })
@@ -1273,7 +1317,10 @@ export const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
+      const process = Effect.fn("SessionProcessor.process")(function* (
+        streamInput: LLM.StreamInput,
+        options?: { allowSplit?: boolean },
+      ) {
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -1305,6 +1352,8 @@ export const layer = Layer.effect(
             ctx.currentText = undefined
             ctx.currentTextID = undefined
             ctx.reasoningMap = {}
+            ctx.splitForContinuation = false
+            ctx.allowSplit = options?.allowSplit !== false
             // Detection state is per attempt: a retried attempt must not
             // inherit the previous attempt's admissions, and its finish reason
             // is tracked separately so the persisted assistant.finish (last
@@ -1361,7 +1410,7 @@ export const layer = Layer.effect(
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsCompaction),
+              Stream.takeUntil(() => ctx.needsCompaction || ctx.splitForContinuation),
               Stream.runDrain,
             )
 
@@ -1376,6 +1425,7 @@ export const layer = Layer.effect(
             if (
               !aborted &&
               !ctx.needsCompaction &&
+              !ctx.splitForContinuation &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
               !ctx.anyToolCalled &&
@@ -1399,6 +1449,7 @@ export const layer = Layer.effect(
               (streamInput.purpose === "conversation" || streamInput.purpose === undefined) &&
               !aborted &&
               !ctx.needsCompaction &&
+              !ctx.splitForContinuation &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
               !ctx.attemptToolActivity &&
@@ -1418,6 +1469,7 @@ export const layer = Layer.effect(
               (streamInput.purpose === "conversation" || streamInput.purpose === undefined) &&
               !aborted &&
               !ctx.needsCompaction &&
+              !ctx.splitForContinuation &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
               !ctx.attemptToolActivity &&
@@ -1506,9 +1558,10 @@ export const layer = Layer.effect(
             Effect.ensuring(cleanup()),
           )
 
+          if (ctx.needsCompaction) return "compact"
+          if (ctx.splitForContinuation) return "split"
           if (timedOut) return "timeout"
           if (deferred) return "deferred"
-          if (ctx.needsCompaction) return "compact"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })

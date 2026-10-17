@@ -40,6 +40,8 @@ type Sse = {
   hang?: boolean
   error?: unknown
   reset?: boolean
+  encryptedReasoning?: string
+  signedReasoning?: string
 }
 
 type HttpError = {
@@ -219,12 +221,12 @@ function responseReasonText(id: string, text: string, seq: number) {
   }
 }
 
-function responseReasonDone(id: string, seq: number) {
+function responseReasonDone(id: string, seq: number, encrypted?: string) {
   return {
     type: "response.output_item.done",
     sequence_number: seq,
     output_index: 0,
-    item: { type: "reasoning", id, encrypted_content: null },
+    item: { type: "reasoning", id, encrypted_content: encrypted ?? null },
   }
 }
 
@@ -329,6 +331,28 @@ function flow(item: Sse) {
   return out
 }
 
+function gemini(item: Sse) {
+  const parts: unknown[] = []
+  for (const part of flow(item)) {
+    if (part.type === "text") {
+      parts.push({ text: part.text })
+      continue
+    }
+    if (part.type === "reason") {
+      parts.push({
+        text: part.text,
+        thought: true,
+        ...(item.signedReasoning ? { thoughtSignature: item.signedReasoning } : {}),
+      })
+    }
+  }
+  return {
+    ...item,
+    head: [{ candidates: [{ content: { parts, role: "model" }, finishReason: "STOP" }] }],
+    tail: [],
+  } satisfies Sse
+}
+
 function responses(item: Sse, model: string) {
   let seq = 1
   let msg: string | undefined
@@ -397,7 +421,7 @@ function responses(item: Sse, model: string) {
   }
   if (reason) {
     seq += 1
-    lines.push(responseReasonDone(reason, seq))
+    lines.push(responseReasonDone(reason, seq, item.encryptedReasoning))
   }
   if (call && !item.hang && !item.error) {
     seq += 1
@@ -459,6 +483,8 @@ export class Reply {
   #error: unknown
   #reset = false
   #seq = 0
+  #encryptedReasoning: string | undefined
+  #signedReasoning: string | undefined
 
   #id() {
     this.#seq += 1
@@ -472,6 +498,16 @@ export class Reply {
 
   reason(value: string) {
     this.#tail = [...this.#tail, reasonLine(value)]
+    return this
+  }
+
+  encryptedReason(value: string) {
+    this.#encryptedReasoning = value
+    return this
+  }
+
+  signedReason(value: string) {
+    this.#signedReasoning = value
     return this
   }
 
@@ -560,6 +596,8 @@ export class Reply {
       hang: this.#hang,
       error: this.#error,
       reset: this.#reset,
+      encryptedReasoning: this.#encryptedReasoning,
+      signedReasoning: this.#signedReasoning,
     }
   }
 }
@@ -672,7 +710,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         return first.item
       }
 
-      const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses") {
+      const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses" | "gemini") {
         const req = yield* HttpServerRequest.HttpServerRequest
         const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
         const current = hit(req.originalUrl, body)
@@ -681,6 +719,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("E2E Title"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
+          if (mode === "gemini") return send(gemini(auto))
           return send(auto)
         }
         const next = pull(current)
@@ -689,12 +728,14 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("ok"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
+          if (mode === "gemini") return send(gemini(auto))
           return send(auto)
         }
         hits = [...hits, current]
         yield* notify()
         if (next.type !== "sse") return fail(next)
         if (mode === "responses") return send(responses(next, modelFrom(body)))
+        if (mode === "gemini") return send(gemini(next))
         if (next.reset) {
           yield* reset(next)
           return HttpServerResponse.empty()
@@ -705,6 +746,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
       yield* router.add("POST", "/v1/chat/completions", handle("chat"))
       yield* router.add("POST", "/v1/messages", handle("chat"))
       yield* router.add("POST", "/v1/responses", handle("responses"))
+      yield* router.add("POST", "/v1beta/*", handle("gemini"))
 
       yield* server.serve(router.asHttpEffect())
 

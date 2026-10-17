@@ -23,14 +23,14 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 以下功能都是本 fork 在 opencode 之上自行开发的，各自可选或自成体系；opencode 的其余部分（多 Provider、LSP、客户端/服务器、TUI/桌面/Web 客户端）与上游一致。
 
-| 功能 | 作用 | 怎么用 |
-| --- | --- | --- |
-| [思考自动塑形](#思考自动塑形) | 思考内容在再次发给模型之前，先由小模型整理去噪（默认开启） | `reasoningDistillation.enabled` + `small_model` |
-| [DAG 工作流](#dag-工作流) | 把任务拆成可持久化的子智能体依赖图并跑完 | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc` |
-| [项目 Memory](#项目-memory) | 按项目保存经用户确认的偏好、决策和术语 | `/memory on` |
-| [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标 | `/goal`、`/subgoal` |
-| [Hooks](#hooks) | 兼容 Claude Code 的生命周期 hooks | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
-| [上下文管理](#上下文管理) | 折叠重复工具输出、限制工具调用、压缩长会话 | `compaction`、`maxToolCalls` |
+| 功能                                  | 作用                                                                   | 怎么用                                               |
+| ------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
+| [思考自动塑形](#思考自动塑形)         | 思考结束后先由小模型同步整理，再用整理后的内容继续生成正文（默认开启） | `reasoningDistillation.enabled` + `small_model`      |
+| [DAG 工作流](#dag-工作流)             | 把任务拆成可持久化的子智能体依赖图并跑完                               | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc`  |
+| [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语                                 | `/memory on`                                         |
+| [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标                             | `/goal`、`/subgoal`                                  |
+| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                                      | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
+| [上下文管理](#上下文管理)             | 折叠重复工具输出、限制工具调用、压缩长会话                             | `compaction`、`maxToolCalls`                         |
 
 ---
 
@@ -38,10 +38,13 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 思考型模型会在后续步骤里把之前的思考内容回传给服务商。长思考里充斥着复述需求、被推翻的猜测和纠错过程，后续每次请求都要为它重复付费。
 
-思考自动塑形默认开启。每段思考**一结束**就交给小模型整理：优先用配置的 `small_model`，否则用当前服务商自带的小模型；两者都没有时不改写。整理时保留最终的事实、数值、计算结果、约束、真实执行结果和待办，以及思考中积累的工作状态：已排除的假设及其依据、已检查的位置及结果（包括“未发现”）、已确认的指代；删掉重复、已被否定的猜测和空话；路径、命令、代码、URL、配置键和数值逐字保留。整理和本步的工具执行并行进行，下一次请求就带上整理后的内容。
+思考自动塑形默认开启，并默认采用**同步整理**：思考型模型先输出思考内容；如果这段思考没有签名，且正文或工具调用尚未开始，会话会暂停当前响应，先让小模型整理这段思考，再用整理后的内容继续生成正文。用户仍然只看到一轮回答，但模型后续输出基于整理后的思考，而不是原始思考。
 
-- **要么在第一次回传前替换，要么永不替换。** 每次向模型发请求前，会话最多等待一个很短的窗口（`OPENCODE_REASONING_DISTILLATION_SETTLE_MS`，默认 3000 ms）；没整理完的部分被封存，永久保留原文，因此不会让之前请求已经写入的提示缓存前缀失效。
-- **只改安全的载体。** 只改写普通思考和明文镜像；带签名、加密或服务端引用的思考（Anthropic thinking 签名、OpenAI 加密推理、Gemini thought 签名）一律不动。
+整理时优先用配置的 `small_model`，否则用当前服务商自带的小模型；两者都没有时不改写。整理时保留最终的事实、数值、计算结果、约束、真实执行结果和待办，以及思考中积累的工作状态：已排除的假设及其依据、已检查的位置及结果（包括“未发现”）、已确认的指代；删掉重复、已被否定的猜测和空话；路径、命令、代码、URL、配置键和数值逐字保留。
+
+- **只改安全的载体。** 只整理普通思考和明文镜像；带签名、加密或服务端引用的思考（Anthropic thinking 签名、OpenAI 加密推理、Gemini thought 签名）一律不动，也不触发同步暂停。
+- **正文或工具已开始时不打断。** 如果思考结束时正文或工具调用已经开始，保留当前响应；思考仍会立即同步整理，但不会为了整理而中断已开始的输出。
+- **失败回退。** 整理失败、超时或没有可用的小模型时，使用原始思考继续生成正文，用户仍能得到回答。
 - **可还原。** 原文和原始 metadata 随思考一起保存；关闭功能后回放的就是原文。
 - **走引擎层。** 整理请求通过内置的 `@opencode-ai/llm` 引擎发送：不带工具、不自动重试、推理档位用 `none`/`low`；只有整理结果确实更省 token 才会采用。
 
@@ -56,7 +59,9 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 }
 ```
 
-`OPENCODE_DISABLE_REASONING_DISTILLATION=1` 可以无视配置直接关闭；`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 限制单次整理调用的时长。日志会记录每一次整理（`reasoning distillation`）和每一次封存（`reasoning rewrite sealed`）。
+每段思考结束后都会同步等待整理结果；没有后台整理任务，也没有首帧等待窗口。整理调用没有响应时，受 `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 超时约束，超时后使用原始思考继续。
+
+`OPENCODE_DISABLE_REASONING_DISTILLATION=1` 可以无视配置直接关闭；`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 限制单次整理调用的时长。日志会记录每一次整理（`reasoning distillation`）以及失败后的原文回退。
 
 ---
 
@@ -156,10 +161,10 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
   // 关键节点：required: true，以及审查/仲裁类 worker。
   "model": {
     "advanced": "anthropic/claude-sonnet-4-5",
-    "standard": "anthropic/claude-haiku-4-5"
+    "standard": "anthropic/claude-haiku-4-5",
   },
   // DAG 子会话的推理深度变体，仅当模型定义了同名变体时生效。
-  "thinking_depth": "medium"
+  "thinking_depth": "medium",
 }
 ```
 
@@ -169,11 +174,11 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 工作流 spec 就是一个描述图的 YAML 文件。把它放进工作流目录，它就有了**名字**：
 
-| 作用域 | 路径 | 可用范围 |
-|---|---|---|
-| 项目级 | `.opencode/workflows/<name>.yaml` | 本仓库，随仓库提交 —— 团队拿到的是同一套流程 |
-| 全局级 | `<opencode 配置目录>/workflows/<name>.yaml` | 本机所有项目 |
-| 内嵌级 | 编译进正式版二进制 | 每个正式版安装——兜底解析层 |
+| 作用域 | 路径                                        | 可用范围                                     |
+| ------ | ------------------------------------------- | -------------------------------------------- |
+| 项目级 | `.opencode/workflows/<name>.yaml`           | 本仓库，随仓库提交 —— 团队拿到的是同一套流程 |
+| 全局级 | `<opencode 配置目录>/workflows/<name>.yaml` | 本机所有项目                                 |
+| 内嵌级 | 编译进正式版二进制                          | 每个正式版安装——兜底解析层                   |
 
 解析按此顺序取第一个命中的名字：项目级遮蔽同名的全局级，二者都遮蔽内嵌级。全局作用域由 [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) 仓库维护（直接 `git clone`/`git pull` 到配置目录即可同步）。一个最小的 spec：
 
@@ -217,17 +222,17 @@ config:
 
 每个节点可声明：
 
-| 字段 | 用途 |
-|---|---|
-| `depends_on` | 依赖边；创建时做环检测和悬空引用校验 |
-| `worker_type` | 执行节点的智能体（`explore`、`build`、`general` 或任意已配置 agent） |
-| `prompt_template` | 通过 `id` 引用模板（先项目、后全局的 `dag-prompts/`）或 `inline` 内联，支持 `{{var}}` 插值 |
-| `input_mapping` | 把上游节点输出映射为模板变量（`"count": "node-b.output.count"`） |
-| `condition` | 基于上游输出的表达式；为假则跳过节点，纯依赖它的下游级联跳过 |
-| `output_schema` | JSON Schema；子智能体必须调用 `submit_result` 提交匹配的结构化结果 |
-| `required` | 必需节点失败会使整个工作流失败 |
-| `report_to_parent` | 节点到达终态时唤醒父智能体 |
-| `review` | `design` 或 `diff` 审查阶段，带实现指纹契约（见下） |
+| 字段               | 用途                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| `depends_on`       | 依赖边；创建时做环检测和悬空引用校验                                                       |
+| `worker_type`      | 执行节点的智能体（`explore`、`build`、`general` 或任意已配置 agent）                       |
+| `prompt_template`  | 通过 `id` 引用模板（先项目、后全局的 `dag-prompts/`）或 `inline` 内联，支持 `{{var}}` 插值 |
+| `input_mapping`    | 把上游节点输出映射为模板变量（`"count": "node-b.output.count"`）                           |
+| `condition`        | 基于上游输出的表达式；为假则跳过节点，纯依赖它的下游级联跳过                               |
+| `output_schema`    | JSON Schema；子智能体必须调用 `submit_result` 提交匹配的结构化结果                         |
+| `required`         | 必需节点失败会使整个工作流失败                                                             |
+| `report_to_parent` | 节点到达终态时唤醒父智能体                                                                 |
+| `review`           | `design` 或 `diff` 审查阶段，带实现指纹契约（见下）                                        |
 
 工作流级参数：`max_concurrency`（默认 5）、`max_node_replan_attempts`（5）、`max_total_nodes`（100）、节点级 `timeout_ms`（默认 10 分钟，排队等待计入预算）。
 
@@ -281,18 +286,18 @@ config:
 
 DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPENCODE_CONFIG_DIR`，否则 `~/.config/opencode`）里有对应的全局版本。其余全部继承 opencode 主配置。
 
-| 路径 | 用途 | 全局对应 |
-|---|---|---|
-| `.opencode/dag.jsonc` | 模型分层（`advanced` / `standard`）与子会话 `thinking_depth` | `<配置目录>/dag.jsonc`，首次使用时生成带注释的默认文件 |
-| `.opencode/workflows/*.yaml` | 存盘的工作流 spec，可按名字启动 | `<配置目录>/workflows/*.yaml` |
-| `.opencode/dag-prompts/*.md` | 由 `prompt_template.id` 引用的节点 prompt 模板（项目优先） | `<配置目录>/dag-prompts/*.md` |
-| `.opencode/workflow-reports/` | 节点报告文件（自动 gitignore） | —— |
+| 路径                          | 用途                                                         | 全局对应                                               |
+| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------------------ |
+| `.opencode/dag.jsonc`         | 模型分层（`advanced` / `standard`）与子会话 `thinking_depth` | `<配置目录>/dag.jsonc`，首次使用时生成带注释的默认文件 |
+| `.opencode/workflows/*.yaml`  | 存盘的工作流 spec，可按名字启动                              | `<配置目录>/workflows/*.yaml`                          |
+| `.opencode/dag-prompts/*.md`  | 由 `prompt_template.id` 引用的节点 prompt 模板（项目优先）   | `<配置目录>/dag-prompts/*.md`                          |
+| `.opencode/workflow-reports/` | 节点报告文件（自动 gitignore）                               | ——                                                     |
 
 `dag.jsonc` 和工作流库都是惰性读取，改完下一次启动工作流就生效，不用重启。
 
 ## 背景
 
-在 GraphAgent 里，graph 是一份可执行、可持久化、可观测、可控制的契约。公开 Git 历史显示，第一版完整 DAG 引擎在 **2026-07-02** 已经提交；论文 [*What makes prompts a graph*](https://arxiv.org/abs/2607.27578) 到 **2026-07-30** 才把显式结构、prompt/拓扑分离、可执行语义和 graph 一等制品化归纳出来。术语晚了四周，工具没有等它。
+在 GraphAgent 里，graph 是一份可执行、可持久化、可观测、可控制的契约。公开 Git 历史显示，第一版完整 DAG 引擎在 **2026-07-02** 已经提交；论文 [_What makes prompts a graph_](https://arxiv.org/abs/2607.27578) 到 **2026-07-30** 才把显式结构、prompt/拓扑分离、可执行语义和 graph 一等制品化归纳出来。术语晚了四周，工具没有等它。
 
 落到五条运行规则：
 
@@ -355,10 +360,10 @@ bun dev serve        # headless API 服务（端口 4096）
 
 混合许可证模型：
 
-| 内容 | 许可证 | 文本 |
-|---------|---------|------|
-| 上游 opencode 代码（绝大多数） | MIT | [`LICENSE`](./LICENSE) |
-| DAG 工作流引擎（fork 自研） | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/opencode/src/dag/LICENSE`](./packages/opencode/src/dag/LICENSE) |
+| 内容                           | 许可证            | 文本                                                                                                                                           |
+| ------------------------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 上游 opencode 代码（绝大多数） | MIT               | [`LICENSE`](./LICENSE)                                                                                                                         |
+| DAG 工作流引擎（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/opencode/src/dag/LICENSE`](./packages/opencode/src/dag/LICENSE) |
 
 精确的文件边界列在 [`NOTICE`](./NOTICE) 中。AGPL 覆盖 DAG 引擎及其衍生品，包括网络服务部署；不碰 DAG 引擎的话，仓库其余部分按 MIT 用就行。
 
