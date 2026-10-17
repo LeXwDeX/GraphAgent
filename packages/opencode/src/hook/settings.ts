@@ -308,9 +308,30 @@ export interface HookJSONOutput {
 // loops. The prefix must match the opening of buildRewakePrompt exactly.
 export const HOOK_REWAKE_SENTINEL = "<system-reminder>\nAsync hook completed"
 
+const CONTEXT_LIMIT = 10_000
+/** Claude bounds hook-provided context and escapes reminder tags so hook output cannot close the host envelope. */
+export function sanitizeHookContext(text: string): string {
+  const escaped = text
+    .replaceAll("<system-reminder>", "&lt;system-reminder>")
+    .replaceAll("</system-reminder>", "&lt;/system-reminder>")
+  return escaped.length > CONTEXT_LIMIT
+    ? `${escaped.slice(0, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
+    : escaped
+}
+
+const SHOW_STDERR_EVENTS = new Set<HookEvent>([
+  "SessionStart",
+  "SessionEnd",
+  "CwdChanged",
+  "FileChanged",
+  "PostCompact",
+  "SubagentStart",
+  "PostModelSwitch",
+])
+
 function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string): string {
   const cmd = descriptorFor(entry)
-  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${content}\n</system-reminder>`
+  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content)}\n</system-reminder>`
 }
 
 /**
@@ -887,7 +908,8 @@ function evaluatorDecision(
       : { continue: false, stopReason: answer.reason, systemMessage: answer.reason }
   if (event === "PostToolUseFailure")
     return { hookSpecificOutput: { hookEventName: event, additionalContext: answer.reason } }
-  if (event === "TaskCreated" || event === "TaskCompleted") return { decision: "block", reason: answer.reason }
+  // Claude returns this reason as tool feedback and keeps the turn running; only TaskCreated cancels creation.
+  if (event === "TaskCreated" || event === "TaskCompleted") return { systemMessage: answer.reason }
   return { decision: "block", reason: answer.reason, systemMessage: answer.reason }
 }
 
@@ -2205,6 +2227,8 @@ export interface Interface {
   readonly hasEvent?: (event: HookEvent, sessionID?: SessionID | string) => Effect.Effect<boolean>
   /** Overall SessionEnd budget, accounting for configured hooks and env override. */
   readonly sessionEndTimeout?: () => Effect.Effect<number>
+  /** Wait for async SessionEnd commands within the caller's budget; interruption cancels them. */
+  readonly settleSessionEnd?: () => Effect.Effect<void>
   /** Register validated skill/agent frontmatter hooks for their actual lifetime. */
   readonly registerScoped?: (sessionID: SessionID | string, input: ScopedHooksInput) => Effect.Effect<void>
   readonly unregisterScoped?: (sessionID: SessionID | string, origin: string) => Effect.Effect<void>
@@ -3067,6 +3091,7 @@ export const layer = Layer.effect(
         onceBucket.add(entry)
         state.once.set(sessionOwner ?? sessionID, onceBucket)
       }
+      // SessionEnd has no later turn.
       if (event === "SessionEnd") return
       if (!sessionID) return
       const parts: string[] = []
@@ -3098,7 +3123,7 @@ export const layer = Layer.effect(
       if (stopChain) {
         // A newer non-hook prompt, SessionEnd, or session cancel invalidates
         // pending Stop callbacks.
-        if (state.stopRewakeChains.get(sessionID) !== stopChain) {
+        if (state.stopRewakeChains.get(`${event}:${sessionID}`) !== stopChain) {
           log.debug("async Stop callback discarded: chain invalidated", { sessionID, event })
           return
         }
@@ -3110,6 +3135,10 @@ export const layer = Layer.effect(
         stopChain.count++
       }
 
+      // Claude ignores StopFailure output and exit code. Keep the chain invalidation above so a cancelled callback
+      // is still discarded, but never queue context or start a new turn from this event.
+      if (event === "StopFailure") return
+
       const text = buildRewakePrompt(entry, event, result.exitBlock ?? parts.join("\n"))
       // The token rides along so SessionPrompt can re-check validity at the
       // real admission point — cancel can invalidate after this completion
@@ -3119,7 +3148,8 @@ export const layer = Layer.effect(
           sessionID: SessionID.make(sessionID),
           text,
           stopChain,
-          valid: () => Effect.sync(() => !stopChain || state.stopRewakeChains.get(sessionID) === stopChain),
+          valid: () =>
+            Effect.sync(() => !stopChain || state.stopRewakeChains.get(`${event}:${sessionID}`) === stopChain),
         })
         .pipe(
           Effect.catchDefect((defect) => {
@@ -3139,15 +3169,21 @@ export const layer = Layer.effect(
 
       // Hook rewake prompts skip UserPromptSubmit in SessionPrompt. Every other
       // prompt (including a Goal continuation) begins a new automatic hook chain.
-      if (payload.event === "UserPromptSubmit" && ctx.sessionID) s.stopRewakeChains.delete(ctx.sessionID)
-      if (payload.event === "SessionEnd" && ctx.sessionID) s.stopRewakeChains.delete(ctx.sessionID)
+      const clearStopChains = (sessionID: string) => {
+        for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) s.stopRewakeChains.delete(key)
+      }
+      if (payload.event === "UserPromptSubmit" && ctx.sessionID) clearStopChains(ctx.sessionID)
+      if (payload.event === "SessionEnd" && ctx.sessionID) clearStopChains(ctx.sessionID)
       let stopChain: StopRewakeChain | undefined
       if (
         (payload.event === "Stop" || payload.event === "StopFailure" || payload.event === "SubagentStop") &&
         ctx.sessionID
       ) {
-        stopChain = s.stopRewakeChains.get(ctx.sessionID) ?? { count: 0 }
-        s.stopRewakeChains.set(ctx.sessionID, stopChain)
+        // Stop, StopFailure and SubagentStop have independent chains. Sharing one key leaks stop_hook_active from a
+        // main Stop rewake into a later subagent stop.
+        const chainKey = `${payload.event}:${ctx.sessionID}`
+        stopChain = s.stopRewakeChains.get(chainKey) ?? { count: 0 }
+        s.stopRewakeChains.set(chainKey, stopChain)
         if (stopChain.count > 0) payload = { ...payload, stopHookActive: true }
       }
 
@@ -3292,7 +3328,8 @@ export const layer = Layer.effect(
       // additionalContext dedup: only within this trigger for tool events,
       // per session otherwise (see PER_TRIGGER_DEDUP_EVENTS).
       const local = new Set<string>()
-      const addContext = (text: string) => {
+      const addContext = (raw: string) => {
+        const text = sanitizeHookContext(raw)
         if (local.has(text)) return
         local.add(text)
         // SubagentStart lands in the target child's history, so only that child's own
@@ -3614,6 +3651,9 @@ export const layer = Layer.effect(
           const observational = new Set<HookEvent>([
             "Setup",
             "Notification",
+            "SessionStart",
+            "SubagentStart",
+            "PostModelSwitch",
             "SessionEnd",
             "PostCompact",
             "InstructionsLoaded",
@@ -3625,6 +3665,7 @@ export const layer = Layer.effect(
             "WorktreeCreate",
             "WorktreeRemove",
           ])
+          if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event)) result.systemMessages.push(sanitizeHookContext(exitBlock))
           if (exitBlock && payload.event !== "PermissionRequest" && !observational.has(payload.event)) {
             result.blocked = { reason: exitBlock, command: commandText(entry) }
             // A failed or exit-2 PreToolUse hook is a deny that outranks defer, and no JSON
@@ -3733,13 +3774,18 @@ export const layer = Layer.effect(
 
           if (
             json.systemMessage &&
-            (!observational.has(payload.event) || payload.event === "FileChanged" || payload.event === "CwdChanged") &&
+            (!observational.has(payload.event) ||
+              payload.event === "FileChanged" ||
+              payload.event === "CwdChanged" ||
+              payload.event === "SessionStart" ||
+              payload.event === "SubagentStart" ||
+              payload.event === "PostModelSwitch") &&
             payload.event !== "ConfigChange" &&
             payload.event !== "PreCompact" &&
             payload.event !== "Elicitation" &&
             payload.event !== "ElicitationResult"
           )
-            result.systemMessages.push(json.systemMessage)
+            result.systemMessages.push(sanitizeHookContext(json.systemMessage))
           if ((payload.event === "FileChanged" || payload.event === "CwdChanged") && json.watchPaths)
             result.watchPaths = json.watchPaths
           if (json.terminalSequence && validTerminalSequence(json.terminalSequence))
@@ -3920,7 +3966,7 @@ export const layer = Layer.effect(
       s.seen.delete(sessionID)
       s.once.delete(sessionID)
       s.onceRunning.delete(sessionID)
-      s.stopRewakeChains.delete(sessionID)
+      for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) s.stopRewakeChains.delete(key)
       for (const fiber of s.asyncFibers.get(sessionID) ?? []) yield* Fiber.interrupt(fiber)
       s.asyncFibers.delete(sessionID)
       yield* sessionHooks.clear(SessionID.make(String(sessionID)))
@@ -3939,6 +3985,20 @@ export const layer = Layer.effect(
         .flatMap((group) => group.hooks)
         .map((entry) => (entry.timeout === undefined ? 1_500 : entry.timeout * 1000))
       return Math.min(60_000, Math.max(1_500, ...configured))
+    })
+
+    // Async SessionEnd commands run for side effects after the session ends. A headless client waits for the
+    // configured SessionEnd budget, then cancels what remains; an instance that outlives the process keeps them.
+    const settleSessionEnd = Effect.fn("SettingsHook.settleSessionEnd")(function* () {
+      const s = yield* InstanceState.get(state)
+      const fibers = [...s.endFibers]
+      if (fibers.length === 0) return
+      yield* Effect.forEach(fibers, (fiber) => Fiber.await(fiber), { concurrency: "unbounded" }).pipe(
+        Effect.onInterrupt(() =>
+          Effect.forEach(fibers, (fiber) => Fiber.interrupt(fiber), { concurrency: "unbounded" }),
+        ),
+        Effect.asVoid,
+      )
     })
 
     const registerScoped = Effect.fn("SettingsHook.registerScoped")(
@@ -3965,7 +4025,9 @@ export const layer = Layer.effect(
       sessionID: SessionID | string,
     ) {
       const s = yield* InstanceState.get(state)
-      const deleted = s.stopRewakeChains.delete(sessionID)
+      let deleted = false
+      for (const key of s.stopRewakeChains.keys())
+        if (key.endsWith(`:${sessionID}`)) deleted = s.stopRewakeChains.delete(key) || deleted
       if (deleted) log.info("stop rewake chain invalidated", { sessionID })
     })
 
@@ -3974,7 +4036,9 @@ export const layer = Layer.effect(
       token: unknown,
     ) {
       const s = yield* InstanceState.get(state)
-      return s.stopRewakeChains.get(sessionID) === token
+      for (const [key, chain] of s.stopRewakeChains)
+        if (key.endsWith(`:${sessionID}`) && chain === token) return true
+      return false
     })
 
     return Service.of({
@@ -3985,6 +4049,7 @@ export const layer = Layer.effect(
       clearSession,
       fileWatchPaths,
       sessionEndTimeout,
+      settleSessionEnd,
       registerScoped,
       unregisterScoped,
       invalidateStopRewakeChain,

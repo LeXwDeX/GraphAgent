@@ -695,13 +695,16 @@ export const layer: Layer.Layer<
         }
 
         // A deletion ends only the attached top-level client session; child lifetime uses SubagentStop.
-        if (!session.parentID && callSettings && (!hookLifecycle || (yield* hookLifecycle.claimEnd(sessionID)))) {
+        if (!session.parentID && callSettings) {
           const finish = Effect.gen(function* () {
+            // Materialize before claiming: a failed transcript read must not consume the one SessionEnd attempt.
+            const messages = yield* api.messages({ sessionID }).pipe(Effect.orDie)
             const transcriptPath = yield* HookTranscript.materialize({
               sessionID,
               directory: session.directory,
-              messages: yield* api.messages({ sessionID }).pipe(Effect.orDie),
+              messages,
             }).pipe(Effect.orDie)
+            if (hookLifecycle && !(yield* hookLifecycle.claimEnd(sessionID))) return
             const result = yield* callSettings.trigger(
               { event: "SessionEnd", reason: "other" },
               {
@@ -711,6 +714,7 @@ export const layer: Layer.Layer<
               },
             )
             yield* landSystemMessages(result, { sessionID })
+            if (callSettings.settleSessionEnd) yield* callSettings.settleSessionEnd()
           })
           yield* finish.pipe(
             Effect.timeout(yield* callSettings.sessionEndTimeout?.() ?? Effect.succeed(1500)),

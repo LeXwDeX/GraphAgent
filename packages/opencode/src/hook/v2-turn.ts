@@ -151,7 +151,14 @@ export const layer = Layer.effect(
             backgroundTasks,
             sessionCrons: [],
           })
-          if (!result || result.preventContinuation) return {}
+          if (!result || result.preventContinuation) {
+            if (result?.stopReason)
+              yield* SettingsHook.landSystemMessages(
+                { additionalContexts: [], systemMessages: [result.stopReason] },
+                { sessionID: input.sessionID },
+              )
+            return {}
+          }
           const feedback = [
             ...result.additionalContexts.filter((value) => value.length > 0),
             ...(result.blocked ? [result.blocked.reason || "Continue."] : []),
