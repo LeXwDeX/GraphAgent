@@ -323,6 +323,47 @@ description: A skill in the .claude/skills directory.
     }),
   )
 
+  it.live("marks workspace skills project-owned and user-root skills user-owned", () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir({ git: true })),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const workspace = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir({ git: true })),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const hooks = { Stop: [{ hooks: [{ type: "command", command: "printf hooked" }] }] }
+      const write = (file: string, name: string) =>
+        Effect.promise(() =>
+          Bun.write(
+            file,
+            `---\n${JSON.stringify({ name, description: `${name} fixture`, hooks })}\n---\n\n# ${name}\n`,
+          ),
+        )
+      const workspaceSkill = path.join(workspace.path, ".opencode", "skills", "workspace-hooked", "SKILL.md")
+      const userSkill = path.join(home.path, ".opencode", "skills", "user-hooked", "SKILL.md")
+      yield* write(workspaceSkill, "workspace-hooked")
+      yield* write(userSkill, "user-hooked")
+
+      yield* withHome(
+        home.path,
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          const workspaceItem = yield* skill.require("workspace-hooked")
+          const userItem = yield* skill.require("user-hooked")
+          // Provenance is what decides whether frontmatter hooks may run before
+          // the folder is trusted: a repository's own skill is project-owned.
+          expect(workspaceItem.hookSource).toBe("project")
+          expect(workspaceItem.hookOrigin).toBe(`skill:${workspaceSkill}`)
+          expect(workspaceItem.hooks).toEqual(hooks)
+          expect(userItem.hookSource).toBe("user")
+          expect(userItem.hookOrigin).toBe(`skill:${userSkill}`)
+        }).pipe(provideInstance(workspace.path)),
+      )
+    }),
+  )
+
   it.live("returns empty array when no skills exist", () =>
     provideTmpdirInstance(
       () =>

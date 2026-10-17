@@ -103,17 +103,23 @@ export const layer = Layer.effect(
             location: AbsolutePath.make(filepath),
             content: markdown.content,
           }
+          // Operator-owned roots, matching the V1 classifier in
+          // packages/opencode/src/skill/index.ts. Everything else — including a
+          // repository's own `.opencode` when the project is the home directory —
+          // stays project-owned so its frontmatter hooks are gated by trust.
+          const sourcePath = source.type === "directory" ? source.path : undefined
+          const userOwned =
+            sourcePath !== undefined &&
+            global !== undefined &&
+            [global.config, path.join(global.home, ".opencode")].some((root) => {
+              const relative = path.relative(root, sourcePath)
+              return !relative.startsWith("..") && !path.isAbsolute(relative)
+            })
           SourceProvenance.setSkill(
             skill,
             SourceProvenance.skillSource(source) ?? {
               origin: filepath,
-              source:
-                source.type === "directory" &&
-                global !== undefined &&
-                !path.relative(global.config, source.path).startsWith("..") &&
-                !path.isAbsolute(path.relative(global.config, source.path))
-                  ? "user"
-                  : "project",
+              source: userOwned ? "user" : "project",
             },
           )
           skills.push(skill)

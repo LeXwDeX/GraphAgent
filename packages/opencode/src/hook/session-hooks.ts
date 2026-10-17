@@ -57,7 +57,7 @@ export interface ScopedHooksInput {
   /** Stable skill path or one active agent invocation; registration is idempotent by origin. */
   origin: string
   hooks: unknown
-  /** Explicit provenance for exempt agent frontmatter; never inferred from its filename. */
+  /** Explicit loader provenance; never inferred from the filename itself. */
   source?: "project" | "user" | "plugin" | "builtin"
   /** Only a child agent's frontmatter Stop hook becomes SubagentStop. */
   child?: boolean
@@ -164,11 +164,14 @@ export const layerWithTrustFile = (trustFile?: string) =>
       ) {
         if (!input.origin || (input.kind !== "skill" && input.kind !== "agent"))
           return yield* new InvalidHookError({ message: "scoped hook requires kind and origin" })
-        if (input.kind === "agent") {
-          const file = input.origin.startsWith("agent:") ? input.origin.slice("agent:".length) : input.origin
+        // Loader-supplied frontmatter (skill and agent alike) is untrusted input
+        // until the folder it came from is accepted. `OPENCODE_HOOKS_REQUIRE_TRUST=0`
+        // is the documented global opt-out for the whole gate; an unknown origin
+        // still fails closed instead of defaulting to exempt.
+        if (process.env.OPENCODE_HOOKS_REQUIRE_TRUST !== "0") {
+          const prefix = `${input.kind}:`
+          const file = input.origin.startsWith(prefix) ? input.origin.slice(prefix.length) : input.origin
           const exempt = input.source === "user" || input.source === "plugin" || input.source === "builtin"
-          // Project subagent frontmatter requires an explicit accepted workspace
-          // trust entry even in headless runs. An unknown origin fails closed.
           if (!exempt && (!path.isAbsolute(file) || !isTrusted(path.dirname(file), trustFile))) return undefined
         }
         const raw = input.hooks

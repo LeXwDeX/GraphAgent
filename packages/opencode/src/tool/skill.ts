@@ -52,6 +52,7 @@ export const SkillTool = Tool.define(
               yield* settings.registerScoped(ctx.sessionID, {
                 kind: "skill",
                 origin: info.hookOrigin,
+                source: info.hookSource ?? "project",
                 hooks: info.hooks,
               })
           }

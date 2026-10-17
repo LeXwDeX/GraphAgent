@@ -11,6 +11,7 @@ import { SkillPlugin } from "@opencode-ai/core/plugin/skill"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Config } from "@/config/config"
 import { ConfigPaths } from "@/config/paths"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { FrontmatterError } from "@opencode-ai/core/v1/config/error"
 import { ConfigMarkdown } from "@/config/markdown"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -57,6 +58,7 @@ export const Info = Schema.Struct({
   content: Schema.String,
   hooks: Schema.optional(Schema.Unknown),
   hookOrigin: Schema.optional(Schema.String),
+  hookSource: Schema.optional(Schema.Literals(["project", "user", "plugin", "builtin"])),
 })
 export type Info = Schema.Schema.Type<typeof Info>
 
@@ -121,6 +123,29 @@ export interface Interface {
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
 
+/**
+ * Roots owned by the operator rather than by the workspace being opened. Skill
+ * frontmatter hooks found anywhere else are project-owned input: they stay
+ * withheld until that folder is on the workspace trust list (see
+ * `SessionHooks.registerScoped`).
+ */
+const userSkillRoots = () => [
+  Global.Path.config,
+  path.join(Global.Path.home, ".opencode"),
+  path.join(Global.Path.home, ".claude"),
+  path.join(Global.Path.home, ".agents"),
+  ...(Flag.OPENCODE_CONFIG_DIR ? [Flag.OPENCODE_CONFIG_DIR] : []),
+]
+
+const skillHookSource = (match: string) => {
+  const absolute = path.resolve(match)
+  const userOwned = userSkillRoots().some((root) => {
+    const resolved = path.resolve(root)
+    return absolute === resolved || absolute.startsWith(resolved + path.sep)
+  })
+  return userOwned ? ("user" as const) : ("project" as const)
+}
+
 const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
@@ -155,7 +180,9 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
     description: md.data.description,
     location: match,
     content: md.content,
-    ...(md.data.hooks === undefined ? {} : { hooks: md.data.hooks, hookOrigin: `skill:${match}` }),
+    ...(md.data.hooks === undefined
+      ? {}
+      : { hooks: md.data.hooks, hookOrigin: `skill:${match}`, hookSource: skillHookSource(match) }),
   }
 })
 
