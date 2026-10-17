@@ -169,7 +169,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           directory: input.session.directory,
           messages: input.messages as readonly HookTranscript.Message[],
         }).pipe(Effect.orDie)
-    return { permissionMode: mode === "manual" ? "default" : mode, ...prompt, ...binding, transcriptPath }
+    // A tool executed under a child session is that subagent's own call: CC
+    // names the child session and the executing agent in agent_id / agent_type.
+    const subagent = input.session.parentID ? { agentID: input.session.id, agentType: input.agent.name } : undefined
+    return { permissionMode: mode === "manual" ? "default" : mode, ...prompt, ...binding, ...subagent, transcriptPath }
   })
 
   const transformSchema = (schema: Parameters<typeof ProviderTransform.schema>[1]) =>

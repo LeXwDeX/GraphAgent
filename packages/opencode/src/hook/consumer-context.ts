@@ -42,6 +42,8 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   if (agent === "plan" && permissionMode === undefined) permissionMode = "plan"
   return {
     sessionID,
+    // A child session is the subagent owning these events; CC names it in agent_id.
+    ...(nativeSession?.parentID ? { agentID: sessionID } : {}),
     agentType: agent,
     ...promptIdentity(messages),
     transcriptPath: yield* HookTranscript.materialize({ sessionID, directory, messages }),
