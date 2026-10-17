@@ -1,4 +1,7 @@
 import { SessionHooks } from "@/hook/session-hooks"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { decodeRecord, decodeString } from "../lib/hook-json"
 import { expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -62,6 +65,8 @@ const lsp = Layer.succeed(
 )
 
 const root = LayerNode.group([
+  // HookMessage notices (stopReason landing) are published through this bridge.
+  EventV2Bridge.node,
   SessionPrompt.node,
   SessionHooks.node,
   Session.node,
@@ -144,6 +149,43 @@ it.live("Stop hook block reason is the latest model input on the continuation tu
       expect(JSON.stringify(previous.content)).toContain("first answer")
       const user = second.messages.findLast((message) => message.role === "user" && message !== last)
       expect(JSON.stringify(user?.content)).not.toContain("STOP-REASON-MARKER")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+// `{ continue: false, stopReason }` stops the turn, so its reason can never be
+// model feedback. CC still shows it; V2 lands it as a HookMessage and V1 must too.
+it.live("Stop hook continue:false lands its stopReason as a user-visible notice", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const events = yield* EventV2Bridge.Service
+      const session = yield* sessions.create({ title: "Stop reason", permission: [] })
+      yield* hooks.add(session.id, {
+        event: "Stop",
+        hooks: [
+          {
+            type: "command",
+            command: `printf '%s' '${JSON.stringify({ continue: false, stopReason: "STOPPED-MARKER" })}'`,
+          },
+        ],
+      })
+      const notices: string[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== LegacyEvent.HookMessage.type) return Effect.void
+        const data = decodeRecord(event.data)
+        if (data.sessionID === session.id) notices.push(decodeString(data.message))
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => (typeof off === "function" ? Effect.sync(off) : off))
+      yield* llm.text("only answer")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "do work" }] })
+      // continue:false ends the turn: no continuation request is made.
+      expect(yield* llm.calls).toBe(1)
+      expect(notices).toEqual(["STOPPED-MARKER"])
     }),
     { git: true, config: providerCfg },
   ),

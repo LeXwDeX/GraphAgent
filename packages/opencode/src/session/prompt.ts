@@ -2799,6 +2799,18 @@ export const layer = Layer.effect(
                     Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)),
                   )
                 agentContinuationPrevented = stopResult.preventContinuation === true
+                // `continue:false` ends the turn, so its stopReason can never be
+                // model feedback. Land it as a user-visible notice, as v2-turn.ts
+                // already does for the same result.
+                if (
+                  agentContinuationPrevented &&
+                  stopResult.stopReason &&
+                  !stopResult.systemMessages.includes(stopResult.stopReason)
+                )
+                  yield* SettingsHook.landSystemMessages(
+                    { additionalContexts: [], systemMessages: [stopResult.stopReason] },
+                    { sessionID },
+                  )
                 if (agentContinuationPrevented && agentMessages) {
                   const input = lastAssistant && (yield* agentMessages.snapshotForTurn(identity, lastAssistant.id))
                   if (input?.ok && input.value)

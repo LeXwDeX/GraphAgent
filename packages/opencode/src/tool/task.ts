@@ -467,6 +467,16 @@ export const TaskTool = Tool.define(
             })
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
+          // A `continue:false` stopReason is user-visible, like the V1 Stop path.
+          if (
+            stopResult.preventContinuation &&
+            stopResult.stopReason &&
+            !stopResult.systemMessages.includes(stopResult.stopReason)
+          )
+            yield* SettingsHook.landSystemMessages(
+              { additionalContexts: [], systemMessages: [stopResult.stopReason] },
+              { sessionID: ctx.sessionID },
+            )
         }
         if (settingsHook && !promoted) {
           let subagentStopBlocked = false
@@ -484,6 +494,17 @@ export const TaskTool = Tool.define(
               .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
             // Land any hook systemMessages so they're never silently dropped.
             yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
+            // `continue:false` ends the subagent loop, so its stopReason cannot be
+            // model feedback either; surface it the same way.
+            if (
+              stopResult.preventContinuation &&
+              stopResult.stopReason &&
+              !stopResult.systemMessages.includes(stopResult.stopReason)
+            )
+              yield* SettingsHook.landSystemMessages(
+                { additionalContexts: [], systemMessages: [stopResult.stopReason] },
+                { sessionID: ctx.sessionID },
+              )
             if (
               (!stopResult.blocked && !stopResult.additionalContexts?.some((text) => text.trim())) ||
               stopResult.preventContinuation
