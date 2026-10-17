@@ -13,7 +13,8 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
-import { isOverflow } from "./overflow"
+import { estimateRequest, isOverflow } from "./overflow"
+import { Token } from "@/util/token"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import {
@@ -46,6 +47,20 @@ import { LLMError, Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred" | "split"
+
+/** Accumulate one provider request's usage into the assistant message that owns both requests. */
+function accumulateUsage(message: SessionV1.Assistant, usage: ReturnType<typeof Session.getUsage>) {
+  message.cost += usage.cost
+  message.tokens = {
+    input: message.tokens.input + usage.tokens.input,
+    output: message.tokens.output + usage.tokens.output,
+    reasoning: message.tokens.reasoning + usage.tokens.reasoning,
+    cache: {
+      read: message.tokens.cache.read + usage.tokens.cache.read,
+      write: message.tokens.cache.write + usage.tokens.cache.write,
+    },
+  }
+}
 
 export interface Handle {
   readonly message: SessionV1.Assistant
@@ -124,6 +139,12 @@ interface ProcessorContext extends Input {
   attemptTextLength: number
   /** Sum of reasoning-delta lengths in the current attempt; zero means no visible reasoning. */
   attemptReasoningLength: number
+  /** Conservative token estimate of reasoning deltas in the current attempt. */
+  attemptReasoningEstimate: number
+  /** Whether step-finish already recorded real provider usage for the current attempt. */
+  attemptUsageRecorded: boolean
+  /** Conservative estimate of the current request's input (system, tools, messages). */
+  requestInputTokens: number
   /** Includes opaque-only reasoning parts and orphan reasoning deltas. */
   attemptReasoningActivity: boolean
   /** Nonempty provider metadata can carry encrypted reasoning without text. */
@@ -215,6 +236,9 @@ export const layer = Layer.effect(
         attemptFinish: undefined,
         attemptTextLength: 0,
         attemptReasoningLength: 0,
+        attemptReasoningEstimate: 0,
+        attemptUsageRecorded: false,
+        requestInputTokens: 0,
         attemptReasoningActivity: false,
         attemptOpaqueReasoning: false,
         attemptReasoningParts: new Map(),
@@ -567,6 +591,7 @@ export const layer = Layer.effect(
             ctx.attemptReasoningActivity = true
             if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
             ctx.attemptReasoningLength += value.text.length
+            ctx.attemptReasoningEstimate += Token.estimateReserve(value.text)
             // Match dev: silently drop orphan deltas (no preceding reasoning-start).
             if (!(value.id in ctx.reasoningMap)) return
             ctx.reasoningMap[value.id].text += value.text
@@ -952,18 +977,10 @@ export const layer = Layer.effect(
               value.providerMetadata.opencode.suppressedActivity === true
             if (suppressed && !ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
             ctx.attemptSuppressedActivity ||= suppressed
-            ctx.assistantMessage.cost += usage.cost
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
-            ctx.assistantMessage.tokens = {
-              input: ctx.assistantMessage.tokens.input + usage.tokens.input,
-              output: ctx.assistantMessage.tokens.output + usage.tokens.output,
-              reasoning: ctx.assistantMessage.tokens.reasoning + usage.tokens.reasoning,
-              cache: {
-                read: ctx.assistantMessage.tokens.cache.read + usage.tokens.cache.read,
-                write: ctx.assistantMessage.tokens.cache.write + usage.tokens.cache.write,
-              },
-            }
+            ctx.attemptUsageRecorded = true
+            accumulateUsage(ctx.assistantMessage, usage)
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -1244,7 +1261,26 @@ export const layer = Layer.effect(
         yield* display(true)
         // A split normally hands the message to a continuation, which completes it. Compaction takes precedence and
         // never continues, so it must still complete the message.
-        if (ctx.splitForContinuation && !ctx.needsCompaction) return
+        if (ctx.splitForContinuation && !ctx.needsCompaction) {
+          // The cut drops the provider's finish chunk, so this request's usage never reaches step-finish.
+          // Charge it from the prepared request and the reasoning already generated, unless real usage
+          // arrived before the cut. The continuation request is charged separately when it finishes.
+          if (!ctx.attemptUsageRecorded) {
+            const output = ctx.attemptReasoningEstimate
+            const usage = Session.getUsage({
+              model: ctx.model,
+              usage: new Usage({
+                inputTokens: ctx.requestInputTokens,
+                outputTokens: output,
+                reasoningTokens: output,
+                totalTokens: ctx.requestInputTokens + output,
+              }),
+            })
+            accumulateUsage(ctx.assistantMessage, usage)
+            yield* session.updateMessage(ctx.assistantMessage)
+          }
+          return
+        }
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })
@@ -1368,12 +1404,19 @@ export const layer = Layer.effect(
             ctx.attemptFinish = undefined
             ctx.attemptTextLength = 0
             ctx.attemptReasoningLength = 0
+            ctx.attemptReasoningEstimate = 0
+            ctx.attemptUsageRecorded = false
             ctx.attemptReasoningActivity = false
             ctx.attemptOpaqueReasoning = false
             ctx.attemptReasoningParts = new Map()
             ctx.attemptToolActivity = false
             ctx.attemptSuppressedActivity = false
             ctx.attemptRetryBlockingSuppressedActivity = false
+            ctx.requestInputTokens = estimateRequest({
+              system: streamInput.system,
+              tools: streamInput.tools,
+              messages: streamInput.messages,
+            })
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
             const source = llm.stream({

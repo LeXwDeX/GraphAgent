@@ -221,10 +221,13 @@ export const layer = Layer.effect(
       messages: SessionV1.WithParts[]
       model: Provider.Model
     }) {
+      // The retained tail outlives the compaction request: media and other parts stay in the session and
+      // are sent again by later requests, so size the tail as it is persisted. Only the estimator's
+      // calibration is shared with the request gate: it must not undercount CJK text.
       const msgs = yield* MessageV2.toModelMessagesEffect(input.messages, input.model, {
         reasoningDistillationEnabled: reasoningDistillationEnabled(yield* config.get(), input.model),
       })
-      return Token.estimate(JSON.stringify(msgs))
+      return Token.estimateReserve(JSON.stringify(msgs))
     })
 
     const select = Effect.fn("SessionCompaction.select")(function* (input: {
