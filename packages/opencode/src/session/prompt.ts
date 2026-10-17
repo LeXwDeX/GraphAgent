@@ -2903,8 +2903,18 @@ export const layer = Layer.effect(
 
           if (lastFinished) {
             const switchedModel = lastFinished.providerID !== model.providerID || lastFinished.modelID !== model.id
-            const observedTokens = lastFinished.summary === true || switchedModel ? 0 : measured(lastFinished.tokens)
             const lastFinishedIndex = msgs.findIndex((message) => message.info.id === lastFinished.id)
+            // Message tokens accumulate every request this assistant message made, including the phase-one
+            // request a synchronous reasoning split charged before its continuation, so they report cost.
+            // The context carries only the latest request: measure that request's step instead, falling back
+            // to the accumulated total when no step is persisted.
+            const lastRequestTokens =
+              (lastFinishedIndex < 0
+                ? undefined
+                : msgs[lastFinishedIndex]?.parts.findLast(
+                    (part): part is SessionV1.StepFinishPart => part.type === "step-finish",
+                  )?.tokens) ?? lastFinished.tokens
+            const observedTokens = lastFinished.summary === true || switchedModel ? 0 : measured(lastRequestTokens)
             const newUsers =
               lastFinishedIndex < 0
                 ? []
@@ -2954,7 +2964,7 @@ export const layer = Layer.effect(
             const tokens =
               lastFinished.summary === true || switchedModel
                 ? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-                : lastFinished.tokens
+                : lastRequestTokens
             const hardOverflow = yield* compaction.isOverflow({
               tokens,
               model,
