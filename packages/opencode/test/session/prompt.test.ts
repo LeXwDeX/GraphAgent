@@ -7653,6 +7653,61 @@ for (const stage of ["memory", "tools"] as const) {
   )
 }
 
+distillationIt.instance("compacts instead of sending an oversized synchronous continuation", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const base = providerCfg(url)
+      return {
+        ...base,
+        reasoningDistillation: { enabled: true },
+        provider: {
+          ...base.provider,
+          test: {
+            ...base.provider.test,
+            models: {
+              ...base.provider.test.models,
+              "test-model": {
+                ...base.provider.test.models["test-model"],
+                limit: { context: 12_000, output: 1_000 },
+              },
+            },
+          },
+        },
+      }
+    })
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Oversized sync continuation",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          throw new Error("organizer unavailable")
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "think carefully" }],
+    })
+    yield* llm.push(
+      reply().reason("x".repeat(100_000)).stop(),
+      reply().text("compaction summary").stop(),
+      reply().text("final answer").stop(),
+    )
+    yield* prompt.loop({ sessionID: chat.id })
+    const bodies = (yield* llm.hits).map((hit) => JSON.stringify(hit.body))
+    expect(bodies.some((body) => body.includes("Continue from the reasoning above"))).toBe(false)
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "compaction")).toBe(true)
+  }),
+)
+
 distillationIt.instance("organizes the last reasoning part when the continuation limit is exhausted", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
