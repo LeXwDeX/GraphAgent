@@ -68,7 +68,7 @@ export interface Interface {
   readonly set: (sessionID: SessionID, goal: string, maxTurns?: number) => Effect.Effect<GoalState.Info>
   readonly pause: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
   readonly resume: (sessionID: SessionID, maxTurns?: number) => Effect.Effect<GoalState.Info | undefined>
-  readonly clear: (sessionID: SessionID) => Effect.Effect<void>
+  readonly clear: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly markDone: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
@@ -400,6 +400,11 @@ const serviceLayer = Layer.effect(
     ) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
+          // Whether the transaction actually removed a goal row. A delete
+          // decision on a session with no row is a no-op and must not publish
+          // goal.cleared — that event is the presentation contract for a real
+          // removal, not for a command that found nothing to remove.
+          let deletedRow = false
           const result = yield* db
             .transaction(
               (tx) =>
@@ -436,6 +441,7 @@ const serviceLayer = Layer.effect(
                     }
                   }
                   if (next.tag === "delete" && row) {
+                    deletedRow = true
                     if (next.terminal) {
                       const payload = JSON.stringify(Schema.encodeSync(GoalState.Info)(next.terminal))
                       const goalID =
@@ -473,7 +479,7 @@ const serviceLayer = Layer.effect(
             )
             .pipe(Effect.orDie)
           if (result.tag === "save") yield* publishGoal(sessionID, result.state)
-          if (result.tag === "delete") {
+          if (result.tag === "delete" && deletedRow) {
             if (result.terminal) yield* publishGoal(sessionID, result.terminal)
             yield* events.publish(GoalEvent.Cleared, { sessionID })
           }
@@ -741,6 +747,7 @@ const serviceLayer = Layer.effect(
         yield* automation.unregister(sessionID, { kind: "goal", id: cleared.goal_id ?? "legacy" })
       yield* clearFiber(sessionID)
       turnDriven.delete(sessionID)
+      return cleared
     })
 
     // GOAL-FP-01-05/-16: session-deletion cleanup. `clear` keeps the
@@ -1032,13 +1039,19 @@ const serviceLayer = Layer.effect(
         // /goal done is explicit "I finished this" — distinct from
         // /goal clear (/stop), which just tears it down without marking
         // completion. Both remove the row because done is transient.
-        yield* markDone(sessionID, "/goal done")
-        return { type: "message" as const, text: "✓ 目标已标记为完成并清除。" }
+        const completed = yield* markDone(sessionID, "/goal done")
+        return {
+          type: "message" as const,
+          text: completed ? "✓ 目标已标记为完成并清除。" : "没有活跃的目标可以完成。",
+        }
       }
 
       if (lower === "clear" || lower === "stop") {
-        yield* clear(sessionID)
-        return { type: "message" as const, text: "目标已清除。" }
+        const cleared = yield* clear(sessionID)
+        return {
+          type: "message" as const,
+          text: cleared ? "目标已清除。" : "没有活跃的目标可以清除。",
+        }
       }
 
       const existing = yield* loadState(sessionID)

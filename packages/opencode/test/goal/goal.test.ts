@@ -555,6 +555,55 @@ describe("Goal.clear — deletes row, clears loop fiber, publishes goal.cleared"
   )
 })
 
+describe("Goal.dispatch — clear/stop/done distinguish a no-op from a transition", () => {
+  it.instance("clear and stop report no active goal and publish no event", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const events = yield* EventV2Bridge.Service
+      const seen = yield* captureEvents(events)
+      for (const command of ["clear", "stop"]) {
+        const sessionID = SessionID.descending()
+        const result = yield* goal.dispatch(sessionID, command)
+        expect(result).toEqual({ type: "message", text: "没有活跃的目标可以清除。" })
+        expect(yield* goal.load(sessionID)).toBeUndefined()
+      }
+      expect(seen.filter((e) => e.type === GoalEvent.Updated.type || e.type === GoalEvent.Cleared.type)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("done reports no active goal and publishes no event", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const events = yield* EventV2Bridge.Service
+      const seen = yield* captureEvents(events)
+      const sessionID = SessionID.descending()
+
+      const result = yield* goal.dispatch(sessionID, "done")
+
+      expect(result).toEqual({ type: "message", text: "没有活跃的目标可以完成。" })
+      expect(yield* goal.load(sessionID)).toBeUndefined()
+      expect(seen.filter((e) => e.type === GoalEvent.Updated.type || e.type === GoalEvent.Cleared.type)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("clear, stop and done keep their success messages when a goal exists", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      for (const [command, text] of [
+        ["clear", "目标已清除。"],
+        ["stop", "目标已清除。"],
+        ["done", "✓ 目标已标记为完成并清除。"],
+      ] as const) {
+        const sessionID = SessionID.descending()
+        yield* goal.set(sessionID, "build feature X", 5)
+        const result = yield* goal.dispatch(sessionID, command)
+        expect(result).toEqual({ type: "message", text })
+        expect(yield* goal.load(sessionID)).toBeUndefined()
+      }
+    }),
+  )
+})
+
 describe("Goal.registerLoopFiber — interrupts the previous fiber before storing the new one", () => {
   // §5.6 — registering a new fiber for a session that already has one must
   // interrupt the old one first (prevents a leaked/orphaned loop fiber when a
