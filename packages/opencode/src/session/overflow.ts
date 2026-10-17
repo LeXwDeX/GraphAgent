@@ -7,7 +7,7 @@ import type { MessageV2 } from "./message-v2"
 import { Token } from "@/util/token"
 
 const COMPACTION_BUFFER = 20_000
-const DEFAULT_AUTO_COMPACTION_CEILING = 250_000
+const DEFAULT_AUTO_COMPACTION_CEILING = 600_000
 
 export function measured(tokens: SessionV1.Assistant["tokens"]) {
   return tokens.total || tokens.input + tokens.output + tokens.cache.read + tokens.cache.write

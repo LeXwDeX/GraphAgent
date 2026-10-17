@@ -184,7 +184,7 @@ export const Info = Schema.Struct({
       }),
       max_context_tokens: Schema.optional(PositiveInt).annotate({
         description:
-          "Trigger automatic full compaction once the previous response reaches this token count (default: 250000), even when the model has a larger context window. The model's smaller usable limit still takes precedence.",
+          "Trigger automatic full compaction once the previous response reaches this token count (default: 600000), even when the model has a larger context window. A configured value takes precedence over the default, and the model's smaller usable limit still takes precedence over both.",
       }),
     }),
   ),
