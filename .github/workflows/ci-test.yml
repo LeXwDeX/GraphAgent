@@ -301,7 +301,10 @@ jobs:
         # --progress now also arms an out-of-process watchdog that SIGKILLs
         # the runner after 120s without progress, naming the last scenario/
         # phase — the step timeout stays as the final backstop.
-        timeout-minutes: 15
+        # 2026-10-17: three loaded-runner runs reached the 15m backstop while
+        # still making progress (the slowest passed modes took ~15m). Raise
+        # the backstop; the 120s no-progress watchdog remains the hang guard.
+        timeout-minutes: 25
         run: bun run test:httpapi:ci
 
       - name: Record successful verification
