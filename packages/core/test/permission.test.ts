@@ -337,6 +337,52 @@ it.effect("hook allow cannot override a native deny", () =>
     expect(yield* service.list()).toEqual([])
   }),
 )
+// A dontAsk session cannot prompt the user, but the reference still runs the
+// PermissionRequest hook first: its allow is a decision, and only the absence
+// of one falls back to the dontAsk denial. V1 already ordered it this way.
+it.effect("a dontAsk session still lets the PermissionRequest hook allow", () =>
+  Effect.gen(function* () {
+    yield* setup()
+    const service = yield* PermissionV2.Service
+    let requests = 0
+    const scope = hookScope()
+    scope.hooks.policy = () => Effect.succeed({ mode: "dontAsk", rules: [] })
+    scope.hooks.request = () =>
+      Effect.sync(() => {
+        requests++
+        return { behavior: "allow" as const }
+      })
+    const exit = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(requests).toBe(1)
+    expect(yield* service.list()).toEqual([])
+  }),
+)
+
+it.effect("a dontAsk session denies when the PermissionRequest hook returns no decision", () =>
+  Effect.gen(function* () {
+    yield* setup()
+    const service = yield* PermissionV2.Service
+    let requests = 0
+    const scope = hookScope()
+    scope.hooks.policy = () => Effect.succeed({ mode: "dontAsk", rules: [] })
+    scope.hooks.request = () =>
+      Effect.sync(() => {
+        requests++
+        return {}
+      })
+    const exit = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(requests).toBe(1)
+    expect(scope.denied).toBe(true)
+    expect(yield* service.list()).toEqual([])
+  }),
+)
+
 it.effect("hook force ask retains a real user confirmation despite allow", () =>
   Effect.gen(function* () {
     yield* setup([{ action: "read", resource: "*", effect: "allow" }])

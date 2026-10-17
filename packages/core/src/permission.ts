@@ -261,8 +261,11 @@ export const layer = Layer.effect(
             !explicitAsk &&
             (hook?.preDecision === "allow" || (policy?.mode === "acceptEdits" && input.action === "edit"))
           if (!force && (result.effect === "allow" || implicitAllowed)) return undefined
-          if (policy?.mode === "dontAsk") {
-            if (hook) hook.denied = true
+          // A dontAsk session cannot ask the user, but it must still give the
+          // PermissionRequest hook its say: the hook runs below and the
+          // refreshed-policy check denies when it returns no allow. Only an
+          // absent hook scope short-circuits here.
+          if (policy?.mode === "dontAsk" && !hook) {
             return yield* new DeniedError({ rules: relevant(input, result.rules) })
           }
           if (hook) {
