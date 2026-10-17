@@ -634,6 +634,10 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
+      // A nonzero exit is a completed command whose output the model still
+      // needs, so it stays a normal result. The hook-facing failure is carried
+      // separately; the dispatcher turns it into PostToolUseFailure.
+      const hookFailure = code !== null && code !== 0 ? `Exit code ${code}\n\n${output}` : undefined
       return {
         title: input.command,
         metadata: {
@@ -643,6 +647,7 @@ export const ShellTool = Tool.define(
           ...(cut && file ? { outputPath: file } : {}),
         },
         output,
+        ...(hookFailure ? { hookFailure } : {}),
       }
     })
 

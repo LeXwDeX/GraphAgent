@@ -12,6 +12,7 @@ import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AppProcess } from "@opencode-ai/core/process"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
 import { BashTool } from "@opencode-ai/core/tool/bash"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { location } from "./fixture/location"
@@ -339,6 +340,50 @@ describe("BashTool", () => {
                 output: "HEAD full output TAIL",
                 truncated: false,
               })
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // A nonzero exit is model-facing output, not a ToolFailure: the command ran
+  // and its output belongs to the conversation. PostToolUseFailure must still
+  // observe it as a failure, so the hook gets `error` while the settlement
+  // stays a successful text result.
+  it.live("reports a nonzero exit to after-tool hooks as a failure and keeps the model output", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        result = { ...result, exitCode: 7, stdout: Buffer.from("FAILED_OUTPUT\n") }
+        let observed: { toolName?: string; output?: unknown; error?: string } | undefined
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: "false" })).pipe(
+            Effect.provideService(
+              SessionConversationHooks.Service,
+              SessionConversationHooks.Service.of({
+                admit: () => Effect.void,
+                beforeTool: (input) => Effect.succeed({ toolInput: input.toolInput }),
+                afterTool: (input) =>
+                  Effect.sync(() => {
+                    observed = input
+                    return {}
+                  }),
+              }),
+            ),
+          ),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              expect(settled.result).toEqual({
+                type: "text",
+                value: "FAILED_OUTPUT\n\n\nCommand exited with code 7.",
+              })
+              expect(settled.output?.structured).toMatchObject({ exitCode: 7, output: "FAILED_OUTPUT\n" })
+              expect(observed).toMatchObject({ toolName: "bash", error: "Exit code 7\n\nFAILED_OUTPUT\n" })
+              expect(observed).not.toHaveProperty("output")
             }),
           ),
         )

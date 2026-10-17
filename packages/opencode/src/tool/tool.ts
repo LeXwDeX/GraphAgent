@@ -49,6 +49,13 @@ export interface ExecuteResult<M extends Metadata = Metadata> {
   metadata: M
   output: string
   attachments?: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[]
+  /**
+   * Failure text for after-tool hooks on a result that completed normally.
+   * The shell reports a nonzero exit as ordinary output so the model keeps the
+   * command output; hooks still need the reference's PostToolUseFailure event.
+   * This never changes the model-facing result or persisted metadata.
+   */
+  hookFailure?: string
 }
 
 export interface Def<

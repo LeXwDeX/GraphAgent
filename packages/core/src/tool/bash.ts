@@ -120,6 +120,12 @@ export const layer = Layer.effectDiscard(
             input: Input,
             output: Output,
             toModelOutput: ({ output }) => [{ type: "text", text: modelOutput(output) }],
+            // Nonzero exits stay normal model output; hooks need the reference's
+            // failure event with the exit code and the command output.
+            hookFailure: (_, output) =>
+              output.exitCode !== undefined && output.exitCode !== 0
+                ? `Exit code ${output.exitCode}\n\n${output.output}`
+                : undefined,
             execute: (input, context) =>
               Effect.gen(function* () {
                 const source = {

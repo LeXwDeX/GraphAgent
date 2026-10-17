@@ -1096,6 +1096,10 @@ describe("tool.shell abort", () => {
           command: `exit 42`,
         })
         expect(result.metadata.exit).toBe(42)
+        // The result stays a normal completion, but hooks must see the
+        // reference's failure event; the error text starts with the exit code
+        // and carries the same output the model receives.
+        expect(result.hookFailure).toBe(`Exit code 42\n\n${result.output}`)
       }),
     ),
   )

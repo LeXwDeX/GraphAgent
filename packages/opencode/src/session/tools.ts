@@ -540,17 +540,28 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 output,
               )
               dynamicInstructions ||= beforePlugin === undefined || beforePlugin !== outputFingerprint(output)
-              // SettingsHook PostToolUse
+              // SettingsHook PostToolUse; a completed failure (nonzero shell
+              // exit) fires the reference's PostToolUseFailure instead while
+              // keeping the same model-facing result and feedback handling.
               if (settingsHook) {
+                const hookFailure = output.hookFailure
                 const postResult = yield* settingsHook
                   .trigger(
-                    {
-                      event: "PostToolUse",
-                      toolName: item.id,
-                      toolInput: toRecord(args),
-                      toolResponse: output.output,
-                      toolUseID: ctx.callID,
-                    },
+                    hookFailure === undefined
+                      ? {
+                          event: "PostToolUse",
+                          toolName: item.id,
+                          toolInput: toRecord(args),
+                          toolResponse: output.output,
+                          toolUseID: ctx.callID,
+                        }
+                      : {
+                          event: "PostToolUseFailure",
+                          toolName: item.id,
+                          toolInput: toRecord(args),
+                          error: hookFailure,
+                          toolUseID: ctx.callID,
+                        },
                     { ...(yield* hookContext()), sessionID: ctx.sessionID },
                   )
                   .pipe(

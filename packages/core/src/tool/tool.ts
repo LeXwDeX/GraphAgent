@@ -50,6 +50,12 @@ type Config<Input extends SchemaType<any>, Output extends SchemaType<any>> = {
     readonly input: Schema.Schema.Type<Input>
     readonly output: Output["Encoded"]
   }) => ReadonlyArray<Content>
+  /**
+   * Hook-facing failure for an invocation that completed normally. Returning
+   * text routes the after-tool hook to its failure event without changing the
+   * tool result or its model-facing output (for example a nonzero shell exit).
+   */
+  readonly hookFailure?: (input: Schema.Schema.Type<Input>, output: Output["Encoded"]) => string | undefined
   /** Host-owned execution evidence. Public application tools remain untrusted by source kind. */
   readonly contextFolding?: Readonly<{ instructions: CandidateSafety["instructions"] }>
 }
@@ -60,6 +66,7 @@ type Runtime = {
   readonly validate: (call: ToolCall) => Effect.Effect<void, ToolFailure>
   readonly replaceOutput: (call: ToolCall, value: unknown) => Effect.Effect<ToolOutput, ToolFailure>
   readonly settle: (call: ToolCall, context: Context) => Effect.Effect<ToolOutput, ToolFailure>
+  readonly hookFailure: (call: ToolCall, output: unknown) => Effect.Effect<string | undefined>
   readonly contextFolding: Readonly<{ instructions: CandidateSafety["instructions"] }>
 }
 
@@ -125,9 +132,20 @@ export function make<Input extends SchemaType<any>, Output extends SchemaType<an
           config.execute(input, context).pipe(Effect.flatMap((output) => project(input, output))),
         ),
       ),
+    hookFailure: (call, output) =>
+      config.hookFailure
+        ? decode(call).pipe(
+            Effect.map((input) => config.hookFailure?.(input, output as Output["Encoded"])),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : Effect.succeed(undefined),
   })
   return tool
 }
+
+/** The tool's hook-facing failure text for a completed invocation, if declared. */
+export const hookFailure = (tool: AnyTool, call: ToolCall, output: unknown) =>
+  runtimes.get(tool)?.hookFailure(call, output) ?? Effect.succeed(undefined)
 
 export const validateName = (name: string) =>
   /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)
