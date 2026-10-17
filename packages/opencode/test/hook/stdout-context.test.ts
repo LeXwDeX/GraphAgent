@@ -172,8 +172,12 @@ describe("SettingsHook initialUserMessage safety", () => {
           { sessionID: "sess-initial-cap", transcriptPath: "" },
         )
         expect(r.initialUserMessage).toBeDefined()
-        expect(r.initialUserMessage?.startsWith("A")).toBe(true)
+        expect(r.initialUserMessage?.startsWith("Full context saved to ")).toBe(true)
         expect(r.initialUserMessage).not.toContain("TAIL_MARKER")
+        const [header, , preview] = r.initialUserMessage!.split("\n")
+        expect(preview.length).toBe(2_000)
+        const file = header.slice("Full context saved to ".length)
+        expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(`${"A".repeat(10_000)}TAIL_MARKER`)
       }),
     {
       init: writeHooks({

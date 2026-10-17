@@ -41,7 +41,7 @@
  */
 import path from "path"
 import os from "os"
-import { existsSync, readFileSync, lstatSync, statSync } from "fs"
+import { existsSync, readFileSync, lstatSync, statSync, writeFileSync } from "fs"
 import { spawn } from "child_process"
 import { createHash } from "crypto"
 import { Effect, Layer, Context, Option, Scope, Exit, Fiber, Cause } from "effect"
@@ -319,14 +319,29 @@ export interface HookJSONOutput {
 export const HOOK_REWAKE_SENTINEL = "<system-reminder>\nAsync hook completed"
 
 const CONTEXT_LIMIT = 10_000
-/** Claude bounds hook-provided context and escapes reminder tags so hook output cannot close the host envelope. */
-export function sanitizeHookContext(text: string): string {
+const CONTEXT_PREVIEW_LIMIT = 2_000
+/**
+ * Claude bounds hook-provided context at 10,000 characters and escapes reminder
+ * tags so hook output cannot close the host envelope. Over-limit text is kept
+ * whole in `spillDir` when available; what reaches the model is its path plus a
+ * 2,000-character preview. Without a writable directory the value is truncated
+ * in place so the cap still holds.
+ */
+export function sanitizeHookContext(text: string, spillDir?: string): string {
   const escaped = text
     .replaceAll("<system-reminder>", "&lt;system-reminder>")
     .replaceAll("</system-reminder>", "&lt;/system-reminder>")
-  return escaped.length > CONTEXT_LIMIT
-    ? `${escaped.slice(0, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
-    : escaped
+  if (escaped.length <= CONTEXT_LIMIT) return escaped
+  if (spillDir) {
+    const file = path.join(spillDir, `context-${createHash("sha256").update(text).digest("hex").slice(0, 16)}.txt`)
+    try {
+      writeFileSync(file, text, { mode: 0o600 })
+      return `Full context saved to ${file}\n\n${escaped.slice(0, CONTEXT_PREVIEW_LIMIT)}`
+    } catch {
+      // An unwritable scratchpad must not fail the hook; fall back to truncation.
+    }
+  }
+  return `${escaped.slice(0, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
 }
 
 const SHOW_STDERR_EVENTS = new Set<HookEvent>([
@@ -339,9 +354,9 @@ const SHOW_STDERR_EVENTS = new Set<HookEvent>([
   "PostModelSwitch",
 ])
 
-function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string): string {
+function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string, spillDir?: string): string {
   const cmd = descriptorFor(entry)
-  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content)}\n</system-reminder>`
+  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content, spillDir)}\n</system-reminder>`
 }
 
 /**
@@ -3296,9 +3311,11 @@ export const layer = Layer.effect(
         // and the V2 turn bridge) drain raw strings, so an escaped/bounded value
         // must already be in the queue. This also keeps an oversized payload from
         // accumulating in memory while it waits for the next turn.
-        if (result.json?.systemMessage) queued.additionalContexts.push(sanitizeHookContext(result.json.systemMessage))
+        const spillDir = yield* HookTranscript.scratchpadDir(sessionID)
+        if (result.json?.systemMessage)
+          queued.additionalContexts.push(sanitizeHookContext(result.json.systemMessage, spillDir))
         if (hso && "additionalContext" in hso && typeof hso.additionalContext === "string")
-          queued.additionalContexts.push(sanitizeHookContext(hso.additionalContext))
+          queued.additionalContexts.push(sanitizeHookContext(hso.additionalContext, spillDir))
         state.asyncResults.set(sessionID, queued)
         return
       }
@@ -3323,7 +3340,12 @@ export const layer = Layer.effect(
       // is still discarded, but never queue context or start a new turn from this event.
       if (event === "StopFailure") return
 
-      const text = buildRewakePrompt(entry, event, result.exitBlock ?? parts.join("\n"))
+      const text = buildRewakePrompt(
+        entry,
+        event,
+        result.exitBlock ?? parts.join("\n"),
+        yield* HookTranscript.scratchpadDir(sessionID),
+      )
       // The token rides along so SessionPrompt can re-check validity at the
       // real admission point — cancel can invalidate after this completion
       // check but before the rewake lands.
@@ -3521,7 +3543,7 @@ export const layer = Layer.effect(
       // per session otherwise (see PER_TRIGGER_DEDUP_EVENTS).
       const local = new Set<string>()
       const addContext = (raw: string) => {
-        const text = sanitizeHookContext(raw)
+        const text = sanitizeHookContext(raw, scratchpadDir)
         if (local.has(text)) return
         local.add(text)
         // SubagentStart lands in the target child's history, so only that child's own
@@ -3818,7 +3840,7 @@ export const layer = Layer.effect(
           // context, tool feedback, or any hook decision.
           if (succeeded !== true && !exitBlock && failureMessage)
             (result.hookErrors ??= []).push(
-              `${group.matcher ? `${payload.event}:${group.matcher}` : payload.event} hook error: ${sanitizeHookContext(failureMessage)}`,
+              `${group.matcher ? `${payload.event}:${group.matcher}` : payload.event} hook error: ${sanitizeHookContext(failureMessage, scratchpadDir)}`,
             )
           if (group._sessionEntry?.once && group._sessionOwner)
             yield* settleGroup(
@@ -3868,7 +3890,7 @@ export const layer = Layer.effect(
             "WorktreeRemove",
           ])
           if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event))
-            result.systemMessages.push(sanitizeHookContext(exitBlock))
+            result.systemMessages.push(sanitizeHookContext(exitBlock, scratchpadDir))
           if (exitBlock && payload.event !== "PermissionRequest" && !observational.has(payload.event)) {
             result.blocked = { reason: exitBlock, command: commandText(entry) }
             // A failed or exit-2 PreToolUse hook is a deny that outranks defer, and no JSON
@@ -3988,7 +4010,7 @@ export const layer = Layer.effect(
             payload.event !== "Elicitation" &&
             payload.event !== "ElicitationResult"
           )
-            result.systemMessages.push(sanitizeHookContext(json.systemMessage))
+            result.systemMessages.push(sanitizeHookContext(json.systemMessage, scratchpadDir))
           if ((payload.event === "FileChanged" || payload.event === "CwdChanged") && json.watchPaths)
             result.watchPaths = json.watchPaths
           if (json.terminalSequence && validTerminalSequence(json.terminalSequence))
@@ -4096,7 +4118,7 @@ export const layer = Layer.effect(
             // This value is admitted as a user turn, so it gets the same reminder
             // escaping and length bound as every other hook-supplied string.
             if (hso.initialUserMessage !== undefined)
-              result.initialUserMessage = sanitizeHookContext(hso.initialUserMessage)
+              result.initialUserMessage = sanitizeHookContext(hso.initialUserMessage, scratchpadDir)
             if ("watchPaths" in hso) result.watchPaths = hso.watchPaths
             if ("sessionTitle" in hso) result.sessionTitle = hso.sessionTitle
             if ("reloadSkills" in hso) result.reloadSkills = hso.reloadSkills
