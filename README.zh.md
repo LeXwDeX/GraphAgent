@@ -61,7 +61,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 每段思考结束后都会同步等待整理结果；没有后台整理任务，也没有首帧等待窗口。整理调用没有响应时，受 `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 超时约束，超时后使用原始思考继续。
 
-`OPENCODE_DISABLE_REASONING_DISTILLATION=1` 可以无视配置直接关闭；`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 限制单次整理调用的时长。日志会记录每一次整理（`reasoning distillation`）和每一次封存（`reasoning rewrite sealed`）。
+`OPENCODE_DISABLE_REASONING_DISTILLATION=1` 可以无视配置直接关闭；`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 限制单次整理调用的时长。日志会记录每一次整理（`reasoning distillation`）以及失败后的原文回退。
 
 ---
 
