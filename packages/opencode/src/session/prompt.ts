@@ -26,7 +26,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { Token } from "@/util/token"
-import { measured } from "./overflow"
+import { estimateRequest, measured, triggerLimit } from "./overflow"
 import { SessionRevert } from "./revert"
 
 function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messageIndex: number) {
@@ -3285,18 +3285,47 @@ export const layer = Layer.effect(
                     reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
                   })
                 : []
+              const continuationMessages = [
+                ...processInput.messages,
+                ...assistantMessages,
+                {
+                  role: "user" as const,
+                  content:
+                    "Continue from the reasoning above. Produce the final answer now. Do not repeat the reasoning.",
+                },
+              ]
+              const continuationEstimate = estimateRequest({
+                system: processInput.system,
+                tools: processInput.tools,
+                messages: continuationMessages,
+              })
+              const continuationLimit = triggerLimit({
+                cfg: yield* config.get(),
+                model,
+                outputTokenMax: flags.outputTokenMax,
+                threshold: "model",
+              })
+              if (continuationEstimate >= continuationLimit) {
+                yield* Effect.logWarning("reasoning sync continuation overflow; compacting instead", {
+                  "session.id": sessionID,
+                  "message.id": handle.message.id,
+                  continuations,
+                  estimatedInputTokens: continuationEstimate,
+                  triggerLimit: continuationLimit,
+                })
+                // Split cleanup deliberately leaves the assistant message open for the continuation to
+                // finish. Skipping the continuation must close it, or the message stays incomplete forever.
+                if (handle.message.time.completed === undefined) {
+                  handle.message.time.completed = Date.now()
+                  yield* sessions.updateMessage(handle.message)
+                }
+                result = "compact"
+                break
+              }
               result = yield* handle.process(
                 {
                   ...processInput,
-                  messages: [
-                    ...processInput.messages,
-                    ...assistantMessages,
-                    {
-                      role: "user",
-                      content:
-                        "Continue from the reasoning above. Produce the final answer now. Do not repeat the reasoning.",
-                    },
-                  ],
+                  messages: continuationMessages,
                   contextFolding: processInput.contextFolding,
                 },
                 { allowSplit: continuations < 3 },
