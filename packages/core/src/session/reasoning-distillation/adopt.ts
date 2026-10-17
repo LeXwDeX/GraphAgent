@@ -10,6 +10,12 @@ import { SessionMessageTable, SessionTable } from "../sql"
 import { adoptionProvenance, type ReasoningReplacement } from "./adoption"
 import { replaceCanonicalReasoning } from "./canonical"
 
+/** A normal adoption rejection. Database/schema defects are not wrapped and must propagate. */
+class AdoptionRejected extends Error {}
+const reject = (reason: string) => Effect.die(new AdoptionRejected(reason))
+const expectedRejection = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.every((reason) => Cause.isDieReason(reason) && reason.defect instanceof AdoptionRejected)
+
 /**
  * Commit one accepted rewrite of a settled reasoning part. Validation runs inside the event transaction: the job must
  * still be adoptable (not sealed by a send barrier, feature enabled), the session must not be reverted, and the
@@ -34,6 +40,7 @@ export const adoptReasoning = Effect.fn("CoreReasoningDistillation.adopt")(funct
     replacement.partID !== part.id ||
     part.distillation ||
     part.text !== replacement.before ||
+    replacement.after.trim() === "" ||
     replacement.after === replacement.before
   )
     return false
@@ -41,14 +48,14 @@ export const adoptReasoning = Effect.fn("CoreReasoningDistillation.adopt")(funct
   const edited = replaceCanonicalReasoning(source, replacement.after)
   if (!edited) return false
   const validate = Effect.gen(function* () {
-    if (!(yield* input.canAdopt)) yield* Effect.die("reasoning rewrite was sealed or disabled")
+    if (!(yield* input.canAdopt)) yield* reject("reasoning rewrite was sealed or disabled")
     const session = yield* input.db
       .select()
       .from(SessionTable)
       .where(eq(SessionTable.id, input.sessionID))
       .get()
       .pipe(Effect.orDie)
-    if (!session || session.revert) yield* Effect.die("reasoning source was reverted")
+    if (!session || session.revert) yield* reject("reasoning source was reverted")
     const row = yield* input.db
       .select()
       .from(SessionMessageTable)
@@ -62,7 +69,7 @@ export const adoptReasoning = Effect.fn("CoreReasoningDistillation.adopt")(funct
       : undefined
     const current = message?.type === "assistant" ? message.content.filter((item) => item.id === part.id) : []
     if (!row || row.session_id !== input.sessionID || current.length !== 1 || !isDeepStrictEqual(current[0], part))
-      yield* Effect.die("stale reasoning adoption")
+      yield* reject("stale reasoning adoption")
     // Durable send fence: the in-memory barrier only covers this process. Once any process has persisted a later
     // assistant attempt, that request may already carry the original, so the part is never rewritten afterwards.
     const later = row
@@ -80,7 +87,7 @@ export const adoptReasoning = Effect.fn("CoreReasoningDistillation.adopt")(funct
           .all()
           .pipe(Effect.orDie)
       : []
-    if (later.length > 0) yield* Effect.die("reasoning was already resent by a later attempt")
+    if (later.length > 0) yield* reject("reasoning was already resent by a later attempt")
   })
   return yield* input.events
     .publishMany(
@@ -103,7 +110,7 @@ export const adoptReasoning = Effect.fn("CoreReasoningDistillation.adopt")(funct
     .pipe(
       Effect.as(true),
       Effect.catchCauseIf(
-        (cause) => !Cause.hasInterrupts(cause),
+        (cause) => !Cause.hasInterrupts(cause) && (!Cause.hasDies(cause) || expectedRejection(cause)),
         () => Effect.logInfo("reasoning adoption rejected; retaining current history").pipe(Effect.as(false)),
       ),
     )

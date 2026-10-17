@@ -90,12 +90,12 @@ export async function organizeReasoning(
   let parseMs = 0
   let called = false
   let output: Awaited<ReturnType<OrganizeCall>>
-  const skipped = (reason: OrganizeReason): OrganizeResult => ({
+  const skipped = (reason: OrganizeReason, responded = output !== undefined): OrganizeResult => ({
     status: "skipped",
     reason,
     called,
-    output: output?.text,
-    usageTokens: output?.usageTokens,
+    output: responded ? output?.text : undefined,
+    usageTokens: responded ? output?.usageTokens : undefined,
     timing: { modelMs, parseMs, totalMs: performance.now() - started },
   })
   const slot = input.slot
@@ -114,6 +114,9 @@ export async function organizeReasoning(
   }
   modelMs = performance.now() - modelStarted
   if (!output) return skipped("model-failure")
+  // Engine transports surface provider failures as a completed response with finishReason "error". It is not a
+  // response for budget accounting, otherwise consecutive failures never pause the session.
+  if (output.finishReason === "error") return skipped("model-failure", false)
   if (output.text.length > ReasoningDistillationPolicy.tokens.maxOutputTokens * 4) return skipped("truncated")
   if (output.finishReason && !COMPLETE_FINISH.includes(output.finishReason)) return skipped("truncated")
   const parseStarted = performance.now()
