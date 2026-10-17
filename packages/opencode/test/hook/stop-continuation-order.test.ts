@@ -190,3 +190,35 @@ it.live("Stop hook continue:false lands its stopReason as a user-visible notice"
     { git: true, config: providerCfg },
   ),
 )
+
+// Claude Code bounds consecutive Stop continuations at 8 by default and lets
+// CLAUDE_CODE_STOP_HOOK_BLOCK_CAP raise the bound. The cap is read while the
+// turn loop runs, so 2 allows exactly two continuation turns (three calls).
+it.live("honors CLAUDE_CODE_STOP_HOOK_BLOCK_CAP when capping Stop continuations", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const previous = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+      process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "2"
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+          else process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previous
+        }),
+      )
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Stop cap", permission: [] })
+      yield* hooks.add(session.id, {
+        event: "Stop",
+        hooks: [{ type: "command", command: `printf '%s' '{"decision":"block","reason":"KEEP-GOING"}'` }],
+      })
+      yield* llm.text("first answer")
+      yield* llm.text("second answer")
+      yield* llm.text("third answer")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "do work" }] })
+      expect(yield* llm.calls).toBe(3)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)

@@ -666,6 +666,18 @@ export { landSystemMessages } from "./trigger-result"
  */
 export const MAX_STOP_CONTINUATIONS = 8
 
+/**
+ * Claude Code's `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` override for the cap above.
+ * Only a positive integer is accepted; anything else (including unset) keeps
+ * the documented default of 8.
+ */
+export function stopHookBlockCap(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+  if (raw === undefined) return MAX_STOP_CONTINUATIONS
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : MAX_STOP_CONTINUATIONS
+}
+
 // ── [FORK:hook-ext] Extension callback interface ────────────────
 //
 // All fork-specific hook processing plugs in here. settings.ts calls
@@ -3299,8 +3311,9 @@ export const layer = Layer.effect(
           log.debug("async Stop callback discarded: chain invalidated", { sessionID, event })
           return
         }
-        if (stopChain.count >= MAX_STOP_CONTINUATIONS) {
-          log.warn("async Stop hook continuation limit reached", { sessionID, limit: MAX_STOP_CONTINUATIONS })
+        const continuationCap = stopHookBlockCap()
+        if (stopChain.count >= continuationCap) {
+          log.warn("async Stop hook continuation limit reached", { sessionID, limit: continuationCap })
           return
         }
         // Reserve before yielding so concurrent completions share the same bound.

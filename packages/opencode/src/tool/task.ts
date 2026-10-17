@@ -496,9 +496,10 @@ export const TaskTool = Tool.define(
           // Hard cap on blocked-SubagentStop continuation: a misbehaving hook that
           // ignores stop_hook_active would otherwise re-prompt forever (burning
           // tokens). Capped here; at the limit we log.warn and stop. Mirrors the
-          // main agent Stop path (prompt.ts). Shared constant from SettingsHook.
+          // main agent Stop path (prompt.ts); both read the same env override.
           let lastStillBlocked = false
-          for (let i = 0; i < SettingsHook.MAX_STOP_CONTINUATIONS; i++) {
+          const stopHookContinuationCap = SettingsHook.stopHookBlockCap()
+          for (let i = 0; i < stopHookContinuationCap; i++) {
             const stopResult = yield* settingsHook
               .trigger(yield* stopPayload(subagentStopBlocked), {
                 sessionID: ctx.sessionID,
@@ -575,7 +576,7 @@ export const TaskTool = Tool.define(
             yield* Effect.logWarning("SubagentStop continuation limit reached; forcing stop", {
               agentID: nextSession.id,
               agentType: next.name,
-              limit: SettingsHook.MAX_STOP_CONTINUATIONS,
+              limit: stopHookContinuationCap,
             })
           }
         }

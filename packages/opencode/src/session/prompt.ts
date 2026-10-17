@@ -2512,6 +2512,7 @@ export const layer = Layer.effect(
         // drive another model turn, guarding against a hook that ignores
         // stop_hook_active (mirrors task.ts SubagentStop hard limit).
         let stopContinuationCount = 0
+        const stopHookContinuationCap = SettingsHook.stopHookBlockCap()
         // When a Stop hook blocks, the agent gets another model turn; this flag skips
         // the "already finished" exit for one iteration so the turn can actually run.
         let forceContinue = false
@@ -2819,14 +2820,15 @@ export const layer = Layer.effect(
                 }
                 // Stop-hook block → drive another model turn. The next Stop then carries
                 // stop_hook_active=true so a well-behaved hook stops blocking (anti-loop).
-                // Capped by MAX_STOP_CONTINUATIONS so a hook that ignores the signal
-                // can't loop forever; at the limit we log.warn and force a normal exit.
+                // Capped by CLAUDE_CODE_STOP_HOOK_BLOCK_CAP (default MAX_STOP_CONTINUATIONS)
+                // so a hook that ignores the signal can't loop forever; at the limit we
+                // log.warn and force a normal exit.
                 const continuing =
                   !agentInputBlocked &&
                   !turnError &&
                   (stopResult.blocked !== undefined || stopResult.additionalContexts.some((text) => text.length > 0)) &&
                   !stopResult.preventContinuation &&
-                  stopContinuationCount < SettingsHook.MAX_STOP_CONTINUATIONS
+                  stopContinuationCount < stopHookContinuationCap
                 // Consume Stop-hook outputs so nothing is silently dropped. On a
                 // continuation they go into a new synthetic user message AFTER the
                 // assistant reply (block reason last, so the request ends with the
@@ -2876,7 +2878,7 @@ export const layer = Layer.effect(
                   }
                   yield* Effect.logWarning("Stop hook continuation limit reached; forcing exit", {
                     "session.id": sessionID,
-                    limit: SettingsHook.MAX_STOP_CONTINUATIONS,
+                    limit: stopHookContinuationCap,
                   })
                 }
               }
