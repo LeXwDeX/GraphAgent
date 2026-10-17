@@ -1456,6 +1456,7 @@ function execShell(
   event: HookEvent,
   environmentFile?: string,
   environment?: Record<string, string | undefined>,
+  effort?: HookEffort,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string; spawnError?: string; suspect?: boolean }> {
   return new Promise((resolve) => {
     if (signal.aborted) {
@@ -1487,6 +1488,7 @@ function execShell(
     }
 
     const extraEnv: Record<string, string> = { CLAUDE_PROJECT_DIR: cwd }
+    if (effort) extraEnv.CLAUDE_EFFORT = effort
     if (entry.__sourceDir) {
       extraEnv.CLAUDE_PLUGIN_ROOT = entry.__sourceDir
       extraEnv.CLAUDE_PLUGIN_DATA = computeDataDir(entry.__sourceDir)
@@ -2388,6 +2390,8 @@ interface HookHandler<E extends HookCommand = HookCommand> {
     environment?: Record<string, string | undefined>,
     /** Official tool name from the runtime's real binding; internal identity, never configuration. */
     canonicalName?: string,
+    /** Active effort for this trigger, exported to command hooks as `CLAUDE_EFFORT`. */
+    effort?: HookEffort,
   ) => Effect.Effect<HookExecution>
 }
 
@@ -2457,7 +2461,7 @@ function blocksOnFailure(entry: HookCommand, event: HookEvent): boolean {
 const commandHandler: HookHandler = {
   type: "command",
   run: Effect.fn("SettingsHook.handler.command")(
-    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName) {
+    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName, effort) {
       const event = envelope.hook_event_name
       // Translate at this entry's command boundary, never the shared native envelope.
       const toolName = typeof envelope.tool_name === "string" ? envelope.tool_name : ""
@@ -2478,7 +2482,7 @@ const commandHandler: HookHandler = {
           : envelope,
       )
       const { exitCode, stdout, stderr, spawnError, suspect } = yield* Effect.promise((signal) =>
-        execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment),
+        execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment, effort),
       )
       const failureBlocks = blocksOnFailure(entry, event)
 
@@ -3146,6 +3150,7 @@ export const layer = Layer.effect(
       environment?: Record<string, string | undefined>,
       canonicalName?: string,
       projectDir?: string,
+      effort?: HookEffort,
     ) {
       using _ = log.time("runEntry", { type: entry.type, command: commandText(entry).slice(0, 80) })
       const resolvedCwd = resolveHookCwd([cwd, projectDir, os.homedir(), os.tmpdir()])
@@ -3181,7 +3186,7 @@ export const layer = Layer.effect(
         }
       }
       const result = yield* handler
-        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName)
+        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName, effort)
         .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(handlerContext, current)))
       return result
     })
@@ -3511,6 +3516,7 @@ export const layer = Layer.effect(
             ctx.environment,
             ctx.canonicalToolName,
             s.worktree,
+            ctx.effort,
           ).pipe(
             Effect.ensuring(
               entry.statusMessage && ctx.sessionID

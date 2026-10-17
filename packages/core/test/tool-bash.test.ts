@@ -13,6 +13,8 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
+import { SessionStore } from "@opencode-ai/core/session/store"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { BashTool } from "@opencode-ai/core/tool/bash"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { location } from "./fixture/location"
@@ -26,6 +28,7 @@ const runs: Array<{
   readonly command: string
   readonly cwd?: string
   readonly shell?: string | boolean
+  readonly env?: Record<string, string | undefined>
   readonly options?: AppProcess.RunOptions
 }> = []
 let denyAction: string | undefined
@@ -63,7 +66,13 @@ const appProcess = Layer.succeed(
     run: (command: ChildProcess.Command, options?: AppProcess.RunOptions) =>
       Effect.suspend(() => {
         if (command._tag !== "StandardCommand") throw new Error("expected standard command")
-        runs.push({ command: command.command, cwd: command.options.cwd, shell: command.options.shell, options })
+        runs.push({
+          command: command.command,
+          cwd: command.options.cwd,
+          shell: command.options.shell,
+          env: command.options.env,
+          options,
+        })
         return runFailure ? Effect.fail(runFailure) : Effect.succeed(result)
       }),
   } as unknown as AppProcess.Interface),
@@ -91,10 +100,21 @@ const reset = () => {
   }
 }
 
+const noSession = Layer.succeed(
+  SessionStore.Service,
+  SessionStore.Service.of({
+    get: () => Effect.succeed(undefined),
+    context: () => Effect.die("unused"),
+    runnerContext: () => Effect.die("unused"),
+    message: () => Effect.die("unused"),
+  }),
+)
+
 const withTool = <A, E, R>(
   directory: string,
   body: (registry: ToolRegistry.Interface) => Effect.Effect<A, E, R>,
   processLayer: Layer.Layer<AppProcess.Service> = appProcess,
+  sessionLayer: Layer.Layer<SessionStore.Service> = noSession,
 ) => {
   const filesystem = FSUtil.defaultLayer
   const activeLocation = Layer.succeed(
@@ -113,7 +133,7 @@ const withTool = <A, E, R>(
   )
   return Effect.gen(function* () {
     return yield* body(yield* ToolRegistry.Service)
-  }).pipe(Effect.provide(Layer.mergeAll(registry, bash)))
+  }).pipe(Effect.provide(Layer.mergeAll(registry, bash, sessionLayer)))
 }
 
 const call = (input: typeof BashTool.Input.Type, id = "call-bash") => ({
@@ -157,6 +177,42 @@ describe("BashTool", () => {
             })
             expect(assertions).toMatchObject([{ sessionID, action: "bash", resources: ["pwd"], save: ["pwd"] }])
           }),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("exports CLAUDE_EFFORT from the session model variant", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        const session = Layer.succeed(
+          SessionStore.Service,
+          SessionStore.Service.of({
+            get: () => Effect.succeed({ model: { variant: "high" } } as unknown as SessionSchema.Info),
+            context: () => Effect.die("unused"),
+            runnerContext: () => Effect.die("unused"),
+            message: () => Effect.die("unused"),
+          }),
+        )
+        // A host that exports CLAUDE_EFFORT must not mask the tool's own export.
+        const inherited = process.env.CLAUDE_EFFORT
+        delete process.env.CLAUDE_EFFORT
+        return withTool(
+          tmp.path,
+          (registry) => executeTool(registry, call({ command: "pwd" })),
+          appProcess,
+          session,
+        ).pipe(
+          Effect.andThen(Effect.sync(() => expect(runs[0]?.env?.CLAUDE_EFFORT).toBe("high"))),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (inherited === undefined) delete process.env.CLAUDE_EFFORT
+              else process.env.CLAUDE_EFFORT = inherited
+            }),
+          ),
         )
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),

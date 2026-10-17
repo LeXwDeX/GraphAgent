@@ -66,6 +66,35 @@ describe("prompt_id / scratchpad_dir / effort envelope fields", () => {
     }),
   )
 
+  it.instance("command hooks receive CLAUDE_EFFORT from the trigger context", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const hooks = yield* SettingsHook.Service
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const audit = path.join(test.directory, "hook-effort-env.txt")
+      const command = hookCommand(`await Bun.write(${JSON.stringify(audit)}, process.env.CLAUDE_EFFORT ?? "missing");`)
+      yield* store.add(id, { event: "PreToolUse", matcher: "*", hooks: [{ type: "command", command }] })
+      // A host that exports CLAUDE_EFFORT must not mask a trigger that does not.
+      const inherited = process.env.CLAUDE_EFFORT
+      delete process.env.CLAUDE_EFFORT
+      yield* hooks
+        .trigger(
+          { event: "PreToolUse", toolName: "Bash", toolInput: { command: "ls" }, toolUseID: "toolu_effort" },
+          { sessionID: id, transcriptPath: "", promptID: "msg_prompt_1", effort: "high" },
+        )
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (inherited === undefined) delete process.env.CLAUDE_EFFORT
+              else process.env.CLAUDE_EFFORT = inherited
+            }),
+          ),
+        )
+      expect(yield* Effect.promise(() => fs.readFile(audit, "utf8"))).toBe("high")
+    }),
+  )
+
   it.instance("scratchpad_dir is stable across triggers of the same session", () =>
     Effect.gen(function* () {
       const sessionID = SessionID.descending()

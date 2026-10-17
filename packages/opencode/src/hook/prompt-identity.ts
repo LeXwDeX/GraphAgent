@@ -17,31 +17,13 @@
  */
 import type { HookEffort } from "./settings"
 import type { Message } from "./transcript"
+import { variantToEffort } from "@opencode-ai/core/session/effort"
 
 /**
- * Map a model variant (see provider/transform.ts's `VARIANT_EFFORT_ORDER`) to
- * CC's effort level. Unknown names — including provider-specific custom
- * variants — yield `undefined`.
+ * Map a model variant to CC's effort level. Shared with every other consumer
+ * that exports `CLAUDE_EFFORT` to a child process (see `variantToEffort`).
  */
-export function variantToEffort(variant: string | undefined): HookEffort | undefined {
-  switch (variant) {
-    case "low":
-    case "medium":
-    case "high":
-    case "xhigh":
-    case "max":
-      return variant
-    // No reasoning at all sits below CC's lowest selectable level.
-    case "none":
-    case "minimal":
-      return "low"
-    // fork-only tier above "max"; CC clamps to the level it actually runs.
-    case "ultra":
-      return "max"
-    default:
-      return undefined
-  }
-}
+export { variantToEffort }
 
 export interface PromptIdentity {
   promptID?: string
