@@ -4167,7 +4167,6 @@ export type ConfigV2ReasoningDistillationCompatibility = {
 
 export type ConfigV2ReasoningDistillation = {
   enabled?: boolean
-  sync?: boolean
   language?: "zh" | "en"
   compatibility?: Array<ConfigV2ReasoningDistillationCompatibility>
 }
