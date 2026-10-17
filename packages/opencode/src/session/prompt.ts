@@ -11,6 +11,7 @@ import { Logging } from "@opencode-ai/core/observability/logging"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import {
   assessCanonicalReasoning,
+  firstFrameWindowMs,
   makeRewriteBudget,
   makeRewriteScheduler,
   ReasoningDistillationPolicy,
@@ -446,12 +447,36 @@ export const layer = Layer.effect(
           const cfg = yield* config.get()
           const organizer = yield* llm.organizer({ model: input.model })
           if (!organizer) return false
+          const inputTokens = Token.estimate(part.text)
+          const windowMs = Flag.OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS ?? firstFrameWindowMs(inputTokens)
+          let firstFrameTimedOut = false
+          // Cancel only this organizer call when the upstream has not produced a frame within the adaptive window.
+          // A timeout is a silent skip, not a failed turn.
+          const call = (signal: AbortSignal, onResponseStarted?: () => void) => {
+            const local = new AbortController()
+            const onAbort = () => local.abort()
+            signal.addEventListener("abort", onAbort, { once: true })
+            const timer = setTimeout(() => {
+              firstFrameTimedOut = true
+              local.abort()
+            }, windowMs)
+            const started = () => {
+              clearTimeout(timer)
+              onResponseStarted?.()
+            }
+            const inner = organizer.call(local.signal, started)
+            return (request: Parameters<typeof inner>[0]) =>
+              inner(request).finally(() => {
+                clearTimeout(timer)
+                signal.removeEventListener("abort", onAbort)
+              })
+          }
           const outcome = yield* runReasoningRewrite({
             budget,
             sessionID: input.sessionID,
             slot: { messageID: part.messageID, partID: part.id, text: part.text },
             language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
-            call: organizer.call,
+            call,
             adopt: (replacement) =>
               adoptReasoning({
                 sessionID: input.sessionID,
@@ -470,6 +495,9 @@ export const layer = Layer.effect(
               runtime: "opencode",
               mode: "sync",
               "session.id": input.sessionID,
+              "reasoning_distillation.first_frame_ms": windowMs,
+              "reasoning_distillation.first_frame_timeout": firstFrameTimedOut,
+              "reasoning_distillation.input_tokens": inputTokens,
               model: organizer.model,
               transport: organizer.transport,
             }),
@@ -3347,29 +3375,36 @@ export const layer = Layer.effect(
                   adopted,
                 })
               }
-              const continuationMsgs = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-              const continuationModelMsgs = yield* MessageV2.toModelMessagesEffect(continuationMsgs, model, {
-                reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
-              })
-              const continuationFolding = yield* MessageV2.contextFoldingHistory({
-                messages: continuationMsgs,
-                ledger: toolSources,
-              })
+              // Keep the phase-one request prefix byte-for-byte identical so the provider can reuse its KV cache.
+              // Only append the adopted assistant reasoning message and the synthetic continuation instruction.
+              const refreshed = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+              const continuationAssistant = refreshed.findLast((message) => message.info.id === handle.message.id)
+              const assistantMessages = continuationAssistant
+                ? yield* MessageV2.toModelMessagesEffect([continuationAssistant], model, {
+                    reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
+                  })
+                : []
               result = yield* handle.process(
                 {
                   ...processInput,
                   messages: [
-                    ...continuationModelMsgs,
+                    ...processInput.messages,
+                    ...assistantMessages,
                     {
                       role: "user",
                       content:
                         "Continue from the reasoning above. Produce the final answer now. Do not repeat the reasoning.",
                     },
                   ],
-                  contextFolding: continuationFolding,
+                  contextFolding: processInput.contextFolding,
                 },
                 { allowSplit: false },
               )
+              yield* Effect.logInfo("reasoning sync continuation", {
+                "session.id": sessionID,
+                "message.id": handle.message.id,
+                kv_prefix_reused: continuationAssistant !== undefined,
+              })
             }
             if (result === "deferred") return "break" as const
             const settledParts = yield* MessageV2.parts(msg.id).pipe(Effect.provideService(Database.Service, database))

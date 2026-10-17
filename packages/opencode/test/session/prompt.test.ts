@@ -7002,6 +7002,21 @@ const withSettleWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =
       }),
   )
 
+const withFirstFrameWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS
+      process.env.OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS = ms
+      return previous
+    }),
+    () => effect,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS
+        else process.env.OPENCODE_REASONING_DISTILLATION_FIRST_FRAME_MS = previous
+      }),
+  )
+
 for (const scenario of [
   { apiID: "qwen-test", global: true, model: undefined, expected: true },
   { apiID: "gpt-test", global: true, model: undefined, expected: true },
@@ -7110,6 +7125,15 @@ distillationIt.instance("organizes unsigned reasoning before content and continu
         (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
       )
       expect(hits).toHaveLength(2)
+      const firstMessages = hits[0]?.body.messages
+      const secondMessages = hits[1]?.body.messages
+      expect(Array.isArray(firstMessages)).toBe(true)
+      expect(Array.isArray(secondMessages)).toBe(true)
+      if (Array.isArray(firstMessages) && Array.isArray(secondMessages)) {
+        const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+        expect(secondMessages.length).toBeGreaterThan(firstMessages.length)
+        expect(digest(secondMessages.slice(0, firstMessages.length))).toBe(digest(firstMessages))
+      }
       const sent = JSON.stringify(hits.at(-1)?.body)
       expect(sent).toContain("adopted-sync")
       expect(sent).not.toContain("sync-thinking")
@@ -7117,6 +7141,50 @@ distillationIt.instance("organizes unsigned reasoning before content and continu
       expect(parts.some((part) => part.type === "reasoning" && part.text === "adopted-sync")).toBe(true)
       expect(parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(true)
       expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
+    }),
+  ),
+)
+
+distillationIt.instance("skips organization when the organizer misses the first-frame window", () =>
+  withFirstFrameWindow(
+    "20",
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        reasoningDistillation: { enabled: true },
+      }))
+      const { prompt, sessions, chat } = yield* boot()
+      let organizerCalls = 0
+      controlledOrganizer = () =>
+        Effect.succeed({
+          transport: "engine" as const,
+          model: "test/small",
+          call: (abort) => () => {
+            organizerCalls++
+            return new Promise((_, reject) => {
+              abort.addEventListener("abort", () => reject(new Error("first frame timeout")), { once: true })
+            })
+          },
+        })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "think" }],
+      })
+      yield* llm.push(
+        reply().reason(longThought("first-frame-timeout-thinking")).text("phase-one").stop(),
+        reply().text("timeout-fallback-answer").stop(),
+      )
+      yield* prompt.loop({ sessionID: chat.id })
+      expect(organizerCalls).toBe(1)
+      const hits = (yield* llm.hits).filter(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+      )
+      expect(hits).toHaveLength(2)
+      expect(JSON.stringify(hits.at(-1)?.body)).toContain("first-frame-timeout-thinking")
+      const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+      expect(parts.some((part) => part.type === "text" && part.text === "timeout-fallback-answer")).toBe(true)
     }),
   ),
 )

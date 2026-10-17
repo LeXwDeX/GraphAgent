@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Scope } from "effect"
 import { adaptiveSettleMs, makeRewriteScheduler } from "../../src/session/reasoning-distillation/schedule"
+import { firstFrameWindowMs } from "../../src/session/reasoning-distillation/policy"
 
 import * as TestClock from "effect/testing/TestClock"
 import { it } from "../lib/effect"
@@ -273,6 +274,12 @@ test("cancelling a deleted session seals and interrupts its work without touchin
 test("adaptive response-start window scales by waiting characters and stays within 3–15 seconds", () => {
   expect([0, 1, 4_000, 4_001, 8_000, 8_001, 12_001, 16_001, 100_000].map(adaptiveSettleMs)).toEqual([
     3_000, 3_000, 3_000, 6_000, 6_000, 9_000, 12_000, 15_000, 15_000,
+  ])
+})
+
+test("first organizer frame window grows with input tokens and caps at 15 seconds", () => {
+  expect([0, 1_000, 4_000, 8_000, 10_000, 100_000].map(firstFrameWindowMs)).toEqual([
+    5_000, 6_000, 9_000, 13_000, 15_000, 15_000,
   ])
 })
 

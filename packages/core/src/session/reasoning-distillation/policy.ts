@@ -25,3 +25,12 @@ export const ReasoningDistillationPolicy = {
     minimumInputTokens: 32,
   },
 } as const
+
+/**
+ * Wait this long for the organizer's first provider frame. The user-visible budget grows with the estimated input:
+ * a 4K-token reasoning part gets about 9s, capped at 15s. Reaching the first frame proves the upstream is responding;
+ * the organizer's own reasoning frames are discarded, and the full text still has to complete within the auxiliary
+ * timeout.
+ */
+export const firstFrameWindowMs = (inputTokens: number) =>
+  Math.min(15_000, Math.max(5_000, 5_000 + Math.ceil(inputTokens / 1_000) * 1_000))
