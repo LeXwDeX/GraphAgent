@@ -1457,15 +1457,20 @@ function execShell(
   environmentFile?: string,
   environment?: Record<string, string | undefined>,
   effort?: HookEffort,
+  /** Stable project root; `cwd` above stays the working directory of the child. */
+  projectDir?: string,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string; spawnError?: string; suspect?: boolean }> {
   return new Promise((resolve) => {
     if (signal.aborted) {
       resolve({ exitCode: null, stdout: "", stderr: "" })
       return
     }
+    // CLAUDE_PROJECT_DIR names the project, not the (possibly nested) working
+    // directory, so both the exported variable and its placeholder use it.
+    const hookProjectDir = projectDir ?? cwd
     const timeoutMs = timeoutFor(entry, event)
     const shell = resolveHookShell(entry)
-    const expandedCommand = expandCommand(entry, { cwd, powershell: shell.kind === "powershell" })
+    const expandedCommand = expandCommand(entry, { cwd: hookProjectDir, powershell: shell.kind === "powershell" })
 
     const command = commandText(entry)
     log.debug("hook spawn", { command: command.slice(0, 200), cwd, timeoutMs })
@@ -1487,7 +1492,7 @@ function execShell(
       return
     }
 
-    const extraEnv: Record<string, string> = { CLAUDE_PROJECT_DIR: cwd }
+    const extraEnv: Record<string, string> = { CLAUDE_PROJECT_DIR: hookProjectDir }
     if (effort) extraEnv.CLAUDE_EFFORT = effort
     if (entry.__sourceDir) {
       extraEnv.CLAUDE_PLUGIN_ROOT = entry.__sourceDir
@@ -1516,13 +1521,17 @@ function execShell(
     // SessionStart may unset an inherited variable. Spawner APIs can stringify
     // undefined, so remove it explicitly before creating the child.
     for (const [name, value] of Object.entries(childEnv)) if (value === undefined) delete childEnv[name]
-    const child = spawn(expandedCommand, entry.args?.map((arg) => expandTemplate(entry, arg, true, { cwd })) ?? [], {
-      cwd,
-      shell: entry.args === undefined ? shell.file : false,
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    })
+    const child = spawn(
+      expandedCommand,
+      entry.args?.map((arg) => expandTemplate(entry, arg, true, { cwd: hookProjectDir })) ?? [],
+      {
+        cwd,
+        shell: entry.args === undefined ? shell.file : false,
+        env: childEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      },
+    )
 
     let stdout = ""
     let stderr = ""
@@ -2392,6 +2401,12 @@ interface HookHandler<E extends HookCommand = HookCommand> {
     canonicalName?: string,
     /** Active effort for this trigger, exported to command hooks as `CLAUDE_EFFORT`. */
     effort?: HookEffort,
+    /**
+     * Stable project root for `CLAUDE_PROJECT_DIR` and its template placeholder.
+     * The working directory may move inside the project (cd / MoveSession); the
+     * project root does not. Defaults to the resolved working directory.
+     */
+    projectDir?: string,
   ) => Effect.Effect<HookExecution>
 }
 
@@ -2461,7 +2476,7 @@ function blocksOnFailure(entry: HookCommand, event: HookEvent): boolean {
 const commandHandler: HookHandler = {
   type: "command",
   run: Effect.fn("SettingsHook.handler.command")(
-    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName, effort) {
+    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName, effort, projectDir) {
       const event = envelope.hook_event_name
       // Translate at this entry's command boundary, never the shared native envelope.
       const toolName = typeof envelope.tool_name === "string" ? envelope.tool_name : ""
@@ -2482,7 +2497,7 @@ const commandHandler: HookHandler = {
           : envelope,
       )
       const { exitCode, stdout, stderr, spawnError, suspect } = yield* Effect.promise((signal) =>
-        execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment, effort),
+        execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment, effort, projectDir),
       )
       const failureBlocks = blocksOnFailure(entry, event)
 
@@ -3156,6 +3171,10 @@ export const layer = Layer.effect(
       const resolvedCwd = resolveHookCwd([cwd, projectDir, os.homedir(), os.tmpdir()])
       if (resolvedCwd !== cwd)
         log.warn("hook working directory unavailable; using fallback", { cwd, fallback: resolvedCwd })
+      // CLAUDE_PROJECT_DIR names the project root for the whole session, even
+      // when the session was opened in (or moved to) a checkout subdirectory.
+      // A directory outside the project, or a non-VCS "/" worktree, keeps cwd.
+      const hookProjectDir = hasWorktreeLayer(resolvedCwd, projectDir) ? projectDir : resolvedCwd
       if (entry.type === "http") {
         const settings = (yield* InstanceState.get(state)).settings
         if (!httpHookUrlAllowed(httpUrl(entry), settings.allowedHttpHookUrls)) {
@@ -3186,7 +3205,7 @@ export const layer = Layer.effect(
         }
       }
       const result = yield* handler
-        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName, effort)
+        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName, effort, hookProjectDir)
         .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(handlerContext, current)))
       return result
     })
