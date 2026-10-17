@@ -3197,9 +3197,13 @@ export const layer = Layer.effect(
         const queued = state.asyncResults.get(sessionID) ?? { additionalContexts: [], systemMessages: [] }
         // Ordinary async JSON fields are both model feedback on the next turn;
         // unlike synchronous systemMessage, neither is an ephemeral UI warning.
-        if (result.json?.systemMessage) queued.additionalContexts.push(result.json.systemMessage)
+        // Sanitize at the queue's only producer: both consumers (V1 SessionPrompt
+        // and the V2 turn bridge) drain raw strings, so an escaped/bounded value
+        // must already be in the queue. This also keeps an oversized payload from
+        // accumulating in memory while it waits for the next turn.
+        if (result.json?.systemMessage) queued.additionalContexts.push(sanitizeHookContext(result.json.systemMessage))
         if (hso && "additionalContext" in hso && typeof hso.additionalContext === "string")
-          queued.additionalContexts.push(hso.additionalContext)
+          queued.additionalContexts.push(sanitizeHookContext(hso.additionalContext))
         state.asyncResults.set(sessionID, queued)
         return
       }
