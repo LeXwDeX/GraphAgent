@@ -7002,8 +7002,8 @@ const withSettleWindow = <A, E, R>(ms: string, effect: Effect.Effect<A, E, R>) =
 
 for (const scenario of [
   { apiID: "qwen-test", global: true, model: undefined, expected: true },
-  { apiID: "gpt-test", global: true, model: undefined, expected: false },
-  { apiID: "anthropic/Claude-test", global: true, model: undefined, expected: false },
+  { apiID: "gpt-test", global: true, model: undefined, expected: true },
+  { apiID: "anthropic/Claude-test", global: true, model: undefined, expected: true },
   { apiID: "qwen-test", global: false, model: true, expected: true },
   { apiID: "qwen-test", global: true, model: false, expected: false },
   { apiID: "gpt-test", global: false, model: true, expected: true },
