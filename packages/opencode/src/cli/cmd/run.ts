@@ -21,7 +21,7 @@ import type { Argv } from "yargs"
 import path from "path"
 import { pathToFileURL } from "url"
 import { open } from "node:fs/promises"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { EOL } from "os"
@@ -244,6 +244,21 @@ export const RunCommand = effectCmd({
         describe: "auto-approve permissions that are not explicitly denied (dangerous!)",
         default: false,
       })
+      .option("init", {
+        type: "boolean",
+        describe: "run Setup hooks for one-time initialization, then continue the run",
+        default: false,
+      })
+      .option("maintenance", {
+        type: "boolean",
+        describe: "run Setup hooks for maintenance, then continue the run",
+        default: false,
+      })
+      .option("init-only", {
+        type: "boolean",
+        describe: "run Setup and startup SessionStart hooks, then exit without starting a conversation",
+        default: false,
+      })
       .option("demo", {
         type: "boolean",
         default: false,
@@ -258,6 +273,8 @@ export const RunCommand = effectCmd({
     const agentSvc = yield* Agent.Service
     const flags = yield* RuntimeFlags.Service
     const localInstance = yield* InstanceRef
+    const { SettingsHook } = yield* Effect.promise(() => import("@/hook/settings"))
+    const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
@@ -288,6 +305,22 @@ export const RunCommand = effectCmd({
 
       if (args.demo && !interactive) {
         die("--demo requires --mini")
+      }
+
+      if (args.init && args.maintenance) {
+        die("--init and --maintenance are mutually exclusive")
+      }
+
+      if (args.attach && (args.init || args.maintenance || args["init-only"])) {
+        die("--init, --maintenance and --init-only cannot be used with --attach")
+      }
+
+      if (interactive && (args.init || args.maintenance || args["init-only"])) {
+        die("--init, --maintenance and --init-only require a non-interactive run")
+      }
+
+      if (args["init-only"] && (args.session || args.continue || args.fork || args.command)) {
+        die("--init-only cannot be combined with --session, --continue, --fork or --command")
       }
 
       if (interactive && args.format === "json") {
@@ -849,6 +882,25 @@ export const RunCommand = effectCmd({
         await share(client, sessionID)
 
         if (!interactive) {
+          if (args.init || args.maintenance || args["init-only"]) {
+            if (!settingsHook) return die("Setup hooks are unavailable in this run")
+            const { HookTranscript } = await import("@/hook/transcript")
+            const transcriptPath = await Effect.runPromise(
+              HookTranscript.materialize({ sessionID, directory: cwd, messages: [] }),
+            )
+            const environmentFile = await Effect.runPromise(HookTranscript.environmentFile(sessionID))
+            await Effect.runPromise(
+              settingsHook
+                .trigger(
+                  { event: "Setup", trigger: args.maintenance ? "maintenance" : "init" },
+                  { sessionID, transcriptPath, environmentFile },
+                )
+                .pipe(Effect.provideService(InstanceRef, localInstance), Effect.ignore),
+            )
+          }
+          // --init-only runs Setup plus the session's startup SessionStart and
+          // exits without starting a conversation.
+          if (args["init-only"]) return undefined
           const model = pick(args.model)
           let subscription!: AbortController
           let completed!: Promise<string | undefined | void>
@@ -1161,5 +1213,9 @@ export async function runMini(input: MiniCommandInput) {
     "dangerously-skip-permissions": false,
     dangerouslySkipPermissions: false,
     demo: input.demo ?? false,
+    init: false,
+    maintenance: false,
+    "init-only": false,
+    initOnly: false,
   })
 }

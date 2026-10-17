@@ -677,14 +677,17 @@ export function spawnNode(
             yield* SettingsHook.landSystemMessages(started, { sessionID: parent.id })
             if (hookStart) for (const text of started.additionalContexts) yield* hookStart.append(childSession.id, text)
           }
-          let result = yield* promptSvc.prompt({
-            messageID: MessageID.ascending(),
-            sessionID: childSession.id,
-            model,
-            agent: agent.name,
-            ...(input.variant ? { variant: input.variant } : {}),
-            parts: input.promptParts,
-          })
+          let result = yield* promptSvc.prompt(
+            {
+              messageID: MessageID.ascending(),
+              sessionID: childSession.id,
+              model,
+              agent: agent.name,
+              ...(input.variant ? { variant: input.variant } : {}),
+              parts: input.promptParts,
+            },
+            { internalDelegation: true },
+          )
           for (;;) {
             let inputSnapshot =
               Option.isSome(messageService) && caller
@@ -804,7 +807,7 @@ export function spawnNode(
                         },
                       ],
                     },
-                    { continueToolBudget: true },
+                    { continueToolBudget: true, internalDelegation: true },
                   )
                   inputSnapshot =
                     Option.isSome(messageService) && caller
@@ -975,19 +978,22 @@ export function spawnNode(
               nudge = admitted === true
             }
             result = nudge
-              ? yield* promptSvc.prompt({
-                  messageID: MessageID.ascending(),
-                  sessionID: childSession.id,
-                  model,
-                  agent: agent.name,
-                  ...(input.variant ? { variant: input.variant } : {}),
-                  parts: [
-                    {
-                      type: "text",
-                      text: "Runtime continuation: the earlier structured result belongs to an older input snapshot. Review the recorded agent messages and submit an updated result. Keep completed tool evidence and do not repeat completed writes.",
-                    },
-                  ],
-                })
+              ? yield* promptSvc.prompt(
+                  {
+                    messageID: MessageID.ascending(),
+                    sessionID: childSession.id,
+                    model,
+                    agent: agent.name,
+                    ...(input.variant ? { variant: input.variant } : {}),
+                    parts: [
+                      {
+                        type: "text",
+                        text: "Runtime continuation: the earlier structured result belongs to an older input snapshot. Review the recorded agent messages and submit an updated result. Keep completed tool evidence and do not repeat completed writes.",
+                      },
+                    ],
+                  },
+                  { internalDelegation: true },
+                )
               : yield* promptSvc.loop({ sessionID: childSession.id })
           }
         }).pipe(Effect.ensuring(semaphore.release(1)))

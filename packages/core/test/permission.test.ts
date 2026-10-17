@@ -382,6 +382,64 @@ it.effect("permission callback policy updates are rechecked before allow", () =>
   }),
 )
 
+it.effect("a user's dialog rejection marks the hook scope as a permission denial", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const service = yield* PermissionV2.Service
+    const events = yield* EventV2.Service
+    const asked = yield* Deferred.make<PermissionV2.Request>()
+    const off = yield* events.listen((event) =>
+      event.type === PermissionV2.Event.Asked.type
+        ? Deferred.succeed(asked, Schema.decodeUnknownSync(PermissionV2.Request)(event.data)).pipe(Effect.asVoid)
+        : Effect.void,
+    )
+    const scope = hookScope()
+    scope.hooks.request = () => Effect.succeed({})
+    const run = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit, Effect.forkChild)
+    const request = yield* Deferred.await(asked)
+    yield* service.reply({ requestID: request.id, reply: "reject" })
+    expect(Exit.isFailure(yield* Fiber.join(run))).toBe(true)
+    expect(scope.denied).toBe(true)
+    yield* off
+  }),
+)
+
+for (const failing of ["policy", "request"] as const)
+  it.effect(`a failed permission hook ${failing} marks the scope as a permission denial`, () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+      const service = yield* PermissionV2.Service
+      const scope = hookScope()
+      const failure = new PermissionHookScope.Failure({ message: "hook transport down" })
+      if (failing === "policy") scope.hooks.policy = () => Effect.fail(failure)
+      else scope.hooks.request = () => Effect.fail(failure)
+      const exit = yield* service
+        .assert(assertion())
+        .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(scope.denied).toBe(true)
+    }),
+  )
+
+it.effect("an interrupted permission hook is not recorded as a denial", () =>
+  Effect.gen(function* () {
+    yield* setup([{ action: "read", resource: "*", effect: "ask" }])
+    const entered = yield* Deferred.make<void>()
+    const scope = hookScope()
+    scope.hooks.request = () =>
+      Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never), Effect.as({ behavior: "allow" as const }))
+    const service = yield* PermissionV2.Service
+    const fiber = yield* service
+      .assert(assertion())
+      .pipe(Effect.provideService(PermissionHookScope.Service, scope), Effect.forkChild)
+    yield* Deferred.await(entered)
+    yield* Fiber.interrupt(fiber)
+    expect(scope.denied).toBeUndefined()
+  }),
+)
+
 for (const blocked of ["policy", "request"] as const)
   it.effect(`cancels a blocked hook ${blocked} without releasing its hook`, () =>
     Effect.gen(function* () {

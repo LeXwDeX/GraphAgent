@@ -48,6 +48,17 @@ export const layer = Layer.effect(
       data.statuses.delete(sessionID)
       if (timer) yield* Fiber.interrupt(timer)
     })
+    // The session module is imported lazily: it already imports this one. An unreadable session is not a child.
+    const hasParent = Effect.fnUntraced(function* (sessionID: SessionID): Effect.fn.Return<boolean> {
+      const { Session } = yield* Effect.promise(() => import("./session"))
+      const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
+      if (!sessions) return false
+      const info = yield* sessions.get(sessionID).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.catchDefect(() => Effect.succeed(undefined)),
+      )
+      return info?.parentID !== undefined
+    })
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
       const data = yield* InstanceState.get(state)
       const previous = data.statuses.get(sessionID)
@@ -60,7 +71,9 @@ export const layer = Layer.effect(
         data.statuses.delete(sessionID)
         const notification =
           Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service)) ?? layerNotification
-        if (previous?.type === "busy" && notification) {
+        // Only a top-level session waits on the user. A child (subagent or DAG node) returns to its parent.
+        const child = previous?.type === "busy" && notification ? yield* hasParent(sessionID) : false
+        if (previous?.type === "busy" && notification && !child) {
           const fiber = yield* Effect.sleep("60 seconds").pipe(
             Effect.andThen(
               Effect.gen(function* () {

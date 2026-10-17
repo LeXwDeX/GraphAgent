@@ -15,7 +15,7 @@ import { SessionAttention } from "@/notification/attention"
  *                          ─▶ route through Notification emitter (type "elicitation_dialog")
  *                          ─▶ Question.ask (blocks until reply/reject/timeout)
  *   user reply ─▶ validate ─▶ accept+content / decline
- *   reject / timeout / no-context ─▶ decline
+ *   user dismissal ─▶ cancel; timeout / no-context ─▶ decline
  *   ─▶ fire ElicitationResult hook (result | cancelled)
  *   ─▶ respond to server
  */
@@ -278,11 +278,9 @@ export const handleElicitation = Effect.fn("MCP.elicitation.handle")(function* (
   const mapped = schemaToQuestions(input.message, input.requestedSchema)
   if ("reject" in mapped) return { action: "decline" } satisfies ElicitResponse
 
-  // Surface and await the user's answer with a bounded timeout. Timeout or
-  // rejection (user dismissed) both resolve to decline; only a validated reply
-  // resolves to accept.
+  // Dismissing the dialog is cancellation, not an explicit decline.
   const fields = fieldSpecsFromSchema(input.requestedSchema)
-  const validated = yield* Effect.scoped(
+  let response: ElicitResponse = yield* Effect.scoped(
     Effect.gen(function* () {
       const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
       if (notification)
@@ -298,16 +296,20 @@ export const handleElicitation = Effect.fn("MCP.elicitation.handle")(function* (
           Effect.forkScoped,
         )
       return yield* question.ask({ sessionID: SessionID.make(sessionID), questions: mapped.questions }).pipe(
-        // timeoutOption returns None on timeout; timeoutOrElse would also work.
         Effect.timeoutOption(ELICITATION_TIMEOUT_MS),
-        Effect.map((opt) => (Option.isNone(opt) ? undefined : validateAndCoerce(fields, opt.value))),
-        Effect.catch(() => Effect.succeed(undefined)), // user reject (RejectedError) → decline
+        Effect.map((opt): ElicitResponse => {
+          const content = Option.isNone(opt) ? undefined : validateAndCoerce(fields, opt.value)
+          return content === undefined ? { action: "decline" } : { action: "accept", content }
+        }),
+        Effect.catch((error) =>
+          Effect.succeed<ElicitResponse>({
+            action: error._tag === "QuestionRejectedError" ? "cancel" : "decline",
+          }),
+        ),
       )
     }),
   )
 
-  let response: ElicitResponse =
-    validated !== undefined ? { action: "accept", content: validated } : { action: "decline" }
   // The result hook replaces the whole response content. Cancel preserves the
   // submitted values; decline deliberately withholds them.
   if (settingsHook) {

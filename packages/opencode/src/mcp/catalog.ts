@@ -126,6 +126,35 @@ export const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_")
 
 export const toolName = (clientName: string, name: string) => sanitize(clientName) + "_" + sanitize(name)
 
+/**
+ * Real identity of a server-provided tool. The model-facing key (`server_tool`) is
+ * lossy, so hook consumers must read this binding instead of splitting a key.
+ * `source` is where the server definition came from; it is "unknown" unless the
+ * runtime actually tracked it.
+ */
+export interface ToolBinding {
+  readonly server: string
+  readonly tool: string
+  readonly source: string
+  /** The server marked this tool `_meta["anthropic/requiresUserInteraction"] === true`. */
+  readonly requiresUserInteraction?: boolean
+}
+
+const bindings = new WeakMap<object, ToolBinding>()
+
+export function bindTool<T extends object>(item: T, binding: ToolBinding): T {
+  bindings.set(item, binding)
+  return item
+}
+
+export function toolBinding(item: object): ToolBinding | undefined {
+  return bindings.get(item)
+}
+
+/** Claude-style `mcp__<server>__<tool>` name derived from the real binding. */
+export const canonicalToolName = (binding: Pick<ToolBinding, "server" | "tool">) =>
+  `mcp__${sanitize(binding.server)}__${sanitize(binding.tool)}`
+
 export function prompts(client: Client, timeout?: number) {
   if (!client.getServerCapabilities()?.prompts) return Promise.resolve([])
   return paginate(

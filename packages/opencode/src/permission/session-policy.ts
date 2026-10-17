@@ -23,7 +23,21 @@ const aliases: Record<string, string> = {
   TodoWrite: "todowrite",
   Skill: "skill",
 }
-export function toolPermission(name: string) {
+/**
+ * Official `mcp__<server>__<tool>` rule names address the native MCP permission `server_tool`.
+ * Server-wide names (`mcp__server`, `mcp__server__*`) cannot be told apart from another server
+ * whose name merely starts with `server_`, so they widen only deny/ask rules and never an allow.
+ */
+export function toolPermission(name: string, behavior?: "allow" | "deny" | "ask") {
+  if (name.startsWith("mcp__")) {
+    const rest = name.slice("mcp__".length)
+    const split = rest.indexOf("__")
+    const server = split < 0 ? rest : rest.slice(0, split)
+    const tool = split < 0 ? "*" : rest.slice(split + 2)
+    if (!server) return name
+    if (tool !== "*") return `${server}_${tool}`
+    return behavior === "allow" ? name : `${server}_*`
+  }
   return aliases[name] ?? name
 }
 
@@ -63,7 +77,7 @@ export function updateSessionPolicy(
       next.directories = [...dirs]
     } else if ("rules" in update) {
       const incoming = update.rules.map((rule) => ({
-        permission: toolPermission(rule.toolName),
+        permission: toolPermission(rule.toolName, update.behavior),
         pattern: rule.ruleContent ?? "*",
         action: update.behavior,
       }))

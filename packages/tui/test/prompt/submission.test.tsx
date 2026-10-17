@@ -929,6 +929,55 @@ test("model picker keeps the server-accepted model when a queued replacement is 
   }
 })
 
+test("resuming a session restores its persisted model locally without a model switch request or recents", async () => {
+  const requests: string[] = []
+  const messages = [
+    {
+      info: {
+        id: "msg_user_1",
+        sessionID: routeSessionID,
+        role: "user",
+        time: { created: 1 },
+        agent: "build",
+        model: { providerID: "test", modelID: "m" },
+      },
+      parts: [],
+    },
+  ]
+  const route = await mountRoute(
+    "prompt",
+    messages,
+    false,
+    async (url, request) => {
+      if (url.pathname === `/session/${routeSessionID}` && request.method === "GET")
+        return json({ ...routeSession, model: { id: "saved", providerID: "test" } })
+      if (url.pathname !== `/session/${routeSessionID}/model`) return undefined
+      requests.push(url.pathname)
+      return json(true)
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    const original = route.sync.data.provider[0].models.m
+    route.sync.set("provider", 0, "models", { saved: { ...original, id: "saved", name: "Saved model" } })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    await route.sync.session.sync(routeSessionID)
+    const recent = [...route.local.model.recent()]
+    route.mount()
+    await wait(() => Boolean(prompt))
+    await wait(() => route.local.model.current()?.modelID === "saved")
+    await Bun.sleep(50)
+    expect(requests).toEqual([])
+    expect(route.local.model.recent()).toEqual(recent)
+    expect(route.local.model.current()).toEqual({ providerID: "test", modelID: "saved" })
+    await route.app.renderOnce()
+    expect(route.app.captureCharFrame()).not.toContain("is not valid")
+  } finally {
+    await route.dispose()
+  }
+})
+
 test("session attention follows real typing, background child navigation, and unmount", async () => {
   const childID = "ses_attention_child"
   const child = { ...routeSession, id: childID, parentID: routeSessionID, title: "Background child" }

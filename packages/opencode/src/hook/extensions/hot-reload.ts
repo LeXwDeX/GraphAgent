@@ -83,21 +83,29 @@ function mtimeOrZero(file: string): number {
  *
  * @param projectDir - Project root directory
  * @param worktree - Optional git worktree root; its .opencode/hooks.json is polled too
- * @param reload - Effect that re-runs loadChain() and returns new Settings
- * @param onReload - Callback invoked with new settings and changed file path
+ * @param reload - Effect that builds the candidate settings for the changed file. It may run the
+ *   ConfigChange gate against the CURRENT settings first; resolving to `undefined` rejects the
+ *   candidate and the current settings stay in force.
+ * @param onReload - Atomic commit callback, invoked synchronously with an accepted candidate
+ *   and changed file path. Never invoked after `close()`.
  * @param opencodeGlobalConfig - OpenCode global config dir; its hooks.json is
  *   also polled so global hooks edits hot-reload without a restart.
  */
 export function watchSettings(
   projectDir: string,
   worktree: string | undefined,
-  reload: () => Effect.Effect<Settings>,
+  reload: (changedFile: string) => Effect.Effect<Settings | undefined>,
   onReload: (newSettings: Settings, changedFile: string) => void,
   opencodeGlobalConfig?: string,
 ): HotReloadHandle {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let lastReload = 0
   let closed = false
+  // One reload at a time: a slow ConfigChange hook must not let an older candidate commit
+  // after a newer one. close() interrupts the reload in flight.
+  const controller = new AbortController()
+  let running = false
+  let pending: string | undefined
 
   const files = watchedFiles(projectDir, worktree, opencodeGlobalConfig)
   // Seed mtime snapshots so a pre-existing file does not fire on the first poll.
@@ -105,15 +113,34 @@ export function watchSettings(
   log.info("polling hooks.json files", { files })
 
   const fireReload = (changedFile: string) => {
+    if (closed) return
+    if (running) {
+      pending = changedFile
+      return
+    }
+    running = true
     log.info("hooks.json changed, reloading", { file: changedFile })
     // Fire-and-forget: reload errors are logged but never crash
-    Effect.runPromise(Effect.suspend(reload))
+    Effect.runPromise(
+      Effect.suspend(() => reload(changedFile)),
+      { signal: controller.signal },
+    )
       .then((settings) => {
         if (closed) return
+        if (!settings) {
+          log.info("hooks reload rejected; keeping current hooks", { file: changedFile })
+          return
+        }
         log.info("hooks hot-reloaded", { file: changedFile, hookCount: countHooks(settings) })
         onReload(settings, changedFile)
       })
       .catch((err) => log.warn("hooks reload failed", { file: changedFile, error: String(err) }))
+      .finally(() => {
+        running = false
+        const next = pending
+        pending = undefined
+        if (next !== undefined && !closed) fireReload(next)
+      })
   }
 
   // Debounce: 500ms. Min 1s between reloads. On min-interval block, reschedule
@@ -159,6 +186,7 @@ export function watchSettings(
   return {
     close() {
       closed = true
+      controller.abort()
       if (debounceTimer) clearTimeout(debounceTimer)
       clearInterval(interval)
       log.info("stopped polling hooks.json files")

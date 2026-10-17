@@ -298,6 +298,37 @@ describe("run session replay", () => {
     )
   })
 
+  test("replays hook-managed assistant text from displayText only, including an empty display", () => {
+    const managed = (id: string, displayText: string) => {
+      const message = assistantMessage(id, "SECRET raw model output")
+      const part = message.parts[0]
+      if (part?.type !== "text") throw new Error("expected text part")
+      part.displayText = displayText
+      return message
+    }
+
+    const shown = replaySession({
+      messages: [userMessage("msg-user-1", "hi"), managed("msg-1", "safe output")],
+      permissions: [],
+      questions: [],
+      thinking: true,
+      limits: {},
+    })
+    expect(shown.commits.filter((item) => item.kind === "assistant").map((item) => item.text)).toEqual(["safe output"])
+    expect(shown.data.part.size).toBe(0)
+
+    const hidden = replaySession({
+      messages: [userMessage("msg-user-1", "hi"), managed("msg-1", "")],
+      permissions: [],
+      questions: [],
+      thinking: true,
+      limits: {},
+    })
+    expect(hidden.commits.filter((item) => item.kind === "assistant")).toEqual([])
+    expect(JSON.stringify(hidden.commits)).not.toContain("SECRET")
+    expect(hidden.data.part.size).toBe(0)
+  })
+
   test("uses provider model names for replayed turn summaries when available", () => {
     const out = replaySession({
       messages: [

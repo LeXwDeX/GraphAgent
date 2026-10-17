@@ -1,6 +1,6 @@
 import z from "zod"
 
-const PermissionUpdateSchema = z.union([
+export const PermissionUpdateSchema = z.union([
   z.object({
     type: z.enum(["addRules", "replaceRules", "removeRules"]),
     rules: z.array(z.object({ toolName: z.string(), ruleContent: z.string().optional() })),
@@ -14,6 +14,8 @@ const PermissionUpdateSchema = z.union([
     destination: z.string(),
   }),
 ])
+
+export type PermissionUpdate = z.infer<typeof PermissionUpdateSchema>
 
 export const HookCommandSchema = z
   .object({

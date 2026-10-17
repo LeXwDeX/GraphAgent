@@ -24,7 +24,9 @@ const adapter = HookCwd.layer.pipe(
   Layer.provide(HookFileWatch.defaultLayer),
   Layer.provide(HookConfigChange.defaultLayer),
 )
-const it = testEffect(Layer.mergeAll(adapter, MoveSession.defaultLayer, SessionProjector.defaultLayer))
+const it = testEffect(
+  Layer.mergeAll(adapter, MoveSession.defaultLayer, SessionProjector.defaultLayer, HookFileWatch.defaultLayer),
+)
 it.instance(
   "real persisted session move executes CwdChanged with new cwd and readable transcript",
   () =>
@@ -67,6 +69,66 @@ it.instance(
         actual_cwd: destination,
         readable: true,
       })
+    }),
+  { git: true },
+)
+
+function moveWithWatch(input: { cwdOutput?: unknown; seed?: string[] }) {
+  return Effect.gen(function* () {
+    const { directory } = yield* TestInstance
+    const destination = path.join(directory, "nested")
+    const audit = path.join(directory, "watch-audit.jsonl")
+    const script = path.join(directory, "watch-hook.ts")
+    yield* Effect.promise(async () => {
+      await fs.mkdir(destination)
+      await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+      await fs.writeFile(
+        script,
+        `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,path:i.file_path})+'\\n');if(i.hook_event_name==='CwdChanged'&&${JSON.stringify(input.cwdOutput !== undefined)})process.stdout.write(${JSON.stringify(JSON.stringify(input.cwdOutput ?? {}))});`,
+      )
+      const hook = { type: "command", command: process.execPath, args: [script] }
+      await fs.writeFile(
+        path.join(directory, ".opencode/hooks.json"),
+        JSON.stringify({ CwdChanged: [{ hooks: [hook] }], FileChanged: [{ matcher: "watched.*", hooks: [hook] }] }),
+      )
+    })
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({})
+    yield* (yield* HookFileWatch.Service).replace(session.id, input.seed ?? ["watched.txt"], () => Effect.void)
+    yield* (yield* MoveSession.Service)
+      .moveSession({ sessionID: session.id, destination: { directory: AbsolutePath.make(destination) } })
+      .pipe(Effect.provideService(InstanceRef, undefined))
+    yield* Effect.promise(() => fs.writeFile(path.join(destination, "watched.txt"), "changed"))
+    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1500)))
+    const rows: { event: string; path?: string }[] = yield* Effect.promise(async () =>
+      (await fs.readFile(audit, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    )
+    return { rows, destination }
+  })
+}
+
+it.instance(
+  "CwdChanged without watchPaths keeps the dynamic watch list and rebinds it to the new directory",
+  () =>
+    Effect.gen(function* () {
+      const { rows, destination } = yield* moveWithWatch({})
+      expect(rows.map((row) => row.event)).toEqual(["CwdChanged", "FileChanged"])
+      expect(rows[1]?.path).toBe(path.join(destination, "watched.txt"))
+    }),
+  { git: true },
+)
+
+it.instance(
+  "CwdChanged with an empty watchPaths array clears the dynamic watch list",
+  () =>
+    Effect.gen(function* () {
+      const { rows } = yield* moveWithWatch({
+        cwdOutput: { hookSpecificOutput: { hookEventName: "CwdChanged", watchPaths: [] } },
+      })
+      expect(rows.map((row) => row.event)).toEqual(["CwdChanged"])
     }),
   { git: true },
 )
@@ -119,7 +181,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
         .split("\n")
         .map((line) => JSON.parse(line))
       expect(movedAudit.map((row) => row.event)).toEqual(["SessionStart", "CwdChanged"])
-      expect(movedAudit.at(-1).old_env).toBeUndefined()
+      expect(movedAudit.at(-1).old_env).toBe("old-directory")
       const disposed = await fetch(server.url + "/instance/dispose", { method: "POST", headers })
       expect(disposed.status).toBe(200)
       await fs.writeFile(watched, "external write after old scope disposal")
@@ -148,7 +210,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
         }),
       })
       expect(response.status).toBe(200)
-      expect(await response.text()).toContain("unset|new-directory")
+      expect(await response.text()).toContain("old-directory|new-directory")
     })
     yield* Effect.promise(async () => {
       const response = await fetch(server.url + "/config", {

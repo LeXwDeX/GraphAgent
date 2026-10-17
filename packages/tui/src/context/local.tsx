@@ -369,6 +369,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           modelRequest = queued.then(() => undefined)
           return queued
         },
+        // Mirrors an already-persisted session model into the local per-agent cache.
+        // It sends no setModel request, so no model-switch hook runs and the server
+        // value is not overwritten; it also leaves recents and toasts untouched.
+        restore(model: { providerID: string; modelID: string }) {
+          const a = agent.current()
+          if (!a || !isModelValid(model)) return false
+          setModelStore("model", a.name, { providerID: model.providerID, modelID: model.modelID })
+          return true
+        },
         toggleFavorite(model: { providerID: string; modelID: string }) {
           batch(() => {
             if (!isModelValid(model)) {

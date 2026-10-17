@@ -40,6 +40,8 @@ export class Subscription {
   private readonly abort = new AbortController()
   private readonly shellSnapshots = new Map<string, string>()
   private readonly toolStarts = new Set<string>()
+  // Hook-managed text already forwarded, keyed by part ID. Only displayText suffixes are sent.
+  private readonly displaySent = new Map<string, string>()
   private readonly permission: ACPPermission.Handler
   private started = false
 
@@ -83,6 +85,7 @@ export class Subscription {
     const cwd = message.info.role === "assistant" ? message.info.path?.cwd : undefined
     for (const part of message.parts) {
       await this.recordFetchedPart(message.info.sessionID, message, part)
+      if (part.type === "text" && typeof part.displayText === "string") this.displaySent.set(part.id, part.displayText)
       if (part.type === "tool") {
         await this.handleToolPart(message.info.sessionID, part, cwd ?? process.cwd())
         continue
@@ -134,21 +137,56 @@ export class Subscription {
     const session = await Effect.runPromise(this.input.session.tryGet(sessionId))
     if (!session) return
 
+    const managed = part.type === "text" && typeof part.displayText === "string"
+    const known = managed
+      ? await Effect.runPromise(
+          this.input.session.tryGetPartMetadata({ sessionId: session.id, messageId: part.messageID, partId: part.id }),
+        )
+      : undefined
     await Effect.runPromise(
       this.input.session.recordPartMetadata({
         sessionId: session.id,
         messageId: part.messageID,
         partId: part.id,
         partType: part.type,
-        role: part.type === "reasoning" ? "assistant" : undefined,
+        role: part.type === "reasoning" ? "assistant" : known?.role,
         ignored: part.type === "text" ? part.ignored : undefined,
+        displayManaged: managed ? true : undefined,
         toolCallId: part.type === "tool" ? part.callID : undefined,
         metadata: "metadata" in part ? part.metadata : undefined,
       }),
     )
+    if (part.type === "text" && managed) {
+      await this.handleDisplayText(session.id, session.cwd, part)
+    }
     if (part.type === "tool") {
       await this.handleToolPart(session.id, part, session.cwd)
     }
+  }
+
+  // Forwards only the new suffix of hook-managed displayText. Raw part.text and raw deltas
+  // never reach the client for these parts.
+  private async handleDisplayText(sessionId: string, cwd: string, part: Extract<Part, { type: "text" }>) {
+    if (part.ignored === true) return
+    const next = part.displayText ?? ""
+    const prev = this.displaySent.get(part.id) ?? ""
+    if (next.length <= prev.length || !next.startsWith(prev)) return
+
+    const known = await Effect.runPromise(
+      this.input.session.tryGetPartMetadata({ sessionId, messageId: part.messageID, partId: part.id }),
+    )
+    const role = known?.role ?? (await this.fetchPartMetadata(sessionId, cwd, part.messageID, part.id))?.role
+    if (role !== "assistant") return
+
+    this.displaySent.set(part.id, next)
+    await this.input.connection.sessionUpdate({
+      sessionId,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        messageId: part.messageID,
+        content: { type: "text", text: next.slice(prev.length) },
+      },
+    })
   }
 
   private async handlePartDelta(event: EventMessagePartDelta) {
@@ -168,6 +206,7 @@ export class Subscription {
         ? known
         : await this.fetchPartMetadata(session.id, session.cwd, props.messageID, props.partID)
     if (metadata?.role !== "assistant") return
+    if (metadata.partType === "text" && props.field === "text" && metadata.displayManaged === true) return
     if (metadata.partType === "text" && props.field === "text" && metadata.ignored !== true) {
       await this.input.connection.sessionUpdate({
         sessionId: session.id,
@@ -226,6 +265,7 @@ export class Subscription {
         partType: part.type,
         role: message.info.role,
         ignored: part.type === "text" ? part.ignored : undefined,
+        displayManaged: part.type === "text" && typeof part.displayText === "string" ? true : undefined,
         toolCallId: part.type === "tool" ? part.callID : undefined,
         metadata: "metadata" in part ? part.metadata : undefined,
       }),

@@ -11,6 +11,8 @@ export interface Interface {
     paths: readonly string[] | undefined,
     changed: (file: string, event: "change" | "add" | "unlink") => Effect.Effect<void>,
   ) => Effect.Effect<void>
+  /** Current dynamic watch list for the session in this directory instance, if any. */
+  readonly paths: (sessionID: string) => Effect.Effect<readonly string[] | undefined>
   readonly refreshStatic: (paths: readonly string[]) => Effect.Effect<void>
   readonly clear: (sessionID: string) => Effect.Effect<void>
 }
@@ -60,6 +62,9 @@ export const layer = Layer.effect(
       for (const w of old.watchers) w.close()
       for (const f of old.fibers) if (f !== Fiber.getCurrent()) yield* Fiber.interrupt(f)
       sessions.delete(sessionID)
+    })
+    const paths = Effect.fn("HookFileWatch.paths")(function* (sessionID: string) {
+      return (yield* InstanceState.get(state)).sessions.get(sessionID)?.paths
     })
     const replace = Effect.fn("HookFileWatch.replace")(function* (
       sessionID: string,
@@ -111,7 +116,7 @@ export const layer = Layer.effect(
       data.staticPaths.splice(0, data.staticPaths.length, ...paths)
       for (const [id, entry] of Array.from(data.sessions)) yield* replace(id, entry.paths, entry.changed)
     })
-    return Service.of({ replace, clear, refreshStatic })
+    return Service.of({ replace, clear, paths, refreshStatic })
   }),
 )
 export const defaultLayer = layer

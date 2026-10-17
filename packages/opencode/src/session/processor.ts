@@ -26,6 +26,7 @@ import {
   INCOMPLETE_REASONING_RESPONSE_MESSAGE,
 } from "./retry"
 import { ToolInputRejectedError } from "./llm/ai-sdk"
+import { hookToolStop } from "@/hook/trigger-result"
 import { CompactionTimeoutError, watchCompactionStream } from "./compaction-timeout"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
@@ -859,6 +860,8 @@ export const layer = Layer.effect(
               })
             }
             yield* failToolCall(value.id, value.error ?? new Error(value.message))
+            // A PostToolUseFailure `continue:false` ends the agent turn once the error is recorded.
+            if (hookToolStop(value.error)) ctx.blocked = true
             return
           }
 

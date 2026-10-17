@@ -87,10 +87,40 @@ export function withHookFeedback(output: string, result: TriggerResult): string 
   return feedback ? `${output}\n\n${feedback}` : output
 }
 
-export function withHookFailure(error: unknown, result: TriggerResult): unknown {
-  const feedback = postHookFeedback(result)
+/** PreToolUse context stays attached to the result of the call it governed (denial, rejection or failure). */
+export function withPreContext(text: string, contexts: readonly string[] | undefined): string {
+  const lines = (contexts ?? []).filter(Boolean)
+  return lines.length ? `${text}\n\n${lines.join("\n\n")}` : text
+}
+
+/** A failed tool whose PostToolUseFailure hook returned `continue:false`; the processor ends the turn on it. */
+export class HookToolStop extends Error {
+  readonly _tag = "HookToolStop"
+  constructor(
+    message: string,
+    readonly stopReason: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options)
+    this.name = "HookToolStop"
+  }
+}
+
+/** Find a hook stop marker on an error or its cause chain. */
+export function hookToolStop(error: unknown): HookToolStop | undefined {
+  for (let depth = 0, current = error; depth < 8 && current instanceof Error; depth++, current = current.cause) {
+    if (current instanceof HookToolStop) return current
+  }
+  return undefined
+}
+
+export function withHookFailure(error: unknown, result: TriggerResult, preContexts: readonly string[] = []): unknown {
+  const feedback = [...preContexts.filter(Boolean), postHookFeedback(result)].filter(Boolean).join("\n\n")
   if (!feedback) return error
-  return new Error(`${error instanceof Error ? error.message : String(error)}\n\n${feedback}`, { cause: error })
+  const message = `${error instanceof Error ? error.message : String(error)}\n\n${feedback}`
+  if (result.preventContinuation)
+    return new HookToolStop(message, result.stopReason ?? "Hook requested stop", { cause: error })
+  return new Error(message, { cause: error })
 }
 
 /**

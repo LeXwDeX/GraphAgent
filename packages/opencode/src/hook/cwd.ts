@@ -27,10 +27,12 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const sessionID = SessionID.make(change.sessionID)
           const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
-          yield* HookTranscript.clearEnvironment(sessionID).pipe(Effect.orDie)
+          yield* HookTranscript.clearEnvironment(sessionID, "directory").pipe(Effect.orDie)
           const old = yield* instances.load({ directory: change.previousDirectory })
           const initial = yield* lifecycle.consumeInitial(sessionID).pipe(Effect.provideService(InstanceRef, old))
           yield* lifecycle.detach(sessionID).pipe(Effect.provideService(InstanceRef, old))
+          // A CwdChanged result without watchPaths keeps the dynamic list; only [] clears it.
+          const watched = yield* watcher.paths(sessionID).pipe(Effect.provideService(InstanceRef, old))
           yield* watcher.clear(sessionID).pipe(Effect.provideService(InstanceRef, old))
           yield* config.clear(sessionID)
           const instance = yield* instances.load({ directory: change.directory })
@@ -46,7 +48,9 @@ export const layer = Layer.effect(
               {
                 sessionID,
                 transcriptPath,
-                environmentFile: yield* HookTranscript.environmentFile(sessionID).pipe(Effect.orDie),
+                environmentFile: yield* HookTranscript.environmentFile(sessionID, undefined, "directory").pipe(
+                  Effect.orDie,
+                ),
                 environment: yield* HookTranscript.environment(sessionID).pipe(Effect.orDie),
               },
             )
@@ -55,7 +59,11 @@ export const layer = Layer.effect(
               session: { id: sessionID, directory: instance.directory },
               sessions,
               settings,
-              result: { additionalContexts: [], systemMessages: [], watchPaths: result.watchPaths },
+              result: {
+                additionalContexts: [],
+                systemMessages: [],
+                watchPaths: result.watchPaths ?? (watched ? [...watched] : undefined),
+              },
             })
           }).pipe(
             Effect.provideService(HookLifecycle.Service, lifecycle),

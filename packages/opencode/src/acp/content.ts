@@ -9,6 +9,8 @@ export type ReplayPart =
   | {
       type: "text"
       text: string
+      /** Hook-managed visible text. Present (even "") means text must not be shown. */
+      displayText?: string
       synthetic?: boolean
       ignored?: boolean
     }
@@ -122,17 +124,20 @@ export function partsToContentChunks(parts: readonly ReplayPart[]): ContentChunk
 
 export function partToContentChunks(part: ReplayPart): ContentChunk[] {
   switch (part.type) {
-    case "text":
-      if (!part.text) return []
+    case "text": {
+      // An empty displayText is meaningful: hooks hid the text, so never fall back to raw text.
+      const text = part.displayText ?? part.text
+      if (!text) return []
       return [
         {
           content: {
             type: "text",
-            text: part.text,
+            text,
             ...partAudience(part),
           },
         },
       ]
+    }
 
     case "file":
       return filePartToContentChunks(part)

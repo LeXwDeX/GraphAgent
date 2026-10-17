@@ -12,6 +12,8 @@ import {
   SystemPart,
   ToolOutput,
   TransportReason,
+  type ToolContent,
+  type ToolResultValue,
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
@@ -99,6 +101,23 @@ const toolWaitTimeoutError = () =>
     method: "stream",
     reason: new TransportReason({ message: "Tool execution timed out", kind: "Timeout" }),
   })
+
+const serializedText = (value: unknown) => {
+  if (typeof value === "string") return value
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/** The exact text a provider receives for a settled tool call, for PostToolBatch `tool_response`. */
+const modelToolResponse = (settlement: { readonly output?: ToolOutput; readonly result: ToolResultValue }) => {
+  const result = settlement.output ? ToolOutput.toResultValue(settlement.output) : settlement.result
+  if (result.type === "content")
+    return result.value.map((item: ToolContent) => (item.type === "text" ? item.text : `[${item.type}]`)).join("\n")
+  return serializedText(result.value)
+}
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -733,7 +752,7 @@ export const layer = Layer.effect(
             }
             if (event.type === "tool-result") {
               const call = toolCalls.find((candidate) => candidate.toolUseID === event.id)
-              if (call) call.toolResponse = event.output?.structured ?? event.result
+              if (call) call.toolResponse = modelToolResponse({ output: event.output, result: event.result })
             }
             yield* publish(event)
             if (event.type === "text-start" && displayConfig.enabled) yield* publishDisplay(event.id)
@@ -820,15 +839,16 @@ export const layer = Layer.effect(
                         }),
                       )
                     }
-                    if (call) call.toolResponse = settlement.output?.structured ?? settlement.result
+                    const result: ToolResultValue =
+                      settlement.stopped && !settlement.output && settlement.result.type !== "error"
+                        ? { type: "error", value: settlement.stopped }
+                        : settlement.result
+                    if (call) call.toolResponse = modelToolResponse({ output: settlement.output, result })
                     yield* publish(
                       LLMEvent.toolResult({
                         id: event.id,
                         name: event.name,
-                        result:
-                          settlement.stopped && !settlement.output && settlement.result.type !== "error"
-                            ? { type: "error", value: settlement.stopped }
-                            : settlement.result,
+                        result,
                         output: settlement.output,
                       }),
                       settlement.outputPaths ?? [],
@@ -1127,7 +1147,7 @@ export const layer = Layer.effect(
           result: settlement.result,
           provider: { executed: false },
         })
-        const stopped = settlement.stopped || (yield* postBatch(settlement.result))
+        const stopped = settlement.stopped || (yield* postBatch(modelToolResponse({ result: settlement.result })))
         return stopped ? ("stopped" as const) : ("settled" as const)
       }
       const output = settlement.output ?? ToolOutput.fromResultValue(settlement.result)
@@ -1140,7 +1160,9 @@ export const layer = Layer.effect(
         outputPaths: settlement.outputPaths ?? [],
         provider: { executed: false },
       })
-      return settlement.stopped || (yield* postBatch(output.structured)) ? ("stopped" as const) : ("settled" as const)
+      return settlement.stopped || (yield* postBatch(modelToolResponse({ output, result: settlement.result })))
+        ? ("stopped" as const)
+        : ("settled" as const)
     })
 
     const run = Effect.fn("SessionRunner.run")(function* (input: {

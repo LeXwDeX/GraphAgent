@@ -272,17 +272,20 @@ export const TaskTool = Tool.define(
             if (text) yield* startCtx.append(nextSession.id, text)
           }
         }
-        const result = yield* ops.prompt({
-          messageID: MessageID.ascending(),
-          sessionID: nextSession.id,
-          model: {
-            modelID: model.modelID,
-            providerID: model.providerID,
+        const result = yield* ops.prompt(
+          {
+            messageID: MessageID.ascending(),
+            sessionID: nextSession.id,
+            model: {
+              modelID: model.modelID,
+              providerID: model.providerID,
+            },
+            variant: next.model ? undefined : variant,
+            agent: next.name,
+            parts,
           },
-          variant: next.model ? undefined : variant,
-          agent: next.name,
-          parts,
-        })
+          { internalDelegation: true },
+        )
         const text = result.parts.findLast((item) => item.type === "text")?.text ?? ""
         return text
       })
@@ -513,7 +516,7 @@ export const TaskTool = Tool.define(
                     },
                   ],
                 },
-                { continueToolBudget: true },
+                { continueToolBudget: true, internalDelegation: true },
               )
               .pipe(Effect.exit)
             if (Exit.isFailure(cont)) {

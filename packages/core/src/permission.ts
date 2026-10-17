@@ -221,11 +221,25 @@ export const layer = Layer.effect(
       EffectRuntime.uninterruptibleMask((restore) =>
         EffectRuntime.gen(function* () {
           const hook = Option.getOrUndefined(yield* EffectRuntime.serviceOption(PermissionHookScope.Service))
+          // A typed permission failure is a permission denial for the invocation, not a tool failure.
+          // tapError ignores interrupts and defects, which keep propagating unmarked.
+          const rejecting = <A, E, R>(effect: EffectRuntime.Effect<A, E, R>) =>
+            hook
+              ? effect.pipe(
+                  EffectRuntime.tapError(() =>
+                    EffectRuntime.sync(() => {
+                      hook.denied = true
+                    }),
+                  ),
+                )
+              : effect
           const policy = hook
             ? yield* restore(
-                hook.hooks
-                  .policy()
-                  .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+                rejecting(
+                  hook.hooks
+                    .policy()
+                    .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+                ),
               )
             : undefined
           const result = yield* evaluateInput(input, policy?.rules, policy?.mode === "plan")
@@ -253,14 +267,16 @@ export const layer = Layer.effect(
           }
           if (hook) {
             const decision = yield* restore(
-              hook.hooks
-                .request({
-                  action: input.action,
-                  resources: input.resources,
-                  toolInput: hook.input,
-                  metadata: input.metadata,
-                })
-                .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+              rejecting(
+                hook.hooks
+                  .request({
+                    action: input.action,
+                    resources: input.resources,
+                    toolInput: hook.input,
+                    metadata: input.metadata,
+                  })
+                  .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+              ),
             )
             if (decision.behavior === "deny") {
               hook.denied = true
@@ -273,9 +289,11 @@ export const layer = Layer.effect(
             }
             // Permission updates may have changed this very action's policy.
             const refreshedPolicy = yield* restore(
-              hook.hooks
-                .policy()
-                .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+              rejecting(
+                hook.hooks
+                  .policy()
+                  .pipe(EffectRuntime.mapError((error) => new CorrectedError({ feedback: error.message }))),
+              ),
             )
             const refreshed = yield* evaluateInput(input, refreshedPolicy.rules, refreshedPolicy.mode === "plan")
             if (refreshed.effect === "deny") {
@@ -298,7 +316,7 @@ export const layer = Layer.effect(
             }
           }
           const item = yield* create(request(input), input.agent)
-          return yield* restore(Deferred.await(item.deferred)).pipe(
+          return yield* rejecting(restore(Deferred.await(item.deferred))).pipe(
             EffectRuntime.tap(() =>
               EffectRuntime.sync(() => {
                 if (hook) hook.confirmed = true
