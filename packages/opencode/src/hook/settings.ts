@@ -4093,7 +4093,10 @@ export const layer = Layer.effect(
               result.elicitation = { action: hso.action, content: "content" in hso ? hso.content : undefined }
           }
           if (payload.event === "SessionStart" && hso) {
-            if ("initialUserMessage" in hso) result.initialUserMessage = hso.initialUserMessage
+            // This value is admitted as a user turn, so it gets the same reminder
+            // escaping and length bound as every other hook-supplied string.
+            if (hso.initialUserMessage !== undefined)
+              result.initialUserMessage = sanitizeHookContext(hso.initialUserMessage)
             if ("watchPaths" in hso) result.watchPaths = hso.watchPaths
             if ("sessionTitle" in hso) result.sessionTitle = hso.sessionTitle
             if ("reloadSkills" in hso) result.reloadSkills = hso.reloadSkills
