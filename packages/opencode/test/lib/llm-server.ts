@@ -333,7 +333,6 @@ function flow(item: Sse) {
 
 function gemini(item: Sse) {
   const parts: unknown[] = []
-  let usage: Usage | undefined
   for (const part of flow(item)) {
     if (part.type === "text") {
       parts.push({ text: part.text })
@@ -345,26 +344,11 @@ function gemini(item: Sse) {
         thought: true,
         ...(item.signedReasoning ? { thoughtSignature: item.signedReasoning } : {}),
       })
-      continue
     }
-    usage = part.usage
   }
   return {
     ...item,
-    head: [
-      {
-        candidates: [{ content: { parts, role: "model" }, finishReason: "STOP" }],
-        ...(usage
-          ? {
-              usageMetadata: {
-                promptTokenCount: usage.input,
-                candidatesTokenCount: usage.output,
-                totalTokenCount: usage.input + usage.output,
-              },
-            }
-          : {}),
-      },
-    ],
+    head: [{ candidates: [{ content: { parts, role: "model" }, finishReason: "STOP" }] }],
     tail: [],
   } satisfies Sse
 }
