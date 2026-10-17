@@ -2,6 +2,7 @@ export * as SessionConversationHooks from "./conversation-hooks"
 
 import { Context, Effect, Schema } from "effect"
 import type { PermissionHookScope } from "../permission/hook-scope"
+import { SessionMessage } from "./message"
 import { Prompt } from "./prompt"
 import { SessionSchema } from "./schema"
 
@@ -9,6 +10,11 @@ import { SessionSchema } from "./schema"
 export interface Interface {
   readonly admit: (input: {
     sessionID: SessionSchema.ID
+    /**
+     * The prompt being admitted. UserPromptSubmit runs before the message row
+     * is persisted, so the hook cannot discover this id from storage.
+     */
+    messageID: SessionMessage.ID
     prompt: Prompt
   }) => Effect.Effect<void | { additionalContext?: string }, Blocked>
   readonly beforeTool: (input: {

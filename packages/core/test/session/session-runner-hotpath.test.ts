@@ -669,6 +669,35 @@ describe("SessionRunnerLLM hot path", () => {
     }),
   )
 
+  it.effect("passes the submitted message id into conversation-hook admission", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const admitted: Array<Parameters<SessionConversationHooks.Interface["admit"]>[0]> = []
+      const hooks = SessionConversationHooks.Service.of({
+        admit: (input) =>
+          Effect.sync(() => {
+            admitted.push(input)
+          }),
+        beforeTool: (input) => Effect.succeed({ toolInput: input.toolInput }),
+        afterTool: () => Effect.succeed({}),
+      })
+      const messageID = SessionMessage.ID.make("msg_submitted_prompt")
+      yield* session
+        .prompt({
+          sessionID,
+          id: messageID,
+          prompt: Prompt.make({ text: "Admit me", hookMode: "noninteractive" }),
+          resume: false,
+        })
+        .pipe(Effect.provideService(SessionConversationHooks.Service, hooks))
+      expect(admitted).toHaveLength(1)
+      expect(admitted[0]?.sessionID).toBe(sessionID)
+      expect(admitted[0]?.messageID).toBe(messageID)
+      expect(admitted[0]?.prompt.text).toBe("Admit me")
+    }),
+  )
+
   it.effect("continues a V2 Stop block through a durable synthetic prompt", () =>
     Effect.gen(function* () {
       yield* setup

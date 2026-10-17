@@ -4,13 +4,19 @@ import { Database } from "@opencode-ai/core/database/database"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { HookTranscript, type Message } from "./transcript"
-import { promptIdentity, variantToEffort } from "./prompt-identity"
+import { promptIdentity, variantToEffort, withPromptIdentity } from "./prompt-identity"
 
 /** Actual persisted history and SessionStart environment for consumers without the prompt wrapper. */
 export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   sessionID: string,
   permissionMode?: string,
   currentAgent?: string,
+  /**
+   * Prompt being processed when the caller already knows it. Prompt admission
+   * runs before the durable user row exists, so the transcript-derived identity
+   * would otherwise name the previous prompt.
+   */
+  promptID?: string,
 ): Effect.fn.Return<TriggerContext, unknown> {
   const directory = (yield* InstanceRef)?.directory ?? process.cwd()
   const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
@@ -53,7 +59,7 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   }
   const agent = currentAgent ?? nativeSession?.agent ?? messages.findLast((message) => message.info.agent)?.info.agent
   if (agent === "plan" && permissionMode === undefined) permissionMode = "plan"
-  const identity = promptIdentity(messages)
+  const identity = withPromptIdentity(promptIdentity(messages), { promptID })
   // V2 durable user rows carry no model metadata, so the transcript identity
   // cannot name the effort even though the session row holds the variant.
   const effort = identity.effort ?? variantToEffort(nativeSession?.model?.variant)

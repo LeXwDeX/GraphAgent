@@ -41,7 +41,7 @@ const conversationLayer = Layer.effect(
         if (session) return session.location.directory
         return yield* new SessionConversationHooks.Blocked({ reason: "Session hook location is unavailable" })
       })
-    const runHook = (sessionID: SessionID, payload: HookPayload, land = true) =>
+    const runHook = (sessionID: SessionID, payload: HookPayload, land = true, promptID?: string) =>
       Effect.gen(function* () {
         const directory = yield* directoryFor(sessionID)
         return yield* instances.provide(
@@ -56,6 +56,7 @@ const conversationLayer = Layer.effect(
                     sessionID,
                     (yield* permissions.hookPolicy(sessionID)).mode,
                     (yield* sessions.get(sessionID).pipe(Effect.orDie)).agent,
+                    promptID,
                   ).pipe(Effect.orDie)
                 : { sessionID, transcriptPath: "" },
             )
@@ -68,7 +69,20 @@ const conversationLayer = Layer.effect(
       admit: (input) =>
         Effect.gen(function* () {
           const sessionID = SessionID.make(input.sessionID)
-          const result = yield* runHook(sessionID, { event: "UserPromptSubmit", prompt: input.prompt.text })
+          const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
+          // session_title is present only for a title the user or a hook chose,
+          // never for a generated one (same rule as V1 prompt admission).
+          const titled = current.metadata?.hookTitleSource === "custom" && current.title ? current.title : undefined
+          const result = yield* runHook(
+            sessionID,
+            {
+              event: "UserPromptSubmit",
+              prompt: input.prompt.text,
+              ...(titled !== undefined ? { sessionTitle: titled } : {}),
+            },
+            true,
+            input.messageID,
+          )
           if (result.sessionTitle !== undefined)
             yield* instances.provide(
               { directory: yield* directoryFor(sessionID) },
