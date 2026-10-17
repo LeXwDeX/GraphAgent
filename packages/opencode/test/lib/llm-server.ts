@@ -40,6 +40,7 @@ type Sse = {
   hang?: boolean
   error?: unknown
   reset?: boolean
+  encryptedReasoning?: string
 }
 
 type HttpError = {
@@ -219,12 +220,12 @@ function responseReasonText(id: string, text: string, seq: number) {
   }
 }
 
-function responseReasonDone(id: string, seq: number) {
+function responseReasonDone(id: string, seq: number, encrypted?: string) {
   return {
     type: "response.output_item.done",
     sequence_number: seq,
     output_index: 0,
-    item: { type: "reasoning", id, encrypted_content: null },
+    item: { type: "reasoning", id, encrypted_content: encrypted ?? null },
   }
 }
 
@@ -397,7 +398,7 @@ function responses(item: Sse, model: string) {
   }
   if (reason) {
     seq += 1
-    lines.push(responseReasonDone(reason, seq))
+    lines.push(responseReasonDone(reason, seq, item.encryptedReasoning))
   }
   if (call && !item.hang && !item.error) {
     seq += 1
@@ -459,6 +460,7 @@ export class Reply {
   #error: unknown
   #reset = false
   #seq = 0
+  #encryptedReasoning: string | undefined
 
   #id() {
     this.#seq += 1
@@ -472,6 +474,11 @@ export class Reply {
 
   reason(value: string) {
     this.#tail = [...this.#tail, reasonLine(value)]
+    return this
+  }
+
+  encryptedReason(value: string) {
+    this.#encryptedReasoning = value
     return this
   }
 
@@ -560,6 +567,7 @@ export class Reply {
       hang: this.#hang,
       error: this.#error,
       reset: this.#reset,
+      encryptedReasoning: this.#encryptedReasoning,
     }
   }
 }

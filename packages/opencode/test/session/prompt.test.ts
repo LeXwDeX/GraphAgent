@@ -7186,6 +7186,59 @@ distillationIt.instance("leaves signed reasoning untouched in the same turn", ()
   ),
 )
 
+distillationIt.instance("does not split encrypted OpenAI reasoning", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const config = providerCfg(url)
+      return {
+        ...config,
+        reasoningDistillation: { enabled: true },
+        provider: {
+          test: {
+            ...config.provider.test,
+            npm: "@ai-sdk/openai",
+            models: {
+              "test-model": {
+                ...config.provider.test.models["test-model"],
+                id: "gpt-test",
+                reasoning: true,
+              },
+            },
+          },
+        },
+      }
+    })
+    const { prompt, sessions, chat } = yield* boot()
+    let organizerCalls = 0
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          organizerCalls++
+          return { text: "must-not-adopt", finishReason: "stop" }
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "answer directly" }],
+    })
+    yield* llm.push(
+      reply().reason(longThought("encrypted-thinking")).encryptedReason("ciphertext").text("encrypted-answer").stop(),
+    )
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(organizerCalls).toBe(0)
+    expect(yield* llm.hits).toHaveLength(1)
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    const reasoning = parts.find((part) => part.type === "reasoning")
+    expect(reasoning?.type === "reasoning" ? reasoning.text : undefined).toBe(longThought("encrypted-thinking"))
+    expect(JSON.stringify(reasoning?.type === "reasoning" ? reasoning.metadata : undefined)).toContain("ciphertext")
+    expect(parts.some((part) => part.type === "text" && part.text === "encrypted-answer")).toBe(true)
+  }),
+)
+
 distillationIt.instance("falls back to the original reasoning when synchronous organization fails", () =>
   withSettleWindow(
     "10000",
@@ -7714,6 +7767,79 @@ for (const stage of ["memory", "tools"] as const) {
     }),
   )
 }
+
+distillationIt.instance("does not split reasoning below the organizer minimum", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    let organizerCalls = 0
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          organizerCalls++
+          return { text: "must-not-adopt", finishReason: "stop" }
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "answer directly" }],
+    })
+    yield* llm.push(reply().reason("short thought").text("short-answer").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(organizerCalls).toBe(0)
+    expect(yield* llm.hits).toHaveLength(1)
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "reasoning" && part.text === "short thought")).toBe(true)
+    expect(parts.some((part) => part.type === "reasoning" && part.text === "must-not-adopt")).toBe(false)
+  }),
+)
+
+distillationIt.instance("cancelling a synchronous continuation interrupts the organizer", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    const started = yield* Deferred.make<void>()
+    let signal: AbortSignal | undefined
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: (abort) => () => {
+          signal = abort
+          Deferred.doneUnsafe(started, Effect.void)
+          return new Promise(() => {})
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "think" }],
+    })
+    yield* llm.push(reply().reason(longThought("sync-cancel")).text("phase-one").stop())
+    const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* awaitWithTimeout(Deferred.await(started), "sync organizer did not start")
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(loop)
+    yield* pollWithTimeout(
+      Effect.sync(() => signal?.aborted || undefined),
+      "synchronous organizer was not cancelled",
+    )
+    expect((yield* (yield* SessionStatus.Service).get(chat.id)).type).toBe("idle")
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "text" && part.text === "phase-one")).toBe(false)
+  }),
+)
 
 distillationIt.instance("cancelling a foreground reasoning barrier seals late organizer results", () =>
   withSettleWindow(
