@@ -26,7 +26,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { Token } from "@/util/token"
-import { measured, triggerLimit } from "./overflow"
+import { estimateRequest, measured, triggerLimit } from "./overflow"
 import { SessionRevert } from "./revert"
 
 function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messageIndex: number) {
@@ -3294,9 +3294,11 @@ export const layer = Layer.effect(
                     "Continue from the reasoning above. Produce the final answer now. Do not repeat the reasoning.",
                 },
               ]
-              const continuationEstimate = Token.estimate(
-                JSON.stringify({ system: processInput.system, messages: continuationMessages }),
-              )
+              const continuationEstimate = estimateRequest({
+                system: processInput.system,
+                tools: processInput.tools,
+                messages: continuationMessages,
+              })
               const continuationLimit = triggerLimit({
                 cfg: yield* config.get(),
                 model,
@@ -3311,6 +3313,12 @@ export const layer = Layer.effect(
                   estimatedInputTokens: continuationEstimate,
                   triggerLimit: continuationLimit,
                 })
+                // Split cleanup deliberately leaves the assistant message open for the continuation to
+                // finish. Skipping the continuation must close it, or the message stays incomplete forever.
+                if (handle.message.time.completed === undefined) {
+                  handle.message.time.completed = Date.now()
+                  yield* sessions.updateMessage(handle.message)
+                }
                 result = "compact"
                 break
               }

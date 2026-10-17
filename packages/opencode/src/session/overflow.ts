@@ -4,6 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import type { MessageV2 } from "./message-v2"
+import { Token } from "@/util/token"
 
 const COMPACTION_BUFFER = 20_000
 const DEFAULT_AUTO_COMPACTION_CEILING = 250_000
@@ -48,4 +49,24 @@ export function isOverflow(input: {
 
   const count = measured(input.tokens)
   return Math.max(count, input.estimatedInputTokens ?? 0) >= triggerLimit(input)
+}
+
+/**
+ * Conservative estimate of one prepared provider request. A context gate must include every part the
+ * provider receives (system, tool schemas, messages) and must not undercount CJK text: undercounting
+ * lets an oversized request reach the provider, which then rejects it.
+ */
+export function estimateRequest(input: {
+  system: readonly string[]
+  messages: unknown
+  tools?: Record<string, { description?: string; parameters?: unknown }>
+}) {
+  const tools = input.tools
+    ? Object.entries(input.tools).map(([name, tool]) => ({
+        name,
+        description: tool.description,
+        parameters: tool.parameters,
+      }))
+    : undefined
+  return Token.estimateReserve(JSON.stringify({ system: input.system, tools, messages: input.messages }))
 }

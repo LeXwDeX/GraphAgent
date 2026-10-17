@@ -7703,8 +7703,15 @@ distillationIt.instance("compacts instead of sending an oversized synchronous co
     yield* prompt.loop({ sessionID: chat.id })
     const bodies = (yield* llm.hits).map((hit) => JSON.stringify(hit.body))
     expect(bodies.some((body) => body.includes("Continue from the reasoning above"))).toBe(false)
-    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const parts = messages.flatMap((message) => message.parts)
     expect(parts.some((part) => part.type === "compaction")).toBe(true)
+    const reasoningAssistant = messages.find(
+      (message) => message.info.role === "assistant" && message.parts.some((part) => part.type === "reasoning"),
+    )
+    expect(
+      reasoningAssistant?.info.role === "assistant" ? reasoningAssistant.info.time.completed : undefined,
+    ).toBeDefined()
   }),
 )
 
