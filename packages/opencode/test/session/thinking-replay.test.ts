@@ -20,6 +20,67 @@ test("keeps subsequent signatures when only a leading thinking block was removed
   expect(JSON.stringify(replay.messages)).not.toContain("thinkingReplay")
 })
 
+test("accepts signed blocks removed from the start, the end, or the whole history", () => {
+  const initial = ThinkingReplay.project({ messages: [user] })
+  const first = signed(initial, "first")
+  const middle = signed(initial, "middle")
+  const last = signed(initial, "last")
+  // Middle retained, leading "first" removed: legal under the GA contract.
+  expect(
+    ThinkingReplay.project({ messages: [user, { role: "assistant", content: [middle, last] }] }).invalidated,
+  ).toEqual([])
+  // Trailing "last" removed: legal — nothing follows the removed block.
+  expect(
+    ThinkingReplay.project({ messages: [user, { role: "assistant", content: [first, middle] }] }).invalidated,
+  ).toEqual([])
+  // Entire signed history removed: legal.
+  expect(ThinkingReplay.project({ messages: [user] }).invalidated).toEqual([])
+})
+
+test("settles carriers removed before projection without invalidating survivors", () => {
+  const initial = ThinkingReplay.project({ messages: [user] })
+  const first = signed(initial, "first")
+  const last = signed(initial, "last")
+  const source = [user, { role: "assistant", content: [first, last] }]
+  const sourceOrigins = ThinkingReplay.replayOrigins(source)
+  const folded = [user, { role: "assistant", content: [first] }]
+  const replay = ThinkingReplay.project({ messages: folded, sourceOrigins })
+  // The removed trailing block is durably settled, but the retained block is
+  // still replayed: a tail removal never invalidates earlier signatures.
+  expect(replay.invalidated).toEqual([ThinkingReplay.origin(last.providerMetadata)!.block])
+  expect(JSON.stringify(replay.messages)).toContain("first")
+  expect(replay.diagnostic).toMatchObject({ removedBeforeProjection: 1, newlyInvalidated: 1 })
+})
+
+test("invalidates known signatures when the logical provider or model changes", () => {
+  const context = { provider: "anthropic", model: "claude-a", sdk: "@ai-sdk/anthropic" }
+  const initial = ThinkingReplay.project({ messages: [user], context })
+  const thinking = signed(initial, "bound")
+  const messages = [user, { role: "assistant", content: [thinking] }]
+  expect(ThinkingReplay.project({ messages, context }).invalidated).toEqual([])
+  const switched = ThinkingReplay.project({ messages, context: { ...context, model: "claude-b" } })
+  expect(switched.invalidated).toEqual([ThinkingReplay.origin(thinking.providerMetadata)!.block])
+  expect(JSON.stringify(switched.messages)).not.toContain("bound")
+  expect(switched.diagnostic.prefixChanged).toBe(1)
+})
+
+test("declares an opaque upstream backend behind an unchanged logical model unobservable", () => {
+  // The prefix binds provider/model/sdk as the client knows them. A relay that
+  // silently switches its hidden backend or account behind the same logical
+  // model cannot be detected here. This pins the declared boundary: keep the
+  // block rather than guessing, record upstreamIdentity: "unobservable" in the
+  // DEBUG projection, and classify any 400 via errorDiagnostic.
+  const context = { provider: "amazon-bedrock", model: "relay-claude", sdk: "opaque-relay" }
+  const initial = ThinkingReplay.project({ messages: [user], context })
+  const thinking = signed(initial, "relay")
+  const replay = ThinkingReplay.project({
+    messages: [user, { role: "assistant", content: [thinking] }],
+    context,
+  })
+  expect(replay.invalidated).toEqual([])
+  expect(replay.diagnostic).toMatchObject({ retained: 1, prefixChanged: 0, chainChanged: 0 })
+})
+
 test("excludes a later signature after a missing intermediate thinking block", () => {
   const initial = ThinkingReplay.project({ messages: [user] })
   const first = signed(initial, "first")
@@ -29,6 +90,26 @@ test("excludes a later signature after a missing intermediate thinking block", (
   expect(replay.invalidated).toEqual([ThinkingReplay.origin(last.providerMetadata)!.block])
   expect(JSON.stringify(replay.messages)).toContain("first")
   expect(JSON.stringify(replay.messages)).not.toContain("last")
+})
+
+test("chains redacted thinking carriers like signed blocks", () => {
+  const initial = ThinkingReplay.project({ messages: [user] })
+  const first = signed(initial, "first")
+  initial.bind(LLMEvent.reasoningStart({ id: "redacted" }))
+  const end = initial.bind(
+    LLMEvent.reasoningEnd({ id: "redacted", providerMetadata: { anthropic: { redactedData: "opaque_payload" } } }),
+  )
+  if (end.type !== "reasoning-end") throw new Error("Expected reasoning end")
+  const redacted = { type: "reasoning", text: "", providerMetadata: end.providerMetadata }
+  const last = signed(initial, "after")
+  expect(
+    ThinkingReplay.project({ messages: [user, { role: "assistant", content: [first, redacted, last] }] }).invalidated,
+  ).toEqual([])
+  // Dropping the middle redacted carrier invalidates the later signed block,
+  // exactly like dropping a signed middle block.
+  expect(
+    ThinkingReplay.project({ messages: [user, { role: "assistant", content: [first, last] }] }).invalidated,
+  ).toEqual([ThinkingReplay.origin(last.providerMetadata)!.block])
 })
 
 test("includes preceding output text within the same response in each block origin", () => {
