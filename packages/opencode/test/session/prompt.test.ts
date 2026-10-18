@@ -8652,3 +8652,44 @@ unix("SessionPrompt wrapper keeps transcript compatibility when a legacy hook se
     expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(true)
   }),
 )
+
+distillationIt.instance("measures the context from the continuation request, not the split total", () =>
+  Effect.gen(function* () {
+    // Phase one's cut request is charged to the message for cost reporting, so the persisted tokens
+    // accumulate two requests while the context only carries the continuation's prompt. The limit below
+    // sits between them: the accumulated total would compact, the continuation's usage must not.
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+      compaction: { auto: true, max_context_tokens: 12_000, tail_turns: 1 },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => ({ text: "adopted", finishReason: "stop" }),
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "think carefully" }],
+    })
+    yield* llm.push(
+      reply().reason(longThought("step-1")).stop(),
+      reply().text("final-answer").usage({ input: 7_000, output: 10 }).stop(),
+    )
+    yield* prompt.loop({ sessionID: chat.id })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "second turn" }],
+    })
+    yield* llm.push(reply().text("compaction summary").stop(), reply().text("second answer").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "compaction")).toBe(false)
+  }),
+)
