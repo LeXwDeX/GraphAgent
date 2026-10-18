@@ -129,6 +129,117 @@ describe("single-part reasoning organizer", () => {
     expect(carriesConcreteContent(filler.en)).toBe(false)
   })
 
+  test("a long noise verdict is retried once and the second result is adopted", async () => {
+    const text = "最终决定：测试任务的重试上限设为5次。已检查 packages/core/src/retry.ts。".repeat(200)
+    expect(Token.estimateReserve(text)).toBeGreaterThanOrEqual(
+      ReasoningDistillationPolicy.tokens.noiseVerdictRetryInputTokens,
+    )
+    let calls = 0
+    let retryPrompt = ""
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async ({ prompt }) => {
+        calls++
+        if (calls === 1) return { text: NO_USEFUL_REASONING, usageTokens: 7 }
+        retryPrompt = prompt
+        return { text: "最终决定：重试上限为5次。", usageTokens: 5, finishReason: "stop" }
+      },
+    })
+    expect(result).toMatchObject({
+      status: "organized",
+      called: true,
+      modelCalls: 2,
+      usageTokens: 12,
+      replacement: { messageID: "m1", partID: "p1", before: text, after: "最终决定：重试上限为5次。" },
+    })
+    expect(calls).toBe(2)
+    expect(retryPrompt).toContain("这是一段较长的思考文本")
+    expect(retryPrompt).toContain(NO_USEFUL_REASONING)
+  })
+
+  test("a long noise verdict that stays noise after the retry is rejected", async () => {
+    const text = "最终决定：测试任务的重试上限设为5次。已检查 packages/core/src/retry.ts。".repeat(200)
+    let calls = 0
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async () => {
+        calls++
+        return { text: NO_USEFUL_REASONING, usageTokens: 7 }
+      },
+    })
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "rejected-noise-verdict",
+      called: true,
+      modelCalls: 2,
+      output: NO_USEFUL_REASONING,
+      usageTokens: 14,
+    })
+    expect(calls).toBe(2)
+  })
+
+  test("a failed long-noise retry keeps the first verdict and usage", async () => {
+    const text = "最终决定：测试任务的重试上限设为5次。已检查 packages/core/src/retry.ts。".repeat(200)
+    let calls = 0
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async () => {
+        calls++
+        if (calls === 1) return { text: NO_USEFUL_REASONING, usageTokens: 7 }
+        throw new Error("network")
+      },
+    })
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "rejected-noise-verdict",
+      called: true,
+      modelCalls: 2,
+      output: NO_USEFUL_REASONING,
+      usageTokens: 7,
+    })
+    expect(calls).toBe(2)
+  })
+
+  test("a malformed long-noise retry keeps the first verdict", async () => {
+    const text = "最终决定：测试任务的重试上限设为5次。已检查 packages/core/src/retry.ts。".repeat(200)
+    let calls = 0
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async () => {
+        calls++
+        return calls === 1
+          ? { text: NO_USEFUL_REASONING, usageTokens: 7 }
+          : { text: `${NO_USEFUL_REASONING}\n方案 A。`, usageTokens: 5 }
+      },
+    })
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "rejected-noise-verdict",
+      modelCalls: 2,
+      output: NO_USEFUL_REASONING,
+      usageTokens: 12,
+    })
+  })
+
+  test("a short noise verdict is not retried", async () => {
+    let calls = 0
+    const result = await organizeReasoning({
+      slot,
+      callModel: async () => {
+        calls++
+        return { text: NO_USEFUL_REASONING, usageTokens: 7 }
+      },
+    })
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "rejected-noise-verdict",
+      called: true,
+      modelCalls: 1,
+      usageTokens: 7,
+    })
+    expect(calls).toBe(1)
+  })
+
   test("a marker mixed with other text is invalid output, not a verdict or a body", async () => {
     for (const text of [
       `${NO_USEFUL_REASONING}\n\n（注：原文中唯一具体事实为：测试任务的重试上限设为5次。）`,

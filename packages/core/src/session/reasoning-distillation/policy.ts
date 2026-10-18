@@ -21,5 +21,7 @@ export const ReasoningDistillationPolicy = {
     minimumNetSavingsTokens: 1,
     /** Reasoning below this estimated size is left as is: the organizer prompt alone costs more. */
     minimumInputTokens: 32,
+    /** A long input whose organizer declares it noise is retried once with an explicit long-input instruction. */
+    noiseVerdictRetryInputTokens: 4_000,
   },
 } as const

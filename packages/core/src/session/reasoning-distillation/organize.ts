@@ -31,6 +31,8 @@ export type OrganizeResult = Readonly<{
   reason?: OrganizeReason
   /** Whether the model was called; a skipped result may still have spent a call. */
   called: boolean
+  /** Number of model calls made, including one bounded retry for a long noise verdict. */
+  modelCalls: number
   /** Text the model returned, for usage estimation when the provider reports none. */
   output?: string
   usageTokens?: number
@@ -78,8 +80,17 @@ const CONCRETE_CONTENT = [
  */
 export const carriesConcreteContent = (text: string) => CONCRETE_CONTENT.some((pattern) => pattern.test(text))
 
+/** Added only to the bounded retry of a long input that the organizer first declared noise. */
+const RETRY_INSTRUCTIONS: Readonly<Record<OrganizeLanguage, string>> = {
+  zh: `这是一段较长的思考文本，包含具体事实、约束、结论或待办。即使原文冗长，也必须整理并保留这些内容；只有全文完全没有可用信息时，才输出精确标记 ${NO_USEFUL_REASONING}。`,
+  en: `This is a long reasoning text that contains concrete facts, constraints, conclusions or to-dos. Even when it is verbose, organize and preserve that content; output the exact marker ${NO_USEFUL_REASONING} only when the entire text has no usable information.`,
+}
+
 export const organizePrompt = (text: string, language: OrganizeLanguage = "zh") =>
   `${ORGANIZE_INSTRUCTIONS[language]}\n${OUTPUT_FORMAT[language]}\n${text}`
+
+export const organizeRetryPrompt = (text: string, language: OrganizeLanguage = "zh") =>
+  `${ORGANIZE_INSTRUCTIONS[language]}\n${RETRY_INSTRUCTIONS[language]}\n${OUTPUT_FORMAT[language]}\n${text}`
 
 const COMPLETE_FINISH = ["stop", "end_turn", "complete", "completed"]
 
@@ -87,6 +98,11 @@ const COMPLETE_FINISH = ["stop", "end_turn", "complete", "completed"]
  * Organize one reasoning part with one model call. Structural validation only; semantic fidelity is not certified.
  * Parts too small to repay the call are left out, and a replacement that is not smaller than its source is dropped.
  */
+const addUsage = (current: number | undefined, value: number | undefined) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return current
+  return Math.ceil((current ?? 0) + value)
+}
+
 export async function organizeReasoning(
   input: Readonly<{ slot: OrganizeSlot; callModel: OrganizeCall; language?: OrganizeLanguage }>,
 ): Promise<OrganizeResult> {
@@ -94,13 +110,16 @@ export async function organizeReasoning(
   let modelMs = 0
   let parseMs = 0
   let called = false
+  let modelCalls = 0
+  let usageTokens: number | undefined
   let output: Awaited<ReturnType<OrganizeCall>>
   const skipped = (reason: OrganizeReason, responded = output !== undefined): OrganizeResult => ({
     status: "skipped",
     reason,
     called,
+    modelCalls,
     output: responded ? output?.text : undefined,
-    usageTokens: responded ? output?.usageTokens : undefined,
+    usageTokens: responded ? usageTokens : undefined,
     timing: { modelMs, parseMs, totalMs: performance.now() - started },
   })
   const slot = input.slot
@@ -114,6 +133,7 @@ export async function organizeReasoning(
   if (Token.estimateReserve(prompt) > ReasoningDistillationPolicy.tokens.maxInputTokens) return skipped("work-limit")
   const modelStarted = performance.now()
   called = true
+  modelCalls = 1
   try {
     output = await input.callModel({ prompt })
   } catch {
@@ -124,11 +144,12 @@ export async function organizeReasoning(
   // Engine transports surface provider failures as a completed response with finishReason "error". It is not a
   // response for budget accounting, otherwise consecutive failures never pause the session.
   if (output.finishReason === "error") return skipped("model-failure", false)
+  usageTokens = addUsage(usageTokens, output.usageTokens)
   if (output.text.length > ReasoningDistillationPolicy.tokens.maxOutputTokens * 4) return skipped("truncated")
   if (output.finishReason && !COMPLETE_FINISH.includes(output.finishReason)) return skipped("truncated")
   const parseStarted = performance.now()
-  const raw = output.text.trim()
-  parseMs = performance.now() - parseStarted
+  let raw = output.text.trim()
+  parseMs += performance.now() - parseStarted
   // Only the explicit marker may declare a part noise; an empty body is a model failure, not a noise verdict.
   if (!raw) return skipped("invalid-output")
   // An organizer that emits a tool call must not have it adopted as reasoning; keep the original.
@@ -136,7 +157,51 @@ export async function organizeReasoning(
   // A marker mixed with other text is neither a verdict nor a clean body; adopting it would store the marker.
   if (raw !== NO_USEFUL_REASONING && raw.includes(NO_USEFUL_REASONING)) return skipped("invalid-output")
   // Small models return the marker for informative parts, so the verdict is trusted only for contentless input.
-  if (raw === NO_USEFUL_REASONING && carriesConcreteContent(slot.text)) return skipped("rejected-noise-verdict")
+  // Long inputs are a known failure mode for that judgment: retry once with an explicit long-input instruction.
+  if (raw === NO_USEFUL_REASONING && carriesConcreteContent(slot.text)) {
+    if (Token.estimateReserve(slot.text) < ReasoningDistillationPolicy.tokens.noiseVerdictRetryInputTokens)
+      return skipped("rejected-noise-verdict")
+    const firstOutput = output
+    const retryStarted = performance.now()
+    modelCalls += 1
+    try {
+      output = await input.callModel({ prompt: organizeRetryPrompt(slot.text, language) })
+    } catch {
+      output = undefined
+    }
+    modelMs += performance.now() - retryStarted
+    // A failed retry must not hide the first valid verdict; keep its output and usage for accounting.
+    if (!output) {
+      output = firstOutput
+      return skipped("rejected-noise-verdict")
+    }
+    if (output.finishReason === "error") {
+      output = firstOutput
+      return skipped("rejected-noise-verdict")
+    }
+    usageTokens = addUsage(usageTokens, output.usageTokens)
+    // A truncated or malformed retry is not a second verdict; retain the first.
+    if (
+      output.text.length > ReasoningDistillationPolicy.tokens.maxOutputTokens * 4 ||
+      (output.finishReason && !COMPLETE_FINISH.includes(output.finishReason))
+    ) {
+      output = firstOutput
+      return skipped("rejected-noise-verdict")
+    }
+    const retryParseStarted = performance.now()
+    const retryRaw = output.text.trim()
+    parseMs += performance.now() - retryParseStarted
+    if (
+      !retryRaw ||
+      detectToolCallEnvelope(retryRaw) ||
+      (retryRaw !== NO_USEFUL_REASONING && retryRaw.includes(NO_USEFUL_REASONING))
+    ) {
+      output = firstOutput
+      return skipped("rejected-noise-verdict")
+    }
+    if (retryRaw === NO_USEFUL_REASONING) return skipped("rejected-noise-verdict")
+    raw = retryRaw
+  }
   const after = raw === NO_USEFUL_REASONING ? NO_USEFUL_REASONING_TEXT[language] : raw
   if (after === slot.text) return skipped("unchanged")
   // Source and rewrite may use different scripts (English reasoning, Chinese prose), so compare unbiased estimates.
@@ -149,8 +214,9 @@ export async function organizeReasoning(
     status: "organized",
     replacement: { messageID: slot.messageID, partID: slot.partID, before: slot.text, after },
     called,
+    modelCalls,
     output: output.text,
-    usageTokens: output.usageTokens,
+    usageTokens,
     timing: { modelMs, parseMs, totalMs: performance.now() - started },
   }
 }

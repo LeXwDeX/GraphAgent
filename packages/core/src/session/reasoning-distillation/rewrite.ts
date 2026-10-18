@@ -134,7 +134,7 @@ export const runReasoningRewrite = <A>(input: {
       })
     const observed = {
       ...base,
-      modelCalls: organized.called ? 1 : 0,
+      modelCalls: organized.called ? organized.modelCalls : 0,
       outputCharacters: organized.output?.length ?? 0,
       usageTokens: organized.usageTokens,
     }
