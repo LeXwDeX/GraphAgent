@@ -500,6 +500,68 @@ describe("Dag timeout escalation fixes (unit)", () => {
     )
   }, 7000)
 
+  it("enforces the extension cap by failing the node and cancelling its child session", async () => {
+    let failed: { reason: string; errorClass: string; attempt: unknown } | undefined
+    const cancelled: string[] = []
+    const storeLayer = Layer.mock(DagStore.Service)({
+      getNode: () =>
+        Effect.succeed(
+          makeNodeRow({
+            id: "a",
+            workflowId: "dag-cap",
+            name: "a",
+            status: "running",
+            deadlineMs: Date.now() - 1,
+            timeoutExtensions: 1,
+            childSessionId: "ses_child_cap",
+          }),
+        ),
+    })
+    const dagLayer = Layer.unwrap(
+      Effect.map(DagStore.Service, (store) =>
+        Layer.mock(Dag.Service)({
+          store,
+          nodeFailed: (dagID: string, nodeID: string, reason: string, errorClass: string, attempt: unknown) =>
+            Effect.sync(() => {
+              failed = { reason, errorClass, attempt }
+              return true
+            }),
+        }),
+      ),
+    ).pipe(Layer.provide(storeLayer))
+    const promptLayer = Layer.mock(SessionPrompt.Service, {
+      cancel: (sessionID: string) =>
+        Effect.sync(() => {
+          cancelled.push(sessionID)
+        }),
+    })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const watcher = yield* makeDeadlineWatcher({
+          dagID: "dag-cap",
+          nodeID: "a",
+          timeoutMs: 300,
+          maxTimeoutExtensions: 1,
+        }).pipe(Effect.forkScoped)
+        yield* pollWithTimeout(
+          Effect.sync(() => (failed !== undefined ? true : undefined)),
+          "the watcher did not enforce the extension cap",
+        )
+        yield* pollWithTimeout(
+          Effect.sync(() => (cancelled.length > 0 ? true : undefined)),
+          "the cap enforcement did not cancel the child session",
+        )
+        yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
+        // Regression for the #777 attribution seam: the cap branch settles the
+        // node and then aborts the child with its correlation identity intact.
+        expect(failed?.reason).toContain("timeout extensions exhausted (1/1)")
+        expect(failed?.errorClass).toBe("timeout")
+        expect(failed?.attempt).toEqual({ replanAttempts: 0, childSessionID: "ses_child_cap" })
+        expect(cancelled).toEqual(["ses_child_cap"])
+      }).pipe(Effect.provide(dagLayer), Effect.provide(promptLayer), Effect.scoped),
+    )
+  })
+
   it("continues supervision after store read retries fail (R13/F1-product)", async () => {
     let reads = 0
     const storeLayer = Layer.mock(DagStore.Service)({
