@@ -15,7 +15,9 @@ type CandidateOptions = Readonly<{
   text?: string
   complete?: boolean
   comparisonMetadata?: unknown
-  resultKind?: "text" | "unknown"
+  resultKind?: "text" | "error" | "unknown"
+  failureClass?: string
+  taskEpoch?: number
   sourceKind?: ToolSourceKind
   registrationID?: string
   generation?: string
@@ -33,14 +35,22 @@ const candidate = (id: string, options: CandidateOptions = {}): FoldCandidate =>
   const result =
     options.resultKind === "unknown"
       ? ({ kind: "unknown" } as const)
-      : Object.hasOwn(options, "comparisonMetadata")
+      : options.resultKind === "error"
         ? ({
-            kind: "text",
+            kind: "error",
             text: options.text ?? "A",
             complete: options.complete ?? true,
-            comparisonMetadata: options.comparisonMetadata,
+            failureClass: options.failureClass ?? "tool-error",
+            ...(Object.hasOwn(options, "comparisonMetadata") ? { comparisonMetadata: options.comparisonMetadata } : {}),
           } as const)
-        : ({ kind: "text", text: options.text ?? "A", complete: options.complete ?? true } as const)
+        : Object.hasOwn(options, "comparisonMetadata")
+          ? ({
+              kind: "text",
+              text: options.text ?? "A",
+              complete: options.complete ?? true,
+              comparisonMetadata: options.comparisonMetadata,
+            } as const)
+          : ({ kind: "text", text: options.text ?? "A", complete: options.complete ?? true } as const)
 
   return {
     ref: { messageID, partID: `part-${id}`, callID },
@@ -63,6 +73,7 @@ const candidate = (id: string, options: CandidateOptions = {}): FoldCandidate =>
       providerExecuted: options.providerExecuted ?? false,
     },
     targetPath: toolName === "read" ? (options.targetPath ?? "/workspace/file.ts") : options.targetPath,
+    ...(options.taskEpoch === undefined ? {} : { taskEpoch: options.taskEpoch }),
   }
 }
 
@@ -82,6 +93,17 @@ const recentProtection = (prefix: string) => [
 const refKey = (ref: FoldRef) => `${ref.messageID}/${ref.partID}/${ref.callID}`
 const sourceKeys = (steps: readonly FoldStep[]) =>
   new Set(planContextFolding(steps).replacements.map((replacement) => refKey(replacement.source)))
+// Without task-epoch information every source belongs to the current task, so `anchor` defaults to true.
+const fold = (
+  source: FoldRef,
+  witness: FoldRef,
+  extras: Readonly<{ resultKind?: "text" | "error"; anchor?: boolean }> = {},
+) => ({
+  source,
+  witness,
+  resultKind: extras.resultKind ?? "text",
+  anchor: extras.anchor ?? true,
+})
 
 describe("context-folding planner", () => {
   test("U01 fixes the latest complete A as witness for A/A/A", () => {
@@ -95,8 +117,8 @@ describe("context-folding planner", () => {
     const plan = planContextFolding(steps)
     expect(plan.skipReason).toBeUndefined()
     expect(plan.replacements).toEqual([
-      { source: candidate("a-1").ref, witness: candidate("a-3").ref },
-      { source: candidate("a-2").ref, witness: candidate("a-3").ref },
+      fold(candidate("a-1").ref, candidate("a-3").ref),
+      fold(candidate("a-2").ref, candidate("a-3").ref),
     ])
     expect(plan.replacements.some((replacement) => refKey(replacement.source) === refKey(candidate("a-3").ref))).toBe(
       false,
@@ -114,7 +136,7 @@ describe("context-folding planner", () => {
       ...recentProtection("u03"),
     ])
 
-    expect(plan.replacements).toEqual([{ source: a1.ref, witness: a2.ref }])
+    expect(plan.replacements).toEqual([fold(a1.ref, a2.ref)])
     expect(sourceKeys([step("a", [a1]), step("b", [b]), ...recentProtection("u02")])).toEqual(new Set())
   })
 
@@ -165,7 +187,7 @@ describe("context-folding planner", () => {
     })
     const plan = planContextFolding([step("keys-1", [first]), step("keys-2", [second]), ...recentProtection("u06")])
 
-    expect(plan.replacements).toEqual([{ source: first.ref, witness: second.ref }])
+    expect(plan.replacements).toEqual([fold(first.ref, second.ref)])
   })
 
   test("U06 and U07 compare adapter-validated result metadata without adding defaults", () => {
@@ -187,7 +209,7 @@ describe("context-folding planner", () => {
         step("metadata-2", [reordered]),
         ...recentProtection("metadata-equal"),
       ]).replacements,
-    ).toEqual([{ source: first.ref, witness: reordered.ref }])
+    ).toEqual([fold(first.ref, reordered.ref)])
     expect(
       planContextFolding([
         step("metadata-2", [reordered]),
@@ -267,9 +289,9 @@ describe("context-folding planner", () => {
     ])
 
     expect(plan.replacements).toEqual([
-      { source: read1.ref, witness: read2.ref },
-      { source: grep1.ref, witness: grep2.ref },
-      { source: glob1.ref, witness: glob2.ref },
+      fold(read1.ref, read2.ref),
+      fold(grep1.ref, grep2.ref),
+      fold(glob1.ref, glob2.ref),
     ])
   })
 
@@ -298,7 +320,7 @@ describe("context-folding planner", () => {
       step("recent-4", [witness]),
     ])
 
-    expect(plan.replacements).toEqual([{ source: source.ref, witness: witness.ref }])
+    expect(plan.replacements).toEqual([fold(source.ref, witness.ref)])
   })
 
   test("U11 extends recent protection past four steps to 16000 tokens and keeps parallel siblings together", () => {
@@ -324,7 +346,7 @@ describe("context-folding planner", () => {
       "recent-5",
       "recent-6",
     ])
-    expect(plan.replacements).toEqual([{ source: old.ref, witness: protectedLatest.ref }])
+    expect(plan.replacements).toEqual([fold(old.ref, protectedLatest.ref)])
     expect(plan.replacements.some((replacement) => refKey(replacement.source) === refKey(protectedFirst.ref))).toBe(
       false,
     )
@@ -381,7 +403,9 @@ describe("context-folding planner", () => {
     ])
 
     expect(plan.replacements).toEqual([])
-    expect(plan.exclusions.filter((item) => item.reason === "unsuccessful")).toHaveLength(8)
+    // An error-status candidate that carries no complete error payload is rejected by the error gate.
+    expect(plan.exclusions.filter((item) => item.reason === "unsafe-error-payload")).toHaveLength(2)
+    expect(plan.exclusions.filter((item) => item.reason === "unsuccessful")).toHaveLength(6)
     expect(plan.exclusions.filter((item) => item.reason === "unsupported-tool").length).toBeGreaterThanOrEqual(2)
     expect(plan.exclusions.some((item) => item.reason === "untrusted-source")).toBe(true)
   })
@@ -522,6 +546,85 @@ describe("context-folding planner", () => {
       ...recentProtection("duplicate"),
     ])
     expect(ambiguous).toMatchObject({ replacements: [], skipReason: "invalid-structure" })
+  })
+
+  test("E01 keeps text and error results in separate identity classes", () => {
+    const text = candidate("class-text", { text: "same-visible-bytes" })
+    const error = candidate("class-error", { resultKind: "error", status: "error", text: "same-visible-bytes" })
+    const plan = planContextFolding([
+      step("class-text", [text]),
+      step("class-error", [error]),
+      ...recentProtection("e01"),
+    ])
+
+    expect(plan.replacements).toEqual([])
+  })
+
+  test("E02 folds identical error payloads only within the same failure class", () => {
+    const first = candidate("error-1", { resultKind: "error", status: "error", text: "boom" })
+    const second = candidate("error-2", { resultKind: "error", status: "error", text: "boom" })
+    expect(
+      planContextFolding([step("error-1", [first]), step("error-2", [second]), ...recentProtection("e02-positive")])
+        .replacements,
+    ).toEqual([fold(first.ref, second.ref, { resultKind: "error" })])
+
+    const otherClass = candidate("error-class", {
+      resultKind: "error",
+      status: "error",
+      text: "boom",
+      failureClass: "timeout",
+    })
+    expect(
+      planContextFolding([
+        step("error-1", [first]),
+        step("error-class", [otherClass]),
+        ...recentProtection("e02-negative"),
+      ]).replacements,
+    ).toEqual([])
+  })
+
+  test("E03 rejects an error result without a complete class-tagged payload", () => {
+    const incomplete = candidate("error-incomplete", { resultKind: "error", status: "error", complete: false })
+    const missingClass = candidate("error-missing-class", { resultKind: "error", status: "error", failureClass: "" })
+    const textPayload = candidate("error-text-payload", { status: "error" })
+    const plan = planContextFolding([
+      step("error-incomplete", [incomplete]),
+      step("error-missing-class", [missingClass]),
+      step("error-text-payload", [textPayload]),
+      ...recentProtection("e03"),
+    ])
+
+    expect(plan.replacements).toEqual([])
+    for (const item of [incomplete, missingClass, textPayload])
+      expect(plan.exclusions).toContainEqual({ ref: item.ref, reason: "unsafe-error-payload" })
+  })
+
+  test("E04 anchors duplicate sources from the current task and defers older epochs", () => {
+    const old = candidate("epoch-old", { taskEpoch: 1 })
+    const current = candidate("epoch-current", { taskEpoch: 2 })
+    const witness = candidate("epoch-witness", { taskEpoch: 2 })
+    const plan = planContextFolding([
+      step("epoch-old-step", [old]),
+      step("epoch-current-step", [current]),
+      step("epoch-witness-step", [witness]),
+      ...recentProtection("e04"),
+    ])
+
+    expect(plan.replacements).toEqual([
+      fold(old.ref, witness.ref, { anchor: false }),
+      fold(current.ref, witness.ref, { anchor: true }),
+    ])
+  })
+
+  test("E05 rejects a malformed task epoch instead of guessing a boundary", () => {
+    for (const taskEpoch of [-1, 1.5, Number.NaN]) {
+      const plan = planContextFolding([
+        step("epoch-invalid", [candidate("epoch-invalid", { taskEpoch })]),
+        step("epoch-invalid-copy", [candidate("epoch-invalid-copy", { taskEpoch })]),
+        ...recentProtection(`e05-${taskEpoch}`),
+      ])
+      expect(plan).toMatchObject({ replacements: [], skipReason: "invalid-structure" })
+    }
   })
 
   test("U21 is deterministic and does not mutate frozen input", () => {

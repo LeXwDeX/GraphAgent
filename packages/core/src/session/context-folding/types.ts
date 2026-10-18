@@ -27,6 +27,16 @@ export type CandidateResult =
       comparisonMetadata?: unknown
     }>
   | Readonly<{
+      kind: "error"
+      /** Complete visible error payload. The later witness keeps these exact bytes. */
+      text: string
+      complete: boolean
+      /** Coarse adapter-validated failure class. A different class never shares an identity with a text result. */
+      failureClass: string
+      /** Adapter-validated, non-body fields that must also match exactly (for example Core error content). */
+      comparisonMetadata?: unknown
+    }>
+  | Readonly<{
       kind: "unknown"
     }>
 
@@ -44,6 +54,8 @@ export type FoldCandidate = Readonly<{
   input: unknown
   result: CandidateResult
   safety: CandidateSafety
+  /** Deterministic task epoch supplied by the adapter. Missing values are treated as the initial epoch. */
+  taskEpoch?: number
   /** Required for read candidates so instruction-file basenames remain protected. */
   targetPath?: string
 }>
@@ -64,6 +76,7 @@ export type CandidateSkipReason =
   | "provider-executed"
   | "unknown-content"
   | "unknown-read-target"
+  | "unsafe-error-payload"
   | "unsuccessful"
   | "unsupported-tool"
   | "untrusted-source"
@@ -72,6 +85,9 @@ export type PlanSkipReason =
   | "all-sources-protected"
   | "fingerprint-failed"
   | "invalid-structure"
+  // Adapters rewrite a persisted plan to this reason when it cannot be verified against the prepared wire. The
+  // projection then reports its own mapping-mismatch without attempting any replacement.
+  | "mapping-mismatch"
   | "no-eligible-duplicates"
   | "unknown-step-tokens"
   | "work-limit"
@@ -79,6 +95,10 @@ export type PlanSkipReason =
 export type FoldReplacement = Readonly<{
   source: FoldRef
   witness: FoldRef
+  /** Result class of the folded pair. Missing values are treated as text for backward compatibility. */
+  resultKind?: "text" | "error"
+  /** The source belongs to the latest task epoch and is selected only after unrelated-task pairs. */
+  anchor?: boolean
 }>
 
 export type CandidateExclusion = Readonly<{
@@ -155,6 +175,8 @@ export type WireResultMapping = Readonly<{
   visibleCallIDPath: readonly WirePathSegment[]
   ordinal: number
   bodyPath: readonly WirePathSegment[]
+  /** Result class of the wire body. Missing values are treated as text for backward compatibility. */
+  resultKind?: "text" | "error" | "unknown"
   complete: boolean
 }>
 

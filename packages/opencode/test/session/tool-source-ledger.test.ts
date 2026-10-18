@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Effect } from "effect"
 import { MessageV2 } from "@/session/message-v2"
 import { ToolSourceLedger, type Interface as Ledger } from "@/session/tool-source-ledger"
@@ -34,6 +34,8 @@ const assistant = (input: {
   providerExecuted?: boolean
   loaded?: unknown
   instructionMarker?: "none" | "dynamic"
+  error?: string
+  interruptedOutput?: string
 }): SessionV1.WithParts => ({
   info: {
     id: input.messageID,
@@ -64,20 +66,30 @@ const assistant = (input: {
           type: "tool",
           callID: input.callID,
           tool: "read",
-          state: {
-            status: "completed",
-            input: { filePath: "/workspace/source.ts" },
-            output: input.output ?? "same complete output",
-            title: "source.ts",
-            metadata: {
-              ...(input.truncated ? { truncated: true } : {}),
-              ...(input.loaded === undefined ? { loaded: [] } : { loaded: input.loaded }),
-              ...(input.instructionMarker === undefined
-                ? { contextFoldingInstructions: "none" }
-                : { contextFoldingInstructions: input.instructionMarker }),
-            },
-            time: { start: 0, end: 1 },
-          },
+          state:
+            input.error === undefined
+              ? {
+                  status: "completed",
+                  input: { filePath: "/workspace/source.ts" },
+                  output: input.output ?? "same complete output",
+                  title: "source.ts",
+                  metadata: {
+                    ...(input.truncated ? { truncated: true } : {}),
+                    ...(input.loaded === undefined ? { loaded: [] } : { loaded: input.loaded }),
+                    ...(input.instructionMarker === undefined
+                      ? { contextFoldingInstructions: "none" }
+                      : { contextFoldingInstructions: input.instructionMarker }),
+                  },
+                  time: { start: 0, end: 1 },
+                }
+              : {
+                  status: "error",
+                  input: { filePath: "/workspace/source.ts" },
+                  error: input.error,
+                  metadata:
+                    input.interruptedOutput === undefined ? {} : { interrupted: true, output: input.interruptedOutput },
+                  time: { start: 0, end: 1 },
+                },
           metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
         },
       ] as SessionV1.Part[])
@@ -98,8 +110,37 @@ const assistant = (input: {
       ] as SessionV1.Part[]),
 })
 
-const conversation = (options?: { truncated?: boolean; providerExecuted?: boolean }) => [
-  assistant({ messageID: "msg_source", partID: "prt_source", callID: "call_source" }),
+const user = (input: { messageID: string; synthetic?: boolean; summary?: boolean }): SessionV1.WithParts => ({
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixtures only exercise role, summary and text parts
+  info: {
+    id: input.messageID,
+    sessionID,
+    role: "user",
+    time: { created: 0 },
+    agent: "build",
+    model: { providerID: "provider", modelID: "model" },
+    ...(input.summary ? { summary: { diffs: [] } } : {}),
+  } as SessionV1.User,
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixtures only exercise role, summary and text parts
+  parts: [
+    {
+      id: `${input.messageID}_text`,
+      sessionID,
+      messageID: input.messageID,
+      type: "text",
+      text: "next task",
+      ...(input.synthetic ? { synthetic: true } : {}),
+    },
+  ] as SessionV1.Part[],
+})
+
+const conversation = (options?: { truncated?: boolean; sourceTruncated?: boolean; providerExecuted?: boolean }) => [
+  assistant({
+    messageID: "msg_source",
+    partID: "prt_source",
+    callID: "call_source",
+    truncated: options?.sourceTruncated ?? options?.truncated,
+  }),
   assistant({
     messageID: "msg_witness",
     partID: "prt_witness",
@@ -316,6 +357,8 @@ describe("session tool-source ledger", () => {
         {
           source: { messageID: "msg_source", partID: "prt_source", callID: "call_source" },
           witness: { messageID: "msg_witness", partID: "prt_witness", callID: "call_witness" },
+          resultKind: "text",
+          anchor: true,
         },
       ])
       expect(
@@ -467,6 +510,8 @@ describe("session tool-source ledger", () => {
         {
           source: { messageID: "msg_source", partID: "prt_source", callID: "call_source" },
           witness: { messageID: "msg_witness", partID: "prt_witness", callID: "call_witness" },
+          resultKind: "text",
+          anchor: true,
         },
       ])
       expect(JSON.stringify(messages)).toBe(before)
@@ -495,13 +540,28 @@ describe("session tool-source ledger", () => {
     }),
   )
 
-  it.instance("rejects truncated and provider-executed candidates", () =>
+  it.instance("folds identical truncated candidates and rejects provider-executed candidates", () =>
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service
       yield* registerPair(ledger)
+      // Identical truncated previews are still byte-identical duplicates: the later witness retains the same
+      // preview and truncation metadata, so the earlier copy is safe to fold.
       const truncated = yield* MessageV2.contextFoldingHistory({ messages: conversation({ truncated: true }), ledger })
-      expect(truncated.duplicatePlan.replacements).toEqual([])
-      expect(truncated.duplicatePlan.exclusions.some((item) => item.reason === "incomplete-content")).toBe(true)
+      expect(truncated.duplicatePlan.replacements).toEqual([
+        {
+          source: { messageID: "msg_source", partID: "prt_source", callID: "call_source" },
+          witness: { messageID: "msg_witness", partID: "prt_witness", callID: "call_witness" },
+          resultKind: "text",
+          anchor: true,
+        },
+      ])
+
+      // A truncation hint on only one side changes the comparison metadata, so the pair is not identical.
+      const mixed = yield* MessageV2.contextFoldingHistory({
+        messages: conversation({ truncated: true, sourceTruncated: false }),
+        ledger,
+      })
+      expect(mixed.duplicatePlan.replacements).toEqual([])
 
       const providerExecuted = yield* MessageV2.contextFoldingHistory({
         messages: conversation({ providerExecuted: true }),
@@ -509,6 +569,170 @@ describe("session tool-source ledger", () => {
       })
       expect(providerExecuted.duplicatePlan.replacements).toEqual([])
       expect(providerExecuted.duplicatePlan.exclusions.some((item) => item.reason === "provider-executed")).toBe(true)
+    }),
+  )
+
+  it.instance("aligns folding history with the provider wire for errored assistant messages", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      yield* registerPair(ledger)
+
+      const errored = assistant({ messageID: "msg_errored", partID: "prt_errored", callID: "call_errored" })
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixture attaches a persisted provider error
+      errored.info = {
+        ...errored.info,
+        error: new SessionV1.APIError({ message: "boom", isRetryable: true }).toObject(),
+      } as SessionV1.Assistant
+      const aborted = assistant({ messageID: "msg_aborted", partID: "prt_aborted", callID: "call_aborted" })
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixture attaches a persisted abort error
+      aborted.info = {
+        ...aborted.info,
+        error: new SessionV1.AbortedError({ message: "aborted" }).toObject(),
+      } as SessionV1.Assistant
+
+      const history = yield* MessageV2.contextFoldingHistory({
+        messages: [errored, aborted, ...conversation()],
+        ledger,
+      })
+      // Provider-errored assistant turns never reach the wire, so they must not create history references.
+      expect(history.references.some((reference) => reference.ref.messageID === "msg_errored")).toBe(false)
+      expect(history.duplicatePlan.exclusions.some((item) => item.ref.messageID === "msg_errored")).toBe(false)
+      // Aborted turns with replayable content still participate exactly as the wire does.
+      expect(history.references.some((reference) => reference.ref.messageID === "msg_aborted")).toBe(true)
+      expect(history.duplicatePlan.replacements).toHaveLength(1)
+    }),
+  )
+
+  it.instance("folds identical tool error payloads and keeps error identities isolated", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      yield* registerPair(ledger)
+      const recent = () =>
+        Array.from({ length: 4 }, (_, index) =>
+          assistant({ messageID: `msg_recent_${index}`, partID: `prt_recent_${index}` }),
+        )
+      const pair = (source: Parameters<typeof assistant>[0], witness: Parameters<typeof assistant>[0]) => [
+        assistant(source),
+        assistant(witness),
+        ...recent(),
+      ]
+      const sourceMessage = (error: string) =>
+        ({ messageID: "msg_source", partID: "prt_source", callID: "call_source", error }) as const
+      const witnessMessage = (error: string) =>
+        ({ messageID: "msg_witness", partID: "prt_witness", callID: "call_witness", error }) as const
+
+      // Identical complete errors are folded as an error payload, never as ordinary tool text.
+      const folded = yield* MessageV2.contextFoldingHistory({
+        messages: pair(sourceMessage("identical failure"), witnessMessage("identical failure")),
+        ledger,
+      })
+      expect(folded.duplicatePlan.replacements).toEqual([
+        {
+          source: { messageID: "msg_source", partID: "prt_source", callID: "call_source" },
+          witness: { messageID: "msg_witness", partID: "prt_witness", callID: "call_witness" },
+          resultKind: "error",
+          anchor: true,
+        },
+      ])
+      expect(folded.references.find((reference) => reference.ref.messageID === "msg_source")?.resultKind).toBe("error")
+
+      // Distinct failures are distinct identities.
+      const different = yield* MessageV2.contextFoldingHistory({
+        messages: pair(sourceMessage("first failure"), witnessMessage("second failure")),
+        ledger,
+      })
+      expect(different.duplicatePlan.replacements).toEqual([])
+
+      // Identical bytes with a different result class never share an identity.
+      const crossKind = yield* MessageV2.contextFoldingHistory({
+        messages: [
+          assistant({ ...sourceMessage(""), error: "same complete output" }),
+          assistant({ messageID: "msg_witness", partID: "prt_witness", callID: "call_witness" }),
+          ...recent(),
+        ],
+        ledger,
+      })
+      expect(crossKind.duplicatePlan.replacements).toEqual([])
+
+      // An interrupted error replays as a successful partial output, so it is never a complete error payload.
+      const interrupted = yield* MessageV2.contextFoldingHistory({
+        messages: pair(
+          { ...sourceMessage("interrupted failure"), interruptedOutput: "partial output" },
+          { ...witnessMessage("interrupted failure"), interruptedOutput: "partial output" },
+        ),
+        ledger,
+      })
+      expect(interrupted.duplicatePlan.replacements).toEqual([])
+      expect(interrupted.duplicatePlan.exclusions.map((item) => item.reason)).toEqual([
+        "unsafe-error-payload",
+        "unsafe-error-payload",
+      ])
+
+      // Error text that carries dynamic instructions stays protected.
+      const instructions = yield* MessageV2.contextFoldingHistory({
+        messages: pair(
+          sourceMessage("<system-reminder>dynamic</system-reminder> failure"),
+          witnessMessage("<system-reminder>dynamic</system-reminder> failure"),
+        ),
+        ledger,
+      })
+      expect(instructions.duplicatePlan.replacements).toEqual([])
+      expect(instructions.duplicatePlan.exclusions.map((item) => item.reason)).toEqual([
+        "instruction-content",
+        "instruction-content",
+      ])
+    }),
+  )
+
+  it.instance("marks older-task duplicates as anchors while the current task stays preferred", () =>
+    Effect.gen(function* () {
+      const ledger = yield* ToolSourceLedger.Service
+      const generation = yield* registerPair(ledger)
+      for (const [messageID, callID] of [
+        ["msg_old_s", "call_old_s"],
+        ["msg_old_w", "call_old_w"],
+        ["msg_new_s", "call_new_s"],
+        ["msg_new_w", "call_new_w"],
+      ]) {
+        yield* ledger.record(identity({ messageID, callID, generation }))
+      }
+      const pair = (prefix: "old" | "new") => {
+        const output = `${prefix} complete output`
+        return [
+          assistant({ messageID: `msg_${prefix}_s`, partID: `prt_${prefix}_s`, callID: `call_${prefix}_s`, output }),
+          assistant({ messageID: `msg_${prefix}_w`, partID: `prt_${prefix}_w`, callID: `call_${prefix}_w`, output }),
+        ]
+      }
+      const recent = Array.from({ length: 4 }, (_, index) =>
+        assistant({ messageID: `msg_recent_${index}`, partID: `prt_recent_${index}` }),
+      )
+
+      // A real user turn separates the two tasks: the older duplicate is an anchor candidate, the newest is preferred.
+      const segmented = yield* MessageV2.contextFoldingHistory({
+        messages: [...pair("old"), user({ messageID: "msg_task" }), ...pair("new"), ...recent],
+        ledger,
+      })
+      expect(
+        segmented.duplicatePlan.replacements.map((replacement) => ({
+          callID: replacement.source.callID,
+          anchor: replacement.anchor,
+        })),
+      ).toEqual([
+        { callID: "call_old_s", anchor: false },
+        { callID: "call_new_s", anchor: true },
+      ])
+
+      // Synthetic user turns and compaction summaries are not real tasks, so everything stays in the current epoch.
+      for (const marker of [
+        user({ messageID: "msg_task", synthetic: true }),
+        user({ messageID: "msg_task", summary: true }),
+      ]) {
+        const unsegmented = yield* MessageV2.contextFoldingHistory({
+          messages: [...pair("old"), marker, ...pair("new"), ...recent],
+          ledger,
+        })
+        expect(unsegmented.duplicatePlan.replacements.every((replacement) => replacement.anchor === true)).toBe(true)
+      }
     }),
   )
 

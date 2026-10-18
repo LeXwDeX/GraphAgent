@@ -11,6 +11,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 const source: FoldRef = { messageID: "msg_source", partID: "prt_source", callID: "call:source" }
 const witness: FoldRef = { messageID: "msg_witness", partID: "prt_witness", callID: "call:witness" }
 const body = "same complete tool output\n".repeat(600)
+const errorBody = "same complete tool error\n".repeat(600)
 const tools = {
   read: tool({
     description: "Read a file",
@@ -50,9 +51,54 @@ function historySnapshot(sourceRef = source, witnessRef = witness): HistorySnaps
       skipReason: undefined,
     },
     references: [
-      { ref: sourceRef, toolName: "read", complete: true, evidence },
-      { ref: witnessRef, toolName: "read", complete: true, evidence },
+      { ref: sourceRef, toolName: "read", complete: true, resultKind: "text", evidence },
+      { ref: witnessRef, toolName: "read", complete: true, resultKind: "text", evidence },
     ],
+  }
+}
+
+function errorHistorySnapshot(sourceRef = source, witnessRef = witness): HistorySnapshot {
+  const evidence = {
+    input: { filePath: "/tmp/a.txt" },
+    result: errorBody,
+    comparisonMetadata: { metadata: {} },
+    outerMetadata: undefined,
+  }
+  return {
+    duplicatePlan: {
+      replacements: [{ source: sourceRef, witness: witnessRef, resultKind: "error" }],
+      protectedStepIDs: ["recent"],
+      exclusions: [],
+      skipReason: undefined,
+    },
+    references: [
+      { ref: sourceRef, toolName: "read", complete: true, resultKind: "error", evidence },
+      { ref: witnessRef, toolName: "read", complete: true, resultKind: "error", evidence },
+    ],
+  }
+}
+
+function duplicateHistory(pairs: ReadonlyArray<readonly [FoldRef, FoldRef]>): HistorySnapshot {
+  const evidence = {
+    input: { filePath: "/tmp/a.txt" },
+    result: body,
+    comparisonMetadata: {
+      title: "a.txt",
+      metadata: { loaded: [], contextFoldingInstructions: "none" },
+    },
+    outerMetadata: undefined,
+  }
+  return {
+    duplicatePlan: {
+      replacements: pairs.map(([sourceRef, witnessRef]) => ({ source: sourceRef, witness: witnessRef })),
+      protectedStepIDs: [],
+      exclusions: [],
+      skipReason: undefined,
+    },
+    references: pairs.flatMap(([sourceRef, witnessRef]) => [
+      { ref: sourceRef, toolName: "read", complete: true, resultKind: "text", evidence },
+      { ref: witnessRef, toolName: "read", complete: true, resultKind: "text", evidence },
+    ]),
   }
 }
 
@@ -69,7 +115,7 @@ function snapshot(
 function messages(
   sourceID = source.callID,
   witnessID = witness.callID,
-  sharedOutput?: { type: "text"; value: string },
+  sharedOutput?: { type: "text" | "error-text"; value: string },
 ): ModelMessage[] {
   const output = sharedOutput ?? { type: "text", value: body }
   return [
@@ -169,6 +215,14 @@ function outputValue(projected: { messages: ModelMessage[] }, index: number) {
   const part = message.content[0]
   if (!part || part.type !== "tool-result") return undefined
   return part.output.type === "text" ? part.output.value : undefined
+}
+
+function errorOutputValue(projected: { messages: ModelMessage[] }, index: number) {
+  const message = projected.messages[index]
+  if (!message || !Array.isArray(message.content)) return undefined
+  const part = message.content[0]
+  if (!part || part.type !== "tool-result") return undefined
+  return part.output.type === "error-text" ? part.output.value : undefined
 }
 
 function deepFreeze<T>(value: T): T {
@@ -414,5 +468,151 @@ describe("session.context-folding OpenCode wire adapters", () => {
       expect(projected.applied).toBe(false)
       expect(projected.plan.skipReason).toBe("mapping-mismatch")
     }
+  })
+
+  test("projects duplicate error-text results with the error placeholder", () => {
+    const sourceMessages = messages(source.callID, witness.callID, { type: "error-text", value: errorBody })
+    const bound = ContextFolding.bindModelMessages(errorHistorySnapshot(), sourceMessages)
+    expect(bound).toBeDefined()
+    const projected = aiProjection({ snapshot: bound!, sourceMessages })
+
+    expect(projected.applied).toBe(true)
+    expect(errorOutputValue(projected.request, 1)).toContain("Duplicate tool error output folded")
+    expect(errorOutputValue(projected.request, 1)).toContain(witness.callID)
+    expect(errorOutputValue(projected.request, 3)).toBe(errorBody)
+  })
+
+  test("never binds a text identity to an error-text wire result or the reverse", () => {
+    const errorWire = messages(source.callID, witness.callID, { type: "error-text", value: errorBody })
+    const boundToText = ContextFolding.bindModelMessages(
+      {
+        ...historySnapshot(),
+        references: historySnapshot().references.map((reference) => ({
+          ...reference,
+          evidence: { ...reference.evidence, result: errorBody },
+        })),
+      },
+      errorWire,
+    )
+    expect(boundToText).toBeDefined()
+    expect(boundToText!.duplicatePlan.replacements).toEqual([])
+    expect(boundToText!.duplicatePlan.skipReason).toBe("mapping-mismatch")
+
+    const textWire = messages(source.callID, witness.callID)
+    const boundToError = ContextFolding.bindModelMessages(
+      {
+        ...errorHistorySnapshot(),
+        references: errorHistorySnapshot().references.map((reference) => ({
+          ...reference,
+          evidence: { ...reference.evidence, result: body },
+        })),
+      },
+      textWire,
+    )
+    expect(boundToError).toBeDefined()
+    expect(boundToError!.duplicatePlan.replacements).toEqual([])
+    expect(boundToError!.duplicatePlan.skipReason).toBe("mapping-mismatch")
+  })
+
+  test("projects duplicate Native error results with the error placeholder", () => {
+    const selected = model()
+    const sourceMessages = messages(source.callID, witness.callID, { type: "error-text", value: errorBody })
+    const bound = ContextFolding.bindModelMessages(errorHistorySnapshot(), sourceMessages)
+    expect(bound).toBeDefined()
+    const transformed = ProviderTransform.message(structuredClone(sourceMessages), selected, {})
+    const canonical = LLMNative.request({
+      model: selected,
+      apiKey: "test-key",
+      messages: transformed,
+      tools,
+      maxOutputTokens: 512,
+    })
+    const projected = ContextFolding.projectNative({
+      model: selected,
+      purpose: "conversation",
+      snapshot: bound!,
+      request: canonical,
+      transformedMessages: transformed,
+      sourceMessages,
+      messageTransformOptions: {},
+      tools,
+      maxOutputTokens: 512,
+      params: { maxOutputTokens: 512 },
+      system: { kind: "messages" },
+    })
+
+    expect(projected.applied).toBe(true)
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- reads the canonical native wire shape built by LLMNative
+    const results = (projected.request.messages as ReadonlyArray<{ content: ReadonlyArray<Record<string, unknown>> }>)
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === "tool-result")
+      .map((part) => part.result)
+    expect(results).toHaveLength(2)
+    expect(results[0]).toEqual({ type: "error", value: expect.stringContaining("Duplicate tool error output folded") })
+    expect(results[0]).toEqual({ type: "error", value: expect.stringContaining(witness.callID) })
+    expect(results[1]).toEqual({ type: "error", value: errorBody })
+  })
+
+  test("isolates an unverifiable pair instead of disabling every verified pair", () => {
+    const firstSource = { messageID: "msg_s1", partID: "prt_s1", callID: "call:s1" }
+    const firstWitness = { messageID: "msg_w1", partID: "prt_w1", callID: "call:w1" }
+    const secondSource = { messageID: "msg_s2", partID: "prt_s2", callID: "call:s2" }
+    const secondWitness = { messageID: "msg_w2", partID: "prt_w2", callID: "call:w2" }
+    const sourceMessages = [
+      ...messages(firstSource.callID, firstWitness.callID),
+      ...messages(secondSource.callID, secondWitness.callID),
+    ]
+    const bound = ContextFolding.bindModelMessages(
+      duplicateHistory([
+        [firstSource, firstWitness],
+        [secondSource, secondWitness],
+      ]),
+      sourceMessages,
+    )
+    expect(bound).toBeDefined()
+    expect(bound!.duplicatePlan.replacements).toEqual([
+      { source: firstSource, witness: firstWitness },
+      { source: secondSource, witness: secondWitness },
+    ])
+
+    const projected = aiProjection({ snapshot: bound!, sourceMessages })
+    expect(projected.applied).toBe(true)
+    expect(outputValue(projected.request, 1)).toContain(firstWitness.callID)
+    expect(outputValue(projected.request, 3)).toBe(body)
+    expect(outputValue(projected.request, 5)).toContain(secondWitness.callID)
+    expect(outputValue(projected.request, 7)).toBe(body)
+
+    const changed = structuredClone(sourceMessages)
+    toolResultAt(changed, 1).output = { type: "text", value: "different body" }
+    const partial = ContextFolding.bindModelMessages(
+      duplicateHistory([
+        [firstSource, firstWitness],
+        [secondSource, secondWitness],
+      ]),
+      changed,
+    )
+    expect(partial).toBeDefined()
+    expect(partial!.duplicatePlan.replacements).toEqual([{ source: secondSource, witness: secondWitness }])
+
+    const changedTool = changed[5]
+    if (!changedTool || changedTool.role !== "tool") throw new Error("expected tool message")
+    changedTool.content = [
+      {
+        type: "tool-result",
+        toolCallId: secondSource.callID,
+        toolName: "read",
+        output: { type: "text", value: "different body" },
+      },
+    ]
+    const dropped = ContextFolding.bindModelMessages(
+      duplicateHistory([
+        [firstSource, firstWitness],
+        [secondSource, secondWitness],
+      ]),
+      changed,
+    )
+    expect(dropped).toBeDefined()
+    expect(dropped!.duplicatePlan.replacements).toEqual([])
+    expect(dropped!.duplicatePlan.skipReason).toBe("mapping-mismatch")
   })
 })

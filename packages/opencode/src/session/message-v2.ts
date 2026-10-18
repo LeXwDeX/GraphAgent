@@ -38,8 +38,10 @@ import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { ContextFolding } from "./context-folding"
+import { isReplayableAssistantMessage } from "./message-replay"
 
 export const node = LayerNode.group([Database.node])
+export { isReplayableAssistantMessage }
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -287,15 +289,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       const differentModel = `${model.providerID}/${model.id}` !== `${msg.info.providerID}/${msg.info.modelID}`
       const media: Array<{ mime: string; url: string; filename?: string }> = []
 
-      if (
-        msg.info.error &&
-        !(
-          AbortedError.isInstance(msg.info.error) &&
-          msg.parts.some((part) => part.type !== "step-start" && part.type !== "reasoning")
-        )
-      ) {
-        continue
-      }
+      if (!isReplayableAssistantMessage(msg)) continue
       // A successful client compaction inserts a summary before the retained old
       // tail. Its old thinking is bound to the replaced prefix, and the summary's
       // own thinking was produced under the separate summarizer system/tools.

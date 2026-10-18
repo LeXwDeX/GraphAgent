@@ -22,6 +22,7 @@ import { asSchema, type ModelMessage, type Tool } from "ai"
 import { Effect } from "effect"
 import type { Interface as ToolSourceLedgerInterface } from "./tool-source-ledger"
 import { LLMNative } from "./llm/native-request"
+import { isReplayableAssistantMessage } from "./message-replay"
 
 const PROTOCOL_OVERHEAD_TOKENS = 64
 const MAX_COPY_DEPTH = 64
@@ -33,6 +34,7 @@ export type HistoryReference = Readonly<{
   ref: FoldRef
   toolName: string
   complete: boolean
+  resultKind: "text" | "error" | "unknown"
   evidence: Readonly<{
     input: unknown
     result: unknown
@@ -50,6 +52,7 @@ export type PreparedReference = Readonly<{
   ref: FoldRef
   toolName: string
   complete: boolean
+  resultKind: "text" | "error" | "unknown"
   inputFingerprint: string
   resultFingerprint: string
   comparisonMetadataFingerprint: string
@@ -196,15 +199,44 @@ function instructionSafety(part: SessionV1.ToolPart): "none" | "dynamic" | "unkn
   return metadata.loaded.length > 0 ? "dynamic" : marker
 }
 
+function errorInstructionSafety(part: SessionV1.ToolPart): "none" | "dynamic" | "unknown" {
+  if (part.state.status !== "error") return "unknown"
+  if (typeof part.state.error !== "string") return "unknown"
+  return part.state.error.includes("<system-reminder>") ? "dynamic" : "none"
+}
+
+/**
+ * A real user turn opens a new task epoch. Synthetic/system/shell/compaction turns and unrecognized shapes do not,
+ * which keeps every candidate in a single conservative epoch when the history is not clearly user-authored.
+ */
+function isRealUserTurn(message: SessionV1.WithParts): boolean {
+  if (message.info.role !== "user" || message.info.summary !== undefined) return false
+  let realText = false
+  for (const part of message.parts) {
+    if (part.type === "compaction") return false
+    if (part.type === "text" && part.synthetic !== true && part.ignored !== true && part.text.trim().length > 0) {
+      realText = true
+    }
+  }
+  return realText
+}
+
 export const history = Effect.fn("ContextFolding.history")(function* (input: {
   messages: readonly SessionV1.WithParts[]
   ledger: ToolSourceLedgerInterface
 }) {
   const steps: FoldStep[] = []
   const references: HistoryReference[] = []
+  let taskEpoch = 0
 
   for (const message of input.messages) {
+    if (message.info.role === "user") {
+      if (isRealUserTurn(message)) taskEpoch++
+      continue
+    }
     if (message.info.role !== "assistant") continue
+    // Keep folding history aligned with the exact assistant messages the provider wire replays.
+    if (!isReplayableAssistantMessage(message)) continue
     let stepParts: SessionV1.Part[] = []
     let stepID = `${message.info.id}:0`
     const flush = () =>
@@ -224,24 +256,40 @@ export const history = Effect.fn("ContextFolding.history")(function* (input: {
               toolName: part.tool,
             })) ?? missingSource(part.sessionID, part.messageID, part.callID, part.tool)
           const completedState = part.state.status === "completed" ? part.state : undefined
+          const errorState = part.state.status === "error" ? part.state : undefined
+          // An interrupted error is replayed on the wire as a successful partial output. It is not a complete
+          // failure payload, so it never enters the error identity.
+          const interruptedError =
+            errorState !== undefined &&
+            isRecord(errorState.metadata) &&
+            errorState.metadata.interrupted === true &&
+            typeof errorState.metadata.output === "string"
           const attachments: "none" | "present" =
             completedState && (completedState.attachments?.length ?? 0) > 0 ? "present" : "none"
+          // Truncated previews stay foldable because identity compares the complete visible body and metadata:
+          // a truncated duplicate loses no unique bytes when the later witness keeps the identical preview.
+          // Compacted sentinels and file-backed outputs remain lossy and are never eligible.
           const complete =
             !!completedState &&
             completedState.time.compacted === undefined &&
-            completedState.metadata.truncated !== true &&
             typeof completedState.metadata.outputPath !== "string"
+          const errorText = errorState && !interruptedError ? errorState.error : undefined
+          const completeError = typeof errorText === "string"
+          const errorComparisonMetadata = errorState ? { metadata: errorState.metadata } : undefined
           const ref = { messageID: part.messageID, partID: part.id, callID: part.callID }
           references.push({
             ref,
             toolName: part.tool,
-            complete,
+            complete: complete || completeError,
+            resultKind: completedState ? "text" : completeError ? "error" : "unknown",
             evidence: {
               input: part.state.input,
-              result: completedState?.output,
+              result: completedState ? completedState.output : completeError ? errorText : undefined,
               comparisonMetadata: completedState
                 ? { title: completedState.title, metadata: completedState.metadata }
-                : undefined,
+                : completeError
+                  ? errorComparisonMetadata
+                  : undefined,
               outerMetadata: part.metadata,
             },
           })
@@ -258,12 +306,21 @@ export const history = Effect.fn("ContextFolding.history")(function* (input: {
                   complete,
                   comparisonMetadata: { title: completedState.title, metadata: completedState.metadata },
                 }
-              : { kind: "unknown" as const },
+              : completeError
+                ? {
+                    kind: "error" as const,
+                    text: errorText,
+                    complete: true,
+                    failureClass: "tool-error",
+                    comparisonMetadata: errorComparisonMetadata,
+                  }
+                : { kind: "unknown" as const },
             safety: {
               attachments,
-              instructions: instructionSafety(part),
+              instructions: completedState ? instructionSafety(part) : errorInstructionSafety(part),
               providerExecuted: part.metadata?.providerExecuted === true,
             },
+            taskEpoch,
             ...(part.tool === "read" && typeof part.state.input.filePath === "string"
               ? { targetPath: part.state.input.filePath }
               : {}),
@@ -290,6 +347,7 @@ type ModelLocated = Readonly<{
   ordinal: number
   input?: unknown
   result?: unknown
+  resultKind?: "text" | "error"
 }>
 
 function locateModelMessages(messages: readonly ModelMessage[]): ModelLocated[] {
@@ -312,13 +370,15 @@ function locateModelMessages(messages: readonly ModelMessage[]): ModelLocated[] 
       }
       if (item.type === "tool-result") {
         const output = isRecord(item.output) ? item.output : undefined
-        const result = output && (output.type === "text" || output.type === "error-text") ? output.value : undefined
+        const resultKind = output?.type === "text" ? "text" : output?.type === "error-text" ? "error" : undefined
+        const result = resultKind !== undefined && output !== undefined ? output.value : undefined
         located.push({
           id: item.toolCallId,
           name: item.toolName,
           kind: "result",
           ordinal: resultOrdinal++,
           result,
+          ...(resultKind ? { resultKind } : {}),
         })
       }
     }
@@ -331,11 +391,16 @@ function uniqueByVisibleID(located: readonly ModelLocated[], id: string, kind: M
   return matches.length === 1 ? matches[0] : undefined
 }
 
+const refKey = (ref: FoldRef) => JSON.stringify([ref.messageID, ref.partID, ref.callID])
+
 export function bindModelMessages(input: HistorySnapshot, messages: ModelMessage[]): Snapshot | undefined {
-  const selected = selectedReferences(input)
+  const selected = new Set(selectedReferences(input).map((reference) => refKey(reference.ref)))
   const located = locateModelMessages(messages)
   const prepared: PreparedReference[] = []
+  const bound = new Set<string>()
   for (const reference of input.references) {
+    const key = refKey(reference.ref)
+    const isSelected = selected.has(key)
     const inputFingerprint = evidenceFingerprint(reference.evidence.input)
     const resultFingerprint = evidenceFingerprint(reference.evidence.result)
     const comparisonMetadataFingerprint = evidenceFingerprint(reference.evidence.comparisonMetadata)
@@ -345,9 +410,13 @@ export function bindModelMessages(input: HistorySnapshot, messages: ModelMessage
       !resultFingerprint.ok ||
       !comparisonMetadataFingerprint.ok ||
       !outerMetadataFingerprint.ok
-    )
-      return undefined
-    if (selected.includes(reference)) {
+    ) {
+      // Unselected references still bind the whole history fingerprint. A selected reference that cannot be
+      // fingerprinted only invalidates its own duplicate pair.
+      if (!isSelected) return undefined
+      continue
+    }
+    if (isSelected) {
       const call = uniqueByVisibleID(located, reference.ref.callID, "call")
       const result = uniqueByVisibleID(located, reference.ref.callID, "result")
       if (
@@ -355,34 +424,45 @@ export function bindModelMessages(input: HistorySnapshot, messages: ModelMessage
         !result ||
         call.name !== reference.toolName ||
         result.name !== reference.toolName ||
+        result.resultKind !== reference.resultKind ||
         !sameWireValue(call.input, reference.evidence.input) ||
         !sameWireValue(result.result, reference.evidence.result)
       )
-        return undefined
+        continue
+      bound.add(key)
     }
     prepared.push({
       ref: reference.ref,
       toolName: reference.toolName,
       complete: reference.complete,
+      resultKind: reference.resultKind,
       inputFingerprint: inputFingerprint.value,
       resultFingerprint: resultFingerprint.value,
       comparisonMetadataFingerprint: comparisonMetadataFingerprint.value,
       outerMetadataFingerprint: outerMetadataFingerprint.value,
     })
   }
-  for (const replacement of input.duplicatePlan.replacements) {
+
+  // Isolate each selected pair. One unverifiable pair must not disable folding for every other verified pair.
+  const replacements = input.duplicatePlan.replacements.filter((replacement) => {
+    if (!bound.has(refKey(replacement.source)) || !bound.has(refKey(replacement.witness))) return false
     const source = uniqueByVisibleID(located, replacement.source.callID, "result")
     const witness = uniqueByVisibleID(located, replacement.witness.callID, "result")
-    if (!source || !witness || source.ordinal >= witness.ordinal) return undefined
-  }
+    return source !== undefined && witness !== undefined && source.ordinal < witness.ordinal
+  })
+  const duplicatePlan: FoldPlan =
+    replacements.length === 0 && input.duplicatePlan.replacements.length > 0
+      ? { ...input.duplicatePlan, replacements: [], skipReason: "mapping-mismatch" }
+      : { ...input.duplicatePlan, replacements }
+
   const historyBindingFingerprint = wireFingerprint({
-    duplicatePlan: input.duplicatePlan,
+    duplicatePlan,
     references: prepared,
     sourceMessages: messages,
   })
   if (!historyBindingFingerprint.ok) return undefined
   return {
-    duplicatePlan: input.duplicatePlan,
+    duplicatePlan,
     references: prepared,
     historyBindingFingerprint: historyBindingFingerprint.value,
   }
@@ -469,6 +549,7 @@ type Located = Readonly<{
   name: string
   kind: "call" | "result"
   ordinal: number
+  resultKind?: "text" | "error" | "unknown"
 }>
 
 function locateAISDK(request: unknown): Located[] {
@@ -503,6 +584,7 @@ function locateAISDK(request: unknown): Located[] {
           name: part.toolName,
           kind: "result",
           ordinal: resultOrdinal++,
+          resultKind: part.output.type === "error-text" ? "error" : "text",
         })
       }
     })
@@ -530,6 +612,12 @@ function locateNative(request: unknown): Located[] {
         })
       }
       if (part.type !== "tool-result") return
+      const nativeResultKind =
+        isRecord(part.result) && part.result.type === "error"
+          ? "error"
+          : isRecord(part.result) && part.result.type === "text"
+            ? "text"
+            : "unknown"
       if (typeof part.result === "string") {
         located.push({
           path: [...base, "id"],
@@ -538,6 +626,7 @@ function locateNative(request: unknown): Located[] {
           name: part.name,
           kind: "result",
           ordinal: resultOrdinal++,
+          resultKind: "unknown",
         })
       } else if (isRecord(part.result) && typeof part.result.value === "string") {
         located.push({
@@ -547,6 +636,7 @@ function locateNative(request: unknown): Located[] {
           name: part.name,
           kind: "result",
           ordinal: resultOrdinal++,
+          resultKind: nativeResultKind,
         })
       }
     })
@@ -585,6 +675,7 @@ function mapping(
       visibleCallIDPath: result[0].path,
       bodyPath: result[0].bodyPath,
       ordinal: result[0].ordinal,
+      resultKind: reference.resultKind,
       complete: reference.complete,
     })
   }

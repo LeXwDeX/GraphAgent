@@ -35,7 +35,7 @@
 - 去重不足时按时间清理唯一结果。
 - 相似文本、部分段落、跨工具或跨会话去重。
 - 语义话题识别、分支相关性推断、自动归档、长期记忆。
-- 连续修改合并、失败重试摘要、shell 输出去重。
+- 连续修改合并、失败重试摘要、shell 输出去重；逐字相同的完整错误去重不属于摘要，见 §16。
 - 改写用户输入、助手结论、推理、工具参数或调用关系。
 - 为去重额外调用模型、增加后台清理任务、注册 `dcp_prune` 工具。
 - 重排现有全文压缩状态机，以保证动态折叠总能先执行。
@@ -197,7 +197,7 @@ type FoldPlan = {
 
 候选必须满足：
 
-- 普通历史中纯文本成功结果，非 pending/running/error/interrupted。
+- 普通历史中纯文本成功结果，非 pending/running/interrupted；完整错误结果按 §16 单独处理。
 - 没有附件、媒体、错误字段和未知语义内容。
 - 没有既有清理标记，实际正文仍会发送。
 - 没有动态加载指令；读取目标可以明确确认。
@@ -494,3 +494,30 @@ V1/Core schema、迁移映射、配置加载、环境变量和配置说明必须
 [S01 基线与接入契约证据](context-folding/evidence/S01.md)。S01 只固定后续实现契约，不表示 S02–S10 已完成。
 
 任何一项证据不足，相关请求应跳过折叠并显式记录限制；不能以扩大删除范围或弱化保护来换取节省数字。
+
+## 16. 修订：错误重复折叠与任务纪元（2026-10-18）
+
+状态：默认开启的行为修订，策略版本提升为 `strict-duplicate-v2`。本节取代 §6.1 中“错误结果一律不参与”的首版限制，其余资格、保护、预算与投影契约不变。
+
+### 16.1 Why
+
+- 首版只折叠成功的工具正文。真实任务失败后重试同一读取/搜索时，完整错误正文会与成功正文一样逐次重复，成为持续占用上下文的噪声；模型还会反复重读同一失败信息。
+- 首版按出现顺序折叠。长会话里当前任务内的重复往往先被折叠，而与当前任务无关的旧重复仍留在请求中，与“保留核心任务、压缩无关任务”的产品目标相反。
+
+### 16.2 Scope
+
+- 错误结果只在适配器能证明完整可见 payload 时参与精确去重；中断回放、无字符串错误体、未知错误结构保持原样。
+- 任务边界只由真实用户回合决定，并与 provider wire 的 replay 语义保持一致；没有真实用户回合或消息形状未知时退化为单一纪元（fail-closed，退回原顺序）。
+
+### 16.3 Approach
+
+1. **结果类别进入身份**：text 的身份类为 `text`，error 为 `error:<failureClass>`；当前两个适配器只能证明“这是完整错误”，不能证明底层失败分类，因此统一使用 coarse class `tool-error`。只有同一类别内逐字相同的完整 payload 才可能同组；text 与 error 即使字节完全相同也永不共享身份。
+2. **适配器识别**：V1 把 `state.status === "error"` 且错误体为字符串的工具结果映射为错误候选；中断错误（`metadata.interrupted === true` 且 `metadata.output` 为字符串）按成功回放处理，不进入错误身份。AI SDK wire 识别 `output.type === "error-text"`，Native canonical 识别 `{ type: "error", value }`。
+3. **占位与校验**：错误折叠使用独立占位前缀 `[Duplicate tool error output folded. …]`，同样引用 witness callID；plan、mapping 与最终 wire 的 resultKind 必须一致，否则按 `mapping-mismatch` 失败关闭。错误 payload 必须 `complete === true` 且 failureClass 非空，否则以 `unsafe-error-payload` 排除。
+4. **任务纪元**：每个真实用户回合开新纪元（synthetic、system、shell、compaction 与带 summary 的用户消息不开启）。规划器给源标记 `anchor`（源属于最新纪元）。投影分两段选择：先折叠非 anchor（无关任务）的重复；预算仍高于目标时才折叠 anchor（当前任务）的重复。未知消息形状时全部候选共享 epoch 0，所有源都按 anchor 处理，退化为原选择顺序。
+
+### 16.4 Acceptance
+
+- 核心策略：`packages/core/test/session/context-folding*.test.ts` 覆盖 text/error 身份隔离、failureClass 隔离、不安全错误 payload、纪元 anchor 标记、非法纪元、两段式选择与错误占位一致性。
+- V1 适配器：`packages/opencode/test/session/context-folding.test.ts` 覆盖 AI SDK/Native 错误占位端到端、text/error 绑定不交叉；`tool-source-ledger.test.ts` 覆盖完整错误折叠、不同错误、跨类别、中断错误、指令型错误与纪元 anchor。
+- 门禁：`bun run typecheck`、`bun run lint`（不提高上限）、Prettier、`packages/opencode` 的 `test:dag-core` 与相关 `bun test` 全绿。

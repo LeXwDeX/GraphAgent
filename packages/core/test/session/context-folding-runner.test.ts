@@ -44,6 +44,8 @@ const toolMessage = (input: {
   structured?: Record<string, unknown>
   content?: SessionMessage.ToolStateCompleted["content"]
   status?: "completed" | "running" | "error"
+  errorMessage?: string
+  providerExecuted?: boolean
   messageMetadata?: Record<string, unknown>
   providerMetadata?: Record<string, Record<string, unknown>>
 }): SessionMessage.Assistant => {
@@ -68,7 +70,7 @@ const toolMessage = (input: {
             input: input.toolInput ?? { path: "notes.txt", offset: 1, limit: 200 },
             structured: input.structured ?? {},
             content: input.content ?? [],
-            error: { type: "unknown", message: "failed" },
+            error: { type: "unknown", message: input.errorMessage ?? "failed" },
           }
   return {
     id: SessionMessage.ID.make(input.messageID),
@@ -85,7 +87,11 @@ const toolMessage = (input: {
         provider:
           input.providerMetadata === undefined
             ? undefined
-            : { executed: false, metadata: input.providerMetadata, resultMetadata: input.providerMetadata },
+            : {
+                executed: input.providerExecuted ?? false,
+                metadata: input.providerMetadata,
+                resultMetadata: input.providerMetadata,
+              },
         state,
         time: { created: now, ran: now, completed: now },
       },
@@ -178,6 +184,8 @@ describe("Core runner context folding adapter", () => {
         {
           source: { messageID: "msg_source", partID: "call-source", callID: "call-source" },
           witness: { messageID: "msg_witness", partID: "call-witness", callID: "call-witness" },
+          resultKind: "text",
+          anchor: true,
         },
       ])
 
@@ -194,15 +202,152 @@ describe("Core runner context folding adapter", () => {
         expect(result.history.duplicatePlan.replacements, name).toEqual([])
       }
 
+      // Identical truncated pages are exact duplicates: the later witness keeps the same visible preview and
+      // truncation hint, so folding the earlier copy removes no unique bytes.
       const truncated = yield* plan(
         pair({ structured: textPage({ truncated: true }) }, { structured: textPage({ truncated: true }) }),
       )
-      expect(truncated.history.duplicatePlan.replacements).toEqual([])
-      expect(truncated.history.duplicatePlan.exclusions.map((item) => item.reason)).toContain("incomplete-content")
+      expect(truncated.history.duplicatePlan.replacements).toEqual([
+        {
+          source: { messageID: "msg_source", partID: "call-source", callID: "call-source" },
+          witness: { messageID: "msg_witness", partID: "call-witness", callID: "call-witness" },
+          resultKind: "text",
+          anchor: true,
+        },
+      ])
+
+      // Different truncation hints remain ineligible even when the visible body is identical.
+      const mixed = yield* plan(
+        pair({ structured: textPage({ truncated: true }) }, { structured: textPage({ truncated: false }) }),
+      )
+      expect(mixed.history.duplicatePlan.replacements).toEqual([])
     }),
   )
 
-  it.effect("rejects list, binary, media, failed, running, dynamic, and unknown-instruction results", () =>
+  it.effect("folds only complete identical error payloads and keeps text and error identities apart", () =>
+    Effect.gen(function* () {
+      const expected = [
+        {
+          source: { messageID: "msg_source", partID: "call-source", callID: "call-source" },
+          witness: { messageID: "msg_witness", partID: "call-witness", callID: "call-witness" },
+          resultKind: "error" as const,
+          anchor: true,
+        },
+      ]
+      const identical = yield* plan(pair({ status: "error" }, { status: "error" }))
+      expect(identical.history.duplicatePlan.replacements).toEqual(expected)
+
+      // A different visible error message is a different identity, even when the rest of the payload matches.
+      const differentMessage = yield* plan(
+        pair({ status: "error", errorMessage: "one" }, { status: "error", errorMessage: "two" }),
+      )
+      expect(differentMessage.history.duplicatePlan.replacements).toEqual([])
+
+      // The remaining error payload (content and structured) participates in the comparison metadata.
+      const differentOuter = yield* plan(
+        pair(
+          { status: "error", content: [{ type: "text", text: "left" }] },
+          { status: "error", content: [{ type: "text", text: "right" }] },
+        ),
+      )
+      expect(differentOuter.history.duplicatePlan.replacements).toEqual([])
+
+      // Identical visible bytes never cross the text/error boundary.
+      const mixedKinds = yield* plan(
+        pair({ status: "completed", structured: textPage({ content: body }) }, { status: "error", errorMessage: body }),
+      )
+      expect(mixedKinds.history.duplicatePlan.replacements).toEqual([])
+
+      // Instruction markers, attachments, and provider execution keep an error result out of the fold.
+      const fixtures: Array<[string, readonly SessionMessage.Message[], "none" | "dynamic" | "unknown"]> = [
+        [
+          "dynamic body",
+          pair(
+            { status: "error", errorMessage: `<system-reminder>${body}` },
+            { status: "error", errorMessage: `<system-reminder>${body}` },
+          ),
+          "none",
+        ],
+        [
+          "attachment",
+          pair(
+            { status: "error", content: [{ type: "file", uri: "data:image/png;base64,AA==", mime: "image/png" }] },
+            { status: "error", content: [{ type: "file", uri: "data:image/png;base64,AA==", mime: "image/png" }] },
+          ),
+          "none",
+        ],
+        [
+          "provider executed",
+          pair(
+            { status: "error", providerExecuted: true, providerMetadata: { provider: { remote: true } } },
+            { status: "error", providerExecuted: true, providerMetadata: { provider: { remote: true } } },
+          ),
+          "none",
+        ],
+        ["dynamic marker", pair({ status: "error" }, { status: "error" }), "dynamic"],
+        ["unknown marker", pair({ status: "error" }, { status: "error" }), "unknown"],
+      ]
+      for (const [name, messages, instructions] of fixtures) {
+        const result = yield* plan(messages, instructions)
+        expect(result.history.duplicatePlan.replacements, name).toEqual([])
+      }
+    }),
+  )
+
+  it.effect("anchors duplicates from the latest user turn and defers earlier turns", () =>
+    Effect.gen(function* () {
+      const user = (id: string, text: string): SessionMessage.User => ({
+        id: SessionMessage.ID.make(id),
+        type: "user",
+        text,
+        time: { created: now },
+      })
+      const messages: SessionMessage.Message[] = [
+        user("msg_user_one", "first task"),
+        toolMessage({ messageID: "msg_source_old", callID: "call-source-old" }),
+        user("msg_user_two", "second task"),
+        toolMessage({ messageID: "msg_source_current", callID: "call-source-current" }),
+        toolMessage({ messageID: "msg_witness", callID: "call-witness" }),
+        ...Array.from({ length: 4 }, (_, index) => recent(index)),
+      ]
+      const { history } = yield* plan(messages)
+      expect(history.duplicatePlan.replacements).toEqual([
+        {
+          source: { messageID: "msg_source_old", partID: "call-source-old", callID: "call-source-old" },
+          witness: { messageID: "msg_witness", partID: "call-witness", callID: "call-witness" },
+          resultKind: "text",
+          anchor: false,
+        },
+        {
+          source: { messageID: "msg_source_current", partID: "call-source-current", callID: "call-source-current" },
+          witness: { messageID: "msg_witness", partID: "call-witness", callID: "call-witness" },
+          resultKind: "text",
+          anchor: true,
+        },
+      ])
+
+      // An unrecognized message shape makes task segmentation untrustworthy: every source becomes an anchor,
+      // which degrades to the pre-epoch selection order instead of guessing task boundaries.
+      const ledger = yield* ContextFoldingToolSourceLedger.Service
+      const conversion = toLLMMessagesWithBindings(messages, model)
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- deliberately unrecognized message shape
+      const unknown = {
+        id: SessionMessage.ID.make("msg_unknown"),
+        type: "future-message",
+        time: { created: now },
+      } as unknown as SessionMessage.Message
+      const unreliable = yield* CoreContextFolding.history({
+        sessionID: "ses_runner_adapter",
+        messages: [...messages, unknown],
+        conversion,
+        model,
+        ledger,
+      })
+      expect(unreliable.duplicatePlan.replacements.map((replacement) => replacement.anchor)).toEqual([true, true])
+    }),
+  )
+
+  it.effect("rejects list, binary, media, running, dynamic, and unknown-instruction results", () =>
     Effect.gen(function* () {
       const fixtures: Array<[string, readonly SessionMessage.Message[], "none" | "dynamic" | "unknown"]> = [
         [
@@ -240,7 +385,6 @@ describe("Core runner context folding adapter", () => {
           ),
           "none",
         ],
-        ["failed", pair({ status: "error" }, { status: "error" }), "none"],
         ["running", pair({ status: "running" }, { status: "running" }), "none"],
         [
           "dynamic body",
@@ -260,18 +404,26 @@ describe("Core runner context folding adapter", () => {
     }),
   )
 
-  it.effect("rejects captured history after input, body, metadata, order, deletion, or cross-tool ID mutation", () =>
+  it.effect("isolates input, body, metadata, outer, order and deletion mutations but rejects ID collisions", () =>
     Effect.gen(function* () {
       const messages = pair()
       const { history, conversion } = yield* plan(messages)
       expect(CoreContextFolding.bindHistory(history, conversion.messages, messages)).toBeDefined()
+
+      // A single unverifiable pair is isolated: binding succeeds with the pair removed and a diagnostic reason,
+      // rather than disabling folding for every other pair in the same request.
+      const expectDropped = (result: ReturnType<typeof CoreContextFolding.bindHistory>) => {
+        expect(result).toBeDefined()
+        expect(result!.duplicatePlan.replacements).toEqual([])
+        expect(result!.duplicatePlan.skipReason).toBe("mapping-mismatch")
+      }
 
       const changedInput = structuredClone(conversion.messages)
       const changedInputPart = changedInput[0].content[0]
       if (changedInputPart.type !== "tool-call" || !isRecord(changedInputPart.input))
         throw new Error("expected tool call")
       changedInputPart.input.path = "other.txt"
-      expect(CoreContextFolding.bindHistory(history, changedInput, messages)).toBeUndefined()
+      expectDropped(CoreContextFolding.bindHistory(history, changedInput, messages))
 
       const changedBody = structuredClone(conversion.messages)
       const changedBodyPart = changedBody[1].content[0]
@@ -282,11 +434,11 @@ describe("Core runner context folding adapter", () => {
       )
         throw new Error("expected JSON tool result")
       changedBodyPart.result.value.mime = "text/markdown"
-      expect(CoreContextFolding.bindHistory(history, changedBody, messages)).toBeUndefined()
+      expectDropped(CoreContextFolding.bindHistory(history, changedBody, messages))
 
       const changedMetadata = structuredClone(messages)
       changedMetadata.splice(0, 1, { ...changedMetadata[0], metadata: { changed: true } })
-      expect(CoreContextFolding.bindHistory(history, conversion.messages, changedMetadata)).toBeUndefined()
+      expectDropped(CoreContextFolding.bindHistory(history, conversion.messages, changedMetadata))
 
       const changedOuter = structuredClone(messages)
       const changedOuterTool = changedOuter[0].content[0]
@@ -304,15 +456,15 @@ describe("Core runner context folding adapter", () => {
           },
         ],
       })
-      expect(CoreContextFolding.bindHistory(history, conversion.messages, changedOuter)).toBeUndefined()
+      expectDropped(CoreContextFolding.bindHistory(history, conversion.messages, changedOuter))
 
       const reordered = structuredClone(conversion.messages)
       reordered.splice(0, 4, reordered[2], reordered[3], reordered[0], reordered[1])
-      expect(CoreContextFolding.bindHistory(history, reordered, messages)).toBeUndefined()
+      expectDropped(CoreContextFolding.bindHistory(history, reordered, messages))
 
       const deleted = structuredClone(conversion.messages)
       deleted.splice(1, 1)
-      expect(CoreContextFolding.bindHistory(history, deleted, messages)).toBeUndefined()
+      expectDropped(CoreContextFolding.bindHistory(history, deleted, messages))
 
       const collision = structuredClone(conversion.messages)
       const collisionMessage = collision[2]
@@ -373,6 +525,48 @@ describe("Core runner context folding adapter", () => {
           expect(prepares, purpose).toBe(0)
         }
       }),
+  )
+
+  it.effect("projects a folded error message while preserving the rest of the provider error payload", () =>
+    Effect.gen(function* () {
+      const errorText = "failed:" + "e".repeat(20_000)
+      const messages = pair({ status: "error", errorMessage: errorText }, { status: "error", errorMessage: errorText })
+      const { conversion, ledger } = yield* plan(messages)
+      const request = LLM.request({ model, messages: conversion.messages, tools: [] })
+      const projected = yield* CoreContextFolding.project({
+        enabled: true,
+        purpose: "conversation",
+        sessionID: "ses_runner_adapter",
+        sourceMessages: messages,
+        conversion,
+        expectedMessages: conversion.messages,
+        model,
+        request,
+        ledger,
+        prepare,
+      })
+      expect(projected.applied).toBe(true)
+      expect(projected.plan.replacements).toHaveLength(1)
+      const placeholder = projected.plan.replacements[0].placeholder
+      expect(placeholder).toContain("Duplicate tool error output folded")
+
+      // The provider wire still carries the complete error payload; only the source message is replaced.
+      const wire = JSON.stringify((yield* prepare(projected.request)).body)
+      expect(wire).toContain("Duplicate tool error output folded")
+      expect(wire).toContain(errorText)
+      expect(wire).toContain('\\"structured\\":{}')
+
+      const source = projected.request.messages
+        .flatMap((message) => message.content)
+        .find((part) => part.type === "tool-result" && part.id === "call-source")
+      if (!source || source.type !== "tool-result" || source.result.type !== "error")
+        throw new Error("expected projected error result")
+      const value = source.result.value
+      if (!isRecord(value) || !isRecord(value.error)) throw new Error("expected structured error payload")
+      expect(value.error.message).toBe(placeholder)
+      expect(value.structured).toEqual({})
+      expect(value.content).toEqual([])
+    }),
   )
 
   it.effect("projects a 7.5 MiB prepared request and still fails closed on a stale large binding", () =>
@@ -447,6 +641,47 @@ describe("Core runner context folding adapter", () => {
       expect(rejected.request).toBe(request)
       expect(rejected.plan).toMatchObject({ replacements: [], skipReason: "mapping-mismatch" })
       expect(JSON.stringify({ messages, request })).toBe(original)
+    }),
+  )
+
+  it.effect("isolates unverifiable pairs instead of disabling every verified pair", () =>
+    Effect.gen(function* () {
+      const messages = [
+        toolMessage({ messageID: "msg_s1", callID: "call-s1" }),
+        toolMessage({ messageID: "msg_w1", callID: "call-w1" }),
+        toolMessage({ messageID: "msg_s2", callID: "call-s2" }),
+        toolMessage({ messageID: "msg_w2", callID: "call-w2" }),
+        ...Array.from({ length: 4 }, (_, index) => recent(index)),
+      ]
+      const { history, conversion } = yield* plan(messages)
+      expect(history.duplicatePlan.replacements).toHaveLength(3)
+
+      const mutateBody = (value: typeof conversion.messages, callID: string) => {
+        for (const message of value) {
+          for (const part of message.content) {
+            if (part.type !== "tool-result" || part.id !== callID) continue
+            if (part.result.type !== "json" || !isRecord(part.result.value)) continue
+            part.result.value.content = `${body}-changed`
+            return
+          }
+        }
+        throw new Error(`missing tool result for ${callID}`)
+      }
+
+      const changed = structuredClone(conversion.messages)
+      mutateBody(changed, "call-s1")
+      const partial = CoreContextFolding.bindHistory(history, changed, messages)
+      expect(partial).toBeDefined()
+      expect(partial!.duplicatePlan.replacements.map((replacement) => replacement.source.callID)).toEqual([
+        "call-w1",
+        "call-s2",
+      ])
+
+      for (const callID of ["call-w1", "call-s2"]) mutateBody(changed, callID)
+      const dropped = CoreContextFolding.bindHistory(history, changed, messages)
+      expect(dropped).toBeDefined()
+      expect(dropped!.duplicatePlan.replacements).toEqual([])
+      expect(dropped!.duplicatePlan.skipReason).toBe("mapping-mismatch")
     }),
   )
 })

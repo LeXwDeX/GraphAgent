@@ -27,6 +27,7 @@ type PreparedCandidate = Readonly<{
   normalizedResultMetadata: string
   sequence: number
   stepIndex: number
+  taskEpoch: number
 }>
 
 const allowedTools = new Set<string>(ContextFoldingPolicy.allowedTools)
@@ -119,6 +120,12 @@ const validateStructure = (steps: readonly FoldStep[], budget: WorkBudget): Plan
         ) {
           return "work-limit"
         }
+        if (
+          candidate.taskEpoch !== undefined &&
+          (!Number.isSafeInteger(candidate.taskEpoch) || candidate.taskEpoch < 0)
+        ) {
+          return "invalid-structure"
+        }
         const key = refKey(candidate.ref)
         if (refs.has(key)) return "invalid-structure"
         refs.add(key)
@@ -175,7 +182,7 @@ const exclusionReason = (candidate: FoldCandidate): CandidateSkipReason | undefi
     ) {
       return "invalid-provenance"
     }
-    if (candidate.status !== "completed") return "unsuccessful"
+    if (candidate.status !== "completed" && candidate.status !== "error") return "unsuccessful"
     if (candidate.safety.attachments !== "none") return "attachments"
     if (candidate.safety.instructions !== "none") return "instruction-content"
     if (candidate.safety.providerExecuted !== false) return "provider-executed"
@@ -183,6 +190,21 @@ const exclusionReason = (candidate: FoldCandidate): CandidateSkipReason | undefi
     const protectedTarget = readTargetIsProtected(candidate)
     if (protectedTarget === undefined) return "unknown-read-target"
     if (protectedTarget) return "instruction-content"
+
+    if (candidate.status === "error") {
+      // Errors are foldable only as a complete, class-tagged payload. An adapter that cannot prove the full
+      // visible error fails closed instead of letting a partial payload share a text identity.
+      if (
+        candidate.result.kind !== "error" ||
+        typeof candidate.result.text !== "string" ||
+        typeof candidate.result.failureClass !== "string" ||
+        candidate.result.failureClass.length === 0 ||
+        !candidate.result.complete
+      ) {
+        return "unsafe-error-payload"
+      }
+      return undefined
+    }
 
     if (candidate.result.kind !== "text" || typeof candidate.result.text !== "string") return "unknown-content"
     if (!exactlyTrue(candidate.result.complete)) return "incomplete-content"
@@ -210,13 +232,19 @@ const chargeCandidateStrings = (candidate: FoldCandidate, budget: WorkBudget) =>
   ]
   if (typeof candidate.targetPath === "string") values.push(candidate.targetPath)
   if (candidate.result.kind === "text") values.push(candidate.result.text)
+  if (candidate.result.kind === "error") values.push(candidate.result.text, candidate.result.failureClass)
   return values.every((value) => consumeString(budget, value))
 }
 
+const resultIdentityClass = (result: CandidateResult) =>
+  result.kind === "error" ? `error:${result.failureClass}` : result.kind
+
 const exactIdentity = (prepared: PreparedCandidate, budget: WorkBudget): string | undefined => {
   const { candidate, normalizedInput, normalizedResultMetadata } = prepared
-  if (candidate.result.kind !== "text") throw new Error("prepared candidate must contain text")
+  if (candidate.result.kind !== "text" && candidate.result.kind !== "error")
+    throw new Error("prepared candidate must contain a foldable result")
   const parts = [
+    resultIdentityClass(candidate.result),
     candidate.toolName,
     candidate.source.sessionID,
     candidate.source.sourceKind,
@@ -283,6 +311,7 @@ const plan = (steps: readonly FoldStep[], dependencies: PlannerDependencies): Fo
         normalizedResultMetadata: normalizedResultMetadata.value,
         sequence,
         stepIndex,
+        taskEpoch: candidate.taskEpoch ?? 0,
       })
       sequence++
     }
@@ -319,6 +348,9 @@ const plan = (steps: readonly FoldStep[], dependencies: PlannerDependencies): Fo
 
   const replacements: Array<FoldReplacement & { readonly sequence: number }> = []
   let duplicateGroups = 0
+  // The latest adapter-supplied epoch is the current task. Its duplicate sources are the "anchor": exact folding
+  // keeps them semantically intact, but selection uses them only after unrelated-task duplicates.
+  const latestTaskEpoch = prepared.reduce((latest, item) => Math.max(latest, item.taskEpoch), 0)
 
   for (const bucket of buckets.values()) {
     for (const group of bucket.values()) {
@@ -331,6 +363,8 @@ const plan = (steps: readonly FoldStep[], dependencies: PlannerDependencies): Fo
         replacements.push({
           source: copyRef(source.candidate.ref),
           witness: copyRef(witness.candidate.ref),
+          resultKind: source.candidate.result.kind === "error" ? "error" : "text",
+          anchor: source.taskEpoch === latestTaskEpoch,
           sequence: source.sequence,
         })
       }
@@ -347,7 +381,12 @@ const plan = (steps: readonly FoldStep[], dependencies: PlannerDependencies): Fo
   }
 
   return {
-    replacements: replacements.map(({ source, witness }) => ({ source, witness })),
+    replacements: replacements.map(({ source, witness, resultKind, anchor }) => ({
+      source,
+      witness,
+      resultKind,
+      anchor,
+    })),
     protectedStepIDs,
     exclusions,
     skipReason: undefined,

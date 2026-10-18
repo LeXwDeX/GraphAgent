@@ -1042,6 +1042,50 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("exposes one replay predicate with wire parity for context folding", async () => {
+    const aborted = new SessionV1.AbortedError({
+      message: "aborted",
+    }).toObject() as SessionV1.Assistant["error"]
+    const failure = new SessionV1.APIError({
+      message: "boom",
+      isRetryable: true,
+    }).toObject() as SessionV1.Assistant["error"]
+    const input: SessionV1.WithParts[] = [
+      {
+        info: assistantInfo("m-error", "m-parent", failure),
+        parts: [{ ...basePart("m-error", "e1"), type: "text", text: "provider-error-should-drop" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo("m-abort-content", "m-parent", aborted),
+        parts: [{ ...basePart("m-abort-content", "a1"), type: "text", text: "abort-content-kept" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo("m-abort-reasoning", "m-parent", aborted),
+        parts: [
+          { ...basePart("m-abort-reasoning", "r1"), type: "step-start" },
+          {
+            ...basePart("m-abort-reasoning", "r2"),
+            type: "reasoning",
+            text: "reasoning-only-should-drop",
+            time: { start: 0 },
+          },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo("m-ok", "m-parent"),
+        parts: [{ ...basePart("m-ok", "o1"), type: "text", text: "plain-assistant-kept" }] as SessionV1.Part[],
+      },
+    ]
+
+    expect(input.map((message) => MessageV2.isReplayableAssistantMessage(message))).toEqual([false, true, false, true])
+
+    const wire = JSON.stringify(await MessageV2.toModelMessages(input, model))
+    expect(wire).toContain("abort-content-kept")
+    expect(wire).toContain("plain-assistant-kept")
+    expect(wire).not.toContain("provider-error-should-drop")
+    expect(wire).not.toContain("reasoning-only-should-drop")
+  })
+
   test("preserves OpenRouter reasoning details through provider transform", async () => {
     const assistantID = "m-assistant"
     const openrouterModel: Provider.Model = {
