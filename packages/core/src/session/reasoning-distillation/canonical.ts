@@ -1,5 +1,6 @@
 import { ReasoningCarrier } from "@opencode-ai/llm"
 import { Hash } from "../../util/hash"
+import { assessRewriteControl, detectToolCallEnvelope } from "./control-markup"
 
 /** Pure editability contract for a persisted reasoning part. */
 export type CanonicalReasoning = Readonly<{
@@ -13,6 +14,7 @@ export type CanonicalProtection =
   | "empty-source"
   | "unsettled-source"
   | "already-distilled"
+  | "control-markup-source"
   | "protected-carrier"
   | "unknown-carrier"
   | "metadata-mismatch"
@@ -21,6 +23,12 @@ export type CanonicalEditability =
   | Readonly<{ editable: false; reason: CanonicalProtection }>
   | Readonly<{ editable: true; aliasPaths: readonly (readonly (string | number)[])[] }>
 
+type CanonicalReplacement = Readonly<{
+  text: string
+  metadata?: Record<string, unknown>
+  originalMetadata?: Record<string, unknown>
+}>
+
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
@@ -28,10 +36,12 @@ const record = (value: unknown): value is Record<string, unknown> =>
  * Editability is policy owned here; which metadata binds the provider to the original text is decided by the engine
  * that defines that metadata (`ReasoningCarrier`). Unknown carriers are never edited by guessing.
  */
-export const assessCanonicalReasoning = (source: CanonicalReasoning): CanonicalEditability => {
+const assess = (source: CanonicalReasoning, controlMarkup: boolean): CanonicalEditability => {
   if (!source.text.trim()) return { editable: false, reason: "empty-source" }
   if (!source.settled) return { editable: false, reason: "unsettled-source" }
   if (source.distilled) return { editable: false, reason: "already-distilled" }
+  // A leaked provider tool call is never organizer input; the organizer would copy it or waste the call.
+  if (controlMarkup && detectToolCallEnvelope(source.text)) return { editable: false, reason: "control-markup-source" }
   const carrier = ReasoningCarrier.classify(source.metadata, source.text)
   if (carrier.kind === "plain") return { editable: true, aliasPaths: [] }
   if (carrier.kind === "mirror") return { editable: true, aliasPaths: carrier.paths }
@@ -39,15 +49,23 @@ export const assessCanonicalReasoning = (source: CanonicalReasoning): CanonicalE
   return { editable: false, reason: carrier.reason === "mismatch" ? "metadata-mismatch" : "unknown-carrier" }
 }
 
-/** Edit a private copy and verify every declared alias changed with the authoritative text. */
-export const replaceCanonicalReasoning = (
+export const assessCanonicalReasoning = (source: CanonicalReasoning): CanonicalEditability => assess(source, true)
+
+/**
+ * Edit a private copy and verify every declared alias changed with the authoritative text. `controlMarkup` is false
+ * only for replay evidence: a rewrite stored before the guard may pair a leaked original with a clean rewrite, and
+ * refusing to reconstruct that mirror would replay the envelope instead of the clean text.
+ */
+const replace = (
   source: CanonicalReasoning,
   after: string,
-):
-  | Readonly<{ text: string; metadata?: Record<string, unknown>; originalMetadata?: Record<string, unknown> }>
-  | undefined => {
-  const assessment = assessCanonicalReasoning(source)
+  controlMarkup: boolean,
+): CanonicalReplacement | undefined => {
+  const assessment = assess(source, controlMarkup)
   if (!assessment.editable || after === source.text) return undefined
+  // The shared rewrite gate: both adoption paths reach this decision through this function. Replay checks the stored
+  // text itself before reconstructing evidence, so evidence reconstruction does not need to repeat the gate.
+  if (controlMarkup && assessRewriteControl(source.text, after)) return undefined
   if (source.metadata === undefined || Object.keys(source.metadata).length === 0)
     return { text: after, metadata: source.metadata }
   let copy: Record<string, unknown>
@@ -75,6 +93,11 @@ export const replaceCanonicalReasoning = (
   return { text: after, metadata: copy, originalMetadata: source.metadata }
 }
 
+export const replaceCanonicalReasoning = (
+  source: CanonicalReasoning,
+  after: string,
+): CanonicalReplacement | undefined => replace(source, after, true)
+
 /** Resolve one authoritative text/carrier pair for replay; legacy adoption never changed its carrier. */
 export const reasoningForReplay = (input: {
   text: string
@@ -89,6 +112,12 @@ export const reasoningForReplay = (input: {
 }): Readonly<{ text: string; metadata?: Record<string, unknown> }> => {
   const saved = input.distillation
   if (!saved) return { text: input.text, metadata: input.metadata }
+  // A distilled text written before this guard existed can still hold a control envelope; never replay it. Fail open
+  // to the known original pair instead of emitting a tool call as thinking.
+  if (input.enabled && detectToolCallEnvelope(input.text))
+    return saved.version === 2
+      ? { text: saved.originalText, metadata: saved.originalMetadata ?? input.metadata }
+      : { text: saved.originalText, metadata: input.metadata }
   if (input.enabled && saved.version === 2) {
     // A V2 provenance must describe the stored original. If the mirror or fingerprint no longer matches, replay the
     // known original pair instead of sending contradictory text and metadata.
@@ -99,7 +128,9 @@ export const reasoningForReplay = (input: {
     const originalMetadata = saved.originalMetadata ?? input.metadata
     if (originalMetadata === undefined || Object.keys(originalMetadata).length === 0)
       return { text: input.text, metadata: input.metadata }
-    const edited = replaceCanonicalReasoning(
+    // Evidence reconstruction ignores the control policy: the stored rewrite was checked above, and the provenance may
+    // legitimately describe an envelope source rewritten to clean text. Rejecting here would replay the envelope.
+    const edited = replace(
       {
         text: saved.originalText,
         metadata: originalMetadata,
@@ -107,6 +138,7 @@ export const reasoningForReplay = (input: {
         distilled: false,
       },
       input.text,
+      false,
     )
     return edited
       ? { text: input.text, metadata: input.metadata }
@@ -117,7 +149,7 @@ export const reasoningForReplay = (input: {
     // otherwise preserve the known original pair instead of emitting contradictory text and metadata.
     if (input.metadata === undefined || Object.keys(input.metadata).length === 0)
       return { text: input.text, metadata: input.metadata }
-    const edited = replaceCanonicalReasoning(
+    const edited = replace(
       {
         text: saved.originalText,
         metadata: input.metadata,
@@ -125,6 +157,7 @@ export const reasoningForReplay = (input: {
         distilled: false,
       },
       input.text,
+      false,
     )
     return edited
       ? { text: edited.text, metadata: edited.metadata }

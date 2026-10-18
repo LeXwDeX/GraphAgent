@@ -213,3 +213,75 @@ outcome lines, so each barrier now logs `reasoning rewrite sealed` (info) when i
   mechanical failure, but it shows that the organizer can drop short plans.
 - A short-lived `opencode run` process ends before the final step's job; the barrier semantics need a long-lived process
   (TUI, server), as intended.
+
+## Control-markup guard (2026-10-18)
+
+### Why
+
+Issue #824 reported reasoning replaced by DeepSeek DSML tool-call markup. A read-only survey of the local
+`~/.local/share/opencode/opencode.db` (181 reasoning parts containing DSML) located the paths:
+
+- Of 1,376 distilled reasoning parts, 1,331 had no envelope on either side, 10 had one only in the source, 3 only in
+  the rewrite, and 32 had DSML text on both sides. Of those 32, only 8 carried a complete envelope in both; 22 merely
+  mentioned DSML, and 2 had a complete envelope only in the rewrite.
+- The exact Issue #824 part (`prt_01a14e70412eJ40Qvq3IRU3VxB`, 2026-10-18 09:55:41) had a 13,736-character source with
+  no DSML and a 661-character rewrite that was entirely a DSML envelope.
+- Two non-distilled reasoning parts already contained a complete upstream envelope.
+
+Root cause is therefore both: the organizer emits DSML in a tool-less request and its text is adopted directly
+(output-side), and upstream providers leak envelopes into `reasoning_content` which the organizer then consumed
+(input-side). The reported case is output-side.
+
+### Scope
+
+- New `packages/core/src/session/reasoning-distillation/control-markup.ts` owns the only detector and the only rewrite
+  decision. `organize.ts` skips a source envelope and rejects a rewrite envelope; `canonical.ts` refuses to edit a
+  source envelope, gates `replaceCanonicalReasoning`, and falls back to the original pair in `reasoningForReplay` for
+  rewrites stored before this guard; core `adopt.ts` and opencode `reasoning-adoption.ts` call the same
+  `assessRewriteControl` before writing provenance.
+- No provider protocol, model selection, persisted part shape, provenance shape, public HTTP or event change. The
+  feature is not disabled, and signed, encrypted, referenced and unknown carriers stay non-editable.
+- Rejections fail open: the original reasoning remains, no `distillation` provenance is written, and logs carry only
+  the reason code (`control-markup-source` / `control-markup-output`) and existing bounded rewrite fields.
+
+### Approach
+
+The detector accepts only a structurally complete envelope: a `calls` / `tool_calls` / `function_calls` opening
+wrapper, then an `invoke` with a quoted `name`, then a `parameter` with a quoted `name`; the three markers must be
+consecutive in that order with only whitespace between them. Bars may be fullwidth or ASCII, one or two, with optional
+spaces, and the tag name is case-insensitive, covering canonical, proxy and degraded renderings. Closing tags are not
+required, because long-context output drops them. A mention of DSML, one or two markers, tags separated by prose, a
+generic XML sample without DSML, or a path, command, URL or code sample that does not itself form the complete
+structure is not an envelope and remains distillable. A complete envelope is rejected even inside a fenced block or a
+prose listing; because rejection is fail-open, this only forgoes distillation and never removes content.
+
+### Acceptance
+
+- A complete envelope in organizer output is not adopted; the original reasoning and its carrier survive with no
+  provenance. A complete envelope in the source skips the organizer with `control-markup-source` and spends no call.
+- Both adoption paths and replay use the shared decision. Replay of a pre-existing distilled text that is itself an
+  envelope returns the stored original pair. Replay of a clean rewrite whose provenance records an envelope source
+  keeps the clean rewrite and reconstructs a coherent carrier instead of falling back to the envelope.
+- Mentions, code samples that do not form the complete structure, paths, commands, URLs and truncated fragments remain
+  distillable.
+- The focused core and opencode tests pass, both package typechecks pass, and root lint reports 0 errors within the
+  warning ratchet.
+
+### Review hardening (2026-10-18)
+
+Adversarial review found that replay reused the control-markup source guard while reconstructing carrier evidence. When
+a rewrite stored before the guard had an envelope as `originalText` and clean distilled text, evidence reconstruction
+was refused and replay fell back to the envelope, which the original code would have replayed as clean text. Replay
+evidence now bypasses only the control policy (`replace(..., false)`); adoption keeps the full shared gate. Regressions
+pin both V2 and legacy replay for an envelope source with a clean rewrite, and a direct test pins the shared
+`assessRewriteControl` decision (source before output, clean text allowed).
+
+A read-only check of the 181 local reasoning parts containing DSML found no evidence for the documented detector gaps:
+no U+2581 in a tag name, no three-bar tags, and no unquoted `name` attribute. Fullwidth angle brackets, an omitted
+wrapper, zero-width separators, escaped quotes and U+2581 therefore remain recorded risks rather than expanded
+detection surface. Precedence between `control-markup-source` and `protected-carrier` affects only the log reason code.
+
+CodeQL flagged the first detector's regular expression as a polynomial-time risk on model-controlled text. Tag
+scanning is now a bounded `<([^<>]{1,4096})>` candidate followed by a linear code-unit parser with no overlapping
+repetition. A candidate body over 4096 characters cannot be an envelope header and is ignored fail-open; a regression
+pins that bound and a pathological prefix run. Detection behavior for every accepted and rejected fixture is unchanged.

@@ -2,6 +2,8 @@ export { adoptionProvenance } from "./adoption"
 export type { ReasoningReplacement } from "./adoption"
 export { assessCanonicalReasoning, reasoningForReplay, replaceCanonicalReasoning } from "./canonical"
 export type { CanonicalEditability, CanonicalProtection, CanonicalReasoning } from "./canonical"
+export { assessRewriteControl, detectToolCallEnvelope } from "./control-markup"
+export type { ControlMarkup, RewriteControlReason } from "./control-markup"
 export { declaresNoReasoning, engineOrganizerCall } from "./engine"
 export type { OrganizerEffort } from "./engine"
 export {

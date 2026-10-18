@@ -12,6 +12,15 @@ const plain = (metadata?: Record<string, unknown>) => ({
   distilled: false,
 })
 
+/** A complete provider tool-call envelope, rendered as observed in stored DeepSeek sessions (Issue #824). */
+const envelope = [
+  "<｜｜DSML｜｜ calls>",
+  '<｜｜DSML｜｜ invoke name="bash">',
+  '<｜｜DSML｜｜ parameter name="command" string="true">git status --short</｜｜DSML｜｜ parameter>',
+  "</｜｜DSML｜｜ invoke>",
+  "</｜｜DSML｜｜ calls>",
+].join("\n")
+
 describe("canonical reasoning editability", () => {
   test("edits one exact plaintext mirror without changing its shape or other fields", () => {
     const metadata = {
@@ -144,5 +153,65 @@ describe("canonical reasoning editability", () => {
     expect(
       reasoningForReplay({ text: "DISTILLED", metadata: protectedMetadata, distillation: legacy, enabled: true }),
     ).toEqual({ text: "ORIGINAL", metadata: protectedMetadata })
+  })
+
+  test("a complete tool-call envelope is never a source, rewrite, or replay text", () => {
+    expect(assessCanonicalReasoning({ ...plain(), text: envelope })).toEqual({
+      editable: false,
+      reason: "control-markup-source",
+    })
+    expect(replaceCanonicalReasoning({ ...plain(), text: envelope }, "DISTILLED")).toBeUndefined()
+    expect(replaceCanonicalReasoning(plain(), envelope)).toBeUndefined()
+
+    const saved = { originalText: "ORIGINAL", version: 2 as const, originalMetadata: {} }
+    expect(reasoningForReplay({ text: envelope, metadata: {}, distillation: saved, enabled: true })).toEqual({
+      text: "ORIGINAL",
+      metadata: {},
+    })
+    expect(
+      reasoningForReplay({ text: envelope, metadata: {}, distillation: { originalText: "ORIGINAL" }, enabled: true }),
+    ).toEqual({ text: "ORIGINAL", metadata: {} })
+    // Clean distilled text keeps replaying as distilled.
+    expect(reasoningForReplay({ text: "DISTILLED", metadata: {}, distillation: saved, enabled: true })).toEqual({
+      text: "DISTILLED",
+      metadata: {},
+    })
+    // A mere mention is not contamination.
+    expect(
+      reasoningForReplay({
+        text: "讨论了 <｜DSML｜tool_calls> 标记",
+        metadata: {},
+        distillation: saved,
+        enabled: true,
+      }),
+    ).toEqual({ text: "讨论了 <｜DSML｜tool_calls> 标记", metadata: {} })
+  })
+
+  test("replays a clean rewrite when the stored original was a control envelope", () => {
+    const originalMetadata = {
+      relay: { reasoning_details: [{ type: "reasoning.text", text: envelope, format: "unknown", index: 0 }] },
+    }
+    const metadata = {
+      relay: { reasoning_details: [{ type: "reasoning.text", text: "DISTILLED", format: "unknown", index: 0 }] },
+    }
+    // A V2 adoption that recorded the envelope as its source still has a clean stored rewrite; its carrier mirrors
+    // that rewrite, so the clean pair must replay instead of falling back to the envelope.
+    expect(
+      reasoningForReplay({
+        text: "DISTILLED",
+        metadata,
+        distillation: { originalText: envelope, version: 2, originalMetadata },
+        enabled: true,
+      }),
+    ).toEqual({ text: "DISTILLED", metadata })
+    // Legacy adoption changed only the text, so replay reconstructs the mirror from the envelope source.
+    expect(
+      reasoningForReplay({
+        text: "DISTILLED",
+        metadata: originalMetadata,
+        distillation: { originalText: envelope },
+        enabled: true,
+      }),
+    ).toEqual({ text: "DISTILLED", metadata })
   })
 })

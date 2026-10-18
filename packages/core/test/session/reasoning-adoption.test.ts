@@ -26,6 +26,15 @@ const it = testEffect(
 )
 const model = Model.make({ id: "model", provider: "provider", route: OpenAIChat.route })
 
+/** A complete provider tool-call envelope, rendered as observed in stored DeepSeek sessions (Issue #824). */
+const envelope = [
+  "<｜｜DSML｜｜ calls>",
+  '<｜｜DSML｜｜ invoke name="bash">',
+  '<｜｜DSML｜｜ parameter name="command" string="true">git status --short</｜｜DSML｜｜ parameter>',
+  "</｜｜DSML｜｜ invoke>",
+  "</｜｜DSML｜｜ calls>",
+].join("\n")
+
 const seed = Effect.fnUntraced(function* () {
   const { db } = yield* Database.Service
   const events = yield* EventV2.Service
@@ -189,6 +198,15 @@ describe("durable reasoning adoption", () => {
     Effect.gen(function* () {
       const { db, store, message, adopt } = yield* seed()
       expect(yield* adopt("r1", "first adopted", { canAdopt: Effect.succeed(false) })).toBe(false)
+      expect((yield* store.message(message.id))?.message).toEqual(message)
+      expect(yield* db.select().from(EventTable).all().pipe(Effect.orDie)).toEqual([])
+    }),
+  )
+
+  it.effect("rejects a distilled tool-call envelope, keeps the source, and writes no provenance", () =>
+    Effect.gen(function* () {
+      const { db, store, message, adopt } = yield* seed()
+      expect(yield* adopt("r1", envelope)).toBe(false)
       expect((yield* store.message(message.id))?.message).toEqual(message)
       expect(yield* db.select().from(EventTable).all().pipe(Effect.orDie)).toEqual([])
     }),
