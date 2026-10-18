@@ -280,3 +280,8 @@ A read-only check of the 181 local reasoning parts containing DSML found no evid
 no U+2581 in a tag name, no three-bar tags, and no unquoted `name` attribute. Fullwidth angle brackets, an omitted
 wrapper, zero-width separators, escaped quotes and U+2581 therefore remain recorded risks rather than expanded
 detection surface. Precedence between `control-markup-source` and `protected-carrier` affects only the log reason code.
+
+CodeQL flagged the first detector's regular expression as a polynomial-time risk on model-controlled text. Tag
+scanning is now a bounded `<([^<>]{1,4096})>` candidate followed by a linear code-unit parser with no overlapping
+repetition. A candidate body over 4096 characters cannot be an envelope header and is ignored fail-open; a regression
+pins that bound and a pathological prefix run. Detection behavior for every accepted and rejected fixture is unchanged.

@@ -105,3 +105,10 @@ test("the shared rewrite decision reports the side that carried the envelope", (
   expect(assessRewriteControl(observed, observed)).toBe("control-markup-source")
   expect(assessRewriteControl("clean source", "clean rewrite")).toBeUndefined()
 })
+
+test("bounds tag scanning without accepting a malformed or over-long header", () => {
+  // A body beyond the bound cannot be a provider envelope header; rejection here is fail-open.
+  expect(detectToolCallEnvelope(`<｜DSML｜calls ${"x".repeat(4096)}>`)).toBeUndefined()
+  // A pathological run of tag prefixes is scanned once per candidate and rejected.
+  expect(detectToolCallEnvelope("<\t".repeat(50_000))).toBeUndefined()
+})

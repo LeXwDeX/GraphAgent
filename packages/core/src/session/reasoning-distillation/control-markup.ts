@@ -9,23 +9,74 @@
  */
 export type ControlMarkup = "tool-call-envelope"
 
-/** DSML tags use fullwidth bars; proxies and degraded generations render one bar, two bars, or ASCII pipes. */
-const TAG = /<\s*(\/)?\s*[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*([A-Za-z_][A-Za-z0-9_-]*)?([^>]*)>/gi
+/**
+ * The outer pattern is bounded and has no overlapping repetition, so scanning model text stays linear. A real opening
+ * marker is short; a `<...>` body over 4096 characters cannot be an envelope header and is ignored without scanning it.
+ */
+const TAG = /<([^<>]{1,4096})>/g
 const NAMED = /\bname\s*=\s*["']/i
 
 type Marker = Readonly<{ close: boolean; name: string; named: boolean; start: number; end: number }>
+
+/** ECMAScript `\s`, checked by code unit so the tag parser never backtracks. */
+const isSpace = (code: number) =>
+  (code >= 9 && code <= 13) ||
+  code === 32 ||
+  code === 0xa0 ||
+  code === 0x1680 ||
+  (code >= 0x2000 && code <= 0x200a) ||
+  code === 0x2028 ||
+  code === 0x2029 ||
+  code === 0x202f ||
+  code === 0x205f ||
+  code === 0x3000 ||
+  code === 0xfeff
+
+const isNameStart = (code: number) => (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95
+const isNamePart = (code: number) => isNameStart(code) || (code >= 48 && code <= 57) || code === 45
+
+const skipSpace = (text: string, at: number) => {
+  let i = at
+  while (i < text.length && isSpace(text.charCodeAt(i))) i++
+  return i
+}
+
+/** DSML tags use fullwidth bars; proxies and degraded generations render one bar, two bars, or ASCII pipes. */
+const skipBars = (text: string, at: number) => {
+  let i = at
+  while (i < text.length && (text[i] === "｜" || text[i] === "|")) i++
+  const count = i - at
+  return count === 1 || count === 2 ? i : -1
+}
+
+const parseMarker = (body: string, start: number, end: number): Marker | undefined => {
+  let i = skipSpace(body, 0)
+  const close = body[i] === "/"
+  if (close) i = skipSpace(body, i + 1)
+  i = skipBars(body, i)
+  if (i < 0) return undefined
+  i = skipSpace(body, i)
+  if (body.slice(i, i + 4).toLowerCase() !== "dsml") return undefined
+  i = skipSpace(body, i + 4)
+  i = skipBars(body, i)
+  if (i < 0) return undefined
+  i = skipSpace(body, i)
+  let name = ""
+  if (i < body.length && isNameStart(body.charCodeAt(i))) {
+    const from = i
+    i++
+    while (i < body.length && isNamePart(body.charCodeAt(i))) i++
+    name = body.slice(from, i).toLowerCase().replace(/-/g, "_")
+  }
+  return { close, name, named: NAMED.test(body.slice(i)), start, end }
+}
 
 const markers = (text: string): Marker[] => {
   const found: Marker[] = []
   for (const match of text.matchAll(TAG)) {
     const start = match.index ?? 0
-    found.push({
-      close: match[1] === "/",
-      name: (match[2] ?? "").toLowerCase().replace(/-/g, "_"),
-      named: NAMED.test(match[3] ?? ""),
-      start,
-      end: start + match[0].length,
-    })
+    const parsed = parseMarker(match[1], start, start + match[0].length)
+    if (parsed) found.push(parsed)
   }
   return found
 }
