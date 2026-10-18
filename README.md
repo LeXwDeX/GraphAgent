@@ -142,8 +142,8 @@ Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreT
 - **Context folding**: repeated tool outputs are folded in the outbound request while the stored history stays
   canonical (`compaction.dynamic`, `compaction.prune`; `OPENCODE_DISABLE_PRUNE=1` disables pruning).
 - **Bounded tool use**: tool output is size-bounded, and `maxToolCalls` caps tool calls per user input.
-- **Compaction**: automatic summarization of long sessions (`compaction.auto`, `compaction.keep.tokens`,
-  `compaction.buffer`, `compaction.max_context_tokens`).
+- **Compaction**: automatic summarization of long sessions at the model's usable context limit (`compaction.auto`,
+  `compaction.keep.tokens`, `compaction.buffer`).
 
 Which of these apply depends on configuration, provider support and request purpose.
 

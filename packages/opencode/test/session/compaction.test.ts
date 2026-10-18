@@ -409,98 +409,78 @@ function autocontinue(enabled: boolean) {
 
 describe("session.compaction.isOverflow", () => {
   it.live(
-    "compacts at the default ceiling on a larger model window",
+    "compacts at the model's usable limit on a larger window",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 1_000_000, output: 32_000 })
-        const tokens = { input: 249_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        const tokens = { input: 967_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
-        expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 250_000 }, model })).toBe(true)
+        expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 968_000 }, model })).toBe(true)
       }),
     ),
   )
 
   it.live(
-    "accepts a larger configured ceiling without exceeding the model limit",
+    "ignores a removed max_context_tokens setting",
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {
           const compact = yield* SessionCompaction.Service
-          const largeModel = createModel({ context: 1_000_000, output: 32_000 })
-          const smallModel = createModel({ context: 300_000, output: 32_000 })
-          const tokens = { input: 300_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-          expect(yield* compact.isOverflow({ tokens, model: largeModel })).toBe(false)
-          expect(yield* compact.isOverflow({ tokens, model: smallModel })).toBe(true)
-          expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 400_000 }, model: largeModel })).toBe(true)
+          const model = createModel({ context: 1_000_000, output: 32_000 })
+          const tokens = { input: 550_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+          expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+          expect(yield* compact.isOverflow({ tokens: { ...tokens, input: 968_000 }, model })).toBe(true)
         }),
-      { config: { compaction: { max_context_tokens: 400_000 } } },
+      {
+        // A configuration that still carries the removed field must keep working, and the field has no effect.
+        // The key is intentionally outside the schema type; decoding proves the legacy object still loads.
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+        config: Schema.decodeUnknownSync(ConfigV1.Info)({
+          compaction: { max_context_tokens: 550_000 },
+        }) as ConfigV1.Info,
+      },
     ),
   )
 
   it.live(
     "uses the current model's smaller limit when switching models",
-    provideTmpdirInstance(
-      () =>
-        Effect.gen(function* () {
-          const compact = yield* SessionCompaction.Service
-          const tokens = { input: 85_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-          const largeModel = createModel({ context: 1_000_000, output: 32_000 })
-          const smallModel = createModel({ context: 100_000, output: 32_000 })
-          expect(yield* compact.isOverflow({ tokens, model: largeModel })).toBe(false)
-          expect(yield* compact.isOverflow({ tokens, model: smallModel })).toBe(true)
-        }),
-      { config: { compaction: { max_context_tokens: 250_000 } } },
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const tokens = { input: 85_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        const largeModel = createModel({ context: 1_000_000, output: 32_000 })
+        const smallModel = createModel({ context: 100_000, output: 32_000 })
+        expect(yield* compact.isOverflow({ tokens, model: largeModel })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens, model: smallModel })).toBe(true)
+      }),
     ),
   )
 
   it.live(
-    "uses a fresh active-history estimate when prior model usage undercounts the switched model",
-    provideTmpdirInstance(
-      () =>
-        Effect.gen(function* () {
-          const compact = yield* SessionCompaction.Service
-          const model = createModel({ context: 1_000_000, output: 32_000 })
-          const tokens = { input: 190_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-          expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
-          expect(yield* compact.isOverflow({ tokens, model, estimatedInputTokens: 250_000 })).toBe(true)
-        }),
-      { config: { compaction: { max_context_tokens: 250_000 } } },
+    "uses a fresh active-history estimate against the model limit",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 1_000_000, output: 32_000 })
+        const tokens = { input: 900_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens, model, estimatedInputTokens: 968_000 })).toBe(true)
+      }),
     ),
   )
 
   it.live(
-    "honors the model limit while the proactive ceiling is cooling down",
+    "does not compact when automatic compaction is disabled",
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {
           const compact = yield* SessionCompaction.Service
-          const model = createModel({ context: 100_000, output: 10_000 })
-          const currentHistoryTokens = 100_000
-          expect(
-            yield* compact.isOverflow({
-              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-              model,
-              estimatedInputTokens: currentHistoryTokens,
-              threshold: "model",
-            }),
-          ).toBe(true)
-        }),
-      { config: { compaction: { max_context_tokens: 250_000 } } },
-    ),
-  )
-
-  it.live(
-    "does not compact at the configured ceiling when automatic compaction is disabled",
-    provideTmpdirInstance(
-      () =>
-        Effect.gen(function* () {
-          const compact = yield* SessionCompaction.Service
-          const model = createModel({ context: 1_000_000, output: 32_000 })
-          const tokens = { input: 300_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+          const model = createModel({ context: 100_000, output: 32_000 })
+          const tokens = { input: 90_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
           expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
         }),
-      { config: { compaction: { auto: false, max_context_tokens: 250_000 } } },
+      { config: { compaction: { auto: false } } },
     ),
   )
 
@@ -1546,7 +1526,6 @@ describe("session.compaction.process", () => {
                   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
                   model: main,
                   estimatedInputTokens: Token.estimate(JSON.stringify(wire)),
-                  threshold: "model",
                 }),
               ).toBe(false)
             }).pipe(

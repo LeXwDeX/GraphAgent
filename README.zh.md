@@ -104,7 +104,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 - **上下文折叠**：在发出的请求里折叠重复的工具输出，存储的历史保持原样（`compaction.dynamic`、`compaction.prune`；`OPENCODE_DISABLE_PRUNE=1` 关闭裁剪）。
 - **有界的工具使用**：工具输出有大小上限，`maxToolCalls` 限制每次用户输入的工具调用次数。
-- **压缩**：长会话自动摘要（`compaction.auto`、`compaction.keep.tokens`、`compaction.buffer`、`compaction.max_context_tokens`）。
+- **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.keep.tokens`、`compaction.buffer`）。
 
 具体哪些生效取决于配置、服务商支持和请求用途。
 

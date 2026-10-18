@@ -23,10 +23,10 @@ placeholder and are never restored, used as duplicate witnesses, or rewritten by
 `OPENCODE_DISABLE_AUTOCOMPACT` remains independent and controls only automatic full compaction. No settings page was
 added because this repository has no existing context-folding settings surface.
 
-Automatic full compaction now starts when the preceding response reaches 250,000 tokens, or sooner if the current
-model's usable input limit is smaller. Set `compaction.max_context_tokens` to a positive integer to change the ceiling;
-for example, `{"compaction":{"max_context_tokens":400000}}`. `compaction.auto: false` still disables this trigger.
-The check runs between model requests, so a single response may exceed the ceiling before compaction begins. On the
+Automatic full compaction starts when the context reaches the current model's usable input limit; there is no separate
+configured ceiling. The former `compaction.max_context_tokens` setting was removed, and a value left in an existing
+configuration is ignored. `compaction.auto: false` still disables this trigger.
+The check runs between model requests, so a single response may exceed the limit before compaction begins. On the
 same model, it combines usage reported by the previous response with newly appended user text and newly completed,
 unique textual tool results. Exact repeated tool results remain available to dynamic folding before full compaction. On
 a model switch, it estimates the active text history against the new model's limit. Media payloads are excluded from
