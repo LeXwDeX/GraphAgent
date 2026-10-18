@@ -15,6 +15,15 @@ const slot: OrganizeSlot = {
   text: "重复推测：也许是 A，也许是 B。再看看，可能有消息。检查日志后确认原因，最终决定采用方案 A，并保留回滚步骤。",
 }
 
+/** A complete provider tool-call envelope, rendered as observed in stored DeepSeek sessions (Issue #824). */
+const envelope = [
+  "<｜｜DSML｜｜ calls>",
+  '<｜｜DSML｜｜ invoke name="bash">',
+  '<｜｜DSML｜｜ parameter name="command" string="true">git status --short && git log --oneline -6</｜｜DSML｜｜ parameter>',
+  "</｜｜DSML｜｜ invoke>",
+  "</｜｜DSML｜｜ calls>",
+].join("\n")
+
 /** Pure filler: no concrete content, so a noise verdict on it is trusted. */
 const filler = {
   zh: "嗯……让我想想。再想一下。不，这样说不好，换个说法。算了，刚才只是口头填充。\n".repeat(3),
@@ -177,5 +186,44 @@ describe("single-part reasoning organizer", () => {
     const longer = await organizeReasoning({ slot, callModel: async () => ({ text: `${slot.text}补充。` }) })
     expect(longer).toMatchObject({ status: "skipped", reason: "no-savings" })
     expect(longer.replacement).toBeUndefined()
+  })
+
+  test("a source containing a complete tool-call envelope skips before the model call", async () => {
+    let calls = 0
+    const result = await organizeReasoning({
+      slot: { ...slot, text: `${envelope}\n${slot.text}` },
+      callModel: async () => {
+        calls++
+        return { text: "不应调用模型。" }
+      },
+    })
+    expect(result).toMatchObject({ status: "skipped", reason: "control-markup-source", called: false })
+    expect(result.replacement).toBeUndefined()
+    expect(calls).toBe(0)
+  })
+
+  test("a distilled envelope is rejected and the original reasoning retained", async () => {
+    const text = `${slot.text}\n${"检查背景与约束。".repeat(120)}`
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async () => ({ text: envelope, finishReason: "stop" }),
+    })
+    expect(result).toMatchObject({
+      status: "skipped",
+      reason: "control-markup-output",
+      called: true,
+      output: envelope,
+    })
+    expect(result.replacement).toBeUndefined()
+  })
+
+  test("a DSML mention or an ordinary code example still organizes", async () => {
+    const text = `${slot.text}\nDeepSeek 使用 <｜DSML｜tool_calls> 标记；参考 https://example.com/DSML；运行 \`rg DSML\`。`
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async () => ({ text: "最终决定采用方案 A，并保留回滚步骤。", finishReason: "stop" }),
+    })
+    expect(result.status).toBe("organized")
+    expect(result.replacement?.after).toBe("最终决定采用方案 A，并保留回滚步骤。")
   })
 })

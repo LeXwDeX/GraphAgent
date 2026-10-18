@@ -1,4 +1,5 @@
 import type { ReasoningReplacement } from "./adoption"
+import { detectToolCallEnvelope } from "./control-markup"
 import { ReasoningDistillationPolicy } from "./policy"
 import { Token } from "../../util/token"
 
@@ -14,6 +15,10 @@ export type OrganizeReason =
   | "below-minimum"
   | "work-limit"
   | "invalid-output"
+  /** The source carries a complete provider tool-call envelope; never organizer input. */
+  | "control-markup-source"
+  /** The rewrite itself is a tool-call envelope; fail open to the original. */
+  | "control-markup-output"
   /** The model declared the part noise, but the source carries concrete content. */
   | "rejected-noise-verdict"
   | "truncated"
@@ -102,6 +107,8 @@ export async function organizeReasoning(
   if (!slot.text.trim()) return skipped("empty-input")
   if (Token.estimateReserve(slot.text) < ReasoningDistillationPolicy.tokens.minimumInputTokens)
     return skipped("below-minimum")
+  // A leaked tool call is not distillable reasoning; skip before spending a model call.
+  if (detectToolCallEnvelope(slot.text)) return skipped("control-markup-source")
   const language = input.language ?? "zh"
   const prompt = organizePrompt(slot.text, language)
   if (Token.estimateReserve(prompt) > ReasoningDistillationPolicy.tokens.maxInputTokens) return skipped("work-limit")
@@ -124,6 +131,8 @@ export async function organizeReasoning(
   parseMs = performance.now() - parseStarted
   // Only the explicit marker may declare a part noise; an empty body is a model failure, not a noise verdict.
   if (!raw) return skipped("invalid-output")
+  // An organizer that emits a tool call must not have it adopted as reasoning; keep the original.
+  if (detectToolCallEnvelope(raw)) return skipped("control-markup-output")
   // A marker mixed with other text is neither a verdict nor a clean body; adopting it would store the marker.
   if (raw !== NO_USEFUL_REASONING && raw.includes(NO_USEFUL_REASONING)) return skipped("invalid-output")
   // Small models return the marker for informative parts, so the verdict is trusted only for contentless input.

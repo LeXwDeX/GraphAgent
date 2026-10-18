@@ -12,6 +12,7 @@ import {
   type ReasoningReplacement,
 } from "@opencode-ai/core/session/reasoning-distillation/adoption"
 import { replaceCanonicalReasoning } from "@opencode-ai/core/session/reasoning-distillation/canonical"
+import { assessRewriteControl } from "@opencode-ai/core/session/reasoning-distillation/control-markup"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "./session"
 import type { SessionID } from "./schema"
@@ -49,6 +50,13 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
     replacement.after === replacement.before
   )
     return undefined
+  const control = assessRewriteControl(part.text, replacement.after)
+  if (control) {
+    yield* Effect.logInfo("reasoning adoption rejected; retaining current history", {
+      "reasoning_distillation.reason": control,
+    })
+    return undefined
+  }
   const source = { text: part.text, metadata: part.metadata, settled: true, distilled: false }
   const edited = replaceCanonicalReasoning(source, replacement.after)
   if (!edited) return undefined

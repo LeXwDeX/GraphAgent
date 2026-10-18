@@ -1,5 +1,6 @@
 import { ReasoningCarrier } from "@opencode-ai/llm"
 import { Hash } from "../../util/hash"
+import { assessRewriteControl, detectToolCallEnvelope } from "./control-markup"
 
 /** Pure editability contract for a persisted reasoning part. */
 export type CanonicalReasoning = Readonly<{
@@ -13,6 +14,7 @@ export type CanonicalProtection =
   | "empty-source"
   | "unsettled-source"
   | "already-distilled"
+  | "control-markup-source"
   | "protected-carrier"
   | "unknown-carrier"
   | "metadata-mismatch"
@@ -32,6 +34,8 @@ export const assessCanonicalReasoning = (source: CanonicalReasoning): CanonicalE
   if (!source.text.trim()) return { editable: false, reason: "empty-source" }
   if (!source.settled) return { editable: false, reason: "unsettled-source" }
   if (source.distilled) return { editable: false, reason: "already-distilled" }
+  // A leaked provider tool call is never organizer input; the organizer would copy it or waste the call.
+  if (detectToolCallEnvelope(source.text)) return { editable: false, reason: "control-markup-source" }
   const carrier = ReasoningCarrier.classify(source.metadata, source.text)
   if (carrier.kind === "plain") return { editable: true, aliasPaths: [] }
   if (carrier.kind === "mirror") return { editable: true, aliasPaths: carrier.paths }
@@ -48,6 +52,8 @@ export const replaceCanonicalReasoning = (
   | undefined => {
   const assessment = assessCanonicalReasoning(source)
   if (!assessment.editable || after === source.text) return undefined
+  // The shared rewrite gate: both adoption paths and replay reach this decision through this function.
+  if (assessRewriteControl(source.text, after)) return undefined
   if (source.metadata === undefined || Object.keys(source.metadata).length === 0)
     return { text: after, metadata: source.metadata }
   let copy: Record<string, unknown>
@@ -89,6 +95,12 @@ export const reasoningForReplay = (input: {
 }): Readonly<{ text: string; metadata?: Record<string, unknown> }> => {
   const saved = input.distillation
   if (!saved) return { text: input.text, metadata: input.metadata }
+  // A distilled text written before this guard existed can still hold a control envelope; never replay it. Fail open
+  // to the known original pair instead of emitting a tool call as thinking.
+  if (input.enabled && detectToolCallEnvelope(input.text))
+    return saved.version === 2
+      ? { text: saved.originalText, metadata: saved.originalMetadata ?? input.metadata }
+      : { text: saved.originalText, metadata: input.metadata }
   if (input.enabled && saved.version === 2) {
     // A V2 provenance must describe the stored original. If the mirror or fingerprint no longer matches, replay the
     // known original pair instead of sending contradictory text and metadata.

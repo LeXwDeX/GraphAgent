@@ -9,6 +9,7 @@ import { SessionSchema } from "../schema"
 import { SessionMessageTable, SessionTable } from "../sql"
 import { adoptionProvenance, type ReasoningReplacement } from "./adoption"
 import { replaceCanonicalReasoning } from "./canonical"
+import { assessRewriteControl } from "./control-markup"
 
 /** A normal adoption rejection. Database/schema defects are not wrapped and must propagate. */
 class AdoptionRejected extends Error {}
@@ -44,6 +45,13 @@ export const adoptReasoning = Effect.fn("CoreReasoningDistillation.adopt")(funct
     replacement.after === replacement.before
   )
     return false
+  const control = assessRewriteControl(part.text, replacement.after)
+  if (control) {
+    yield* Effect.logInfo("reasoning adoption rejected; retaining current history", {
+      "reasoning_distillation.reason": control,
+    })
+    return false
+  }
   const source = { text: part.text, metadata: part.providerMetadata, settled: true, distilled: false }
   const edited = replaceCanonicalReasoning(source, replacement.after)
   if (!edited) return false

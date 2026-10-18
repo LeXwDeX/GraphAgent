@@ -46,6 +46,15 @@ const replacement = "DISTILLED canonical reasoning with the same source identity
 const detail = { type: "reasoning.text", text: source, format: "unknown", index: 0 }
 const metadata = { openrouter: { reasoning_details: [detail] } }
 
+/** The same complete envelope fixture as the core adoption test; both adoption paths must agree. */
+const envelope = [
+  "<｜｜DSML｜｜ calls>",
+  '<｜｜DSML｜｜ invoke name="bash">',
+  '<｜｜DSML｜｜ parameter name="command" string="true">git status --short</｜｜DSML｜｜ parameter>',
+  "</｜｜DSML｜｜ invoke>",
+  "</｜｜DSML｜｜ calls>",
+].join("\n")
+
 for (const output of [replacement, NO_USEFUL_REASONING_TEXT.zh])
   it.instance(
     `replays an adopted persistent reasoning object as one coherent pair (${output === replacement ? "content" : "noise"})`,
@@ -171,3 +180,94 @@ for (const output of [replacement, NO_USEFUL_REASONING_TEXT.zh])
         })
       }),
   )
+
+it.instance("rejects a distilled tool-call envelope and replays the original reasoning", () =>
+  Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Rejected DSML adoption" })
+    const providerID = ProviderV2.ID.make("openrouter")
+    const modelID = ModelV2.ID.make("stealth/space-bunny-alpha")
+    const userID = MessageID.ascending()
+    const assistantID = MessageID.ascending()
+    const user: SessionV1.User = {
+      id: userID,
+      sessionID: chat.id,
+      role: "user",
+      time: { created: 1 },
+      agent: "build",
+      model: { providerID, modelID },
+    }
+    const assistant: SessionV1.Assistant = {
+      id: assistantID,
+      sessionID: chat.id,
+      parentID: userID,
+      role: "assistant",
+      agent: "build",
+      modelID,
+      providerID,
+      mode: "build",
+      path: { cwd: chat.directory, root: chat.directory },
+      time: { created: 2, completed: 3 },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    }
+    const part: SessionV1.ReasoningPart = {
+      id: PartID.ascending(),
+      sessionID: chat.id,
+      messageID: assistantID,
+      type: "reasoning",
+      text: source,
+      metadata,
+      time: { start: 2, end: 3 },
+    }
+    yield* sessions.updateMessage(user)
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      sessionID: chat.id,
+      messageID: userID,
+      type: "text",
+      text: "Explain the synthetic ledger",
+      time: { start: 1, end: 1 },
+    })
+    yield* sessions.updateMessage(assistant)
+    yield* sessions.updatePart(part)
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      sessionID: chat.id,
+      messageID: assistantID,
+      type: "text",
+      text: "Ledger answer",
+      time: { start: 3, end: 3 },
+    })
+
+    const stored = (yield* sessions.messages({ sessionID: chat.id }))
+      .flatMap((message) => message.parts)
+      .find((item) => item.id === part.id)
+    if (stored?.type !== "reasoning") throw new Error("missing stored reasoning")
+
+    const adopted = yield* adoptReasoning({
+      sessionID: chat.id,
+      part: stored,
+      replacement: { messageID: assistantID, partID: part.id, before: source, after: envelope },
+      canAdopt: Effect.succeed(true),
+    })
+    expect(adopted).toBeUndefined()
+
+    const reloaded = yield* sessions.messages({ sessionID: chat.id })
+    const saved = reloaded.flatMap((message) => message.parts).find((item) => item.id === part.id)
+    expect(saved).toMatchObject({ type: "reasoning", text: source, metadata })
+    expect(saved?.type === "reasoning" ? saved.distillation : undefined).toBeUndefined()
+
+    const model = ProviderTest.model({
+      id: modelID,
+      providerID,
+      api: { id: modelID, npm: "@openrouter/ai-sdk-provider", url: "https://openrouter.ai/api/v1" },
+    })
+    const replay = yield* MessageV2.toModelMessagesEffect(reloaded, model, { reasoningDistillationEnabled: true })
+    const reasoning = replay
+      .flatMap((message) => (message.role !== "assistant" || !Array.isArray(message.content) ? [] : message.content))
+      .filter((content) => content.type === "reasoning")
+    expect(reasoning).toHaveLength(1)
+    expect(reasoning[0]).toMatchObject({ text: source })
+  }),
+)
