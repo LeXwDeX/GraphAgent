@@ -145,9 +145,8 @@ export interface Interface {
     tokens: SessionV1.Assistant["tokens"]
     model: Provider.Model
     estimatedInputTokens?: number
-    threshold?: "auto" | "model"
   }) => Effect.Effect<boolean>
-  /** "declined": a PreCompact hook vetoed a proactive compaction; the caller continues uncompacted. */
+  /** "declined": a PreCompact hook vetoed an automatic compaction; the caller continues uncompacted. */
   readonly process: (input: {
     parentID: MessageID
     messages: SessionV1.WithParts[]
@@ -194,7 +193,6 @@ export const layer = Layer.effect(
       tokens: SessionV1.Assistant["tokens"]
       model: Provider.Model
       estimatedInputTokens?: number
-      threshold?: "auto" | "model"
     }) {
       const cfg = yield* config.get()
       const request = {
@@ -202,7 +200,6 @@ export const layer = Layer.effect(
         tokens: input.tokens,
         model: input.model,
         estimatedInputTokens: input.estimatedInputTokens,
-        threshold: input.threshold,
         outputTokenMax: flags.outputTokenMax,
       }
       const triggered = overflow(request)
@@ -212,7 +209,6 @@ export const layer = Layer.effect(
           triggerTokens: triggerLimit(request),
           measuredTokens: measured(input.tokens),
           estimatedInputTokens: input.estimatedInputTokens,
-          thresholdMode: input.threshold ?? "auto",
         })
       }
       return triggered

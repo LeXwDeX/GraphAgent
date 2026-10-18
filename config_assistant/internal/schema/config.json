@@ -1316,12 +1316,6 @@
               "type": "integer",
               "maximum": 9007199254740991,
               "description": "Token buffer for compaction. Leaves enough window to avoid overflow during compaction."
-            },
-            "max_context_tokens": {
-              "exclusiveMinimum": 0,
-              "type": "integer",
-              "maximum": 9007199254740991,
-              "description": "Trigger automatic full compaction once the previous response reaches this token count (default: 250000), even when the model has a larger context window. The model's smaller usable limit still takes precedence."
             }
           },
           "additionalProperties": false

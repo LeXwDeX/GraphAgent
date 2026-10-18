@@ -2530,10 +2530,6 @@ export const layer = Layer.effect(
         let turnStopped = false
         let agentInputBlocked = false
         let agentBoundaryApproved = false
-        let nextAutoCompactionMinimum: number | undefined
-        // A PreCompact veto of proactive compaction holds for the rest of this run; do not ask again each step.
-        let autoCompactionDeclined = false
-        let awaitingPostCompactionUsage = false
         let consecutiveAutoCompactions = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
         const requestOverheadBySession = yield* InstanceState.get(requestOverheads)
@@ -2928,7 +2924,6 @@ export const layer = Layer.effect(
               overflow: task.overflow,
             })
             if (result === "stop") break
-            if (result === "declined") autoCompactionDeclined = true
             continue
           }
 
@@ -2983,37 +2978,16 @@ export const layer = Layer.effect(
             // overflow recovery path handles it. This also covers a pending compaction task from an earlier
             // loop, whose summary would otherwise re-trigger compaction immediately.
             const overflowEstimate = lastFinished.summary === true ? estimatedTextTokens : estimatedInputTokens
-            if (lastFinished.summary === true) awaitingPostCompactionUsage = true
-            const effectiveTokens = Math.max(observedTokens, estimatedInputTokens)
-            const afterCompaction = lastFinished.summary !== true && awaitingPostCompactionUsage
-            if (afterCompaction) {
-              nextAutoCompactionMinimum = effectiveTokens + 25_000
-              awaitingPostCompactionUsage = false
-            }
-            const enoughNewContext =
-              nextAutoCompactionMinimum === undefined || effectiveTokens >= nextAutoCompactionMinimum
             const tokens =
               lastFinished.summary === true || switchedModel
                 ? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
                 : lastRequestTokens
-            const hardOverflow = yield* compaction.isOverflow({
+            const overflow = yield* compaction.isOverflow({
               tokens,
               model,
               estimatedInputTokens: overflowEstimate,
-              threshold: "model",
             })
-            if (afterCompaction && !hardOverflow) consecutiveAutoCompactions = 0
-            const proactiveOverflow =
-              !hardOverflow &&
-              lastFinished.summary !== true &&
-              enoughNewContext &&
-              (yield* compaction.isOverflow({
-                tokens,
-                model,
-                estimatedInputTokens: overflowEstimate,
-                threshold: "auto",
-              }))
-            if (hardOverflow || (proactiveOverflow && !autoCompactionDeclined)) {
+            if (overflow) {
               if (consecutiveAutoCompactions >= 3) {
                 const error = new SessionV1.ContextOverflowError({
                   message: "Context still exceeds the model limit after repeated automatic compaction",
@@ -3025,6 +2999,7 @@ export const layer = Layer.effect(
               yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
               continue
             }
+            consecutiveAutoCompactions = 0
           }
 
           const agent = yield* agents.get(lastUser.agent)
@@ -3363,7 +3338,6 @@ export const layer = Layer.effect(
                 cfg: yield* config.get(),
                 model,
                 outputTokenMax: flags.outputTokenMax,
-                threshold: "model",
               })
               if (continuationEstimate >= continuationLimit) {
                 yield* Effect.logWarning("reasoning sync continuation overflow; compacting instead", {

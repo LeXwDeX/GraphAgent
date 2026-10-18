@@ -7,7 +7,6 @@ import type { MessageV2 } from "./message-v2"
 import { Token } from "@/util/token"
 
 const COMPACTION_BUFFER = 20_000
-const DEFAULT_AUTO_COMPACTION_CEILING = 250_000
 
 export function measured(tokens: SessionV1.Assistant["tokens"]) {
   return tokens.total || tokens.input + tokens.output + tokens.cache.read + tokens.cache.write
@@ -25,15 +24,9 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
     : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
 }
 
-export function triggerLimit(input: {
-  cfg: ConfigV1.Info
-  model: Provider.Model
-  outputTokenMax?: number
-  threshold?: "auto" | "model"
-}) {
-  const modelLimit = usable(input)
-  const configuredLimit = input.cfg.compaction?.max_context_tokens ?? DEFAULT_AUTO_COMPACTION_CEILING
-  return input.threshold === "model" ? modelLimit : Math.min(modelLimit, configuredLimit)
+/** Automatic compaction uses the model's usable context window and nothing else. */
+export function triggerLimit(input: { cfg: ConfigV1.Info; model: Provider.Model; outputTokenMax?: number }) {
+  return usable(input)
 }
 
 export function isOverflow(input: {
@@ -42,7 +35,6 @@ export function isOverflow(input: {
   model: Provider.Model
   outputTokenMax?: number
   estimatedInputTokens?: number
-  threshold?: "auto" | "model"
 }) {
   if (input.cfg.compaction?.auto === false) return false
   if (input.model.limit.context === 0) return false

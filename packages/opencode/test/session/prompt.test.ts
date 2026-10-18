@@ -1551,7 +1551,7 @@ it.instance("compacts a large new user message before sending it on the same mod
       const config = providerCfg(url)
       return {
         ...config,
-        compaction: { auto: true, max_context_tokens: 25_000 },
+        compaction: { auto: true },
         provider: {
           ...config.provider,
           test: {
@@ -1560,7 +1560,7 @@ it.instance("compacts a large new user message before sending it on the same mod
               ...config.provider.test.models,
               "test-model": {
                 ...config.provider.test.models["test-model"],
-                limit: { context: 1_000_000, output: 10_000 },
+                limit: { context: 30_000, output: 10_000 },
               },
             },
           },
@@ -1572,8 +1572,8 @@ it.instance("compacts a large new user message before sending it on the same mod
     const chat = yield* sessions.create({ title: "Proactive compaction" })
     yield* seed(chat.id, { finish: "stop" })
     yield* user(chat.id, "large request ".repeat(10_000))
-    // An ineffective summary must not immediately re-trigger the same proactive compaction.
-    yield* llm.text("long summary ".repeat(10_000))
+    // The summary fits the model's usable window, so the next request is not compacted again.
+    yield* llm.text("long summary ".repeat(200))
     yield* llm.text("continued answer")
 
     yield* prompt.loop({ sessionID: chat.id })
@@ -1590,7 +1590,7 @@ it.instance("compacts a large unique tool output before sending it on the same m
       const config = providerCfg(url)
       return {
         ...config,
-        compaction: { auto: true, max_context_tokens: 25_000 },
+        compaction: { auto: true },
         provider: {
           ...config.provider,
           test: {
@@ -1599,7 +1599,7 @@ it.instance("compacts a large unique tool output before sending it on the same m
               ...config.provider.test.models,
               "test-model": {
                 ...config.provider.test.models["test-model"],
-                limit: { context: 1_000_000, output: 10_000 },
+                limit: { context: 30_000, output: 10_000 },
               },
             },
           },
@@ -1643,7 +1643,7 @@ it.instance("checks a smaller switched model after an earlier compaction summary
       const config = providerCfg(url)
       return {
         ...config,
-        compaction: { auto: true, max_context_tokens: 25_000 },
+        compaction: { auto: true },
         provider: {
           ...config.provider,
           test: {
@@ -1697,7 +1697,7 @@ withOversizedToolSchema.instance(
         const config = providerCfg(url)
         return {
           ...config,
-          compaction: { auto: true, max_context_tokens: 50_000, tail_turns: 1 },
+          compaction: { auto: true, tail_turns: 1 },
           provider: {
             ...config.provider,
             test: {
@@ -1708,7 +1708,7 @@ withOversizedToolSchema.instance(
                   ...config.provider.test.models["test-model"],
                   id: "small-model",
                   name: "Small Model",
-                  limit: { context: 200_000, output: 10_000 },
+                  limit: { context: 60_000, output: 10_000 },
                 },
               },
             },
@@ -1725,7 +1725,7 @@ withOversizedToolSchema.instance(
       yield* prompt.loop({ sessionID: chat.id })
 
       // A switched model discards provider usage, so the check falls back to the history estimate plus
-      // the recorded overhead. Their sum exceeds max_context_tokens even though history alone does not.
+      // the recorded overhead. Their sum exceeds the model's usable limit even though history alone does not.
       const next = yield* user(chat.id, "continue with the smaller model")
       yield* sessions.updateMessage({
         ...next,
@@ -1747,7 +1747,7 @@ it.instance("uses the new model projection instead of stale usage from the previ
       const config = providerCfg(url)
       return {
         ...config,
-        compaction: { auto: true, max_context_tokens: 25_000 },
+        compaction: { auto: true },
         provider: {
           ...config.provider,
           test: {
@@ -1794,7 +1794,7 @@ it.instance("recompacts an oversized summary before sending it to a smaller mode
       const config = providerCfg(url)
       return {
         ...config,
-        compaction: { auto: true, max_context_tokens: 25_000 },
+        compaction: { auto: true },
         provider: {
           ...config.provider,
           test: {
@@ -1833,7 +1833,7 @@ it.instance("stops after repeated automatic summaries remain above the model lim
       const config = providerCfg(url)
       return {
         ...config,
-        compaction: { auto: true, max_context_tokens: 25_000 },
+        compaction: { auto: true },
         provider: {
           ...config.provider,
           test: {
@@ -3594,11 +3594,27 @@ for (const [runtime, runner] of [
 
   runner.instance(`tool call budget is retained through automatic compaction (${runtime})`, () =>
     Effect.gen(function* () {
-      const { dir, llm } = yield* useServerConfig((url) => ({
-        ...providerCfg(url),
-        maxToolCalls: 1,
-        compaction: { auto: true, max_context_tokens: 25_000 },
-      }))
+      const { dir, llm } = yield* useServerConfig((url) => {
+        const config = providerCfg(url)
+        return {
+          ...config,
+          maxToolCalls: 1,
+          compaction: { auto: true },
+          provider: {
+            ...config.provider,
+            test: {
+              ...config.provider.test,
+              models: {
+                ...config.provider.test.models,
+                "test-model": {
+                  ...config.provider.test.models["test-model"],
+                  limit: { context: 35_000, output: 10_000 },
+                },
+              },
+            },
+          },
+        }
+      })
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const fs = yield* FSUtil.Service
@@ -6982,7 +6998,7 @@ for (const dynamic of [false, true]) {
         const config = providerCfg(url)
         return {
           ...config,
-          compaction: { auto: true, dynamic, max_context_tokens: 25_000 },
+          compaction: { auto: true, dynamic },
           provider: {
             ...config.provider,
             test: {
@@ -8656,13 +8672,29 @@ unix("SessionPrompt wrapper keeps transcript compatibility when a legacy hook se
 distillationIt.instance("measures the context from the continuation request, not the split total", () =>
   Effect.gen(function* () {
     // Phase one's cut request is charged to the message for cost reporting, so the persisted tokens
-    // accumulate two requests while the context only carries the continuation's prompt. The limit below
+    // accumulate two requests while the context only carries the continuation's prompt. The model limit
     // sits between them: the accumulated total would compact, the continuation's usage must not.
-    const { llm } = yield* useServerConfig((url) => ({
-      ...providerCfg(url),
-      reasoningDistillation: { enabled: true },
-      compaction: { auto: true, max_context_tokens: 12_000, tail_turns: 1 },
-    }))
+    const { llm } = yield* useServerConfig((url) => {
+      const config = providerCfg(url)
+      return {
+        ...config,
+        reasoningDistillation: { enabled: true },
+        compaction: { auto: true, tail_turns: 1 },
+        provider: {
+          ...config.provider,
+          test: {
+            ...config.provider.test,
+            models: {
+              ...config.provider.test.models,
+              "test-model": {
+                ...config.provider.test.models["test-model"],
+                limit: { context: 20_000, output: 2_000 },
+              },
+            },
+          },
+        },
+      }
+    })
     const { prompt, sessions, chat } = yield* boot()
     controlledOrganizer = () =>
       Effect.succeed({
