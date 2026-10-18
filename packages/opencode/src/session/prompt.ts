@@ -126,6 +126,7 @@ import { HookTurnContext } from "@/hook/turn-context"
 import { dispatchTrust } from "@/hook/workspace-trust"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
+import { promptIdentity, withPromptIdentity } from "@/hook/prompt-identity"
 import { Skill } from "@/skill"
 import { HookRewake } from "@/hook/rewake"
 import { Goal } from "@/goal/goal"
@@ -513,8 +514,15 @@ export const layer = Layer.effect(
           const environmentFile = yield* HookTranscript.environmentFile(context.sessionID).pipe(Effect.orDie)
           const policy = yield* permission.hookPolicy(context.sessionID)
           const permissionMode = policy.mode === "manual" ? "default" : policy.mode
+          // CC's prompt-scoped envelope fields. An explicit promptID from the
+          // caller wins (UserPromptSubmit names the prompt it is about to
+          // persist); everything else derives from the newest user message.
+          const identity = withPromptIdentity(
+            context,
+            promptIdentity(messages as unknown as readonly HookTranscript.Message[]),
+          )
           return yield* rawSettingsHook.trigger(payload, {
-            ...context,
+            ...identity,
             transcriptPath,
             environmentFile,
             environment: yield* HookTranscript.environment(context.sessionID).pipe(Effect.orDie),
@@ -2248,6 +2256,11 @@ export const layer = Layer.effect(
           return { message, run: false as const }
         }
       }
+      // CC's `prompt_id` names the prompt being submitted, but the message row is
+      // only persisted after UserPromptSubmit has run. Allocate the identity now
+      // and reuse it below, so the envelope and the transcript name the same
+      // message. A caller-supplied id (queued/follow-up prompts) wins.
+      const promptMessageID = input.messageID ?? MessageID.ascending()
       if (settingsHook && !isRewake && options?.internalDelegation !== true) {
         // session_title is present only for a title the user or a hook chose, never for a generated one.
         const titled = session.metadata?.hookTitleSource === "custom" && session.title ? session.title : undefined
@@ -2258,7 +2271,7 @@ export const layer = Layer.effect(
               prompt: promptText,
               ...(titled !== undefined ? { sessionTitle: titled } : {}),
             },
-            { sessionID: input.sessionID, transcriptPath: "" },
+            { sessionID: input.sessionID, transcriptPath: "", promptID: promptMessageID },
           )
           .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
         hookAdditionalContexts = hookResult.additionalContexts ?? []
@@ -2276,7 +2289,11 @@ export const layer = Layer.effect(
         // only the message: the text stays in local storage either way and never reaches the model.
         const original = hookResult.suppressOriginalPrompt === true ? "" : `\n\nOriginal prompt: ${promptText}`
         const message = yield* createUserMessage(
-          { ...input, parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }] },
+          {
+            ...input,
+            messageID: promptMessageID,
+            parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }],
+          },
           persistAdmission,
         )
         yield* sessions.touch(input.sessionID)
@@ -2296,7 +2313,7 @@ export const layer = Layer.effect(
       // Rewake prompts are internal re-entries into a live session and never claim resume.
       const resumeTexts = isRewake ? [] : yield* resumeContexts(session)
 
-      const message = yield* createUserMessage(input, persistAdmission)
+      const message = yield* createUserMessage({ ...input, messageID: promptMessageID }, persistAdmission)
       yield* sessions.touch(input.sessionID)
 
       // The chain was validated before admission, but cancel can land while
@@ -2502,6 +2519,7 @@ export const layer = Layer.effect(
         // drive another model turn, guarding against a hook that ignores
         // stop_hook_active (mirrors task.ts SubagentStop hard limit).
         let stopContinuationCount = 0
+        const stopHookContinuationCap = SettingsHook.stopHookBlockCap()
         // When a Stop hook blocks, the agent gets another model turn; this flag skips
         // the "already finished" exit for one iteration so the turn can actually run.
         let forceContinue = false
@@ -2789,6 +2807,18 @@ export const layer = Layer.effect(
                     Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)),
                   )
                 agentContinuationPrevented = stopResult.preventContinuation === true
+                // `continue:false` ends the turn, so its stopReason can never be
+                // model feedback. Land it as a user-visible notice, as v2-turn.ts
+                // already does for the same result.
+                if (
+                  agentContinuationPrevented &&
+                  stopResult.stopReason &&
+                  !stopResult.systemMessages.includes(stopResult.stopReason)
+                )
+                  yield* SettingsHook.landSystemMessages(
+                    { additionalContexts: [], systemMessages: [stopResult.stopReason] },
+                    { sessionID },
+                  )
                 if (agentContinuationPrevented && agentMessages) {
                   const input = lastAssistant && (yield* agentMessages.snapshotForTurn(identity, lastAssistant.id))
                   if (input?.ok && input.value)
@@ -2797,14 +2827,15 @@ export const layer = Layer.effect(
                 }
                 // Stop-hook block → drive another model turn. The next Stop then carries
                 // stop_hook_active=true so a well-behaved hook stops blocking (anti-loop).
-                // Capped by MAX_STOP_CONTINUATIONS so a hook that ignores the signal
-                // can't loop forever; at the limit we log.warn and force a normal exit.
+                // Capped by CLAUDE_CODE_STOP_HOOK_BLOCK_CAP (default MAX_STOP_CONTINUATIONS)
+                // so a hook that ignores the signal can't loop forever; at the limit we
+                // log.warn and force a normal exit.
                 const continuing =
                   !agentInputBlocked &&
                   !turnError &&
                   (stopResult.blocked !== undefined || stopResult.additionalContexts.some((text) => text.length > 0)) &&
                   !stopResult.preventContinuation &&
-                  stopContinuationCount < SettingsHook.MAX_STOP_CONTINUATIONS
+                  stopContinuationCount < stopHookContinuationCap
                 // Consume Stop-hook outputs so nothing is silently dropped. On a
                 // continuation they go into a new synthetic user message AFTER the
                 // assistant reply (block reason last, so the request ends with the
@@ -2854,7 +2885,7 @@ export const layer = Layer.effect(
                   }
                   yield* Effect.logWarning("Stop hook continuation limit reached; forcing exit", {
                     "session.id": sessionID,
-                    limit: SettingsHook.MAX_STOP_CONTINUATIONS,
+                    limit: stopHookContinuationCap,
                   })
                 }
               }
@@ -4015,6 +4046,9 @@ export const layer = Layer.effect(
           )
         : undefined
       if (expansion?.blocked || expansion?.preventContinuation) {
+        // This branch returns before the normal landing point below, so notices
+        // from the hook that stopped the command must be published here.
+        if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
         return yield* commandTurn(
           input.sessionID,
           createUserMessage({

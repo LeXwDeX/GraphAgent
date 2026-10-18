@@ -189,6 +189,34 @@ describe("tool.shell", () => {
     ),
   )
 
+  it.live("exports CLAUDE_EFFORT from the newest prompt's model variant", () => {
+    if (process.platform === "win32") return Effect.void
+    const effortCtx = {
+      ...ctx,
+      messages: [
+        {
+          info: { id: MessageID.make("msg_effort"), role: "user", model: { variant: "high" } },
+          parts: [],
+        },
+      ] as unknown as Tool.Context["messages"],
+    }
+    // A host that exports CLAUDE_EFFORT must not mask the tool's own export.
+    const inherited = process.env.CLAUDE_EFFORT
+    delete process.env.CLAUDE_EFFORT
+    return runIn(
+      projectRoot,
+      run({ command: `printf '%s' "$CLAUDE_EFFORT"` }, effortCtx).pipe(
+        Effect.map((result) => expect(result.output).toContain("high")),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (inherited === undefined) delete process.env.CLAUDE_EFFORT
+            else process.env.CLAUDE_EFFORT = inherited
+          }),
+        ),
+      ),
+    )
+  })
+
   it.live("falls back from terminal-only configured shell", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({ config: { shell: "fish" } })
@@ -1096,6 +1124,10 @@ describe("tool.shell abort", () => {
           command: `exit 42`,
         })
         expect(result.metadata.exit).toBe(42)
+        // The result stays a normal completion, but hooks must see the
+        // reference's failure event; the error text starts with the exit code
+        // and carries the same output the model receives.
+        expect(result.hookFailure).toBe(`Exit code 42\n\n${result.output}`)
       }),
     ),
   )

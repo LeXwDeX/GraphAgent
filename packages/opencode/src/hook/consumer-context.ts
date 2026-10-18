@@ -4,12 +4,19 @@ import { Database } from "@opencode-ai/core/database/database"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { HookTranscript, type Message } from "./transcript"
+import { promptIdentity, variantToEffort, withPromptIdentity } from "./prompt-identity"
 
 /** Actual persisted history and SessionStart environment for consumers without the prompt wrapper. */
 export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   sessionID: string,
   permissionMode?: string,
   currentAgent?: string,
+  /**
+   * Prompt being processed when the caller already knows it. Prompt admission
+   * runs before the durable user row exists, so the transcript-derived identity
+   * would otherwise name the previous prompt.
+   */
+  promptID?: string,
 ): Effect.fn.Return<TriggerContext, unknown> {
   const directory = (yield* InstanceRef)?.directory ?? process.cwd()
   const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
@@ -36,12 +43,33 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
   }
   const { SessionStore } = yield* Effect.promise(() => import("@opencode-ai/core/session/store"))
   const store = Option.getOrUndefined(yield* Effect.serviceOption(SessionStore.Service))
-  const nativeSession = store ? yield* store.get(SessionID.make(sessionID)) : undefined
+  let nativeSession: { parentID?: string; agent?: string; model?: { variant?: string } } | undefined = store
+    ? yield* store.get(SessionID.make(sessionID))
+    : undefined
+  if (!nativeSession) {
+    // AppLayer hides the core store behind SessionV2; the V1 session service
+    // reads the same row, including model.variant.
+    const { Session } = yield* Effect.promise(() => import("@/session/session"))
+    const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
+    nativeSession = sessions
+      ? yield* sessions
+          .get(SessionID.make(sessionID))
+          .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
+      : undefined
+  }
   const agent = currentAgent ?? nativeSession?.agent ?? messages.findLast((message) => message.info.agent)?.info.agent
   if (agent === "plan" && permissionMode === undefined) permissionMode = "plan"
+  const identity = withPromptIdentity(promptIdentity(messages), { promptID })
+  // V2 durable user rows carry no model metadata, so the transcript identity
+  // cannot name the effort even though the session row holds the variant.
+  const effort = identity.effort ?? variantToEffort(nativeSession?.model?.variant)
   return {
     sessionID,
+    // A child session is the subagent owning these events; CC names it in agent_id.
+    ...(nativeSession?.parentID ? { agentID: sessionID } : {}),
     agentType: agent,
+    ...identity,
+    ...(effort ? { effort } : {}),
     transcriptPath: yield* HookTranscript.materialize({ sessionID, directory, messages }),
     environment: yield* HookTranscript.environment(sessionID),
     permissionMode: permissionMode === "manual" ? "default" : (permissionMode ?? "default"),

@@ -18,6 +18,7 @@ import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
+import { promptIdentity } from "@/hook/prompt-identity"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { HookStartContext } from "@/hook/start-context"
 import { TaskSubagents } from "@/hook/task-subagents"
@@ -196,6 +197,13 @@ export const TaskTool = Tool.define(
           messages: yield* sessions.messages({ sessionID }).pipe(Effect.orDie),
         }).pipe(Effect.orDie)
       })
+      // This tool resolves the raw SettingsHook service, bypassing the
+      // prompt-runtime wrapper that derives prompt-scoped fields. Derive the
+      // same parent-prompt identity here for SubagentStart/SubagentStop.
+      const hookIdentity = Effect.fn("TaskTool.hookIdentity")(function* () {
+        const messages = yield* sessions.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
+        return promptIdentity(messages as unknown as readonly HookTranscript.Message[])
+      })
       let stopToolCount = 0
       const countTools = (messages: readonly SessionV1.WithParts[]) =>
         messages.reduce((count, message) => count + message.parts.filter((part) => part.type === "tool").length, 0)
@@ -258,10 +266,14 @@ export const TaskTool = Tool.define(
           const result = yield* settingsHook
             .trigger(
               { event: "SubagentStart", agentID: nextSession.id, agentType: next.name },
-              { sessionID: ctx.sessionID, transcriptPath: yield* transcript(ctx.sessionID) },
+              {
+                sessionID: ctx.sessionID,
+                transcriptPath: yield* transcript(ctx.sessionID),
+                ...(yield* hookIdentity()),
+              },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
-          yield* SettingsHook.landSystemMessages(result, { sessionID: ctx.sessionID })
+          yield* SettingsHook.landSystemMessages(result, { sessionID: nextSession.id })
           startContexts = result.additionalContexts
         }
         const parts = yield* ops.resolvePromptParts(params.prompt)
@@ -464,26 +476,50 @@ export const TaskTool = Tool.define(
             .trigger(yield* stopPayload(false), {
               sessionID: ctx.sessionID,
               transcriptPath: yield* transcript(ctx.sessionID),
+              ...(yield* hookIdentity()),
             })
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
+          // A `continue:false` stopReason is user-visible, like the V1 Stop path.
+          if (
+            stopResult.preventContinuation &&
+            stopResult.stopReason &&
+            !stopResult.systemMessages.includes(stopResult.stopReason)
+          )
+            yield* SettingsHook.landSystemMessages(
+              { additionalContexts: [], systemMessages: [stopResult.stopReason] },
+              { sessionID: ctx.sessionID },
+            )
         }
         if (settingsHook && !promoted) {
           let subagentStopBlocked = false
           // Hard cap on blocked-SubagentStop continuation: a misbehaving hook that
           // ignores stop_hook_active would otherwise re-prompt forever (burning
           // tokens). Capped here; at the limit we log.warn and stop. Mirrors the
-          // main agent Stop path (prompt.ts). Shared constant from SettingsHook.
+          // main agent Stop path (prompt.ts); both read the same env override.
           let lastStillBlocked = false
-          for (let i = 0; i < SettingsHook.MAX_STOP_CONTINUATIONS; i++) {
+          const stopHookContinuationCap = SettingsHook.stopHookBlockCap()
+          for (let i = 0; i < stopHookContinuationCap; i++) {
             const stopResult = yield* settingsHook
               .trigger(yield* stopPayload(subagentStopBlocked), {
                 sessionID: ctx.sessionID,
                 transcriptPath: yield* transcript(ctx.sessionID),
+                ...(yield* hookIdentity()),
               })
               .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
             // Land any hook systemMessages so they're never silently dropped.
             yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
+            // `continue:false` ends the subagent loop, so its stopReason cannot be
+            // model feedback either; surface it the same way.
+            if (
+              stopResult.preventContinuation &&
+              stopResult.stopReason &&
+              !stopResult.systemMessages.includes(stopResult.stopReason)
+            )
+              yield* SettingsHook.landSystemMessages(
+                { additionalContexts: [], systemMessages: [stopResult.stopReason] },
+                { sessionID: ctx.sessionID },
+              )
             if (
               (!stopResult.blocked && !stopResult.additionalContexts?.some((text) => text.trim())) ||
               stopResult.preventContinuation
@@ -540,7 +576,7 @@ export const TaskTool = Tool.define(
             yield* Effect.logWarning("SubagentStop continuation limit reached; forcing stop", {
               agentID: nextSession.id,
               agentType: next.name,
-              limit: SettingsHook.MAX_STOP_CONTINUATIONS,
+              limit: stopHookContinuationCap,
             })
           }
         }

@@ -310,6 +310,7 @@ export const app = LayerNode.group([
   LayerNode.make(HookTodo.layer, [SettingsHook.node, Session.node, InstanceStore.node]),
   LayerNode.make(HookCwd.layer, [
     SettingsHook.node,
+    SessionHooks.node,
     Session.node,
     InstanceStore.node,
     HookLifecycle.node,

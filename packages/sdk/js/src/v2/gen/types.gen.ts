@@ -9348,6 +9348,7 @@ export type AppSkillsResponses = {
     content: string
     hooks?: unknown
     hookOrigin?: string
+    hookSource?: "project" | "user" | "plugin" | "builtin"
   }>
 }
 

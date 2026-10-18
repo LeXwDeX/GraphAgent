@@ -45,6 +45,24 @@ describe("condition-filter evaluate", () => {
     ).toBe(false)
   })
 
+  // Core Edit/Write/Read declare their argument as `path` and V2 forwards the
+  // model's raw input. Reading only filePath/file_path made every file guard
+  // fail open — `Edit(*.ts)` fired for a .py edit and its negation never did.
+  test("原生 `path` 参数参与条件匹配（core Edit/Write/Read）", () => {
+    expect(evaluate(entry("Edit(*.ts)"), { tool_name: "edit", tool_input: { path: "a.ts" } }, "PermissionDenied")).toBe(
+      true,
+    )
+    expect(evaluate(entry("Edit(*.ts)"), { tool_name: "edit", tool_input: { path: "a.py" } }, "PermissionDenied")).toBe(
+      false,
+    )
+    expect(evaluate(entry("Read(*.ts)"), { tool_name: "read", tool_input: { path: "x.py" } }, "PostToolUse")).toBe(
+      false,
+    )
+    expect(evaluate(entry("Write(*.env)"), { tool_name: "write", tool_input: { path: ".env" } }, "PreToolUse")).toBe(
+      true,
+    )
+  })
+
   test("PostToolUse/PostToolUseFailure 仍受 if 过滤", () => {
     expect(evaluate(entry("Read(*.ts)"), { tool_name: "read", tool_input: { filePath: "x.ts" } }, "PostToolUse")).toBe(
       true,

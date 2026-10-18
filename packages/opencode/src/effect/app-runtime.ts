@@ -9,6 +9,7 @@ import { HookV2Compaction } from "@/hook/v2-compaction"
 import { HookV2Lifecycle } from "@/hook/v2-lifecycle"
 import { HookTodo } from "@/hook/todo"
 import { HookConfigChange } from "@/hook/config-change"
+import { SessionHooks } from "@/hook/session-hooks"
 import { Layer, ManagedRuntime } from "effect"
 import { attach } from "./run-service"
 import * as Observability from "@opencode-ai/core/observability"
@@ -142,6 +143,9 @@ const BaseAppLayer = Layer.mergeAll(
   Layer.provideMerge(HookLifecycle.defaultLayer),
   Layer.provideMerge(HookFileWatch.defaultLayer),
   Layer.provideMerge(HookConfigChange.defaultLayer),
+  // HookCwd transfers session hooks across a directory move; SettingsHook
+  // already builds this same layer internally, so memoization keeps one store.
+  Layer.provideMerge(SessionHooks.defaultLayer),
   Layer.provideMerge(Ripgrep.defaultLayer),
   Layer.provideMerge(InstanceLayer.layer),
   Layer.provideMerge(Observability.layer),

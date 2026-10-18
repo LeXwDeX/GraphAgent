@@ -1,4 +1,5 @@
-import { HookTranscript } from "@/hook/transcript"
+import { HookTranscript, type Message } from "@/hook/transcript"
+import { promptIdentity } from "@/hook/prompt-identity"
 import { Effect, Fiber, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
@@ -436,10 +437,14 @@ export const ShellTool = Tool.define(
         { env: {} },
       )
       const base = { ...process.env, ...extra.env }
-      return HookTranscript.applyEnvironment(
+      const env = HookTranscript.applyEnvironment(
         base,
         yield* HookTranscript.environment(ctx.sessionID, undefined, base).pipe(Effect.orDie),
       )
+      // CC exports the active effort to model-run shells; the newest prompt's model
+      // variant is authoritative, so a hook-exported value never overrides it.
+      const effort = promptIdentity(ctx.messages as readonly Message[]).effort
+      return effort ? { ...env, CLAUDE_EFFORT: effort } : env
     })
 
     const run = Effect.fn("ShellTool.run")(function* (
@@ -634,6 +639,10 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
+      // A nonzero exit is a completed command whose output the model still
+      // needs, so it stays a normal result. The hook-facing failure is carried
+      // separately; the dispatcher turns it into PostToolUseFailure.
+      const hookFailure = code !== null && code !== 0 ? `Exit code ${code}\n\n${output}` : undefined
       return {
         title: input.command,
         metadata: {
@@ -643,6 +652,7 @@ export const ShellTool = Tool.define(
           ...(cut && file ? { outputPath: file } : {}),
         },
         output,
+        ...(hookFailure ? { hookFailure } : {}),
       }
     })
 

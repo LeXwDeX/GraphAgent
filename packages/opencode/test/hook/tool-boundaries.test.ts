@@ -286,6 +286,82 @@ describe("real SessionTools call path", () => {
   )
 })
 
+// Mirrors the shell result contract: a nonzero exit is a normal completion
+// plus `hookFailure`, not a thrown error. The dispatcher must route it to the
+// reference's failure event while leaving the model-facing output untouched.
+const shellFailureDefinition = {
+  id: "bash",
+  description: "Fixture shell result that reports a hook-facing failure",
+  parameters: Schema.Struct({ command: Schema.String }),
+  execute: (_args: { command: string }) =>
+    Effect.succeed({
+      title: "exit 7",
+      output: "FAILED_SHELL_OUTPUT",
+      metadata: { exit: 7 },
+      hookFailure: "Exit code 7\n\nFAILED_SHELL_OUTPUT",
+    }),
+}
+const shellFailureLayers = Layer.mergeAll(
+  hookLayer,
+  Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
+  Layer.mock(Permission.Service, {
+    ask: () => Effect.void,
+    hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
+  }),
+  Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
+  Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
+  Layer.mock(ToolRegistry.Service, {
+    tools: () => Effect.succeed([shellFailureDefinition]),
+    registrations: () =>
+      Effect.succeed([{ definition: shellFailureDefinition, sourceKind: "host-builtin", registrationID: "test:bash" }]),
+  }),
+)
+const shellFailureIt = testEffect(shellFailureLayers)
+const executeShell = (tools: any) =>
+  Effect.promise(() =>
+    Promise.resolve(
+      tools.bash.execute(
+        { command: "false" },
+        { toolCallId: "audit-shell-failure", messages: [], abortSignal: new AbortController().signal },
+      ),
+    ),
+  )
+
+describe("nonzero shell exits reach failure hooks", () => {
+  shellFailureIt.instance("a completed nonzero exit fires PostToolUseFailure and keeps the model output", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const failure = path.join(instance.directory, "failure.json")
+      const success = path.join(instance.directory, "success.json")
+      yield* store.add(id, {
+        event: "PostToolUseFailure",
+        hooks: [{ type: "command", command: "cat > " + quote(failure) }],
+      })
+      yield* store.add(id, {
+        event: "PostToolUse",
+        hooks: [{ type: "command", command: "cat > " + quote(success) }],
+      })
+      const tools = yield* resolve(id, instance.directory)
+      const result = yield* executeShell(tools)
+      expect(result.output).toBe("FAILED_SHELL_OUTPUT")
+      const envelope = JSON.parse(yield* Effect.promise(() => fs.readFile(failure, "utf8")))
+      expect(envelope.hook_event_name).toBe("PostToolUseFailure")
+      expect(envelope.tool_name).toBe("bash")
+      expect(envelope.error).toBe("Exit code 7\n\nFAILED_SHELL_OUTPUT")
+      expect(
+        yield* Effect.promise(() =>
+          fs.access(success).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      ).toBe(false)
+    }),
+  )
+})
+
 const agent = testEffect(Layer.mergeAll(CrossSpawnSpawner.defaultLayer, FSUtil.defaultLayer))
 describe("agent tool runtime boundary", () => {
   agent.instance("read-only agent bash must not create a file using a newline", () =>
@@ -464,7 +540,8 @@ describe("Claude command consumer with real discovery tools", () => {
         expect(claude.tool_use_id).toBe(`compat-${name}`)
         if (name === "read") {
           expect(claude.tool_input.file_path).toBe(target)
-          expect(claude.tool_response).toContain("HOOK_SEARCH_NEEDLE")
+          // PostToolUse carries the tool's structured metadata, not its text output.
+          expect(claude.tool_response.preview).toContain("HOOK_SEARCH_NEEDLE")
         } else expect(output).toContain(target)
       }),
     )

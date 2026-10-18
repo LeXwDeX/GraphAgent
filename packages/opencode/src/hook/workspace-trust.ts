@@ -12,9 +12,10 @@
  * an empty list (everything untrusted); it NEVER throws (a trust gate that
  * throws would itself become a denial vector).
  *
- * Enforcement is opt-in (see settings.ts trigger): silent skip + log.warn when
- * enforcement is enabled and the dir is untrusted. This module only decides;
- * it does not enforce.
+ * Enforcement is ON by default (see settings.ts trigger): while the dir is
+ * untrusted, matchers from the hooks.json chain are held back with a log.warn.
+ * A global `requireTrust: false` or `OPENCODE_HOOKS_REQUIRE_TRUST=0` disables
+ * the gate. This module decides and reports; it does not enforce.
  */
 import { existsSync, readFileSync, writeFileSync } from "fs"
 import path from "path"
@@ -26,6 +27,19 @@ const log = Log.create({ service: "hook.workspace-trust" })
 /** Absolute path to the persisted trust list. */
 export function trustFilePath(): string {
   return path.join(Global.Path.data, "trusted-workspaces.json")
+}
+
+/**
+ * Whether a worktree layer exists for this project. A global non-VCS project
+ * reports `worktree = "/"` (the drive root on Windows); treating that as a
+ * layer would read `/.opencode/hooks.json` — a file shared by every session on
+ * the machine rather than owned by the workspace. Distinct roots are the only
+ * valid worktree layers.
+ */
+export function hasWorktreeLayer(directory: string, worktree: string | undefined): worktree is string {
+  if (!worktree || worktree === directory) return false
+  const resolved = path.resolve(worktree)
+  return path.dirname(resolved) !== resolved
 }
 
 /**
@@ -91,28 +105,36 @@ export function addTrusted(dir: string, file: string = trustFilePath()): void {
 }
 
 /**
- * Scan the hooks.json chain (global / project / worktree) for a `requireTrust:
- * true` top-level key, without importing `loadChain` from settings.ts (that
- * would form a settings → workspace-trust → settings cycle). Mirrors the
- * chain semantics in settings.ts:requireTrust — any single layer opting in
- * enables enforcement. Used only by `/trust status` to report the gate source.
+ * Scan the hooks.json chain (global / project / worktree) for the top-level
+ * `requireTrust` key, without importing `loadChain` from settings.ts (that
+ * would form a settings → workspace-trust → settings cycle). Mirrors
+ * `mergeSettings`: a global `false` disables the gate; otherwise any layer's
+ * `true` forces it. Project/worktree `false` values are ignored because
+ * `readChain` strips them (a repository cannot opt itself out). Used only by
+ * `/trust status` to report the gate source.
  */
-function configRequireTrust(directory: string, worktree?: string): boolean {
+function configRequireTrust(directory: string, worktree?: string): "enforce" | "disabled" | undefined {
   const files = [
-    path.join(Global.Path.config, "hooks.json"),
-    path.join(directory, ".opencode", "hooks.json"),
-    ...(worktree && worktree !== directory ? [path.join(worktree, ".opencode", "hooks.json")] : []),
+    { scope: "global", file: path.join(Global.Path.config, "hooks.json") },
+    { scope: "project", file: path.join(directory, ".opencode", "hooks.json") },
+    ...(hasWorktreeLayer(directory, worktree)
+      ? [{ scope: "worktree", file: path.join(worktree, ".opencode", "hooks.json") }]
+      : []),
   ]
-  for (const file of files) {
+  let enforce = false
+  let disabled = false
+  for (const { scope, file } of files) {
     try {
       if (!existsSync(file)) continue
       const parsed = JSON.parse(readFileSync(file, "utf8"))
-      if (parsed && typeof parsed === "object" && parsed.requireTrust === true) return true
+      if (!parsed || typeof parsed !== "object") continue
+      if (parsed.requireTrust === true) enforce = true
+      if (scope === "global" && parsed.requireTrust === false) disabled = true
     } catch {
-      // unreadable / unparseable — treat as not opting in
+      // unreadable / unparseable — treat as not configured
     }
   }
-  return false
+  return disabled ? "disabled" : enforce ? "enforce" : undefined
 }
 
 /**
@@ -134,21 +156,29 @@ export function dispatchTrust(
   file: string = trustFilePath(),
 ): { text: string } {
   const sub = args.trim().toLowerCase()
-  const envForced = process.env.OPENCODE_HOOKS_REQUIRE_TRUST === "1"
-  const cfgForced = configRequireTrust(directory, worktree)
-  const gateActive = envForced || cfgForced
+  const envTrust = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+  const configured = configRequireTrust(directory, worktree)
+  const gateActive = envTrust === "1" ? true : envTrust === "0" ? false : configured !== "disabled"
+  const gateSource =
+    envTrust === "1"
+      ? "OPENCODE_HOOKS_REQUIRE_TRUST=1"
+      : envTrust === "0"
+        ? "OPENCODE_HOOKS_REQUIRE_TRUST=0"
+        : configured === "disabled"
+          ? "global hooks.json requireTrust:false"
+          : configured === "enforce"
+            ? "hooks.json requireTrust:true"
+            : "默认"
 
   if (sub === "status") {
     const trusted = isTrusted(directory, file)
-    const sources: string[] = []
-    if (cfgForced) sources.push("hooks.json requireTrust")
-    if (envForced) sources.push("OPENCODE_HOOKS_REQUIRE_TRUST=1")
     return {
       text:
         `工作区信任状态：\n` +
         `• 目录：${directory}\n` +
         `• 信任：${trusted ? "已信任" : "未信任"}\n` +
-        `• requireTrust 门禁：${sources.length > 0 ? sources.join(" + ") : "未启用"}\n` +
+        `• requireTrust 门禁：${gateActive ? "已启用" : "已关闭"}（${gateSource}）\n` +
+        `• 门禁范围：hooks.json 链（设置文件）；会话/插件 hooks 不受影响\n` +
         `• 信任文件：${file}`,
     }
   }
@@ -167,6 +197,6 @@ export function dispatchTrust(
   return {
     text: already
       ? `${directory} 已在信任列表中（幂等，未重复追加）。`
-      : `已将 ${directory} 追加到信任列表。${gateActive ? "" : "\n（提示：requireTrust 门禁当前未启用；在 hooks.json 设置 \"requireTrust\": true 或 OPENCODE_HOOKS_REQUIRE_TRUST=1 后，信任列表才会门控 hook 执行。）"}`,
+      : `已将 ${directory} 追加到信任列表。${gateActive ? "" : "\n（提示：requireTrust 门禁当前已关闭，设置文件 hooks 即使工作区未信任也会执行。）"}`,
   }
 }

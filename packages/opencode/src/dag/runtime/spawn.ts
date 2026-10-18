@@ -674,7 +674,7 @@ export function spawnNode(
               { event: "SubagentStart", agentID: childSession.id, agentType: agent.name },
               { sessionID: parent.id, transcriptPath },
             )
-            yield* SettingsHook.landSystemMessages(started, { sessionID: parent.id })
+            yield* SettingsHook.landSystemMessages(started, { sessionID: childSession.id })
             if (hookStart) for (const text of started.additionalContexts) yield* hookStart.append(childSession.id, text)
           }
           let result = yield* promptSvc.prompt(

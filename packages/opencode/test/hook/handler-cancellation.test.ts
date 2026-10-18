@@ -21,19 +21,19 @@ const base = SettingsHook.layer.pipe(
   Layer.provideMerge(SessionHooks.defaultLayer),
 )
 const it = testEffect(Layer.mergeAll(base, CrossSpawnSpawner.defaultLayer, FSUtil.defaultLayer))
-const run = (
-  entry: HookCommand,
-  event: "PreToolUse" | "PostToolUse" | "PermissionRequest" | "PermissionDenied" = "PreToolUse",
-) =>
+type RunEvent =
+  "PreToolUse" | "PostToolUse" | "PermissionRequest" | "PermissionDenied" | "TaskCreated" | "TaskCompleted"
+const run = (entry: HookCommand, event: RunEvent = "PreToolUse") =>
   Effect.gen(function* () {
     const store = yield* SessionHooks.Service
     const settings = yield* SettingsHook.Service
     const id = SessionID.descending()
     yield* store.add(id, { event, hooks: [entry] })
-    return yield* settings.trigger(
-      { event, toolName: "bash", toolInput: {}, ...(event === "PostToolUse" ? { toolResponse: "done" } : {}) } as any,
-      { sessionID: id, transcriptPath: "" },
-    )
+    const payload =
+      event === "TaskCreated" || event === "TaskCompleted"
+        ? { event, taskID: "task-1", taskTitle: "audit task" }
+        : { event, toolName: "bash", toolInput: {}, ...(event === "PostToolUse" ? { toolResponse: "done" } : {}) }
+    return yield* settings.trigger(payload as any, { sessionID: id, transcriptPath: "" })
   })
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
@@ -123,6 +123,25 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
       expect(stop.systemMessages).toContain("post-check failed")
       expect(retry.preventContinuation).toBeUndefined()
       expect(retry.additionalContexts).toEqual(["post-check failed"])
+    }),
+  )
+
+  // The reference returns a TaskCreated/TaskCompleted veto as a tool error, so
+  // the task write is refused and the reason reaches the model; only a
+  // systemMessage would be user-visible and the write would still happen.
+  // The turn itself keeps running (no continue:false).
+  it.instance("prompt TaskCreated/TaskCompleted rejection blocks the write and keeps the turn running", () =>
+    Effect.gen(function* () {
+      const model = new MockLanguageModelV3({
+        doGenerate: generated(JSON.stringify({ ok: false, reason: "task veto" })),
+      })
+      for (const event of ["TaskCreated", "TaskCompleted"] as const) {
+        const result = yield* run({ type: "prompt", prompt: "audit task" }, event).pipe(
+          Effect.provide(providerLayer(model)),
+        )
+        expect(result.blocked?.reason).toBe("task veto")
+        expect(result.preventContinuation).toBeUndefined()
+      }
     }),
   )
 

@@ -108,10 +108,13 @@ export const landInitial = Effect.fn("SessionLifecycleHooks.landInitial")(functi
   ])
   if (admitted || user || legacyUser) return false
   const prompt = Prompt.make({ text: input.text, hookMode: "noninteractive" })
+  // Admission runs before the row is persisted, so allocate the same id the
+  // durable input below will use.
+  const messageID = SessionMessage.ID.create()
   const conversation = Option.getOrUndefined(yield* Effect.serviceOption(SessionConversationHooks.Service))
   if (conversation) {
     let allowed = true
-    const decision = yield* conversation.admit({ sessionID: input.sessionID, prompt }).pipe(
+    const decision = yield* conversation.admit({ sessionID: input.sessionID, messageID, prompt }).pipe(
       Effect.catchTag("SessionConversationHookBlocked", (error) =>
         Effect.gen(function* () {
           allowed = false
@@ -124,7 +127,6 @@ export const landInitial = Effect.fn("SessionLifecycleHooks.landInitial")(functi
     if (!allowed) return false
     yield* landContext(events, { sessionID: input.sessionID, text: decision?.additionalContext })
   }
-  const messageID = SessionMessage.ID.create()
   yield* saveMetadata(input.sessionID, { ...(yield* metadata(db, input.sessionID)), hookV2Initial: { messageID } })
   yield* SessionInput.admit(db, events, { id: messageID, sessionID: input.sessionID, prompt, delivery: "queue" })
   return true

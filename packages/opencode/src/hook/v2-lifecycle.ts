@@ -14,6 +14,7 @@ import { HookStartContext } from "./start-context"
 import { HookFileWatch } from "./file-watch"
 import { HookConfigChange } from "./config-change"
 import { HookTranscript } from "./transcript"
+import { promptIdentity } from "./prompt-identity"
 import { HookSessionContext } from "./session-context"
 import { HookModelMetrics } from "./model-metrics"
 import { SettingsHook } from "./settings"
@@ -86,6 +87,7 @@ export const layer = Layer.effect(
               },
               {
                 sessionID,
+                ...promptIdentity(history),
                 transcriptPath,
                 environmentFile: yield* HookTranscript.environmentFile(sessionID).pipe(Effect.orDie),
                 environment: yield* HookTranscript.environment(sessionID).pipe(Effect.orDie),

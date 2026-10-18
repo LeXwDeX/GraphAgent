@@ -2,6 +2,7 @@ import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
 import { HookTranscript } from "@/hook/transcript"
+import { promptIdentity } from "@/hook/prompt-identity"
 import { Instruction } from "./instruction"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -324,6 +325,7 @@ export const layer = Layer.effect(
             { event: "PreCompact", trigger: input.auto ? "auto" : "manual", customInstructions: null },
             {
               sessionID: input.sessionID,
+              ...promptIdentity(input.messages),
               transcriptPath,
               environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
               environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
@@ -660,10 +662,11 @@ export const layer = Layer.effect(
         if (instruction) yield* instruction.markCompacted(input.sessionID)
         // PostCompact sees the committed compacted conversation, not the pre-compaction snapshot.
         if (settingsHook) {
+          const postMessages = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
           transcriptPath = yield* HookTranscript.materialize({
             sessionID: input.sessionID,
             directory: yield* InstanceState.directory,
-            messages: yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie),
+            messages: postMessages,
           }).pipe(Effect.orDie)
           const pcResult = yield* settingsHook
             .trigger(
@@ -674,6 +677,7 @@ export const layer = Layer.effect(
               } as any,
               {
                 sessionID: input.sessionID,
+                ...promptIdentity(postMessages),
                 transcriptPath,
                 environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
                 environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
@@ -700,11 +704,12 @@ export const layer = Layer.effect(
                     titleSource: current.metadata?.hookTitleSource,
                     model: current.model ?? { providerID: conversationModel.providerID, id: conversationModel.id },
                     agent: current.agent,
-                    history: yield* session.messages({ sessionID: current.id }).pipe(Effect.orDie),
+                    history: postMessages,
                   })),
                 },
                 {
                   sessionID: input.sessionID,
+                  ...promptIdentity(postMessages),
                   transcriptPath,
                   environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
                   environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),

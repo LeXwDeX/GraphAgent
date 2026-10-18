@@ -11,6 +11,8 @@ import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
+import { variantToEffort } from "../session/effort"
+import { SessionStore } from "../session/store"
 import { PositiveInt } from "../schema"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -120,6 +122,12 @@ export const layer = Layer.effectDiscard(
             input: Input,
             output: Output,
             toModelOutput: ({ output }) => [{ type: "text", text: modelOutput(output) }],
+            // Nonzero exits stay normal model output; hooks need the reference's
+            // failure event with the exit code and the command output.
+            hookFailure: (_, output) =>
+              output.exitCode !== undefined && output.exitCode !== 0
+                ? `Exit code ${output.exitCode}\n\n${output.output}`
+                : undefined,
             execute: (input, context) =>
               Effect.gen(function* () {
                 const source = {
@@ -157,8 +165,18 @@ export const layer = Layer.effectDiscard(
                   Object.assign({}, ...entries.flatMap((entry) => (entry.type === "document" ? [entry.info] : [])))
                     .shell ?? defaultShell()
                 const host = Option.getOrUndefined(yield* Effect.serviceOption(SessionTurnHooks.Service))
+                const store = Option.getOrUndefined(yield* Effect.serviceOption(SessionStore.Service))
+                const effort = store
+                  ? variantToEffort((yield* store.get(context.sessionID))?.model?.variant)
+                  : undefined
                 const exported = host?.environment ? yield* host.environment(context.sessionID) : {}
-                const env = { ...process.env, ...exported }
+                // CC exports the active effort to model-run shells. The session row is
+                // authoritative, so a hook-exported value never overrides it.
+                const env: Record<string, string | undefined> = {
+                  ...process.env,
+                  ...exported,
+                  ...(effort ? { CLAUDE_EFFORT: effort } : {}),
+                }
                 for (const key of Object.keys(exported)) if (exported[key] === undefined) delete env[key]
                 const command = ChildProcess.make(input.command, [], {
                   env,

@@ -39,6 +39,11 @@ process.env["XDG_STATE_HOME"] = path.join(dir, "state")
 process.env["OPENCODE_MODELS_PATH"] = path.join(import.meta.dir, "tool", "fixtures", "models-api.json")
 process.env["OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"] = "true"
 process.env["OPENCODE_EXPERIMENTAL_WORKSPACES"] = "true"
+// Settings-file hooks are gated on workspace trust by default, and test
+// workspaces live in throwaway temp dirs that are (correctly) not on the trust
+// list. Disable the gate for the suite; the workspace-trust tests re-enable it
+// explicitly (`=1`) or delete this variable to exercise the default.
+process.env["OPENCODE_HOOKS_REQUIRE_TRUST"] = "0"
 
 // Set test home directory to isolate tests from user's actual home directory
 // This prevents tests from picking up real user configs/skills from ~/.claude/skills

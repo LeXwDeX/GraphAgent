@@ -20,7 +20,8 @@ import { MCP } from "@/mcp"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionID } from "@/session/schema"
-import { TestInstance } from "../fixture/fixture"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { TestInstance, provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const layer = SettingsHook.layer.pipe(
@@ -64,6 +65,37 @@ describe("cross-audit: exec form placeholders and shell selection", () => {
       const result = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
       expect(result.additionalContexts).toEqual([`${instance.directory}/a b|x`])
     }),
+  )
+
+  // A session opened in a checkout subdirectory (cd / MoveSession) still belongs
+  // to the project root: CC keeps CLAUDE_PROJECT_DIR at the project for the whole
+  // session while the envelope cwd follows the working directory.
+  it.effect("CLAUDE_PROJECT_DIR is the project root when the instance directory is a subdirectory", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped({ git: true })
+      const sub = path.join(root, "sub")
+      yield* Effect.promise(() => fs.mkdir(sub))
+      const script =
+        "const i=JSON.parse(await Bun.stdin.text());" +
+        "process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit'," +
+        "additionalContext:JSON.stringify({env:process.env.CLAUDE_PROJECT_DIR,arg:process.argv[1]," +
+        "cwd:process.cwd(),envelope:i.cwd})}}))"
+      const probe = yield* Effect.gen(function* () {
+        const store = yield* SessionHooks.Service
+        const hook = yield* SettingsHook.Service
+        const sessionID = SessionID.descending()
+        yield* store.add(sessionID, {
+          event: "UserPromptSubmit",
+          hooks: [node(script, { args: ["-e", script, "${CLAUDE_PROJECT_DIR}/arg"] })],
+        })
+        const result = yield* hook.trigger(
+          { event: "UserPromptSubmit", prompt: "go" },
+          { sessionID, transcriptPath: "" },
+        )
+        return JSON.parse(result.additionalContexts[0])
+      }).pipe(provideInstance(sub))
+      expect(probe).toEqual({ env: root, arg: `${root}/arg`, cwd: sub, envelope: sub })
+    }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
   )
 
   test("the exec command itself and PowerShell shell form rewrite placeholders", () => {

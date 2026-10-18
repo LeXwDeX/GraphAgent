@@ -34,6 +34,10 @@ cliIt.live("V2 HTTP prompt admission runs UserPromptSubmit exactly once per dura
     const created = yield* request("/api/session", "POST", { location: { directory: home } })
     expect(created.status).toBe(200)
     const id = decodeV2Session(yield* Effect.promise(() => created.json())).data.id
+    // V2 sessions share the V1 session row; the title route records a custom
+    // title, which is what UserPromptSubmit may expose as session_title.
+    const titled = yield* request(`/session/${id}`, "PATCH", { title: "V2 chosen title" })
+    expect(titled.status).toBe(200)
     const route = `/api/session/${id}/prompt`
     const body = { id: "msg_v2_hook", prompt: { text: "POLICY_SAMPLE" }, hookMode: "interactive", resume: false }
     const denied = yield* request(route, "POST", body)
@@ -49,17 +53,44 @@ cliIt.live("V2 HTTP prompt admission runs UserPromptSubmit exactly once per dura
     expect(yield* Effect.promise(() => retried.json())).toEqual(first)
     const conflict = yield* request(route, "POST", { ...body, prompt: { text: "different" } })
     expect(conflict.status).toBe(409)
+    const generated = yield* request("/api/session", "POST", { location: { directory: home } })
+    const generatedID = decodeV2Session(yield* Effect.promise(() => generated.json())).data.id
+    const generatedPrompt = yield* request(`/api/session/${generatedID}/prompt`, "POST", {
+      id: "msg_v2_generated",
+      prompt: { text: "GENERATED_SAMPLE" },
+      hookMode: "interactive",
+      resume: false,
+    })
+    expect(generatedPrompt.status).toBe(200)
     const rows = yield* Effect.promise(async () =>
       (await fs.readFile(audit, "utf8"))
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line)),
     )
-    expect(rows).toHaveLength(2)
+    expect(rows).toHaveLength(3)
+    const titledRows = rows.filter((row) => row.session_id === id)
+    expect(titledRows).toHaveLength(2)
     expect(
-      rows.every(
-        (row) => row.hook_event_name === "UserPromptSubmit" && row.session_id === id && row.prompt === "POLICY_SAMPLE",
+      titledRows.every(
+        (row) =>
+          row.hook_event_name === "UserPromptSubmit" &&
+          row.prompt === "POLICY_SAMPLE" &&
+          // CC names the prompt being submitted, even though its durable row
+          // only exists after UserPromptSubmit has run.
+          row.prompt_id === "msg_v2_hook" &&
+          // session_title is present only for a title the user or a hook chose.
+          row.session_title === "V2 chosen title",
       ),
     ).toBe(true)
+    const generatedRows = rows.filter((row) => row.session_id === generatedID)
+    expect(generatedRows).toHaveLength(1)
+    expect(generatedRows[0]).toMatchObject({
+      hook_event_name: "UserPromptSubmit",
+      prompt: "GENERATED_SAMPLE",
+      prompt_id: "msg_v2_generated",
+    })
+    // A generated title is not a title the user chose.
+    expect(generatedRows[0]).not.toHaveProperty("session_title")
   }),
 )

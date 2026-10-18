@@ -133,3 +133,40 @@ describe("hook envelope cwd follows bash workdir", () => {
     }),
   )
 })
+
+// Claude Code's documented PermissionRequest input has no tool_use_id, unlike
+// PreToolUse/PostToolUse. Sending one there advertises a field hooks may rely on
+// but that the reference never provides.
+describe("hook envelope tool_use_id", () => {
+  it.instance("PermissionRequest omits tool_use_id but keeps tool_name and tool_input", () =>
+    Effect.gen(function* () {
+      const envelopes = yield* capture({
+        event: "PermissionRequest",
+        toolName: "bash",
+        toolInput: { command: "ls" },
+        toolUseID: "toolu_abc",
+      })
+      expect(envelopes).toHaveLength(2)
+      for (const envelope of envelopes) {
+        expect("tool_use_id" in envelope).toBe(false)
+        expect(envelope.tool_input).toEqual({ command: "ls" })
+      }
+      expect(
+        envelopes.map((e) => e.tool_name).sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+      ).toEqual(["Bash", "bash"])
+    }),
+  )
+
+  it.instance("PreToolUse still carries tool_use_id", () =>
+    Effect.gen(function* () {
+      const envelopes = yield* capture({
+        event: "PreToolUse",
+        toolName: "bash",
+        toolInput: { command: "ls" },
+        toolUseID: "toolu_abc",
+      })
+      expect(envelopes).toHaveLength(2)
+      for (const envelope of envelopes) expect(envelope.tool_use_id).toBe("toolu_abc")
+    }),
+  )
+})

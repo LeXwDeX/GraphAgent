@@ -411,7 +411,7 @@ export const layer = Layer.unwrap(
                     if (!prior) {
                       const hook = Option.getOrUndefined(yield* Effect.serviceOption(SessionConversationHooks.Service))
                       if (hook) {
-                        const decision = yield* hook.admit({ sessionID: input.sessionID, prompt })
+                        const decision = yield* hook.admit({ sessionID: input.sessionID, messageID, prompt })
                         additionalContext = decision?.additionalContext
                       }
                     }

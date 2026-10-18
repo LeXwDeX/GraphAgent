@@ -128,3 +128,70 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
     },
   )
 })
+
+// SessionStart initialUserMessage becomes a user turn, so it needs the same
+// reminder escaping and 10,000-character bound as every other hook string.
+describe("SettingsHook initialUserMessage safety", () => {
+  const initial = (text: string) =>
+    JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", initialUserMessage: text } })
+
+  it.instance(
+    "escapes system-reminder tags",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const r = yield* hook.trigger(
+          { event: "SessionStart", source: "startup" },
+          { sessionID: "sess-initial-escape", transcriptPath: "" },
+        )
+        expect(r.initialUserMessage).toBe("&lt;system-reminder>x&lt;/system-reminder>")
+      }),
+    {
+      init: writeHooks({
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `printf '%s' '${initial("<system-reminder>x</system-reminder>")}'`,
+              },
+            ],
+          },
+        ],
+      }),
+    },
+  )
+
+  it.instance(
+    "does not admit content beyond the 10,000-character cap",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const r = yield* hook.trigger(
+          { event: "SessionStart", source: "startup" },
+          { sessionID: "sess-initial-cap", transcriptPath: "" },
+        )
+        expect(r.initialUserMessage).toBeDefined()
+        expect(r.initialUserMessage?.startsWith("Full context saved to ")).toBe(true)
+        expect(r.initialUserMessage).not.toContain("TAIL_MARKER")
+        const [header, , preview] = r.initialUserMessage!.split("\n")
+        expect(preview.length).toBe(2_000)
+        const file = header.slice("Full context saved to ".length)
+        expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(`${"A".repeat(10_000)}TAIL_MARKER`)
+      }),
+    {
+      init: writeHooks({
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `printf '%s' '${initial(`${"A".repeat(10_000)}TAIL_MARKER`)}'`,
+              },
+            ],
+          },
+        ],
+      }),
+    },
+  )
+})

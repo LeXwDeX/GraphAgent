@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs"
 import * as os from "os"
@@ -9,6 +9,19 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { dispatchTrust, isTrusted, isTrustedDir, loadTrustedList } from "@/hook/workspace-trust"
 import { testEffect } from "../lib/effect"
+
+// Bun runs every test file of a CI shard in ONE process, so an env value left
+// modified here silently changes hook behavior for later files. That is a real
+// CI failure, not a theoretical one: leaving the gate's variable deleted made
+// `mcp/elicitation-integration.test.ts` skip its project `.opencode/hooks.json`
+// (audit file missing → ENOENT). Restore the suite preload value after EVERY
+// test in this file, not just inside one describe.
+const PRELOAD_REQUIRE_TRUST = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+
+afterEach(() => {
+  if (PRELOAD_REQUIRE_TRUST === undefined) delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+  else process.env.OPENCODE_HOOKS_REQUIRE_TRUST = PRELOAD_REQUIRE_TRUST
+})
 
 // WP-6B workspace-trust gate. Two layers of tests:
 //  - pure predicate + file-IO degradation (no Global.Path dependency)
@@ -56,8 +69,11 @@ describe("loadTrustedList — file degradation", () => {
 })
 
 // ── trigger integration: the cwd (s.cwd) is the per-test instance tmpdir,
-// which is never on the real trust list, so enforcement ON → untrusted → skip.
-// No need to touch Global.Path.data.
+// which is never on the real trust list, so the default gate → untrusted →
+// settings-file hooks are skipped. No need to touch Global.Path.data.
+// The suite preload disables the gate with OPENCODE_HOOKS_REQUIRE_TRUST=0 so
+// unrelated hook tests keep working; each test here selects the gate state it
+// exercises and the file-level afterEach above restores the preload value.
 
 const testLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
@@ -70,9 +86,9 @@ const CONTEXT = "trust-gate-hook-fired"
 
 const writeHooks = (json: unknown) => (dir: string) =>
   Effect.promise(() =>
-    fs.promises.mkdir(path.join(dir, ".opencode"), { recursive: true }).then(() =>
-      fs.promises.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(json)),
-    ),
+    fs.promises
+      .mkdir(path.join(dir, ".opencode"), { recursive: true })
+      .then(() => fs.promises.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(json))),
   )
 
 const sessionStartHook = (extra: Record<string, unknown>) => ({
@@ -82,9 +98,10 @@ const sessionStartHook = (extra: Record<string, unknown>) => ({
 
 describe("SettingsHook workspace-trust gate (WP-6B)", () => {
   trustIt.instance(
-    "enforcement ON + untrusted cwd → hooks silently skipped (empty result)",
+    "explicit requireTrust:true + untrusted cwd → hooks silently skipped (empty result)",
     () =>
       Effect.gen(function* () {
+        process.env.OPENCODE_HOOKS_REQUIRE_TRUST = "1"
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
@@ -98,9 +115,26 @@ describe("SettingsHook workspace-trust gate (WP-6B)", () => {
   )
 
   trustIt.instance(
-    "enforcement ON + project-layer allowUntrusted:true → still skipped (no self-escape)",
+    "untrusted cwd → gate is ON by default, hooks skipped without any requireTrust key",
     () =>
       Effect.gen(function* () {
+        delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+        const hook = yield* SettingsHook.Service
+        const r = yield* hook.trigger(
+          { event: "SessionStart", source: "startup" },
+          { sessionID: "ses-trust-default", transcriptPath: "" },
+        )
+        expect(r.additionalContexts).toEqual([])
+        expect(r.blocked).toBeUndefined()
+      }),
+    { init: writeHooks(sessionStartHook({})) },
+  )
+
+  trustIt.instance(
+    "explicit requireTrust:true + project-layer allowUntrusted:true → still skipped (no self-escape)",
+    () =>
+      Effect.gen(function* () {
+        process.env.OPENCODE_HOOKS_REQUIRE_TRUST = "1"
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
@@ -116,9 +150,10 @@ describe("SettingsHook workspace-trust gate (WP-6B)", () => {
   )
 
   trustIt.instance(
-    "enforcement OFF (default) → zero gate, hooks execute",
+    "OPENCODE_HOOKS_REQUIRE_TRUST=0 → gate disabled, hooks execute",
     () =>
       Effect.gen(function* () {
+        process.env.OPENCODE_HOOKS_REQUIRE_TRUST = "0"
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
@@ -172,6 +207,9 @@ describe("dispatchTrust (/trust command) — D3", () => {
     expect(r.text).toContain("未信任")
     expect(r.text).toContain(file)
     expect(r.text).toContain("requireTrust 门禁")
+    // No env / hooks.json override → the gate defaults ON.
+    expect(r.text).toContain("已启用")
+    expect(r.text).toContain("默认")
   })
 
   test("/trust status — hooks.json requireTrust 来源", () => {

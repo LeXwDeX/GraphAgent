@@ -1,4 +1,6 @@
 import { DagStore } from "@opencode-ai/core/dag/store"
+import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { decodeRecord, decodeString } from "../lib/hook-json"
 import { Question } from "@/question"
 import { handleElicitation } from "@/mcp/elicitation"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -402,6 +404,66 @@ appIt.effect(
           yield* drain
           expect(yield* Effect.promise(() => fs.readFile(audit, "utf8"))).toBe("")
         }
+      }),
+    {
+      config: {
+        command: { notificationfixture: { template: "Synthetic command input" } },
+        provider: {
+          "notification-fixture": {
+            name: "Fixture",
+            npm: "@ai-sdk/openai-compatible",
+            options: { baseURL: "http://127.0.0.1:1/v1", apiKey: "synthetic" },
+            models: { fixture: { name: "Fixture", limit: { context: 4096, output: 64 } } },
+          },
+        },
+      },
+    },
+  ),
+)
+// A blocked UserPromptExpansion returns before the normal path lands its
+// notices, so a `systemMessage` on the same hook silently disappeared.
+appIt.effect(
+  "blocked UserPromptExpansion still lands its systemMessage as a notice",
+  provideTmpdirInstance(
+    (_directory) =>
+      Effect.gen(function* () {
+        const events = yield* EventV2Bridge.Service
+        const sessions = yield* Session.Service
+        const prompt = yield* SessionPrompt.Service
+        const hooks = yield* SessionHooks.Service
+        const model = { providerID: ProviderV2.ID.make("notification-fixture"), modelID: ModelV2.ID.make("fixture") }
+        const session = yield* sessions.create({ model: { providerID: model.providerID, id: model.modelID } })
+        yield* hooks.add(session.id, {
+          event: "UserPromptExpansion",
+          hooks: [
+            {
+              type: "command",
+              command: `printf '%s' '${JSON.stringify({
+                decision: "block",
+                reason: "blocked-by-test",
+                systemMessage: "EXPANSION_WARNING",
+              })}'`,
+            },
+          ],
+        })
+        const notices: string[] = []
+        const off = yield* events.listen((event) => {
+          if (event.type !== LegacyEvent.HookMessage.type) return Effect.void
+          const data = decodeRecord(event.data)
+          if (data.sessionID === session.id) notices.push(decodeString(data.message))
+          return Effect.void
+        })
+        yield* Effect.addFinalizer(() => (typeof off === "function" ? Effect.sync(off) : off))
+        const result = yield* prompt.command({
+          sessionID: session.id,
+          agent: "build",
+          model: "notification-fixture/fixture",
+          hookMode: "interactive",
+          command: "notificationfixture",
+          arguments: "",
+        })
+        expect(JSON.stringify(result)).toContain("blocked-by-test")
+        expect(notices).toContain("EXPANSION_WARNING")
       }),
     {
       config: {

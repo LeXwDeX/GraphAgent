@@ -23,7 +23,9 @@
  *   - { type: "agent",   prompt: "<llm-task-prompt>", command?: "<legacy-prompt>", timeout?: <seconds> }
  *
  * stdin JSON envelope per Claude Code spec:
- *   { hook_event_name, session_id, transcript_path, cwd, ...event-specific }
+ *   { hook_event_name, session_id, prompt_id, transcript_path, cwd,
+ *     scratchpad_dir, permission_mode, agent_id?, agent_type?, effort?,
+ *     ...event-specific }
  *
  * stdout control JSON (any subset):
  *   { continue, stopReason, suppressOutput, systemMessage,
@@ -39,7 +41,7 @@
  */
 import path from "path"
 import os from "os"
-import { existsSync, readFileSync, lstatSync, statSync } from "fs"
+import { existsSync, readFileSync, lstatSync, statSync, writeFileSync } from "fs"
 import { spawn } from "child_process"
 import { createHash } from "crypto"
 import { Effect, Layer, Context, Option, Scope, Exit, Fiber, Cause } from "effect"
@@ -75,7 +77,8 @@ import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 import { EffectBridge } from "@/effect/bridge"
 import { buildForkHooks, watchSettings } from "./extensions" // [FORK:hook-ext]
-import { isTrusted, trustFilePath } from "./workspace-trust" // [FORK:hook-ext] WP-6B
+import { hasWorktreeLayer, isTrusted, trustFilePath } from "./workspace-trust" // [FORK:hook-ext] WP-6B
+import { HookTranscript } from "./transcript"
 
 const log = Log.create({ service: "hook.settings" })
 
@@ -245,11 +248,18 @@ export interface Settings {
   /** Optional global ceiling for environment interpolation in HTTP headers. */
   httpHookAllowedEnvVars?: string[]
   /**
-   * Opt-in enforcement of the workspace-trust gate (WP-6B). When `true` (any
-   * layer in the chain), `SettingsHook.trigger` silently skips ALL hooks for a
-   * working directory that is not on the trust list, unless `allowUntrusted` is
-   * also set. Read from the top-level `requireTrust` key of a hooks.json. Also
-   * enabled by env `OPENCODE_HOOKS_REQUIRE_TRUST=1`. Default false → zero gate.
+   * Workspace-trust gate for settings-file hooks (WP-6B). The gate is ON by
+   * default: while the working directory is not on the trust list, matchers
+   * read from the hooks.json chain are held back (CC's workspace-trust rule for
+   * settings files). Runtime-registered session hooks (plugins, builtins, the
+   * session-hook HTTP API, user-scope agent frontmatter) are not gated; project
+   * subagent frontmatter keeps its own registration-time trust check.
+   *
+   * A GLOBAL hooks.json may set `false` to disable the gate; the explicit
+   * `true` (any layer) is kept for compatibility and forces the same behavior
+   * as the default. Non-global `false` values are stripped by `readChain` so a
+   * repository cannot opt itself out. Env `OPENCODE_HOOKS_REQUIRE_TRUST=0|1`
+   * overrides the chain (1 also forces the gate; 0 disables it).
    */
   requireTrust?: boolean
   /**
@@ -309,14 +319,29 @@ export interface HookJSONOutput {
 export const HOOK_REWAKE_SENTINEL = "<system-reminder>\nAsync hook completed"
 
 const CONTEXT_LIMIT = 10_000
-/** Claude bounds hook-provided context and escapes reminder tags so hook output cannot close the host envelope. */
-export function sanitizeHookContext(text: string): string {
+const CONTEXT_PREVIEW_LIMIT = 2_000
+/**
+ * Claude bounds hook-provided context at 10,000 characters and escapes reminder
+ * tags so hook output cannot close the host envelope. Over-limit text is kept
+ * whole in `spillDir` when available; what reaches the model is its path plus a
+ * 2,000-character preview. Without a writable directory the value is truncated
+ * in place so the cap still holds.
+ */
+export function sanitizeHookContext(text: string, spillDir?: string): string {
   const escaped = text
     .replaceAll("<system-reminder>", "&lt;system-reminder>")
     .replaceAll("</system-reminder>", "&lt;/system-reminder>")
-  return escaped.length > CONTEXT_LIMIT
-    ? `${escaped.slice(0, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
-    : escaped
+  if (escaped.length <= CONTEXT_LIMIT) return escaped
+  if (spillDir) {
+    const file = path.join(spillDir, `context-${createHash("sha256").update(text).digest("hex").slice(0, 16)}.txt`)
+    try {
+      writeFileSync(file, text, { mode: 0o600 })
+      return `Full context saved to ${file}\n\n${escaped.slice(0, CONTEXT_PREVIEW_LIMIT)}`
+    } catch {
+      // An unwritable scratchpad must not fail the hook; fall back to truncation.
+    }
+  }
+  return `${escaped.slice(0, CONTEXT_LIMIT)}\n[truncated at ${CONTEXT_LIMIT} characters]`
 }
 
 const SHOW_STDERR_EVENTS = new Set<HookEvent>([
@@ -329,9 +354,9 @@ const SHOW_STDERR_EVENTS = new Set<HookEvent>([
   "PostModelSwitch",
 ])
 
-function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string): string {
+function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string, spillDir?: string): string {
   const cmd = descriptorFor(entry)
-  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content)}\n</system-reminder>`
+  return `${HOOK_REWAKE_SENTINEL} (command: ${cmd}, event: ${event}):\n${sanitizeHookContext(content, spillDir)}\n</system-reminder>`
 }
 
 /**
@@ -621,7 +646,24 @@ export interface TriggerContext {
   canonicalToolName?: string
   /** Real MCP server binding of the tool in this trigger; surfaced as `mcp_server`. */
   mcpServer?: { name: string; source: string }
+  /**
+   * CC envelope `prompt_id`: the user prompt currently being processed. The fork
+   * reports the persisted user message id (stable per prompt, absent before the
+   * first input). `buildStdinEnvelope` omits the field when unset.
+   */
+  promptID?: string
+  /**
+   * CC envelope `effort`: the effort level in effect for this trigger. Only the
+   * five CC levels are meaningful; producers derive it from the model variant
+   * (see `hook/prompt-identity.ts`). Emitted only for tool-use-context events.
+   */
+  effort?: HookEffort
+  /** CC envelope `scratchpad_dir`: per-session scratch directory, created lazily by `trigger`. */
+  scratchpadDir?: string
 }
+
+/** CC's effort levels (the `level` reported inside the `effort` envelope object). */
+export type HookEffort = "low" | "medium" | "high" | "xhigh" | "max"
 
 // `TriggerResult` and `landSystemMessages` live in `./trigger-result` (a
 // cycle-free leaf). Re-exported here so existing `SettingsHook.*` /
@@ -638,6 +680,18 @@ export { landSystemMessages } from "./trigger-result"
  * Stop path (prompt.ts) and the SubagentStop path (task.ts).
  */
 export const MAX_STOP_CONTINUATIONS = 8
+
+/**
+ * Claude Code's `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` override for the cap above.
+ * Only a positive integer is accepted; anything else (including unset) keeps
+ * the documented default of 8.
+ */
+export function stopHookBlockCap(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+  if (raw === undefined) return MAX_STOP_CONTINUATIONS
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : MAX_STOP_CONTINUATIONS
+}
 
 // ── [FORK:hook-ext] Extension callback interface ────────────────
 //
@@ -908,8 +962,11 @@ function evaluatorDecision(
       : { continue: false, stopReason: answer.reason, systemMessage: answer.reason }
   if (event === "PostToolUseFailure")
     return { hookSpecificOutput: { hookEventName: event, additionalContext: answer.reason } }
-  // Claude returns this reason as tool feedback and keeps the turn running; only TaskCreated cancels creation.
-  if (event === "TaskCreated" || event === "TaskCompleted") return { systemMessage: answer.reason }
+  // The reference returns this reason as a tool error: the todo write is refused
+  // with the reason as feedback, while the turn keeps running (no continue:false).
+  // systemMessage keeps the human-visible notification from the previous behavior.
+  if (event === "TaskCreated" || event === "TaskCompleted")
+    return { decision: "block", reason: answer.reason, systemMessage: answer.reason }
   return { decision: "block", reason: answer.reason, systemMessage: answer.reason }
 }
 
@@ -1095,10 +1152,12 @@ export function mergeSettings(layers: Settings[]): Settings {
       acc.push(...(matchers ?? []))
     }
   }
-  // requireTrust is chain-wide: any layer opting in enables enforcement.
-  // allowUntrusted merges the same way here, but readChain strips it from
-  // non-global layers before merge — only the global layer's opt-out survives.
-  if (layers.some((l) => l.requireTrust === true)) out.requireTrust = true
+  // The trust gate defaults ON. `true` from any layer forces it; an explicit
+  // `false` can only survive from the global layer (readChain strips the rest),
+  // so its presence means "the user disabled the gate". allowUntrusted merges
+  // the same way — only the global layer's escape hatch survives.
+  if (layers.some((l) => l.requireTrust === false)) out.requireTrust = false
+  else if (layers.some((l) => l.requireTrust === true)) out.requireTrust = true
   if (layers.some((l) => l.allowUntrusted === true)) out.allowUntrusted = true
   for (const layer of layers) if (layer.disableAllHooks !== undefined) out.disableAllHooks = layer.disableAllHooks
   if (layers.some((l) => l.allowedHttpHookUrls !== undefined))
@@ -1138,7 +1197,7 @@ function chainCandidates(
     { scope: "global", file: path.join(opencodeGlobal, "hooks.json") },
     { scope: "project", file: path.join(directory, ".opencode", "hooks.json") },
   ]
-  if (worktree && worktree !== directory) {
+  if (hasWorktreeLayer(directory, worktree)) {
     candidates.push({ scope: "worktree", file: path.join(worktree, ".opencode", "hooks.json") })
   }
   return candidates
@@ -1179,6 +1238,15 @@ function readChain(
         scope,
       })
       data.allowUntrusted = undefined
+    }
+    // `requireTrust: false` is the global opt-out. A project or worktree must
+    // not be able to switch the gate off for its own hooks.
+    if (scope !== "global" && data.requireTrust === false) {
+      log.warn("requireTrust:false ignored: only the global hooks.json layer may disable the trust gate", {
+        file,
+        scope,
+      })
+      data.requireTrust = undefined
     }
     warnUnsupportedFields(data.hooks, path.dirname(file))
     layers.push(data)
@@ -1269,7 +1337,7 @@ function deprecatedSettingsPaths(opencodeGlobal: string, directory: string, work
     path.join(directory, ".opencode", "settings.json"),
     path.join(directory, ".opencode", "settings.local.json"),
   ]
-  if (worktree && worktree !== directory) {
+  if (hasWorktreeLayer(directory, worktree)) {
     paths.push(
       path.join(worktree, ".opencode", "settings.json"),
       path.join(worktree, ".opencode", "settings.local.json"),
@@ -1324,6 +1392,18 @@ export function __resetDeprecatedWarnings(): void {
   warnedDeprecatedHooks.clear()
 }
 
+/**
+ * @internal Test-only: the hooks.json layer candidates for a project, so tests
+ * can assert which files the chain would read without writing to them.
+ */
+export { chainCandidates as __chainCandidates }
+
+/**
+ * @internal Test-only: the deprecated settings.json paths scanned for a stale
+ * `hooks` field, exported for the same reason as `__chainCandidates`.
+ */
+export { deprecatedSettingsPaths as __deprecatedSettingsPaths }
+
 /** Diagnose fields that have no effect for the selected handler type. */
 export function detectUnsupportedFields(
   hooks: Settings["hooks"],
@@ -1377,6 +1457,24 @@ function timeoutFor(entry: HookCommand, event: HookEvent): number {
 const KILL_GRACE_MS = 2_000
 const DRAIN_MS = 500
 
+/**
+ * A deleted working directory must not disable hooks for the rest of the
+ * session: the reference falls back to the session-start directory, the
+ * project root, home, then temp. The instance directory (`cwd`) is already
+ * the first candidate; the stable worktree root survives its deletion.
+ */
+function resolveHookCwd(candidates: readonly (string | undefined)[]): string {
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      if (statSync(candidate).isDirectory()) return candidate
+    } catch {
+      // Missing or unreadable: try the next fallback.
+    }
+  }
+  return os.tmpdir()
+}
+
 function execShell(
   entry: HookCommand,
   stdinJSON: string,
@@ -1385,15 +1483,21 @@ function execShell(
   event: HookEvent,
   environmentFile?: string,
   environment?: Record<string, string | undefined>,
+  effort?: HookEffort,
+  /** Stable project root; `cwd` above stays the working directory of the child. */
+  projectDir?: string,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string; spawnError?: string; suspect?: boolean }> {
   return new Promise((resolve) => {
     if (signal.aborted) {
       resolve({ exitCode: null, stdout: "", stderr: "" })
       return
     }
+    // CLAUDE_PROJECT_DIR names the project, not the (possibly nested) working
+    // directory, so both the exported variable and its placeholder use it.
+    const hookProjectDir = projectDir ?? cwd
     const timeoutMs = timeoutFor(entry, event)
     const shell = resolveHookShell(entry)
-    const expandedCommand = expandCommand(entry, { cwd, powershell: shell.kind === "powershell" })
+    const expandedCommand = expandCommand(entry, { cwd: hookProjectDir, powershell: shell.kind === "powershell" })
 
     const command = commandText(entry)
     log.debug("hook spawn", { command: command.slice(0, 200), cwd, timeoutMs })
@@ -1415,7 +1519,8 @@ function execShell(
       return
     }
 
-    const extraEnv: Record<string, string> = { CLAUDE_PROJECT_DIR: cwd }
+    const extraEnv: Record<string, string> = { CLAUDE_PROJECT_DIR: hookProjectDir }
+    if (effort) extraEnv.CLAUDE_EFFORT = effort
     if (entry.__sourceDir) {
       extraEnv.CLAUDE_PLUGIN_ROOT = entry.__sourceDir
       extraEnv.CLAUDE_PLUGIN_DATA = computeDataDir(entry.__sourceDir)
@@ -1443,13 +1548,17 @@ function execShell(
     // SessionStart may unset an inherited variable. Spawner APIs can stringify
     // undefined, so remove it explicitly before creating the child.
     for (const [name, value] of Object.entries(childEnv)) if (value === undefined) delete childEnv[name]
-    const child = spawn(expandedCommand, entry.args?.map((arg) => expandTemplate(entry, arg, true, { cwd })) ?? [], {
-      cwd,
-      shell: entry.args === undefined ? shell.file : false,
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    })
+    const child = spawn(
+      expandedCommand,
+      entry.args?.map((arg) => expandTemplate(entry, arg, true, { cwd: hookProjectDir })) ?? [],
+      {
+        cwd,
+        shell: entry.args === undefined ? shell.file : false,
+        env: childEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      },
+    )
 
     let stdout = ""
     let stderr = ""
@@ -1730,6 +1839,24 @@ function envelopeCwd(payload: HookPayload, cwd: string): string {
 
 type HookEnvelope = Record<string, unknown> & { hook_event_name: HookEvent }
 
+/**
+ * CC emits `effort` only for events that fire "within a tool-use context" and
+ * only when the active model supports the effort parameter. The fork cannot ask
+ * every provider whether effort is supported, so it reports the field exactly
+ * when a variant is known (see `variantToEffort`) and the event is in that
+ * context — the tool-event family plus the turn-terminating Stop events.
+ */
+const EFFORT_EVENTS: ReadonlySet<HookEvent> = new Set<HookEvent>([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+  "PermissionDenied",
+  "Stop",
+  "StopFailure",
+  "SubagentStop",
+])
+
 function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: string): HookEnvelope {
   // Provider/MCP auth notifications can occur before a user session exists.
   // An empty sentinel in the internal context is not a session identity.
@@ -1739,6 +1866,12 @@ function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: stri
     ...(!sessionlessNotification ? { session_id: ctx.sessionID, transcript_path: ctx.transcriptPath } : {}),
     cwd: envelopeCwd(payload, cwd),
   }
+  // `prompt_id` and `scratchpad_dir` are session/prompt-scoped, so the same
+  // sessionless-notification rule applies. Both are omitted rather than sent
+  // as empty strings: "absent" is part of CC's contract.
+  if (!sessionlessNotification && ctx.promptID) base.prompt_id = ctx.promptID
+  if (!sessionlessNotification && ctx.scratchpadDir) base.scratchpad_dir = ctx.scratchpadDir
+  if (ctx.effort && EFFORT_EVENTS.has(payload.event)) base.effort = { level: ctx.effort }
   // Explicit ctx.permissionMode wins; otherwise derive from agentType so callers only pass agent.
   const permissionMode = ctx.permissionMode ?? (ctx.agentType ? agentToPermissionMode(ctx.agentType) : undefined)
   if (permissionMode) base.permission_mode = permissionMode
@@ -1783,7 +1916,6 @@ function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: stri
     case "PermissionRequest":
       return {
         ...base,
-        ...(payload.toolUseID !== undefined ? { tool_use_id: payload.toolUseID } : {}),
         tool_name: payload.toolName,
         tool_input: payload.toolInput,
         ...(payload.permissionSuggestions !== undefined
@@ -2098,9 +2230,14 @@ function matcherTarget(payload: HookPayload, ctx: TriggerContext): string | unde
  */
 function canonicalModelMatcherName(raw: string): string | undefined {
   const name = raw.replace(/\[1m\]$/i, "")
-  const match = name.match(/(?:^|[./:])claude-(opus|sonnet|haiku)-(\d+)(?:[.-](\d+))?(?=$|[-./:])/i)
+  const match = name.match(/(?:^|[./:@])claude-(opus|sonnet|haiku)-(\d+)(?:[.@-](\d+))?(?=$|[-./:@])/i)
   if (!match) return undefined
-  return `claude-${match[1].toLowerCase()}-${match[2]}${match[3] ? `-${match[3]}` : ""}`
+  const minor = match[3]
+  // An 8-digit date (claude-sonnet-4-20250514) and the ".0" alias minor
+  // (claude-sonnet-4.0) name the same undated model; keeping either would make
+  // an exact canonical matcher silently miss the switch.
+  const keepMinor = minor !== undefined && minor !== "0" && !/^\d{8}$/.test(minor)
+  return `claude-${match[1].toLowerCase()}-${match[2]}${keepMinor ? `-${minor}` : ""}`
 }
 
 /**
@@ -2189,6 +2326,8 @@ interface StopRewakeChain {
 interface State {
   settings: Settings
   cwd: string
+  /** Stable project root; survives deletion of `cwd`, so hooks can fall back to it. */
+  worktree: string
   /**
    * Deduplicated additionalContext strings, bucketed per sessionID. Each
    * session sees every distinct context once; a second session is NOT
@@ -2286,6 +2425,14 @@ interface HookHandler<E extends HookCommand = HookCommand> {
     environment?: Record<string, string | undefined>,
     /** Official tool name from the runtime's real binding; internal identity, never configuration. */
     canonicalName?: string,
+    /** Active effort for this trigger, exported to command hooks as `CLAUDE_EFFORT`. */
+    effort?: HookEffort,
+    /**
+     * Stable project root for `CLAUDE_PROJECT_DIR` and its template placeholder.
+     * The working directory may move inside the project (cd / MoveSession); the
+     * project root does not. Defaults to the resolved working directory.
+     */
+    projectDir?: string,
   ) => Effect.Effect<HookExecution>
 }
 
@@ -2296,6 +2443,8 @@ interface HookExecution {
   exitCode?: number | null
   /** True only after the handler actually ran successfully; absent means failure. */
   succeeded?: boolean
+  /** Failure text for the user-visible `<hook name> hook error` notice; never model context. */
+  failureMessage?: string
 }
 
 const claudeTools = new Map<string, { name: string; fields: readonly (readonly [string, string])[] }>([
@@ -2353,7 +2502,7 @@ function blocksOnFailure(entry: HookCommand, event: HookEvent): boolean {
 const commandHandler: HookHandler = {
   type: "command",
   run: Effect.fn("SettingsHook.handler.command")(
-    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName) {
+    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName, effort, projectDir) {
       const event = envelope.hook_event_name
       // Translate at this entry's command boundary, never the shared native envelope.
       const toolName = typeof envelope.tool_name === "string" ? envelope.tool_name : ""
@@ -2374,7 +2523,7 @@ const commandHandler: HookHandler = {
           : envelope,
       )
       const { exitCode, stdout, stderr, spawnError, suspect } = yield* Effect.promise((signal) =>
-        execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment),
+        execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment, effort, projectDir),
       )
       const failureBlocks = blocksOnFailure(entry, event)
 
@@ -2382,6 +2531,7 @@ const commandHandler: HookHandler = {
         return {
           json: undefined,
           exitCode: 1,
+          failureMessage: spawnError,
           exitBlock: failureBlocks ? `hook failed; blocking because onFailure is "block": ${spawnError}` : undefined,
         }
 
@@ -2415,7 +2565,13 @@ const commandHandler: HookHandler = {
           MISSING_FILE_STDERR.test(stderr)
         ) {
           log.warn("hook exit 2 reports a missing file; treating as non-blocking", { command: commandText(entry) })
-          return { json: undefined, exitCode, succeeded: false, exitBlock: undefined }
+          return {
+            json: undefined,
+            exitCode,
+            succeeded: false,
+            failureMessage: stderr.trim() || "hook exited with code 2",
+            exitBlock: undefined,
+          }
         }
         const outcome = sync(stdout)
         const json = outcome.kind === "json" ? outcome.value : undefined
@@ -2442,6 +2598,7 @@ const commandHandler: HookHandler = {
           rawStdout: undefined,
           exitCode: null,
           succeeded: false,
+          failureMessage: `hook timed out after ${entry.timeout ?? DEFAULT_TIMEOUT_MS / 1000}s`,
           exitBlock: failureBlocks ? 'hook timed out; blocking because onFailure is "block"' : undefined,
         }
       }
@@ -2455,6 +2612,7 @@ const commandHandler: HookHandler = {
         return {
           json: outcome.kind === "json" ? outcome.value : undefined,
           exitCode,
+          failureMessage: stderr.trim() || `hook exited with code ${exitCode}`,
           exitBlock: failureBlocks ? `hook failed; blocking because onFailure is "block": ${stderr.trim()}` : undefined,
         }
       }
@@ -2475,6 +2633,7 @@ const commandHandler: HookHandler = {
         rawStdout: stdout,
         exitCode,
         succeeded: !invalidJson,
+        failureMessage: invalidJson ? "hook returned invalid JSON" : undefined,
         exitBlock:
           invalidJson && failureBlocks ? `hook invalid JSON; blocking because onFailure is "block"` : undefined,
       }
@@ -2515,11 +2674,22 @@ const mcpHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
+        failureMessage: hookFailureText(exit.cause),
         exitBlock: undefined,
       }
     }
     return { ...exit.value, succeeded: exit.value.succeeded ?? true }
   }),
+}
+
+/** Readable failure text for the user-visible hook-error notice; never the raw cause. */
+function hookFailureText(cause: Cause.Cause<unknown>): string {
+  // invokeMcpHook throws, and a throw inside Effect.gen is a defect rather than
+  // a typed failure, so both reason kinds carry the message the user needs.
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause)) ?? cause.reasons.find(Cause.isDieReason)?.defect
+  if (Cause.isTimeoutError(error)) return "hook timed out"
+  if (error instanceof Error) return error.message
+  return String(error ?? "hook failed")
 }
 
 const mcpToolHandler: HookHandler = {
@@ -2540,6 +2710,7 @@ const mcpToolHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
+        failureMessage: hookFailureText(exit.cause),
         exitBlock: undefined,
       }
     }
@@ -2548,16 +2719,26 @@ const mcpToolHandler: HookHandler = {
 }
 
 /**
- * `type: "http"` handler. Per CC protocol, `entry.command` is the endpoint URL;
- * the envelope is POSTed as JSON with `entry.headers` applied verbatim (auth
- * tokens etc.). 2xx → body parsed via the same parseStdout path as command
- * stdout. Non-2xx → synthetic `exitBlock` so the trigger aggregator surfaces it
- * as a block. Network errors / timeouts → log.warn + silent allow, mirroring
- * commandHandler's spawnError behavior (hooks must never crash the host).
+ * `type: "http"` handler. Per CC protocol, `url` (legacy: `command`) is the
+ * endpoint; the envelope is POSTed once as JSON with `headers` after `$VAR` /
+ * `${VAR}` interpolation restricted to `allowedEnvVars` (unlisted variables
+ * become ""). Timeout comes from `timeoutFor` (600 s default; `timeout`
+ * overrides).
  *
- * Factory takes the resolved HttpClient so the HookHandler.run signature stays
- * `R = never` (the WP-4A interface contract). Captures `http` in closure scope —
- * registered once per layer construction inside the layer's Effect.gen block.
+ * 2xx empty body → success with no output. 2xx JSON object → parsed with the
+ * same HookOutputSchema as command stdout; a schema mismatch is a non-blocking
+ * error. 2xx with any other body (plain text, array, multiple JSON lines) →
+ * non-blocking error; the text is never injected into context.
+ *
+ * Non-2xx, connection failure and timeout → non-blocking error (exitCode 1;
+ * null on timeout, output discarded). `onFailure: "block"` on a foreground,
+ * non-exempt event is the only path that turns them into a synthetic
+ * `exitBlock`. There is no retry: one POST per trigger. Hooks must never crash
+ * the host.
+ *
+ * The handler is a plain HookHandler that resolves HttpClient per run via
+ * Effect.serviceOption, so `run` stays `R = never` (the WP-4A interface
+ * contract); it is registered once in the handler map below.
  */
 const httpHandler: HookHandler = {
   type: "http",
@@ -2592,6 +2773,7 @@ const httpHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
+        failureMessage: hookFailureText(exit.cause),
         exitBlock: blocksOnFailure(entry, envelope.hook_event_name)
           ? `http hook failed; blocking because onFailure is "block"`
           : undefined,
@@ -2603,6 +2785,7 @@ const httpHandler: HookHandler = {
       return {
         json: undefined,
         exitCode: 1,
+        failureMessage: `hook returned status ${status}`,
         exitBlock: blocksOnFailure(entry, envelope.hook_event_name)
           ? `http hook returned status ${status}; blocking because onFailure is "block"`
           : undefined,
@@ -2614,6 +2797,7 @@ const httpHandler: HookHandler = {
     return {
       json,
       succeeded: !!json,
+      failureMessage: json ? undefined : "hook returned invalid JSON",
       exitBlock:
         !json && blocksOnFailure(entry, envelope.hook_event_name)
           ? `http hook invalid JSON; blocking because onFailure is "block"`
@@ -2891,6 +3075,7 @@ export const layer = Layer.effect(
           settings: chain.settings,
           hooksList: chain.summaries,
           cwd: instCtx.directory,
+          worktree: instCtx.worktree,
           seen: new Map<string, Set<string>>(),
           once: new Map<string, WeakSet<HookCommand>>(),
           onceRunning: new Map<string, WeakMap<HookCommand, string>>(),
@@ -3005,8 +3190,17 @@ export const layer = Layer.effect(
       environmentFile?: string,
       environment?: Record<string, string | undefined>,
       canonicalName?: string,
+      projectDir?: string,
+      effort?: HookEffort,
     ) {
       using _ = log.time("runEntry", { type: entry.type, command: commandText(entry).slice(0, 80) })
+      const resolvedCwd = resolveHookCwd([cwd, projectDir, os.homedir(), os.tmpdir()])
+      if (resolvedCwd !== cwd)
+        log.warn("hook working directory unavailable; using fallback", { cwd, fallback: resolvedCwd })
+      // CLAUDE_PROJECT_DIR names the project root for the whole session, even
+      // when the session was opened in (or moved to) a checkout subdirectory.
+      // A directory outside the project, or a non-VCS "/" worktree, keeps cwd.
+      const hookProjectDir = hasWorktreeLayer(resolvedCwd, projectDir) ? projectDir : resolvedCwd
       if (entry.type === "http") {
         const settings = (yield* InstanceState.get(state)).settings
         if (!httpHookUrlAllowed(httpUrl(entry), settings.allowedHttpHookUrls)) {
@@ -3037,7 +3231,7 @@ export const layer = Layer.effect(
         }
       }
       const result = yield* handler
-        .run(entry, envelope, cwd, inHook, environmentFile, environment, canonicalName)
+        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName, effort, hookProjectDir)
         .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(handlerContext, current)))
       return result
     })
@@ -3113,9 +3307,15 @@ export const layer = Layer.effect(
         const queued = state.asyncResults.get(sessionID) ?? { additionalContexts: [], systemMessages: [] }
         // Ordinary async JSON fields are both model feedback on the next turn;
         // unlike synchronous systemMessage, neither is an ephemeral UI warning.
-        if (result.json?.systemMessage) queued.additionalContexts.push(result.json.systemMessage)
+        // Sanitize at the queue's only producer: both consumers (V1 SessionPrompt
+        // and the V2 turn bridge) drain raw strings, so an escaped/bounded value
+        // must already be in the queue. This also keeps an oversized payload from
+        // accumulating in memory while it waits for the next turn.
+        const spillDir = yield* HookTranscript.scratchpadDir(sessionID)
+        if (result.json?.systemMessage)
+          queued.additionalContexts.push(sanitizeHookContext(result.json.systemMessage, spillDir))
         if (hso && "additionalContext" in hso && typeof hso.additionalContext === "string")
-          queued.additionalContexts.push(hso.additionalContext)
+          queued.additionalContexts.push(sanitizeHookContext(hso.additionalContext, spillDir))
         state.asyncResults.set(sessionID, queued)
         return
       }
@@ -3127,8 +3327,9 @@ export const layer = Layer.effect(
           log.debug("async Stop callback discarded: chain invalidated", { sessionID, event })
           return
         }
-        if (stopChain.count >= MAX_STOP_CONTINUATIONS) {
-          log.warn("async Stop hook continuation limit reached", { sessionID, limit: MAX_STOP_CONTINUATIONS })
+        const continuationCap = stopHookBlockCap()
+        if (stopChain.count >= continuationCap) {
+          log.warn("async Stop hook continuation limit reached", { sessionID, limit: continuationCap })
           return
         }
         // Reserve before yielding so concurrent completions share the same bound.
@@ -3139,7 +3340,12 @@ export const layer = Layer.effect(
       // is still discarded, but never queue context or start a new turn from this event.
       if (event === "StopFailure") return
 
-      const text = buildRewakePrompt(entry, event, result.exitBlock ?? parts.join("\n"))
+      const text = buildRewakePrompt(
+        entry,
+        event,
+        result.exitBlock ?? parts.join("\n"),
+        yield* HookTranscript.scratchpadDir(sessionID),
+      )
       // The token rides along so SessionPrompt can re-check validity at the
       // real admission point — cancel can invalidate after this completion
       // check but before the rewake lands.
@@ -3246,28 +3452,31 @@ export const layer = Layer.effect(
       }
 
       // ── WP-6B workspace-trust gate ──────────────────────────────
-      // OPT-IN enforcement: enabled only when any chain layer sets `requireTrust`
-      // OR env OPENCODE_HOOKS_REQUIRE_TRUST=1. When enabled and the working
-      // directory is not on the persisted trust list, ALL hooks are silently
-      // skipped (log.warn pointing at the trust file + cwd, empty TriggerResult).
-      // A layer may declare `allowUntrusted: true` to opt out of the gate. NEVER
-      // deny / throw — a trust gate that throws becomes a denial vector. Default
-      // (enforcement off) is byte-for-byte the prior behavior (zero gate).
-      const requireTrust = s.settings.requireTrust === true || process.env.OPENCODE_HOOKS_REQUIRE_TRUST === "1"
-      if (requireTrust && !isTrusted(s.cwd) && s.settings.allowUntrusted !== true) {
-        log.warn("hooks skipped: workspace not trusted", {
+      // The gate is ON by default and applies to settings-file matchers only:
+      // while `s.cwd` is untrusted, hooks.json entries are held back, matching
+      // Claude Code's workspace-trust rule for settings files. Runtime-registered
+      // session hooks (plugins, builtins, the session-hook HTTP API, user-scope
+      // agent frontmatter) are not repository configuration and keep running;
+      // project subagent frontmatter has its own registration-time trust check in
+      // SessionHooks.
+      //
+      // Opt-outs: a GLOBAL hooks.json `requireTrust: false` (readChain strips the
+      // field from project/worktree layers) or env OPENCODE_HOOKS_REQUIRE_TRUST=0.
+      // Env `=1` and any layer's explicit `true` force the gate. A layer may also
+      // declare `allowUntrusted: true` (global only) to exempt its directory.
+      // NEVER deny / throw — a trust gate that throws becomes a denial vector.
+      //
+      // Filtering only the file matchers (instead of early-returning) also keeps
+      // the deferred SessionHooks.clear on SessionEnd reachable in an untrusted
+      // workspace, so registered hooks cannot leak for the process lifetime.
+      const envTrust = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+      const gateEnabled = envTrust === "1" ? true : envTrust === "0" ? false : s.settings.requireTrust !== false
+      const fileHooksAllowed = !hasFile || !gateEnabled || s.settings.allowUntrusted === true || isTrusted(s.cwd)
+      if (!fileHooksAllowed) {
+        log.warn("settings hooks skipped: workspace not trusted", {
           cwd: s.cwd,
           trustFile: trustFilePath(),
         })
-        // Still free this session's hook bucket on SessionEnd — the trust gate
-        // is the one early-return path that would otherwise skip the deferred
-        // SessionHooks.clear (mirrors the short-circuit / empty-matcher / end
-        // return points), leaving an untrusted session's registered hooks
-        // leaked in memory for the process lifetime.
-        if (payload.event === "SessionEnd" && ctx.sessionID) {
-          yield* clearEndedSession(s, ctx.sessionID)
-        }
-        return result
       }
 
       // ── Session-scoped hook resolution (WP-5D) ────────────────
@@ -3288,7 +3497,7 @@ export const layer = Layer.effect(
             )
           : []
 
-      const fileMatchers = s.settings.hooks?.[payload.event] ?? []
+      const fileMatchers = fileHooksAllowed ? (s.settings.hooks?.[payload.event] ?? []) : []
       // Tag matchers with their origin so once-cleanup can remove session ones
       // after execution. The settings chain matchers carry no _sessionEntry.
       type RunMatcher = HookMatcher & { _sessionEntry?: SessionHookEntry; _sessionOwner?: string }
@@ -3322,14 +3531,19 @@ export const layer = Layer.effect(
       }
 
       const targets = matcherTargets(payload, ctx)
-      const envelope = buildStdinEnvelope(payload, ctx, s.cwd)
+      // CC's `scratchpad_dir`: create it only now, after the short-circuits, so
+      // sessions that never run a hook leave no directory behind. A failed
+      // mkdir makes the field absent instead of failing the hook.
+      const scratchpadDir =
+        ctx.scratchpadDir ?? (ctx.sessionID ? yield* HookTranscript.scratchpadDir(ctx.sessionID) : undefined)
+      const envelope = buildStdinEnvelope(payload, scratchpadDir ? { ...ctx, scratchpadDir } : ctx, s.cwd)
       // Identical handlers matched by several groups/layers run once per trigger.
       const ran = new Set<string>()
       // additionalContext dedup: only within this trigger for tool events,
       // per session otherwise (see PER_TRIGGER_DEDUP_EVENTS).
       const local = new Set<string>()
       const addContext = (raw: string) => {
-        const text = sanitizeHookContext(raw)
+        const text = sanitizeHookContext(raw, scratchpadDir)
         if (local.has(text)) return
         local.add(text)
         // SubagentStart lands in the target child's history, so only that child's own
@@ -3354,6 +3568,8 @@ export const layer = Layer.effect(
             ctx.environmentFile,
             ctx.environment,
             ctx.canonicalToolName,
+            s.worktree,
+            ctx.effort,
           ).pipe(
             Effect.ensuring(
               entry.statusMessage && ctx.sessionID
@@ -3602,7 +3818,7 @@ export const layer = Layer.effect(
           // kill the session. Catch defects here at the single entry-execution point
           // (covers all handler types: command/mcp/http/prompt/agent) → silent allow,
           // log, and continue to the next entry.
-          const { json, exitBlock, rawStdout, exitCode, succeeded } = yield* Fiber.join(pending).pipe(
+          const { json, exitBlock, rawStdout, exitCode, succeeded, failureMessage } = yield* Fiber.join(pending).pipe(
             Effect.catchDefect((defect) => {
               log.warn("hook entry defect swallowed (host protected)", {
                 event: payload.event,
@@ -3615,9 +3831,17 @@ export const layer = Layer.effect(
                 rawStdout: undefined,
                 exitCode: undefined,
                 succeeded: false,
+                failureMessage: undefined,
               })
             }),
           )
+          // Reference parity: a hook that failed without blocking still leaves a
+          // user-visible `<hook name> hook error` notice. It never enters model
+          // context, tool feedback, or any hook decision.
+          if (succeeded !== true && !exitBlock && failureMessage)
+            (result.hookErrors ??= []).push(
+              `${group.matcher ? `${payload.event}:${group.matcher}` : payload.event} hook error: ${sanitizeHookContext(failureMessage, scratchpadDir)}`,
+            )
           if (group._sessionEntry?.once && group._sessionOwner)
             yield* settleGroup(
               `${group._sessionOwner}:${group._sessionEntry.id}`,
@@ -3665,7 +3889,8 @@ export const layer = Layer.effect(
             "WorktreeCreate",
             "WorktreeRemove",
           ])
-          if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event)) result.systemMessages.push(sanitizeHookContext(exitBlock))
+          if (exitBlock && SHOW_STDERR_EVENTS.has(payload.event))
+            result.systemMessages.push(sanitizeHookContext(exitBlock, scratchpadDir))
           if (exitBlock && payload.event !== "PermissionRequest" && !observational.has(payload.event)) {
             result.blocked = { reason: exitBlock, command: commandText(entry) }
             // A failed or exit-2 PreToolUse hook is a deny that outranks defer, and no JSON
@@ -3785,7 +4010,7 @@ export const layer = Layer.effect(
             payload.event !== "Elicitation" &&
             payload.event !== "ElicitationResult"
           )
-            result.systemMessages.push(sanitizeHookContext(json.systemMessage))
+            result.systemMessages.push(sanitizeHookContext(json.systemMessage, scratchpadDir))
           if ((payload.event === "FileChanged" || payload.event === "CwdChanged") && json.watchPaths)
             result.watchPaths = json.watchPaths
           if (json.terminalSequence && validTerminalSequence(json.terminalSequence))
@@ -3890,7 +4115,10 @@ export const layer = Layer.effect(
               result.elicitation = { action: hso.action, content: "content" in hso ? hso.content : undefined }
           }
           if (payload.event === "SessionStart" && hso) {
-            if ("initialUserMessage" in hso) result.initialUserMessage = hso.initialUserMessage
+            // This value is admitted as a user turn, so it gets the same reminder
+            // escaping and length bound as every other hook-supplied string.
+            if (hso.initialUserMessage !== undefined)
+              result.initialUserMessage = sanitizeHookContext(hso.initialUserMessage, scratchpadDir)
             if ("watchPaths" in hso) result.watchPaths = hso.watchPaths
             if ("sessionTitle" in hso) result.sessionTitle = hso.sessionTitle
             if ("reloadSkills" in hso) result.reloadSkills = hso.reloadSkills
@@ -4036,8 +4264,7 @@ export const layer = Layer.effect(
       token: unknown,
     ) {
       const s = yield* InstanceState.get(state)
-      for (const [key, chain] of s.stopRewakeChains)
-        if (key.endsWith(`:${sessionID}`) && chain === token) return true
+      for (const [key, chain] of s.stopRewakeChains) if (key.endsWith(`:${sessionID}`) && chain === token) return true
       return false
     })
 

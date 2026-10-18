@@ -1,5 +1,7 @@
-import { decodeJsonRecord } from "../lib/hook-json"
+import { decodeJsonRecord, decodeRecord, decodeString } from "../lib/hook-json"
 import { SessionHooks } from "@/hook/session-hooks"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
 import { expect } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -65,6 +67,8 @@ const lsp = Layer.succeed(
 )
 
 const root = LayerNode.group([
+  // HookMessage notices (stopReason landing) are published through this bridge.
+  EventV2Bridge.node,
   SessionPrompt.node,
   SessionHooks.node,
   Session.node,
@@ -180,6 +184,47 @@ it.live("SDK-created child session emits parent-scoped SubagentStop", () =>
       expect(events).toEqual([
         expect.objectContaining({ session_id: parent.id, agent_id: child.id, hook_event_name: "SubagentStop" }),
       ])
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+// `{ continue: false, stopReason }` cannot reach the model (the turn stops), but
+// CC still shows the reason; the V2 turn bridge lands it as a HookMessage, and
+// the Task tool's SubagentStop consumer must do the same.
+it.live("SubagentStop continue:false lands its stopReason as a user-visible notice", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const notice = JSON.stringify({ continue: false, stopReason: "SUBAGENT-STOPPED" })
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+        await fs.writeFile(
+          path.join(dir, ".opencode", "hooks.json"),
+          JSON.stringify({
+            SubagentStop: [{ hooks: [{ type: "command", command: `printf '%s' '${notice}'` }] }],
+          }),
+        )
+      })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const events = yield* EventV2Bridge.Service
+      const session = yield* sessions.create({
+        title: "Subagent stop reason",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const notices: string[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== LegacyEvent.HookMessage.type) return Effect.void
+        const data = decodeRecord(event.data)
+        if (data.sessionID === session.id) notices.push(decodeString(data.message))
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => (typeof off === "function" ? Effect.sync(off) : off))
+      yield* llm.tool("task", { description: "sub task", prompt: "say something", subagent_type: "general" })
+      yield* llm.text("sub answer")
+      yield* llm.text("parent done")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "delegate" }] })
+      expect(notices).toContain("SUBAGENT-STOPPED")
     }),
     { git: true, config: providerCfg },
   ),

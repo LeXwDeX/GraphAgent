@@ -7,6 +7,8 @@ import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { testEffect } from "../lib/effect"
+import { TestInstance } from "../fixture/fixture"
+import { hookCommand } from "../fixture/claude-hook"
 
 const testLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
@@ -117,5 +119,234 @@ describe("matchers on non-tool events", () => {
         expect(r.additionalContexts).toEqual(["prompt-always"])
       }),
     { init: write },
+  )
+})
+
+// ConfigChange, StopFailure, InstructionsLoaded, Elicitation and ElicitationResult
+// filter on their own target field. None of them consumes additionalContext, so
+// observe execution through marker files instead of hook output.
+const markerHook = (file: string) => ({
+  type: "command",
+  command: hookCommand(`require("node:fs").writeFileSync(${JSON.stringify(file)}, "1")`),
+})
+
+const writeMarkers = (dir: string) =>
+  Effect.promise(async () => {
+    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    const marker = (name: string) => markerHook(path.join(dir, `marker-${name}`))
+    await fs.writeFile(
+      path.join(dir, ".opencode", "hooks.json"),
+      JSON.stringify({
+        ConfigChange: [{ matcher: "project_settings", hooks: [marker("config-change")] }],
+        StopFailure: [{ matcher: "rate_limit|overloaded", hooks: [marker("stop-failure")] }],
+        InstructionsLoaded: [{ matcher: "session_start", hooks: [marker("instructions-loaded")] }],
+        Elicitation: [{ matcher: "fixture", hooks: [marker("elicitation")] }],
+        ElicitationResult: [{ matcher: "fixture", hooks: [marker("elicitation-result")] }],
+      }),
+    )
+  })
+
+const markerExists = (directory: string, name: string) =>
+  Effect.promise(() =>
+    fs.access(path.join(directory, `marker-${name}`)).then(
+      () => true,
+      () => false,
+    ),
+  )
+
+describe("matcher targets on lifecycle and elicitation events", () => {
+  it.instance(
+    "ConfigChange matcher filters on source",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const { directory } = yield* TestInstance
+        yield* hook.trigger(
+          { event: "ConfigChange", source: "user_settings", configPath: "/tmp/hooks.json" },
+          {
+            sessionID: "ses_matcher_config_miss",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "config-change")).toBe(false)
+        yield* hook.trigger(
+          { event: "ConfigChange", source: "project_settings", configPath: "/tmp/hooks.json" },
+          {
+            sessionID: "ses_matcher_config_hit",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "config-change")).toBe(true)
+      }),
+    { init: writeMarkers },
+  )
+
+  it.instance(
+    "StopFailure matcher filters on error, including the exact-name list branch",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const { directory } = yield* TestInstance
+        yield* hook.trigger(
+          { event: "StopFailure", stopHookActive: false, error: "server_error" },
+          {
+            sessionID: "ses_matcher_stopfail_miss",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "stop-failure")).toBe(false)
+        yield* hook.trigger(
+          { event: "StopFailure", stopHookActive: false, error: "overloaded" },
+          {
+            sessionID: "ses_matcher_stopfail_hit",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "stop-failure")).toBe(true)
+      }),
+    { init: writeMarkers },
+  )
+
+  it.instance(
+    "InstructionsLoaded matcher filters on load reason",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const { directory } = yield* TestInstance
+        yield* hook.trigger(
+          { event: "InstructionsLoaded", path: "/tmp/AGENTS.md", loadReason: "compact" },
+          {
+            sessionID: "ses_matcher_instructions_miss",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "instructions-loaded")).toBe(false)
+        yield* hook.trigger(
+          { event: "InstructionsLoaded", path: "/tmp/AGENTS.md", loadReason: "session_start" },
+          {
+            sessionID: "ses_matcher_instructions_hit",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "instructions-loaded")).toBe(true)
+      }),
+    { init: writeMarkers },
+  )
+
+  it.instance(
+    "Elicitation matcher filters on MCP server name",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const { directory } = yield* TestInstance
+        yield* hook.trigger(
+          { event: "Elicitation", serverName: "other", message: "hi" },
+          {
+            sessionID: "ses_matcher_elicitation_miss",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "elicitation")).toBe(false)
+        yield* hook.trigger(
+          { event: "Elicitation", serverName: "fixture", message: "hi" },
+          {
+            sessionID: "ses_matcher_elicitation_hit",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "elicitation")).toBe(true)
+      }),
+    { init: writeMarkers },
+  )
+
+  it.instance(
+    "ElicitationResult matcher filters on MCP server name",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const { directory } = yield* TestInstance
+        yield* hook.trigger(
+          { event: "ElicitationResult", serverName: "other", action: "accept" },
+          {
+            sessionID: "ses_matcher_elicitation_result_miss",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "elicitation-result")).toBe(false)
+        yield* hook.trigger(
+          { event: "ElicitationResult", serverName: "fixture", action: "accept" },
+          {
+            sessionID: "ses_matcher_elicitation_result_hit",
+            transcriptPath: "",
+          },
+        )
+        expect(yield* markerExists(directory, "elicitation-result")).toBe(true)
+      }),
+    { init: writeMarkers },
+  )
+})
+
+// Model switch matchers match the canonical Claude model name. Dated suffixes
+// (`-20250514`), `.0` alias minors and provider-qualified spellings must all
+// converge on `claude-<family>-<major>[-<minor>]`; otherwise an exact canonical
+// matcher silently skips the switch.
+// PreModelSwitch controls the switch through permissionDecision and does not
+// consume additionalContext; PostModelSwitch injects context.
+const denySwitch = {
+  type: "command",
+  command: `printf '%s' '${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreModelSwitch",
+      permissionDecision: "deny",
+      permissionDecisionReason: "denied",
+    },
+  })}'`,
+}
+
+const writeModel = (dir: string) =>
+  Effect.promise(async () => {
+    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.writeFile(
+      path.join(dir, ".opencode", "hooks.json"),
+      JSON.stringify({
+        PreModelSwitch: [{ matcher: "claude-sonnet-4", hooks: [denySwitch] }],
+        PostModelSwitch: [{ matcher: "claude-opus-4|claude-haiku-4-5", hooks: [ctxHook("post-canonical")] }],
+      }),
+    )
+  })
+
+describe("model switch matchers use the canonical model name", () => {
+  it.instance(
+    "dated, alias and provider-qualified IDs match the canonical alias",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const pre = (toModel: string, id: string) =>
+          hook.trigger(
+            { event: "PreModelSwitch", fromModel: "claude-sonnet-3-7", toModel },
+            { sessionID: id, transcriptPath: "" },
+          )
+        for (const [toModel, id] of [
+          ["claude-sonnet-4-20250514", "ses_model_dated"],
+          ["claude-sonnet-4.0", "ses_model_alias"],
+          ["us.anthropic.claude-sonnet-4-20250514-v1:0", "ses_model_bedrock"],
+        ] as const) {
+          expect((yield* pre(toModel, id)).modelSwitchDecision).toBe("deny")
+        }
+        // An unrelated family must not be matched by the canonical alias.
+        expect((yield* pre("claude-haiku-4-5", "ses_model_pre_miss")).modelSwitchDecision).toBeUndefined()
+        const post = (toModel: string, id: string) =>
+          hook.trigger(
+            { event: "PostModelSwitch", fromModel: "claude-sonnet-4", toModel },
+            { sessionID: id, transcriptPath: "" },
+          )
+        expect((yield* post("claude-opus-4.0", "ses_model_opus_alias")).additionalContexts).toEqual(["post-canonical"])
+        expect((yield* post("claude-haiku-4-5-20250929", "ses_model_haiku_dated")).additionalContexts).toEqual([
+          "post-canonical",
+        ])
+        // A different family is not silently matched by the canonical alias.
+        expect((yield* post("claude-sonnet-4", "ses_model_miss")).additionalContexts).toEqual([])
+      }),
+    { init: writeModel },
   )
 })

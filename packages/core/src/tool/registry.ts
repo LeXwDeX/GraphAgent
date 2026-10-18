@@ -17,6 +17,7 @@ import { ApplicationTools } from "./application-tools"
 import {
   contextFolding,
   definition,
+  hookFailure,
   permission,
   settle,
   validateName,
@@ -211,11 +212,13 @@ const registryLayer = Layer.effect(
             permissionState.confirmed = true
           }
           executionAttempted = true
+          const hookInput = "hookInput" in before ? before.hookInput : undefined
           const execution = settle(registration.tool, call, {
             sessionID: input.sessionID,
             agent: input.agent,
             assistantMessageID: input.assistantMessageID,
             toolCallID: input.call.id,
+            ...(hookInput ? { hookInput } : {}),
           })
           const pending = yield* (
             permissionState
@@ -255,6 +258,15 @@ const registryLayer = Layer.effect(
       if ((permissionState?.denied || !executionAttempted) && "result" in pending) return pending
       if (permissionState?.denied)
         return { result: { type: "error" as const, value: "Tool continued after permission denial" } }
+      // A completed invocation can still be a hook-facing failure: the shell
+      // reports a nonzero exit as ordinary output, and the tool declares the
+      // failure text. The result itself stays successful for the model.
+      const hookError =
+        "result" in pending
+          ? undefined
+          : hook
+            ? yield* hookFailure(registration.tool, call, pending.output.structured)
+            : undefined
       const after = hook
         ? yield* hook
             .afterTool({
@@ -264,7 +276,9 @@ const registryLayer = Layer.effect(
               toolInput: call.input,
               ...("result" in pending
                 ? { error: String(pending.result.value) }
-                : { output: pending.output.structured }),
+                : hookError !== undefined
+                  ? { error: hookError }
+                  : { output: pending.output.structured }),
             })
             .pipe(Effect.catch((error) => Effect.succeed({ feedback: error.reason })))
         : {}

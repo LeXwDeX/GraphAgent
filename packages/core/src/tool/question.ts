@@ -6,6 +6,7 @@ import { Effect, Layer, Schema } from "effect"
 import { PermissionV2 } from "../permission"
 import { QuestionV2 } from "../question"
 import * as QuestionGuidance from "../question-guidance"
+import { hookQuestionAnswers } from "./question-answers"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
@@ -52,35 +53,47 @@ export const layer = Layer.effectDiscard(
               { type: "text", text: toModelOutput(input.questions, output.answers, output.timedOut, output.rejected) },
             ],
             execute: (input, context) =>
-              permission
-                .assert({
-                  action: "question",
-                  resources: ["*"],
-                  sessionID: context.sessionID,
-                  agent: context.agent,
-                  source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
-                })
-                .pipe(
-                  Effect.mapError(() => new ToolFailure({ message: "Permission denied: question" })),
-                  Effect.andThen(
-                    question
-                      .ask({
-                        sessionID: context.sessionID,
-                        questions: input.questions,
-                        tool: { messageID: context.assistantMessageID, callID: context.toolCallID },
-                      })
-                      .pipe(
-                        Effect.map((answers) => ({ answers })),
-                        Effect.catchTag("QuestionV2.TimedOutError", () =>
-                          Effect.succeed({ answers: [], timedOut: true as const }),
-                        ),
-                        Effect.catchTag("QuestionV2.RejectedError", () =>
-                          Effect.succeed({ answers: [], rejected: true as const }),
-                        ),
-                        Effect.orDie,
-                      ),
-                  ),
-                ),
+              Effect.gen(function* () {
+                yield* permission
+                  .assert({
+                    action: "question",
+                    resources: ["*"],
+                    sessionID: context.sessionID,
+                    agent: context.agent,
+                    source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                  })
+                  .pipe(Effect.mapError(() => new ToolFailure({ message: "Permission denied: question" })))
+
+                // Answers supplied by an allowing PreToolUse hook replace the dialog. They are
+                // hook-only input, so the tool schema never sees them.
+                if (context.hookInput && "answers" in context.hookInput) {
+                  const answers = yield* Effect.try({
+                    try: () => hookQuestionAnswers(input.questions, context.hookInput?.answers),
+                    catch: (error) =>
+                      new ToolFailure({
+                        message: `Invalid hook answers: ${error instanceof Error ? error.message : String(error)}`,
+                      }),
+                  })
+                  return { answers: answers.map((answer) => [...answer]) }
+                }
+
+                return yield* question
+                  .ask({
+                    sessionID: context.sessionID,
+                    questions: input.questions,
+                    tool: { messageID: context.assistantMessageID, callID: context.toolCallID },
+                  })
+                  .pipe(
+                    Effect.map((answers) => ({ answers })),
+                    Effect.catchTag("QuestionV2.TimedOutError", () =>
+                      Effect.succeed({ answers: [], timedOut: true as const }),
+                    ),
+                    Effect.catchTag("QuestionV2.RejectedError", () =>
+                      Effect.succeed({ answers: [], rejected: true as const }),
+                    ),
+                    Effect.orDie,
+                  )
+              }),
           }),
         ),
       })

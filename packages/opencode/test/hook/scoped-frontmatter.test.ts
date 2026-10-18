@@ -1,4 +1,4 @@
-import { afterAll, describe, expect } from "bun:test"
+import { afterAll, afterEach, describe, expect } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -29,9 +29,20 @@ const trustLayer = SettingsHook.layer.pipe(
 )
 const itTrust = testEffect(trustLayer)
 
+// The suite preload disables the trust gate (`OPENCODE_HOOKS_REQUIRE_TRUST=0`)
+// so unrelated hook fixtures can register scoped hooks from synthetic paths.
+// Tests here opt into the gate and every test restores the preload value; Bun
+// runs a whole CI shard in one process, so leakage changes later files.
+const PRELOAD_REQUIRE_TRUST = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+afterEach(() => {
+  if (PRELOAD_REQUIRE_TRUST === undefined) delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
+  else process.env.OPENCODE_HOOKS_REQUIRE_TRUST = PRELOAD_REQUIRE_TRUST
+})
+
 describe("scoped frontmatter hooks", () => {
-  itTrust.instance("project agent frontmatter requires accepted folder trust; skill remains available", () =>
+  itTrust.instance("project agent and skill frontmatter require accepted folder trust", () =>
     Effect.gen(function* () {
+      process.env.OPENCODE_HOOKS_REQUIRE_TRUST = "1"
       const hook = yield* SettingsHook.Service
       const store = yield* SessionHooks.Service
       const sessionID = SessionID.descending()
@@ -48,19 +59,35 @@ describe("scoped frontmatter hooks", () => {
         hooks,
       })
       expect(yield* store.list(sessionID, "Stop")).toHaveLength(1)
+      // A cloned repository's skill frontmatter must not execute either: the
+      // same folder decision gates skills, not just subagents.
       yield* hook.registerScoped!(sessionID, {
         kind: "skill",
         origin: `skill:${path.join(rejected, "SKILL.md")}`,
         hooks,
       })
+      expect(yield* store.list(sessionID, "Stop")).toHaveLength(1)
+      yield* hook.registerScoped!(sessionID, {
+        kind: "skill",
+        origin: `skill:${path.join(accepted, "SKILL.md")}`,
+        hooks,
+      })
       expect(yield* store.list(sessionID, "Stop")).toHaveLength(2)
+      // Loader-owned provenance (user-level or plugin skills) never needs trust.
+      yield* hook.registerScoped!(sessionID, {
+        kind: "skill",
+        source: "user",
+        origin: `skill:${path.join(rejected, "user-skill", "SKILL.md")}`,
+        hooks,
+      })
+      expect(yield* store.list(sessionID, "Stop")).toHaveLength(3)
       yield* hook.registerScoped!(sessionID, {
         kind: "agent",
         source: "plugin",
         origin: `agent:${path.join(rejected, "plugin.md")}`,
         hooks,
       })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(3)
+      expect(yield* store.list(sessionID, "Stop")).toHaveLength(4)
     }),
   )
 

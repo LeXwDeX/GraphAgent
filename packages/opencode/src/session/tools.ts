@@ -16,6 +16,8 @@ import { Truncate } from "@/tool/truncate"
 import { Plugin } from "@/plugin"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
+import { HookTranscript } from "@/hook/transcript"
+import { promptIdentity } from "@/hook/prompt-identity"
 import { withHookFeedback, withHookFailure, withPreContext } from "@/hook/trigger-result"
 import { builtinToolOutput, mcpToolOutput, toolOutputReplacement } from "@/hook/tool-output"
 import { toolInputValidator } from "@/hook/tool-input"
@@ -149,11 +151,28 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
   const mcpHookIdentity = new Map<string, { canonicalToolName: string; mcpServer: { name: string; source: string } }>()
   // Server-marked tools (`_meta["anthropic/requiresUserInteraction"] === true`) always need a human.
   const mcpRequiresInteraction = new Map<string, { server: string; tool: string }>()
+  // The prompt runtime injects a wrapped settings service that materializes the transcript before
+  // each configured event and overrides this context. Callers that reach `resolve` directly have
+  // no such wrapper, so they would send `transcript_path: ""`; give them a real snapshot instead.
   const hookContext = Effect.fn("SessionTools.hookContext")(function* (toolName?: string) {
     const policy = "hookPolicy" in permission ? yield* permission.hookPolicy(input.session.id) : undefined
     const mode = policy?.mode ?? (input.agent.name === "plan" ? "plan" : "default")
-    const identity = toolName === undefined ? undefined : mcpHookIdentity.get(toolName)
-    return { permissionMode: mode === "manual" ? "default" : mode, ...identity }
+    const binding = toolName === undefined ? undefined : mcpHookIdentity.get(toolName)
+    // Tool events fire inside a prompt, so name that prompt and its effort in the
+    // envelope. When the prompt runtime injected its wrapper the same values are
+    // recomputed there; an explicitly supplied value always wins.
+    const prompt = promptIdentity(input.messages as readonly HookTranscript.Message[])
+    const transcriptPath = input.hooks
+      ? ""
+      : yield* HookTranscript.materialize({
+          sessionID: input.session.id,
+          directory: input.session.directory,
+          messages: input.messages as readonly HookTranscript.Message[],
+        }).pipe(Effect.orDie)
+    // A tool executed under a child session is that subagent's own call: CC
+    // names the child session and the executing agent in agent_id / agent_type.
+    const subagent = input.session.parentID ? { agentID: input.session.id, agentType: input.agent.name } : undefined
+    return { permissionMode: mode === "manual" ? "default" : mode, ...prompt, ...binding, ...subagent, transcriptPath }
   })
 
   const transformSchema = (schema: Parameters<typeof ProviderTransform.schema>[1]) =>
@@ -361,7 +380,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 let preResult = yield* settingsHook
                   .trigger(
                     { event: "PreToolUse", toolName: item.id, toolInput: toRecord(args), toolUseID: ctx.callID },
-                    { ...(yield* hookContext()), sessionID: ctx.sessionID, transcriptPath: "" },
+                    { ...(yield* hookContext()), sessionID: ctx.sessionID },
                   )
                   .pipe(
                     Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
@@ -524,18 +543,31 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 output,
               )
               dynamicInstructions ||= beforePlugin === undefined || beforePlugin !== outputFingerprint(output)
-              // SettingsHook PostToolUse
+              // SettingsHook PostToolUse; a completed failure (nonzero shell
+              // exit) fires the reference's PostToolUseFailure instead while
+              // keeping the same model-facing result and feedback handling.
               if (settingsHook) {
+                const hookFailure = output.hookFailure
                 const postResult = yield* settingsHook
                   .trigger(
-                    {
-                      event: "PostToolUse",
-                      toolName: item.id,
-                      toolInput: toRecord(args),
-                      toolResponse: output.output,
-                      toolUseID: ctx.callID,
-                    },
-                    { ...(yield* hookContext()), sessionID: ctx.sessionID, transcriptPath: "" },
+                    hookFailure === undefined
+                      ? {
+                          event: "PostToolUse",
+                          toolName: item.id,
+                          toolInput: toRecord(args),
+                          // V2 passes the tool's structured output; the model-facing
+                          // text lives in the transcript, not in tool_response.
+                          toolResponse: output.metadata,
+                          toolUseID: ctx.callID,
+                        }
+                      : {
+                          event: "PostToolUseFailure",
+                          toolName: item.id,
+                          toolInput: toRecord(args),
+                          error: hookFailure,
+                          toolUseID: ctx.callID,
+                        },
+                    { ...(yield* hookContext()), sessionID: ctx.sessionID },
                   )
                   .pipe(
                     Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
@@ -610,7 +642,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                           error: String(error),
                           toolUseID: options.toolCallId,
                         },
-                        { ...(yield* hookContext()), sessionID: input.session.id, transcriptPath: "" },
+                        { ...(yield* hookContext()), sessionID: input.session.id },
                       )
                       .pipe(
                         Effect.catch(() =>
@@ -908,7 +940,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 {
                   ...(yield* hookContext()),
                   sessionID: input.session.id,
-                  transcriptPath: "",
                 },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
@@ -1012,9 +1043,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   toolName: name,
                   toolInput: args,
                   toolUseID: opts.toolCallId,
-                  toolResponse: output.output,
+                  toolResponse: output.metadata,
                 },
-                { ...(yield* hookContext()), sessionID: input.session.id, transcriptPath: "" },
+                { ...(yield* hookContext()), sessionID: input.session.id },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(post, { sessionID: input.session.id })
@@ -1060,7 +1091,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                       toolUseID: options.toolCallId,
                       error: String(error),
                     },
-                    { ...(yield* hookContext()), sessionID: input.session.id, transcriptPath: "" },
+                    { ...(yield* hookContext()), sessionID: input.session.id },
                   )
                   .pipe(
                     Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
@@ -1112,7 +1143,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             let preResult = yield* settingsHook
               .trigger(
                 { event: "PreToolUse", toolName: key, toolInput: toRecord(args), toolUseID: opts.toolCallId },
-                { ...(yield* hookContext(key)), sessionID: ctx.sessionID, transcriptPath: "" },
+                { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(preResult, { sessionID: ctx.sessionID })
@@ -1265,7 +1296,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   toolResponse: result,
                   toolUseID: opts.toolCallId,
                 },
-                { ...(yield* hookContext(key)), sessionID: ctx.sessionID, transcriptPath: "" },
+                { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(postResult, { sessionID: ctx.sessionID })
@@ -1378,7 +1409,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                       error: String(error),
                       toolUseID: opts.toolCallId,
                     },
-                    { ...(yield* hookContext(key)), sessionID: input.session.id, transcriptPath: "" },
+                    { ...(yield* hookContext(key)), sessionID: input.session.id },
                   )
                   .pipe(
                     Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
