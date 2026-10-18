@@ -200,9 +200,34 @@ type ComparableResult = ComparablePart &
 type CandidateBody =
   | Readonly<{ kind: "text"; text: string }>
   | Readonly<{ kind: "text-page"; text: string; outer: Omit<ReadTextPage, "content"> }>
+  | Readonly<{ kind: "error"; text: string; outer: unknown }>
+
+/**
+ * The foldable error body is always a string field. Canonical errors usually carry
+ * `{ error: { type, message }, content, structured }`; only the message is replaced, and the remaining fields travel
+ * through comparison metadata unchanged. An unrecognized error shape is never foldable.
+ */
+const errorBody = (value: unknown): Readonly<{ text: string; outer: unknown; path: readonly string[] }> | undefined => {
+  if (typeof value === "string") return { text: value, outer: undefined, path: [] }
+  if (!isRecord(value)) return undefined
+  if (typeof value.error === "string") {
+    const { error: _error, ...outer } = value
+    return { text: value.error, outer, path: ["error"] }
+  }
+  if (isRecord(value.error) && value.error.type === "unknown" && typeof value.error.message === "string") {
+    const { message: _message, ...errorOuter } = value.error
+    const { error: _nested, ...rest } = value
+    return { text: value.error.message, outer: { ...rest, error: errorOuter }, path: ["error", "message"] }
+  }
+  return undefined
+}
 
 const candidateBody = (toolName: string, result: ComparableResult | undefined): CandidateBody | undefined => {
   if (!result?.result) return undefined
+  if (result.result.type === "error") {
+    const error = errorBody(result.result.value)
+    return error ? { kind: "error", text: error.text, outer: error.outer } : undefined
+  }
   if ((toolName === "grep" || toolName === "glob") && result.result.type === "text") {
     return typeof result.result.value === "string" ? { kind: "text", text: result.result.value } : undefined
   }
@@ -237,12 +262,16 @@ const comparisonMetadata = (
                 type: binding.result.result?.type,
                 ...optionalFields(binding.result),
                 ...(body?.kind === "text-page" ? { outer: body.outer } : {}),
+                ...(body?.kind === "error" ? { errorOuter: body.outer } : {}),
               },
             }),
       }),
 })
 
 const hasAttachments = (tool: SessionMessage.AssistantTool) => {
+  if (tool.state.status === "error") {
+    return tool.state.content.some((item) => item.type === "file") ? ("present" as const) : ("none" as const)
+  }
   if (tool.state.status !== "completed") return "unknown" as const
   if ((tool.state.attachments?.length ?? 0) > 0 || (tool.state.outputPaths?.length ?? 0) > 0) return "present" as const
   return tool.state.content.some((item) => item.type === "file") ? ("present" as const) : ("none" as const)
@@ -320,6 +349,19 @@ const estimatedStepTokens = (message: SessionMessage.Assistant, model: Model) =>
   }
 }
 
+// Task epochs segment the conversation into user turns. An unrecognized message shape makes the segmentation
+// untrustworthy, so every candidate then shares epoch 0 instead of inventing task boundaries.
+const knownMessageTypes = new Set([
+  "agent-switched",
+  "model-switched",
+  "user",
+  "synthetic",
+  "system",
+  "shell",
+  "assistant",
+  "compaction",
+])
+
 export const history = Effect.fn("CoreContextFolding.history")(function* (input: {
   sessionID: string
   messages: readonly SessionMessage.Message[]
@@ -335,7 +377,13 @@ export const history = Effect.fn("CoreContextFolding.history")(function* (input:
 
   const steps: FoldStep[] = []
   const references: HistoryReference[] = []
+  const reliableEpochs = input.messages.every((message) => knownMessageTypes.has(message.type))
+  let taskEpoch = 0
   for (const message of input.messages) {
+    if (message.type === "user") {
+      if (typeof message.text === "string" && message.text.trim().length > 0) taskEpoch++
+      continue
+    }
     if (message.type !== "assistant") continue
     const candidates: FoldCandidate[] = []
     for (const tool of message.content) {
@@ -351,11 +399,12 @@ export const history = Effect.fn("CoreContextFolding.history")(function* (input:
       })
       const body = candidateBody(tool.name, binding?.result)
       const attachments = hasAttachments(tool)
+      // A truncated preview stays foldable: the comparison metadata carries the page outer fields, so two
+      // truncated results only match when their complete visible bytes and truncation hints are identical.
       const complete =
-        tool.state.status === "completed" &&
+        (tool.state.status === "completed" || tool.state.status === "error") &&
         attachments === "none" &&
-        body !== undefined &&
-        (body.kind !== "text-page" || !body.outer.truncated)
+        body !== undefined
       const metadata = comparisonMetadata(message, binding, body)
       references.push({
         ref,
@@ -378,12 +427,23 @@ export const history = Effect.fn("CoreContextFolding.history")(function* (input:
         result:
           body === undefined
             ? { kind: "unknown" }
-            : { kind: "text", text: body.text, complete, comparisonMetadata: metadata },
+            : body.kind === "error"
+              ? {
+                  kind: "error" as const,
+                  text: body.text,
+                  complete,
+                  // The adapter proves a complete error payload but not the underlying failure taxonomy, so the
+                  // coarse class stays fixed. Only identical error bytes inside one class share an identity.
+                  failureClass: "tool-error",
+                  comparisonMetadata: metadata,
+                }
+              : { kind: "text" as const, text: body.text, complete, comparisonMetadata: metadata },
         safety: {
           attachments,
           instructions: instructionSafety(recorded, body),
           providerExecuted: tool.provider?.executed === true,
         },
+        taskEpoch: reliableEpochs ? taskEpoch : 0,
         ...(tool.name === "read" && isRecord(binding?.call.input) && typeof binding?.call.input.path === "string"
           ? { targetPath: binding.call.input.path }
           : {}),
@@ -452,6 +512,22 @@ function locateCanonical(messages: unknown): CanonicalLocated[] {
           ...(Object.hasOwn(part.result, "value") ? { value: part.result.value } : {}),
         },
         ...comparableFields(part),
+      }
+      if (part.result.type === "error") {
+        // Only the string payload of a recognized error shape is replaceable; the surrounding error fields ride
+        // through the comparison metadata. An unrecognized shape stays unmapped instead of guessing a path.
+        const error = errorBody(part.result.value)
+        located.push({
+          path: [...base, "id"],
+          ...(error ? { bodyPath: [...base, "result", "value", ...error.path], bodyKind: "error" as const } : {}),
+          id: part.id,
+          name: part.name,
+          kind: "result",
+          ordinal: currentOrdinal,
+          result: part.result,
+          part: comparable,
+        })
+        return
       }
       if (
         (part.name === "grep" || part.name === "glob") &&
@@ -552,7 +628,10 @@ export function bindHistory(
 
   const selected = new Set(selectedReferences(input).map((reference) => refKey(reference.ref)))
   const prepared: PreparedReference[] = []
+  const bound = new Set<string>()
   for (const reference of input.references) {
+    const key = refKey(reference.ref)
+    const isSelected = selected.has(key)
     const inputFingerprint = evidenceFingerprint(reference.evidence.input)
     const resultFingerprint = evidenceFingerprint(reference.evidence.result)
     const comparisonMetadataFingerprint = evidenceFingerprint(reference.evidence.comparisonMetadata)
@@ -562,9 +641,13 @@ export function bindHistory(
       !resultFingerprint.ok ||
       !comparisonMetadataFingerprint.ok ||
       !outerMetadataFingerprint.ok
-    )
-      return undefined
-    if (selected.has(refKey(reference.ref))) {
+    ) {
+      // Unselected references still bind the whole history fingerprint. A selected reference that cannot be
+      // fingerprinted only invalidates its own duplicate pair.
+      if (!isSelected) return undefined
+      continue
+    }
+    if (isSelected) {
       const call = unique(located, reference.ref.callID, "call")
       const result = unique(located, reference.ref.callID, "result")
       if (
@@ -576,7 +659,7 @@ export function bindHistory(
         !sameWireValue(call.input, reference.evidence.input) ||
         !sameWireValue(result.result, reference.evidence.result)
       )
-        return undefined
+        continue
       if (sourceMessages) {
         const sourceMatches = sourceMessages.flatMap((message) =>
           message.type === "assistant" && message.id === reference.ref.messageID
@@ -588,9 +671,9 @@ export function bindHistory(
                 .map((tool) => ({ message, tool }))
             : [],
         )
-        if (sourceMatches.length !== 1 || !call.part || !result.part) return undefined
+        if (sourceMatches.length !== 1 || !call.part || !result.part) continue
         const source = sourceMatches[0]
-        if (!("result" in result.part) || !("input" in call.part) || !result.part.result) return undefined
+        if (!("result" in result.part) || !("input" in call.part) || !result.part.result) continue
         const body = candidateBody(reference.toolName, result.part)
         const currentComparison = comparisonMetadata(
           source.message,
@@ -604,8 +687,9 @@ export function bindHistory(
           !sameWireValue(currentComparison, reference.evidence.comparisonMetadata) ||
           !sameWireValue(outerMetadata(source.tool), reference.evidence.outerMetadata)
         )
-          return undefined
+          continue
       }
+      bound.add(key)
     }
     prepared.push({
       ref: reference.ref,
@@ -618,19 +702,27 @@ export function bindHistory(
       outerMetadataFingerprint: outerMetadataFingerprint.value,
     })
   }
-  for (const replacement of input.duplicatePlan.replacements) {
+
+  // Isolate each selected pair. One unverifiable pair must not disable folding for every other verified pair.
+  const replacements = input.duplicatePlan.replacements.filter((replacement) => {
+    if (!bound.has(refKey(replacement.source)) || !bound.has(refKey(replacement.witness))) return false
     const source = unique(located, replacement.source.callID, "result")
     const witness = unique(located, replacement.witness.callID, "result")
-    if (!source || !witness || source.ordinal >= witness.ordinal) return undefined
-  }
+    return source !== undefined && witness !== undefined && source.ordinal < witness.ordinal
+  })
+  const duplicatePlan: FoldPlan =
+    replacements.length === 0 && input.duplicatePlan.replacements.length > 0
+      ? { ...input.duplicatePlan, replacements: [], skipReason: "mapping-mismatch" }
+      : { ...input.duplicatePlan, replacements }
+
   const historyBindingFingerprint = wireFingerprint({
-    duplicatePlan: input.duplicatePlan,
+    duplicatePlan,
     references: prepared,
     request,
   })
   if (!historyBindingFingerprint.ok) return undefined
   return {
-    duplicatePlan: input.duplicatePlan,
+    duplicatePlan,
     references: prepared,
     historyBindingFingerprint: historyBindingFingerprint.value,
   }
@@ -706,6 +798,7 @@ function mapping(
       bodyPath: result.bodyPath,
       ordinal: result.ordinal,
       complete: reference.complete,
+      resultKind: result.bodyKind === "error" ? "error" : "text",
     })
   }
   return { requestFingerprint, calls, results }
@@ -863,6 +956,37 @@ function sameReadOuter(before: string, after: string, expectedBefore: string, ex
   }
 }
 
+/**
+ * Structured error results are lowered to provider text as a JSON document, so the provider wire still carries the
+ * complete error payload around the replaced message. A raw string error is lowered verbatim.
+ */
+function sameErrorText(
+  structured: boolean,
+  before: string,
+  after: string,
+  expectedBefore: string,
+  expectedAfter: string,
+) {
+  if (!structured) return before === expectedBefore && after === expectedAfter
+  try {
+    const left = errorBody(JSON.parse(before))
+    const right = errorBody(JSON.parse(after))
+    return (
+      left !== undefined &&
+      right !== undefined &&
+      left.text === expectedBefore &&
+      right.text === expectedAfter &&
+      left.path.join("\u0000") === right.path.join("\u0000") &&
+      sameWireValue(left.outer, right.outer)
+    )
+  } catch {
+    return false
+  }
+}
+
+const structuredErrorValue = (located: CanonicalLocated | undefined) =>
+  isRecord(located?.result) && located.result.type === "error" && isRecord(located.result.value)
+
 function verifyPreparedProjection(input: {
   before: PreparedRequest
   after: PreparedRequest
@@ -959,13 +1083,29 @@ function verifyPreparedProjection(input: {
       beforeWitnessBody.value !== afterWitnessBody.value ||
       (witnessReference.bodyKind === "text-page"
         ? !sameReadOuter(beforeWitness.text, afterWitness.text, beforeWitnessBody.value, afterWitnessBody.value)
-        : beforeWitness.text !== beforeWitnessBody.value || afterWitness.text !== afterWitnessBody.value)
+        : witnessReference.bodyKind === "error"
+          ? !sameErrorText(
+              structuredErrorValue(beforeCanonicalWitnessResult),
+              beforeWitness.text,
+              afterWitness.text,
+              beforeWitnessBody.value,
+              afterWitnessBody.value,
+            )
+          : beforeWitness.text !== beforeWitnessBody.value || afterWitness.text !== afterWitnessBody.value)
     )
       return false
     if (
       reference.bodyKind === "text-page"
         ? !sameReadOuter(beforeResult.text, afterResult.text, beforeBodyValue.value, replacement.placeholder)
-        : beforeResult.text !== beforeBodyValue.value || afterResult.text !== replacement.placeholder
+        : reference.bodyKind === "error"
+          ? !sameErrorText(
+              structuredErrorValue(beforeCanonicalResult),
+              beforeResult.text,
+              afterResult.text,
+              beforeBodyValue.value,
+              replacement.placeholder,
+            )
+          : beforeResult.text !== beforeBodyValue.value || afterResult.text !== replacement.placeholder
     )
       return false
     changes.push({ path: beforeResult.textPath, before: beforeResult.text, after: afterResult.text })

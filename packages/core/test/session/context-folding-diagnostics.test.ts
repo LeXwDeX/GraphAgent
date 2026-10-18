@@ -33,7 +33,7 @@ describe("context folding diagnostics", () => {
     })
 
     expect(diagnostic).toEqual({
-      policyVersion: "strict-duplicate-v1",
+      policyVersion: "strict-duplicate-v2",
       runtime: "core-runner",
       requestPurpose: "conversation",
       enabledSource: "default",
@@ -53,6 +53,7 @@ describe("context folding diagnostics", () => {
         "provider-executed": 0,
         "unknown-content": 1,
         "unknown-read-target": 0,
+        "unsafe-error-payload": 0,
         unsuccessful: 0,
         "unsupported-tool": 0,
         "untrusted-source": 0,

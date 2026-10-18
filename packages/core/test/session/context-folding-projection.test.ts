@@ -313,6 +313,77 @@ describe("context folding projection", () => {
     expect(exhausted.plan.overBudget).toBe(true)
   })
 
+  test("folds older-task duplicates before current-task duplicates when only one fits the target", () => {
+    const firstBody = bodyForSavings(700, "visible-witness-a")
+    const secondBody = bodyForSavings(700, "visible-witness-b")
+    const refs = [ref("source-a"), ref("witness-a"), ref("source-b"), ref("witness-b")]
+    const visible = ["visible-source-a", "visible-witness-a", "visible-source-b", "visible-witness-b"]
+    const request = {
+      messages: refs.flatMap((_, index) => [
+        { role: "assistant", callID: visible[index] },
+        { role: "tool", callID: visible[index], body: index < 2 ? firstBody : secondBody },
+      ]),
+      metadata: { mutable: "original" },
+    }
+    const identity = { model: "test", runtime: "test-runtime" }
+    // The current-task duplicate comes first by source order, but only the older-task source should be compressed.
+    const duplicate: FoldPlan = {
+      replacements: [
+        { source: refs[0], witness: refs[1], anchor: true },
+        { source: refs[2], witness: refs[3], anchor: false },
+      ],
+      protectedStepIDs: [],
+      exclusions: [],
+      skipReason: undefined,
+    }
+    const baseBudget = estimateContextFoldingBudget(
+      budgetInput(request.messages, { contextLimit: 100_000, outputReserve: 1_000 }),
+    )
+    const desiredTarget = baseBudget.estimatedInputTokens! - 699
+    const usable = Math.ceil(desiredTarget / ContextFoldingPolicy.softTargetRatio)
+    const inputForBudget = (budget: PreparedRequestBudgetInput) => {
+      const fingerprint = requestFingerprint(request, identity, budget)
+      return {
+        request,
+        identity,
+        expectedRequestFingerprint: fingerprint,
+        duplicatePlan: duplicate,
+        budget,
+        mapping: {
+          requestFingerprint: fingerprint,
+          calls: refs.map((item, ordinal) => ({
+            ref: item,
+            visibleCallID: visible[ordinal],
+            visibleCallIDPath: ["messages", ordinal * 2, "callID"] as const,
+            ordinal,
+          })),
+          results: refs.map((item, ordinal) => ({
+            ref: item,
+            visibleCallID: visible[ordinal],
+            visibleCallIDPath: ["messages", ordinal * 2 + 1, "callID"] as const,
+            ordinal,
+            bodyPath: ["messages", ordinal * 2 + 1, "body"] as const,
+            complete: true,
+          })),
+        },
+      }
+    }
+
+    const one = projectContextFoldingRequest(
+      inputForBudget(budgetInput(request.messages, { contextLimit: usable + 100, outputReserve: 100 })),
+    )
+    expect(one.plan.replacements.map((replacement) => replacement.source)).toEqual([refs[2]])
+    expect(one.request.messages[1].body).toBe(firstBody)
+    expect(one.request.messages[5].body).toBe(expectedPlaceholder("visible-witness-b"))
+
+    const both = projectContextFoldingRequest(
+      inputForBudget(
+        budgetInput(request.messages, { contextLimit: 1_000, outputReserve: 100, protocolOverheadTokens: 5_000 }),
+      ),
+    )
+    expect(both.plan.replacements.map((replacement) => replacement.source)).toEqual([refs[0], refs[2]])
+  })
+
   test("escapes a bounded final wire call ID and rejects overlong or colliding IDs", () => {
     const unusual = 'visible-"witness\\line\nnext'
     const { input } = projectionFixture(bodyForSavings(600, unusual), "visible-source", unusual)
@@ -629,6 +700,51 @@ describe("context folding projection", () => {
     expect(second.request).toBe(first.request)
     expect(second.applied).toBe(false)
     expect(second.plan.skipReason).toBe("already-projected")
+  })
+
+  test("uses the error placeholder only when the plan and mapping agree on an error result", () => {
+    const { input, source, witness } = projectionFixture(bodyForSavings(600))
+    const errorPlan: FoldPlan = {
+      ...input.duplicatePlan,
+      replacements: [{ source, witness, resultKind: "error" }],
+    }
+    const errorMapping = {
+      ...input.mapping,
+      results: input.mapping.results.map((result) => ({ ...result, resultKind: "error" as const })),
+    }
+    const applied = projectContextFoldingRequest({ ...input, duplicatePlan: errorPlan, mapping: errorMapping })
+    expect(applied.applied).toBe(true)
+    const errorPlaceholder =
+      '[Duplicate tool error output folded. The identical full error is retained in later tool call "visible-witness".]'
+    expect(applied.plan.replacements[0].placeholder).toBe(errorPlaceholder)
+    expect(applied.request.messages[1].body).toBe(errorPlaceholder)
+
+    // A plan that claims an error result cannot be projected onto a text mapping.
+    const mismatch = projectContextFoldingRequest({ ...input, duplicatePlan: errorPlan })
+    expect(mismatch.applied).toBe(false)
+    expect(mismatch.plan.skipReason).toBe("mapping-mismatch")
+
+    // An unknown mapping kind never matches any plan kind.
+    const unknownKind = projectContextFoldingRequest({
+      ...input,
+      duplicatePlan: errorPlan,
+      mapping: {
+        ...input.mapping,
+        results: input.mapping.results.map((result) => ({ ...result, resultKind: "unknown" as const })),
+      },
+    })
+    expect(unknownKind.applied).toBe(false)
+    expect(unknownKind.plan.skipReason).toBe("mapping-mismatch")
+  })
+
+  test("recognizes an error placeholder from an earlier projection", () => {
+    const placeholder =
+      '[Duplicate tool error output folded. The identical full error is retained in later tool call "visible-witness".]'
+    // Pad past the soft target so the already-projected guard, not the budget, decides the outcome.
+    const { input } = projectionFixture(placeholder + "x".repeat(4_000))
+    const result = projectContextFoldingRequest(input)
+    expect(result.applied).toBe(false)
+    expect(result.plan.skipReason).toBe("already-projected")
   })
 })
 

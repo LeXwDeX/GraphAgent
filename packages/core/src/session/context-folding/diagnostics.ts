@@ -18,6 +18,7 @@ const emptyExclusionCounts = (): Record<CandidateSkipReason, number> => ({
   "provider-executed": 0,
   "unknown-content": 0,
   "unknown-read-target": 0,
+  "unsafe-error-payload": 0,
   unsuccessful: 0,
   "unsupported-tool": 0,
   "untrusted-source": 0,

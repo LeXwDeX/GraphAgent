@@ -18,7 +18,10 @@ import type {
 import { cloneWireValue, readWirePath, serializeWireValue, verifyWireValueChanges, writeWirePath } from "./wire-value"
 import { consumeContainerEntries, consumeString, createWorkBudget, type WorkBudget } from "./work-budget"
 
-const PLACEHOLDER_PREFIX = "[Duplicate tool output folded. Identical full output is retained in later tool call "
+const TEXT_PLACEHOLDER_PREFIX = "[Duplicate tool output folded. Identical full output is retained in later tool call "
+const ERROR_PLACEHOLDER_PREFIX =
+  "[Duplicate tool error output folded. The identical full error is retained in later tool call "
+const PLACEHOLDER_PREFIXES = [TEXT_PLACEHOLDER_PREFIX, ERROR_PLACEHOLDER_PREFIX] as const
 const PLACEHOLDER_SUFFIX = ".]"
 
 const refKey = (ref: FoldRef) => JSON.stringify([ref.messageID, ref.partID, ref.callID])
@@ -75,11 +78,20 @@ const utf8BytesAtMost = (value: string, limit: number) => {
   return true
 }
 
-const placeholder = (visibleCallID: string) => {
+const placeholder = (visibleCallID: string, resultKind: "text" | "error") => {
   if (visibleCallID.length === 0 || !utf8BytesAtMost(visibleCallID, ContextFoldingPolicy.maximumVisibleCallIDBytes)) {
     return undefined
   }
-  return `${PLACEHOLDER_PREFIX}${JSON.stringify(visibleCallID)}${PLACEHOLDER_SUFFIX}`
+  const prefix = resultKind === "error" ? ERROR_PLACEHOLDER_PREFIX : TEXT_PLACEHOLDER_PREFIX
+  return `${prefix}${JSON.stringify(visibleCallID)}${PLACEHOLDER_SUFFIX}`
+}
+
+const alreadyProjected = (value: string) => PLACEHOLDER_PREFIXES.some((prefix) => value.startsWith(prefix))
+
+const mappingResultKind = (result: WireResultMapping): "text" | "error" | "unknown" => {
+  if (result.resultKind === "error") return "error"
+  if (result.resultKind === "text" || result.resultKind === undefined) return "text"
+  return "unknown"
 }
 
 export const fingerprintContextFoldingRequest = (input: ContextFoldingRequestFingerprintInput) => {
@@ -107,6 +119,7 @@ type ValidatedReplacement = SelectedFoldReplacement &
     sourceBody: string
     witnessBody: string
     sourceOrdinal: number
+    anchor: boolean
   }>
 
 type MappingValidation =
@@ -264,14 +277,27 @@ const validateMapping = <Request>(
 
   const validated: ValidatedReplacement[] = []
   let previousSourceOrdinal = -1
+  let firstFailure: "invalid-reference" | "mapping-mismatch" | undefined
   for (const replacement of replacements) {
+    const resultKind = replacement.resultKind === "error" ? "error" : "text"
     const source = resultsByRef.get(refKey(replacement.source))
     const witness = resultsByRef.get(refKey(replacement.witness))
-    if (!source || !witness || !source.complete || !witness.complete || source.ordinal >= witness.ordinal) {
-      return { ok: false, reason: "mapping-mismatch" }
+    if (
+      !source ||
+      !witness ||
+      !source.complete ||
+      !witness.complete ||
+      source.ordinal >= witness.ordinal ||
+      mappingResultKind(source) !== resultKind ||
+      mappingResultKind(witness) !== resultKind
+    ) {
+      firstFailure ??= "mapping-mismatch"
+      continue
     }
-    if (source.ordinal <= previousSourceOrdinal) return { ok: false, reason: "mapping-mismatch" }
-    previousSourceOrdinal = source.ordinal
+    if (source.ordinal <= previousSourceOrdinal) {
+      firstFailure ??= "mapping-mismatch"
+      continue
+    }
 
     const sourceBody = readWirePath(request, source.bodyPath)
     const witnessBody = readWirePath(request, witness.bodyPath)
@@ -281,14 +307,23 @@ const validateMapping = <Request>(
       typeof sourceBody.value !== "string" ||
       typeof witnessBody.value !== "string"
     ) {
-      return { ok: false, reason: "mapping-mismatch" }
+      firstFailure ??= "mapping-mismatch"
+      continue
     }
-    if (sourceBody.value.startsWith(PLACEHOLDER_PREFIX)) return { ok: false, reason: "already-projected" }
-    if (sourceBody.value !== witnessBody.value) return { ok: false, reason: "mapping-mismatch" }
+    // Re-folding an already projected request is a whole-mapping condition, not a single-pair mismatch.
+    if (alreadyProjected(sourceBody.value)) return { ok: false, reason: "already-projected" }
+    if (sourceBody.value !== witnessBody.value) {
+      firstFailure ??= "mapping-mismatch"
+      continue
+    }
 
-    const folded = placeholder(witness.visibleCallID)
-    if (folded === undefined) return { ok: false, reason: "invalid-reference" }
+    const folded = placeholder(witness.visibleCallID, resultKind)
+    if (folded === undefined) {
+      firstFailure ??= "invalid-reference"
+      continue
+    }
     const estimatedSavings = Token.estimate(JSON.stringify(sourceBody.value)) - Token.estimate(JSON.stringify(folded))
+    previousSourceOrdinal = source.ordinal
     validated.push({
       source: replacement.source,
       witness: replacement.witness,
@@ -299,9 +334,13 @@ const validateMapping = <Request>(
       sourceBody: sourceBody.value,
       witnessBody: witnessBody.value,
       sourceOrdinal: source.ordinal,
+      anchor: replacement.anchor === true,
     })
   }
 
+  if (validated.length === 0 && replacements.length > 0) {
+    return { ok: false, reason: firstFailure ?? "mapping-mismatch" }
+  }
   return { ok: true, replacements: validated }
 }
 
@@ -338,14 +377,24 @@ const project = <Request>(
   const mapping = validateMapping(input.request, input.mapping, input.duplicatePlan.replacements)
   if (!mapping.ok) return unchanged(input.request, mapping.reason, budget)
 
+  const eligible = mapping.replacements.filter(
+    (replacement) => replacement.estimatedSavings >= ContextFoldingPolicy.minimumNetSavingsTokens,
+  )
   const selected: ValidatedReplacement[] = []
   let estimatedAfter = budget.estimatedInputTokens!
-  for (const replacement of mapping.replacements) {
-    if (replacement.estimatedSavings < ContextFoldingPolicy.minimumNetSavingsTokens) continue
-    selected.push(replacement)
-    estimatedAfter = Math.max(0, estimatedAfter - replacement.estimatedSavings)
-    if (estimatedAfter <= budget.targetTokens!) break
+  const select = (replacements: readonly ValidatedReplacement[]) => {
+    for (const replacement of replacements) {
+      selected.push(replacement)
+      estimatedAfter = Math.max(0, estimatedAfter - replacement.estimatedSavings)
+      if (estimatedAfter <= budget.targetTokens!) break
+    }
   }
+  // Compress unrelated tasks first: sources from earlier task epochs are folded before duplicates that belong to
+  // the current task. Exact duplicates preserve meaning either way; this ordering preserves the active task's
+  // full working set whenever older duplicates alone are enough to reach the soft target.
+  select(eligible.filter((replacement) => !replacement.anchor))
+  if (estimatedAfter > budget.targetTokens!) select(eligible.filter((replacement) => replacement.anchor))
+  selected.sort((left, right) => left.sourceOrdinal - right.sourceOrdinal)
   if (selected.length === 0) return unchanged(input.request, "insufficient-savings", budget)
 
   const copy = cloneWireValue(input.request)
