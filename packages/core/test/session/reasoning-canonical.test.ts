@@ -186,4 +186,32 @@ describe("canonical reasoning editability", () => {
       }),
     ).toEqual({ text: "讨论了 <｜DSML｜tool_calls> 标记", metadata: {} })
   })
+
+  test("replays a clean rewrite when the stored original was a control envelope", () => {
+    const originalMetadata = {
+      relay: { reasoning_details: [{ type: "reasoning.text", text: envelope, format: "unknown", index: 0 }] },
+    }
+    const metadata = {
+      relay: { reasoning_details: [{ type: "reasoning.text", text: "DISTILLED", format: "unknown", index: 0 }] },
+    }
+    // A V2 adoption that recorded the envelope as its source still has a clean stored rewrite; its carrier mirrors
+    // that rewrite, so the clean pair must replay instead of falling back to the envelope.
+    expect(
+      reasoningForReplay({
+        text: "DISTILLED",
+        metadata,
+        distillation: { originalText: envelope, version: 2, originalMetadata },
+        enabled: true,
+      }),
+    ).toEqual({ text: "DISTILLED", metadata })
+    // Legacy adoption changed only the text, so replay reconstructs the mirror from the envelope source.
+    expect(
+      reasoningForReplay({
+        text: "DISTILLED",
+        metadata: originalMetadata,
+        distillation: { originalText: envelope },
+        enabled: true,
+      }),
+    ).toEqual({ text: "DISTILLED", metadata })
+  })
 })

@@ -1,13 +1,14 @@
 import { expect, test } from "bun:test"
-import { detectToolCallEnvelope } from "../../src/session/reasoning-distillation/control-markup"
+import { assessRewriteControl, detectToolCallEnvelope } from "../../src/session/reasoning-distillation/control-markup"
 
 /**
  * False-positive boundary for provider control markup.
  *
  * A complete DSML tool-call envelope is three structurally nested opening tags: a calls wrapper, an invoke with a
  * name, and at least one named parameter. Closing tags are optional because long-context output drops them. Everything
- * else — a mention, a path, a command, a URL, a code span, an incomplete fragment, or a generic XML example without
- * DSML — is legitimate reasoning and must survive.
+ * that does not itself form that structure — a mention, a path, a command, a URL, a code sample, an incomplete
+ * fragment, or a generic XML example without DSML — is legitimate reasoning and survives. A complete envelope is
+ * rejected even inside a code fence or a prose listing; rejection is fail-open, so only distillation is forgone.
  */
 const observed = [
   "<｜｜DSML｜｜ calls>",
@@ -97,3 +98,10 @@ for (const [name, text] of negatives) {
     expect(detectToolCallEnvelope(text)).toBeUndefined()
   })
 }
+
+test("the shared rewrite decision reports the side that carried the envelope", () => {
+  expect(assessRewriteControl(observed, "clean rewrite")).toBe("control-markup-source")
+  expect(assessRewriteControl("clean source", observed)).toBe("control-markup-output")
+  expect(assessRewriteControl(observed, observed)).toBe("control-markup-source")
+  expect(assessRewriteControl("clean source", "clean rewrite")).toBeUndefined()
+})

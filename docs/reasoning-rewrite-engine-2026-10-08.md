@@ -251,14 +251,32 @@ wrapper, then an `invoke` with a quoted `name`, then a `parameter` with a quoted
 consecutive in that order with only whitespace between them. Bars may be fullwidth or ASCII, one or two, with optional
 spaces, and the tag name is case-insensitive, covering canonical, proxy and degraded renderings. Closing tags are not
 required, because long-context output drops them. A mention of DSML, one or two markers, tags separated by prose, a
-generic XML sample without DSML, a path, command, URL or code span is not an envelope and remains distillable.
+generic XML sample without DSML, or a path, command, URL or code sample that does not itself form the complete
+structure is not an envelope and remains distillable. A complete envelope is rejected even inside a fenced block or a
+prose listing; because rejection is fail-open, this only forgoes distillation and never removes content.
 
 ### Acceptance
 
 - A complete envelope in organizer output is not adopted; the original reasoning and its carrier survive with no
   provenance. A complete envelope in the source skips the organizer with `control-markup-source` and spends no call.
-- Both adoption paths and replay use the shared decision; replay of a pre-existing distilled envelope returns the
-  stored original text and metadata.
-- Mentions, code examples, paths, commands, URLs and truncated fragments remain distillable.
+- Both adoption paths and replay use the shared decision. Replay of a pre-existing distilled text that is itself an
+  envelope returns the stored original pair. Replay of a clean rewrite whose provenance records an envelope source
+  keeps the clean rewrite and reconstructs a coherent carrier instead of falling back to the envelope.
+- Mentions, code samples that do not form the complete structure, paths, commands, URLs and truncated fragments remain
+  distillable.
 - The focused core and opencode tests pass, both package typechecks pass, and root lint reports 0 errors within the
   warning ratchet.
+
+### Review hardening (2026-10-18)
+
+Adversarial review found that replay reused the control-markup source guard while reconstructing carrier evidence. When
+a rewrite stored before the guard had an envelope as `originalText` and clean distilled text, evidence reconstruction
+was refused and replay fell back to the envelope, which the original code would have replayed as clean text. Replay
+evidence now bypasses only the control policy (`replace(..., false)`); adoption keeps the full shared gate. Regressions
+pin both V2 and legacy replay for an envelope source with a clean rewrite, and a direct test pins the shared
+`assessRewriteControl` decision (source before output, clean text allowed).
+
+A read-only check of the 181 local reasoning parts containing DSML found no evidence for the documented detector gaps:
+no U+2581 in a tag name, no three-bar tags, and no unquoted `name` attribute. Fullwidth angle brackets, an omitted
+wrapper, zero-width separators, escaped quotes and U+2581 therefore remain recorded risks rather than expanded
+detection surface. Precedence between `control-markup-source` and `protected-carrier` affects only the log reason code.

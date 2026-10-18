@@ -3,8 +3,9 @@
  *
  * DeepSeek models serialize tool calls as DSML when the structured tool-call channel is unavailable, and the markup can
  * leak into `content` or `reasoning_content`; a small organizer model can also emit it. Only a complete tool-call
- * envelope is rejected. A mention of DSML, a path, a command, a URL, a code span, or an incomplete fragment is
- * legitimate reasoning and must survive.
+ * envelope is rejected. A mention, a path, a command, a URL, a code sample that does not itself form the complete
+ * structure, or an incomplete fragment is legitimate reasoning and must survive. A complete envelope is rejected even
+ * inside a code fence or a prose listing; rejection is fail-open, so only distillation is forgone.
  */
 export type ControlMarkup = "tool-call-envelope"
 
