@@ -379,6 +379,65 @@ describe("Anthropic Messages route", () => {
     }),
   )
 
+  it.effect("replays redacted thinking as an opaque redacted_thinking block", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              { type: "reasoning", text: "", providerMetadata: { anthropic: { redactedData: "opaque_payload" } } },
+            ]),
+          ],
+        }),
+      )
+
+      expect(prepared.body).toMatchObject({
+        messages: [{ role: "assistant", content: [{ type: "redacted_thinking", data: "opaque_payload" }] }],
+      })
+    }),
+  )
+
+  it.effect("preserves redacted thinking blocks in streamed history without breaking the thinking chain", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        { type: "message_start", message: { usage: { input_tokens: 1 } } },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "redacted_thinking", data: "opaque_payload" },
+        },
+        { type: "content_block_stop", index: 0 },
+        { type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "" } },
+        { type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "after redaction" } },
+        { type: "content_block_delta", index: 1, delta: { type: "signature_delta", signature: "sig_after" } },
+        { type: "content_block_stop", index: 1 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+        { type: "message_stop" },
+      )
+      const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)))
+      expect(response.message.content).toEqual([
+        { type: "reasoning", text: "", providerMetadata: { anthropic: { redactedData: "opaque_payload" } } },
+        { type: "reasoning", text: "after redaction", providerMetadata: { anthropic: { signature: "sig_after" } } },
+      ])
+
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({ model, messages: [Message.assistant(response.message.content)] }),
+      )
+      expect(prepared.body).toMatchObject({
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "redacted_thinking", data: "opaque_payload" },
+              { type: "thinking", thinking: "after redaction", signature: "sig_after" },
+            ],
+          },
+        ],
+      })
+    }),
+  )
+
   it.effect("parses text, reasoning, and usage stream fixtures", () =>
     Effect.gen(function* () {
       const body = sseEvents(
