@@ -420,13 +420,14 @@ export const layer = Layer.effect(
           ),
         ),
       )
-    // Decide before stopping the stream: only editable, large-enough reasoning with an available organizer and budget
-    // may request a synchronous continuation.
-    const canSplitReasoning = (input: {
+    // Decide whether a settled part may wait for a continuation: only editable, large-enough reasoning with an
+    // available organizer and budget qualifies. The request itself is never stopped here; the continuation decision
+    // is made after the stream ends with reasoning alone.
+    const canDeferReasoning = (input: {
       sessionID: SessionID
       part: SessionV1.ReasoningPart
       model: Provider.Model
-    }): Effect.Effect<"split" | "continue"> =>
+    }): Effect.Effect<"defer" | "continue"> =>
       InstanceState.useEffect(rewriteState, ({ budget }) =>
         Effect.gen(function* () {
           if (!(yield* reasoningDistillationEnabled(input.model))) return "continue" as const
@@ -442,7 +443,7 @@ export const layer = Layer.effect(
             return "continue" as const
           if (budget.admit(input.sessionID) !== "ok") return "continue" as const
           const organizer = yield* llm.organizer({ model: input.model })
-          return organizer ? ("split" as const) : ("continue" as const)
+          return organizer ? ("defer" as const) : ("continue" as const)
         }).pipe(
           // A typed failure keeps the stream; a defect must not be mistaken for "no organizer".
           Effect.catchCauseIf(
@@ -3090,19 +3091,23 @@ export const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
-              onReasoningSettled: (part, canSplit) =>
+              onReasoningSettled: (part, canDefer) =>
                 Effect.gen(function* () {
                   if (toolsDisabled || isLastStep) {
                     yield* rewriteReasoningNow({ sessionID, part, model })
                     return "continue" as const
                   }
-                  const decision = yield* canSplitReasoning({ sessionID, part, model })
-                  // A real split rewrites this and any other reasoning part in the continuation loop, after the
-                  // stream stops. A part that cannot split is rewritten here, so one part never pays twice and the
+                  const decision = yield* canDeferReasoning({ sessionID, part, model })
+                  // A deferred part is rewritten by the continuation loop only if this request ends with reasoning
+                  // alone. A part this request cannot defer is rewritten here, so one part never pays twice and the
                   // last part after the continuation limit is still organized.
-                  if (!canSplit || decision === "continue") yield* rewriteReasoningNow({ sessionID, part, model })
+                  if (!canDefer || decision === "continue") yield* rewriteReasoningNow({ sessionID, part, model })
                   return decision
                 }),
+              // The request produced content, tool activity, or a blocked tool, so it will not continue; its
+              // deferred reasoning still needs organizing before the next request resends it.
+              onReasoningUnused: (parts) =>
+                Effect.forEach(parts, (part) => rewriteReasoningNow({ sessionID, part, model }), { discard: true }),
               displayMode: lastUser.hookMode ?? "noninteractive",
               ...(displayEnabled && settingsHook
                 ? {

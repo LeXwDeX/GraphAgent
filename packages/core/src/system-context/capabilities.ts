@@ -42,7 +42,7 @@ Before claiming a feature is unavailable, check this catalog and its configurati
 
 ### Reasoning distillation (thought distillation)
 - The runtime can organize and compress eligible reasoning before it is resent to the model.
-- Distillation is enabled by default for every model; set reasoningDistillation.enabled to false to turn it off.
+- Distillation is disabled by default for every model; set reasoningDistillation.enabled to true to turn it on.
 - Signed, encrypted, referenced or unknown reasoning is never rewritten.
 - It requires an available small model.
 - This feature manages host context. It does not expose private reasoning.

@@ -7070,6 +7070,7 @@ for (const scenario of [
   { apiID: "qwen-test", global: true, model: undefined, expected: true },
   { apiID: "gpt-test", global: true, model: undefined, expected: true },
   { apiID: "anthropic/Claude-test", global: true, model: undefined, expected: true },
+  { apiID: "qwen-test", global: undefined, model: undefined, expected: false },
   { apiID: "qwen-test", global: false, model: true, expected: true },
   { apiID: "qwen-test", global: true, model: false, expected: false },
   { apiID: "gpt-test", global: false, model: true, expected: true },
@@ -7131,7 +7132,7 @@ for (const scenario of [
   )
 }
 
-distillationIt.instance("organizes unsigned reasoning before content and continues with it", () =>
+distillationIt.instance("organizes reasoning in place when the request continues with content", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
       ...providerCfg(url),
@@ -7159,10 +7160,52 @@ distillationIt.instance("organizes unsigned reasoning before content and continu
       noReply: true,
       parts: [{ type: "text", text: "answer directly" }],
     })
-    yield* llm.push(
-      reply().reason(longThought("sync-thinking")).text("phase-one-content").stop(),
-      reply().text("final-answer").stop(),
+    // The model continues its own turn after reasoning, so the stream must run to its natural end and keep the
+    // content instead of being cut and replaced by a continuation.
+    yield* llm.push(reply().reason(longThought("sync-thinking")).text("phase-one-content").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    expect(organizerCalls).toBe(1)
+    const hits = (yield* llm.hits).filter(
+      (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
     )
+    expect(hits).toHaveLength(1)
+    expect(JSON.stringify(hits[0]?.body)).not.toContain("Continue from the reasoning above")
+    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "reasoning" && part.text === "adopted-sync")).toBe(true)
+    expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(true)
+    expect(parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(false)
+  }),
+)
+
+distillationIt.instance("continues only when the request ends with reasoning alone", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      reasoningDistillation: { enabled: true },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Sync continuation",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    let organizerCalls = 0
+    controlledOrganizer = () =>
+      Effect.succeed({
+        transport: "engine" as const,
+        model: "test/small",
+        call: () => async () => {
+          organizerCalls++
+          return { text: "adopted-sync", finishReason: "stop" }
+        },
+      })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "answer directly" }],
+    })
+    yield* llm.push(reply().reason(longThought("sync-thinking")).stop(), reply().text("final-answer").stop())
     yield* prompt.loop({ sessionID: chat.id })
     expect(organizerCalls).toBe(1)
     const hits = (yield* llm.hits).filter(
@@ -7181,10 +7224,10 @@ distillationIt.instance("organizes unsigned reasoning before content and continu
     const sent = JSON.stringify(hits.at(-1)?.body)
     expect(sent).toContain("adopted-sync")
     expect(sent).not.toContain("sync-thinking")
+    expect(sent).toContain("Continue from the reasoning above")
     const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
     expect(parts.some((part) => part.type === "reasoning" && part.text === "adopted-sync")).toBe(true)
     expect(parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(true)
-    expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
   }),
 )
 
@@ -7394,10 +7437,7 @@ distillationIt.instance("falls back to the original reasoning when synchronous o
       noReply: true,
       parts: [{ type: "text", text: "answer directly" }],
     })
-    yield* llm.push(
-      reply().reason(longThought("fallback-thinking")).text("phase-one-content").stop(),
-      reply().text("fallback-answer").stop(),
-    )
+    yield* llm.push(reply().reason(longThought("fallback-thinking")).stop(), reply().text("fallback-answer").stop())
     yield* prompt.loop({ sessionID: chat.id })
     expect(organizerCalls).toBe(1)
     const hits = (yield* llm.hits).filter(
@@ -7407,7 +7447,6 @@ distillationIt.instance("falls back to the original reasoning when synchronous o
     expect(JSON.stringify(hits.at(-1)?.body)).toContain("fallback-thinking")
     const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
     expect(parts.some((part) => part.type === "text" && part.text === "fallback-answer")).toBe(true)
-    expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
   }),
 )
 
@@ -7434,7 +7473,7 @@ distillationIt.instance("runs local hooks once around a synchronous continuation
       parts: [{ type: "text", text: "read and explain" }],
     })
     yield* llm.push(
-      reply().reason(longThought("tool-thinking")).text("phase-one-content").stop(),
+      reply().reason(longThought("tool-thinking")).stop(),
       reply().tool("read", { filePath: path.join(dir, "distillation-source.txt") }, "read-sync"),
       reply().text("hook-final").stop(),
     )
@@ -7451,7 +7490,6 @@ distillationIt.instance("runs local hooks once around a synchronous continuation
     expect(reasoningParts[0].type === "reasoning" ? reasoningParts[0].text : undefined).toBe("adopted-tool")
     const parts = messages.flatMap((message) => message.parts)
     expect(parts.some((part) => part.type === "text" && part.text === "hook-final")).toBe(true)
-    expect(parts.some((part) => part.type === "text" && part.text === "phase-one-content")).toBe(false)
   }),
 )
 
@@ -7477,7 +7515,7 @@ distillationIt.instance("each step's reasoning is rewritten before its first res
       parts: [{ type: "text", text: "read and explain" }],
     })
     yield* llm.push(
-      // Each reasoning part splits before any content, so the stream stops and the next reply answers it.
+      // Each request ends with reasoning alone, so it continues and the next reply answers it.
       reply().reason(longThought("tool-thinking")).stop(),
       reply().tool("read", { filePath: path.join(dir, "distillation-source.txt") }, "read-source"),
       reply().reason(longThought("final-thinking")).stop(),
@@ -7794,7 +7832,7 @@ distillationIt.instance("compacts instead of sending an oversized synchronous co
   }),
 )
 
-distillationIt.instance("charges the split request whose finish chunk was cut", () =>
+distillationIt.instance("accumulates usage from both requests of a continuation", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
       ...providerCfg(url),
@@ -7813,15 +7851,18 @@ distillationIt.instance("charges the split request whose finish chunk was cut", 
       noReply: true,
       parts: [{ type: "text", text: "think carefully" }],
     })
-    yield* llm.push(reply().reason(longThought("step-1")).stop(), reply().text("final-answer").stop())
+    yield* llm.push(
+      reply().reason(longThought("step-1")).usage({ input: 1_000, output: 200 }).stop(),
+      reply().text("final-answer").usage({ input: 1_100, output: 30 }).stop(),
+    )
     yield* prompt.loop({ sessionID: chat.id })
     const assistant = (yield* sessions.messages({ sessionID: chat.id })).findLast(
       (message) => message.info.role === "assistant",
     )
     if (assistant?.info.role !== "assistant") throw new Error("missing assistant")
     expect(assistant.parts.some((part) => part.type === "text" && part.text === "final-answer")).toBe(true)
-    expect(assistant.info.tokens.input).toBeGreaterThan(0)
-    expect(assistant.info.tokens.reasoning).toBeGreaterThan(0)
+    expect(assistant.info.tokens.input).toBe(2_100)
+    expect(assistant.info.tokens.output).toBe(230)
   }),
 )
 
@@ -8036,7 +8077,7 @@ distillationIt.instance("cancelling a synchronous continuation interrupts the or
       noReply: true,
       parts: [{ type: "text", text: "think" }],
     })
-    yield* llm.push(reply().reason(longThought("sync-cancel")).text("phase-one").stop())
+    yield* llm.push(reply().reason(longThought("sync-cancel")).stop())
     const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
     yield* awaitWithTimeout(Deferred.await(started), "sync organizer did not start")
     yield* prompt.cancel(chat.id)
@@ -8046,8 +8087,14 @@ distillationIt.instance("cancelling a synchronous continuation interrupts the or
       "synchronous organizer was not cancelled",
     )
     expect((yield* (yield* SessionStatus.Service).get(chat.id)).type).toBe("idle")
-    const parts = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
-    expect(parts.some((part) => part.type === "text" && part.text === "phase-one")).toBe(false)
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const assistantText = messages
+      .filter((message) => message.info.role === "assistant")
+      .flatMap((message) => message.parts)
+      .filter((part) => part.type === "text")
+    expect(assistantText).toHaveLength(0)
+    const parts = messages.flatMap((message) => message.parts)
+    expect(parts.some((part) => part.type === "reasoning" && part.text === longThought("sync-cancel"))).toBe(true)
   }),
 )
 

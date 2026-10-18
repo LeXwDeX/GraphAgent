@@ -32,7 +32,7 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 
 | Feature | What it does | How to use it |
 | --- | --- | --- |
-| [Reasoning shaping](#reasoning-shaping) | Reorganizes each reasoning part with a small model before the model sees it again (on by default) | `reasoningDistillation.enabled` + `small_model` |
+| [Reasoning shaping](#reasoning-shaping) | Reorganizes each reasoning part with a small model before the model sees it again (off by default) | `reasoningDistillation.enabled` + `small_model` |
 | [DAG workflows](#dag-workflows) | Decomposes a task into a durable dependency graph of child agents | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
 | [Project Memory](#project-memory) | Keeps confirmed preferences, decisions and terminology per project | `/memory on` |
 | [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally | `/goal`, `/subgoal` |
@@ -46,9 +46,10 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 Thinking models send their earlier reasoning back to the provider on later steps. Long reasoning is full of restated
 requests, abandoned guesses and correction narrative, and every later request pays for it again.
 
-Reasoning shaping is on by default and is fully synchronous. A thinking model first emits its reasoning; if the
-reasoning has no signature and no content or tool call has started, the session pauses the response, organizes the
-reasoning with the small model, then continues the same assistant message with the organized text. The user still sees
+Reasoning shaping is off by default and is fully synchronous. Set `reasoningDistillation.enabled` to `true` globally
+or on a model to opt in. A thinking model first emits its reasoning, and the stream is never cut at the reasoning
+boundary. If the request ends with reasoning alone — no content and no tool call — the session organizes the reasoning
+with the small model and sends a continuation, so the same assistant message still produces an answer. The user sees
 one turn, but the rest of the model output is based on the organized reasoning. The organizer is the configured
 `small_model`, otherwise the provider's own small model; with neither, nothing is rewritten.
 
@@ -60,7 +61,7 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 - **Only safe carriers.** Plain reasoning and plaintext mirrors are rewritten. Signed, encrypted or referenced reasoning
   (Anthropic thinking signatures, OpenAI encrypted reasoning, Gemini thought signatures) is never touched.
 - **No interruption after output starts.** If content or a tool call has already started, the response is not paused;
-  the reasoning is still organized in place before the stream continues.
+  the reasoning is organized after the request ends, before the next request resends it.
 - **Fallback.** If organization fails, times out or no organizer is available, the original reasoning continues and the
   user still gets an answer.
 - **Reversible.** The original text and metadata are stored with the part; turning the feature off replays originals.
@@ -72,7 +73,7 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 {
   "small_model": "provider/small-model", // prefer one with a `none` reasoning variant
   "reasoningDistillation": {
-    "enabled": true, // default; false turns it off
+    "enabled": true, // opt in; the default is false
     "language": "zh", // organizer prose language: "zh" (default) or "en"
   },
 }

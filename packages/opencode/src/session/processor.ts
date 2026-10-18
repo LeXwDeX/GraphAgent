@@ -86,11 +86,18 @@ type Input = {
   sessionID: SessionID
   model: Provider.Model
   /**
-   * Called once per reasoning part that ended normally, after it is persisted. `canSplit` is false when this request
-   * may not stop for a continuation, so the host must organize the part in place. Returns `split` when the host wants
-   * to stop this stream before content or tools start, organize the reasoning, and continue in a second request.
+   * Called once per reasoning part that ended normally, after it is persisted. `canDefer` is false when this request
+   * may not continue for this part, so the host must organize the part in place. Returns `defer` when the host wants
+   * to organize the part only if this request ends with reasoning alone. The stream is never stopped at the reasoning
+   * boundary: a part is often followed by content or tool calls that belong to the same request.
    */
-  onReasoningSettled?: (part: SessionV1.ReasoningPart, canSplit: boolean) => Effect.Effect<"split" | "continue">
+  onReasoningSettled?: (part: SessionV1.ReasoningPart, canDefer: boolean) => Effect.Effect<"defer" | "continue">
+  /**
+   * Called after a request that deferred reasoning parts ended without a continuation (content or tool activity,
+   * including a tool the user or a hook blocked), so the host can still organize those parts in place before they
+   * are resent. Errors, cancellation and compaction keep the originals.
+   */
+  onReasoningUnused?: (parts: readonly SessionV1.ReasoningPart[]) => Effect.Effect<void>
   displayMode?: "interactive" | "noninteractive"
   onTextDisplay?: (batch: { delta: string; index: number; final: boolean }) => Effect.Effect<string>
 }
@@ -115,9 +122,14 @@ interface ProcessorContext extends Input {
   snapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
-  /** Stop the current stream at a settled reasoning part so the host can organize it before content starts. */
+  /**
+   * This attempt ended with reasoning alone. The host organizes the reasoning and continues it in a second request
+   * instead of ending the turn without an answer.
+   */
   splitForContinuation: boolean
-  /** Whether this attempt may split; the continuation request disables further splits. */
+  /** Settled reasoning parts the host will organize only if this attempt ends with reasoning alone. */
+  deferredReasoning: SessionV1.ReasoningPart[]
+  /** Whether this attempt may defer reasoning parts; the last continuation request disables further continuations. */
   allowSplit: boolean
   currentText: SessionV1.TextPart | undefined
   currentTextID: string | undefined
@@ -225,6 +237,7 @@ export const layer = Layer.effect(
         blocked: false,
         needsCompaction: false,
         splitForContinuation: false,
+        deferredReasoning: [],
         allowSplit: true,
         currentText: undefined,
         currentTextID: undefined,
@@ -425,10 +438,10 @@ export const layer = Layer.effect(
         const settled = yield* session.updatePart(ctx.reasoningMap[reasoningID])
         delete ctx.reasoningMap[reasoningID]
         if (!input.onReasoningSettled || ctx.assistantMessage.summary) return
-        // A part may only stop the stream while this attempt has produced no visible text or tool activity. The host
-        // uses the same flag to decide whether it can defer organization to the continuation loop or must organize
-        // the part in place.
-        const canSplit =
+        // A part may only wait for a continuation while this attempt has produced no visible text or tool activity.
+        // The decision to continue is made when the stream ends: reasoning is commonly followed by content or tool
+        // calls in the same request, and stopping at the reasoning boundary would drop them.
+        const canDefer =
           allowSplit &&
           ctx.allowSplit &&
           ctx.currentText === undefined &&
@@ -436,8 +449,8 @@ export const layer = Layer.effect(
           Object.keys(ctx.toolcalls).length === 0 &&
           ctx.admittedToolCalls === 0 &&
           !ctx.attemptToolActivity
-        const decision = yield* input.onReasoningSettled(settled, canSplit)
-        if (canSplit && decision === "split") ctx.splitForContinuation = true
+        const decision = yield* input.onReasoningSettled(settled, canDefer)
+        if (canDefer && decision === "defer") ctx.deferredReasoning.push(settled)
       })
 
       const flushV2Fragments = Effect.fn("SessionProcessor.flushV2Fragments")(function* () {
@@ -562,9 +575,7 @@ export const layer = Layer.effect(
               sessionID: ctx.assistantMessage.sessionID,
               type: "reasoning",
               text: "",
-              ...(v2AssistantMessageID
-                ? { v2: { messageID: v2AssistantMessageID, reasoningID: partID } }
-                : {}),
+              ...(v2AssistantMessageID ? { v2: { messageID: v2AssistantMessageID, reasoningID: partID } } : {}),
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
@@ -1262,9 +1273,9 @@ export const layer = Layer.effect(
         // A split normally hands the message to a continuation, which completes it. Compaction takes precedence and
         // never continues, so it must still complete the message.
         if (ctx.splitForContinuation && !ctx.needsCompaction) {
-          // The cut drops the provider's finish chunk, so this request's usage never reaches step-finish.
-          // Charge it from the prepared request and the reasoning already generated, unless real usage
-          // arrived before the cut. The continuation request is charged separately when it finishes.
+          // A natural stream end records provider usage in step-finish, so this fallback only covers a continuation
+          // whose request ended without one. Charge it from the prepared request and the reasoning already
+          // generated. The continuation request is charged separately when it finishes.
           if (!ctx.attemptUsageRecorded) {
             const output = ctx.attemptReasoningEstimate
             const usage = Session.getUsage({
@@ -1393,6 +1404,7 @@ export const layer = Layer.effect(
             ctx.currentTextID = undefined
             ctx.reasoningMap = {}
             ctx.splitForContinuation = false
+            ctx.deferredReasoning = []
             ctx.allowSplit = options?.allowSplit !== false
             // Detection state is per attempt: a retried attempt must not
             // inherit the previous attempt's admissions, and its finish reason
@@ -1457,9 +1469,28 @@ export const layer = Layer.effect(
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsCompaction || ctx.splitForContinuation),
+              Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
+
+            // A request that ended with reasoning alone left the turn without an answer. Only now may it continue:
+            // reasoning is often followed by content or tool calls, and cutting the stream at the reasoning boundary
+            // would drop them.
+            if (
+              ctx.deferredReasoning.length > 0 &&
+              !aborted &&
+              !ctx.needsCompaction &&
+              !ctx.blocked &&
+              !ctx.assistantMessage.error &&
+              ctx.currentText === undefined &&
+              ctx.attemptTextLength === 0 &&
+              Object.keys(ctx.toolcalls).length === 0 &&
+              ctx.admittedToolCalls === 0 &&
+              !ctx.attemptToolActivity &&
+              !ctx.attemptSuppressedActivity
+            ) {
+              ctx.splitForContinuation = true
+            }
 
             // Detect an incomplete response before cleanup loses the
             // execution-state information: the stream drained normally with an
@@ -1604,6 +1635,20 @@ export const layer = Layer.effect(
             }),
             Effect.ensuring(cleanup()),
           )
+
+          // The request produced content, tool activity, or a blocked tool, so it will not continue. Its deferred
+          // reasoning still needs organizing before the next request resends it: a denied or hook-stopped tool
+          // leaves a replayable message whose raw reasoning would otherwise be paid for on every later request.
+          if (
+            ctx.deferredReasoning.length > 0 &&
+            !ctx.splitForContinuation &&
+            !ctx.needsCompaction &&
+            !aborted &&
+            !ctx.assistantMessage.error &&
+            input.onReasoningUnused
+          ) {
+            yield* input.onReasoningUnused(ctx.deferredReasoning)
+          }
 
           if (ctx.needsCompaction) return "compact"
           if (ctx.splitForContinuation) return "split"
