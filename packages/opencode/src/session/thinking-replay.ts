@@ -229,6 +229,15 @@ export function project<T>(input: {
         diagnostic.carriers++
         if (saved) diagnostic.knownOrigins++
         else diagnostic.unknownLegacy++
+        // Official preserved-thinking contract (platform.claude.com/docs/en/
+        // build-with-claude/preserved-thinking): removing thinking blocks from
+        // the START of a history, from the END, or removing all of them is
+        // valid — only removing blocks from the MIDDLE while keeping later
+        // blocks invalidates those later blocks. The chain check therefore
+        // compares against the immediately preceding RETAINED block:
+        // `previous === undefined` means no retained predecessor, so a leading
+        // removal must not invalidate. Do not tighten this to the absolute
+        // chain start: that would tombstone legal histories.
         const mismatch =
           saved &&
           (saved.forceInvalidation ||

@@ -62,6 +62,15 @@ const AnthropicThinkingBlock = Schema.Struct({
   cache_control: Schema.optional(AnthropicCacheControl),
 })
 
+// Safety-redacted thinking: the payload is opaque to the client and must be
+// replayed verbatim inside the assistant turn. Dropping it from the middle of
+// a preserved-thinking history invalidates every later thinking block.
+const AnthropicRedactedThinkingBlock = Schema.Struct({
+  type: Schema.tag("redacted_thinking"),
+  data: Schema.String,
+  cache_control: Schema.optional(AnthropicCacheControl),
+})
+
 const AnthropicToolUseBlock = Schema.Struct({
   type: Schema.tag("tool_use"),
   id: Schema.String,
@@ -121,6 +130,7 @@ type AnthropicUserBlock = Schema.Schema.Type<typeof AnthropicUserBlock>
 const AnthropicAssistantBlock = Schema.Union([
   AnthropicTextBlock,
   AnthropicThinkingBlock,
+  AnthropicRedactedThinkingBlock,
   AnthropicToolUseBlock,
   AnthropicServerToolUseBlock,
   AnthropicServerToolResultBlock,
@@ -185,6 +195,9 @@ const AnthropicStreamBlock = Schema.Struct({
   text: Schema.optional(Schema.String),
   thinking: Schema.optional(Schema.String),
   signature: Schema.optional(Schema.String),
+  // redacted_thinking arrives whole as content_block_start; the opaque payload
+  // must survive into the stored reasoning part for verbatim replay.
+  data: Schema.optional(Schema.String),
   input: Schema.optional(Schema.Unknown),
   // *_tool_result blocks arrive whole as content_block_start (no streaming
   // delta) with the structured payload in `content` and the originating
@@ -256,6 +269,12 @@ const signatureFromMetadata = (metadata: ProviderMetadata | undefined): string |
   const anthropic = metadata?.anthropic
   if (!ProviderShared.isRecord(anthropic)) return undefined
   return typeof anthropic.signature === "string" ? anthropic.signature : undefined
+}
+
+const redactedFromMetadata = (metadata: ProviderMetadata | undefined): string | undefined => {
+  const anthropic = metadata?.anthropic
+  if (!ProviderShared.isRecord(anthropic)) return undefined
+  return typeof anthropic.redactedData === "string" ? anthropic.redactedData : undefined
 }
 
 const lowerTool = (breakpoints: Cache.Breakpoints, tool: ToolDefinition, inputSchema: JsonSchema): AnthropicTool => ({
@@ -447,11 +466,19 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
           continue
         }
         if (part.type === "reasoning") {
-          content.push({
-            type: "thinking",
-            thinking: part.text,
-            signature: part.encrypted ?? signatureFromMetadata(part.providerMetadata),
-          })
+          const redacted = redactedFromMetadata(part.providerMetadata)
+          content.push(
+            redacted === undefined
+              ? {
+                  type: "thinking",
+                  thinking: part.text,
+                  signature: part.encrypted ?? signatureFromMetadata(part.providerMetadata),
+                }
+              : // Replay the opaque block unchanged; converting it to a text
+                // `thinking` block (the previous behavior) sends an empty
+                // signature and breaks the preserved-thinking chain.
+                { type: "redacted_thinking", data: redacted },
+          )
           continue
         }
         if (part.type === "tool-call") {
@@ -697,6 +724,17 @@ const onContentBlockStart = (state: ParserState, event: AnthropicEvent): StepRes
       },
       events,
     ]
+  }
+
+  // Redacted thinking arrives as one complete block. Preserve the opaque
+  // payload as an (empty-text) reasoning part so the stored history can echo
+  // it back verbatim; omitting it would leave a gap in the thinking chain.
+  if (block.type === "redacted_thinking" && block.data) {
+    const metadata = anthropicMetadata({ redactedData: block.data })
+    const id = `reasoning-${event.index ?? 0}`
+    const events: LLMEvent[] = []
+    const started = Lifecycle.reasoningStart(state.lifecycle, events, id, metadata)
+    return [{ ...state, lifecycle: Lifecycle.reasoningEnd(started, events, id, metadata) }, events]
   }
 
   const result = serverToolResultEvent(block)
