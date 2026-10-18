@@ -72,6 +72,7 @@ import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { deliverReport, selectReportNode } from "./report-delivery"
+import { Logging } from "@opencode-ai/core/observability/logging"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
@@ -560,7 +561,7 @@ const serviceLayer = Layer.effect(
                 entry.runtime.markRunning(nodeID)
                 const oldFiber = entry.fibers.get(nodeID)
                 const oldWatcher = entry.watchers.get(nodeID)
-                yield* abortChild(nodeID, node.childSessionId).pipe(Effect.ignore)
+                yield* abortChild(dagID, nodeID, node.childSessionId, "dag.loop.admission.replace").pipe(Effect.ignore)
                 if (oldFiber) yield* Fiber.interrupt(oldFiber).pipe(Effect.ignore)
                 // Interrupt the old watcher before installing a new one. The
                 // old self-renewing watcher would otherwise become unreachable
@@ -661,8 +662,21 @@ const serviceLayer = Layer.effect(
         // Best-effort abort of a durable child session, independent of whether
         // a local wrapper fiber still exists.  Used at every replacement,
         // cancellation, failure, and workflow-terminal cleanup site.
-        const abortChild = Effect.fnUntraced(function* (nodeID: string, childSessionId: string | null) {
+        const abortChild = Effect.fnUntraced(function* (
+          dagID: string,
+          nodeID: string,
+          childSessionId: string | null,
+          source: string,
+        ) {
           if (!childSessionId) return
+          // File-only DEBUG attribution for a future interruption whose initiator
+          // is otherwise unknown (#777). Correlation IDs only; never prompt text.
+          yield* Logging.backgroundDebug("lifecycle.dag.execution.aborted", {
+            source,
+            workflowID: dagID,
+            nodeID,
+            childSessionID: childSessionId,
+          })
           yield* promptSvc.cancel(childSessionId as never).pipe(Effect.ignore)
         })
 
@@ -799,7 +813,12 @@ const serviceLayer = Layer.effect(
             const recovery = yield* reconcileWorkflow(
               dagID,
               checkSessionStatus,
-              (sid) => promptSvc.cancel(sid as never),
+              (sid) =>
+                Logging.backgroundDebug("lifecycle.dag.execution.aborted", {
+                  source: "dag.recovery.cancel",
+                  workflowID: dagID,
+                  childSessionID: sid,
+                }).pipe(Effect.andThen(promptSvc.cancel(sid as never))),
               // null (not undefined) marks an unparseable row so recovery
               // fails such nodes loudly instead of undefined-completing them.
               config ?? null,
@@ -1113,7 +1132,12 @@ const serviceLayer = Layer.effect(
                           // delete — their fiber published the event and is finishing.
                           const fiber = entry.fibers.get(nodeID)
                           if (fiber) {
-                            yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                            yield* abortChild(
+                              dagID,
+                              nodeID,
+                              node?.childSessionId ?? null,
+                              "dag.loop.nodeSkipped.cancel-race",
+                            ).pipe(Effect.ignore)
                             yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                           }
                         }
@@ -1193,7 +1217,9 @@ const serviceLayer = Layer.effect(
                 Effect.gen(function* () {
                   const fiber = entry.fibers.get(nodeID)
                   const node = yield* store.getNode(dagID, nodeID)
-                  yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                  yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.nodeCancelled").pipe(
+                    Effect.ignore,
+                  )
                   if (fiber) {
                     yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                     entry.fibers.delete(nodeID)
@@ -1239,7 +1265,9 @@ const serviceLayer = Layer.effect(
                       const watcher = entry.watchers.get(nid)
                       entry.fibers.delete(nid)
                       entry.watchers.delete(nid)
-                      yield* abortChild(nid, node.childSessionId ?? null).pipe(Effect.ignore)
+                      yield* abortChild(dagID, nid, node.childSessionId ?? null, "dag.loop.nodeFailed.cleanup").pipe(
+                        Effect.ignore,
+                      )
                       if (fiber) yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                       if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
                       entry.runtime.markUnsatisfied(nid)
@@ -1571,7 +1599,9 @@ const serviceLayer = Layer.effect(
                   for (const [nodeID, fiber] of [...entry.fibers]) {
                     const node = nodes.find((n) => n.id === nodeID)
                     if (node && (node.status === "running" || node.status === "queued")) continue
-                    yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                    yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.replan.cleanup").pipe(
+                      Effect.ignore,
+                    )
                     yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                     const watcher = entry.watchers.get(nodeID)
                     if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
@@ -1608,7 +1638,9 @@ const serviceLayer = Layer.effect(
                     Effect.gen(function* () {
                       for (const [nodeID, fiber] of entry.fibers) {
                         const node = yield* store.getNode(dagID, nodeID)
-                        yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                        yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.workflowTerminal").pipe(
+                          Effect.ignore,
+                        )
                         yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                         const watcher = entry.watchers.get(nodeID)
                         if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
@@ -2293,7 +2325,12 @@ const serviceLayer = Layer.effect(
                   Effect.gen(function* () {
                     for (const [nodeID, fiber] of entry.fibers) {
                       const node = yield* store.getNode(dagID, nodeID)
-                      yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                      yield* abortChild(
+                        dagID,
+                        nodeID,
+                        node?.childSessionId ?? null,
+                        "dag.loop.parentSessionDeleted",
+                      ).pipe(Effect.ignore)
                       yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                       const watcher = entry.watchers.get(nodeID)
                       if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
@@ -2335,7 +2372,9 @@ const serviceLayer = Layer.effect(
                   Effect.gen(function* () {
                     for (const [nodeID, fiber] of entry.fibers) {
                       const node = yield* store.getNode(dagID, nodeID)
-                      yield* abortChild(nodeID, node?.childSessionId ?? null).pipe(Effect.ignore)
+                      yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.locationMoved").pipe(
+                        Effect.ignore,
+                      )
                       yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                       const watcher = entry.watchers.get(nodeID)
                       if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)

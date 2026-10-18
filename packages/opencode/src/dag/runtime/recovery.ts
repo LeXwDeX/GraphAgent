@@ -618,7 +618,10 @@ export function continueRecoveredMessageNode(
           yield* dag.nodeFailed(
             dagID,
             nodeID,
-            "recovered model turn stopped without a successful result",
+            childFailureReason(
+              "recovered model turn stopped without a successful result",
+              result.info.role === "assistant" ? result.info.error : undefined,
+            ),
             "exec_failed",
             attempt,
           )

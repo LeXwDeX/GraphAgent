@@ -50,7 +50,7 @@ function harness(
     stale?: number
     text?: string
     userResult?: boolean
-    modelError?: boolean
+    modelError?: boolean | "MessageAbortedError"
     loopFault?: "defect" | "interrupt"
     guardStale?: boolean
     claimRejection?: DagMessages.Rejection["reason"]
@@ -176,7 +176,10 @@ function harness(
             parts: [],
           } satisfies SessionV1.WithParts
         if (input.modelError && r.info.role === "assistant")
-          r.info.error = { name: "UnknownError", data: { message: "model failed" } }
+          r.info.error =
+            input.modelError === "MessageAbortedError"
+              ? { name: "MessageAbortedError", data: { message: "Aborted" } }
+              : { name: "UnknownError", data: { message: "model failed" } }
         return r
       }).pipe(
         Effect.flatMap((result) =>
@@ -328,6 +331,18 @@ describe("message recovery continuation admission and settlement branches", () =
       expect(h.failed).toHaveLength(1)
       expect(h.completed).toEqual([])
     })
+  test("preserves the durable abort identity when a recovered continuation stops", async () => {
+    const { h, run } = harness({ modelError: "MessageAbortedError" })
+    await run()
+    expect(h.loops).toBe(1)
+    expect(h.prompts).toBe(0)
+    expect(h.failed).toHaveLength(1)
+    expect(h.failed[0].errorClass).toBe("exec_failed")
+    expect(h.failed[0].reason).toContain("(MessageAbortedError)")
+    expect(h.failed[0].reason).toContain("interrupt source unknown")
+    expect(h.failed[0].reason).toContain("checking side effects")
+    expect(h.failureAttempts[0].attempt).toEqual({ childSessionID: "ses_recovery", replanAttempts: 0 })
+  })
   for (const [name, mutation] of [
     [
       "node disappeared",

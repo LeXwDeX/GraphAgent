@@ -6,6 +6,7 @@ export * as DagSupervisionSweep from "./supervision-sweep"
 import { Cause, Context, Effect, Fiber, Layer, Scope } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
+import { Logging } from "@opencode-ai/core/observability/logging"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { WorkflowNodeTable } from "@opencode-ai/core/dag/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -245,6 +246,16 @@ const serviceLayer = Layer.effect(
         // by the durable terminal-status guard — either way at most one
         // settle lands.
         if (row.childSessionId) {
+          // File-only DEBUG attribution for the sweep-initiated interruption
+          // (#777): correlation IDs only, never prompt text. backgroundDebug
+          // owns its logger selection, so it needs no ambient InstanceRef.
+          yield* Logging.backgroundDebug("lifecycle.dag.execution.aborted", {
+            source: "dag.supervisionSweep.frozen",
+            workflowID: row.workflowId,
+            nodeID: row.nodeId,
+            replanAttempts: row.replanAttempts,
+            childSessionID: row.childSessionId,
+          })
           // Best-effort cancel, recovered at CAUSE level: the sweep's layer
           // context has no ambient InstanceRef, so a real SessionPrompt.cancel
           // dies at InstanceState.context ("InstanceRef not provided") — and

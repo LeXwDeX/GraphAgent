@@ -266,7 +266,16 @@ export function makeDeadlineWatcher(
           )
         if (Exit.isSuccess(outcome)) {
           if (outcome.value === "stale") return
-          if (node.childSessionId) yield* promptSvc.cancel(node.childSessionId as never).pipe(Effect.ignore)
+          if (node.childSessionId) {
+            yield* Logging.backgroundDebug("lifecycle.dag.execution.aborted", {
+              source: "dag.deadlineWatcher.cap",
+              workflowID: input.dagID,
+              nodeID: input.nodeID,
+              replanAttempts: node.replanAttempts,
+              childSessionID: node.childSessionId,
+            })
+            yield* promptSvc.cancel(node.childSessionId as never).pipe(Effect.ignore)
+          }
           return
         }
         if (Cause.hasInterrupts(outcome.cause)) return yield* Effect.failCause(outcome.cause)
@@ -602,6 +611,13 @@ export function spawnNode(
               Effect.map(() => false),
               Effect.catchIf(isTransitionRejection, () =>
                 Effect.gen(function* () {
+                  yield* Logging.backgroundDebug("lifecycle.dag.execution.aborted", {
+                    source: "dag.spawn.queueWait.terminalized",
+                    workflowID: input.dagID,
+                    nodeID: input.nodeID,
+                    replanAttempts: input.node.replanAttempts,
+                    childSessionID: childSession.id,
+                  })
                   yield* promptSvc.cancel(childSession.id).pipe(Effect.catch(() => Effect.void))
                   yield* Effect.logWarning(
                     `Node ${input.nodeID} was terminalized during queue wait — child session cancelled, no spurious failure published`,
@@ -609,7 +625,15 @@ export function spawnNode(
                   return true
                 }),
               ),
-              Effect.onError(() => promptSvc.cancel(childSession.id).pipe(Effect.ignore)),
+              Effect.onError(() =>
+                Logging.backgroundDebug("lifecycle.dag.execution.aborted", {
+                  source: "dag.spawn.queueWait.error",
+                  workflowID: input.dagID,
+                  nodeID: input.nodeID,
+                  replanAttempts: input.node.replanAttempts,
+                  childSessionID: childSession.id,
+                }).pipe(Effect.andThen(promptSvc.cancel(childSession.id).pipe(Effect.ignore))),
+              ),
             )
           if (terminalized) return
 
