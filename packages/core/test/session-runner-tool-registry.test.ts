@@ -351,6 +351,8 @@ describe("ToolRegistry", () => {
               partID: "call-builtin-witness",
               callID: "call-builtin-witness",
             },
+            resultKind: "text",
+            anchor: true,
           },
         ])
       }),
