@@ -3536,6 +3536,7 @@ const reasoningStep = (id: string, final: boolean) => [
 for (const scenario of [
   { id: "gpt-test", global: true, enabled: undefined, expected: true },
   { id: "anthropic/claude-test", global: true, enabled: undefined, expected: true },
+  { id: "gpt-test", global: undefined, enabled: undefined, expected: false },
   { id: "qwen-test", global: false, enabled: true, expected: true },
   { id: "qwen-test", global: true, enabled: false, expected: false },
   { id: "gpt-test", global: false, enabled: true, expected: true },

@@ -421,6 +421,49 @@ describe("adopted reasoning", () => {
       yield* session.remove(chat.id)
     }),
   )
+  it.instance("adopts a part whose assistant turn has an earlier continuation attempt", () =>
+    Effect.gen(function* () {
+      const { session, chat, info, reasoning, after, adopt } = yield* seed()
+      const events = yield* EventV2Bridge.Service
+      // Each continuation of one assistant turn persists its own V2 attempt. The part belongs to the second
+      // attempt, so the first attempt's row is earlier and cannot have carried it. The first id sorts after the
+      // second and both share a timestamp, so only the per-session seq proves which row is earlier: ids are not
+      // comparable across processes and producer clocks can tie or skew.
+      const first = SessionMessage.ID.make("msg_zzzz")
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID: chat.id,
+        assistantMessageID: first,
+        agent: "build",
+        model: { id: info.modelID, providerID: info.providerID },
+        timestamp: DateTime.makeUnsafe(4),
+      })
+      const second = SessionMessage.ID.make("msg_aaaa")
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID: chat.id,
+        assistantMessageID: second,
+        agent: "build",
+        model: { id: info.modelID, providerID: info.providerID },
+        timestamp: DateTime.makeUnsafe(4),
+      })
+      yield* events.publish(SessionEvent.Reasoning.Started, {
+        sessionID: chat.id,
+        assistantMessageID: second,
+        reasoningID: "r1",
+        timestamp: DateTime.makeUnsafe(4),
+      })
+      yield* events.publish(SessionEvent.Reasoning.Ended, {
+        sessionID: chat.id,
+        assistantMessageID: second,
+        reasoningID: "r1",
+        text: reasoning.text,
+        timestamp: DateTime.makeUnsafe(5),
+      })
+      const continued: SessionV1.ReasoningPart = { ...reasoning, v2: { messageID: second, reasoningID: "r1" } }
+      yield* session.updatePart(continued)
+      expect((yield* adopt(continued))?.text).toBe(after)
+      yield* session.remove(chat.id)
+    }),
+  )
   it.instance("a disabled switch blocks an already prepared adoption", () =>
     Effect.gen(function* () {
       const { session, chat, reasoning, adopt } = yield* seed()

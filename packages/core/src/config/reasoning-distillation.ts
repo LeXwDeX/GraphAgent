@@ -21,11 +21,11 @@ export class Model extends Schema.Class<Model>("ConfigV2.Model.ReasoningDistilla
 }) {}
 
 /**
- * Global reasoning-distillation switch (default-on for every model). When enabled, each settled part whose carrier is
- * plain or a plaintext mirror is organized by the small model as soon as it ends, and the result replaces the stored
- * text before the part is first resent. Signed, encrypted, referenced and unknown carriers are never rewritten; the
- * per-part carrier check, not the model family, decides eligibility. `compatibility` is accepted for older
- * configurations and ignored.
+ * Global reasoning-distillation switch (default-off; an explicit enable turns it on for every model). When enabled,
+ * each settled part whose carrier is plain or a plaintext mirror is organized by the small model as soon as it ends,
+ * and the result replaces the stored text before the part is first resent. Signed, encrypted, referenced and unknown
+ * carriers are never rewritten; the per-part carrier check, not the model family, decides eligibility. `compatibility`
+ * is accepted for older configurations and ignored.
  */
 export class Info extends Schema.Class<Info>("ConfigV2.ReasoningDistillation")({
   enabled: Schema.Boolean.pipe(Schema.optional),
@@ -54,10 +54,10 @@ export type EnableInput = Readonly<{
   modelEnabled?: boolean
 }>
 
-/** Resolve the effective switch without mutating persisted config. Every model family defaults on. */
+/** Resolve the effective switch without mutating persisted config. Every model family defaults off. */
 export function resolveEnabled(input: EnableInput): EnableResolution {
   if (input.disabledByEnvironment) return { enabled: false, source: "environment" }
   if (input.modelEnabled !== undefined) return { enabled: input.modelEnabled, source: "model" }
   if (input.enabled !== undefined) return { enabled: input.enabled, source: "config" }
-  return { enabled: true, source: "default" }
+  return { enabled: false, source: "default" }
 }

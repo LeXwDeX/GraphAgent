@@ -2,15 +2,21 @@
 
 Branch: `refactor/reasoning-rewrite-engine`. Baseline: `main` at `1b69adcdcf`.
 
-> **2026-10-17 update — synchronous organization only.** There is no asynchronous rewrite fallback. Each editable
-> (unsigned/plaintext-mirror) reasoning part is organized synchronously when it ends. If no content or tool call has
-> started, the host stops the stream, organizes and adopts the part, and continues the same assistant message in the
-> same user turn, repeating for each new reasoning part until content/tools start or a bounded continuation limit is
-> reached. The continuation reuses the phase-one request prefix so the provider can reuse its KV cache. The organizer
-> is awaited directly; an unresponsive call is bounded by `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`, and a
-> failed or timed-out call keeps that part's original reasoning. Signed, encrypted, referenced and unknown carriers are
-> never changed. The scheduler, send barriers, adaptive first-frame window and sealing rules below describe the retired
-> asynchronous implementation and are retained only as historical design notes.
+> **2026-10-18 update — continue only after a natural reasoning-only end.** The request stream is never stopped at a
+> reasoning boundary. Each editable (unsigned/plaintext-mirror) reasoning part is still organized synchronously, but a
+> part that may continue is deferred: the request runs to its natural end, and the host continues the same assistant
+> message in the same user turn only when that request produced reasoning and no content, tool call, or other activity.
+> A request whose reasoning is followed by content or tool calls keeps that output, and its deferred reasoning is
+> organized in place before the next request resends it. This replaces the 2026-10-17 behavior, which cut the stream as
+> soon as an eligible reasoning part ended: the model's tool call arrived after the cut, the continuation instruction
+> ("produce the final answer now") replaced it, and the turn ended with a summary instead of the tool work. The
+> continuation reuses the phase-one request prefix so the provider can reuse its KV cache, and the same bounded
+> continuation limit applies. The organizer is awaited directly; an unresponsive call is bounded by
+> `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`, and a failed or timed-out call keeps that part's original
+> reasoning. Signed, encrypted, referenced and unknown carriers are never changed. The feature is off by default:
+> `reasoningDistillation.enabled` must be set to `true` globally or on the model to opt in. The scheduler, send barriers,
+> adaptive first-frame window and sealing rules below describe the retired asynchronous implementation and are retained
+> only as historical design notes.
 
 ## Why
 
@@ -49,9 +55,9 @@ adopts the result in the background. Review found:
 
 The effective switch follows this order: the environment kill-switch disables rewriting; an explicit model-level
 `reasoningDistillation.enabled` value wins next; then the global `reasoningDistillation.enabled` value applies; if
-none is set, rewriting defaults to on for every model family. Eligibility is decided per reasoning part by its
-carrier, not by the model name: plain and plaintext-mirror carriers are rewritten, while signed, encrypted,
-referenced and unknown carriers remain untouched.
+none is set, rewriting is off for every model family, so an explicit `true` opts in. Eligibility is decided per
+reasoning part by its carrier, not by the model name: plain and plaintext-mirror carriers are rewritten, while signed,
+encrypted, referenced and unknown carriers remain untouched.
 
 The per-model field contains only `enabled`. Organizer language remains global under
 `reasoningDistillation.language`. Existing canonical-content checks still protect opaque, signed, encrypted, and

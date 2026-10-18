@@ -14,7 +14,7 @@ import type { Agent } from "../../src/agent/agent"
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionProcessor } from "../../src/session/processor"
+import { SessionProcessor, type Result } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
@@ -553,6 +553,71 @@ reasoningOnly.it.effect(
       }),
     { config: cfg },
   ),
+)
+
+// A synchronous continuation is only for a request that ended with reasoning and nothing else. Provider activity
+// that is not session-visible (a source or file chunk: `observational`) means the request did produce output, so
+// the processor must not split; the deferred reasoning is organized in place instead.
+const deferredReasoningScript: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.reasoningStart({ id: "reason-1" }),
+  LLMEvent.reasoningDelta({ id: "reason-1", text: "thinking" }),
+  LLMEvent.reasoningEnd({ id: "reason-1" }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+
+function deferReasoning(unused: string[]) {
+  return {
+    onReasoningSettled: (_part: SessionV1.ReasoningPart, canDefer: boolean) =>
+      Effect.succeed(canDefer ? ("defer" as const) : ("continue" as const)),
+    onReasoningUnused: (parts: readonly SessionV1.ReasoningPart[]) =>
+      Effect.sync(() => {
+        unused.push(...parts.map((part) => part.id))
+      }),
+  }
+}
+
+function verifyReasoningShaping(name: string, first: Script, expected: Result, unusedCount: number) {
+  const fixture = scripted([first])
+  fixture.it.effect(
+    name,
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, name)
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const unused: string[] = []
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model: mdl,
+            ...deferReasoning(unused),
+          })
+          const result = yield* handle.process(input(chat.id, parent, mdl))
+          expect(result).toBe(expected)
+          expect(unused).toHaveLength(unusedCount)
+        }),
+      { config: cfg },
+    ),
+  )
+}
+
+verifyReasoningShaping(
+  "session.processor continues a request that ends with deferred reasoning alone",
+  deferredReasoningScript,
+  "split",
+  0,
+)
+
+verifyReasoningShaping(
+  "session.processor keeps observational activity in place instead of continuing",
+  { activity: "observational", events: deferredReasoningScript },
+  "continue",
+  1,
 )
 
 const incompleteReasoning: LLMEvent[] = [

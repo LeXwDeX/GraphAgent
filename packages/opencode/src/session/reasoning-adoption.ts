@@ -1,6 +1,6 @@
 import { Database } from "@opencode-ai/core/database/database"
 import { MessageTable, SessionMessageTable } from "@opencode-ai/core/session/sql"
-import { and, eq, gt, ne, or } from "drizzle-orm"
+import { and, eq, gt, or } from "drizzle-orm"
 import { Cause, DateTime, Effect, Schema } from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -117,9 +117,17 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
     if (!isDeepStrictEqual(current, part)) yield* reject("stale reasoning adoption")
     if (!part.v2) return
     // The core/V2 runner persists attempts in SessionMessageTable instead of MessageTable. Mixed runners must see
-    // those attempts too, otherwise a V1 adoption can rewrite a part the V2 request already sent. Exclude this
-    // message's own mirror row: its timestamp can be later than the V1 row it belongs to.
-    const laterMirrored = own
+    // those attempts too, otherwise a V1 adoption can rewrite a part the V2 request already sent. An earlier
+    // continuation of the same assistant turn may already own a V2 row, but that attempt cannot have carried this
+    // part, so the part's own attempt is the send boundary rather than its V1 message's creation time. The
+    // per-session seq orders attempts: producer clocks and ids are not comparable across processes.
+    const row = yield* db
+      .select()
+      .from(SessionMessageTable)
+      .where(eq(SessionMessageTable.id, SessionMessage.ID.make(part.v2.messageID)))
+      .get()
+      .pipe(Effect.orDie)
+    const laterMirrored = row
       ? yield* db
           .select({ id: SessionMessageTable.id })
           .from(SessionMessageTable)
@@ -127,22 +135,14 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
             and(
               eq(SessionMessageTable.session_id, input.sessionID),
               eq(SessionMessageTable.type, "assistant"),
-              gt(SessionMessageTable.time_created, own.time),
-              ne(SessionMessageTable.id, SessionMessage.ID.make(part.v2.messageID)),
+              gt(SessionMessageTable.seq, row.seq),
             ),
           )
           .limit(1)
           .all()
           .pipe(Effect.orDie)
       : []
-    if (laterMirrored.length > 0)
-      yield* reject("reasoning was already resent by a later mirrored attempt")
-    const row = yield* db
-      .select()
-      .from(SessionMessageTable)
-      .where(eq(SessionMessageTable.id, SessionMessage.ID.make(part.v2.messageID)))
-      .get()
-      .pipe(Effect.orDie)
+    if (laterMirrored.length > 0) yield* reject("reasoning was already resent by a later mirrored attempt")
     const message = row
       ? yield* Schema.decodeUnknownEffect(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }).pipe(
           Effect.orDie,
