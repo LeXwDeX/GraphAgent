@@ -13,7 +13,7 @@ cliIt.live("real child tool work resets the consecutive SubagentStop feedback ca
       await fs.writeFile(file, "REAL_CHILD_TOOL_PROGRESS")
       await fs.writeFile(
         script,
-        `const count=Number(await Bun.file(${JSON.stringify(counter)}).text().catch(()=>0))+1;await Bun.write(${JSON.stringify(counter)},String(count));if(count<=9)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SubagentStop',additionalContext:'continue the remaining local task'}}));`,
+        `const count=Number(await Bun.file(${JSON.stringify(counter)}).text().catch(()=>0))+1;await Bun.write(${JSON.stringify(counter)},String(count));if(count<=9)process.stdout.write(JSON.stringify({decision:'block',reason:'continue the remaining local task'}));`,
       )
       const agents = path.join(home, ".config/opencode/agent")
       await fs.mkdir(agents, { recursive: true })

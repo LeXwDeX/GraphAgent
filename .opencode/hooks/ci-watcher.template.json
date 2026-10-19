@@ -1,0 +1,29 @@
+{
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bun",
+          "args": ["${CLAUDE_PROJECT_DIR}/.opencode/hooks/watch-ci.ts", "guidance"],
+          "options": { "repoCiWatcher": "v1" }
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bun",
+          "args": ["${CLAUDE_PROJECT_DIR}/.opencode/hooks/watch-ci.ts"],
+          "asyncRewake": true,
+          "timeout": 2800,
+          "options": { "repoCiWatcher": "v1" }
+        }
+      ]
+    }
+  ]
+}

@@ -555,9 +555,7 @@ reasoningOnly.it.effect(
   ),
 )
 
-// A synchronous continuation is only for a request that ended with reasoning and nothing else. Provider activity
-// that is not session-visible (a source or file chunk: `observational`) means the request did produce output, so
-// the processor must not split; the deferred reasoning is organized in place instead.
+// Settled reasoning is enqueued once without manufacturing another model request.
 const deferredReasoningScript: LLMEvent[] = [
   LLMEvent.stepStart({ index: 0 }),
   LLMEvent.reasoningStart({ id: "reason-1" }),
@@ -567,13 +565,11 @@ const deferredReasoningScript: LLMEvent[] = [
   LLMEvent.finish({ reason: "stop" }),
 ]
 
-function deferReasoning(unused: string[]) {
+function deferReasoning(settled: string[]) {
   return {
-    onReasoningSettled: (_part: SessionV1.ReasoningPart, canDefer: boolean) =>
-      Effect.succeed(canDefer ? ("defer" as const) : ("continue" as const)),
-    onReasoningUnused: (parts: readonly SessionV1.ReasoningPart[]) =>
+    onReasoningSettled: (part: SessionV1.ReasoningPart) =>
       Effect.sync(() => {
-        unused.push(...parts.map((part) => part.id))
+        settled.push(part.id)
       }),
   }
 }
@@ -607,10 +603,10 @@ function verifyReasoningShaping(name: string, first: Script, expected: Result, u
 }
 
 verifyReasoningShaping(
-  "session.processor continues a request that ends with deferred reasoning alone",
+  "session.processor continues a request that ends with reasoning alone without a split",
   deferredReasoningScript,
-  "split",
-  0,
+  "continue",
+  1,
 )
 
 verifyReasoningShaping(

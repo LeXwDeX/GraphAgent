@@ -50,10 +50,15 @@ const writeDefinition = {
 let extraDefinitions: any[] = []
 let mcpTools: Record<string, any> = {}
 let mcpClients: Record<string, unknown> = {}
+let resourceLoader: MCP.Interface["resources"] = () => Effect.succeed({})
+let afterPluginDefect = false
 let askResult: Effect.Effect<void, PermissionV1.RejectedError> = Effect.void
 const layers = Layer.mergeAll(
   hookLayer,
-  Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
+  Layer.mock(Plugin.Service, {
+    trigger: (name, _input, output) =>
+      name === "tool.execute.after" && afterPluginDefect ? Effect.die("AFTER_PLUGIN_DEFECT") : Effect.succeed(output),
+  }),
   Layer.mock(Permission.Service, {
     ask: () => askResult,
     hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
@@ -62,7 +67,7 @@ const layers = Layer.mergeAll(
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
     clients: () => Effect.succeed(mcpClients as never),
     tools: () => Effect.succeed(mcpTools),
-    resources: () => Effect.succeed({}),
+    resources: (server) => resourceLoader(server),
     resourceTemplates: () => Effect.succeed({}),
   }),
   Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
@@ -663,6 +668,193 @@ describe("question answered by a PreToolUse hook (the local defer round trip)", 
       })
       expect(result._tag).toBe("Success")
       expect(asked).toHaveLength(1)
+    }),
+  )
+})
+
+describe("tool failure event boundaries", () => {
+  for (const interrupted of [false, true]) {
+    it.instance(`MCP resource rejection reports rewritten input (interrupted=${interrupted})`, () =>
+      Effect.gen(function* () {
+        const instance = yield* TestInstance
+        const store = yield* SessionHooks.Service
+        const id = SessionID.descending()
+        const capture = path.join(instance.directory, "resource-failure-events.jsonl")
+        const started = Promise.withResolvers<void>()
+        const pending = Promise.withResolvers<never>()
+        mcpClients = { fixture: { getServerCapabilities: () => ({ resources: {} }) } }
+        resourceLoader = (server) =>
+          Effect.promise(() => {
+            expect(server).toBe("fixture")
+            started.resolve()
+            return pending.promise
+          })
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            mcpClients = {}
+            resourceLoader = () => Effect.succeed({})
+          }),
+        )
+        yield* store.add(id, {
+          event: "PreToolUse",
+          hooks: [
+            {
+              type: "command",
+              command: hookCommand(
+                `console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",updatedInput:{server:"fixture"}}}))`,
+              ),
+            },
+          ],
+        })
+        for (const event of ["PostToolUse", "PostToolUseFailure"] as const) {
+          yield* store.add(id, {
+            event,
+            hooks: [
+              {
+                type: "command",
+                command: hookCommand(
+                  `const {appendFile}=await import("node:fs/promises");await appendFile(${JSON.stringify(capture)},(await Bun.stdin.text())+"\\n")`,
+                ),
+              },
+            ],
+          })
+        }
+        const tools = yield* resolve(id, instance.directory)
+        const controller = new AbortController()
+        const result = Promise.resolve(
+          tools.list_mcp_resources.execute!({}, { ...options("resource-reject"), abortSignal: controller.signal }),
+        ).then(
+          () => false,
+          () => true,
+        )
+        yield* Effect.promise(() => started.promise)
+        if (interrupted) controller.abort()
+        pending.reject(new Error(interrupted ? "AbortError" : "RESOURCE_ERROR"))
+        expect(yield* Effect.promise(() => result)).toBe(true)
+        const rows = (yield* Effect.promise(() => fs.readFile(capture, "utf8")))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({
+          hook_event_name: "PostToolUseFailure",
+          tool_input: { server: "fixture" },
+          tool_use_id: "resource-reject",
+        })
+        expect(rows[0].is_interrupt === true).toBe(interrupted)
+      }),
+    )
+  }
+
+  for (const [mode, slowHook] of [
+    ["interrupt", false],
+    ["interrupt", true],
+    ["partial", false],
+    ["reject", false],
+  ] as const) {
+    it.instance(`cancelled native execution (${mode}) delivers one failure and bounds slow hook=${slowHook}`, () =>
+      Effect.gen(function* () {
+        const instance = yield* TestInstance
+        const store = yield* SessionHooks.Service
+        const id = SessionID.descending()
+        const capture = path.join(instance.directory, "interrupt-events.jsonl")
+        const started = Promise.withResolvers<void>()
+        extraDefinitions = [
+          {
+            id: "interruptible",
+            description: "Interrupt fixture",
+            parameters: Schema.Struct({}),
+            execute: (_args: unknown, ctx: { abort: AbortSignal }) =>
+              Effect.callback((resume) => {
+                const abort = () =>
+                  resume(
+                    mode === "partial"
+                      ? Effect.succeed({ title: "partial", output: "partial output", metadata: { interrupted: true } })
+                      : mode === "reject"
+                        ? Effect.die(new Error("AbortError"))
+                        : Effect.interrupt,
+                  )
+                ctx.abort.addEventListener("abort", abort, { once: true })
+                started.resolve()
+                return Effect.sync(() => ctx.abort.removeEventListener("abort", abort))
+              }),
+          },
+        ]
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            extraDefinitions = []
+          }),
+        )
+        for (const event of ["PostToolUse", "PostToolUseFailure"] as const) {
+          yield* store.add(id, {
+            event,
+            hooks: [
+              {
+                type: "command",
+                command: hookCommand(
+                  `const {appendFile}=await import("node:fs/promises");const input=await Bun.stdin.text();await appendFile(${JSON.stringify(capture)},input+"\\n");${slowHook ? "await Bun.sleep(10000)" : ""}`,
+                ),
+              },
+            ],
+          })
+        }
+        const tools = yield* resolve(id, instance.directory)
+        const controller = new AbortController()
+        const result = Promise.resolve(
+          tools.interruptible.execute!({}, { ...options("interrupt-call"), abortSignal: controller.signal }),
+        ).then(
+          () => false,
+          () => true,
+        )
+        yield* Effect.promise(() => started.promise)
+        const before = Date.now()
+        controller.abort()
+        expect(yield* Effect.promise(() => result)).toBe(mode !== "partial")
+        expect(Date.now() - before).toBeLessThan(2000)
+        const rows = (yield* Effect.promise(() => fs.readFile(capture, "utf8")))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({
+          hook_event_name: "PostToolUseFailure",
+          is_interrupt: true,
+          tool_use_id: "interrupt-call",
+        })
+      }),
+    )
+  }
+
+  it.instance("a plugin defect after successful execution does not become a tool failure", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const capture = path.join(instance.directory, "unexpected-failure.txt")
+      afterPluginDefect = true
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          afterPluginDefect = false
+        }),
+      )
+      yield* store.add(id, {
+        event: "PostToolUseFailure",
+        hooks: [{ type: "command", command: hookCommand(`await Bun.write(${JSON.stringify(capture)},"failure")`) }],
+      })
+      const tools = yield* resolve(id, instance.directory)
+      const rejected = yield* Effect.promise(() =>
+        Promise.resolve(
+          tools.write.execute!(
+            { filePath: path.join(instance.directory, "written.txt"), content: "ok" },
+            options("plugin-defect"),
+          ),
+        ).then(
+          () => false,
+          () => true,
+        ),
+      )
+      expect(rejected).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(capture).exists())).toBe(false)
     }),
   )
 })

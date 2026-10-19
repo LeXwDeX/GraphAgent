@@ -18,6 +18,7 @@ import {
 } from "@opencode-ai/core/session/reasoning-distillation"
 import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-distillation"
 import { adoptReasoning } from "./reasoning-adoption"
+import { makeReasoningQueue } from "./reasoning-queue"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
@@ -26,7 +27,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { Token } from "@/util/token"
-import { estimateOverhead, estimateRequest, measured, triggerLimit } from "./overflow"
+import { estimateOverhead, measured } from "./overflow"
 import { SessionRevert } from "./revert"
 
 function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messageIndex: number) {
@@ -123,7 +124,6 @@ import { TaskSubagents } from "@/hook/task-subagents"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { HookTurnContext } from "@/hook/turn-context"
-import { dispatchTrust } from "@/hook/workspace-trust"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
 import { promptIdentity, withPromptIdentity } from "@/hook/prompt-identity"
@@ -322,10 +322,11 @@ export const layer = Layer.effect(
     const llm = yield* LLM.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
-    // Rewrite budgets belong to the directory. There is no background rewrite job or send barrier.
+    // Budgets and organizer jobs belong to the directory, independently of each turn.
     const rewriteState = yield* InstanceState.make(() =>
       Effect.gen(function* () {
         const budget = makeRewriteBudget()
+        const queue = yield* makeReasoningQueue
         yield* Effect.acquireRelease(
           events.listen((event) => {
             if (event.type !== Session.Event.Deleted.type) return Effect.void
@@ -333,11 +334,11 @@ export const layer = Layer.effect(
             if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
             const sessionID = data.sessionID
             if (typeof sessionID !== "string") return Effect.void
-            return Effect.sync(() => budget.forget(sessionID))
+            return queue.cancel(sessionID).pipe(Effect.ensuring(Effect.sync(() => budget.forget(sessionID))))
           }),
           (unsubscribe) => unsubscribe,
         )
-        return { budget }
+        return { budget, queue }
       }),
     )
     const reasoningDistillationEnabled = (model: Provider.Model) =>
@@ -352,128 +353,67 @@ export const layer = Layer.effect(
         ),
       )
     const database = yield* Database.Service
-    // Organize one settled part before the next request in the same turn. No send barrier or background job exists:
-    // the caller waits for this effect, and the continuation request is built only after adoption has committed.
-    const rewriteReasoningNow = (input: {
-      sessionID: SessionID
-      part: SessionV1.ReasoningPart
-      model: Provider.Model
-    }) =>
-      InstanceState.useEffect(rewriteState, ({ budget }) =>
-        Effect.gen(function* () {
-          if (!(yield* reasoningDistillationEnabled(input.model))) return false
-          const part = yield* sessions.getPart({
-            sessionID: input.sessionID,
-            messageID: input.part.messageID,
-            partID: input.part.id,
-          })
-          if (part?.type !== "reasoning") return false
-          const editability = assessCanonicalReasoning({
-            text: part.text,
-            metadata: part.metadata,
-            settled: part.time.end !== undefined,
-            distilled: part.distillation !== undefined,
-          })
-          if (!editability.editable) return false
-          const cfg = yield* config.get()
-          const organizer = yield* llm.organizer({ model: input.model })
-          if (!organizer) return false
-          const outcome = yield* runReasoningRewrite({
-            budget,
-            sessionID: input.sessionID,
-            slot: { messageID: part.messageID, partID: part.id, text: part.text },
-            language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
-            call: organizer.call,
-            adopt: (replacement) =>
-              adoptReasoning({
-                sessionID: input.sessionID,
-                part,
-                replacement,
-                canAdopt: reasoningDistillationEnabled(input.model),
-              }).pipe(
-                Effect.provideService(Database.Service, database),
-                Effect.provideService(Session.Service, sessions),
-                Effect.provideService(EventV2Bridge.Service, events),
-              ),
-          })
-          yield* Effect.logInfo(
-            "reasoning distillation",
-            rewriteLogFields(outcome, {
-              runtime: "opencode",
-              mode: "sync",
-              "session.id": input.sessionID,
-              model: organizer.model,
-              transport: organizer.transport,
-            }),
-          )
-          return outcome.status === "adopted"
-        }).pipe(
-          // Model failures already resolve to a skipped outcome. What remains is infrastructure: a typed
-          // failure may degrade to the original reasoning, but a defect (database/schema) must reach the turn.
-          Effect.catchCauseIf(
-            (cause) => !Cause.hasInterrupts(cause) && !Cause.hasDies(cause),
-            (cause) =>
-              Effect.logWarning("reasoning sync distillation failed; using original reasoning", {
+    const queueReasoning = (input: { sessionID: SessionID; part: SessionV1.ReasoningPart; model: Provider.Model }) =>
+      InstanceState.useEffect(rewriteState, ({ budget, queue }) =>
+        queue.enqueue(
+          input.sessionID,
+          input.part.id,
+          Effect.gen(function* () {
+            if (!(yield* reasoningDistillationEnabled(input.model))) return undefined
+            const part = yield* sessions.getPart({
+              sessionID: input.sessionID,
+              messageID: input.part.messageID,
+              partID: input.part.id,
+            })
+            if (part?.type !== "reasoning") return undefined
+            const editability = assessCanonicalReasoning({
+              text: part.text,
+              metadata: part.metadata,
+              settled: part.time.end !== undefined,
+              distilled: part.distillation !== undefined,
+            })
+            if (
+              !editability.editable ||
+              Token.estimate(part.text) < ReasoningDistillationPolicy.tokens.minimumInputTokens
+            )
+              return undefined
+            if (budget.admit(input.sessionID) !== "ok") return undefined
+            const cfg = yield* config.get()
+            const organizer = yield* llm.organizer({ model: input.model })
+            if (!organizer) return undefined
+            const outcome = yield* runReasoningRewrite({
+              budget,
+              sessionID: input.sessionID,
+              slot: { messageID: part.messageID, partID: part.id, text: part.text },
+              language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
+              call: organizer.call,
+              // Organization only queues a candidate; the next step commits it before reading history.
+              adopt: (replacement) => Effect.succeed(replacement),
+            })
+            yield* Effect.logInfo(
+              "reasoning distillation",
+              rewriteLogFields(outcome, {
+                runtime: "opencode",
+                mode: "async",
                 "session.id": input.sessionID,
-                error: Cause.squash(cause),
-              }).pipe(Effect.as(false)),
-          ),
+                model: organizer.model,
+                transport: organizer.transport,
+              }),
+            )
+            if (!outcome.adopted) return undefined
+            return adoptReasoning({
+              sessionID: input.sessionID,
+              part,
+              replacement: outcome.adopted,
+              canAdopt: reasoningDistillationEnabled(input.model),
+            }).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.provideService(Session.Service, sessions),
+              Effect.provideService(EventV2Bridge.Service, events),
+            )
+          }),
         ),
       )
-    // Decide whether a settled part may wait for a continuation: only editable, large-enough reasoning with an
-    // available organizer and budget qualifies. The request itself is never stopped here; the continuation decision
-    // is made after the stream ends with reasoning alone.
-    const canDeferReasoning = (input: {
-      sessionID: SessionID
-      part: SessionV1.ReasoningPart
-      model: Provider.Model
-    }): Effect.Effect<"defer" | "continue"> =>
-      InstanceState.useEffect(rewriteState, ({ budget }) =>
-        Effect.gen(function* () {
-          if (!(yield* reasoningDistillationEnabled(input.model))) return "continue" as const
-          const cfg = yield* config.get()
-          const editability = assessCanonicalReasoning({
-            text: input.part.text,
-            metadata: input.part.metadata,
-            settled: input.part.time.end !== undefined,
-            distilled: input.part.distillation !== undefined,
-          })
-          if (!editability.editable) return "continue" as const
-          if (Token.estimate(input.part.text) < ReasoningDistillationPolicy.tokens.minimumInputTokens)
-            return "continue" as const
-          if (budget.admit(input.sessionID) !== "ok") return "continue" as const
-          const organizer = yield* llm.organizer({ model: input.model })
-          return organizer ? ("defer" as const) : ("continue" as const)
-        }).pipe(
-          // A typed failure keeps the stream; a defect must not be mistaken for "no organizer".
-          Effect.catchCauseIf(
-            (cause) => !Cause.hasInterrupts(cause) && !Cause.hasDies(cause),
-            (cause) =>
-              Effect.logWarning("reasoning split decision failed; continuing the stream", {
-                "session.id": input.sessionID,
-                error: Cause.squash(cause),
-              }).pipe(Effect.as("continue" as const)),
-          ),
-        ),
-      )
-    // Replace reasoning parts in history already held in memory with their stored versions.
-    const withStoredReasoning = Effect.fnUntraced(function* (
-      sessionID: SessionID,
-      msgs: SessionV1.WithParts[],
-      refs: ReadonlyArray<{ messageID: MessageID; partID: PartID }>,
-    ) {
-      if (refs.length === 0) return msgs
-      const stored = yield* Effect.forEach(refs, (ref) => sessions.getPart({ sessionID, ...ref }))
-      const byID = new Map<string, SessionV1.Part>(
-        stored.flatMap((part) => (part?.type === "reasoning" ? [[part.id, part] as const] : [])),
-      )
-      if (byID.size === 0) return msgs
-      return msgs.map((message) =>
-        message.parts.some((part) => byID.has(part.id))
-          ? { ...message, parts: message.parts.map((part) => byID.get(part.id) ?? part) }
-          : message,
-      )
-    })
     const backgroundJobs = yield* BackgroundJob.Service
     const workflowStore = yield* DagStore.Service
     const agentMessages = Option.getOrUndefined(yield* Effect.serviceOption(DagMessages.Service))
@@ -2570,6 +2510,7 @@ export const layer = Layer.effect(
           const modelMessageID = MessageID.ascending()
           const identity = { projectID: ctx.project.id, directory: ctx.directory, sessionID }
           let agentSnapshot: DagMessages.Snapshot | undefined
+          yield* InstanceState.useEffect(rewriteState, ({ queue }) => queue.drain(sessionID))
           let snapshot = yield* claimSnapshot(sessionID)
           let msgs = snapshot.messages
           let budget = snapshot.budget
@@ -2745,8 +2686,12 @@ export const layer = Layer.effect(
               // for it. task.ts fails a child that ended in error or was cancelled
               // without SubagentStop, so StopFailure still fires for those. Only
               // positively registered sessions are skipped; any other child
-              // (SDK-created, DAG node, background task) still fires Stop.
-              const taskSubagentCleanExit = !turnError && TaskSubagents.delegateStop(sessionID)
+              // (SDK-created or background task) still fires Stop. DAG owners
+              // defer their one notification until the whole attempt settles.
+              const taskSubagentCleanExit =
+                !turnError &&
+                (TaskSubagents.delegateStop(sessionID) ||
+                  (hookLifecycle && (yield* hookLifecycle.isChildStopDelegated(sessionID))))
               // SettingsHook: Stop on clean turn exit, StopFailure when it ended in error.
               if (settingsHook && !taskSubagentCleanExit) {
                 const lastAssistantMessage =
@@ -2830,7 +2775,7 @@ export const layer = Layer.effect(
                 const continuing =
                   !agentInputBlocked &&
                   !turnError &&
-                  (stopResult.blocked !== undefined || stopResult.additionalContexts.some((text) => text.length > 0)) &&
+                  stopResult.blocked !== undefined &&
                   !stopResult.preventContinuation &&
                   stopContinuationCount < stopHookContinuationCap
                 // Consume Stop-hook outputs so nothing is silently dropped. On a
@@ -2871,7 +2816,7 @@ export const layer = Layer.effect(
                 if (
                   !agentInputBlocked &&
                   !turnError &&
-                  (stopResult.blocked || stopResult.additionalContexts.some((text) => text.length > 0)) &&
+                  stopResult.blocked !== undefined &&
                   !stopResult.preventContinuation
                 ) {
                   if (continuing) {
@@ -3043,19 +2988,6 @@ export const layer = Layer.effect(
             sessionID,
           }
           yield* sessions.updateMessage(msg)
-          // Cross-process send fence: this persisted attempt is the claim. Adoption rejects every earlier part once it
-          // exists, and only the previous assistant message could still adopt before it, so re-reading that message's
-          // settled reasoning picks up a rewrite another process committed after this loop read its history.
-          msgs = yield* withStoredReasoning(
-            sessionID,
-            msgs,
-            (msgs.findLast((message) => message.info.role === "assistant")?.parts ?? []).flatMap((part) =>
-              part.type === "reasoning" && part.time.end !== undefined && !part.distillation
-                ? [{ messageID: part.messageID, partID: part.id }]
-                : [],
-            ),
-          )
-
           const finalizeInterruptedAssistant = Effect.gen(function* () {
             if (msg.time.completed) return
             msg.error ??= MessageV2.fromError(new DOMException("Aborted", "AbortError"), {
@@ -3091,23 +3023,7 @@ export const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
-              onReasoningSettled: (part, canDefer) =>
-                Effect.gen(function* () {
-                  if (toolsDisabled || isLastStep) {
-                    yield* rewriteReasoningNow({ sessionID, part, model })
-                    return "continue" as const
-                  }
-                  const decision = yield* canDeferReasoning({ sessionID, part, model })
-                  // A deferred part is rewritten by the continuation loop only if this request ends with reasoning
-                  // alone. A part this request cannot defer is rewritten here, so one part never pays twice and the
-                  // last part after the continuation limit is still organized.
-                  if (!canDefer || decision === "continue") yield* rewriteReasoningNow({ sessionID, part, model })
-                  return decision
-                }),
-              // The request produced content, tool activity, or a blocked tool, so it will not continue; its
-              // deferred reasoning still needs organizing before the next request resends it.
-              onReasoningUnused: (parts) =>
-                Effect.forEach(parts, (part) => rewriteReasoningNow({ sessionID, part, model }), { discard: true }),
+              onReasoningSettled: (part) => queueReasoning({ sessionID, part, model }),
               displayMode: lastUser.hookMode ?? "noninteractive",
               ...(displayEnabled && settingsHook
                 ? {
@@ -3298,84 +3214,6 @@ export const layer = Layer.effect(
                 }),
               ),
             )
-            let continuations = 0
-            while (result === "split" && continuations < 3) {
-              continuations++
-              const phase = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-              const assistant = phase.findLast((message) => message.info.id === handle.message.id)
-              const reasoningParts =
-                assistant?.parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning") ?? []
-              for (const part of reasoningParts) {
-                if (part.distillation) continue
-                const adopted = yield* rewriteReasoningNow({ sessionID, part, model })
-                yield* Effect.logInfo("reasoning sync continuation", {
-                  "session.id": sessionID,
-                  "message.id": handle.message.id,
-                  "reasoning.part": part.id,
-                  continuations,
-                  adopted,
-                })
-              }
-              // Keep the phase-one request prefix byte-for-byte identical so the provider can reuse its KV cache.
-              // Only append the adopted assistant reasoning message and the synthetic continuation instruction.
-              const refreshed = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-              const continuationAssistant = refreshed.findLast((message) => message.info.id === handle.message.id)
-              const assistantMessages = continuationAssistant
-                ? yield* MessageV2.toModelMessagesEffect([continuationAssistant], model, {
-                    reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
-                  })
-                : []
-              const continuationMessages = [
-                ...processInput.messages,
-                ...assistantMessages,
-                {
-                  role: "user" as const,
-                  content:
-                    "Continue from the reasoning above. Produce the final answer now. Do not repeat the reasoning.",
-                },
-              ]
-              const continuationEstimate = estimateRequest({
-                system: processInput.system,
-                tools: processInput.tools,
-                messages: continuationMessages,
-              })
-              const continuationLimit = triggerLimit({
-                cfg: yield* config.get(),
-                model,
-                outputTokenMax: flags.outputTokenMax,
-              })
-              if (continuationEstimate >= continuationLimit) {
-                yield* Effect.logWarning("reasoning sync continuation overflow; compacting instead", {
-                  "session.id": sessionID,
-                  "message.id": handle.message.id,
-                  continuations,
-                  estimatedInputTokens: continuationEstimate,
-                  triggerLimit: continuationLimit,
-                })
-                // Split cleanup deliberately leaves the assistant message open for the continuation to
-                // finish. Skipping the continuation must close it, or the message stays incomplete forever.
-                if (handle.message.time.completed === undefined) {
-                  handle.message.time.completed = Date.now()
-                  yield* sessions.updateMessage(handle.message)
-                }
-                result = "compact"
-                break
-              }
-              result = yield* handle.process(
-                {
-                  ...processInput,
-                  messages: continuationMessages,
-                  contextFolding: processInput.contextFolding,
-                },
-                { allowSplit: continuations < 3 },
-              )
-              yield* Effect.logInfo("reasoning sync continuation", {
-                "session.id": sessionID,
-                "message.id": handle.message.id,
-                continuations,
-                kv_prefix_reused: continuationAssistant !== undefined,
-              })
-            }
             if (result === "deferred") return "break" as const
             const settledParts = yield* MessageV2.parts(msg.id).pipe(Effect.provideService(Database.Service, database))
             const batch = settledParts.filter(
@@ -3733,7 +3571,7 @@ export const layer = Layer.effect(
       return yield* result
     })
 
-    // #409: early-return command dispatches (/memory, /trust, /goal non-kick)
+    // #409: early-return command dispatches (/memory, /goal non-kick)
     // must still drive the busy→idle status transition — the run CLI exits its
     // event loop on the idle event, which only the runner's onIdle publishes.
     // startIfIdle keeps today's inline semantics while another turn is running
@@ -3818,53 +3656,6 @@ export const layer = Layer.effect(
             yield* sessions.updatePart(responsePart)
             yield* sessions.touch(input.sessionID)
             return { info: userMsg, parts: [commandPart, responsePart] }
-          }),
-        )
-      }
-      // /trust command dispatch — early return BEFORE command registry lookup.
-      // Trust writes are security-sensitive and MUST NOT be delegated to the
-      // LLM-driven command template path; mirror /goal's early-return dispatch
-      // (prompt.ts only wires + renders; the domain logic lives in workspace-trust.ts).
-      if (input.command === "trust") {
-        return yield* commandTurn(
-          input.sessionID,
-          Effect.gen(function* () {
-            const ctx = yield* InstanceState.context
-            const result = dispatchTrust(ctx.directory, input.arguments, ctx.worktree)
-            const m = yield* currentModel(input.sessionID)
-            const agentName = input.agent ?? (yield* agents.defaultAgent())
-            const userMsg: SessionV1.User = {
-              id: input.messageID ?? MessageID.ascending(),
-              role: "user",
-              sessionID: input.sessionID,
-              time: { created: Date.now() },
-              agent: agentName,
-              model: { providerID: m.providerID, modelID: m.modelID },
-            }
-            yield* sessions.updateMessage(userMsg)
-            const cmdText: SessionV1.TextPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              text: `/trust ${input.arguments}`.trim(),
-              metadata: { command: "trust" },
-            }
-            yield* sessions.updatePart(cmdText)
-            const now = Date.now()
-            // time.end set so run-mode consumers print the response (run CLI
-            // only renders text parts once ended).
-            const responsePart: SessionV1.TextPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              text: result.text,
-              time: { start: now, end: now },
-            }
-            yield* sessions.updatePart(responsePart)
-            yield* sessions.touch(input.sessionID)
-            return { info: userMsg, parts: [cmdText, responsePart] }
           }),
         )
       }

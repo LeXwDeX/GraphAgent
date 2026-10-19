@@ -409,14 +409,13 @@ describe("adopted reasoning", () => {
       yield* session.remove(chat.id)
     }),
   )
-  it.instance("rejects adoption once a later assistant attempt exists", () =>
+  it.instance("adopts a source already sent by a later assistant attempt", () =>
     Effect.gen(function* () {
-      const { session, chat, info, reasoning, adopt } = yield* seed()
-      // Another process persisted the next attempt; its request may already carry the original reasoning.
+      const { session, chat, info, reasoning, after, adopt } = yield* seed()
       yield* session.updateMessage({ ...info, id: MessageID.ascending(), time: { created: 3 } })
-      expect(yield* adopt()).toBeUndefined()
-      expect(yield* session.getPart({ sessionID: chat.id, messageID: info.id, partID: reasoning.id })).toEqual(
-        reasoning,
+      expect((yield* adopt())?.text).toBe(after)
+      expect((yield* session.getPart({ sessionID: chat.id, messageID: info.id, partID: reasoning.id }))?.type).toBe(
+        "reasoning",
       )
       yield* session.remove(chat.id)
     }),
@@ -458,10 +457,68 @@ describe("adopted reasoning", () => {
         text: reasoning.text,
         timestamp: DateTime.makeUnsafe(5),
       })
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID: chat.id,
+        assistantMessageID: SessionMessage.ID.make("msg_newer"),
+        agent: "build",
+        model: { id: info.modelID, providerID: info.providerID },
+        timestamp: DateTime.makeUnsafe(6),
+      })
       const continued: SessionV1.ReasoningPart = { ...reasoning, v2: { messageID: second, reasoningID: "r1" } }
       yield* session.updatePart(continued)
       expect((yield* adopt(continued))?.text).toBe(after)
       yield* session.remove(chat.id)
+    }),
+  )
+  it.instance("deleted source or session and adoption defects retain history without failing the turn", () =>
+    Effect.gen(function* () {
+      const { session, chat, reasoning, adopt } = yield* seed()
+      expect(yield* adopt(reasoning, Effect.die(new Error("validation defect")))).toBeUndefined()
+      expect(
+        yield* session.getPart({ sessionID: chat.id, messageID: reasoning.messageID, partID: reasoning.id }),
+      ).toEqual(reasoning)
+      yield* session.remove(chat.id)
+      expect(yield* adopt()).toBeUndefined()
+    }),
+  )
+  it.instance("drops finished reasoning rewrites outside the compacted replay range", () =>
+    Effect.gen(function* () {
+      const { session, chat, info, reasoning, adopt } = yield* seed()
+      const compactID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: compactID,
+        sessionID: chat.id,
+        role: "user",
+        agent: "build",
+        model: { providerID: info.providerID, modelID: info.modelID },
+        time: { created: 3 },
+      })
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        sessionID: chat.id,
+        messageID: compactID,
+        type: "compaction",
+        auto: true,
+      })
+      yield* session.updateMessage({
+        ...info,
+        id: MessageID.ascending(),
+        parentID: compactID,
+        summary: true,
+        finish: "stop",
+        time: { created: 4, completed: 5 },
+      })
+      expect(yield* adopt()).toBeUndefined()
+      expect(
+        yield* session.getPart({ sessionID: chat.id, messageID: reasoning.messageID, partID: reasoning.id }),
+      ).toEqual(reasoning)
+    }),
+  )
+  it.instance("a deleted reasoning source message is an ordinary adoption rejection", () =>
+    Effect.gen(function* () {
+      const { session, chat, info, adopt } = yield* seed()
+      yield* session.removeMessage({ sessionID: chat.id, messageID: info.id })
+      expect(yield* adopt()).toBeUndefined()
     }),
   )
   it.instance("a disabled switch blocks an already prepared adoption", () =>

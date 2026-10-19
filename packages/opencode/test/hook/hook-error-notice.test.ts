@@ -150,3 +150,24 @@ describe("non-blocking hook failures leave a transcript notice", () => {
     }),
   )
 })
+
+for (const event of ["PreToolUse", "Stop"] as const) {
+  it.instance(`${event} ignores decisions printed before a command exits 1`, () =>
+    Effect.gen(function* () {
+      const json =
+        event === "PreToolUse"
+          ? { hookSpecificOutput: { permissionDecision: "allow", updatedInput: { command: "changed" } } }
+          : { decision: "block", reason: "keep going" }
+      const { result } = yield* trigger(
+        [node(`console.log(JSON.stringify(${JSON.stringify(json)}));process.exit(1)`)],
+        {
+          payload: event === "PreToolUse" ? preTool : { event: "Stop", stopHookActive: false },
+        },
+      )
+      expect(result.permissionDecision).toBeUndefined()
+      expect(result.updatedInput).toBeUndefined()
+      expect(result.blocked).toBeUndefined()
+      expect(result.hookErrors).toEqual([`${event} hook error: hook exited with code 1`])
+    }),
+  )
+}

@@ -26,3 +26,19 @@ it.instance("ending only applies to an attached local session and is claimed onc
     expect(yield* life.claimEnd("local")).toBe(true)
   }),
 )
+
+it.instance("DAG Stop delegation covers nudges and historical recovery without inventing lifecycle events", () =>
+  Effect.gen(function* () {
+    const life = yield* HookLifecycle.Service
+    expect(yield* life.isChildStopDelegated("live")).toBe(false)
+    yield* life.delegateChildStop("live")
+    expect(yield* life.claimChildStart("live", "a")).toBe(true)
+    expect(yield* life.isChildStopDelegated("live")).toBe(true)
+    expect(yield* life.isChildStopDelegated("live")).toBe(true)
+    expect(yield* life.claimChildStop("live", "a")).toBe(true)
+    expect(yield* life.claimChildStop("live", "a")).toBe(false)
+    yield* life.delegateChildStop("recovered")
+    expect(yield* life.isChildStopDelegated("recovered")).toBe(true)
+    expect(yield* life.claimChildStop("recovered", "historical")).toBe(false)
+  }),
+)

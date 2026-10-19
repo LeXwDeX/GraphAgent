@@ -1,4 +1,5 @@
 import { decodeJsonRecord, decodeRecord, decodeString } from "../lib/hook-json"
+import { HookLifecycle } from "@/hook/lifecycle"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
@@ -71,6 +72,7 @@ const root = LayerNode.group([
   EventV2Bridge.node,
   SessionPrompt.node,
   SessionHooks.node,
+  HookLifecycle.node,
   Session.node,
   SessionProjector.node,
   SessionSummary.node,
@@ -184,6 +186,29 @@ it.live("SDK-created child session emits parent-scoped SubagentStop", () =>
       expect(events).toEqual([
         expect.objectContaining({ session_id: parent.id, agent_id: child.id, hook_event_name: "SubagentStop" }),
       ])
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+// A recovered historical DAG attempt has no live Start claim in this process.
+// Its owner suppresses per-loop Stop even while resuming multiple model turns.
+it.live("recovered DAG child loops do not replay historical SubagentStop", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const capture = yield* writeStopCapture(dir, "SubagentStop")
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const lifecycle = yield* HookLifecycle.Service
+      const parent = yield* sessions.create({ title: "Recovered DAG parent" })
+      const child = yield* sessions.create({ parentID: parent.id, title: "Recovered DAG child" })
+      yield* lifecycle.delegateChildStop(child.id)
+      for (const text of ["resume accepted input", "submit updated result"]) {
+        yield* llm.text(text)
+        yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
+      }
+      expect(yield* Effect.promise(() => fs.readFile(capture, "utf8").catch(() => ""))).toBe("")
+      expect(yield* lifecycle.claimChildStop(child.id, "historical-attempt")).toBe(false)
     }),
     { git: true, config: providerCfg },
   ),

@@ -144,3 +144,51 @@ describe("SettingsHook http handler", () => {
     }),
   )
 })
+
+it.instance("Claude HTTP input adapts tool names, output and returned input without changing native siblings", () =>
+  Effect.gen(function* () {
+    const store = yield* SessionHooks.Service
+    const hooks = yield* SettingsHook.Service
+    const sessionID = SessionID.descending()
+    const seen: any[] = []
+    yield* withFetch(
+      async (request) => {
+        seen.push(await request.json())
+        return Response.json({ hookSpecificOutput: { updatedInput: { file_path: "updated.ts" } } })
+      },
+      (url) =>
+        Effect.gen(function* () {
+          yield* store.add(sessionID, {
+            event: "PreToolUse",
+            hooks: [{ type: "http", url, inputFormat: "claude-code" }],
+          })
+          const pre = yield* hooks.trigger(
+            { event: "PreToolUse", toolName: "read", toolInput: { filePath: "a.ts" } },
+            { sessionID, transcriptPath: "" },
+          )
+          expect(seen[0].tool_name).toBe("Read")
+          expect(seen[0].tool_input.file_path).toBe("a.ts")
+          expect(pre.updatedInput).toEqual({ filePath: "updated.ts" })
+          yield* store.add(sessionID, {
+            event: "PostToolUse",
+            hooks: [
+              { type: "http", url, inputFormat: "claude-code" },
+              { type: "http", url },
+            ],
+          })
+          yield* hooks.trigger(
+            {
+              event: "PostToolUse",
+              toolName: "bash",
+              toolInput: { command: "echo hi" },
+              toolResponse: { exit: 0 },
+              toolOutput: { title: "echo", output: "hi", metadata: { exit: 0 } },
+            },
+            { sessionID, transcriptPath: "" },
+          )
+          expect(seen.find((item) => item.tool_name === "Bash").tool_response.stdout).toBe("hi")
+          expect(seen.find((item) => item.tool_name === "bash").tool_response).toEqual({ exit: 0 })
+        }),
+    )
+  }),
+)

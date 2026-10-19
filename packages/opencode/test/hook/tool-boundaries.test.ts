@@ -540,8 +540,9 @@ describe("Claude command consumer with real discovery tools", () => {
         expect(claude.tool_use_id).toBe(`compat-${name}`)
         if (name === "read") {
           expect(claude.tool_input.file_path).toBe(target)
-          // PostToolUse carries the tool's structured metadata, not its text output.
-          expect(claude.tool_response.preview).toContain("HOOK_SEARCH_NEEDLE")
+          expect(claude.tool_response.file.content).toBe("HOOK_SEARCH_NEEDLE")
+          expect(claude.tool_response.file.filePath).toBe(target)
+          expect(native.tool_response.preview).toContain("HOOK_SEARCH_NEEDLE")
         } else expect(output).toContain(target)
       }),
     )
@@ -963,3 +964,34 @@ it.instance("continue:false beats ignored defer on the actual V1 tool path", () 
     expect(yield* Effect.promise(() => Bun.file(target).exists())).toBe(false)
   }),
 )
+
+for (const type of ["prompt", "agent"] as const) {
+  it.instance(`${type}: Claude-format PostToolUse receives the actual builtin result`, () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const store = yield* SessionHooks.Service
+      const id = SessionID.descending()
+      const target = path.join(instance.directory, `claude-${type}.txt`)
+      yield* store.add(id, {
+        event: "PostToolUse",
+        hooks: [{ type, prompt: "$ARGUMENTS", inputFormat: "claude-code" }],
+      })
+      const model = rejectingModel("inspect output")
+      yield* Effect.gen(function* () {
+        const tools = yield* resolve(id, instance.directory)
+        yield* execute(tools, target)
+      }).pipe(
+        Effect.provide(Layer.mergeAll(evaluatorServices(model), FSUtil.defaultLayer, CrossSpawnSpawner.defaultLayer)),
+      )
+      expect(model.doGenerateCalls).toHaveLength(1)
+      const message = model.doGenerateCalls[0].prompt.find((message) => message.role === "user")
+      if (!message || !Array.isArray(message.content)) throw new Error("missing evaluator input")
+      const text = message.content.find((part) => part.type === "text")
+      if (!text || text.type !== "text") throw new Error("missing evaluator JSON")
+      const envelope = JSON.parse(text.text)
+      expect(envelope.tool_name).toBe("Write")
+      expect(envelope.tool_input.file_path).toBe(target)
+      expect(envelope.tool_response).toEqual({ filePath: target, structuredPatch: [], success: true })
+    }),
+  )
+}

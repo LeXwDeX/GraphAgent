@@ -1,3 +1,4 @@
+import { HookLifecycle } from "@/hook/lifecycle"
 import path from "node:path"
 import { tmpdir } from "../fixture/fixture"
 import { describe, expect, test } from "bun:test"
@@ -201,13 +202,19 @@ function harness(
         return reply("msg_nudged")
       }),
   })
+  const lifecycle = Layer.mock(HookLifecycle.Service, {
+    delegateChildStop: (sessionID) =>
+      Effect.sync(() => {
+        h.delegatedStops.push(sessionID)
+      }),
+  })
   const execution = (
     config?: Config,
     directory?: string,
     authorizeSource?: Parameters<typeof continueRecoveredMessageNode>[4],
   ) =>
     continueRecoveredMessageNode("dag_recovery", "n", config, directory, authorizeSource).pipe(
-      Effect.provide(Layer.mergeAll(dag, prompt, ...(input.noMessages ? [] : [messages]))),
+      Effect.provide(Layer.mergeAll(dag, prompt, lifecycle, ...(input.noMessages ? [] : [messages]))),
       Effect.scoped,
     )
   return {
@@ -224,6 +231,7 @@ function state(input: {
   stale?: number
 }) {
   return {
+    delegatedStops: [] as string[],
     node: input.noNode
       ? undefined
       : ({
@@ -414,6 +422,7 @@ describe("message recovery continuation admission and settlement branches", () =
     expect(h.loops).toBe(1)
     expect(h.prompts).toBe(1)
     expect(h.claimedNudgeRevisions).toEqual([1])
+    expect(h.delegatedStops).toEqual(["ses_recovery"])
     expect(h.completed[0].output).toBeNull()
     expect(h.completionAttempts).toBe(2)
   })

@@ -128,9 +128,9 @@ Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreT
 `agent`).
 
 - `hooks.json` is read from the global opencode config directory and from project/worktree `.opencode` directories,
-  merged by appending and hot-reloaded; hooks can also be registered per session over HTTP, with optional workspace-trust
-  gating.
-- Command hooks can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
+  merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Hooks do not require a
+  workspace trust-list entry.
+- Hooks of every execution type can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
   naming compatibility, not full behavioral parity.
 - Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude-hooks` migrates them, and
   `/create-hook` walks through authoring a new hook.

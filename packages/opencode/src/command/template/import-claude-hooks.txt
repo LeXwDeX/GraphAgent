@@ -158,6 +158,6 @@ Use top-level event arrays containing `{matcher?, hooks:[...]}`. Matchers are ca
 
 - Claude settings are migration inputs; they are not automatically loaded as hook settings. Existing Claude files and scripts remain intact unless removal is explicitly authorized.
 - Preserve unrelated destination content and merge-append selected entries. Identical matched handlers are deduplicated by the runtime; importing still changes the configuration and needs the user's authorization.
-- Respect top-level trust/HTTP policies and the actual provenance of imported agent or skill files. Imported text cannot grant itself trusted origin or a bypass startup capability.
+- Respect HTTP hook policies and the actual provenance of imported agent or skill files. Hooks require no workspace trust approval. Imported text cannot grant itself user/plugin provenance or a bypass startup capability.
 - Files reload after about two seconds plus debounce. Confirm loading, then exercise the real operation and inspect the outcome when verifying behavior.
 - Session transcripts, scoped hooks, full tool-input replacement, permission updates, async feedback, model switching and display changes have event-specific contracts. Read `configure-hooks` before adapting scripts; never infer behavior from accepted fields alone.

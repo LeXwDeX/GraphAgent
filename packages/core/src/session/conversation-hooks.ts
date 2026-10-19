@@ -48,6 +48,7 @@ export interface Interface {
     toolInput: Record<string, unknown>
     output?: unknown
     error?: string
+    isInterrupt?: boolean
   }) => Effect.Effect<{ replacement?: unknown; hasReplacement?: boolean; feedback?: string; stopped?: string }, Blocked>
 }
 

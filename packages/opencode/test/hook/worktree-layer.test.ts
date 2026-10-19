@@ -4,7 +4,7 @@ import os from "os"
 import path from "path"
 import { __chainCandidates, __deprecatedSettingsPaths, summarizeChain } from "@/hook/settings"
 import { __watchedFiles } from "@/hook/extensions/hot-reload"
-import { hasWorktreeLayer } from "@/hook/workspace-trust"
+import { hasWorktreeLayer } from "@/hook/worktree-layer"
 
 // A non-VCS project reports the filesystem root as its worktree
 // (packages/opencode/src/project/project.ts). Treating that as a layer would

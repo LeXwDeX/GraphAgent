@@ -44,8 +44,6 @@ export const HookCommandSchema = z
     __sourceDir: z.string().optional(),
   })
   .superRefine((entry, ctx) => {
-    if (entry.inputFormat !== undefined && entry.type !== "command")
-      ctx.addIssue({ code: "custom", message: "inputFormat is only supported for command hooks" })
     if (entry.args !== undefined && entry.type !== "command")
       ctx.addIssue({ code: "custom", message: "args is only supported for command hooks" })
     if (entry.async !== undefined && entry.type !== "command")

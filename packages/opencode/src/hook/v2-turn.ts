@@ -159,6 +159,11 @@ export const layer = Layer.effect(
               )
             return {}
           }
+          if (!result.blocked) {
+            if (result.additionalContexts.some((value) => value.length > 0))
+              yield* Effect.logDebug("ignoring non-blocking Stop context")
+            return {}
+          }
           const feedback = [
             ...result.additionalContexts.filter((value) => value.length > 0),
             ...(result.blocked ? [result.blocked.reason || "Continue."] : []),

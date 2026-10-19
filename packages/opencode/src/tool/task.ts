@@ -520,10 +520,9 @@ export const TaskTool = Tool.define(
                 { additionalContexts: [], systemMessages: [stopResult.stopReason] },
                 { sessionID: ctx.sessionID },
               )
-            if (
-              (!stopResult.blocked && !stopResult.additionalContexts?.some((text) => text.trim())) ||
-              stopResult.preventContinuation
-            ) {
+            if (!stopResult.blocked || stopResult.preventContinuation) {
+              if (stopResult.additionalContexts?.some((text) => text.trim()))
+                yield* Effect.logDebug("ignoring non-blocking SubagentStop context")
               lastStillBlocked = false
               break
             }

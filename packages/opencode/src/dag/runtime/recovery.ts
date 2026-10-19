@@ -20,6 +20,7 @@
  * and terminalize on fabricated evidence (P2-2 recovery-pause).
  */
 
+import { HookLifecycle } from "@/hook/lifecycle"
 import { Effect, Clock, Cause, Option } from "effect"
 import { Dag, isStaleMessageInput } from "../dag"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
@@ -600,6 +601,10 @@ export function continueRecoveredMessageNode(
       if (!(yield* admit)) return
       if (config?.result_protocol === "final_response") registerFinalResponseSession(childSessionID)
       if (nodeConfig?.output_schema) registerCaptureSlot(childSessionID, nodeConfig.output_schema)
+      // Recovery owns the full historical attempt, not each resumed model turn.
+      // Do not replay its historical Start/Stop hooks in a new process.
+      const lifecycle = yield* Effect.serviceOption(HookLifecycle.Service)
+      if (Option.isSome(lifecycle)) yield* lifecycle.value.delegateChildStop(childSessionID)
       let result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) })
       for (;;) {
         if (!(yield* admit)) return

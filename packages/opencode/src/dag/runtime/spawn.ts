@@ -30,6 +30,9 @@
  * (Level 2) is a documented boundary — see eval.ts.
  */
 
+import type { TriggerResult } from "@/hook/trigger-result"
+import { HookTurnContext } from "@/hook/turn-context"
+import { BackgroundJob } from "@/background/job"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { SettingsHook } from "@/hook/settings"
 import { HookTranscript } from "@/hook/transcript"
@@ -39,7 +42,7 @@ import { Effect, Semaphore, Scope, Fiber, Option, Clock, Cause, Exit } from "eff
 import { Database } from "@opencode-ai/core/database/database"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
-import { SessionID, MessageID } from "@/session/schema"
+import { SessionID, MessageID, PartID } from "@/session/schema"
 import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
@@ -687,6 +690,7 @@ export function spawnNode(
               hooks: agent.hooks,
               child: true,
             })
+          if (hookLifecycle) yield* hookLifecycle.delegateChildStop(childSession.id)
           const hookAttempt = DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts)
           if (hooks && (!hookLifecycle || (yield* hookLifecycle.claimChildStart(childSession.id, hookAttempt)))) {
             const transcriptPath = yield* HookTranscript.materialize({
@@ -1020,6 +1024,97 @@ export function spawnNode(
                 )
               : yield* promptSvc.loop({ sessionID: childSession.id })
           }
+          // A nudge or stale-input continuation is still the same live attempt.
+          // Notify only after its durable terminal transition, while scoped hooks
+          // and transcripts remain available. Notification feedback cannot reopen
+          // a settled node; foreground task-tool Stop continuations are unchanged.
+          yield* Effect.gen(function* () {
+            if (!hooks) return
+            const terminal = yield* dag.store.getNode(input.dagID, input.nodeID)
+            if (
+              result.info.role === "assistant" &&
+              !result.info.error &&
+              terminal?.childSessionId === childSession.id &&
+              terminal.replanAttempts === settlementAttempt.replanAttempts &&
+              ["completed", "failed"].includes(terminal.status) &&
+              (!hookLifecycle || (yield* hookLifecycle.claimChildStop(childSession.id, hookAttempt)))
+            ) {
+              if (hooks.registerScoped && agent.hooks !== undefined)
+                yield* hooks.registerScoped(childSession.id, {
+                  kind: "agent",
+                  origin: hookOrigin,
+                  source: agent.hookSource,
+                  hooks: agent.hooks,
+                  child: true,
+                })
+              const messages = yield* sessions.messages({ sessionID: childSession.id }).pipe(Effect.orDie)
+              const agentTranscriptPath = yield* HookTranscript.materialize({
+                sessionID: childSession.id,
+                directory: parent.directory,
+                messages,
+              }).pipe(Effect.orDie)
+              const backgroundJobs = yield* Effect.serviceOption(BackgroundJob.Service)
+              const transcriptPath = yield* HookTranscript.materialize({
+                sessionID: parent.id,
+                directory: parent.directory,
+                messages: yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie),
+              }).pipe(Effect.orDie)
+              const stopped: TriggerResult = yield* hooks
+                .trigger(
+                  {
+                    event: "SubagentStop",
+                    stopHookActive: false,
+                    agentID: childSession.id,
+                    agentType: agent.name,
+                    agentTranscriptPath,
+                    lastAssistantMessage:
+                      result.parts
+                        .filter((p) => p.type === "text")
+                        .map((p) => p.text)
+                        .join("") || undefined,
+                    backgroundTasks: Option.isSome(backgroundJobs)
+                      ? yield* HookTurnContext.backgroundTasks(parent.id, {
+                          jobs: backgroundJobs.value,
+                          workflows: dag.store,
+                        })
+                      : [],
+                    sessionCrons: [],
+                  },
+                  { sessionID: parent.id, transcriptPath },
+                )
+                .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
+              yield* SettingsHook.landSystemMessages(
+                {
+                  ...stopped,
+                  systemMessages: [
+                    ...new Set([
+                      ...stopped.systemMessages,
+                      ...(stopped.blocked?.reason ? [stopped.blocked.reason] : []),
+                      ...(stopped.stopReason ? [stopped.stopReason] : []),
+                    ]),
+                  ],
+                },
+                { sessionID: childSession.id },
+              )
+              const user = messages.findLast((message) => message.info.role === "user")
+              if (user)
+                for (const text of stopped.additionalContexts)
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: user.info.id,
+                    sessionID: childSession.id,
+                    type: "text",
+                    text,
+                    synthetic: true,
+                  })
+            }
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("DAG Stop notification failed after settlement", { cause }),
+            ),
+          )
         }).pipe(Effect.ensuring(semaphore.release(1)))
       }).pipe(
         Effect.ensuring(

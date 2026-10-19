@@ -8,6 +8,9 @@ export interface Interface {
   readonly claimChildStart: (sessionID: string, attempt: string) => Effect.Effect<boolean>
   /** Only the matching live attempt may finish, at most once. */
   readonly claimChildStop: (sessionID: string, attempt: string) => Effect.Effect<boolean>
+  /** DAG owners, including recovery, own clean child Stop rather than each prompt loop. */
+  readonly delegateChildStop: (sessionID: string) => Effect.Effect<void>
+  readonly isChildStopDelegated: (sessionID: string) => Effect.Effect<boolean>
   readonly attach: (sessionID: string) => Effect.Effect<void>
   readonly detach: (sessionID: string) => Effect.Effect<void>
   readonly claimEnd: (sessionID: string) => Effect.Effect<boolean>
@@ -31,6 +34,7 @@ export const layer = Layer.effect(
       Effect.succeed({
         attached: new Set<string>(),
         ended: new Set<string>(),
+        delegatedChildren: new Set<string>(),
         children: new Map<string, { attempt: string; stopped: boolean }>(),
         seen: new Map<string, Set<string>>(),
         environments: new Map<
@@ -55,6 +59,12 @@ export const layer = Layer.effect(
       if (!child || child.attempt !== attempt || child.stopped) return false
       child.stopped = true
       return true
+    })
+    const delegateChildStop = Effect.fn("HookLifecycle.delegateChildStop")(function* (sessionID: string) {
+      ;(yield* InstanceState.get(state)).delegatedChildren.add(sessionID)
+    })
+    const isChildStopDelegated = Effect.fn("HookLifecycle.isChildStopDelegated")(function* (sessionID: string) {
+      return (yield* InstanceState.get(state)).delegatedChildren.has(sessionID)
     })
     const attach = Effect.fn("HookLifecycle.attach")(function* (sessionID: string) {
       const data = yield* InstanceState.get(state)
@@ -108,6 +118,8 @@ export const layer = Layer.effect(
       serializeTranscript,
       claimChildStart,
       claimChildStop,
+      delegateChildStop,
+      isChildStopDelegated,
       attach,
       detach,
       claimEnd,

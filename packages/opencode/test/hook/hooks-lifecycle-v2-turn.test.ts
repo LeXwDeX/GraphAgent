@@ -53,7 +53,7 @@ await Bun.write(audit,rows+JSON.stringify(i)+"\\n");
 const e=i.hook_event_name;
 if(e==="PreToolUse") process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:e,permissionDecision:"allow"}}));
 if(e==="PostToolBatch") process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:e,additionalContext:"BATCH_CONTEXT"}}));
-if(e==="Stop" && !i.stop_hook_active) process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:e,additionalContext:"STOP_CONTINUATION"}}));
+if(e==="Stop" && !i.stop_hook_active) process.stdout.write(JSON.stringify({decision:"block",reason:"STOP_CONTINUATION"}));
 if(e==="MessageDisplay") process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:e,displayContent:i.delta.replaceAll("SECRET","REDACTED")}}));
 `,
         )

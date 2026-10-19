@@ -2,22 +2,31 @@ import { expect } from "bun:test"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
+import { pollWithTimeout } from "../lib/effect"
 import { cliIt } from "../lib/cli-process"
 
-cliIt.live(
-  "a real DAG child runs scoped lifecycle hooks and consumes Stop feedback before delivery",
-  ({ home, env, llm, opencode }) =>
+for (const protocol of ["submit_result", "final_response"] as const)
+  cliIt.live(`a real DAG child emits one scoped Stop after ${protocol} settlement`, ({ home, env, llm, opencode }) =>
     Effect.gen(function* () {
       const audit = path.join(home, "dag-hooks.jsonl")
       const script = path.join(home, "dag-hook.ts")
+      const serverURL = path.join(home, "server-url.txt")
       yield* Effect.promise(async () => {
         await fs.writeFile(
           script,
           `
 const i=JSON.parse(await Bun.stdin.text());
-await (await import("node:fs/promises")).appendFile(${JSON.stringify(audit)},JSON.stringify({origin:process.argv[2],...i,readable:await Bun.file(i.transcript_path).exists(),agentReadable:i.agent_transcript_path?await Bun.file(i.agent_transcript_path).exists():undefined})+"\\n");
+let nodeStatus;
+if(i.hook_event_name==="SubagentStop") {
+  const base=await Bun.file(${JSON.stringify(serverURL)}).text();
+  const headers={"x-opencode-directory":${JSON.stringify(home)}};
+  const workflows=await (await fetch(base+"/dag/session/"+i.session_id,{headers})).json();
+  const nodes=await (await fetch(base+"/dag/"+workflows[0].id+"/nodes",{headers})).json();
+  nodeStatus=nodes.find(n=>n.child_session_id===i.agent_id)?.status;
+}
+await (await import("node:fs/promises")).appendFile(${JSON.stringify(audit)},JSON.stringify({origin:process.argv[2],...i,nodeStatus,readable:await Bun.file(i.transcript_path).exists(),agentReadable:i.agent_transcript_path?await Bun.file(i.agent_transcript_path).exists():undefined})+"\\n");
 if(i.hook_event_name==="SubagentStart") console.log(JSON.stringify({hookSpecificOutput:{hookEventName:i.hook_event_name,additionalContext:"DAG_START_GUIDANCE"}}));
-if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_hook_active) console.log(JSON.stringify({hookSpecificOutput:{hookEventName:i.hook_event_name,additionalContext:"DAG_STOP_CORRECTION"}}));
+if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_hook_active) console.log(JSON.stringify({decision:"block",reason:"DAG_STOP_BLOCK",hookSpecificOutput:{hookEventName:i.hook_event_name,additionalContext:"DAG_STOP_CORRECTION"}}));
 `,
         )
         const handler = { type: "command", command: process.execPath, args: [script, "global"] }
@@ -39,7 +48,10 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
           `---\n${JSON.stringify({ mode: "subagent", description: "DAG lifecycle fixture", hooks: { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script, "agent"] }] }] } })}\n---\nComplete the task.`,
         )
       })
-      yield* llm.text("PREMATURE_DAG_REPORT")
+      if (protocol === "submit_result") {
+        yield* llm.text("PREMATURE_DAG_REPORT")
+        yield* llm.tool("submit_result", { payload: { summary: "FINAL_DAG_REPORT" } })
+      }
       yield* llm.text("FINAL_DAG_REPORT")
       const server = yield* opencode.serve({
         env: {
@@ -49,6 +61,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
           }),
         },
       })
+      yield* Effect.promise(() => fs.writeFile(serverURL, server.url))
       const request = (route: string, body?: object) =>
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {
@@ -69,7 +82,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
         title: "Hook lifecycle",
         config: {
           name: "hook-lifecycle",
-          result_protocol: "final_response",
+          result_protocol: protocol,
           delivery_node: "worker",
           max_concurrency: 1,
           nodes: [
@@ -79,6 +92,15 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
               worker_type: "general",
               depends_on: [],
               required: true,
+              ...(protocol === "submit_result"
+                ? {
+                    output_schema: {
+                      type: "object",
+                      required: ["summary"],
+                      properties: { summary: { type: "string" } },
+                    },
+                  }
+                : {}),
               prompt_template: { inline: "Produce the report." },
             },
           ],
@@ -96,51 +118,61 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
         status: "completed",
         errors: [null],
       })
-      const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line))
+      const rows = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const rows = (await fs.readFile(audit, "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+          return rows.some((row) => row.origin === "agent" && row.hook_event_name === "SubagentStop") ? rows : undefined
+        }),
+        "settled DAG attempt never emitted its Stop notification",
+      )
       const global = rows.filter((row) => row.origin === "global")
-      expect(global.map((row) => row.hook_event_name)).toEqual(["SubagentStart", "SubagentStop", "SubagentStop"])
-      expect(global.map((row) => row.session_id)).toEqual([parent.id, parent.id, parent.id])
+      expect(global.map((row) => row.hook_event_name)).toEqual(["SubagentStart", "SubagentStop"])
+      expect(global.map((row) => row.session_id)).toEqual([parent.id, parent.id])
       expect(new Set(global.map((row) => row.agent_id))).toEqual(new Set([nodes[0].child_session_id]))
       expect(global.filter((row) => row.hook_event_name === "SubagentStop").map((row) => row.stop_hook_active)).toEqual(
-        [false, true],
+        [false],
       )
       expect(
         global
           .filter((row) => row.hook_event_name === "SubagentStop")
-          .every((row) =>
-            row.background_tasks.some(
-              (task: { id: string; type: string; status: string }) =>
-                task.id === workflow.id && task.type === "workflow" && task.status === "running",
-            ),
-          ),
+          .every((row) => Array.isArray(row.background_tasks)),
       ).toBe(true)
       expect(
         global
           .filter((row) => row.hook_event_name === "SubagentStop")
           .every((row) => Array.isArray(row.session_crons) && row.session_crons.length === 0),
       ).toBe(true)
-      expect(rows.filter((row) => row.origin === "agent").map((row) => row.hook_event_name)).toEqual([
-        "SubagentStop",
-        "SubagentStop",
-      ])
+      expect(rows.filter((row) => row.origin === "agent").map((row) => row.hook_event_name)).toEqual(["SubagentStop"])
       expect(rows.every((row) => row.readable)).toBe(true)
       expect(global.filter((row) => row.hook_event_name === "SubagentStop").every((row) => row.agentReadable)).toBe(
         true,
       )
       const calls = yield* llm.inputs
-      expect(calls.length).toBe(2)
-      expect(JSON.stringify(calls[0]).includes("DAG_START_GUIDANCE")).toBe(true)
-      expect(JSON.stringify(calls[1]).includes("DAG_STOP_CORRECTION")).toBe(true)
+      const childCalls = calls.filter((call) => JSON.stringify(call.messages).includes("Produce the report."))
+      expect(childCalls.length).toBe(protocol === "submit_result" ? 3 : 1)
+      expect(JSON.stringify(childCalls[0]).includes("DAG_START_GUIDANCE")).toBe(true)
+      if (protocol === "submit_result")
+        expect(JSON.stringify(childCalls[1])).toContain("without calling the submit_result tool")
+      expect(JSON.stringify(calls)).not.toContain("DAG_STOP_CORRECTION")
+      expect(global.find((row) => row.hook_event_name === "SubagentStop")).toMatchObject({
+        last_assistant_message: "FINAL_DAG_REPORT",
+        nodeStatus: "completed",
+      })
       expect(
         calls.every(
           (call) =>
             !Object.hasOwn(call, "hooks") && !Object.hasOwn(call, "hookOrigin") && !Object.hasOwn(call, "hookSource"),
         ),
       ).toBe(true)
-      const childMessages = yield* request(`/session/${nodes[0].child_session_id}/message`)
+      const childMessages = yield* pollWithTimeout(
+        request(`/session/${nodes[0].child_session_id}/message`).pipe(
+          Effect.map((messages) => (JSON.stringify(messages).includes("DAG_STOP_CORRECTION") ? messages : undefined)),
+        ),
+        "DAG Stop feedback was not retained in the child transcript",
+      )
       expect(JSON.stringify(childMessages)).toContain("FINAL_DAG_REPORT")
     }),
-)
+  )

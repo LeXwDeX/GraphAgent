@@ -1048,7 +1048,7 @@ describe("GoalLoop — no assistant in window → visible pause (branch 1)", () 
 })
 
 // A non-ignored user message newer than the last reply (HTTP noReply prompt,
-// a /memory or /trust command turn, ESC before any reply) used to make every
+// a /memory command turn, ESC before any reply) used to make every
 // idle evaluation spend a judge call and then discard the verdict, leaving the
 // goal active with no continuation and no visible pause. The loop now skips
 // the judge and pauses visibly under the idle fence; a real prompt that is

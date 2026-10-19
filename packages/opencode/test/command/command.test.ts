@@ -56,6 +56,13 @@ describe("legacy command registry", () => {
     }),
   )
 
+  it.instance("does not register the retired trust command", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      expect(yield* commands.get("trust")).toBeUndefined()
+    }),
+  )
+
   it.instance("registers the canonical dag-auto command", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service

@@ -222,3 +222,31 @@ it.live("honors CLAUDE_CODE_STOP_HOOK_BLOCK_CAP when capping Stop continuations"
     { git: true, config: providerCfg },
   ),
 )
+
+it.live("Stop additionalContext alone ends the turn and is retained for the next prompt", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Stop context only", permission: [] })
+      yield* hooks.add(session.id, {
+        event: "Stop",
+        hooks: [
+          {
+            type: "command",
+            command: `printf '%s' '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"NEXT-TURN-NOTE"}}'`,
+          },
+        ],
+      })
+      yield* llm.text("finished")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "do work" }] })
+      expect(yield* llm.calls).toBe(1)
+      yield* llm.text("next answer")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "next request" }] })
+      expect(yield* llm.calls).toBe(2)
+      expect(JSON.stringify((yield* llm.inputs)[1])).toContain("NEXT-TURN-NOTE")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)

@@ -13,8 +13,7 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
-import { estimateRequest, isOverflow } from "./overflow"
-import { Token } from "@/util/token"
+import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import {
@@ -46,7 +45,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMError, Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
-export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred" | "split"
+export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
 
 /** Accumulate one provider request's usage into the assistant message that owns both requests. */
 function accumulateUsage(message: SessionV1.Assistant, usage: ReturnType<typeof Session.getUsage>) {
@@ -78,26 +77,15 @@ export interface Handle {
     },
   ) => Effect.Effect<void>
   readonly resumeToolCall: (part: SessionV1.ToolPart, execute: Effect.Effect<unknown, unknown>) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput, options?: { allowSplit?: boolean }) => Effect.Effect<Result>
+  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
 }
 
 type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
-  /**
-   * Called once per reasoning part that ended normally, after it is persisted. `canDefer` is false when this request
-   * may not continue for this part, so the host must organize the part in place. Returns `defer` when the host wants
-   * to organize the part only if this request ends with reasoning alone. The stream is never stopped at the reasoning
-   * boundary: a part is often followed by content or tool calls that belong to the same request.
-   */
-  onReasoningSettled?: (part: SessionV1.ReasoningPart, canDefer: boolean) => Effect.Effect<"defer" | "continue">
-  /**
-   * Called after a request that deferred reasoning parts ended without a continuation (content or tool activity,
-   * including a tool the user or a hook blocked), so the host can still organize those parts in place before they
-   * are resent. Errors, cancellation and compaction keep the originals.
-   */
-  onReasoningUnused?: (parts: readonly SessionV1.ReasoningPart[]) => Effect.Effect<void>
+  /** Enqueue background work after persistence; this callback must never wait for organization. */
+  onReasoningSettled?: (part: SessionV1.ReasoningPart) => Effect.Effect<void>
   displayMode?: "interactive" | "noninteractive"
   onTextDisplay?: (batch: { delta: string; index: number; final: boolean }) => Effect.Effect<string>
 }
@@ -122,15 +110,6 @@ interface ProcessorContext extends Input {
   snapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
-  /**
-   * This attempt ended with reasoning alone. The host organizes the reasoning and continues it in a second request
-   * instead of ending the turn without an answer.
-   */
-  splitForContinuation: boolean
-  /** Settled reasoning parts the host will organize only if this attempt ends with reasoning alone. */
-  deferredReasoning: SessionV1.ReasoningPart[]
-  /** Whether this attempt may defer reasoning parts; the last continuation request disables further continuations. */
-  allowSplit: boolean
   currentText: SessionV1.TextPart | undefined
   currentTextID: string | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
@@ -151,12 +130,6 @@ interface ProcessorContext extends Input {
   attemptTextLength: number
   /** Sum of reasoning-delta lengths in the current attempt; zero means no visible reasoning. */
   attemptReasoningLength: number
-  /** Conservative token estimate of reasoning deltas in the current attempt. */
-  attemptReasoningEstimate: number
-  /** Whether step-finish already recorded real provider usage for the current attempt. */
-  attemptUsageRecorded: boolean
-  /** Conservative estimate of the current request's input (system, tools, messages). */
-  requestInputTokens: number
   /** Includes opaque-only reasoning parts and orphan reasoning deltas. */
   attemptReasoningActivity: boolean
   /** Nonempty provider metadata can carry encrypted reasoning without text. */
@@ -236,9 +209,6 @@ export const layer = Layer.effect(
         snapshot: initialSnapshot,
         blocked: false,
         needsCompaction: false,
-        splitForContinuation: false,
-        deferredReasoning: [],
-        allowSplit: true,
         currentText: undefined,
         currentTextID: undefined,
         reasoningMap: {},
@@ -249,9 +219,6 @@ export const layer = Layer.effect(
         attemptFinish: undefined,
         attemptTextLength: 0,
         attemptReasoningLength: 0,
-        attemptReasoningEstimate: 0,
-        attemptUsageRecorded: false,
-        requestInputTokens: 0,
         attemptReasoningActivity: false,
         attemptOpaqueReasoning: false,
         attemptReasoningParts: new Map(),
@@ -415,10 +382,7 @@ export const layer = Layer.effect(
         return true
       })
 
-      const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (
-        reasoningID: string,
-        allowSplit: boolean,
-      ) {
+      const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
         if (!(reasoningID in ctx.reasoningMap)) return
         const part = ctx.reasoningMap[reasoningID]
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
@@ -438,19 +402,7 @@ export const layer = Layer.effect(
         const settled = yield* session.updatePart(ctx.reasoningMap[reasoningID])
         delete ctx.reasoningMap[reasoningID]
         if (!input.onReasoningSettled || ctx.assistantMessage.summary) return
-        // A part may only wait for a continuation while this attempt has produced no visible text or tool activity.
-        // The decision to continue is made when the stream ends: reasoning is commonly followed by content or tool
-        // calls in the same request, and stopping at the reasoning boundary would drop them.
-        const canDefer =
-          allowSplit &&
-          ctx.allowSplit &&
-          ctx.currentText === undefined &&
-          ctx.attemptTextLength === 0 &&
-          Object.keys(ctx.toolcalls).length === 0 &&
-          ctx.admittedToolCalls === 0 &&
-          !ctx.attemptToolActivity
-        const decision = yield* input.onReasoningSettled(settled, canDefer)
-        if (canDefer && decision === "defer") ctx.deferredReasoning.push(settled)
+        yield* input.onReasoningSettled(settled)
       })
 
       const flushV2Fragments = Effect.fn("SessionProcessor.flushV2Fragments")(function* () {
@@ -602,7 +554,6 @@ export const layer = Layer.effect(
             ctx.attemptReasoningActivity = true
             if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
             ctx.attemptReasoningLength += value.text.length
-            ctx.attemptReasoningEstimate += Token.estimateReserve(value.text)
             // Match dev: silently drop orphan deltas (no preceding reasoning-start).
             if (!(value.id in ctx.reasoningMap)) return
             ctx.reasoningMap[value.id].text += value.text
@@ -631,7 +582,7 @@ export const layer = Layer.effect(
             if (value.providerMetadata && value.id in ctx.reasoningMap) {
               ctx.reasoningMap[value.id].metadata = value.providerMetadata
             }
-            yield* finishReasoning(value.id, true)
+            yield* finishReasoning(value.id)
             return
 
           case "tool-input-start":
@@ -959,7 +910,7 @@ export const layer = Layer.effect(
 
           case "step-finish": {
             const completedSnapshot = yield* snapshot.track()
-            yield* Effect.forEach(Object.keys(ctx.reasoningMap), (reasoningID) => finishReasoning(reasoningID, false))
+            yield* Effect.forEach(Object.keys(ctx.reasoningMap), (reasoningID) => finishReasoning(reasoningID))
             const usage = Session.getUsage({
               model: ctx.model,
               usage: value.usage ?? new Usage({}),
@@ -990,7 +941,6 @@ export const layer = Layer.effect(
             ctx.attemptSuppressedActivity ||= suppressed
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
-            ctx.attemptUsageRecorded = true
             accumulateUsage(ctx.assistantMessage, usage)
             yield* session.updatePart({
               id: PartID.ascending(),
@@ -1270,28 +1220,6 @@ export const layer = Layer.effect(
         ctx.toolcalls = {}
         if (deferred) ctx.assistantMessage.finish = "tool_deferred"
         yield* display(true)
-        // A split normally hands the message to a continuation, which completes it. Compaction takes precedence and
-        // never continues, so it must still complete the message.
-        if (ctx.splitForContinuation && !ctx.needsCompaction) {
-          // A natural stream end records provider usage in step-finish, so this fallback only covers a continuation
-          // whose request ended without one. Charge it from the prepared request and the reasoning already
-          // generated. The continuation request is charged separately when it finishes.
-          if (!ctx.attemptUsageRecorded) {
-            const output = ctx.attemptReasoningEstimate
-            const usage = Session.getUsage({
-              model: ctx.model,
-              usage: new Usage({
-                inputTokens: ctx.requestInputTokens,
-                outputTokens: output,
-                reasoningTokens: output,
-                totalTokens: ctx.requestInputTokens + output,
-              }),
-            })
-            accumulateUsage(ctx.assistantMessage, usage)
-            yield* session.updateMessage(ctx.assistantMessage)
-          }
-          return
-        }
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })
@@ -1368,10 +1296,7 @@ export const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (
-        streamInput: LLM.StreamInput,
-        options?: { allowSplit?: boolean },
-      ) {
+      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -1403,9 +1328,6 @@ export const layer = Layer.effect(
             ctx.currentText = undefined
             ctx.currentTextID = undefined
             ctx.reasoningMap = {}
-            ctx.splitForContinuation = false
-            ctx.deferredReasoning = []
-            ctx.allowSplit = options?.allowSplit !== false
             // Detection state is per attempt: a retried attempt must not
             // inherit the previous attempt's admissions, and its finish reason
             // is tracked separately so the persisted assistant.finish (last
@@ -1416,19 +1338,12 @@ export const layer = Layer.effect(
             ctx.attemptFinish = undefined
             ctx.attemptTextLength = 0
             ctx.attemptReasoningLength = 0
-            ctx.attemptReasoningEstimate = 0
-            ctx.attemptUsageRecorded = false
             ctx.attemptReasoningActivity = false
             ctx.attemptOpaqueReasoning = false
             ctx.attemptReasoningParts = new Map()
             ctx.attemptToolActivity = false
             ctx.attemptSuppressedActivity = false
             ctx.attemptRetryBlockingSuppressedActivity = false
-            ctx.requestInputTokens = estimateRequest({
-              system: streamInput.system,
-              tools: streamInput.tools,
-              messages: streamInput.messages,
-            })
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
             const source = llm.stream({
@@ -1473,25 +1388,6 @@ export const layer = Layer.effect(
               Stream.runDrain,
             )
 
-            // A request that ended with reasoning alone left the turn without an answer. Only now may it continue:
-            // reasoning is often followed by content or tool calls, and cutting the stream at the reasoning boundary
-            // would drop them.
-            if (
-              ctx.deferredReasoning.length > 0 &&
-              !aborted &&
-              !ctx.needsCompaction &&
-              !ctx.blocked &&
-              !ctx.assistantMessage.error &&
-              ctx.currentText === undefined &&
-              ctx.attemptTextLength === 0 &&
-              Object.keys(ctx.toolcalls).length === 0 &&
-              ctx.admittedToolCalls === 0 &&
-              !ctx.attemptToolActivity &&
-              !ctx.attemptSuppressedActivity
-            ) {
-              ctx.splitForContinuation = true
-            }
-
             // Detect an incomplete response before cleanup loses the
             // execution-state information: the stream drained normally with an
             // unknown/missing finish reason while the model started a tool
@@ -1503,7 +1399,6 @@ export const layer = Layer.effect(
             if (
               !aborted &&
               !ctx.needsCompaction &&
-              !ctx.splitForContinuation &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
               !ctx.anyToolCalled &&
@@ -1527,7 +1422,6 @@ export const layer = Layer.effect(
               (streamInput.purpose === "conversation" || streamInput.purpose === undefined) &&
               !aborted &&
               !ctx.needsCompaction &&
-              !ctx.splitForContinuation &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
               !ctx.attemptToolActivity &&
@@ -1547,7 +1441,6 @@ export const layer = Layer.effect(
               (streamInput.purpose === "conversation" || streamInput.purpose === undefined) &&
               !aborted &&
               !ctx.needsCompaction &&
-              !ctx.splitForContinuation &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
               !ctx.attemptToolActivity &&
@@ -1636,22 +1529,7 @@ export const layer = Layer.effect(
             Effect.ensuring(cleanup()),
           )
 
-          // The request produced content, tool activity, or a blocked tool, so it will not continue. Its deferred
-          // reasoning still needs organizing before the next request resends it: a denied or hook-stopped tool
-          // leaves a replayable message whose raw reasoning would otherwise be paid for on every later request.
-          if (
-            ctx.deferredReasoning.length > 0 &&
-            !ctx.splitForContinuation &&
-            !ctx.needsCompaction &&
-            !aborted &&
-            !ctx.assistantMessage.error &&
-            input.onReasoningUnused
-          ) {
-            yield* input.onReasoningUnused(ctx.deferredReasoning)
-          }
-
           if (ctx.needsCompaction) return "compact"
-          if (ctx.splitForContinuation) return "split"
           if (timedOut) return "timeout"
           if (deferred) return "deferred"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"

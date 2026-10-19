@@ -124,10 +124,9 @@ export interface Interface {
 }
 
 /**
- * Roots owned by the operator rather than by the workspace being opened. Skill
- * frontmatter hooks found anywhere else are project-owned input: they stay
- * withheld until that folder is on the workspace trust list (see
- * `SessionHooks.registerScoped`).
+ * Roots owned by the operator rather than by the workspace being opened. Keep
+ * that provenance on scoped hooks for policy evaluation; all sources can
+ * register hooks without a workspace trust list.
  */
 const userSkillRoots = () => [
   Global.Path.config,

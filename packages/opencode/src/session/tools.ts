@@ -175,6 +175,24 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     return { permissionMode: mode === "manual" ? "default" : mode, ...prompt, ...binding, ...subagent, transcriptPath }
   })
 
+  // Cancellation has already invalidated the normal hook wrapper. Give failure hooks
+  // one short, best-effort finalizer window using the underlying service.
+  const reportInterrupt = (toolName: string, args: unknown, toolUseID: string) =>
+    Effect.gen(function* () {
+      if (!hooks) return
+      yield* hooks.trigger(
+        {
+          event: "PostToolUseFailure",
+          toolName,
+          toolInput: toRecord(args),
+          toolUseID,
+          error: "Tool execution interrupted",
+          isInterrupt: true,
+        },
+        { ...(yield* hookContext(toolName)), sessionID: input.session.id },
+      )
+    }).pipe(Effect.interruptible, Effect.timeoutOption("250 millis"), Effect.ignoreCause)
+
   const transformSchema = (schema: Parameters<typeof ProviderTransform.schema>[1]) =>
     input.model ? ProviderTransform.schema(input.model, schema) : schema
   const registryItems = (
@@ -353,6 +371,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
         const settingsHook = withHookCancellation(hooks, options.abortSignal)
         // PreToolUse context also rides on a failure of the call it governed.
         let preContexts: string[] = []
+        let executionPending = false
         return run.promise(
           // Set the active session for server-initiated MCP reverse requests
           // (elicitation) so the handler can route the Question to this session.
@@ -497,6 +516,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 args = decision.effectiveArgs
               }
               if (options.abortSignal?.aborted) return yield* Effect.interrupt
+              executionPending = true
               const executed = yield* executeWithPermissionInput(
                 toRecord(args),
                 (next) => {
@@ -521,7 +541,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                     validateInput(next)
                   },
                 },
-              )
+              ).pipe(Effect.onInterrupt(() => reportInterrupt(item.id, args, options.toolCallId)))
+              executionPending = false
+              if (options.abortSignal?.aborted)
+                yield* reportInterrupt(item.id, args, options.toolCallId).pipe(Effect.uninterruptible)
               const result = executed.value
               args = executed.input
               const output = {
@@ -558,6 +581,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                           // V2 passes the tool's structured output; the model-facing
                           // text lives in the transcript, not in tool_response.
                           toolResponse: output.metadata,
+                          toolOutput: output,
                           toolUseID: ctx.callID,
                         }
                       : {
@@ -617,6 +641,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               Effect.catchCause((cause) =>
                 Effect.gen(function* () {
                   if (Cause.hasInterrupts(cause)) return yield* Effect.failCause(cause)
+                  if (executionPending && options.abortSignal?.aborted) {
+                    yield* reportInterrupt(item.id, args, options.toolCallId).pipe(Effect.uninterruptible)
+                    return yield* Effect.failCause(cause)
+                  }
                   const error = Cause.squash(cause)
                   if (
                     error instanceof PermissionV1.DeniedError ||
@@ -631,6 +659,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                       attachments: [],
                       metadata: { hookStopped: true, stopReason: error.message },
                     }
+                  if (!executionPending) return yield* Effect.failCause(cause)
                   // SettingsHook PostToolUseFailure
                   if (settingsHook) {
                     const failResult = yield* settingsHook
@@ -920,9 +949,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     const validateInput = toolInputValidator(schema)
     item.execute = (original, options) => {
       let failureContexts: string[] = []
+      let executionPending = false
+      let args = toRecord(original)
       return run.promise(
         Effect.gen(function* () {
-          let args = toRecord(original)
           const opts = { ...options }
           const settingsHook = withHookCancellation(hooks, opts.abortSignal)
           let confirmed = false
@@ -1015,6 +1045,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             }
             failureContexts = pre.additionalContexts
           }
+          executionPending = true
           const result = yield* executeWithPermissionInput(
             args,
             (next) => {
@@ -1030,7 +1061,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 validateInput(next)
               },
             },
-          )
+          ).pipe(Effect.onInterrupt(() => reportInterrupt(name, args, opts.toolCallId)))
+          executionPending = false
+          if (opts.abortSignal?.aborted)
+            yield* reportInterrupt(name, args, opts.toolCallId).pipe(Effect.uninterruptible)
           const output = builtinToolOutput(result.value)
           if (!output) return yield* Effect.die(new Error("Invalid built-in MCP resource output"))
           args = result.input
@@ -1044,6 +1078,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   toolInput: args,
                   toolUseID: opts.toolCallId,
                   toolResponse: output.metadata,
+                  toolOutput: output,
                 },
                 { ...(yield* hookContext()), sessionID: input.session.id },
               )
@@ -1071,6 +1106,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (Cause.hasInterrupts(cause)) return yield* Effect.failCause(cause)
+              if (executionPending && options.abortSignal?.aborted) {
+                yield* reportInterrupt(name, args, options.toolCallId).pipe(Effect.uninterruptible)
+                return yield* Effect.failCause(cause)
+              }
               const error = Cause.squash(cause)
               if (
                 error instanceof PermissionV1.DeniedError ||
@@ -1080,6 +1119,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 return yield* Effect.failCause(cause)
               if (error instanceof HookPermissionInterrupt)
                 return { title: "", output: error.message, metadata: { hookStopped: true, stopReason: error.message } }
+              if (!executionPending) return yield* Effect.failCause(cause)
               const settingsHook = withHookCancellation(hooks, options.abortSignal)
               if (settingsHook) {
                 const failure = yield* settingsHook
@@ -1087,7 +1127,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                     {
                       event: "PostToolUseFailure",
                       toolName: name,
-                      toolInput: toRecord(original),
+                      toolInput: args,
                       toolUseID: options.toolCallId,
                       error: String(error),
                     },
@@ -1121,6 +1161,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     item.execute = (args, opts) => {
       const settingsHook = withHookCancellation(hooks, opts.abortSignal)
       let preContexts: string[] = []
+      let executionPending = false
       return run.promise(
         Effect.gen(function* () {
           const originalArgs = toRecord(args)
@@ -1266,9 +1307,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               },
             )
             args = authorized.input
+            executionPending = true
             return yield* Effect.suspend(() => {
               return Effect.promise(() => SessionContext.run(ctx.sessionID, () => execute(args, opts)))
-            })
+            }).pipe(Effect.onInterrupt(() => reportInterrupt(key, args, opts.toolCallId)))
           }).pipe(
             Effect.withSpan("Tool.execute", {
               attributes: {
@@ -1279,6 +1321,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               },
             }),
           )
+          executionPending = false
+          if (opts.abortSignal?.aborted) yield* reportInterrupt(key, args, opts.toolCallId).pipe(Effect.uninterruptible)
           yield* plugin.trigger(
             "tool.execute.after",
             { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
@@ -1384,6 +1428,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (Cause.hasInterrupts(cause)) return yield* Effect.failCause(cause)
+              if (executionPending && opts.abortSignal?.aborted) {
+                yield* reportInterrupt(key, args, opts.toolCallId).pipe(Effect.uninterruptible)
+                return yield* Effect.failCause(cause)
+              }
               const error = Cause.squash(cause)
               if (
                 error instanceof PermissionV1.DeniedError ||
@@ -1399,6 +1447,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                   content: [],
                   metadata: { hookStopped: true, stopReason: error.message },
                 }
+              if (!executionPending) return yield* Effect.failCause(cause)
               if (settingsHook) {
                 const failResult = yield* settingsHook
                   .trigger(
