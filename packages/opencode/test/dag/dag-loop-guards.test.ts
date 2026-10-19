@@ -18,7 +18,7 @@
  *    session kept running. The NodeSkipped handler now aborts live fibers.
  */
 import { describe, expect, it } from "bun:test"
-import { Deferred, Effect, Layer, Option, Queue } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
@@ -37,6 +37,8 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { SettingsHook } from "@/hook/settings"
+import { HookLifecycle } from "@/hook/lifecycle"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 
@@ -88,6 +90,7 @@ function guardLayer(input: {
   readonly failGetWorkflow?: { remaining: number }
   /** Injected Dag.pause failures (typed or defect) for the DAG-03 gate test. */
   readonly failPause?: { remaining: number; defect?: boolean }
+  readonly hooks?: Layer.Layer<SettingsHook.Service>
 }) {
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
@@ -206,6 +209,8 @@ function guardLayer(input: {
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(input.hooks ?? Layer.empty),
+    Layer.provide(input.hooks ? HookLifecycle.layer : Layer.empty),
   )
   return Layer.merge(base, loop)
 }
@@ -216,6 +221,7 @@ function runGuardTest<A>(
     readonly instanceProject: string
     readonly failGetWorkflow?: { remaining: number }
     readonly failPause?: { remaining: number; defect?: boolean }
+    readonly hooks?: Layer.Layer<SettingsHook.Service>
   },
   test: (services: {
     readonly dag: Dag.Interface
@@ -256,7 +262,16 @@ function runGuardTest<A>(
       yield* loop.init()
       return yield* test({ dag, loop, store, childPrompts, cancels, created })
     }).pipe(
-      Effect.provide(guardLayer({ childPrompts, cancels, created, failGetWorkflow: options.failGetWorkflow, failPause: options.failPause })),
+      Effect.provide(
+        guardLayer({
+          childPrompts,
+          cancels,
+          created,
+          failGetWorkflow: options.failGetWorkflow,
+          failPause: options.failPause,
+          hooks: options.hooks,
+        }),
+      ),
       Effect.provideService(InstanceRef, {
         directory: process.cwd(),
         worktree: process.cwd(),
@@ -855,6 +870,114 @@ describe("DagLoop replan verdict gate fail-closed (DAG-03)", () => {
             expect(corrective.title).toBe("corrective")
             yield* Deferred.succeed(corrective.release, "fixed")
           }),
+      ),
+    )
+  })
+})
+
+describe("DagLoop settled Stop notification", () => {
+  for (const timeout of [false, true])
+    it(`finishes Stop after real NodeFailed interruption (${timeout ? "hook timeout" : "hook completion"})`, async () => {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const releaseStop = yield* Deferred.make<void>()
+          const started: string[] = []
+          const finished: string[] = []
+          const exits: Exit.Exit<unknown, unknown>[] = []
+          const hooks = Layer.mock(SettingsHook.Service, {
+            registerScoped: () => Effect.void,
+            unregisterScoped: () => Effect.void,
+            trigger: (payload) =>
+              Effect.gen(function* () {
+                started.push(payload.event)
+                if (payload.event === "SubagentStart")
+                  yield* Effect.withFiber((fiber) => Effect.sync(() => fiber.addObserver((exit) => exits.push(exit))))
+                if (payload.event === "SubagentStop")
+                  yield* timeout ? Effect.never.pipe(Effect.timeoutOption(10)) : Deferred.await(releaseStop)
+                finished.push(payload.event)
+                return { additionalContexts: [], systemMessages: [] }
+              }),
+          })
+          yield* runGuardTest({ instanceProject: "project-1", hooks }, ({ dag, store, childPrompts, cancels }) =>
+            Effect.gen(function* () {
+              const dagID = yield* dag.create({
+                projectID: "project-1",
+                sessionID: "ses_project-1",
+                title: "Settled Stop race",
+                config: {
+                  name: "settled-stop-race",
+                  max_concurrency: 1,
+                  nodes: [node({ required: false }), node({ id: "n2", name: "Node 2", required: false })],
+                },
+              })
+              const child = yield* takeWithin(childPrompts, "child did not start")
+              // A clean model turn with empty output fails the node's result contract.
+              yield* Deferred.succeed(child.release, "")
+              yield* pollWithTimeout(
+                Effect.sync(() => (cancels.includes(child.input.sessionID) ? true : undefined)),
+                "NodeFailed consumer did not cancel the settled child",
+              )
+              yield* Effect.yieldNow
+              if (!timeout) yield* Deferred.succeed(releaseStop, undefined)
+              // This second child cannot prompt until the interrupted first fiber
+              // completes its notification finalizer and releases the sole permit.
+              const next = yield* takeWithin(childPrompts, "settled child did not release the concurrency permit")
+              const failedNodeID = child.title === "Node 1" ? "n1" : "n2"
+              expect((yield* store.getNode(dagID, failedNodeID))?.status).toBe("failed")
+              expect(started.filter((event) => event === "SubagentStop")).toHaveLength(1)
+              expect(finished.filter((event) => event === "SubagentStop")).toHaveLength(1)
+              const interrupted = yield* pollWithTimeout(
+                Effect.sync(() => exits.find((exit) => Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause))),
+                "the real NodeFailed consumer never interrupted the first execution fiber",
+              )
+              expect(Exit.isFailure(interrupted)).toBe(true)
+              yield* Deferred.succeed(next.release, "done")
+              yield* pollWithTimeout(
+                store
+                  .getWorkflow(dagID)
+                  .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? true : undefined))),
+                "workflow did not finish after the next child completed",
+              )
+            }).pipe(Effect.ensuring(Deferred.succeed(releaseStop, undefined))),
+          )
+        }),
+      )
+    })
+
+  it("does not notify Stop for user cancellation before settlement", async () => {
+    const observed: string[] = []
+    const exits: Exit.Exit<unknown, unknown>[] = []
+    const hooks = Layer.mock(SettingsHook.Service, {
+      registerScoped: () => Effect.void,
+      unregisterScoped: () => Effect.void,
+      trigger: (payload) =>
+        Effect.gen(function* () {
+          observed.push(payload.event)
+          if (payload.event === "SubagentStart")
+            yield* Effect.withFiber((fiber) => Effect.sync(() => fiber.addObserver((exit) => exits.push(exit))))
+          return { additionalContexts: [], systemMessages: [] }
+        }),
+    })
+    await Effect.runPromise(
+      runGuardTest({ instanceProject: "project-1", hooks }, ({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_project-1",
+            title: "Cancelled Stop",
+            config: { name: "cancelled-stop", nodes: [node()] },
+          })
+          yield* takeWithin(childPrompts, "child did not start")
+          yield* dag.nodeCancelled(dagID, "n1")
+          yield* pollWithTimeout(
+            Effect.sync(() => exits.find((exit) => Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause))),
+            "cancelled execution fiber did not finish",
+          )
+          const cancelled = yield* store.getNode(dagID, "n1")
+          expect(cancelled?.status).toBe("failed")
+          expect(cancelled?.superseded).toBe(true)
+          expect(observed).toEqual(["SubagentStart"])
+        }),
       ),
     )
   })

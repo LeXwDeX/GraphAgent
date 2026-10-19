@@ -77,18 +77,54 @@ const exited = (child: ChildProcess) =>
 async function fakeCLI(directory: string, scenario = "pass", timeoutMs = 5000) {
   const bin = path.join(directory, "bin")
   await fs.mkdir(bin, { recursive: true })
+  const ghScript = path.join(directory, "gh-fixture.js")
   await fs.writeFile(
-    path.join(bin, "gh"),
-    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[1]==='view'){console.log(JSON.stringify({number:42,headRefOid:'${head}',url:'${url}'}))}else{await Bun.write(${JSON.stringify(path.join(directory, "checking"))},String(process.pid));if(${JSON.stringify(scenario)}==='hold')setInterval(()=>{},1000);else {if(${JSON.stringify(scenario)}==='controlled')while(!(await Bun.file(${JSON.stringify(path.join(directory, "release"))}).exists()))await Bun.sleep(10);console.log(JSON.stringify([{bucket:${JSON.stringify(scenario === "controlled" ? "pass" : scenario)}}]));}}`,
-    { mode: 0o755 },
+    ghScript,
+    `const args=process.argv.slice(2);if(args[1]==="view"){console.log(JSON.stringify({number:42,headRefOid:process.env.GH_FIXTURE_HEAD,url:process.env.GH_FIXTURE_URL}))}else{await Bun.write(process.env.GH_FIXTURE_CHECKING,String(process.pid));if(process.env.GH_FIXTURE_SCENARIO==="hold")setInterval(()=>{},1000);else {if(process.env.GH_FIXTURE_SCENARIO==="controlled")while(!(await Bun.file(process.env.GH_FIXTURE_RELEASE).exists()))await Bun.sleep(10);console.log(JSON.stringify([{bucket:process.env.GH_FIXTURE_RESULT}]));}}`,
   )
+  await fs.writeFile(path.join(bin, "gh"), '#!/bin/sh\nexec "$GH_FIXTURE_NODE" "$GH_FIXTURE_SCRIPT" "$@"\n', {
+    mode: 0o755,
+  })
   const module = fileURLToPath(new URL("../../../../.opencode/hooks/watch-ci.ts", import.meta.url))
   const wrapper = path.join(directory, "watch.ts")
+  const fixtureConfig = path.join(directory, "watch-ci-fixture.json")
+  await fs.writeFile(
+    fixtureConfig,
+    JSON.stringify({
+      bin,
+      module,
+      timeoutMs,
+      node: process.execPath,
+      ghScript,
+      checking: path.join(directory, "checking"),
+      release: path.join(directory, "release"),
+      head,
+      url,
+      scenario,
+      result: scenario === "controlled" ? "pass" : scenario,
+    }),
+  )
   await fs.writeFile(
     wrapper,
-    `import {main} from ${JSON.stringify(module)};process.env.PATH=${JSON.stringify(bin)}+${JSON.stringify(path.delimiter)}+process.env.PATH;process.exitCode=await main([], {intervalMs:10,timeoutMs:${timeoutMs},commandTimeoutMs:10000,parentCheckMs:20});`,
+    `import fs from "node:fs/promises";import path from "node:path";const config=JSON.parse(await fs.readFile(new URL("./watch-ci-fixture.json",import.meta.url),"utf8"));const env={GH_FIXTURE_NODE:config.node,GH_FIXTURE_SCRIPT:config.ghScript,GH_FIXTURE_CHECKING:config.checking,GH_FIXTURE_RELEASE:config.release,GH_FIXTURE_HEAD:config.head,GH_FIXTURE_URL:config.url,GH_FIXTURE_SCENARIO:config.scenario,GH_FIXTURE_RESULT:config.result};Object.assign(process.env,env,{GH_HOST:"github.com",PATH:[config.bin,process.env.PATH].filter(Boolean).join(path.delimiter)});const {main}=await import(config.module);process.exitCode=await main([],{intervalMs:10,timeoutMs:config.timeoutMs,commandTimeoutMs:10000,parentCheckMs:20});`,
   )
-  return { wrapper, env: { ...process.env, GH_HOST: "github.com", PATH: `${bin}${path.delimiter}${process.env.PATH}` } }
+  return {
+    wrapper,
+    config: fixtureConfig,
+    env: {
+      ...process.env,
+      GH_HOST: "github.com",
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      GH_FIXTURE_NODE: process.execPath,
+      GH_FIXTURE_SCRIPT: ghScript,
+      GH_FIXTURE_CHECKING: path.join(directory, "checking"),
+      GH_FIXTURE_RELEASE: path.join(directory, "release"),
+      GH_FIXTURE_HEAD: head,
+      GH_FIXTURE_URL: url,
+      GH_FIXTURE_SCENARIO: scenario,
+      GH_FIXTURE_RESULT: scenario === "controlled" ? "pass" : scenario,
+    },
+  }
 }
 
 describe("repository CI watcher", () => {
@@ -296,9 +332,17 @@ describe("repository CI watcher", () => {
     const hostScript = path.join(tmp.path, "host.ts")
     await fs.writeFile(
       hostScript,
-      `import {spawn} from 'node:child_process';const child=spawn(process.execPath,[${JSON.stringify(fixture.wrapper)}],{stdio:['pipe','ignore','ignore']});child.stdin.end(${JSON.stringify(JSON.stringify(envelope(tmp.path)))});await Bun.write(${JSON.stringify(path.join(tmp.path, "watch-pid"))},String(child.pid));setInterval(()=>{},1000);`,
+      `import {spawn} from 'node:child_process';const child=spawn(process.execPath,[process.env.OPENCODE_WATCH_WRAPPER!],{stdio:['pipe','ignore','ignore']});child.stdin.end(process.env.OPENCODE_WATCH_ENVELOPE);await Bun.write(process.env.OPENCODE_WATCH_PID_FILE!,String(child.pid));setInterval(()=>{},1000);`,
     )
-    const host = spawn(process.execPath, [hostScript], { env: fixture.env, stdio: "ignore" })
+    const host = spawn(process.execPath, [hostScript], {
+      env: {
+        ...fixture.env,
+        OPENCODE_WATCH_WRAPPER: fixture.wrapper,
+        OPENCODE_WATCH_ENVELOPE: JSON.stringify(envelope(tmp.path)),
+        OPENCODE_WATCH_PID_FILE: path.join(tmp.path, "watch-pid"),
+      },
+      stdio: "ignore",
+    })
     const hostDone = exited(host)
     let watchPID: number | undefined, queryPID: number | undefined
     try {
@@ -343,6 +387,7 @@ const configure = (scenario: string, timeoutMs?: number) => (directory: string) 
     const fixture = await fakeCLI(directory, scenario, timeoutMs)
     await fs.mkdir(path.join(directory, ".opencode", "hooks"), { recursive: true })
     await fs.copyFile(fixture.wrapper, path.join(directory, ".opencode", "hooks", "watch-ci.ts"))
+    await fs.copyFile(fixture.config, path.join(directory, ".opencode", "hooks", "watch-ci-fixture.json"))
     await install(path.join(directory, ".opencode"))
   })
 for (const [scenario, conclusion] of [

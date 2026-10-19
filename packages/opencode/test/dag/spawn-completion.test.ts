@@ -423,13 +423,14 @@ describe("spawnNode completion bridge", () => {
     ])
   })
 
-  for (const status of ["completed", "failed", "stale-attempt", "stale-child"] as const)
+  for (const status of ["completed", "failed", "stale-attempt", "stale-child", "cancelled"] as const)
     it(`notifies Stop only for the settled live attempt: ${status}`, async () => {
       const { events, dagLayer } = makeEventTracker({
         getNode: () =>
           Effect.succeed(
             makeNodeRow({
-              status: status === "failed" ? "failed" : "completed",
+              status: status === "failed" || status === "cancelled" ? "failed" : "completed",
+              superseded: status === "cancelled",
               childSessionId: status === "stale-child" ? "ses_other" : "ses_child",
               replanAttempts: status === "stale-attempt" ? 1 : 0,
             }),
