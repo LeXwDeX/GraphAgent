@@ -140,6 +140,27 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("exactly 100 matches are complete", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 100 }, (_, index) =>
+            Bun.write(path.join(test.directory, `complete-${index}.txt`), "needle"),
+          ),
+        ),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt" }, ctx)
+      expect(result.metadata.matches).toBe(100)
+      expect(result.metadata.truncated).toBe(false)
+      expect(result.output).toStartWith("Found 100 matches\n")
+      expect(result.output).not.toContain("Results truncated")
+      expect(result.output).not.toContain("more matches available")
+    }),
+  )
+
   it.instance("does not report an unknown total when results are truncated", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

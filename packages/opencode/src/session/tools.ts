@@ -9,7 +9,9 @@ import { Tool } from "@/tool/tool"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
-import { isFinalResponseSession } from "@/dag/runtime/capture"
+import { hasCaptureSlot, isFinalResponseSession } from "@/dag/runtime/capture"
+import { DagStore } from "@opencode-ai/core/dag/store"
+import path from "node:path"
 import { MemorySearch } from "@/tool/memory-search"
 import { Truncate } from "@/tool/truncate"
 
@@ -79,6 +81,23 @@ const PERMISSION_RESTART_TOOLS = new Set([
   "workflow",
 ])
 const ROOT_ONLY_TOOLS = new Set([MemorySearch.MemorySearchTool.id, TaskTool.id, "workflow"])
+
+const canUseAgentMessages = Effect.fn("SessionTools.canUseAgentMessages")(function* (session: Session.Info) {
+  const store = yield* Effect.serviceOption(DagStore.Service)
+  if (Option.isNone(store)) return false
+  const workflows = (yield* store.value.listBySession(session.parentID ?? session.id)).filter(
+    (workflow) =>
+      workflow.projectId === session.projectID &&
+      workflow.directory !== null &&
+      path.resolve(workflow.directory) === path.resolve(session.directory),
+  )
+  if (!session.parentID) return workflows.length > 0
+  for (const workflow of workflows) {
+    const nodes = yield* store.value.getNodes(workflow.id)
+    if (nodes.some((node) => !node.superseded && node.childSessionId === session.id)) return true
+  }
+  return false
+})
 
 const hookAddsInstructions = (result: TriggerResult) =>
   (result.additionalContexts?.length ?? 0) > 0 ||
@@ -195,17 +214,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
 
   const transformSchema = (schema: Parameters<typeof ProviderTransform.schema>[1]) =>
     input.model ? ProviderTransform.schema(input.model, schema) : schema
-  const registryItems = (
-    input.directTool
-      ? [{ definition: input.directTool, sourceKind: "host-builtin" as const, registrationID: "host:explicit-shell" }]
-      : yield* registry.registrations({
-          modelID: ModelV2.ID.make(input.model.api.id),
-          providerID: input.model.providerID,
-          agent: input.agent,
-        })
-  ).filter(
-    (registration) => !(registration.definition.id === "submit_result" && isFinalResponseSession(input.session.id)),
-  )
+  const registrations = input.directTool
+    ? [{ definition: input.directTool, sourceKind: "host-builtin" as const, registrationID: "host:explicit-shell" }]
+    : yield* registry.registrations({
+        modelID: ModelV2.ID.make(input.model.api.id),
+        providerID: input.model.providerID,
+        agent: input.agent,
+      })
+  const agentMessagesAvailable =
+    registrations.some((item) => item.sourceKind === "host-builtin" && item.definition.id === "agent") &&
+    (yield* canUseAgentMessages(input.session))
+  const registryItems = registrations.filter((registration) => {
+    if (registration.sourceKind !== "host-builtin") return true
+    if (registration.definition.id === "submit_result")
+      return !!input.session.parentID && hasCaptureSlot(input.session.id) && !isFinalResponseSession(input.session.id)
+    if (registration.definition.id === "agent") return agentMessagesAvailable
+    return true
+  })
   const mcpItems = input.directTool ? {} : yield* mcp.tools()
   for (const [key, item] of Object.entries(mcpItems)) {
     const binding = McpCatalog.toolBinding(item)

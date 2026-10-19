@@ -5,16 +5,16 @@ Manage the autonomous goal loop for the current session.
 - `create` — Pass nonempty `text` to start a standing goal for the user's task. Optional `max_turns` sets the positive integer budget (default 20). Never replace an active or paused goal. Continue working in the current turn; automatic continuation starts at turn end.
 - `resume` — Resume the paused goal in the current turn. Preserve used turns and subgoals. Optional `max_turns` changes the total budget and must exceed turns already used. Refuse resumption when no budget remains. Do not increase the budget without user authorization. Do not undo a user pause or stop without a later request to continue.
 - `pause` — Pass a nonempty `reason` to stop automatic continuation when blocked or when the user asks. This preserves the unfinished goal and returns control from the tool. Explain the pause, then finish the current response. Do not resume while the same blocker remains.
-- `status` — Return the goal text, status, turns used and remaining, subgoals, and pause reason (if any). If no goal is active, say so.
+- `status` — Return the current session's goal text, status, turns used and remaining, subgoals, and pause reason (if any). If this session has no goal, say so.
 - `complete` — Declare the goal achieved. This skips the external judge and ends the loop. Pass `reason` as one sentence describing the deliverable (for example, "created `src/foo.ts` and all 7 tests pass"). The goal is cleared; the next `status` call reports "no goal".
 
 Creating a goal does not expand task scope or grant permissions. Do not recreate a goal to evade a stop or budget limit. Use this tool; printing slash-command text does not execute a command.
 
-Only the main conversation can create or resume goals. Child agents report progress to their parent. They may inspect, pause, or complete an existing goal.
+Goal state belongs to the calling session. Only the main conversation can create or resume goals. Child agents cannot inspect, pause, or complete their parent's goal through this tool; they report progress and completion to their parent, who manages that goal. A child's status call normally reports no goal. Any legacy goal stored on the child belongs only to that child session.
 
 ## When to use `status`
 
-`status` is optional. While a goal is active, each turn starts with a live "Current Goal" block containing its text, status, turns used and remaining, subgoals, and last judge verdict. Call `status` only for a deliberate check-in:
+`status` is optional. While the current session's goal is active or paused, each turn starts with a live "Current Goal" block containing its text, status, turns used and remaining, subgoals, and last judge verdict. Call `status` only for a deliberate check-in:
 - After a long operation, to re-verify state mid-turn (in case the budget or status shifted).
 - To inspect `pausedReason` when a goal appears stalled.
 

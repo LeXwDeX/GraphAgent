@@ -1,9 +1,9 @@
-import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { describe, expect, test } from "bun:test"
+import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
-import { WebFetchTool } from "../../src/tool/webfetch"
+import { Parameters, WebFetchTool } from "../../src/tool/webfetch"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Tool } from "@/tool/tool"
 import { testEffect } from "../lib/effect"
@@ -111,3 +111,84 @@ describe("tool.webfetch", () => {
     ),
   )
 })
+
+for (const timeout of [0, -1, Infinity, NaN]) {
+  test(`webfetch rejects timeout ${timeout}`, () => {
+    expect(() => Schema.decodeUnknownSync(Parameters)({ url: "https://example.com", timeout })).toThrow()
+  })
+}
+
+it.instance("honors a supported declared charset", () =>
+  withFetch(
+    () =>
+      new Response(new Uint8Array([0x63, 0x61, 0x66, 0xe9]), {
+        headers: { "content-type": 'text/plain; charset="iso-8859-1"' },
+      }),
+    (url) =>
+      Effect.gen(function* () {
+        expect((yield* exec({ url: url.href, format: "text" })).output).toBe("café")
+      }),
+  ),
+)
+
+it.instance("rejects unsupported charsets explicitly", () =>
+  withFetch(
+    () => new Response("text", { headers: { "content-type": "text/plain; charset=not-a-charset" } }),
+    (url) =>
+      Effect.gen(function* () {
+        const exit = yield* exec({ url: url.href, format: "text" }).pipe(Effect.exit)
+        expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause))).toContain("Unsupported response charset")
+      }),
+  ),
+)
+
+for (const mode of ["slow", "oversize"] as const) {
+  it.instance(`aborts a ${mode} streamed body without waiting for its completion`, () =>
+    Effect.gen(function* () {
+      let produced = 0
+      let cancelled = false
+      let timer: ReturnType<typeof setInterval> | undefined
+      yield* withFetch(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                const chunk = new Uint8Array(mode === "slow" ? 1 : 64 * 1024)
+                controller.enqueue(chunk)
+                timer = setInterval(
+                  () => {
+                    produced++
+                    controller.enqueue(chunk)
+                    if (produced === 200) {
+                      clearInterval(timer)
+                      controller.close()
+                    }
+                  },
+                  mode === "slow" ? 100 : 2,
+                )
+              },
+              cancel() {
+                cancelled = true
+                clearInterval(timer)
+              },
+            }),
+            { headers: { "content-type": "text/plain" } },
+          ),
+        (url) =>
+          Effect.gen(function* () {
+            const started = Date.now()
+            const exit = yield* exec({ url: url.href, format: "text", timeout: mode === "slow" ? 0.05 : 5 }).pipe(
+              Effect.exit,
+            )
+            expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause))).toContain(
+              mode === "slow" ? "Request timed out" : "Response too large",
+            )
+            expect(Date.now() - started).toBeLessThan(3000)
+            yield* Effect.promise(() => Bun.sleep(100))
+            expect(cancelled).toBe(true)
+            expect(produced).toBeLessThan(200)
+          }),
+      )
+    }),
+  )
+}

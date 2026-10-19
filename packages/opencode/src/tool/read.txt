@@ -2,8 +2,8 @@ Read a file or directory from the local filesystem. If the path does not exist, 
 
 Usage:
 - The filePath parameter should be an absolute path.
-- By default, this tool returns up to 2000 lines from the start of the file.
-- The offset parameter is the line number to start from (1-indexed).
+- By default, text reads return up to 2000 lines, with an independent 50 KB content cap. This text-file cap is independent of tool_output configuration.
+- offset and limit must be positive integers. offset is the 1-indexed starting line; limit is the maximum line count. For directories, both count entries instead of lines, and the text-file byte cap does not apply.
 - To read later sections, call this tool again with a larger offset.
 - Use the grep tool to find specific content in large files or files with long lines.
 - If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.

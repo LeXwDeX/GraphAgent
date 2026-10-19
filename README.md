@@ -32,7 +32,7 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 
 | Feature | What it does | How to use it |
 | --- | --- | --- |
-| [Reasoning shaping](#reasoning-shaping) | Reorganizes each reasoning part with a small model before the model sees it again (off by default) | `reasoningDistillation.enabled` + `small_model` |
+| [Reasoning shaping](#reasoning-shaping) | Reorganizes reasoning in the background and adopts completed rewrites between steps (off by default) | `reasoningDistillation.enabled` + `small_model` |
 | [DAG workflows](#dag-workflows) | Decomposes a task into a durable dependency graph of child agents | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
 | [Project Memory](#project-memory) | Keeps confirmed preferences, decisions and terminology per project | `/memory on` |
 | [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally | `/goal`, `/subgoal` |
@@ -46,12 +46,14 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 Thinking models send their earlier reasoning back to the provider on later steps. Long reasoning is full of restated
 requests, abandoned guesses and correction narrative, and every later request pays for it again.
 
-Reasoning shaping is off by default and is fully synchronous. Set `reasoningDistillation.enabled` to `true` globally
-or on a model to opt in. A thinking model first emits its reasoning, and the stream is never cut at the reasoning
-boundary. If the request ends with reasoning alone — no content and no tool call — the session organizes the reasoning
-with the small model and sends a continuation, so the same assistant message still produces an answer. The user sees
-one turn, but the rest of the model output is based on the organized reasoning. The organizer is the configured
-`small_model`, otherwise the provider's own small model; with neither, nothing is rewritten.
+Reasoning shaping is off by default. Set `reasoningDistillation.enabled` to `true` globally or on a model to opt in.
+Eligible reasoning parts are organized in the background after they settle, with at most two organizer jobs running
+per session. The provider stream and the next step do not wait for these jobs. Before building each step's request,
+the session adopts completed rewrites; unfinished parts retain their original text in that request. The organizer is
+the configured `small_model`, otherwise the provider's own small model; with neither, nothing is rewritten.
+
+The feature does not inject a continuation when a response contains only reasoning. Such a response follows the same
+turn-ending behavior as it does with shaping disabled.
 
 The organizer keeps final facts, values, calculations, constraints, real execution results and open items, plus the
 working state the reasoning built: excluded hypotheses with their evidence, checked locations with their results
@@ -60,13 +62,13 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 
 - **Only safe carriers.** Plain reasoning and plaintext mirrors are rewritten. Signed, encrypted or referenced reasoning
   (Anthropic thinking signatures, OpenAI encrypted reasoning, Gemini thought signatures) is never touched.
-- **No interruption after output starts.** If content or a tool call has already started, the response is not paused;
-  the reasoning is organized after the request ends, before the next request resends it.
-- **Fallback.** If organization fails, times out or no organizer is available, the original reasoning continues and the
-  user still gets an answer.
+- **Step boundaries.** Completed rewrites affect later requests; they do not mutate a request already being sent.
+- **Fallback.** If organization fails, times out or no organizer is available, the original reasoning remains.
+  Organizer failures do not fail the main turn.
 - **Reversible.** The original text and metadata are stored with the part; turning the feature off replays originals.
-- **Engine-level.** The organizer call goes through the built-in `@opencode-ai/llm` engine with no tools, no retries and
-  `none`/`low` reasoning effort; a rewrite is adopted only if it is actually smaller.
+- **Engine-level.** The organizer call goes through the built-in `@opencode-ai/llm` engine with no tools and
+  `none`/`low` reasoning effort. A rejected noise verdict on a long input may receive one bounded retry; a rewrite is
+  adopted only if it is actually smaller.
 
 ```jsonc
 // opencode.json
@@ -79,8 +81,8 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 }
 ```
 
-Every reasoning part is organized synchronously; there is no background job and no first-frame window. An
-unresponsive organizer call is bounded by `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`.
+Cancelling a turn leaves its background organization jobs running. Deleting the session or disposing its directory
+cancels those jobs. `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` bounds organizer inactivity.
 `OPENCODE_DISABLE_REASONING_DISTILLATION=1` turns the feature off regardless of configuration. Logs report every
 rewrite (`reasoning distillation`) and fallbacks that keep the original reasoning.
 

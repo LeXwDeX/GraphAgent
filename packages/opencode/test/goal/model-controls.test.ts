@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Fiber, Layer, Option } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { Agent } from "@/agent/agent"
 import { Goal } from "@/goal/goal"
 import { SessionAutomationLease } from "@/session/automation-lease"
@@ -79,8 +79,11 @@ describe("model goal controls", () => {
       const tool = yield* (yield* GoalTool).init()
       const sid = SessionID.descending()
       for (const max_turns of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-        const result = yield* tool.execute({ action: "create", text: "work", max_turns }, context(sid))
-        expect(result.output).toContain("Cannot create")
+        const result = yield* tool
+          .execute({ action: "create", text: "work", max_turns }, context(sid))
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(result)).toBe(true)
+        if (Exit.isFailure(result)) expect(Cause.pretty(result.cause)).toContain("invalid arguments")
         expect(yield* goal.load(sid)).toBeUndefined()
       }
       for (const text of [undefined, "   "]) {
@@ -136,9 +139,15 @@ describe("model goal controls", () => {
       })
       const exhausted = yield* goal.load(sid)
       expect(exhausted?.status).toBe("paused")
-      for (const max_turns of [undefined, 1, 0, 1.5]) {
+      for (const max_turns of [undefined, 1]) {
         const result = yield* tool.execute({ action: "resume", max_turns }, context(sid))
         expect(result.output).toContain("Cannot resume")
+        expect(yield* goal.load(sid)).toEqual(exhausted)
+      }
+      for (const max_turns of [0, 1.5]) {
+        const result = yield* tool.execute({ action: "resume", max_turns }, context(sid)).pipe(Effect.exit)
+        expect(Exit.isFailure(result)).toBe(true)
+        if (Exit.isFailure(result)) expect(Cause.pretty(result.cause)).toContain("invalid arguments")
         expect(yield* goal.load(sid)).toEqual(exhausted)
       }
       const result = yield* tool.execute({ action: "resume", max_turns: 3 }, context(sid))

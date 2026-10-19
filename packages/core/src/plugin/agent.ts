@@ -23,6 +23,7 @@ Guidelines:
 - Use Glob for broad file pattern matching
 - Use Grep for searching file contents with regex
 - Use Read when you know the specific file path you need to read
+- Use webfetch and websearch for relevant external documentation and research when available
 - Adapt your search approach based on the thoroughness level specified by the caller
 - Return file paths as absolute paths in your final response
 - For clear communication, avoid using emojis
@@ -105,15 +106,16 @@ export const Plugin = define({
     const whitelistedDirs = [TRUNCATION_GLOB, path.join(Global.Path.tmp, "*")]
     const readonlyExternalDirectory: PermissionV2.Ruleset = [
       { action: "external_directory", resource: "*", effect: "ask" },
-      ...whitelistedDirs.map(
-        (resource): PermissionV2.Rule => ({ action: "external_directory", resource, effect: "allow" }),
-      ),
+      ...whitelistedDirs.map((resource): PermissionV2.Rule => ({
+        action: "external_directory",
+        resource,
+        effect: "allow",
+      })),
     ]
     const defaults: PermissionV2.Ruleset = [
       { action: "*", resource: "*", effect: "allow" },
       ...readonlyExternalDirectory,
       { action: "question", resource: "*", effect: "deny" },
-      { action: "plan_enter", resource: "*", effect: "deny" },
       { action: "plan_exit", resource: "*", effect: "deny" },
       { action: "read", resource: "*", effect: "allow" },
       { action: "read", resource: "*.env", effect: "ask" },
@@ -126,12 +128,7 @@ export const Plugin = define({
         item.description = "The default agent. Executes tools based on configured permissions."
         item.system ??= BUILD_SYSTEM
         item.mode = "primary"
-        item.permissions.push(
-          ...PermissionV2.merge(defaults, [
-            { action: "question", resource: "*", effect: "allow" },
-            { action: "plan_enter", resource: "*", effect: "allow" },
-          ]),
-        )
+        item.permissions.push(...PermissionV2.merge(defaults, [{ action: "question", resource: "*", effect: "allow" }]))
       })
 
       draft.update(AgentV2.ID.make("plan"), (item) => {

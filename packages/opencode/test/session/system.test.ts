@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs/promises"
 import path from "path"
@@ -14,6 +14,25 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { testEffect } from "../lib/effect"
+import { ProviderTest } from "../fake/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
+import ANTHROPIC from "@/session/prompt/anthropic.txt"
+import GEMINI from "@/session/prompt/gemini.txt"
+import BEAST from "@/session/prompt/beast.txt"
+import DEFAULT from "@/session/prompt/default.txt"
+
+for (const [id, prompt] of [
+  ["Claude-Sonnet-4", ANTHROPIC],
+  ["GEMINI-2.5-Pro", GEMINI],
+  ["GPT-4.1", BEAST],
+  ["o1", BEAST],
+  ["openai/O3-mini", BEAST],
+  ["studio1", DEFAULT],
+  ["foo3-bar", DEFAULT],
+] as const)
+  test(`provider prompt selection for ${id}`, () => {
+    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelV2.ID.make(id) }))).toEqual([prompt])
+  })
 
 const skills: Skill.Info[] = [
   {

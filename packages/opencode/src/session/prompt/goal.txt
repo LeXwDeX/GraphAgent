@@ -27,7 +27,7 @@ Each turn's system prompt includes a live "Current Goal" block while a goal is a
 
 Creating a goal grants no new permissions and does not expand task scope. Do not recreate goals to evade a stop or budget limit. Printing slash commands does not execute them.
 
-Only the main conversation may create or resume goals. Child agents return progress to their parent. They may inspect, pause, or complete an existing goal.
+Goal state belongs to the calling session. Only the main conversation may create or resume goals. Child agents cannot inspect, pause, or complete their parent's goal through this tool; they report progress and completion to their parent, who manages that goal. A child's status call normally reports no goal. Any legacy goal stored on the child belongs only to that child session.
 
 # Completion and continuation
 - Declare completion only when the top-level goal is done and no subgoals remain. Evidence may include files, passing tests, a diagnosis, or a concrete answer.

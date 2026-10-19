@@ -57,9 +57,10 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
+  const tools = resolveTools(input)
   const system = [
     [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model, Object.keys(tools))),
       ...(input.small ? [] : [RUNTIME_CAPABILITIES]),
       DEFAULT_WRITING_STYLE,
       ...input.system,
@@ -155,7 +156,6 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     headers[TITLE_HEADER] = "true"
   }
 
-  const tools = resolveTools(input)
   // Codex parity: OpenAI Responses-family providers hardcode `strict: false`
   // on every function tool so MCP-sourced and dynamic schemas that don't
   // satisfy OpenAI's structured-outputs constraints still register.
