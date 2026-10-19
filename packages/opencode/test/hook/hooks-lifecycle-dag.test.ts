@@ -124,9 +124,12 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
             .trim()
             .split("\n")
             .map((line) => JSON.parse(line))
-          return rows.some((row) => row.origin === "agent" && row.hook_event_name === "SubagentStop") ? rows : undefined
+          const stopped = ["global", "agent"].every((origin) =>
+            rows.some((row) => row.origin === origin && row.hook_event_name === "SubagentStop"),
+          )
+          return stopped ? rows : undefined
         }),
-        "settled DAG attempt never emitted its Stop notification",
+        "settled DAG attempt never emitted both scoped Stop notifications",
       )
       const global = rows.filter((row) => row.origin === "global")
       expect(global.map((row) => row.hook_event_name)).toEqual(["SubagentStart", "SubagentStop"])
