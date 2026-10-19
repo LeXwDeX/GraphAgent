@@ -156,6 +156,10 @@ export function make(options: Options = {}) {
       const prepared = validation.valid ? prepareGraph(decoded.value, nodes, nodeDefaults) : undefined
       const result = {
         ...validation,
+        warnings: DagValidation.sortDiagnostics([
+          ...validation.warnings,
+          ...legacyModelWarnings(input.action, parsed.value),
+        ]),
         document: decoded.value.spec,
         ...(prepared ? { prepared } : {}),
       } satisfies Result
@@ -202,6 +206,23 @@ interface LegacyModels {
 
 interface ParsedValue extends LegacyModels {
   value: unknown
+}
+
+function legacyModelWarnings(action: Action, models: LegacyModels): DagValidation.Diagnostic[] {
+  const prefix = action === "start" ? "config." : action === "replan" ? "fragment." : ""
+  const paths = [
+    ...(models.defaultModel ? [`${prefix}node_defaults.model`] : []),
+    ...Array.from(models.nodes.keys(), (nodeID) => `${prefix}nodes[${nodeID}].model`),
+  ]
+  return paths.map((path) =>
+    DagValidation.diagnostic({
+      severity: "warning",
+      code: DagValidation.DIAGNOSTIC_CODES.modelLegacyPin,
+      path,
+      message: "Legacy YAML model pin retained for compatibility; it overrides DAG tier model selection.",
+      hint: "Do not pin models in new workflow specs. Remove model and configure the DAG tiers in dag.jsonc instead.",
+    }),
+  )
 }
 
 function parseSource(

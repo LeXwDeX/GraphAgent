@@ -35,3 +35,15 @@ export function toolFileChanges(tool: string, args: Record<string, unknown>, met
   }
   return [...changes.values()]
 }
+
+/** Patch header paths only: ignore body lines and preserve move source/destination order. */
+export function patchFilePaths(patch: unknown): string[] {
+  if (typeof patch !== "string") return []
+  return [
+    ...new Set(
+      [...patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)\r?$/gm)]
+        .map((match) => match[1].trim())
+        .filter(Boolean),
+    ),
+  ]
+}

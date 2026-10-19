@@ -878,3 +878,52 @@ it.effect("a custom shadow never gains permission rewrite from its tool name", (
     expect(executions).toBe(1)
   }),
 )
+
+for (const completion of ["complete", "stall", "defect"] as const)
+  it.live(`interrupted tool reports one failure and preserves cancellation when the hook may ${completion}`, () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const started = yield* Deferred.make<void>()
+      yield* registry.register({
+        waiting: Tool.make({
+          description: "Wait until interrupted",
+          input: Schema.Struct({ text: Schema.String }),
+          output: Schema.String,
+          execute: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+        }),
+      })
+      const observed: Array<Parameters<SessionConversationHooks.Interface["afterTool"]>[0]> = []
+      const fiber = yield* settleTool(registry, call("waiting")).pipe(
+        Effect.provideService(
+          SessionConversationHooks.Service,
+          conversationHooks({
+            afterTool: (input) =>
+              Effect.sync(() => observed.push(input)).pipe(
+                Effect.andThen(
+                  completion === "stall"
+                    ? Effect.never
+                    : completion === "defect"
+                      ? Effect.die("hook defect")
+                      : Effect.succeed({}),
+                ),
+              ),
+          }),
+        ),
+        Effect.forkChild,
+      )
+      yield* Deferred.await(started)
+      const before = Date.now()
+      yield* Fiber.interrupt(fiber)
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true)
+      expect(Date.now() - before).toBeLessThan(2000)
+      expect(observed).toEqual([
+        expect.objectContaining({
+          toolName: "waiting",
+          toolCallID: "call-waiting",
+          isInterrupt: true,
+          error: "Tool execution interrupted",
+        }),
+      ])
+    }),
+  )

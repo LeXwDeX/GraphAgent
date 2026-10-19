@@ -93,12 +93,12 @@ describe("tool.goal — service resolution phase", () => {
           }),
       })
 
-      const result = yield* tool.execute({ action: "complete", reason: "docs read" }, ctx()).pipe(
-        Effect.provide(goalLayer),
-      )
+      const result = yield* tool
+        .execute({ action: "complete", reason: "docs read" }, ctx())
+        .pipe(Effect.provide(goalLayer))
 
       expect(markDoneCalls).toBe(1)
-      expect(result.output).toContain("目标已达成")
+      expect(result.output).toContain("Goal completed")
       expect(result.output).toContain("docs read")
     }),
   )
@@ -111,9 +111,9 @@ describe("tool.goal — service resolution phase", () => {
         load: () => Effect.succeed(undefined),
       })
 
-      const result = yield* tool.execute({ action: "complete", reason: "nothing to do" }, ctx()).pipe(
-        Effect.provide(goalLayer),
-      )
+      const result = yield* tool
+        .execute({ action: "complete", reason: "nothing to do" }, ctx())
+        .pipe(Effect.provide(goalLayer))
 
       expect(markDoneNeverCalled(result.output))
       expect(result.output).toContain("Cannot complete goal: no active goal")
@@ -123,7 +123,7 @@ describe("tool.goal — service resolution phase", () => {
   // GOAL-FP-01-09: markDone re-loads the current row and can no-op when the
   // goal was cleared or completed between the tool's `load` and the transition.
   // The tool must NOT present that no-op as an achievement — the stale
-  // "✓ 目标已达成" line would claim a transition that never happened.
+  // "✓ Goal completed" line would claim a transition that never happened.
   it.instance("complete does not claim achievement when markDone did not transition (GOAL-FP-01-09)", () =>
     Effect.gen(function* () {
       const info = yield* GoalTool
@@ -133,11 +133,11 @@ describe("tool.goal — service resolution phase", () => {
         markDone: () => Effect.succeed(undefined),
       })
 
-      const result = yield* tool.execute({ action: "complete", reason: "docs read" }, ctx()).pipe(
-        Effect.provide(goalLayer),
-      )
+      const result = yield* tool
+        .execute({ action: "complete", reason: "docs read" }, ctx())
+        .pipe(Effect.provide(goalLayer))
 
-      expect(result.output).not.toContain("目标已达成")
+      expect(result.output).not.toContain("Goal completed")
       expect(result.output).toContain("Cannot complete goal")
     }),
   )
@@ -156,5 +156,5 @@ describe("tool.goal — service resolution phase", () => {
 })
 
 function markDoneNeverCalled(output: string) {
-  return !output.includes("目标已达成")
+  return !output.includes("Goal completed")
 }

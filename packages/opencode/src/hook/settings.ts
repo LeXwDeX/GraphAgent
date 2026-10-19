@@ -77,8 +77,10 @@ import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 import { EffectBridge } from "@/effect/bridge"
 import { buildForkHooks, watchSettings } from "./extensions" // [FORK:hook-ext]
-import { hasWorktreeLayer, isTrusted, trustFilePath } from "./workspace-trust" // [FORK:hook-ext] WP-6B
+import { hasWorktreeLayer } from "./worktree-layer"
 import { HookTranscript } from "./transcript"
+import { claudeToolResponse } from "./tool-output"
+import { patchFilePaths } from "./file-changes"
 
 const log = Log.create({ service: "hook.settings" })
 
@@ -188,7 +190,7 @@ export interface HookCommand {
    * default (/bin/sh on POSIX, platform shell on Windows).
    */
   shell?: "bash" | "powershell"
-  /** Command-only naming adapter. Omitted or opencode preserves native tool ids and arguments. */
+  /** Per-handler compatibility adapter. Omitted or opencode preserves the native envelope. */
   inputFormat?: "opencode" | "claude-code"
   /**
    * Conditional gate, evaluated by `extensions/condition-filter.ts` in
@@ -247,30 +249,6 @@ export interface Settings {
   allowedHttpHookUrls?: string[]
   /** Optional global ceiling for environment interpolation in HTTP headers. */
   httpHookAllowedEnvVars?: string[]
-  /**
-   * Workspace-trust gate for settings-file hooks (WP-6B). The gate is ON by
-   * default: while the working directory is not on the trust list, matchers
-   * read from the hooks.json chain are held back (CC's workspace-trust rule for
-   * settings files). Runtime-registered session hooks (plugins, builtins, the
-   * session-hook HTTP API, user-scope agent frontmatter) are not gated; project
-   * subagent frontmatter keeps its own registration-time trust check.
-   *
-   * A GLOBAL hooks.json may set `false` to disable the gate; the explicit
-   * `true` (any layer) is kept for compatibility and forces the same behavior
-   * as the default. Non-global `false` values are stripped by `readChain` so a
-   * repository cannot opt itself out. Env `OPENCODE_HOOKS_REQUIRE_TRUST=0|1`
-   * overrides the chain (1 also forces the gate; 0 disables it).
-   */
-  requireTrust?: boolean
-  /**
-   * Escape hatch for the workspace-trust gate. Only honored from the GLOBAL
-   * hooks.json layer (`~/.config/opencode/hooks.json`): project / worktree
-   * hooks.json files are controlled by the (potentially untrusted) repository
-   * itself, so letting them declare `allowUntrusted: true` would let a
-   * malicious repo bypass the very gate meant to contain it. `readChain`
-   * strips the field from non-global layers with a log.warn.
-   */
-  allowUntrusted?: boolean
   /**
    * Temporarily switches every hook off, including session-scoped skill and agent hooks. The
    * value left after layer precedence applies decides (global, then project, then worktree), so
@@ -461,6 +439,8 @@ export type HookPayload =
       toolName: string
       toolInput: Record<string, unknown>
       toolResponse: unknown
+      /** Full builtin result for opt-in response adapters; absent from native envelopes. */
+      toolOutput?: unknown
       durationMs?: number
     }
   | {
@@ -1108,12 +1088,6 @@ function readJSONFile(filepath: string): { settings?: Settings; invalid?: true }
       path: filepath,
       events: Object.keys(hooks),
     })
-    // Top-level `requireTrust` (WP-6B enforcement opt-in) and `allowUntrusted`
-    // (per-layer gate escape hatch) — booleans on the hooks.json root, not
-    // under `hooks`. Propagated through mergeSettings so any layer turning
-    // either on enables it chain-wide.
-    const requireTrust = typeof obj?.requireTrust === "boolean" ? obj.requireTrust : undefined
-    const allowUntrusted = typeof obj?.allowUntrusted === "boolean" ? obj.allowUntrusted : undefined
     const disableAllHooks = typeof obj?.disableAllHooks === "boolean" ? obj.disableAllHooks : undefined
     const allowedHttpHookUrls = Array.isArray(obj?.allowedHttpHookUrls)
       ? obj.allowedHttpHookUrls.filter((value): value is string => typeof value === "string")
@@ -1124,8 +1098,6 @@ function readJSONFile(filepath: string): { settings?: Settings; invalid?: true }
     return {
       settings: {
         hooks,
-        ...(requireTrust !== undefined ? { requireTrust } : {}),
-        ...(allowUntrusted !== undefined ? { allowUntrusted } : {}),
         ...(disableAllHooks !== undefined ? { disableAllHooks } : {}),
         ...(allowedHttpHookUrls !== undefined ? { allowedHttpHookUrls } : {}),
         ...(httpHookAllowedEnvVars !== undefined ? { httpHookAllowedEnvVars } : {}),
@@ -1152,13 +1124,6 @@ export function mergeSettings(layers: Settings[]): Settings {
       acc.push(...(matchers ?? []))
     }
   }
-  // The trust gate defaults ON. `true` from any layer forces it; an explicit
-  // `false` can only survive from the global layer (readChain strips the rest),
-  // so its presence means "the user disabled the gate". allowUntrusted merges
-  // the same way — only the global layer's escape hatch survives.
-  if (layers.some((l) => l.requireTrust === false)) out.requireTrust = false
-  else if (layers.some((l) => l.requireTrust === true)) out.requireTrust = true
-  if (layers.some((l) => l.allowUntrusted === true)) out.allowUntrusted = true
   for (const layer of layers) if (layer.disableAllHooks !== undefined) out.disableAllHooks = layer.disableAllHooks
   if (layers.some((l) => l.allowedHttpHookUrls !== undefined))
     out.allowedHttpHookUrls = [...new Set(layers.flatMap((l) => l.allowedHttpHookUrls ?? []))]
@@ -1227,27 +1192,6 @@ function readChain(
     if (read.invalid) invalid.push(file)
     const data = read.settings
     if (!data) continue
-    // Trust-gate escape (`allowUntrusted`) is only honored from the global
-    // layer. Project / worktree hooks.json are authored by the repository the
-    // gate is meant to contain — honoring their opt-out would let an untrusted
-    // repo bypass a globally-enforced `requireTrust` by declaring
-    // `allowUntrusted: true` in its own .opencode/hooks.json.
-    if (scope !== "global" && data.allowUntrusted !== undefined) {
-      log.warn("allowUntrusted ignored: only the global hooks.json layer may opt out of the trust gate", {
-        file,
-        scope,
-      })
-      data.allowUntrusted = undefined
-    }
-    // `requireTrust: false` is the global opt-out. A project or worktree must
-    // not be able to switch the gate off for its own hooks.
-    if (scope !== "global" && data.requireTrust === false) {
-      log.warn("requireTrust:false ignored: only the global hooks.json layer may disable the trust gate", {
-        file,
-        scope,
-      })
-      data.requireTrust = undefined
-    }
     warnUnsupportedFields(data.hooks, path.dirname(file))
     layers.push(data)
     if (!data.hooks) continue
@@ -1259,7 +1203,9 @@ function readChain(
             event,
             scope,
             type: h.type,
-            descriptor: descriptorFor(h),
+            descriptor: inactiveEventWarning(event)
+              ? `${descriptorFor(h)} [${inactiveEventWarning(event)}]`
+              : descriptorFor(h),
             ...(m.matcher && m.matcher !== "*" ? { matcher: m.matcher } : {}),
           })
         }
@@ -1425,7 +1371,17 @@ export function detectUnsupportedFields(
 /**
  * Warn about fields supplied to a handler type that cannot use them.
  */
+const INACTIVE_EVENTS = new Set<HookEvent>(["PermissionDenied", "TeammateIdle"])
+
+function inactiveEventWarning(event: HookEvent): string | undefined {
+  return INACTIVE_EVENTS.has(event) ? "inactive: this build has no event trigger" : undefined
+}
+
 export function warnUnsupportedFields(hooks: Settings["hooks"], sourceDir: string): void {
+  for (const event of Object.keys(hooks ?? {})) {
+    if (isHookEvent(event) && inactiveEventWarning(event))
+      log.warn("hook event has no trigger in this build", { sourceDir, event })
+  }
   const unsupported = detectUnsupportedFields(hooks)
   if (unsupported.length > 0) {
     log.warn("hook settings contains fields ignored by this handler type", {
@@ -2172,7 +2128,9 @@ function matcherTargets(payload: HookPayload, ctx: TriggerContext): string[] | u
     case "PermissionRequest":
     case "PermissionDenied":
       // The official name is primary; the native id keeps existing native matchers working.
-      return target === payload.toolName ? [target] : [target, payload.toolName]
+      return [
+        ...new Set([target, payload.toolName, ...(claudeTools.get(payload.toolName.toLowerCase())?.aliases ?? [])]),
+      ]
     default:
       return [target]
   }
@@ -2447,7 +2405,13 @@ interface HookExecution {
   failureMessage?: string
 }
 
-const claudeTools = new Map<string, { name: string; fields: readonly (readonly [string, string])[] }>([
+const claudeTools = new Map<
+  string,
+  { name: string; aliases?: readonly string[]; fields: readonly (readonly [string, string])[] }
+>([
+  ["apply_patch", { name: "Edit", aliases: ["Write"], fields: [] }],
+  ["patch", { name: "Edit", aliases: ["Write"], fields: [] }],
+  ["multiedit", { name: "Edit", aliases: ["Write"], fields: [["filePath", "file_path"]] }],
   ["bash", { name: "Bash", fields: [] }],
   ["grep", { name: "Grep", fields: [["include", "glob"]] }],
   ["glob", { name: "Glob", fields: [] }],
@@ -2474,15 +2438,40 @@ const claudeTools = new Map<string, { name: string; fields: readonly (readonly [
   ],
 ])
 
-function translateClaudeInput(toolName: string, input: object, toClaude: boolean) {
+function translateClaudeInput(toolName: string, input: object, toClaude: boolean, originalInput?: unknown) {
   const fields = claudeTools.get(toolName.toLowerCase())?.fields
   const result: Record<string, unknown> = { ...input }
-  for (const [native, claude] of fields ?? []) {
+  for (const [field, claude] of fields ?? []) {
+    // Core/V2 file tools use path; legacy tools use filePath. Return rewrites
+    // in the calling tool's native shape, inferred from its validated input.
+    const original = toClaude ? input : originalInput
+    const native =
+      field === "filePath" &&
+      isRecord(original) &&
+      Object.hasOwn(original, "path") &&
+      !Object.hasOwn(original, "filePath")
+        ? "path"
+        : field
     if (toClaude) {
       if (result[claude] == null && result[native] !== undefined) result[claude] = result[native]
     } else if (Object.hasOwn(result, claude)) {
       result[native] = result[claude]
       delete result[claude]
+    }
+  }
+  if (toClaude && ["apply_patch", "patch", "multiedit"].includes(toolName.toLowerCase())) {
+    const files = new Set(patchFilePaths(result.patchText ?? result.patch))
+    if (typeof result.file_path === "string") files.add(result.file_path)
+    if (Array.isArray(result.edits)) {
+      for (const edit of result.edits) {
+        if (!isRecord(edit)) continue
+        const file = edit.file_path ?? edit.filePath ?? edit.path
+        if (typeof file === "string") files.add(file)
+      }
+    }
+    if (files.size) {
+      result.file_paths = [...files]
+      result.file_path ??= [...files][0]
     }
   }
   return result
@@ -2502,26 +2491,9 @@ function blocksOnFailure(entry: HookCommand, event: HookEvent): boolean {
 const commandHandler: HookHandler = {
   type: "command",
   run: Effect.fn("SettingsHook.handler.command")(
-    function* (entry, envelope, cwd, _inHook, environmentFile, environment, canonicalName, effort, projectDir) {
+    function* (entry, envelope, cwd, _inHook, environmentFile, environment, _canonicalName, effort, projectDir) {
       const event = envelope.hook_event_name
-      // Translate at this entry's command boundary, never the shared native envelope.
-      const toolName = typeof envelope.tool_name === "string" ? envelope.tool_name : ""
-      const claudeTool = entry.inputFormat === "claude-code" ? claudeTools.get(toolName.toLowerCase()) : undefined
-      const claudeName = entry.inputFormat === "claude-code" ? (canonicalName ?? claudeTool?.name) : undefined
-      const stdinJSON = JSON.stringify(
-        claudeName
-          ? {
-              ...envelope,
-              tool_name: claudeName,
-              tool_input:
-                typeof envelope.tool_input === "object" &&
-                envelope.tool_input !== null &&
-                !Array.isArray(envelope.tool_input)
-                  ? translateClaudeInput(toolName, envelope.tool_input, true)
-                  : envelope.tool_input,
-            }
-          : envelope,
-      )
+      const stdinJSON = JSON.stringify(envelope)
       const { exitCode, stdout, stderr, spawnError, suspect } = yield* Effect.promise((signal) =>
         execShell(entry, stdinJSON, cwd, signal, event, environmentFile, environment, effort, projectDir),
       )
@@ -2608,9 +2580,8 @@ const commandHandler: HookHandler = {
           exitCode,
           stderr: stderr.trim().slice(0, 200),
         })
-        const outcome = sync(stdout)
         return {
-          json: outcome.kind === "json" ? outcome.value : undefined,
+          json: undefined,
           exitCode,
           failureMessage: stderr.trim() || `hook exited with code ${exitCode}`,
           exitBlock: failureBlocks ? `hook failed; blocking because onFailure is "block": ${stderr.trim()}` : undefined,
@@ -2623,11 +2594,6 @@ const commandHandler: HookHandler = {
       const outcome = sync(stdout)
       const json = outcome.kind === "json" ? outcome.value : undefined
       const invalidJson = outcome.kind === "invalid"
-      const hso = json?.hookSpecificOutput
-      if (claudeName && event === "PreToolUse" && hso && "updatedInput" in hso && hso.updatedInput)
-        hso.updatedInput = translateClaudeInput(toolName, hso.updatedInput, false)
-      if (claudeName && event === "PermissionRequest" && hso && "decision" in hso && hso.decision?.updatedInput)
-        hso.decision.updatedInput = translateClaudeInput(toolName, hso.decision.updatedInput, false)
       return {
         json,
         rawStdout: stdout,
@@ -3192,6 +3158,7 @@ export const layer = Layer.effect(
       canonicalName?: string,
       projectDir?: string,
       effort?: HookEffort,
+      toolOutput?: unknown,
     ) {
       using _ = log.time("runEntry", { type: entry.type, command: commandText(entry).slice(0, 80) })
       const resolvedCwd = resolveHookCwd([cwd, projectDir, os.homedir(), os.tmpdir()])
@@ -3230,9 +3197,49 @@ export const layer = Layer.effect(
           exitCode: undefined as number | null | undefined,
         }
       }
+      const nativeName = typeof envelope.tool_name === "string" ? envelope.tool_name : ""
+      const claudeName =
+        entry.inputFormat === "claude-code"
+          ? (canonicalName ?? claudeTools.get(nativeName.toLowerCase())?.name)
+          : undefined
+      const adapted = claudeName
+        ? {
+            ...envelope,
+            tool_name: claudeName,
+            tool_input: isRecord(envelope.tool_input)
+              ? translateClaudeInput(nativeName, envelope.tool_input, true)
+              : envelope.tool_input,
+            ...(envelope.hook_event_name === "PostToolUse"
+              ? {
+                  tool_response: claudeToolResponse(
+                    nativeName,
+                    envelope.tool_input,
+                    toolOutput,
+                    envelope.tool_response,
+                  ),
+                }
+              : {}),
+          }
+        : envelope
       const result = yield* handler
-        .run(entry, envelope, resolvedCwd, inHook, environmentFile, environment, canonicalName, effort, hookProjectDir)
+        .run(entry, adapted, resolvedCwd, inHook, environmentFile, environment, canonicalName, effort, hookProjectDir)
         .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(handlerContext, current)))
+      const hso = result.json?.hookSpecificOutput
+      if (claudeName && envelope.hook_event_name === "PreToolUse" && hso && "updatedInput" in hso && hso.updatedInput)
+        hso.updatedInput = translateClaudeInput(nativeName, hso.updatedInput, false, envelope.tool_input)
+      if (
+        claudeName &&
+        envelope.hook_event_name === "PermissionRequest" &&
+        hso &&
+        "decision" in hso &&
+        hso.decision?.updatedInput
+      )
+        hso.decision.updatedInput = translateClaudeInput(
+          nativeName,
+          hso.decision.updatedInput,
+          false,
+          envelope.tool_input,
+        )
       return result
     })
 
@@ -3451,33 +3458,7 @@ export const layer = Layer.effect(
         return result
       }
 
-      // ── WP-6B workspace-trust gate ──────────────────────────────
-      // The gate is ON by default and applies to settings-file matchers only:
-      // while `s.cwd` is untrusted, hooks.json entries are held back, matching
-      // Claude Code's workspace-trust rule for settings files. Runtime-registered
-      // session hooks (plugins, builtins, the session-hook HTTP API, user-scope
-      // agent frontmatter) are not repository configuration and keep running;
-      // project subagent frontmatter has its own registration-time trust check in
-      // SessionHooks.
-      //
-      // Opt-outs: a GLOBAL hooks.json `requireTrust: false` (readChain strips the
-      // field from project/worktree layers) or env OPENCODE_HOOKS_REQUIRE_TRUST=0.
-      // Env `=1` and any layer's explicit `true` force the gate. A layer may also
-      // declare `allowUntrusted: true` (global only) to exempt its directory.
-      // NEVER deny / throw — a trust gate that throws becomes a denial vector.
-      //
-      // Filtering only the file matchers (instead of early-returning) also keeps
-      // the deferred SessionHooks.clear on SessionEnd reachable in an untrusted
-      // workspace, so registered hooks cannot leak for the process lifetime.
-      const envTrust = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
-      const gateEnabled = envTrust === "1" ? true : envTrust === "0" ? false : s.settings.requireTrust !== false
-      const fileHooksAllowed = !hasFile || !gateEnabled || s.settings.allowUntrusted === true || isTrusted(s.cwd)
-      if (!fileHooksAllowed) {
-        log.warn("settings hooks skipped: workspace not trusted", {
-          cwd: s.cwd,
-          trustFile: trustFilePath(),
-        })
-      }
+      const fileMatchers = s.settings.hooks?.[payload.event] ?? []
 
       // ── Session-scoped hook resolution (WP-5D) ────────────────
       // Sub-agent stop semantics: if the caller marks this trigger as
@@ -3497,7 +3478,6 @@ export const layer = Layer.effect(
             )
           : []
 
-      const fileMatchers = fileHooksAllowed ? (s.settings.hooks?.[payload.event] ?? []) : []
       // Tag matchers with their origin so once-cleanup can remove session ones
       // after execution. The settings chain matchers carry no _sessionEntry.
       type RunMatcher = HookMatcher & { _sessionEntry?: SessionHookEntry; _sessionOwner?: string }
@@ -3570,6 +3550,7 @@ export const layer = Layer.effect(
             ctx.canonicalToolName,
             s.worktree,
             ctx.effort,
+            payload.event === "PostToolUse" ? payload.toolOutput : undefined,
           ).pipe(
             Effect.ensuring(
               entry.statusMessage && ctx.sessionID

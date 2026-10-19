@@ -255,6 +255,7 @@ const conversationLayer = Layer.effect(
                   toolUseID: input.toolCallID,
                   toolInput: input.toolInput,
                   toolResponse: input.output,
+                  toolOutput: input.output,
                 }
               : {
                   event: "PostToolUseFailure",
@@ -262,6 +263,7 @@ const conversationLayer = Layer.effect(
                   toolUseID: input.toolCallID,
                   toolInput: input.toolInput,
                   error: input.error,
+                  ...(input.isInterrupt ? { isInterrupt: true } : {}),
                 },
           )
           const mcp = input.toolName.startsWith("mcp__") && Object.hasOwn(result, "updatedMCPToolOutput")

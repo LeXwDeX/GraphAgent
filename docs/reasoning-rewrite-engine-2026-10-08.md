@@ -2,6 +2,17 @@
 
 Branch: `refactor/reasoning-rewrite-engine`. Baseline: `main` at `1b69adcdcf`.
 
+> **2026-10-19 update — background organization with step-boundary adoption (#838).** This document records the
+> earlier designs; the current behavior is described in [Reasoning shaping](../README.md#reasoning-shaping).
+> Eligible settled parts enter a directory-scoped queue with at most two running organizer jobs per session. The
+> provider stream and next step do not wait for the organizer. Each step adopts already-completed rewrites before
+> building its request, and keeps unfinished parts as original text. Adoption retains atomic stale-source, replay-range
+> and revert checks for both V1 and V2, while allowing parts that earlier requests have already sent. Failures preserve
+> the original reasoning. Turn cancellation leaves jobs running; session deletion and directory disposal cancel them.
+> Synchronous organization and injected reasoning-only continuations are removed. The feature remains off by default,
+> and signed, encrypted, referenced and unknown carriers remain unchanged. Rewrites may invalidate a cached suffix;
+> the earlier first-frame window and sealing policies below are not part of this implementation.
+
 > **2026-10-18 update — continue only after a natural reasoning-only end.** The request stream is never stopped at a
 > reasoning boundary. Each editable (unsigned/plaintext-mirror) reasoning part is still organized synchronously, but a
 > part that may continue is deferred: the request runs to its natural end, and the host continues the same assistant

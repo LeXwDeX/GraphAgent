@@ -43,7 +43,10 @@ describe("summarizeChain — scope tags and ordering", () => {
       expect(summaries[1].scope).toBe("project")
       expect(summaries[1].event).toBe("Stop")
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 
@@ -54,7 +57,10 @@ describe("summarizeChain — scope tags and ordering", () => {
       const summaries = summarizeChain(projectDir, "", globalDir)
       expect(summaries).toEqual([])
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 
@@ -69,7 +75,11 @@ describe("summarizeChain — scope tags and ordering", () => {
       const summaries = summarizeChain(projectDir, worktreeDir, globalDir)
       expect(summaries.map((s) => s.scope)).toEqual(["project", "worktree"])
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true }), fs.rm(worktreeDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+        fs.rm(worktreeDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -223,3 +233,16 @@ describe("summarizeChain — matcher handling", () => {
     }
   })
 })
+
+for (const event of ["PermissionDenied", "TeammateIdle"]) {
+  test(`${event} is visibly marked inactive in the Active Hooks descriptor`, async () => {
+    const projectDir = await mktmp("inactive")
+    try {
+      await writeHooksJson(projectDir, { [event]: [{ hooks: [{ type: "command", command: "true" }] }] })
+      const [summary] = summarizeChain(projectDir, "", projectDir)
+      expect(summary.descriptor).toContain("inactive: this build has no event trigger")
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  })
+}

@@ -1,6 +1,6 @@
 // Regression test for #409: run mode hangs forever on early-return commands.
 //
-// Early-return command dispatches (/memory, /trust, /goal non-kick at
+// Early-return command dispatches (/memory, /goal non-kick at
 // src/session/prompt.ts) write a user message + text parts and return without
 // an assistant step. The run CLI exits its event loop only on the
 // `session.status {type:"idle"}` event, which the runner publishes on the
@@ -24,6 +24,8 @@
 //   the early-return paths themselves never call it.
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { cliIt } from "../../lib/cli-process"
 
 const RUN_ENV = { OPENCODE_DB: "" }
@@ -59,23 +61,6 @@ describe("run mode early-return commands complete (#409)", () => {
     120_000,
   )
 
-  // /trust shares the early-return shape; it is not in the command registry,
-  // so the text path cannot reach it — verify via --command (as the issue did).
-  cliIt.live(
-    "opencode run --command trust prints the trust status and exits",
-    ({ llm, home, opencode }) =>
-      Effect.gen(function* () {
-        yield* llm.text("unused")
-        const result = yield* opencode.run("status", {
-          command: "trust",
-          env: { PWD: home, ...RUN_ENV },
-          timeoutMs: 30_000,
-        })
-        expectCompleted(result)
-      }),
-    120_000,
-  )
-
   // /goal with no arguments takes the non-kick early-return shape (status line).
   cliIt.live(
     'opencode run "/goal" prints the goal status and exits',
@@ -88,3 +73,30 @@ describe("run mode early-return commands complete (#409)", () => {
     120_000,
   )
 })
+
+cliIt.live(
+  "retired trust command follows normal unknown-command handling and preserves old trust data",
+  ({ llm, home, opencode }) =>
+    Effect.gen(function* () {
+      yield* llm.text("unused")
+      const file = path.join(home, ".local/share/opencode/trusted-workspaces.json")
+      const old = '["/old-workspace"]\n'
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.dirname(file), { recursive: true })
+        await fs.writeFile(file, old)
+      })
+      for (const args of ["", "status"]) {
+        const result = yield* opencode.run(args, {
+          command: "trust",
+          env: { PWD: home, ...RUN_ENV },
+          timeoutMs: 30_000,
+        })
+        expect(result.exitCode).not.toBe(0)
+        // The HTTP boundary redacts unknown-command defects to UnknownError.
+        expect(result.stdout + result.stderr).toContain("UnknownError")
+        expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe(old)
+      }
+      expect(yield* llm.calls).toBe(0)
+    }),
+  120_000,
+)

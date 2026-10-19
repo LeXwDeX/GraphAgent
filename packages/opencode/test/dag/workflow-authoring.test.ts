@@ -178,6 +178,12 @@ describe("WorkflowAuthoring source-to-graph seam", () => {
         profile: "portable",
       })
       expect(yaml.valid).toBe(true)
+      expect(yaml.warnings.filter((warning) => warning.code === DagValidation.DIAGNOSTIC_CODES.modelLegacyPin)).toEqual(
+        [
+          expect.objectContaining({ severity: "warning", path: "config.node_defaults.model" }),
+          expect.objectContaining({ severity: "warning", path: "config.nodes[work].model" }),
+        ],
+      )
       expect(yaml.prepared?.nodes[0]?.model).toEqual({ providerID: "openai", modelID: "gpt-4.1" })
       expect(yaml.prepared?.action === "start" ? yaml.prepared.config.node_defaults?.model : undefined).toEqual({
         providerID: "openai",
@@ -205,6 +211,33 @@ describe("WorkflowAuthoring source-to-graph seam", () => {
         profile: "portable",
       })
       expect(replan.prepared?.nodes[0]?.model).toEqual({ providerID: "openai", modelID: "gpt-4.1" })
+      expect(replan.warnings).toContainEqual(
+        expect.objectContaining({
+          code: DagValidation.DIAGNOSTIC_CODES.modelLegacyPin,
+          severity: "warning",
+          path: "fragment.node_defaults.model",
+        }),
+      )
+
+      // Removing the legacy fields restores tier selection without warning;
+      // inherited persisted defaults must not be mistaken for newly authored pins.
+      for (const action of ["start", "replan"] as const) {
+        const graph = { name: "tier-selected", nodes: [node] }
+        const clean = yield* authoring.prepare({
+          action,
+          source: {
+            kind: "yaml",
+            source: `${action}.yaml`,
+            content: JSON.stringify(action === "start" ? { config: graph } : { fragment: graph }),
+          },
+          node_defaults: { model: { providerID: "openai", modelID: "gpt-4.1" } },
+          profile: "portable",
+        })
+        expect(clean.valid).toBe(true)
+        expect(
+          clean.warnings.filter((warning) => warning.code === DagValidation.DIAGNOSTIC_CODES.modelLegacyPin),
+        ).toEqual([])
+      }
     }),
   )
 

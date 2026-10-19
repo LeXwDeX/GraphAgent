@@ -11,6 +11,8 @@ import { Plugin } from "../../src/plugin"
 import { Provider } from "../../src/provider/provider"
 import { prepare } from "../../src/session/llm/request"
 import { testEffect } from "../lib/effect"
+import { jsonSchema, tool } from "ai"
+import { Permission } from "@/permission"
 
 const it = testEffect(
   Layer.mergeAll(
@@ -82,6 +84,30 @@ const request = (providerName = "deepseek", modelName = "deepseek-chat", npm = "
   })
 
 describe("runtime capabilities in model requests", () => {
+  for (const disabled of ["permission", "user", "none", "empty"] as const)
+    it.instance(`editing prompt uses the final tool set (${disabled})`, () =>
+      Effect.gen(function* () {
+        const input = yield* request("openai", "gpt-5", "@ai-sdk/openai")
+        const prepared = yield* prepare({
+          ...input,
+          tools:
+            disabled === "empty"
+              ? {}
+              : {
+                  apply_patch: tool({
+                    description: "Apply a patch",
+                    inputSchema: jsonSchema({ type: "object", properties: {} }),
+                  }),
+                },
+          permission: disabled === "permission" ? Permission.fromConfig({ edit: "deny" }) : [],
+          user: { ...input.user, ...(disabled === "user" ? { tools: { apply_patch: false } } : {}) },
+        })
+        expect(Object.keys(prepared.tools)).toEqual(disabled === "none" ? ["apply_patch"] : [])
+        const system = prepared.system.join("\n")
+        expect(system.includes("Use apply_patch for manual file edits")).toBe(disabled === "none")
+        expect(system.includes("No file-editing tool is available")).toBe(disabled !== "none")
+      }),
+    )
   for (const [provider, model, npm] of [
     ["anthropic", "claude-sonnet-4", "@ai-sdk/anthropic"],
     ["openai", "gpt-5", "@ai-sdk/openai"],

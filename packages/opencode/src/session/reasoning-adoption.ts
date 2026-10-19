@@ -1,6 +1,6 @@
 import { Database } from "@opencode-ai/core/database/database"
-import { MessageTable, SessionMessageTable } from "@opencode-ai/core/session/sql"
-import { and, eq, gt, or } from "drizzle-orm"
+import { SessionMessageTable } from "@opencode-ai/core/session/sql"
+import { eq } from "drizzle-orm"
 import { Cause, DateTime, Effect, Schema } from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -15,20 +15,12 @@ import { replaceCanonicalReasoning } from "@opencode-ai/core/session/reasoning-d
 import { assessRewriteControl } from "@opencode-ai/core/session/reasoning-distillation/control-markup"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "./session"
+import { MessageV2 } from "./message-v2"
 import type { SessionID } from "./schema"
 
-/** A normal adoption rejection. Database/schema defects are not wrapped and must propagate. */
-class AdoptionRejected extends Error {}
-const reject = (reason: string) => Effect.die(new AdoptionRejected(reason))
-const expectedRejection = (cause: Cause.Cause<unknown>) =>
-  cause.reasons.every((reason) => Cause.isDieReason(reason) && reason.defect instanceof AdoptionRejected)
+const reject = (reason: string) => Effect.die(new Error(reason))
 
-/**
- * Commit one accepted rewrite of a settled reasoning part, and its v2 mirror when present. Validation runs inside the
- * event transaction: the job must still be adoptable (not sealed by a send barrier, feature enabled), the session must
- * not be reverted, no later assistant attempt may exist, and the persisted part (and mirror) must be exactly the
- * organized source. Returns the adopted part.
- */
+/** Atomically validate the current source and its mirror before publishing a completed background rewrite. */
 export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (input: {
   sessionID: SessionID
   part: SessionV1.ReasoningPart
@@ -37,7 +29,8 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
 }) {
   const session = yield* Session.Service
   const events = yield* EventV2Bridge.Service
-  const { db } = yield* Database.Service
+  const database = yield* Database.Service
+  const { db } = database
   const { part, replacement } = input
   if (
     part.sessionID !== input.sessionID ||
@@ -85,64 +78,20 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
     if (!(yield* input.canAdopt)) yield* reject("reasoning rewrite was sealed or disabled")
     const currentSession = yield* session.get(input.sessionID).pipe(Effect.orDie)
     if (currentSession.revert) yield* reject("reasoning source was reverted")
-    // Durable send fence: the in-memory barrier only covers this process. The prompt loop persists each attempt's
-    // assistant message before it re-reads this part for the request, so once any process has persisted a later
-    // attempt the part is never rewritten, and an adoption committed before that claim is in its request.
-    const own = yield* db
-      .select({ time: MessageTable.time_created })
-      .from(MessageTable)
-      .where(and(eq(MessageTable.id, part.messageID), eq(MessageTable.session_id, input.sessionID)))
-      .get()
-      .pipe(Effect.orDie)
-    if (!own) yield* Effect.die("reasoning source message was removed")
-    const later = own
-      ? yield* db
-          .select({ data: MessageTable.data })
-          .from(MessageTable)
-          .where(
-            and(
-              eq(MessageTable.session_id, input.sessionID),
-              or(
-                gt(MessageTable.time_created, own.time),
-                and(eq(MessageTable.time_created, own.time), gt(MessageTable.id, part.messageID)),
-              ),
-            ),
-          )
-          .all()
-          .pipe(Effect.orDie)
-      : []
-    if (later.some((row) => row.data.role === "assistant"))
-      yield* reject("reasoning was already resent by a later attempt")
+    const replay = yield* MessageV2.filterCompactedEffect(input.sessionID).pipe(
+      Effect.provideService(Database.Service, database),
+    )
+    if (!replay.some((message) => message.info.id === part.messageID))
+      yield* reject("reasoning source is outside the replay range")
     const current = yield* session.getPart({ sessionID: input.sessionID, messageID: part.messageID, partID: part.id })
     if (!isDeepStrictEqual(current, part)) yield* reject("stale reasoning adoption")
     if (!part.v2) return
-    // The core/V2 runner persists attempts in SessionMessageTable instead of MessageTable. Mixed runners must see
-    // those attempts too, otherwise a V1 adoption can rewrite a part the V2 request already sent. An earlier
-    // continuation of the same assistant turn may already own a V2 row, but that attempt cannot have carried this
-    // part, so the part's own attempt is the send boundary rather than its V1 message's creation time. The
-    // per-session seq orders attempts: producer clocks and ids are not comparable across processes.
     const row = yield* db
       .select()
       .from(SessionMessageTable)
       .where(eq(SessionMessageTable.id, SessionMessage.ID.make(part.v2.messageID)))
       .get()
       .pipe(Effect.orDie)
-    const laterMirrored = row
-      ? yield* db
-          .select({ id: SessionMessageTable.id })
-          .from(SessionMessageTable)
-          .where(
-            and(
-              eq(SessionMessageTable.session_id, input.sessionID),
-              eq(SessionMessageTable.type, "assistant"),
-              gt(SessionMessageTable.seq, row.seq),
-            ),
-          )
-          .limit(1)
-          .all()
-          .pipe(Effect.orDie)
-      : []
-    if (laterMirrored.length > 0) yield* reject("reasoning was already resent by a later mirrored attempt")
     const message = row
       ? yield* Schema.decodeUnknownEffect(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }).pipe(
           Effect.orDie,
@@ -163,7 +112,7 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
   return yield* events.publishMany(entries, { validate }).pipe(
     Effect.as<SessionV1.ReasoningPart | undefined>(adopted),
     Effect.catchCauseIf(
-      (cause) => !Cause.hasInterrupts(cause) && (!Cause.hasDies(cause) || expectedRejection(cause)),
+      (cause) => !Cause.hasInterrupts(cause),
       () => Effect.logInfo("reasoning adoption rejected; retaining current history").pipe(Effect.as(undefined)),
     ),
   )

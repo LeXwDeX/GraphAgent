@@ -25,7 +25,7 @@ import path from "path"
 import { Effect } from "effect"
 import * as Log from "@/util/log"
 import type { Settings } from "../settings"
-import { hasWorktreeLayer } from "../workspace-trust"
+import { hasWorktreeLayer } from "../worktree-layer"
 
 const log = Log.create({ service: "hook.extensions.hot-reload" })
 

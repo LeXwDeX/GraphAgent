@@ -307,11 +307,127 @@ describe("command hook Claude input naming", () => {
     },
   )
 
-  test("input format is validated and command-only", () => {
+  test("input format is validated for every handler", () => {
     expect(HookCommandSchema.safeParse({ type: "command", command: "true", inputFormat: "CLAUDE" }).success).toBe(false)
-    for (const type of ["mcp", "http", "prompt", "agent"]) {
-      expect(HookCommandSchema.safeParse({ type, command: "action", inputFormat: "claude-code" }).success).toBe(false)
+    for (const type of ["mcp", "mcp_tool", "http", "prompt", "agent"]) {
+      expect(HookCommandSchema.safeParse({ type, command: "action", inputFormat: "claude-code" }).success).toBe(true)
       expect(HookCommandSchema.safeParse({ type, command: "action" }).success).toBe(true)
     }
   })
 })
+
+for (const toolName of ["apply_patch", "patch", "multiedit"]) {
+  for (const matcher of ["Edit", "Write", "Edit|Write", toolName]) {
+    it.instance(`${toolName} matches ${matcher} once and exposes affected paths`, () =>
+      Effect.gen(function* () {
+        const hooks = yield* SettingsHook.Service
+        const store = yield* SessionHooks.Service
+        const sessionID = SessionID.descending()
+        yield* store.add(sessionID, {
+          event: "PostToolUse",
+          matcher,
+          hooks: [
+            {
+              type: "command",
+              command: nativeHookCommand,
+              inputFormat: "claude-code",
+            },
+          ],
+        })
+        const toolInput =
+          toolName === "multiedit"
+            ? { edits: [{ filePath: "a.ts" }, { filePath: "b.ts" }] }
+            : {
+                patchText:
+                  "*** Begin Patch\n*** Update File: a.ts\n@@\n-x\n+y\n*** Move to: b.ts\n*** Add File: c.ts\n+ok\n*** End Patch",
+              }
+        const result = yield* hooks.trigger(
+          { event: "PostToolUse", toolName, toolInput, toolResponse: {} },
+          { sessionID, transcriptPath: "" },
+        )
+        expect(result.additionalContexts).toHaveLength(1)
+        const stdin = JSON.parse(result.additionalContexts[0].slice("NATIVE_CONTEXT:".length))
+        expect(stdin.tool_name).toBe("Edit")
+        expect(stdin.tool_input.file_path).toBe("a.ts")
+        expect(stdin.tool_input.file_paths).toEqual(
+          toolName === "multiedit" ? ["a.ts", "b.ts"] : ["a.ts", "b.ts", "c.ts"],
+        )
+      }),
+    )
+  }
+}
+
+for (const toolName of ["bash", "read", "edit", "write"]) {
+  it.instance(`${toolName}: full output is adapted only for Claude entries`, () =>
+    Effect.gen(function* () {
+      const hooks = yield* SettingsHook.Service
+      const store = yield* SessionHooks.Service
+      const sessionID = SessionID.descending()
+      yield* store.add(sessionID, {
+        event: "PostToolUse",
+        hooks: [
+          { type: "command", command: nativeHookCommand, inputFormat: "claude-code" },
+          { type: "command", command: nativeHookCommand },
+        ],
+      })
+      const metadata = {
+        marker: "native",
+        display: { path: "a.ts", text: "file content" },
+        diff: "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-before\n+after\n",
+      }
+      const result = yield* hooks.trigger(
+        {
+          event: "PostToolUse",
+          toolName,
+          toolInput: { filePath: "a.ts" },
+          toolResponse: metadata,
+          toolOutput: { title: "test", output: "full output", metadata },
+        },
+        { sessionID, transcriptPath: "" },
+      )
+      const [claude, native] = result.additionalContexts.map((item) => JSON.parse(item.slice("NATIVE_CONTEXT:".length)))
+      expect(native.tool_response).toEqual(metadata)
+      expect(native).not.toHaveProperty("toolOutput")
+      if (toolName === "bash")
+        expect(claude.tool_response).toEqual({ stdout: "full output", stderr: "", interrupted: false })
+      else if (toolName === "read")
+        expect(claude.tool_response).toEqual({ file: { filePath: "a.ts", content: "file content" } })
+      else {
+        expect(claude.tool_response.filePath).toBe("a.ts")
+        expect(claude.tool_response.success).toBe(true)
+        expect(claude.tool_response.structuredPatch[0]).toMatchObject({
+          oldStart: 1,
+          newStart: 1,
+          lines: ["-before", "+after"],
+        })
+      }
+    }),
+  )
+}
+
+for (const toolName of ["read", "write", "edit"]) {
+  for (const event of ["PreToolUse", "PermissionRequest"] as const) {
+    it.instance(`V2 ${toolName} ${event}: path adapts and rewrites return the original native path key`, () =>
+      Effect.gen(function* () {
+        const hooks = yield* SettingsHook.Service
+        const store = yield* SessionHooks.Service
+        const sessionID = SessionID.descending()
+        const input =
+          toolName === "read"
+            ? { path: "original.txt" }
+            : toolName === "write"
+              ? { path: "original.txt", content: "hello" }
+              : { path: "original.txt", oldString: "before", newString: "after" }
+        const script = `let input='';for await(const chunk of process.stdin)input+=chunk;const e=JSON.parse(input);if(e.tool_input.file_path!=='original.txt')process.exit(1);const updatedInput={...e.tool_input,file_path:'changed.txt'};console.log(JSON.stringify({hookSpecificOutput:${event === "PreToolUse" ? "{updatedInput}" : "{decision:{behavior:'allow',updatedInput}}"}}))`
+        yield* store.add(sessionID, {
+          event,
+          hooks: [{ type: "command", inputFormat: "claude-code", command: process.execPath, args: ["-e", script] }],
+        })
+        const result = yield* hooks.trigger({ event, toolName, toolInput: input }, { sessionID, transcriptPath: "" })
+        const updated = event === "PreToolUse" ? result.updatedInput : result.permissionRequestDecision?.updatedInput
+        expect(updated).toEqual({ ...input, path: "changed.txt" })
+        expect(result.hookErrors).toBeUndefined()
+      }),
+    )
+  }
+}

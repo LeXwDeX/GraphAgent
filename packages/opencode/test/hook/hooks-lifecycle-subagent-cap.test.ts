@@ -13,13 +13,13 @@ cliIt.live("real child tool work resets the consecutive SubagentStop feedback ca
       await fs.writeFile(file, "REAL_CHILD_TOOL_PROGRESS")
       await fs.writeFile(
         script,
-        `const count=Number(await Bun.file(${JSON.stringify(counter)}).text().catch(()=>0))+1;await Bun.write(${JSON.stringify(counter)},String(count));if(count<=9)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SubagentStop',additionalContext:'continue the remaining local task'}}));`,
+        `const counter=process.argv[2];const count=Number(await Bun.file(counter).text().catch(()=>0))+1;await Bun.write(counter,String(count));if(count<=9)process.stdout.write(JSON.stringify({decision:'block',reason:'continue the remaining local task'}));`,
       )
       const agents = path.join(home, ".config/opencode/agent")
       await fs.mkdir(agents, { recursive: true })
       await fs.writeFile(
         path.join(agents, "cap_child.md"),
-        `---\n${JSON.stringify({ mode: "subagent", description: "continuation cap child", hooks: { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] } })}\n---\nComplete local work.`,
+        `---\n${JSON.stringify({ mode: "subagent", description: "continuation cap child", hooks: { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script, counter] }] }] } })}\n---\nComplete local work.`,
       )
     })
     yield* llm.tool("task", { description: "Child cap", prompt: "complete local task", subagent_type: "cap_child" })

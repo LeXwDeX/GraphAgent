@@ -1414,9 +1414,43 @@ const scenarios: Scenario[] = [
     .at((ctx) => ({
       path: route("/session/{sessionID}/hook", { sessionID: ctx.state.id }),
       headers: ctx.headers(),
-      body: { event: "PreToolUse", hooks: [{ type: "http", url: "https://example.com", inputFormat: "claude-code" }] },
+      body: {
+        event: "PreToolUse",
+        hooks: [
+          { type: "http", url: "https://example.com", inputFormat: "claude-code" },
+          { type: "prompt", prompt: "Check the request", inputFormat: "claude-code" },
+          { type: "agent", prompt: "Review the request", inputFormat: "claude-code" },
+          { type: "mcp", command: "mcp__test__lookup", inputFormat: "claude-code" },
+        ],
+      },
     }))
-    .status(400),
+    .jsonEffect(200, (body, ctx) =>
+      Effect.gen(function* () {
+        object(body)
+        check(typeof body.id === "string" && body.id.length > 0, "hook add should return an entry id")
+        const readback = yield* ctx.request({
+          method: "GET",
+          path: route("/session/{sessionID}/hook", { sessionID: ctx.state.id }),
+          headers: ctx.headers(),
+        })
+        check(readback.status === 200, `hook list should return 200, got ${readback.status}: ${readback.text}`)
+        check(Array.isArray(readback.body) && readback.body.length === 1, "hook list should contain the created entry")
+        const [entry] = readback.body
+        object(entry)
+        check(entry.id === body.id, "hook list should return the created entry id")
+        check(entry.event === "PreToolUse", "hook list should preserve the event")
+        check(
+          Array.isArray(entry.hooks) && entry.hooks.length === 4,
+          "hook list should preserve all supported handlers",
+        )
+        const hooks = entry.hooks
+        for (const type of ["http", "prompt", "agent", "mcp"]) {
+          const hook = hooks.find((item) => isRecord(item) && item.type === type)
+          check(isRecord(hook), `hook list should include the ${type} handler`)
+          check(hook.inputFormat === "claude-code", `${type} hook should preserve inputFormat`)
+        }
+      }),
+    ),
   http.protected
     .post("/session/{sessionID}/hook", "session.hook.add.empty_command")
     .seeded((ctx) => ctx.session({ title: "Hook empty command session" }))

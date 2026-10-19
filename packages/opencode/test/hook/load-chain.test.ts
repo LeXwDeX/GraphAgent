@@ -89,7 +89,11 @@ describe("§4.1 loadChain reads hooks.json from correct paths (global + project 
       expect(matchers.length).toBe(3)
       expect(matchers.map((m) => m.hooks[0].command)).toEqual(["global", "project", "worktree"])
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true }), fs.rm(worktreeDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+        fs.rm(worktreeDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -120,44 +124,6 @@ describe("§4.2 merge order is global → project → worktree concat-append (no
       const cmds = (merged.hooks?.SessionStart ?? []).map((m) => m.hooks[0].command)
       expect(cmds).toEqual(["g", "p", "w"])
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true }), fs.rm(worktreeDir, { recursive: true, force: true })])
-    }
-  })
-})
-
-describe("§4.2b allowUntrusted is only honored from the global layer (trust-gate self-escape)", () => {
-  test("project-layer allowUntrusted is stripped; global requireTrust survives", async () => {
-    const globalDir = await mktmp("global")
-    const projectDir = await mktmp("project")
-    try {
-      await writeGlobalHooksJson(globalDir, { requireTrust: true, ...hooksJsonTopLevel("g") })
-      await writeHooksJson(projectDir, { allowUntrusted: true, ...hooksJsonTopLevel("p") })
-
-      const merged = loadChain(projectDir, "", globalDir)
-      // The untrusted repo's own hooks.json must not be able to opt out of a
-      // globally-enforced trust gate.
-      expect(merged.requireTrust).toBe(true)
-      expect(merged.allowUntrusted).toBeUndefined()
-    } finally {
-      await Promise.all([
-        fs.rm(globalDir, { recursive: true, force: true }),
-        fs.rm(projectDir, { recursive: true, force: true }),
-      ])
-    }
-  })
-
-  test("worktree-layer allowUntrusted is stripped too", async () => {
-    const globalDir = await mktmp("global")
-    const projectDir = await mktmp("project")
-    const worktreeDir = await mktmp("worktree")
-    try {
-      await writeGlobalHooksJson(globalDir, { requireTrust: true })
-      await writeHooksJson(worktreeDir, { allowUntrusted: true, ...hooksJsonTopLevel("w") })
-
-      const merged = loadChain(projectDir, worktreeDir, globalDir)
-      expect(merged.requireTrust).toBe(true)
-      expect(merged.allowUntrusted).toBeUndefined()
-    } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
         fs.rm(projectDir, { recursive: true, force: true }),
@@ -165,55 +131,23 @@ describe("§4.2b allowUntrusted is only honored from the global layer (trust-gat
       ])
     }
   })
+})
 
-  test("global-layer allowUntrusted is honored", async () => {
+describe("retired trust options are ignored in every layer", () => {
+  test("legacy trust fields do not enter the runtime settings", async () => {
     const globalDir = await mktmp("global")
     const projectDir = await mktmp("project")
+    const worktreeDir = await mktmp("worktree")
     try {
-      await writeGlobalHooksJson(globalDir, { requireTrust: true, allowUntrusted: true })
-      await writeHooksJson(projectDir, hooksJsonTopLevel("p"))
-
-      const merged = loadChain(projectDir, "", globalDir)
-      expect(merged.requireTrust).toBe(true)
-      expect(merged.allowUntrusted).toBe(true)
+      await writeGlobalHooksJson(globalDir, { requireTrust: true, ...hooksJsonTopLevel("g") })
+      await writeHooksJson(projectDir, { allowUntrusted: false, requireTrust: false, ...hooksJsonTopLevel("p") })
+      await writeHooksJson(worktreeDir, { requireTrust: true, allowUntrusted: true, ...hooksJsonTopLevel("w") })
+      const merged = loadChain(projectDir, worktreeDir, globalDir)
+      expect(merged).not.toHaveProperty("requireTrust")
+      expect(merged).not.toHaveProperty("allowUntrusted")
+      expect(merged.hooks?.SessionStart?.map((group) => group.hooks[0].command)).toEqual(["g", "p", "w"])
     } finally {
-      await Promise.all([
-        fs.rm(globalDir, { recursive: true, force: true }),
-        fs.rm(projectDir, { recursive: true, force: true }),
-      ])
-    }
-  })
-
-  test("project-layer requireTrust:false is stripped (a repo cannot disable the default gate)", async () => {
-    const globalDir = await mktmp("global")
-    const projectDir = await mktmp("project")
-    try {
-      await writeHooksJson(projectDir, { requireTrust: false, ...hooksJsonTopLevel("p") })
-
-      const merged = loadChain(projectDir, "", globalDir)
-      expect(merged.requireTrust).toBeUndefined()
-    } finally {
-      await Promise.all([
-        fs.rm(globalDir, { recursive: true, force: true }),
-        fs.rm(projectDir, { recursive: true, force: true }),
-      ])
-    }
-  })
-
-  test("global-layer requireTrust:false disables the default gate and wins over project true", async () => {
-    const globalDir = await mktmp("global")
-    const projectDir = await mktmp("project")
-    try {
-      await writeGlobalHooksJson(globalDir, { requireTrust: false })
-      await writeHooksJson(projectDir, { requireTrust: true, ...hooksJsonTopLevel("p") })
-
-      const merged = loadChain(projectDir, "", globalDir)
-      expect(merged.requireTrust).toBe(false)
-    } finally {
-      await Promise.all([
-        fs.rm(globalDir, { recursive: true, force: true }),
-        fs.rm(projectDir, { recursive: true, force: true }),
-      ])
+      await Promise.all([globalDir, projectDir, worktreeDir].map((dir) => fs.rm(dir, { recursive: true, force: true })))
     }
   })
 })
@@ -257,7 +191,10 @@ describe("§4.4 wrapper-detection fallback tolerates legacy {hooks: {...}}", () 
       const merged = loadChain(projectDir, "", globalDir)
       expect(merged.hooks?.SessionStart?.[0].hooks[0].command).toBe("wrapped-project")
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -312,7 +249,10 @@ describe("§4.5 deprecation warning fires when settings.json has a hooks field",
       // ...but the deprecation scan flagged the file.
       expect(__hasWarnedDeprecated(settingsFile)).toBe(true)
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 
@@ -330,7 +270,10 @@ describe("§4.5 deprecation warning fires when settings.json has a hooks field",
       loadChain(projectDir, "", globalDir)
       expect(__hasWarnedDeprecated(settingsFile)).toBe(true)
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -349,7 +292,10 @@ describe("§4.6 .claude/ paths are NOT read", () => {
       // ...and .claude/ is never scanned for the deprecation warning (silent ignore).
       expect(__hasWarnedDeprecated(claudeFile)).toBe(false)
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -388,7 +334,10 @@ describe("§4.7 polling reload: modify hooks.json → reload fires with new sett
 
       handle.close()
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -409,8 +358,7 @@ describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
         () => Effect.sync(() => loadChain(projectDir, "", globalDir)),
         (settings) => {
           reloadCount += 1
-          reloadedCommands =
-            settings.hooks?.SessionStart?.flatMap((m) => m.hooks.map((h) => h.command ?? "")) ?? []
+          reloadedCommands = settings.hooks?.SessionStart?.flatMap((m) => m.hooks.map((h) => h.command ?? "")) ?? []
         },
         globalDir,
       )
@@ -426,7 +374,10 @@ describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
 
       handle.close()
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 
@@ -453,7 +404,10 @@ describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
       await sleep(4000)
       expect(reloadCount).toBe(0)
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   })
 })
@@ -472,7 +426,9 @@ describe("P2: deleting hooks.json triggers reload (mtime from >0 to 0)", () => {
         projectDir,
         undefined,
         () => Effect.sync(() => loadChain(projectDir, "", globalDir)),
-        (s) => { reloaded = s },
+        (s) => {
+          reloaded = s
+        },
       )
 
       // Verify initial load has the hook
@@ -490,7 +446,10 @@ describe("P2: deleting hooks.json triggers reload (mtime from >0 to 0)", () => {
 
       handle.close()
     } finally {
-      await Promise.all([fs.rm(globalDir, { recursive: true, force: true }), fs.rm(projectDir, { recursive: true, force: true })])
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
     }
   }, 12000)
 })

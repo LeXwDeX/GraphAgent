@@ -24,22 +24,28 @@
 
 ## 通用契约
 
-| 项目                                                                                          | 本地实现                                             | 回归文件                                                                                                                 |
-| --------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 事件选择、`matcher`、handler 类型                                                             | `src/hook/settings.ts`、`src/hook/schema.ts`         | `test/hook/load-chain.test.ts`、`nontool-matcher.test.ts`                                                                |
-| 输入 envelope（`session_id`、`prompt_id`、`transcript_path`、`cwd`、`scratchpad_dir`、`permission_mode`、`effort`、`hook_event_name`） | `buildStdinEnvelope` → command/HTTP/MCP/prompt/agent | `claude-input.test.ts`、`envelope-cwd.test.ts`、`envelope-prompt-identity.test.ts`、`hook-consumer-transcript-v2.test.ts`                               |
-| `if` 条件                                                                                     | `src/hook/extensions/condition-filter.ts`            | `condition-filter.test.ts`、`if-condition-trigger.test.ts`                                                               |
-| `timeout`、取消、失败                                                                         | `src/hook/settings.ts`                               | `handler-cancellation.test.ts`、`hook-executor-protocol.test.ts`                                                         |
-| `async` / `asyncRewake`                                                                       | 后台执行、按规则回注下一轮                           | `async-rewake.test.ts`、`hooks-lifecycle-v2-async-rewake.test.ts`                                                        |
-| `once`、去重、作用域                                                                          | SessionHooks / skill / agent 注册                    | `scoped-frontmatter.test.ts`、`handler-dedup.test.ts`、`settings-dedup.test.ts`、`once-mcp-protocol.test.ts`             |
-| command / HTTP / MCP / prompt / agent 五种 handler                                            | `src/hook/settings.ts`                               | `hook-executor-protocol.test.ts`、`hook-transport-http.test.ts`、`hook-transport-mcp.test.ts`、`hook-consumer-*.test.ts` |
-| 阻断、附加上下文、系统消息、权限决策                                                          | 各事件 reducer + consumer                            | 对应事件测试                                                                                                             |
+| 项目                                                                                                                                   | 本地实现                                             | 回归文件                                                                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 事件选择、`matcher`、handler 类型                                                                                                      | `src/hook/settings.ts`、`src/hook/schema.ts`         | `test/hook/load-chain.test.ts`、`nontool-matcher.test.ts`                                                                 |
+| 输入 envelope（`session_id`、`prompt_id`、`transcript_path`、`cwd`、`scratchpad_dir`、`permission_mode`、`effort`、`hook_event_name`） | `buildStdinEnvelope` → command/HTTP/MCP/prompt/agent | `claude-input.test.ts`、`envelope-cwd.test.ts`、`envelope-prompt-identity.test.ts`、`hook-consumer-transcript-v2.test.ts` |
+| `if` 条件                                                                                                                              | `src/hook/extensions/condition-filter.ts`            | `condition-filter.test.ts`、`if-condition-trigger.test.ts`                                                                |
+| `timeout`、取消、失败                                                                                                                  | `src/hook/settings.ts`                               | `handler-cancellation.test.ts`、`hook-executor-protocol.test.ts`                                                          |
+| `async` / `asyncRewake`                                                                                                                | 后台执行、按规则回注下一轮                           | `async-rewake.test.ts`、`hooks-lifecycle-v2-async-rewake.test.ts`                                                         |
+| `once`、去重、作用域                                                                                                                   | SessionHooks / skill / agent 注册                    | `scoped-frontmatter.test.ts`、`handler-dedup.test.ts`、`settings-dedup.test.ts`、`once-mcp-protocol.test.ts`              |
+| command / HTTP / MCP / prompt / agent 五种 handler                                                                                     | `src/hook/settings.ts`                               | `hook-executor-protocol.test.ts`、`hook-transport-http.test.ts`、`hook-transport-mcp.test.ts`、`hook-consumer-*.test.ts`  |
+| 阻断、附加上下文、系统消息、权限决策                                                                                                   | 各事件 reducer + consumer                            | 对应事件测试                                                                                                              |
 
 ## 兼容边界
 
-- **输入格式。** 默认 envelope 是本 fork 的 native 形态（小写工具名和 native 参数）。command hook 可设置
-  `inputFormat: "claude-code"`，在 entry 边界翻译为 Claude 的 `tool_name`/`tool_input`。HTTP、MCP、prompt 和
-  agent handler 没有该 opt-in；依赖 `Bash`、`file_path` 等 Claude 字段的脚本必须使用 command + 该选项。
+- **输入格式。** 默认 envelope 是本 fork 的 native 形态（小写工具名和 native 参数）。所有 handler 均可设置
+  `inputFormat: "claude-code"`，在 entry 边界翻译为 Claude 的 `tool_name`/`tool_input`。PostToolUse 同时
+  适配 `tool_response`：Bash 提供 `stdout`、`stderr`、`interrupted`（宿主合并输出放入 stdout，stderr 为空）；
+  Read 提供 `file: { filePath, content }`（文本读取采用实际返回的文件片段）；Edit/Write 和 patch 工具提供
+  `filePath`、`structuredPatch`、`success`（structuredPatch 为 unified diff hunks，无 diff 时为空列表）。native 默认仍传原始 metadata。
+  apply_patch、patch、multiedit 同时匹配 `Edit`/`Write` 及 native 名称；Claude 输入提供首个 `file_path` 和 `file_paths`。
+- **工作区信任。** 工作区信任门禁和内置 `/trust` 已移除。旧 `requireTrust`、`allowUntrusted` 和
+  `OPENCODE_HOOKS_REQUIRE_TRUST` 配置忽略；既有信任列表文件不读取、不修改。工具权限和 HTTP 限制保持原有行为。
+- **未接入事件。** `PermissionDenied`、`TeammateIdle` 在加载日志和 Active Hooks 描述中标记为 inactive。
 - **SessionEnd 生命周期。** 本地生产者为 `other`（session 删除）和 `prompt_input_exit`（CLI/TUI 退出）。
   `clear`/`resume`/`logout` 目前没有本地 producer；SessionStart 的 `clear` 同样没有。配置在这些 reason 上的
   matcher 不会触发，直到对应生命周期接入。

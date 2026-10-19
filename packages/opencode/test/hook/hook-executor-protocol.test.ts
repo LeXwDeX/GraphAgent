@@ -123,9 +123,9 @@ describe("hook command executor protocol", () => {
       expected: ["system context"],
     },
     {
-      name: "nonzero exit still parses a standalone JSON line after logs",
+      name: "nonzero exit discards JSON even after logs",
       stdout: `checking...\n${JSON.stringify({ systemMessage: "failed check context", hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: 7 } })}\n`,
-      expected: ["failed check context"],
+      expected: [],
       exitCode: 1,
     },
   ]) {
@@ -135,8 +135,9 @@ describe("hook command executor protocol", () => {
           const store = yield* SessionHooks.Service
           const hook = yield* SettingsHook.Service
           const sessionID = SessionID.descending()
-          yield* store.add(sessionID, {
+          const id = yield* store.add(sessionID, {
             event: "UserPromptSubmit",
+            once: true,
             hooks: [
               {
                 type: "command",
@@ -151,6 +152,12 @@ describe("hook command executor protocol", () => {
           })
           yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
           if (!hook.drainAsync) throw new Error("async hook drain is unavailable")
+          if (fixture.expected.length === 0) {
+            const token = yield* pollWithTimeout(store.claim(sessionID, id), "failed async command did not settle")
+            yield* store.complete(sessionID, id, token, false)
+            expect((yield* hook.drainAsync(sessionID)).additionalContexts).toEqual([])
+            return
+          }
           const result = yield* pollWithTimeout(
             hook
               .drainAsync(sessionID)

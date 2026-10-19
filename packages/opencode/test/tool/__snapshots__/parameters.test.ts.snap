@@ -457,15 +457,17 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
       "type": "string",
     },
     "limit": {
-      "description": "The maximum number of lines to read (defaults to 2000)",
+      "description": "The maximum number of lines or directory entries to read (positive integer, defaults to 2000)",
+      "exclusiveMinimum": 0,
       "maximum": 9007199254740991,
-      "minimum": 0,
+      "minimum": -9007199254740991,
       "type": "integer",
     },
     "offset": {
-      "description": "The line number to start reading from (1-indexed)",
+      "description": "The line number or directory entry to start reading from (1-indexed positive integer)",
+      "exclusiveMinimum": 0,
       "maximum": 9007199254740991,
-      "minimum": 0,
+      "minimum": -9007199254740991,
       "type": "integer",
     },
   },
@@ -583,7 +585,8 @@ exports[`tool parameters JSON Schema (wire shape) webfetch 1`] = `
       "type": "string",
     },
     "timeout": {
-      "description": "Optional timeout in seconds (max 120)",
+      "description": "Positive timeout in seconds, including body download (default 30, max 120)",
+      "exclusiveMinimum": 0,
       "type": "number",
     },
     "url": {
@@ -869,18 +872,18 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
-              "description": "Read one durable node output in bounded pages",
+              "description": "Read inline durable node output in bounded pages. File-backed output instead returns content_ref, path, summary, and next_cursor: null; use the read tool on path to read the file",
               "enum": [
                 "result",
               ],
               "type": "string",
             },
             "cursor": {
-              "description": "Opaque continuation cursor returned by the previous page",
+              "description": "Opaque continuation cursor returned by the previous inline-output page; ignored for file references",
               "type": "string",
             },
             "limit": {
-              "description": "Maximum page characters; defaults to 8000, max 12000",
+              "description": "Maximum inline-output page characters; defaults to 8000, max 12000. Ignored for file references",
               "maximum": 12000,
               "minimum": 1,
               "type": "integer",
@@ -965,7 +968,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
-              "description": "Render a structured graph into a validated YAML START spec file and return its spec_path — no workflow is created, and the file is a start document: it is not a valid extend or replan file (those actions take their own envelopes, see the blocks guide). Preferred over hand-writing YAML: field names are schema-checked here, eliminating serialization drift",
+              "description": "Write a new YAML START spec under .opencode/workflow-drafts/ and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
               "enum": [
                 "draft",
               ],
@@ -1291,7 +1294,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                   "type": "object",
                 },
               ],
-              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...] } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. Fields are exhaustive — no others exist. This is the start file's config envelope only",
+              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, result_protocol?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...], node_defaults?, result_protocol?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. result_protocol is final_response (default) or submit_result (legacy); delivery_node selects the final node copied to the parent. This is the start file's config envelope only; consult each nested field's schema",
             },
             "title": {
               "description": "Optional workflow title",

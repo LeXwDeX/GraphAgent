@@ -82,6 +82,8 @@ it.instance("plan agent denies edits except .opencode/plans/*", () =>
     expect(evalPerm(plan, "edit")).toBe("deny")
     // But specific path is allowed
     expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "touch mutation", plan!.permission).action).toBe("allow")
+    expect(plan!.permission.some((rule) => rule.permission === "plan_enter")).toBe(false)
   }),
 )
 
@@ -122,6 +124,12 @@ it.instance("explore agent denies edit and write", () =>
     expect(evalPerm(explore, "edit")).toBe("deny")
     expect(evalPerm(explore, "write")).toBe("deny")
     expect(evalPerm(explore, "todowrite")).toBe("deny")
+    expect(Permission.evaluate("bash", "touch mutation", explore!.permission).action).toBe("allow")
+    expect(evalPerm(explore, "webfetch")).toBe("allow")
+    expect(evalPerm(explore, "websearch")).toBe("allow")
+    expect(explore!.permission.some((rule) => rule.permission === "list" || rule.permission === "plan_enter")).toBe(
+      false,
+    )
   }),
 )
 

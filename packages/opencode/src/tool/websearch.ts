@@ -95,6 +95,7 @@ function callProvider(
       contextMaxCharacters: params.contextMaxCharacters,
     },
     "25 seconds",
+    McpWebSearch.exaAuthHeaders(),
   )
 }
 

@@ -71,32 +71,28 @@ export const GrepTool = Tool.define(
           }
           const info = yield* fs.stat(search).pipe(Effect.catch((error) => searchPathFailure(search, error, requested)))
           const cwd = info.type === "Directory" ? search : path.dirname(search)
+          const limit = 100
           const result = yield* ripgrep.grep({
             cwd,
             pattern: params.pattern,
             file: info.type === "File" ? path.basename(search) : undefined,
             include: params.include,
-            limit: 100,
+            limit: limit + 1,
           })
           if (result.length === 0) return empty
 
-          const rows = result.map((item) => ({
+          const truncated = result.length > limit
+          const rows = result.slice(0, limit).map((item) => ({
             path: path.resolve(cwd, item.entry.path),
             line: item.line,
             text: item.text,
           }))
 
-          const limit = 100
-          const truncated = rows.length === limit
-          const final = rows
-          if (final.length === 0) return empty
-
           const total = rows.length
-          const hasMore = truncated || result.length === limit
-          const output = [`Found ${total} matches${hasMore ? " (more matches available)" : ""}`]
+          const output = [`Found ${total} matches${truncated ? " (more matches available)" : ""}`]
 
           let current = ""
-          for (const match of final) {
+          for (const match of rows) {
             if (current !== match.path) {
               if (current !== "") output.push("")
               current = match.path

@@ -1,3 +1,4 @@
+import { SettingsHook } from "@/hook/settings"
 import { describe, expect, it } from "bun:test"
 import { Effect, Layer, Semaphore, Fiber } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -22,10 +23,10 @@ type TrackedEvent = {
   trigger?: string
 }
 
-function makeEventTracker() {
+function makeEventTracker(store: Partial<DagStore.Interface> = {}) {
   const events: TrackedEvent[] = []
   const dagLayer = Layer.mock(Dag.Service, {
-    store: { tryClaimAdoption: () => Effect.succeed(true) } as unknown as DagStore.Interface,
+    store: { tryClaimAdoption: () => Effect.succeed(true), ...store } as unknown as DagStore.Interface,
     nodeQueued: Effect.fn("stub.nodeQueued")((dagID: string, nodeID: string) =>
       Effect.sync(() => events.push({ type: "nodeQueued", dagID, nodeID })),
     ),
@@ -43,33 +44,48 @@ function makeEventTracker() {
 }
 
 const agentLayer = Layer.mock(Agent.Service, {
-  get: () => Effect.succeed({
-    name: "build", mode: "all", permission: [], options: {}, description: "", prompt: "",
-    model: { providerID: "test" as never, modelID: "test-model" as never },
-    tools: {}, hooks: {},
-  }),
+  get: () =>
+    Effect.succeed({
+      name: "build",
+      mode: "all",
+      permission: [],
+      options: {},
+      description: "",
+      prompt: "",
+      model: { providerID: "test" as never, modelID: "test-model" as never },
+      tools: {},
+      hooks: {},
+    }),
   list: () => Effect.succeed([]),
   defaultAgent: () => Effect.succeed("build"),
 })
 
-const sessionLayer = Layer.mock(Session.Service, {
+const sessionStub = {
   get: () => Effect.succeed({ id: "ses_parent" as never, permission: [], agent: "build" } as never),
   create: () => Effect.succeed({ id: "ses_child" as never } as never),
   list: () => Effect.succeed([]),
   messages: () => Effect.succeed([]),
-})
+}
+const sessionLayer = Layer.mock(Session.Service, sessionStub)
 
 function reply(text: string, includeText = text !== ""): SessionV1.WithParts {
   return {
     info: {
-      id: MessageID.ascending(), role: "assistant", parentID: MessageID.ascending(),
-      sessionID: "ses_child" as never, mode: "build", agent: "build", cost: 0,
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: MessageID.ascending(),
+      sessionID: "ses_child" as never,
+      mode: "build",
+      agent: "build",
+      cost: 0,
       path: { cwd: "/tmp", root: "/tmp" },
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      modelID: "test-model" as never, providerID: "test" as never,
-      time: { created: Date.now() }, finish: "stop",
+      modelID: "test-model" as never,
+      providerID: "test" as never,
+      time: { created: Date.now() },
+      finish: "stop",
     },
-    parts: includeText ? [{ type: "text", text }] as never : [],
+    parts: includeText ? ([{ type: "text", text }] as never) : [],
   }
 }
 
@@ -153,7 +169,9 @@ describe("spawnNode completion bridge", () => {
           const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentWithoutModel, parentWithModel, prompt))) as Effect.Effect<never>,
+      ).pipe(
+        Effect.provide(Layer.mergeAll(dagLayer, agentWithoutModel, parentWithModel, prompt)),
+      ) as Effect.Effect<never>,
     )
 
     expect(promptModel as unknown).toEqual({
@@ -246,10 +264,12 @@ describe("spawnNode completion bridge", () => {
     await runSpawn(dagLayer, makePromptLayer(reply("")))
 
     expect(findEvent(events, "nodeCompleted")).toBeUndefined()
-    expect(findEvent(events, "nodeFailed")).toEqual(expect.objectContaining({
-      reason: "provider returned empty output",
-      trigger: "verdict_fail",
-    }))
+    expect(findEvent(events, "nodeFailed")).toEqual(
+      expect.objectContaining({
+        reason: "provider returned empty output",
+        trigger: "verdict_fail",
+      }),
+    )
   })
 
   it("classifies empty and whitespace-only text parts like missing text", async () => {
@@ -257,10 +277,12 @@ describe("spawnNode completion bridge", () => {
       const { events, dagLayer } = makeEventTracker()
       await runSpawn(dagLayer, makePromptLayer(reply(text, true)))
       expect(findEvent(events, "nodeCompleted")).toBeUndefined()
-      expect(findEvent(events, "nodeFailed")).toEqual(expect.objectContaining({
-        reason: "provider returned empty output",
-        trigger: "verdict_fail",
-      }))
+      expect(findEvent(events, "nodeFailed")).toEqual(
+        expect.objectContaining({
+          reason: "provider returned empty output",
+          trigger: "verdict_fail",
+        }),
+      )
     }
   })
 
@@ -331,7 +353,10 @@ describe("spawnNode completion bridge", () => {
     await runSpawn(
       dagLayer,
       makePromptLayer(
-        replyWith({ name: "UnknownError", data: { message: "provider exploded" } } satisfies SessionV1.Assistant["error"]),
+        replyWith({
+          name: "UnknownError",
+          data: { message: "provider exploded" },
+        } satisfies SessionV1.Assistant["error"]),
       ),
     )
 
@@ -372,6 +397,113 @@ describe("spawnNode completion bridge", () => {
     expect(terminal.length).toBe(1)
   })
 
+  it("notification preparation defects cannot publish a second terminal event", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const hooks: string[] = []
+    await runSpawn(
+      dagLayer,
+      Layer.merge(
+        makePromptLayer(reply("done")),
+        Layer.mock(SettingsHook.Service, {
+          registerScoped: () => Effect.void,
+          unregisterScoped: () => Effect.void,
+          trigger: (payload) =>
+            Effect.sync(() => {
+              hooks.push(payload.event)
+              return { additionalContexts: [], systemMessages: [] }
+            }),
+        }),
+      ),
+    )
+    // This fixture intentionally has no store.getNode: notification preparation
+    // fails after nodeCompleted, but that optional notification is not execution.
+    expect(hooks).toEqual(["SubagentStart"])
+    expect(events.filter((e) => e.type === "nodeCompleted" || e.type === "nodeFailed").map((e) => e.type)).toEqual([
+      "nodeCompleted",
+    ])
+  })
+
+  for (const status of ["completed", "failed", "stale-attempt", "stale-child", "cancelled"] as const)
+    it(`notifies Stop only for the settled live attempt: ${status}`, async () => {
+      const { events, dagLayer } = makeEventTracker({
+        getNode: () =>
+          Effect.succeed(
+            makeNodeRow({
+              status: status === "failed" || status === "cancelled" ? "failed" : "completed",
+              superseded: status === "cancelled",
+              childSessionId: status === "stale-child" ? "ses_other" : "ses_child",
+              replanAttempts: status === "stale-attempt" ? 1 : 0,
+            }),
+          ),
+      })
+      const hooks: string[] = []
+      const appended: string[] = []
+      const unregistered: string[] = []
+      const userID = MessageID.ascending()
+      await runSpawn(
+        dagLayer,
+        Layer.mergeAll(
+          makePromptLayer(reply(status === "failed" ? "" : "done")),
+          Layer.mock(Session.Service, {
+            ...sessionStub,
+            messages: ({ sessionID }) =>
+              Effect.succeed<SessionV1.WithParts[]>([
+                {
+                  info: {
+                    id: userID,
+                    sessionID,
+                    role: "user",
+                    time: { created: 1 },
+                    agent: "build",
+                    model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+                  },
+                  parts: [],
+                },
+              ]),
+            updatePart: (part) =>
+              Effect.sync(() => {
+                expect(part.messageID).toBe(userID)
+                expect(part.sessionID).toBe(SessionID.make("ses_child"))
+                if (part.type === "text") appended.push(part.text)
+                return part
+              }),
+          }),
+          Layer.mock(SettingsHook.Service, {
+            registerScoped: () => Effect.void,
+            unregisterScoped: (sessionID) =>
+              Effect.sync(() => {
+                unregistered.push(sessionID)
+              }),
+            trigger: (payload, context) =>
+              Effect.sync(() => {
+                hooks.push(payload.event)
+                expect(context.sessionID).toBe("ses_parent")
+                if (payload.event !== "SubagentStop") return { additionalContexts: [], systemMessages: [] }
+                // Completion/failure must already be durable before Stop can observe it.
+                expect(events.filter((event) => ["nodeCompleted", "nodeFailed"].includes(event.type))).toHaveLength(1)
+                expect(payload.agentID).toBe("ses_child")
+                expect(payload.agentTranscriptPath).toBeString()
+                expect(payload.stopHookActive).toBe(false)
+                expect(payload.backgroundTasks).toEqual([])
+                return {
+                  additionalContexts: ["settled context"],
+                  systemMessages: ["notice"],
+                  blocked: { reason: "block cannot reopen settlement", command: "fixture" },
+                  stopReason: "stop notice",
+                }
+              }),
+          }),
+        ),
+      )
+      const current = status === "completed" || status === "failed"
+      expect(hooks).toEqual(current ? ["SubagentStart", "SubagentStop"] : ["SubagentStart"])
+      expect(appended).toEqual(current ? ["settled context"] : [])
+      expect(unregistered).toEqual(["ses_child"])
+      expect(
+        events.filter((event) => ["nodeCompleted", "nodeFailed"].includes(event.type)).map((event) => event.type),
+      ).toEqual([status === "failed" ? "nodeFailed" : "nodeCompleted"])
+    })
+
   it("releases its permit for the next node", async () => {
     const { events, dagLayer } = makeEventTracker()
     const semaphore = Semaphore.makeUnsafe(1)
@@ -409,7 +541,10 @@ describe("spawnNode terminalization during spawn window", () => {
     })
     const promptLayer = Layer.mock(SessionPrompt.Service, {
       prompt: () => Effect.die(new Error("prompt should NOT be called after terminalization")),
-      cancel: () => Effect.sync(() => { cancelCalled = true }),
+      cancel: () =>
+        Effect.sync(() => {
+          cancelCalled = true
+        }),
     })
 
     const semaphore = Semaphore.makeUnsafe(1)
@@ -450,7 +585,10 @@ describe("spawnNode terminalization during spawn window", () => {
           promptCalled = true
           return reply("unexpected")
         }),
-      cancel: () => Effect.sync(() => { cancelCalled = true }),
+      cancel: () =>
+        Effect.sync(() => {
+          cancelCalled = true
+        }),
     })
 
     await Effect.runPromise(

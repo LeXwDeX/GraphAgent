@@ -23,13 +23,11 @@
  * wanting persistent hooks should use the on-disk hooks.json chain.
  */
 import { Context, Effect, Layer, Schema } from "effect"
-import path from "node:path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
 import type { HookEvent, HookJSONOutput, HookCommand } from "./settings"
 import { HookCommandSchema } from "./schema"
-import { isTrusted } from "./workspace-trust"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -114,228 +112,211 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionHooks") {}
 
-/** Test-only trust-list seam; production always uses the persisted workspace trust file. */
-export const layerWithTrustFile = (trustFile?: string) =>
-  Layer.effect(
-    Service,
-    Effect.gen(function* () {
-      const state = yield* InstanceState.make(
-        Effect.fn("SessionHooks.state")(() => Effect.succeed(new Map<SessionID, SessionHookEntry[]>())),
-      )
-      const reservations = yield* InstanceState.make(
-        Effect.fn("SessionHooks.reservations")(() => Effect.succeed(new Map<SessionID, Map<string, string>>())),
-      )
-      const scopedOrigins = yield* InstanceState.make(
-        Effect.fn("SessionHooks.scopedOrigins")(() => Effect.succeed(new Map<SessionID, Set<string>>())),
-      )
+export const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const state = yield* InstanceState.make(
+      Effect.fn("SessionHooks.state")(() => Effect.succeed(new Map<SessionID, SessionHookEntry[]>())),
+    )
+    const reservations = yield* InstanceState.make(
+      Effect.fn("SessionHooks.reservations")(() => Effect.succeed(new Map<SessionID, Map<string, string>>())),
+    )
+    const scopedOrigins = yield* InstanceState.make(
+      Effect.fn("SessionHooks.scopedOrigins")(() => Effect.succeed(new Map<SessionID, Set<string>>())),
+    )
 
-      const add = Effect.fn("SessionHooks.add")(function* (sessionID: SessionID, entry: SessionHookEntryInput) {
-        const parsed = HookCommandSchema.array().min(1).safeParse(entry.hooks)
-        if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
-        if (entry.matcher !== undefined && typeof entry.matcher !== "string")
-          return yield* new InvalidHookError({ message: "matcher must be a string" })
-        const data = yield* InstanceState.get(state)
-        const list = data.get(sessionID) ?? []
-        const id = crypto.randomUUID()
-        list.push({ ...entry, id, hooks: parsed.data })
-        data.set(sessionID, list)
-        return id
-      })
+    const add = Effect.fn("SessionHooks.add")(function* (sessionID: SessionID, entry: SessionHookEntryInput) {
+      const parsed = HookCommandSchema.array().min(1).safeParse(entry.hooks)
+      if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
+      if (entry.matcher !== undefined && typeof entry.matcher !== "string")
+        return yield* new InvalidHookError({ message: "matcher must be a string" })
+      const data = yield* InstanceState.get(state)
+      const list = data.get(sessionID) ?? []
+      const id = crypto.randomUUID()
+      list.push({ ...entry, id, hooks: parsed.data })
+      data.set(sessionID, list)
+      return id
+    })
 
-      const claim = Effect.fn("SessionHooks.claim")(function* (sessionID: SessionID, id: string) {
-        const data = yield* InstanceState.get(state)
-        const list = data.get(sessionID)
-        if (!list?.some((entry) => entry.id === id)) return undefined
-        const locks = yield* InstanceState.get(reservations)
+    const claim = Effect.fn("SessionHooks.claim")(function* (sessionID: SessionID, id: string) {
+      const data = yield* InstanceState.get(state)
+      const list = data.get(sessionID)
+      if (!list?.some((entry) => entry.id === id)) return undefined
+      const locks = yield* InstanceState.get(reservations)
+      const owned = locks.get(sessionID) ?? new Map<string, string>()
+      if (owned.has(id)) return undefined
+      const token = crypto.randomUUID()
+      owned.set(id, token)
+      locks.set(sessionID, owned)
+      return token
+    })
+
+    const complete = Effect.fn("SessionHooks.complete")(function* (
+      sessionID: SessionID,
+      id: string,
+      token: string,
+      succeeded: boolean,
+    ) {
+      const locks = yield* InstanceState.get(reservations)
+      const owned = locks.get(sessionID)
+      if (owned?.get(id) !== token) return
+      owned.delete(id)
+      if (!succeeded) return
+      const data = yield* InstanceState.get(state)
+      const next = (data.get(sessionID) ?? []).filter((entry) => entry.id !== id)
+      if (next.length) data.set(sessionID, next)
+      else data.delete(sessionID)
+    })
+
+    const remove = Effect.fn("SessionHooks.remove")(function* (sessionID: SessionID, id: string) {
+      const locks = yield* InstanceState.get(reservations)
+      locks.get(sessionID)?.delete(id)
+      const data = yield* InstanceState.get(state)
+      const next = (data.get(sessionID) ?? []).filter((entry) => entry.id !== id)
+      if (next.length) data.set(sessionID, next)
+      else data.delete(sessionID)
+    })
+
+    const registerScoped = Effect.fn("SessionHooks.registerScoped")(function* (
+      sessionID: SessionID,
+      input: ScopedHooksInput,
+    ) {
+      if (!input.origin || (input.kind !== "skill" && input.kind !== "agent"))
+        return yield* new InvalidHookError({ message: "scoped hook requires kind and origin" })
+      const raw = input.hooks
+      if (!isRecord(raw)) return yield* new InvalidHookError({ message: "scoped hooks must be an event map" })
+      // Resolve the event vocabulary only when registering. A static import
+      // would form a module-initialization cycle: settings owns SessionHooks,
+      // while permission and MCP also compose the settings layer.
+      const { VALID_HOOK_EVENTS } = yield* Effect.promise(() => import("./settings"))
+      const isEvent = (name: string): name is HookEvent => VALID_HOOK_EVENTS.has(name)
+      const entries: SessionHookEntry[] = []
+      for (const [name, groups] of Object.entries(raw)) {
+        if (!isEvent(name) || !Array.isArray(groups))
+          return yield* new InvalidHookError({ message: `invalid scoped hook event: ${name}` })
+        for (const group of groups) {
+          const item: unknown = group
+          if (!isRecord(item)) return yield* new InvalidHookError({ message: `invalid scoped hook group: ${name}` })
+          if (item.matcher !== undefined && typeof item.matcher !== "string")
+            return yield* new InvalidHookError({ message: `invalid scoped hook matcher: ${name}` })
+          const parsed = HookCommandSchema.array().min(1).safeParse(item.hooks)
+          if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
+          const event = input.kind === "agent" && input.child && name === "Stop" ? "SubagentStop" : name
+          entries.push({
+            id: crypto.randomUUID(),
+            event,
+            matcher: item.matcher,
+            hooks: parsed.data,
+            once: input.kind === "skill" && item.once === true,
+            origin: input.origin,
+            kind: input.kind,
+            child: input.child,
+          })
+        }
+      }
+      const data = yield* InstanceState.get(state)
+      const current = data.get(sessionID) ?? []
+      const registered = yield* InstanceState.get(scopedOrigins)
+      const origins = registered.get(sessionID) ?? new Set<string>()
+      if (origins.has(input.origin)) return undefined
+      origins.add(input.origin)
+      registered.set(sessionID, origins)
+      data.set(sessionID, [...current, ...entries])
+      return undefined
+    })
+
+    const unregisterScoped = Effect.fn("SessionHooks.unregisterScoped")(function* (
+      sessionID: SessionID,
+      origin: string,
+    ) {
+      const data = yield* InstanceState.get(state)
+      const removed = (data.get(sessionID) ?? []).filter((entry) => entry.origin === origin)
+      const next = (data.get(sessionID) ?? []).filter((entry) => entry.origin !== origin)
+      if (next.length) data.set(sessionID, next)
+      else data.delete(sessionID)
+      const locks = yield* InstanceState.get(reservations)
+      for (const entry of removed) locks.get(sessionID)?.delete(entry.id)
+      const registered = yield* InstanceState.get(scopedOrigins)
+      registered.get(sessionID)?.delete(origin)
+    })
+
+    const list = Effect.fn("SessionHooks.list")(function* (sessionID: SessionID, event: HookEvent) {
+      const data = yield* InstanceState.get(state)
+      const arr = data.get(sessionID) ?? []
+      return arr.filter((e) => e.event === event) as readonly SessionHookEntry[]
+    })
+
+    const listAll = Effect.fn("SessionHooks.listAll")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(state)
+      return (data.get(sessionID) ?? []) as readonly SessionHookEntry[]
+    })
+
+    const hasForEvent = Effect.fn("SessionHooks.hasForEvent")(function* (sessionID: SessionID, event: HookEvent) {
+      const data = yield* InstanceState.get(state)
+      const arr = data.get(sessionID)
+      if (!arr || arr.length === 0) return false
+      return arr.some((e) => e.event === event)
+    })
+
+    const clear = Effect.fn("SessionHooks.clear")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(state)
+      data.delete(sessionID)
+      const locks = yield* InstanceState.get(reservations)
+      locks.delete(sessionID)
+      const registered = yield* InstanceState.get(scopedOrigins)
+      registered.delete(sessionID)
+    })
+
+    const take = Effect.fn("SessionHooks.take")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(state)
+      const entries = data.get(sessionID) ?? []
+      data.delete(sessionID)
+      const locks = yield* InstanceState.get(reservations)
+      // Never name this `reservations`: that would shadow the InstanceState
+      // above and hit its TDZ on the `InstanceState.get(reservations)` call.
+      const reservationState = locks.get(sessionID) ?? new Map<string, string>()
+      locks.delete(sessionID)
+      const registered = yield* InstanceState.get(scopedOrigins)
+      const origins = registered.get(sessionID) ?? new Set<string>()
+      registered.delete(sessionID)
+      // Copy the mutable containers: the caller owns the result after this
+      // point and the next mutation of the source map must not reach it.
+      return { entries, reservations: new Map(reservationState), origins: [...origins] }
+    })
+
+    const restore = Effect.fn("SessionHooks.restore")(function* (sessionID: SessionID, transfer: SessionHookTransfer) {
+      const data = yield* InstanceState.get(state)
+      if (transfer.entries.length) data.set(sessionID, [...(data.get(sessionID) ?? []), ...transfer.entries])
+      const locks = yield* InstanceState.get(reservations)
+      if (transfer.reservations.size) {
         const owned = locks.get(sessionID) ?? new Map<string, string>()
-        if (owned.has(id)) return undefined
-        const token = crypto.randomUUID()
-        owned.set(id, token)
+        for (const [id, token] of transfer.reservations) owned.set(id, token)
         locks.set(sessionID, owned)
-        return token
-      })
-
-      const complete = Effect.fn("SessionHooks.complete")(function* (
-        sessionID: SessionID,
-        id: string,
-        token: string,
-        succeeded: boolean,
-      ) {
-        const locks = yield* InstanceState.get(reservations)
-        const owned = locks.get(sessionID)
-        if (owned?.get(id) !== token) return
-        owned.delete(id)
-        if (!succeeded) return
-        const data = yield* InstanceState.get(state)
-        const next = (data.get(sessionID) ?? []).filter((entry) => entry.id !== id)
-        if (next.length) data.set(sessionID, next)
-        else data.delete(sessionID)
-      })
-
-      const remove = Effect.fn("SessionHooks.remove")(function* (sessionID: SessionID, id: string) {
-        const locks = yield* InstanceState.get(reservations)
-        locks.get(sessionID)?.delete(id)
-        const data = yield* InstanceState.get(state)
-        const next = (data.get(sessionID) ?? []).filter((entry) => entry.id !== id)
-        if (next.length) data.set(sessionID, next)
-        else data.delete(sessionID)
-      })
-
-      const registerScoped = Effect.fn("SessionHooks.registerScoped")(function* (
-        sessionID: SessionID,
-        input: ScopedHooksInput,
-      ) {
-        if (!input.origin || (input.kind !== "skill" && input.kind !== "agent"))
-          return yield* new InvalidHookError({ message: "scoped hook requires kind and origin" })
-        // Loader-supplied frontmatter (skill and agent alike) is untrusted input
-        // until the folder it came from is accepted. `OPENCODE_HOOKS_REQUIRE_TRUST=0`
-        // is the documented global opt-out for the whole gate; an unknown origin
-        // still fails closed instead of defaulting to exempt.
-        if (process.env.OPENCODE_HOOKS_REQUIRE_TRUST !== "0") {
-          const prefix = `${input.kind}:`
-          const file = input.origin.startsWith(prefix) ? input.origin.slice(prefix.length) : input.origin
-          const exempt = input.source === "user" || input.source === "plugin" || input.source === "builtin"
-          if (!exempt && (!path.isAbsolute(file) || !isTrusted(path.dirname(file), trustFile))) return undefined
-        }
-        const raw = input.hooks
-        if (!isRecord(raw)) return yield* new InvalidHookError({ message: "scoped hooks must be an event map" })
-        // Resolve the event vocabulary only when registering. A static import
-        // would form a module-initialization cycle: settings owns SessionHooks,
-        // while permission and MCP also compose the settings layer.
-        const { VALID_HOOK_EVENTS } = yield* Effect.promise(() => import("./settings"))
-        const isEvent = (name: string): name is HookEvent => VALID_HOOK_EVENTS.has(name)
-        const entries: SessionHookEntry[] = []
-        for (const [name, groups] of Object.entries(raw)) {
-          if (!isEvent(name) || !Array.isArray(groups))
-            return yield* new InvalidHookError({ message: `invalid scoped hook event: ${name}` })
-          for (const group of groups) {
-            const item: unknown = group
-            if (!isRecord(item)) return yield* new InvalidHookError({ message: `invalid scoped hook group: ${name}` })
-            if (item.matcher !== undefined && typeof item.matcher !== "string")
-              return yield* new InvalidHookError({ message: `invalid scoped hook matcher: ${name}` })
-            const parsed = HookCommandSchema.array().min(1).safeParse(item.hooks)
-            if (!parsed.success) return yield* new InvalidHookError({ message: parsed.error.message })
-            const event = input.kind === "agent" && input.child && name === "Stop" ? "SubagentStop" : name
-            entries.push({
-              id: crypto.randomUUID(),
-              event,
-              matcher: item.matcher,
-              hooks: parsed.data,
-              once: input.kind === "skill" && item.once === true,
-              origin: input.origin,
-              kind: input.kind,
-              child: input.child,
-            })
-          }
-        }
-        const data = yield* InstanceState.get(state)
-        const current = data.get(sessionID) ?? []
-        const registered = yield* InstanceState.get(scopedOrigins)
+      }
+      const registered = yield* InstanceState.get(scopedOrigins)
+      if (transfer.origins.length) {
         const origins = registered.get(sessionID) ?? new Set<string>()
-        if (origins.has(input.origin)) return undefined
-        origins.add(input.origin)
+        for (const origin of transfer.origins) origins.add(origin)
         registered.set(sessionID, origins)
-        data.set(sessionID, [...current, ...entries])
-        return undefined
-      })
+      }
+    })
 
-      const unregisterScoped = Effect.fn("SessionHooks.unregisterScoped")(function* (
-        sessionID: SessionID,
-        origin: string,
-      ) {
-        const data = yield* InstanceState.get(state)
-        const removed = (data.get(sessionID) ?? []).filter((entry) => entry.origin === origin)
-        const next = (data.get(sessionID) ?? []).filter((entry) => entry.origin !== origin)
-        if (next.length) data.set(sessionID, next)
-        else data.delete(sessionID)
-        const locks = yield* InstanceState.get(reservations)
-        for (const entry of removed) locks.get(sessionID)?.delete(entry.id)
-        const registered = yield* InstanceState.get(scopedOrigins)
-        registered.get(sessionID)?.delete(origin)
-      })
-
-      const list = Effect.fn("SessionHooks.list")(function* (sessionID: SessionID, event: HookEvent) {
-        const data = yield* InstanceState.get(state)
-        const arr = data.get(sessionID) ?? []
-        return arr.filter((e) => e.event === event) as readonly SessionHookEntry[]
-      })
-
-      const listAll = Effect.fn("SessionHooks.listAll")(function* (sessionID: SessionID) {
-        const data = yield* InstanceState.get(state)
-        return (data.get(sessionID) ?? []) as readonly SessionHookEntry[]
-      })
-
-      const hasForEvent = Effect.fn("SessionHooks.hasForEvent")(function* (sessionID: SessionID, event: HookEvent) {
-        const data = yield* InstanceState.get(state)
-        const arr = data.get(sessionID)
-        if (!arr || arr.length === 0) return false
-        return arr.some((e) => e.event === event)
-      })
-
-      const clear = Effect.fn("SessionHooks.clear")(function* (sessionID: SessionID) {
-        const data = yield* InstanceState.get(state)
-        data.delete(sessionID)
-        const locks = yield* InstanceState.get(reservations)
-        locks.delete(sessionID)
-        const registered = yield* InstanceState.get(scopedOrigins)
-        registered.delete(sessionID)
-      })
-
-      const take = Effect.fn("SessionHooks.take")(function* (sessionID: SessionID) {
-        const data = yield* InstanceState.get(state)
-        const entries = data.get(sessionID) ?? []
-        data.delete(sessionID)
-        const locks = yield* InstanceState.get(reservations)
-        // Never name this `reservations`: that would shadow the InstanceState
-        // above and hit its TDZ on the `InstanceState.get(reservations)` call.
-        const reservationState = locks.get(sessionID) ?? new Map<string, string>()
-        locks.delete(sessionID)
-        const registered = yield* InstanceState.get(scopedOrigins)
-        const origins = registered.get(sessionID) ?? new Set<string>()
-        registered.delete(sessionID)
-        // Copy the mutable containers: the caller owns the result after this
-        // point and the next mutation of the source map must not reach it.
-        return { entries, reservations: new Map(reservationState), origins: [...origins] }
-      })
-
-      const restore = Effect.fn("SessionHooks.restore")(function* (
-        sessionID: SessionID,
-        transfer: SessionHookTransfer,
-      ) {
-        const data = yield* InstanceState.get(state)
-        if (transfer.entries.length) data.set(sessionID, [...(data.get(sessionID) ?? []), ...transfer.entries])
-        const locks = yield* InstanceState.get(reservations)
-        if (transfer.reservations.size) {
-          const owned = locks.get(sessionID) ?? new Map<string, string>()
-          for (const [id, token] of transfer.reservations) owned.set(id, token)
-          locks.set(sessionID, owned)
-        }
-        const registered = yield* InstanceState.get(scopedOrigins)
-        if (transfer.origins.length) {
-          const origins = registered.get(sessionID) ?? new Set<string>()
-          for (const origin of transfer.origins) origins.add(origin)
-          registered.set(sessionID, origins)
-        }
-      })
-
-      return Service.of({
-        add,
-        claim,
-        complete,
-        registerScoped,
-        unregisterScoped,
-        remove,
-        list,
-        listAll,
-        hasForEvent,
-        take,
-        restore,
-        clear,
-      })
-    }),
-  )
-
-export const layer = layerWithTrustFile()
+    return Service.of({
+      add,
+      claim,
+      complete,
+      registerScoped,
+      unregisterScoped,
+      remove,
+      list,
+      listAll,
+      hasForEvent,
+      take,
+      restore,
+      clear,
+    })
+  }),
+)
 
 export const defaultLayer = layer
 

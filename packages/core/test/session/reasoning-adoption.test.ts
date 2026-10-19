@@ -212,7 +212,35 @@ describe("durable reasoning adoption", () => {
     }),
   )
 
-  it.effect("rejects adoption after a revert or a later assistant attempt, but not after a later user message", () =>
+  it.effect("drops compacted sources and validation defects without rewriting history", () =>
+    Effect.gen(function* () {
+      const { db, store, sessionID, message, adopt } = yield* seed()
+      expect(yield* adopt("r1", "replacement", { canAdopt: Effect.die(new Error("validation defect")) })).toBe(false)
+      const { id, type, ...data } = Schema.encodeSync(SessionMessage.Compaction)({
+        id: SessionMessage.ID.make("msg_compaction"),
+        type: "compaction",
+        reason: "auto",
+        summary: "summary",
+        recent: "summary",
+        time: { created: DateTime.makeUnsafe(3) },
+      })
+      yield* db
+        .insert(SessionMessageTable)
+        .values({
+          id: SessionMessage.ID.make(id),
+          type,
+          data,
+          session_id: sessionID,
+          seq: 2,
+          time_created: 3,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      expect(yield* adopt("r2", "replacement")).toBe(false)
+      expect((yield* store.message(message.id))?.message).toEqual(message)
+    }),
+  )
+  it.effect("rejects reverted sources but adopts after later user and assistant attempts", () =>
     Effect.gen(function* () {
       const { db, store, sessionID, user, message, adopt } = yield* seed()
       yield* db
@@ -242,8 +270,8 @@ describe("durable reasoning adoption", () => {
       expect(yield* adopt("r1", "first adopted")).toBe(true)
       // Another process persisted a later assistant attempt: its request may carry the original.
       yield* insert({ ...message, id: SessionMessage.ID.make("msg_later_attempt") }, 3)
-      expect(yield* adopt("r2", "second adopted")).toBe(false)
-      expect(JSON.stringify((yield* store.message(message.id))?.message)).toContain("second original")
+      expect(yield* adopt("r2", "second adopted")).toBe(true)
+      expect(JSON.stringify((yield* store.message(message.id))?.message)).toContain("second adopted")
     }),
   )
 })

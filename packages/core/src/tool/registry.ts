@@ -225,6 +225,20 @@ const registryLayer = Layer.effect(
               ? execution.pipe(Effect.provideService(PermissionHookScope.Service, permissionState))
               : execution
           ).pipe(
+            Effect.onInterrupt(() =>
+              hook
+                ? hook
+                    .afterTool({
+                      sessionID: input.sessionID,
+                      toolName: call.name,
+                      toolCallID: call.id,
+                      toolInput: call.input,
+                      error: "Tool execution interrupted",
+                      isInterrupt: true,
+                    })
+                    .pipe(Effect.interruptible, Effect.timeoutOption("250 millis"), Effect.ignoreCause)
+                : Effect.void,
+            ),
             Effect.map((output) => ({ output })),
             Effect.catchTag("LLM.ToolFailure", (failure) =>
               Effect.succeed({ result: { type: "error" as const, value: failure.message } }),

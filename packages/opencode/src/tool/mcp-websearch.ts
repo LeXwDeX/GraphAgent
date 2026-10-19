@@ -1,40 +1,56 @@
 import { Duration, Effect, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 
-export const EXA_URL = process.env.EXA_API_KEY
-  ? `https://mcp.exa.ai/mcp?exaApiKey=${encodeURIComponent(process.env.EXA_API_KEY)}`
-  : "https://mcp.exa.ai/mcp"
+export const EXA_URL = "https://mcp.exa.ai/mcp"
+// Hosted MCP officially supports x-api-key; resolve it for each request, never in the URL.
+// https://exa.ai/docs/get-started/exa-mcp#authentication
+export function exaAuthHeaders(): Record<string, string> {
+  const key = process.env.EXA_API_KEY
+  return key ? { "x-api-key": key } : {}
+}
 export const PARALLEL_URL = "https://search.parallel.ai/mcp"
 
-const McpResult = Schema.Struct({
-  result: Schema.Struct({
-    content: Schema.Array(
-      Schema.Struct({
-        type: Schema.String,
-        text: Schema.String,
-      }),
-    ),
+const McpResult = Schema.Union([
+  Schema.Struct({
+    result: Schema.Struct({
+      isError: Schema.optional(Schema.Boolean),
+      content: Schema.Array(
+        Schema.Struct({
+          type: Schema.String,
+          text: Schema.String,
+        }),
+      ),
+    }),
   }),
-})
+  Schema.Struct({ error: Schema.Struct({ code: Schema.Number, message: Schema.String }) }),
+])
 
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(McpResult))
 
-const parsePayload = (payload: string) =>
+const parsePayload = (payload: string, redact: (text: string) => string) =>
   Effect.gen(function* () {
     const trimmed = payload.trim()
     if (!trimmed.startsWith("{")) return undefined
-    const data = yield* decode(trimmed)
-    return data.result.content.find((item) => item.text)?.text
+    const data = yield* decode(trimmed).pipe(Effect.mapError(() => new Error("Invalid MCP search response")))
+    if ("error" in data)
+      return yield* Effect.fail(new Error(`MCP search error (${data.error.code}): ${redact(data.error.message)}`))
+    const content = data.result.content.find((item) => item.text)?.text
+    const text = content === undefined ? undefined : redact(content)
+    if (data.result.isError) return yield* Effect.fail(new Error(text ?? "MCP search failed"))
+    return text
   })
 
-export const parseResponse = Effect.fn("McpWebSearch.parseResponse")(function* (body: string) {
+export const parseResponse = Effect.fn("McpWebSearch.parseResponse")(function* (
+  body: string,
+  redact: (text: string) => string = (text) => text,
+) {
   const trimmed = body.trim()
-  const direct = trimmed ? yield* parsePayload(trimmed) : undefined
+  const direct = trimmed ? yield* parsePayload(trimmed, redact) : undefined
   if (direct) return direct
 
   for (const line of body.split("\n")) {
     if (!line.startsWith("data: ")) continue
-    const data = yield* parsePayload(line.substring(6))
+    const data = yield* parsePayload(line.substring(6), redact)
     if (data) return data
   }
   return undefined
@@ -76,21 +92,35 @@ export const call = <F extends Schema.Struct.Fields>(
   headers?: Record<string, string>,
 ) =>
   Effect.gen(function* () {
-    const request = yield* HttpClientRequest.post(url).pipe(
-      HttpClientRequest.accept("application/json, text/event-stream"),
-      HttpClientRequest.setHeaders(headers ?? {}),
-      HttpClientRequest.schemaBodyJson(McpRequest(args))({
-        jsonrpc: "2.0" as const,
-        id: 1 as const,
-        method: "tools/call" as const,
-        params: { name: tool, arguments: value },
-      }),
-    )
-    const response = yield* HttpClient.filterStatusOk(http)
-      .execute(request)
-      .pipe(
-        Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error(`${tool} request timed out`)) }),
+    const secrets = Object.entries(headers ?? {})
+      .filter(([name]) => /^(authorization|x-api-key)$/i.test(name))
+      .flatMap(([, value]) => [value, value.replace(/^Bearer\s+/i, "")])
+      .filter(Boolean)
+    const redact = (text: string) =>
+      secrets.reduce(
+        (result, secret) =>
+          result.replaceAll(secret, "[REDACTED]").replaceAll(encodeURIComponent(secret), "[REDACTED]"),
+        text,
       )
-    const body = yield* response.text
-    return yield* parseResponse(body)
+    return yield* Effect.gen(function* () {
+      const request = yield* HttpClientRequest.post(url).pipe(
+        HttpClientRequest.accept("application/json, text/event-stream"),
+        HttpClientRequest.setHeaders(headers ?? {}),
+        HttpClientRequest.schemaBodyJson(McpRequest(args))({
+          jsonrpc: "2.0" as const,
+          id: 1 as const,
+          method: "tools/call" as const,
+          params: { name: tool, arguments: value },
+        }),
+      )
+      const response = yield* HttpClient.withScope(HttpClient.filterStatusOk(http)).execute(request)
+      const body = yield* response.text
+      return yield* parseResponse(body, redact)
+    }).pipe(
+      Effect.scoped,
+      Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(new Error(`${tool} request timed out`)) }),
+      // Do not retain HTTP/decoder errors with attached request headers or response bodies.
+      Effect.mapError((error) => new Error(redact(error.message))),
+      Effect.map((result) => (result === undefined ? undefined : redact(result))),
+    )
   })

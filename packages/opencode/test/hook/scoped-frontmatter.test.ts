@@ -1,5 +1,5 @@
-import { afterAll, afterEach, describe, expect } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect } from "bun:test"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Effect, Layer } from "effect"
@@ -16,23 +16,7 @@ const testLayer = SettingsHook.layer.pipe(
   Layer.provideMerge(SessionHooks.defaultLayer),
 )
 const it = testEffect(testLayer)
-const trustDir = mkdtempSync(path.join(tmpdir(), "scoped-trust-"))
-const trustFile = path.join(trustDir, "trusted-workspaces.json")
-const accepted = path.join(trustDir, "accepted")
-const rejected = path.join(trustDir, "accepted-neighbor")
-writeFileSync(trustFile, JSON.stringify([accepted]))
-afterAll(() => rmSync(trustDir, { recursive: true, force: true }))
-const trustLayer = SettingsHook.layer.pipe(
-  Layer.provide(EventV2Bridge.defaultLayer),
-  Layer.provide(Database.defaultLayer),
-  Layer.provideMerge(SessionHooks.layerWithTrustFile(trustFile)),
-)
-const itTrust = testEffect(trustLayer)
-
-// The suite preload disables the trust gate (`OPENCODE_HOOKS_REQUIRE_TRUST=0`)
-// so unrelated hook fixtures can register scoped hooks from synthetic paths.
-// Tests here opt into the gate and every test restores the preload value; Bun
-// runs a whole CI shard in one process, so leakage changes later files.
+// Legacy environment values must no longer filter scoped hook registration.
 const PRELOAD_REQUIRE_TRUST = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
 afterEach(() => {
   if (PRELOAD_REQUIRE_TRUST === undefined) delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
@@ -40,54 +24,22 @@ afterEach(() => {
 })
 
 describe("scoped frontmatter hooks", () => {
-  itTrust.instance("project agent and skill frontmatter require accepted folder trust", () =>
+  it.instance("project agent and skill hooks register and run regardless of legacy trust settings", () =>
     Effect.gen(function* () {
       process.env.OPENCODE_HOOKS_REQUIRE_TRUST = "1"
       const hook = yield* SettingsHook.Service
       const store = yield* SessionHooks.Service
       const sessionID = SessionID.descending()
-      const hooks = { Stop: [{ hooks: [{ type: "command", command: "printf accepted" }] }] }
-      yield* hook.registerScoped!(sessionID, {
-        kind: "agent",
-        origin: `agent:${path.join(rejected, "agent", "unsafe.md")}`,
-        hooks,
-      })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(0)
-      yield* hook.registerScoped!(sessionID, {
-        kind: "agent",
-        origin: `agent:${path.join(accepted, "agent", "safe.md")}`,
-        hooks,
-      })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(1)
-      // A cloned repository's skill frontmatter must not execute either: the
-      // same folder decision gates skills, not just subagents.
-      yield* hook.registerScoped!(sessionID, {
-        kind: "skill",
-        origin: `skill:${path.join(rejected, "SKILL.md")}`,
-        hooks,
-      })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(1)
-      yield* hook.registerScoped!(sessionID, {
-        kind: "skill",
-        origin: `skill:${path.join(accepted, "SKILL.md")}`,
-        hooks,
-      })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(2)
-      // Loader-owned provenance (user-level or plugin skills) never needs trust.
-      yield* hook.registerScoped!(sessionID, {
-        kind: "skill",
-        source: "user",
-        origin: `skill:${path.join(rejected, "user-skill", "SKILL.md")}`,
-        hooks,
-      })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(3)
-      yield* hook.registerScoped!(sessionID, {
-        kind: "agent",
-        source: "plugin",
-        origin: `agent:${path.join(rejected, "plugin.md")}`,
-        hooks,
-      })
-      expect(yield* store.list(sessionID, "Stop")).toHaveLength(4)
+      for (const kind of ["agent", "skill"] as const) {
+        yield* hook.registerScoped!(sessionID, {
+          kind,
+          origin: `${kind}:/unlisted-project/${kind}.md`,
+          hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `printf ${kind}` }] }] },
+        })
+      }
+      expect(yield* store.list(sessionID, "UserPromptSubmit")).toHaveLength(2)
+      const result = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
+      expect(result.additionalContexts).toEqual(["agent", "skill"])
     }),
   )
 

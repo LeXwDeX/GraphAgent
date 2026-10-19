@@ -50,11 +50,19 @@ describe("official MCP tool hook transport", () => {
       })
       yield* store.add(sessionID, {
         event: "PreToolUse",
-        hooks: [{ type: "mcp_tool", server: "audit", tool: "check", input: { path: "${tool_input.file_path}" } }],
+        hooks: [
+          {
+            type: "mcp_tool",
+            server: "audit",
+            tool: "check",
+            inputFormat: "claude-code",
+            input: { path: "${tool_input.file_path}" },
+          },
+        ],
       })
       const result = yield* hook
         .trigger(
-          { event: "PreToolUse", toolName: "Read", toolInput: { file_path: "/tmp/fixture.txt" } },
+          { event: "PreToolUse", toolName: "read", toolInput: { filePath: "/tmp/fixture.txt" } },
           { sessionID, transcriptPath: "" },
         )
         .pipe(Effect.provide(mcp))

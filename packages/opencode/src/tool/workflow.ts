@@ -22,6 +22,7 @@ import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { InstanceRef } from "@/effect/instance-ref"
 import path from "node:path"
+import fs from "node:fs/promises"
 
 const id = "workflow"
 const MAX_WORKFLOW_SPEC_BYTES = 1_000_000
@@ -116,14 +117,17 @@ const Status = Schema.Struct({
   workflow_id: Dag.ID.annotate({ description: "Target workflow ID" }),
 })
 const Result = Schema.Struct({
-  action: Schema.Literal("result").annotate({ description: "Read one durable node output in bounded pages" }),
+  action: Schema.Literal("result").annotate({
+    description:
+      "Read inline durable node output in bounded pages. File-backed output instead returns content_ref, path, summary, and next_cursor: null; use the read tool on path to read the file",
+  }),
   workflow_id: Dag.ID.annotate({ description: "Target workflow ID" }),
   node_id: Dag.NodeID.annotate({ description: "Target durable node ID" }),
   cursor: Schema.optional(ResultCursorToken).annotate({
-    description: "Opaque continuation cursor returned by the previous page",
+    description: "Opaque continuation cursor returned by the previous inline-output page; ignored for file references",
   }),
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_RESULT_PAGE_CHARS }))).annotate({
-    description: `Maximum page characters; defaults to ${DEFAULT_RESULT_PAGE_CHARS}, max ${MAX_RESULT_PAGE_CHARS}`,
+    description: `Maximum inline-output page characters; defaults to ${DEFAULT_RESULT_PAGE_CHARS}, max ${MAX_RESULT_PAGE_CHARS}. Ignored for file references`,
   }),
 })
 const List = Schema.Struct({
@@ -145,12 +149,12 @@ const Guide = Schema.Struct({
 const Draft = Schema.Struct({
   action: Schema.Literal("draft").annotate({
     description:
-      "Render a structured graph into a validated YAML START spec file and return its spec_path — no workflow is created, and the file is a start document: it is not a valid extend or replan file (those actions take their own envelopes, see the blocks guide). Preferred over hand-writing YAML: field names are schema-checked here, eliminating serialization drift",
+      "Write a new YAML START spec under .opencode/workflow-drafts/ and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
   }),
   title: Schema.optional(Schema.String).annotate({ description: "Optional workflow title" }),
   config: DagValidation.WorkflowGraphSchema.annotate({
     description:
-      "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...] } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. Fields are exhaustive — no others exist. This is the start file's config envelope only",
+      "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, result_protocol?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...], node_defaults?, result_protocol?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. result_protocol is final_response (default) or submit_result (legacy); delivery_node selects the final node copied to the parent. This is the start file's config envelope only; consult each nested field's schema",
   }),
 })
 const ValidationProfile = Schema.optional(Schema.Literals(["portable", "environment"])).annotate({
@@ -328,7 +332,9 @@ export const WorkflowTool = Tool.define<
           }
           yield* ctx.ask({
             permission: id,
-            patterns: [params.action],
+            // Both checks apply: a fine-grained allow must never bypass a
+            // pre-existing control deny or approval requirement.
+            patterns: params.action === "control" ? ["control", `control:${params.operation}`] : [params.action],
             always: ["*"],
             metadata: {
               action: params.action,
@@ -365,9 +371,17 @@ export const WorkflowTool = Tool.define<
               }
             }
             case "draft": {
-              const specPath = yield* writeDraftSpec(params.config, params.title, callingSession.directory).pipe(
-                Effect.orDie,
+              const written = yield* writeDraftSpec(params.config, params.title, callingSession.directory, ctx).pipe(
+                Effect.result,
               )
+              if (written._tag === "Failure")
+                return {
+                  title: `Workflow draft not written: ${params.config.name}`,
+                  output: written.failure.message,
+                  hookFailure: written.failure.message,
+                  metadata: { blocked: true },
+                }
+              const specPath = written.success
               const result = yield* authoring.prepare({
                 action: "start",
                 source: { kind: "yaml", source: specPath, content: yield* readDraftSpec(specPath).pipe(Effect.orDie) },
@@ -378,7 +392,7 @@ export const WorkflowTool = Tool.define<
                   title: `Workflow draft written with validation errors: ${params.config.name}`,
                   output: [
                     `spec_path: ${specPath}`,
-                    "The file is on disk; fix the errors by calling draft again with corrected fields. Diagnostics:",
+                    "The file is on disk. Edit it to fix the errors, then validate it; draft will not overwrite it. Diagnostics:",
                     ...result.errors.map((d) => `- [${d.code}] ${d.path}: ${d.message}${d.hint ? ` (${d.hint})` : ""}`),
                     WORKFLOW_RECOVERY.instruction,
                   ].join("\n"),
@@ -708,7 +722,7 @@ export const WorkflowTool = Tool.define<
               const mode = prepared.config.mode ?? "standard"
               return {
                 title: `Workflow started: ${prepared.config.name}`,
-                output: `<workflow id="${dagID}" state="running" mode="${mode}">\n${result.prepared.nodes.length} nodes registered.\nDo not poll this workflow. It runs asynchronously and will wake the parent session when attention is required.\n</workflow>`,
+                output: `<workflow id="${dagID}" state="running" mode="${mode}">\n${result.prepared.nodes.length} nodes registered.\n${authoringWarnings(result)}Do not poll this workflow. It runs asynchronously and will wake the parent session when attention is required.\n</workflow>`,
                 metadata: { workflowId: dagID } as Metadata,
               }
             }
@@ -767,7 +781,7 @@ export const WorkflowTool = Tool.define<
                   : "\nWorkflow was paused; automatic resume raced with another control op — check status and issue control(resume) if still paused."
               return {
                 title: `Workflow extended: ${r.add.length} nodes added`,
-                output: `<workflow id="${params.workflow_id}" action="extend">\nAdded: ${r.add.join(", ")}${pauseNote}\n</workflow>`,
+                output: `<workflow id="${params.workflow_id}" action="extend">\nAdded: ${r.add.join(", ")}${pauseNote}\n${authoringWarnings(result)}</workflow>`,
                 metadata: { workflowId: params.workflow_id, added: r.add } as Metadata,
               }
             }
@@ -858,7 +872,7 @@ export const WorkflowTool = Tool.define<
                     : "\nWorkflow was paused; automatic resume raced with another control op — check status and issue control(resume) if still paused."
                 return {
                   title: `Workflow replanned: +${r.add.length} -${r.cancel.length} ↻${r.restart.length}`,
-                  output: `<workflow id="${wfId}" action="replan">\nAdded: ${r.add.join(", ")}\nCancelled: ${r.cancel.join(", ")}\nRestarted: ${r.restart.join(", ")}\nReplaced: ${r.replace.join(", ")}${ignored}${pauseNote}\n</workflow>`,
+                  output: `<workflow id="${wfId}" action="replan">\nAdded: ${r.add.join(", ")}\nCancelled: ${r.cancel.join(", ")}\nRestarted: ${r.restart.join(", ")}\nReplaced: ${r.replace.join(", ")}${ignored}${pauseNote}\n${authoringWarnings(result)}</workflow>`,
                   metadata: { workflowId: wfId, ...r } as Metadata,
                 }
               }
@@ -993,24 +1007,81 @@ function blockedMetadata(diagnostics: Diagnostic[]): Metadata {
 const DRAFT_DIRECTORY = path.join(".opencode", "workflow-drafts")
 const DRAFT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_]*$/
 
+class DraftWriteError extends Schema.TaggedErrorClass<DraftWriteError>()("WorkflowDraftWriteError", {
+  path: Schema.String,
+  detail: Schema.String,
+}) {
+  override get message() {
+    return `Failed to write workflow draft ${this.path}: ${this.detail}`
+  }
+}
+
+function authoringWarnings(result: DagValidation.ValidationResult) {
+  return result.warnings.map((warning) => `Warning [${warning.code}] ${warning.path}: ${warning.message}\n`).join("")
+}
+
 function writeDraftSpec(
   config: DagValidation.StartGraph,
   title: string | undefined,
   directory: string,
-): Effect.Effect<string, Error> {
+  ctx: Tool.Context,
+): Effect.Effect<string, DraftWriteError> {
   return Effect.gen(function* () {
     if (!DRAFT_NAME_PATTERN.test(config.name)) {
-      return yield* Effect.fail(
-        new Error(
-          `Workflow name must match ${DRAFT_NAME_PATTERN.source} (it becomes the spec filename): ${config.name}`,
-        ),
+      return yield* Effect.die(
+        new Tool.InvalidArgumentsError({
+          tool: id,
+          detail: `Workflow name must match ${DRAFT_NAME_PATTERN.source} (it becomes the spec filename): ${config.name}`,
+        }),
       )
     }
     const dir = path.join(directory, DRAFT_DIRECTORY)
-    yield* Effect.promise(() => Bun.write(Bun.file(path.join(dir, ".keep")), ""))
     const specPath = path.join(dir, `${config.name}.yaml`)
     const content = yamlStringify({ ...(title ? { title } : {}), config })
-    yield* Effect.promise(() => Bun.write(specPath, content))
+    const instance = yield* InstanceRef
+    yield* ctx.ask({
+      permission: "edit",
+      patterns: [path.relative(instance?.worktree ?? directory, specPath)],
+      always: ["*"],
+      metadata: { filepath: specPath, content },
+    })
+    const writeError = (error: unknown) =>
+      new DraftWriteError({
+        path: specPath,
+        detail:
+          error instanceof Error && "code" in error && error.code === "EEXIST"
+            ? "The file already exists. Edit that file or choose a different workflow name; it was not overwritten."
+            : String(error),
+      })
+    yield* Effect.acquireUseRelease(
+      // Acquisition cannot be interrupted between mkdtemp creating the
+      // directory and its path being registered for cleanup. Use stays
+      // interruptible, including a write already in progress.
+      Effect.tryPromise({
+        try: async () => {
+          await fs.mkdir(dir, { recursive: true })
+          return fs.mkdtemp(path.join(dir, ".draft-"))
+        },
+        catch: writeError,
+      }),
+      (staging) =>
+        Effect.tryPromise({
+          try: async (signal) => {
+            const temporary = path.join(staging, "spec.yaml")
+            await fs.writeFile(temporary, content, { flag: "wx", signal })
+            signal.throwIfAborted()
+            // A same-filesystem hard link publishes only the complete file and
+            // refuses an existing destination atomically, unlike rename-overwrite.
+            await fs.link(temporary, specPath)
+          },
+          catch: writeError,
+        }),
+      (staging) =>
+        Effect.tryPromise({
+          try: () => fs.rm(staging, { recursive: true, force: true }),
+          catch: writeError,
+        }).pipe(Effect.catch((error) => Effect.logWarning("Workflow draft staging cleanup failed", { error }))),
+    )
     return specPath
   })
 }
