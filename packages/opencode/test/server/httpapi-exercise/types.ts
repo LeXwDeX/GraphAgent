@@ -37,6 +37,8 @@ export type RequestSpec = {
   body?: unknown
 }
 
+export type FollowupRequestSpec = RequestSpec & { method: Method }
+
 export type CallResult = {
   status: number
   contentType: string
@@ -53,6 +55,7 @@ export type BackendApp = {
 export type ScenarioContext = {
   directory: string | undefined
   headers: (extra?: Record<string, string>) => Record<string, string>
+  request: (input: FollowupRequestSpec) => Effect.Effect<CallResult>
   file: (name: string, content: string) => Effect.Effect<void>
   session: (input?: { title?: string; parentID?: SessionID; model?: { id: string; providerID: string } }) => Effect.Effect<SessionInfo>
   sessionGet: (sessionID: SessionID) => Effect.Effect<SessionInfo | undefined>

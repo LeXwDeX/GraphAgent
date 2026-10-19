@@ -3,7 +3,7 @@ import { HttpEffect, HttpRouter } from "effect/unstable/http"
 import { parse } from "./assertions"
 import { exerciseWorkingDirectory } from "./environment"
 import { runtime, type Runtime } from "./runtime"
-import type { ActiveScenario, BackendApp, CallResult, CaptureMode, SeededContext } from "./types"
+import type { ActiveScenario, BackendApp, CallResult, CaptureMode, FollowupRequestSpec, SeededContext } from "./types"
 
 type CallOptions = {
   auth?: {
@@ -21,6 +21,21 @@ export function call(scenario: ActiveScenario, ctx: SeededContext<unknown>, opti
   return Effect.promise(async (signal) =>
     capture(await app(await runtime(), options).request(toRequest(scenario, ctx, signal)), scenario.capture),
   )
+}
+
+export function callRequest(spec: FollowupRequestSpec) {
+  return Effect.promise(async (signal) => {
+    const headers = spec.body === undefined ? spec.headers : { "content-type": "application/json", ...spec.headers }
+    const response = await app(await runtime(), {}).request(
+      new Request(new URL(spec.path, "http://localhost"), {
+        method: spec.method,
+        headers,
+        body: spec.body === undefined ? undefined : JSON.stringify(spec.body),
+        signal,
+      }),
+    )
+    return capture(response, "full")
+  })
 }
 
 export function callAuthProbe(scenario: ActiveScenario, credentials: "missing" | "valid" = "missing") {
