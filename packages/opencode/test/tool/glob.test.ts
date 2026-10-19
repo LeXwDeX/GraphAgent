@@ -365,6 +365,23 @@ describe("tool.glob", () => {
     }),
   )
 
+  it.instance("exactly 100 matches are complete", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 100 }, (_, index) =>
+            Bun.write(path.join(test.directory, `complete-${index}.txt`), "needle"),
+          ),
+        ),
+      )
+      const result = yield* globExecute({ pattern: "*.txt", path: test.directory })
+      expect(result.metadata.count).toBe(100)
+      expect(result.metadata.truncated).toBe(false)
+      expect(result.output).not.toContain("Results are truncated")
+    }),
+  )
+
   it.instance("does not treat the intentional result limit as a failure", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

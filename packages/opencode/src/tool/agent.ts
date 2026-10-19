@@ -54,9 +54,9 @@ export const AgentTool = Tool.define<typeof Parameters, Metadata, DagAgentMessag
     return {
       description: [
         "Observe owned DAG nodes and exchange messages between the main agent and its nodes.",
-        "observe reads bounded progress, execution attempts, input revisions and delivery status without hidden reasoning.",
+        "observe pages nodes sorted by node id, with progress, execution attempts, input revisions and delivery status without hidden reasoning. limit is 1–50 (default 20).",
         "send durably queues a message to one exact live node attempt, or from a node to its owning parent. Queued does not mean delivered, answered or acted upon.",
-        "receive reads the current mailbox immediately by default; optional waiting is bounded. Reading does not acknowledge delivery or delete messages.",
+        "receive reads the current mailbox immediately by default; wait_ms is 0–30000 milliseconds (default 0), and limit is 1–50 (default 20). Reading does not acknowledge delivery or delete messages.",
         "Use stable idempotency keys on send retries. Peer nodes, arbitrary sessions and other workflows are outside this tool's authority.",
         "A node that needs clarification or a decision sends the question to its owning parent; nodes do not ask the user.",
         "For final_response workflows, finish with your final answer. It is captured and delivered automatically; do not send that answer through agent.send as an additional report. Keep send for questions, decisions and collaboration.",

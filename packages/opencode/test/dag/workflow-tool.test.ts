@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test"
-import { Cause, Effect, Exit, Layer, Schema } from "effect"
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test"
+import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -26,6 +26,7 @@ import { Provider } from "@/provider/provider"
 import { ProviderTest } from "../fake/provider"
 import { makeNodeRow } from "./fixtures"
 import { tmpdirScoped } from "../fixture/fixture"
+import { Permission } from "@/permission"
 
 const projectID = ProjectV2.ID.make("project_test")
 let workflowSpecDirectory = ""
@@ -390,6 +391,7 @@ let environmentAgentListCalls = 0
 let environmentSkillListCalls = 0
 const runtime = testEffect(
   Layer.mergeAll(
+    CrossSpawnSpawner.defaultLayer,
     Layer.mock(Agent.Service, {
       get: () =>
         Effect.succeed({
@@ -512,6 +514,26 @@ function toolContext() {
     metadata: () => Effect.void,
     ask: () => Effect.void,
   } satisfies Tool.Context
+}
+
+function workflowToolAt(directory: string) {
+  return WorkflowTool.pipe(
+    Effect.provide(
+      Layer.mock(Session.Service, {
+        get: (id) =>
+          Effect.succeed({
+            id,
+            slug: "draft-test",
+            projectID,
+            directory,
+            title: "Draft permissions",
+            version: "test",
+            time: { created: 0, updated: 0 },
+          } satisfies Session.Info),
+      }),
+    ),
+    Effect.flatMap((info) => info.init()),
+  )
 }
 
 function missingModelProject() {
@@ -826,6 +848,35 @@ describe("workflow tool execution", () => {
     }),
   )
 
+  runtime.effect("start surfaces legacy model warnings while preserving the authored pin", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      const workflow = yield* (yield* WorkflowTool).init()
+      const specPath = yield* writeWorkflowSpec("legacy-pin-warning", {
+        config: {
+          name: "legacy-pin-warning",
+          nodes: [
+            {
+              id: "worker",
+              name: "Worker",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "Do the work" },
+              model: { providerID: "test", modelID: "test-model" },
+            },
+          ],
+        },
+      })
+      const result = yield* workflow.execute({ params: { action: "start", spec_path: specPath } }, toolContext())
+      expect(result.title).toContain("Workflow started")
+      expect(result.output).toContain("Warning [model.legacy_pin] config.nodes[worker].model")
+      expect(published.find((event) => event.type === DagEvent.NodeRegistered.type)?.data).toMatchObject({
+        model: { providerID: "test", modelID: "test-model" },
+      })
+      published.length = 0
+    }),
+  )
+
   runtime.effect("draft reports validation errors without creating a workflow", () =>
     Effect.gen(function* () {
       const info = yield* WorkflowTool
@@ -851,6 +902,203 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain(".opencode/workflow-drafts/draft-bad-edge.yaml")
       expect(result.output).toContain("ghost")
       expect(published).toHaveLength(0)
+    }),
+  )
+
+  runtime.live("draft checks edit denial or approval before creating any directory", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const workflow = yield* workflowToolAt(directory)
+      for (const action of ["deny", "ask"] as const) {
+        const requests: string[] = []
+        const result = yield* workflow
+          .execute(
+            {
+              params: {
+                action: "draft",
+                config: { name: "protected", nodes: [] },
+              },
+            },
+            {
+              ...toolContext(),
+              ask: (request) =>
+                Effect.gen(function* () {
+                  requests.push(request.permission)
+                  if (request.permission !== "edit") return
+                  expect(request.patterns).toEqual([path.join(".opencode", "workflow-drafts", "protected.yaml")])
+                  const rule = Permission.evaluate("edit", request.patterns[0], [
+                    { permission: "edit", pattern: "*", action },
+                  ])
+                  yield* Effect.die(new Error(rule.action === "deny" ? "edit denied" : "edit approval required"))
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(result)).toBe(true)
+        expect(requests).toEqual(["workflow", "edit"])
+        expect(yield* Effect.promise(() => fs.readdir(directory))).not.toContain(".opencode")
+      }
+    }),
+  )
+
+  runtime.live("draft exclusive creation preserves an existing file and reports write failures", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const workflow = yield* workflowToolAt(directory)
+      const params = { action: "draft", config: { name: "exclusive", nodes: [] } } as const
+      yield* workflow.execute({ params }, toolContext())
+      const file = path.join(directory, ".opencode", "workflow-drafts", "exclusive.yaml")
+      const before = yield* Effect.promise(() => Bun.file(file).text())
+      const duplicate = yield* workflow.execute({ params: { ...params, title: "replacement" } }, toolContext())
+      expect(duplicate.output).toContain("already exists")
+      expect(duplicate.hookFailure).toContain("not overwritten")
+      expect(duplicate.metadata.blocked).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(before)
+      expect(yield* Effect.promise(() => fs.readdir(path.dirname(file)))).toEqual(["exclusive.yaml"])
+
+      const blockedDirectory = yield* tmpdirScoped()
+      yield* Effect.promise(() => fs.writeFile(path.join(blockedDirectory, ".opencode"), "not a directory"))
+      const blocked = yield* workflowToolAt(blockedDirectory)
+      // An expected filesystem error is returned as tool failure feedback,
+      // rather than escaping as an Effect defect or claiming a written draft.
+      const failed = yield* blocked.execute({ params }, toolContext())
+      expect(failed.title).toContain("not written")
+      expect(failed.hookFailure).toContain("Failed to write workflow draft")
+      expect(failed.metadata.blocked).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path.join(blockedDirectory, ".opencode")).text())).toBe(
+        "not a directory",
+      )
+    }),
+  )
+
+  runtime.live("a draft write failing midway leaves no partial target and can be retried", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const workflow = yield* workflowToolAt(directory)
+      const draftDirectory = path.join(directory, ".opencode", "workflow-drafts")
+      const originalWrite = fs.writeFile
+      const write = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          spyOn(fs, "writeFile").mockImplementation(async (file, content, options) => {
+            if (typeof file === "string" && file.startsWith(draftDirectory + path.sep)) {
+              await originalWrite(file, "config:\n  name: partial", options)
+              throw Object.assign(new Error("disk full while writing"), { code: "ENOSPC" })
+            }
+            return originalWrite(file, content, options)
+          }),
+        ),
+        (mock) => Effect.sync(() => mock.mockRestore()),
+      )
+      const params = { action: "draft", config: { name: "recoverable", nodes: [] } } as const
+      const failed = yield* workflow.execute({ params }, toolContext())
+      expect(failed.hookFailure).toContain("disk full while writing")
+      expect(failed.title).toContain("not written")
+      expect(yield* Effect.promise(() => fs.readdir(draftDirectory))).toEqual([])
+      write.mockRestore()
+      const retried = yield* workflow.execute({ params }, toolContext())
+      expect(retried.hookFailure).toBeUndefined()
+      expect(yield* Effect.promise(() => fs.readdir(draftDirectory))).toEqual(["recoverable.yaml"])
+      const saved = yield* Effect.promise(() => Bun.file(path.join(draftDirectory, "recoverable.yaml")).text())
+      expect(saved).toContain("name: recoverable")
+      expect(saved).not.toContain("name: partial")
+    }),
+  )
+
+  runtime.live("cancelling after staging creation but before acquisition returns still cleans the directory", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const workflow = yield* workflowToolAt(directory)
+      const draftDirectory = path.join(directory, ".opencode", "workflow-drafts")
+      const created = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      const originalMkdtemp = fs.mkdtemp
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          spyOn(fs, "mkdtemp").mockImplementation(new Proxy(originalMkdtemp, {
+            async apply(target, receiver, args) {
+              const staging = await Reflect.apply(target, receiver, args)
+              if (String(args[0]).startsWith(draftDirectory + path.sep)) {
+                created.resolve()
+                await release.promise
+              }
+              return staging
+            },
+          })),
+        ),
+        (mock) => Effect.sync(() => mock.mockRestore()),
+      )
+      const fiber = yield* workflow
+        .execute(
+          {
+            params: {
+              action: "draft",
+              config: { name: "cancelled-acquisition", nodes: [] },
+            },
+          },
+          toolContext(),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.gen(function* () {
+        yield* Effect.promise(() => created.promise)
+        // Request interruption synchronously so acquisition is definitely
+        // still suspended in the mocked mkdtemp promise when cancellation hits.
+        yield* Effect.sync(() => fiber.interruptUnsafe())
+        release.resolve()
+        const exit = yield* Fiber.await(fiber)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
+        expect(yield* Effect.promise(() => fs.readdir(draftDirectory))).toEqual([])
+      }).pipe(Effect.ensuring(Effect.sync(() => release.resolve())))
+    }),
+  )
+
+  runtime.live("draft writes remain interruptible and clean their partial staging file", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const workflow = yield* workflowToolAt(directory)
+      const draftDirectory = path.join(directory, ".opencode", "workflow-drafts")
+      const writing = Promise.withResolvers<void>()
+      const originalWrite = fs.writeFile
+      let aborted = false
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          spyOn(fs, "writeFile").mockImplementation(async (file, content, options) => {
+            if (typeof file !== "string" || !file.startsWith(draftDirectory + path.sep))
+              return originalWrite(file, content, options)
+            await originalWrite(file, "partial", options)
+            const signal = typeof options === "object" && options !== null ? options.signal : undefined
+            if (!signal) throw new Error("draft write must be abortable")
+            await new Promise<void>((resolve) => {
+              signal.addEventListener(
+                "abort",
+                () => {
+                  aborted = true
+                  resolve()
+                },
+                { once: true },
+              )
+              writing.resolve()
+            })
+            signal.throwIfAborted()
+          }),
+        ),
+        (mock) => Effect.sync(() => mock.mockRestore()),
+      )
+      const fiber = yield* workflow
+        .execute(
+          {
+            params: {
+              action: "draft",
+              config: { name: "cancelled-write", nodes: [] },
+            },
+          },
+          toolContext(),
+        )
+        .pipe(Effect.forkChild)
+      yield* Effect.promise(() => writing.promise)
+      yield* Fiber.interrupt(fiber)
+      expect(aborted).toBe(true)
+      expect(yield* Effect.promise(() => fs.readdir(draftDirectory))).toEqual([])
     }),
   )
 
@@ -1008,7 +1256,7 @@ describe("workflow tool execution", () => {
       expect(requests).toEqual([
         expect.objectContaining({
           permission: "workflow",
-          patterns: ["control"],
+          patterns: ["control", "control:pause"],
           metadata: expect.objectContaining({
             action: "control",
             workflow_id: "dag_status",
@@ -1017,6 +1265,51 @@ describe("workflow tool execution", () => {
         }),
       ])
       expect(published.some((event) => event.type === DagEvent.WorkflowPaused.type)).toBe(false)
+    }),
+  )
+
+  runtime.effect("control operation rules preserve legacy denies and approval requirements", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      for (const legacy of ["allow", "deny", "ask"] as const) {
+        for (const operation of ["pause", "cancel"] as const) {
+          published.length = 0
+          const checked: string[] = []
+          const result = yield* workflow
+            .execute(
+              {
+                params: {
+                  action: "control",
+                  workflow_id: Dag.ID.make("dag_status"),
+                  operation,
+                },
+              },
+              {
+                ...toolContext(),
+                ask: (request) =>
+                  Effect.gen(function* () {
+                    for (const pattern of request.patterns) {
+                      const rule = Permission.evaluate(request.permission, pattern, [
+                        { permission: "workflow", pattern: "control", action: legacy },
+                        { permission: "workflow", pattern: "control:pause", action: "allow" },
+                        { permission: "workflow", pattern: "control:cancel", action: "deny" },
+                      ])
+                      checked.push(`${pattern}:${rule.action}`)
+                      if (rule.action !== "allow") yield* Effect.die(new Error(`permission ${rule.action}`))
+                    }
+                  }),
+              },
+            )
+            .pipe(Effect.exit)
+          const allowed = legacy === "allow" && operation === "pause"
+          expect(Exit.isSuccess(result)).toBe(allowed)
+          expect(checked[0]).toBe(`control:${legacy}`)
+          if (legacy === "allow")
+            expect(checked[1]).toBe(`control:${operation}:${operation === "pause" ? "allow" : "deny"}`)
+          expect(published.some((event) => event.type === DagEvent.WorkflowPaused.type)).toBe(allowed)
+          expect(published.some((event) => event.type === DagEvent.WorkflowCancelled.type)).toBe(false)
+        }
+      }
     }),
   )
 

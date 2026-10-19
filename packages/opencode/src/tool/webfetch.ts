@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Parser } from "htmlparser2"
 import * as Tool from "./tool"
@@ -18,14 +18,16 @@ export const Parameters = Schema.Struct({
       default: "markdown",
     })
     .pipe(Schema.withDecodingDefault(Effect.succeed("markdown" as const))),
-  timeout: Schema.optional(Schema.Number).annotate({ description: "Optional timeout in seconds (max 120)" }),
+  timeout: Schema.optional(Schema.Number.check(Schema.isFinite(), Schema.isGreaterThan(0))).annotate({
+    description: "Positive timeout in seconds, including body download (default 30, max 120)",
+  }),
 })
 
 export const WebFetchTool = Tool.define(
   "webfetch",
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const httpOk = HttpClient.filterStatusOk(http)
+    const httpOk = HttpClient.withScope(HttpClient.filterStatusOk(http))
 
     return {
       description: DESCRIPTION,
@@ -75,40 +77,52 @@ export const WebFetchTool = Tool.define(
 
           const request = HttpClientRequest.get(params.url).pipe(HttpClientRequest.setHeaders(headers))
 
-          // Retry with honest UA if blocked by Cloudflare bot detection (TLS fingerprint mismatch)
-          const response = yield* httpOk.execute(request).pipe(
-            Effect.catchIf(
-              (err) =>
-                err.reason._tag === "StatusCodeError" &&
-                err.reason.response.status === 403 &&
-                err.reason.response.headers["cf-mitigated"] === "challenge",
-              () =>
-                httpOk.execute(
-                  HttpClientRequest.get(params.url).pipe(
-                    HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
+          const { response, bytes } = yield* Effect.gen(function* () {
+            // Keep both attempts and their bodies inside one deadline and request scope.
+            const response = yield* httpOk.execute(request).pipe(
+              Effect.catchIf(
+                (err) =>
+                  err.reason._tag === "StatusCodeError" &&
+                  err.reason.response.status === 403 &&
+                  err.reason.response.headers["cf-mitigated"] === "challenge",
+                () =>
+                  httpOk.execute(
+                    HttpClientRequest.get(params.url).pipe(
+                      HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
+                    ),
                   ),
-                ),
-            ),
+              ),
+            )
+            const tooLarge = () => Effect.fail(new Error("Response too large (exceeds 5MB limit)"))
+            const contentLength = response.headers["content-length"]
+            if (contentLength && Number(contentLength) > MAX_RESPONSE_SIZE) return yield* tooLarge()
+
+            const chunks: Uint8Array[] = []
+            let size = 0
+            yield* response.stream.pipe(
+              Stream.runForEach((chunk) => {
+                if (size + chunk.byteLength > MAX_RESPONSE_SIZE) return tooLarge()
+                size += chunk.byteLength
+                chunks.push(chunk)
+                return Effect.void
+              }),
+              Effect.catchIf(
+                (error) => "reason" in error && error.reason._tag === "EmptyBodyError",
+                () => Effect.void,
+              ),
+            )
+            return { response, bytes: Buffer.concat(chunks, size) }
+          }).pipe(
+            Effect.scoped,
             Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.die(new Error("Request timed out")) }),
           )
-
-          // Check content length
-          const contentLength = response.headers["content-length"]
-          if (contentLength && parseInt(contentLength) > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
-          }
-
-          const arrayBuffer = yield* response.arrayBuffer
-          if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
-          }
 
           const contentType = response.headers["content-type"] || ""
           const mime = contentType.split(";")[0]?.trim().toLowerCase() || ""
           const title = `${params.url} (${contentType})`
 
           if (isImageAttachment(mime)) {
-            const base64Content = Buffer.from(arrayBuffer).toString("base64")
+            const base64Content = bytes.toString("base64")
             return {
               title,
               output: "Image fetched successfully",
@@ -123,12 +137,20 @@ export const WebFetchTool = Tool.define(
             }
           }
 
-          const content = new TextDecoder().decode(arrayBuffer)
+          const charset = /(?:^|;)\s*charset\s*=\s*(?:"([^";]+)"|([^;\s]+))/i.exec(contentType)
+          const encoding = charset?.[1] ?? charset?.[2] ?? "utf-8"
+          let decoder: TextDecoder
+          try {
+            decoder = new TextDecoder(encoding)
+          } catch {
+            throw new Error(`Unsupported response charset: ${encoding}`)
+          }
+          const content = decoder.decode(bytes)
 
           // Handle content based on requested format and actual content type
           switch (params.format) {
             case "markdown":
-              if (contentType.includes("text/html")) {
+              if (mime === "text/html") {
                 const markdown = convertHTMLToMarkdown(content)
                 return {
                   output: markdown,
@@ -139,7 +161,7 @@ export const WebFetchTool = Tool.define(
               return { output: content, title, metadata: {} }
 
             case "text":
-              if (contentType.includes("text/html")) {
+              if (mime === "text/html") {
                 return { output: extractTextFromHTML(content), title, metadata: {} }
               }
               return { output: content, title, metadata: {} }

@@ -1,7 +1,7 @@
 - Fetches content from a specified URL
 - Takes a URL and optional format as input
-- Fetches the URL content, converts to requested format (markdown by default)
-- Returns the content in the specified format
+- Converts text/html to markdown (default) or plain text when requested; other text content types are returned as decoded source
+- The html format returns the decoded source without conversion; supported raster images return file attachments
 - Use this tool when you need to retrieve and analyze web content
 
 Usage notes:
@@ -10,14 +10,16 @@ Usage notes:
   - Both HTTP and HTTPS URLs are accepted; HTTP is not automatically upgraded
   - Format options: "markdown" (default), "text", or "html"
   - This tool is read-only and does not modify any files
-  - Results may be summarized if the content is very large
+  - Downloads are limited to 5 MB, including streamed bodies; larger responses fail rather than being summarized
+  - The timeout covers the request and body download: 30 seconds by default, capped at 120 seconds
+  - Text uses the declared Content-Type charset when supported, or UTF-8 when no charset is declared; unsupported charsets fail explicitly
 
 ## Parameters
 
 - `url` (REQUIRED): The fully-formed URL to fetch. Both HTTP and HTTPS are accepted.
 - `format` (optional): "markdown" (default), "text", or "html".
-- `timeout` (optional): Timeout in seconds (max 120).
+- `timeout` (optional): Positive finite timeout in seconds (default 30, max 120; fractional seconds are accepted).
 
 ## Returns
 
-The fetched URL content converted to the requested format.
+The decoded content, with text/html conversion as described above, or an image attachment.

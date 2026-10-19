@@ -1,4 +1,4 @@
-- Search the web using the session's web search provider - performs real-time web searches and can scrape content from specific URLs
+- Search the web using the session's web search provider - performs web searches from a query. To retrieve a known URL directly, use webfetch
 - Provides up-to-date information for current events and recent data
 - With Exa, supports configurable result counts and returns the content from the most relevant websites
 - Use this tool for accessing information beyond knowledge cutoff
@@ -16,10 +16,10 @@ The current year is {{year}}. You MUST use this year when searching for recent i
 ## Parameters
 
 - `query` (REQUIRED): Search query string.
-- `numResults` (optional): Number of results to return (default varies by provider).
-- `livecrawl` (optional): Enable live crawling for fresh results.
-- `type` (optional): Search type filter.
-- `contextMaxCharacters` (optional): Exa context-string character limit, not a local per-snippet cap.
+- `numResults` (optional): Exa only: number of results to return (default: 8). Ignored by Parallel.
+- `livecrawl` (optional): Exa only: "fallback" (default) or "preferred". Ignored by Parallel.
+- `type` (optional): Exa only: "auto" (default), "fast", or "deep". Ignored by Parallel.
+- `contextMaxCharacters` (optional): Exa only: context-string character limit, not a local per-snippet cap. Ignored by Parallel.
 
 ## Returns
 

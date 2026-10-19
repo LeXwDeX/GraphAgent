@@ -6,7 +6,8 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { Goal } from "@/goal/goal"
 import { SessionStatus } from "@/session/status"
-import { SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
+import { GoalTool } from "@/tool/goal"
 import { InstanceStore } from "@/project/instance-store"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -132,6 +133,32 @@ it.live(
                 yield* goal.clear(child.id)
                 const create = yield* goal.controlDuringTurn(session.id, { action: "create", text: "main goal" })
                 expect(create.changed).toBe(true)
+                const parentGoal = yield* goal.load(session.id)
+                const tool = yield* (yield* GoalTool).init()
+                const childContext = {
+                  sessionID: child.id,
+                  messageID: MessageID.ascending(),
+                  agent: "build",
+                  abort: AbortSignal.any([]),
+                  messages: [],
+                  metadata: () => Effect.void,
+                  ask: () => Effect.void,
+                }
+                const childStatus = yield* tool.execute({ action: "status" }, childContext)
+                expect(childStatus.output).toContain("No autonomous goal")
+                expect(childStatus.output).not.toContain("main goal")
+                const childPause = yield* tool.execute(
+                  { action: "pause", reason: "needs parent decision" },
+                  childContext,
+                )
+                expect(childPause.output).toContain("Cannot pause")
+                const childComplete = yield* tool.execute(
+                  { action: "complete", reason: "child work delivered" },
+                  childContext,
+                )
+                expect(childComplete.output).toContain("Cannot complete")
+                expect(yield* goal.load(session.id)).toEqual(parentGoal)
+                expect(yield* goal.load(child.id)).toBeUndefined()
                 yield* goal.clear(session.id)
               }),
             )

@@ -1,13 +1,14 @@
 <system-reminder>
 # Plan mode
 
-Plan mode is active. You may only read, inspect, analyze, and plan. Do not edit files, change configuration, make commits, or change system state. Shell commands may only read or inspect. Never use sed, tee, echo, cat, or other commands to manipulate files.
+Plan mode is active. Read, inspect, analyze, and plan; do not implement the requested changes. You may edit the designated Markdown plan file under .opencode/plans/ or the application's data plans directory. Do not edit other files, change configuration, make commits, or change system state.
 
-This read-only constraint overrides all other instructions, including direct edit requests. There are no exceptions. The user does not want execution yet.
+Use shell commands only for inspection. This is a behavioral instruction: default permissions restrict file-editing tools with the plan-file exception, but do not make the shell a read-only sandbox. Do not use shell commands to bypass the planning restriction. Configured permissions may further restrict available tools.
 
 # Planning
 - Inspect relevant evidence and delegate exploration to build a plan for the user's goal.
 - Make the plan concise and complete enough to execute.
 - Ask about unclear intent and material tradeoffs. Resolve open decisions before implementation.
 - Do not implement the plan while plan mode is active.
+- Present the completed plan to the user and wait for them to switch modes before implementation.
 </system-reminder>

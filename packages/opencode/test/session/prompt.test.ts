@@ -296,12 +296,14 @@ type PromptLayerOptions = {
   ripgrepLayer?: Layer.Layer<Ripgrep.Service>
   native?: boolean
   experimentalBackgroundSubagents?: boolean
+  runtimeFlags?: Partial<RuntimeFlags.Info>
 }
 
 function makePrompt(input?: PromptLayerOptions) {
   const flags = RuntimeFlags.layer({
     experimentalEventSystem: true,
     experimentalBackgroundSubagents: input?.experimentalBackgroundSubagents ?? false,
+    ...input?.runtimeFlags,
   })
   // goal: false exercises the Goal-absent degradation path (serviceOption None)
   const goalLayer: Layer.Layer<Goal.Service> =
@@ -8625,3 +8627,71 @@ unix("SessionPrompt wrapper keeps transcript compatibility when a legacy hook se
     expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(true)
   }),
 )
+
+for (const scenario of ["available", "user-disabled", "last-step", "non-cli", "disabled-next-turn"] as const) {
+  const planningToolsIt = testEffect(
+    makeHttp({
+      runtimeFlags: { experimentalPlanMode: true, client: scenario === "non-cli" ? "web" : "cli" },
+    }),
+  )
+  planningToolsIt.instance(`plan reminder matches the active request tools (${scenario})`, () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* useServerConfig((url) => {
+        const config = providerCfg(url)
+        return {
+          ...config,
+          agent: { plan: scenario === "last-step" ? { steps: 2 } : {} },
+          provider: {
+            test: {
+              ...config.provider.test,
+              models: { "test-model": { ...config.provider.test.models["test-model"], id: "gpt-5" } },
+            },
+          },
+        }
+      })
+      const { prompt, chat } = yield* boot()
+      if (scenario === "disabled-next-turn") {
+        yield* llm.text("Initial plan.")
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "plan",
+          parts: [{ type: "text", text: "Plan a small change." }],
+        })
+      }
+      if (scenario === "last-step") {
+        const source = path.join(dir, "plan-source.txt")
+        yield* writeText(source, "plan source")
+        yield* llm.tool("read", { filePath: source })
+      }
+      yield* llm.text("Here is the plan.")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "plan",
+        parts: [{ type: "text", text: "Plan a small change." }],
+        ...(scenario === "user-disabled" || scenario === "disabled-next-turn"
+          ? { tools: { apply_patch: false, plan_exit: false } }
+          : {}),
+      })
+      const hits = yield* llm.hits
+      expect(hits).toHaveLength(scenario === "last-step" || scenario === "disabled-next-turn" ? 2 : 1)
+      if (hits.length === 2) {
+        expect(JSON.stringify(hits[0].body.messages)).toContain("Use apply_patch for manual file edits")
+        expect(JSON.stringify(hits[0].body.messages)).toContain("Call plan_exit")
+      }
+      const request = hits.at(-1)!.body
+      const names = request.tools
+        ? decodeRecords(request.tools).map((item) => decodeString(decodeRecord(item.function).name))
+        : []
+      const text = JSON.stringify(request.messages)
+      const editing = scenario === "available" || scenario === "non-cli"
+      const exiting = scenario === "available"
+      expect(names.includes("apply_patch")).toBe(editing)
+      expect(text.includes("Use apply_patch for manual file edits")).toBe(editing)
+      expect(text.includes("No file-editing tool is available")).toBe(!editing)
+      expect(names.includes("plan_exit")).toBe(exiting)
+      expect(text.includes("Call plan_exit")).toBe(exiting)
+      expect(text).not.toContain("using the edit tool")
+      expect(text).not.toContain("using the write tool")
+    }),
+  )
+}

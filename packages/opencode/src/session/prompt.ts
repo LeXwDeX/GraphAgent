@@ -2960,11 +2960,6 @@ export const layer = Layer.effect(
           const isLastStep = step >= maxSteps
           const toolLimitReached = budget.exhausted
           const toolsDisabled = isLastStep || toolLimitReached
-          msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
-            Effect.provideService(RuntimeFlags.Service, flags),
-            Effect.provideService(FSUtil.Service, fsys),
-            Effect.provideService(Session.Service, sessions),
-          )
           // Issue #389: re-surface uncompleted todos once per model step
           // (in-memory synthetic part, skipped when all settled or when the
           // turn just updated the list via todowrite).
@@ -3081,6 +3076,21 @@ export const layer = Layer.effect(
                     Effect.provideService(Truncate.Service, truncate),
                   ),
                 )
+
+            const disabledTools = Permission.disabled(
+              Object.keys(tools),
+              Permission.merge(agent.permission, session.permission ?? []),
+            )
+            msgs = yield* SessionReminders.apply({
+              messages: msgs,
+              agent,
+              session,
+              tools: Object.keys(tools).filter((name) => lastUser.tools?.[name] !== false && !disabledTools.has(name)),
+            }).pipe(
+              Effect.provideService(RuntimeFlags.Service, flags),
+              Effect.provideService(FSUtil.Service, fsys),
+              Effect.provideService(Session.Service, sessions),
+            )
 
             if (!toolsDisabled && lastUser.format?.type === "json_schema") {
               tools["StructuredOutput"] = createStructuredOutputTool({

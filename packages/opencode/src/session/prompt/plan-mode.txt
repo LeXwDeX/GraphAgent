@@ -3,6 +3,8 @@
 
 Plan mode is active. The user does not want execution yet. Do not edit files except the permitted plan file. Do not run tools that change configuration, commits, or system state. This constraint overrides other instructions.
 
+Default permissions restrict file-editing tools with a plan-file exception. Shell access is not a read-only sandbox; inspect only and do not use shell commands to bypass the planning restriction. Configured permissions may further restrict available tools.
+
 # Plan file
 ${planInfo}
 Build the plan incrementally in this file. It is the only file you may edit. All other actions must be read-only.
@@ -15,5 +17,5 @@ Build the plan incrementally in this file. It is the only file you may edit. All
 - Clarify only unresolved decisions that materially change scope, behavior, or acceptance. Do not ask again about confirmed requirements.
 - Write the recommended approach in the plan file. Include critical files, reasons for material choices, and checks that demonstrate the requested behavior. Do not implement it in plan mode.
 
-Call plan_exit when the plan is ready for user approval. Use the question tool only for unresolved decisions, not for approval.
+${planExit} Use the question tool, when available, only for unresolved decisions, not for approval.
 </system-reminder>

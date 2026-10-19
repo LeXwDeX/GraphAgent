@@ -10,7 +10,9 @@ export const Parameters = Schema.Struct({
   text: Schema.optional(Schema.String).annotate({
     description: "Required for create. The goal to pursue; treated as literal text, not a slash command.",
   }),
-  max_turns: Schema.optional(Schema.Number).annotate({
+  max_turns: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+  ).annotate({
     description:
       "Positive integer total budget for create (default 20) or resume. Resume preserves used turns. Increase only with user authorization.",
   }),
@@ -185,7 +187,7 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
               metadata: { goal: null },
             }
           }
-          const completionMsg = `✓ 目标已达成（${finalState.turns_used}/${finalState.max_turns} 轮）：${finalState.goal}\nReason: ${params.reason.trim()}`
+          const completionMsg = `Goal completed (${finalState.turns_used}/${finalState.max_turns} turns): ${finalState.goal}\nReason: ${params.reason.trim()}`
           return {
             title: `goal completed (${finalState.turns_used}/${finalState.max_turns})`,
             output: completionMsg,

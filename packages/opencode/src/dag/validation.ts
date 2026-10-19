@@ -54,6 +54,7 @@ export const DIAGNOSTIC_CODES = {
   promptNonportableAsset: "prompt.nonportable_asset",
   workerUnknown: "worker.unknown",
   modelUnavailable: "model.unavailable",
+  modelLegacyPin: "model.legacy_pin",
   environmentUnavailable: "environment.unavailable",
   schemaKeywordWarning: "schema.keyword_warning",
 } as const

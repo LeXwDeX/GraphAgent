@@ -1,6 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { afterEach, describe, expect } from "bun:test"
-import { Cause, Effect, Exit, Layer, Stream } from "effect"
+import { afterEach, describe, expect, test } from "bun:test"
+import { Cause, Effect, Exit, Layer, Schema, Stream } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -12,7 +12,7 @@ import { LSP } from "@/lsp/lsp"
 import { Permission } from "../../src/permission"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Instruction } from "../../src/session/instruction"
-import { ReadTool } from "../../src/tool/read"
+import { Parameters, ReadTool } from "../../src/tool/read"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
 import { Filesystem } from "@/util/filesystem"
@@ -603,3 +603,12 @@ describe("tool.read binary detection", () => {
     }),
   )
 })
+
+// The public codec rejects invalid pagination before filesystem work.
+for (const field of ["offset", "limit"] as const) {
+  for (const value of [0, -1, 1.5]) {
+    test(`read rejects ${field}=${value}`, () => {
+      expect(() => Schema.decodeUnknownSync(Parameters)({ filePath: "/unused", [field]: value })).toThrow()
+    })
+  }
+}
