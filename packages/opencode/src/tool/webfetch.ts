@@ -137,6 +137,12 @@ export const WebFetchTool = Tool.define(
             }
           }
 
+          if (isBinaryResponse(mime, bytes)) {
+            throw new Error(
+              `The response is binary (${mime || "unknown content type"}, ${bytes.byteLength} bytes) and cannot be returned as text. Download it with a shell command (for example curl -o) and inspect it with a suitable tool instead.`,
+            )
+          }
+
           const charset = /(?:^|;)\s*charset\s*=\s*(?:"([^";]+)"|([^;\s]+))/i.exec(contentType)
           const encoding = charset?.[1] ?? charset?.[2] ?? "utf-8"
           let decoder: TextDecoder
@@ -176,6 +182,17 @@ export const WebFetchTool = Tool.define(
     }
   }),
 )
+
+const BINARY_MIME =
+  /^(?:audio|video|font)\/|^application\/(?:pdf|zip|gzip|x-gzip|x-tar|x-7z-compressed|x-rar-compressed|octet-stream|wasm|vnd\.ms-|vnd\.openxmlformats-)/
+const TEXT_MIME = /^text\/|[/+](?:json|xml|javascript|ecmascript|yaml|x-yaml|csv|toml)$/
+
+/** Decoding PDFs, archives or executables as text only feeds the model noise. */
+function isBinaryResponse(mime: string, bytes: Uint8Array) {
+  if (TEXT_MIME.test(mime)) return false
+  if (BINARY_MIME.test(mime)) return true
+  return bytes.subarray(0, 8192).includes(0)
+}
 
 function extractTextFromHTML(html: string) {
   let text = ""

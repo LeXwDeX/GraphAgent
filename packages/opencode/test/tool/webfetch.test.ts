@@ -131,6 +131,36 @@ it.instance("honors a supported declared charset", () =>
   ),
 )
 
+it.instance("refuses binary responses instead of decoding them as text", () =>
+  withFetch(
+    (req) =>
+      new URL(req.url).pathname === "/doc.pdf"
+        ? new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x0a, 0xff]), {
+            headers: { "content-type": "application/pdf" },
+          })
+        : new Response(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01]), {
+            headers: { "content-type": "" },
+          }),
+    (url) =>
+      Effect.gen(function* () {
+        for (const file of ["/doc.pdf", "/program"]) {
+          const exit = yield* exec({ url: new URL(file, url).href, format: "text" }).pipe(Effect.exit)
+          expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause))).toContain("The response is binary")
+        }
+      }),
+  ),
+)
+
+it.instance("keeps json responses as text output", () =>
+  withFetch(
+    () => new Response('{"ok":true}', { headers: { "content-type": "application/vnd.api+json" } }),
+    (url) =>
+      Effect.gen(function* () {
+        expect((yield* exec({ url: url.href, format: "text" })).output).toBe('{"ok":true}')
+      }),
+  ),
+)
+
 it.instance("rejects unsupported charsets explicitly", () =>
   withFetch(
     () => new Response("text", { headers: { "content-type": "text/plain; charset=not-a-charset" } }),
