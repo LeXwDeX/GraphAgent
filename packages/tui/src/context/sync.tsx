@@ -821,15 +821,15 @@ export const {
                 if (match.found && !tracker.session) draft.session[match.index] = session.data
                 if (!match.found && !tracker.session) draft.session.splice(match.index, 0, session.data)
                 const currentMessages = draft.message[sessionID] ?? []
+                const currentMessageByID = new Map(currentMessages.map((item) => [item.id, item]))
                 const infos = (messages.data ?? []).flatMap((message) => {
                   if (!tracker.messages.has(message.info.id)) return [message.info]
-                  const current = currentMessages.find((item) => item.id === message.info.id)
+                  const current = currentMessageByID.get(message.info.id)
                   return current ? [current] : []
                 })
+                const infoIDs = new Set(infos.map((item) => item.id))
                 infos.push(
-                  ...currentMessages.filter(
-                    (message) => tracker.messages.has(message.id) && !infos.some((item) => item.id === message.id),
-                  ),
+                  ...currentMessages.filter((message) => tracker.messages.has(message.id) && !infoIDs.has(message.id)),
                 )
                 const removed = infos.slice(0, -100)
                 const visible = infos.slice(-100)
@@ -840,8 +840,9 @@ export const {
                     continue
                   }
                   const currentParts = draft.part[message.info.id] ?? []
+                  const currentPartByID = new Map(currentParts.map((item) => [item.id, item]))
                   const parts = message.parts.flatMap((part) => {
-                    const current = currentParts.find((item) => item.id === part.id)
+                    const current = currentPartByID.get(part.id)
                     if (tracker.parts.has(part.id)) return current ? [current] : []
                     if (
                       current &&
@@ -854,11 +855,8 @@ export const {
                     }
                     return [part]
                   })
-                  parts.push(
-                    ...currentParts.filter(
-                      (part) => tracker.parts.has(part.id) && !parts.some((item) => item.id === part.id),
-                    ),
-                  )
+                  const partIDs = new Set(parts.map((item) => item.id))
+                  parts.push(...currentParts.filter((part) => tracker.parts.has(part.id) && !partIDs.has(part.id)))
                   draft.part[message.info.id] = parts
                 }
                 for (const message of removed) delete draft.part[message.id]
