@@ -112,7 +112,7 @@ export const ApplyPatchTool = Tool.define(
               )
             }
 
-            const source = yield* Bom.readFile(afs, filePath)
+            const source = yield* Bom.readEditableFile(afs, filePath)
             const oldContent = source.text
             let newContent = oldContent
             let bom = source.bom
@@ -139,14 +139,18 @@ export const ApplyPatchTool = Tool.define(
               if (change.removed) deletions += change.count || 0
             }
 
-            const movePath = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
+            const target = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
+            // Moving onto itself is an in-place update; as a move it would write
+            // the file and then remove it.
+            const movePath =
+              target && FSUtil.normalizePath(target) !== FSUtil.normalizePath(filePath) ? target : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
 
             fileChanges.push({
               filePath,
               oldContent,
               newContent,
-              type: hunk.move_path ? "move" : "update",
+              type: movePath ? "move" : "update",
               movePath,
               diff,
               additions,
@@ -262,12 +266,14 @@ export const ApplyPatchTool = Tool.define(
         yield* events.publish(Watcher.Event.Updated, update)
       }
 
-      // Notify LSP of file changes and collect diagnostics
-      for (const change of fileChanges) {
-        if (change.type === "delete") continue
-        const target = change.movePath ?? change.filePath
-        yield* lsp.touchFile(target, "document")
-      }
+      // Notify LSP of file changes and collect diagnostics. Each touch may wait
+      // up to the diagnostics timeout, so files settle concurrently rather than
+      // stacking one wait per file.
+      yield* Effect.forEach(
+        fileChanges.filter((change) => change.type !== "delete"),
+        (change) => lsp.touchFile(change.movePath ?? change.filePath, "document"),
+        { concurrency: 8, discard: true },
+      )
       const diagnostics = yield* lsp.diagnostics()
 
       // Generate output summary

@@ -161,6 +161,28 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("keeps long-line matches within the shared output byte budget", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 60 }, (_, index) =>
+            Bun.write(path.join(test.directory, `wide-${index}.txt`), `needle ${"x".repeat(1_900)}`),
+          ),
+        ),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt" }, ctx)
+
+      expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(Truncate.MAX_BYTES + 1_024)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.metadata.matches).toBeLessThan(60)
+      expect(result.output).toContain("more matches available")
+      expect(result.output).toContain("(Results truncated. Consider using a more specific path or pattern.)")
+    }),
+  )
+
   it.instance("does not report an unknown total when results are truncated", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

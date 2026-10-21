@@ -348,6 +348,25 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
+  test("does not read token counts in a 4xx body as a retryable status", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "max_tokens: 15000 > 4096, which is the maximum allowed",
+        isRetryable: false,
+        statusCode: 400,
+        responseBody: JSON.stringify({ error: { message: "prompt is 150000 tokens, request id req_5029" } }),
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("still retries a bare status code in a provider message", () => {
+    expect(SessionRetry.retryable(wrap("upstream returned 503"), retryProvider)).toEqual({
+      message: "upstream returned 503",
+    })
+  })
+
   test("retries ZlibError decompression failures", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({

@@ -171,6 +171,36 @@ describe("Ripgrep", () => {
     ),
   )
 
+  it.live("keeps other matches when one record is non-UTF-8 or oversized", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            Promise.all([
+              // "needle 你好" with the CJK text encoded as GBK.
+              fs.writeFile(
+                path.join(tmp.path, "gbk.txt"),
+                Buffer.concat([Buffer.from("needle "), Buffer.from([0xc4, 0xe3, 0xba, 0xc3, 0x0a])]),
+              ),
+              fs.writeFile(path.join(tmp.path, "bundle.min.js"), `needle${"x".repeat(80_000)}\n`),
+              fs.writeFile(path.join(tmp.path, "plain.txt"), "needle here\n"),
+            ]),
+          )
+
+          const matches = yield* (yield* Ripgrep.Service).grep({
+            cwd: tmp.path,
+            pattern: "needle",
+            limit: 10,
+          })
+
+          expect(matches.map((match) => String(match.entry.path)).sort()).toEqual(["gbk.txt", "plain.txt"])
+          expect(matches.find((match) => String(match.entry.path) === "gbk.txt")?.text).toStartWith("needle ")
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("surfaces directory traversal failures instead of a partial-success result", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

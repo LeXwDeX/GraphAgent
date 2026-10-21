@@ -17,6 +17,7 @@ import {
   formatDagAgentMessages,
   formatDagAgentInput,
   mergeDagWorkflowSummaries,
+  sameDagNodes,
   type DagNode,
 } from "../../src/feature-plugins/system/dag-inspector-utils"
 
@@ -39,6 +40,20 @@ describe("agent observations", () => {
       agent_messages: { queued: 2, delivered: 1, undeliverable: 1 } }
     expect(formatDagAgentMessages(observed)).toBe("messages 2 queued · 1 delivered · 1 undeliverable")
     expect(formatDagAgentInput(observed)).toBe("attempt attempt-1 · input 4 · snapshot 2")
+  })
+})
+
+describe("sameDagNodes", () => {
+  test("treats a re-fetched identical snapshot as unchanged", () => {
+    const current = [node("a"), node("b", ["a"])]
+    expect(sameDagNodes(current, [node("a"), node("b", ["a"])])).toBe(true)
+  })
+
+  test("detects status, topology and size changes", () => {
+    const current = [node("a"), node("b", ["a"])]
+    expect(sameDagNodes(current, [{ ...node("a"), status: "running" }, node("b", ["a"])])).toBe(false)
+    expect(sameDagNodes(current, [node("a"), node("b")])).toBe(false)
+    expect(sameDagNodes(current, [node("a")])).toBe(false)
   })
 })
 

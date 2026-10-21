@@ -105,6 +105,11 @@ function lastUser(messages: SessionV1.WithParts[]) {
   return messages.findLast((m) => m.info.role === "user")
 }
 
+function reminderText(messages: SessionV1.WithParts[]) {
+  const part = lastUser(messages)?.parts.at(-1)
+  return part?.type === "text" ? part.text : undefined
+}
+
 describe("TodoReminders.apply (issue #389)", () => {
   runtime.effect("injects nothing when the session has no todos", () =>
     Effect.gen(function* () {
@@ -269,6 +274,38 @@ describe("TodoReminders run-loop guarantees (issue #389 review)", () => {
 
       // The durable base stays pristine — the injection is per-request only.
       expect(lastUser(durableBase)?.parts).toHaveLength(1)
+    }),
+  )
+
+  runtime.effect("later steps of a turn reuse the turn's reminder so the cached prefix stays stable", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("ses_pinned")
+      const durableBase = [userMessage("work")]
+      const first = yield* TodoReminders.apply({ messages: structuredClone(durableBase), sessionID }).pipe(
+        Effect.provide(makeTodoLayer([{ content: "a", status: "pending", priority: "high" }])),
+      )
+      const firstText = reminderText(first)
+
+      // The model then updates the list mid-turn. Neither the todowrite
+      // freshness guard nor the new list may rewrite the turn's reminder.
+      const later = [
+        ...structuredClone(durableBase),
+        assistantMessage([{ name: "todowrite", status: "completed" }]),
+      ]
+      const second = yield* TodoReminders.apply({ messages: later, sessionID }).pipe(
+        Effect.provide(makeTodoLayer([{ content: "b", status: "in_progress", priority: "high" }])),
+      )
+      expect(lastUser(second)?.parts).toHaveLength(2)
+      expect(reminderText(second)).toBe(firstText)
+
+      // A new user message starts a new turn with a freshly decided reminder.
+      const nextTurn = [...later, userMessage("continue")]
+      const third = yield* TodoReminders.apply({ messages: nextTurn, sessionID }).pipe(
+        Effect.provide(makeTodoLayer([{ content: "b", status: "in_progress", priority: "high" }])),
+      )
+      const thirdText = reminderText(third)
+      expect(thirdText).toContain("b")
+      expect(thirdText).not.toBe(firstText)
     }),
   )
 

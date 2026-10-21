@@ -58,6 +58,17 @@ export function computeWaves(nodes: readonly DagNode[]): DagNode[][] {
 }
 
 /**
+ * Structural equality for polled node snapshots. The inspector re-fetches every
+ * two seconds; an unchanged snapshot must keep the current array so the wave
+ * list is not torn down and rebuilt.
+ */
+export function sameDagNodes(a: readonly DagNode[], b: readonly DagNode[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  return a.every((node, index) => node === b[index] || JSON.stringify(node) === JSON.stringify(b[index]))
+}
+
+/**
  * Visual row index of a node inside the rendered wave list, counting one row
  * per wave header, one row per node, and one blank spacer row between waves.
  * Used to scroll the selected node into view — valid only while every node

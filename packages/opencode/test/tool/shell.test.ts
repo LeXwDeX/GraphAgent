@@ -1156,6 +1156,32 @@ describe("tool.shell abort", () => {
       }),
     ),
   )
+
+  it.live("coalesces chatty output into bounded metadata updates", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          {
+            command: `for i in $(seq 1 40); do echo line-$i; sleep 0.01; done`,
+          },
+          {
+            ...ctx,
+            metadata: (input) =>
+              Effect.sync(() => {
+                const output: unknown = input.metadata?.output
+                if (typeof output === "string" && output) updates.push(output)
+              }),
+          },
+        )
+        expect(result.output).toContain("line-40")
+        // 40 separate chunks over ~0.4s+ must not become 40 durable writes.
+        expect(updates.length).toBeLessThan(20)
+        expect(updates.at(-1)).toContain("line-40")
+      }),
+    ),
+  )
 })
 
 describe("tool.shell silence guard", () => {
@@ -1208,10 +1234,7 @@ describe("tool.shell silence guard", () => {
         projectRoot,
         Effect.gen(function* () {
           const warned: string[] = []
-          const result = yield* run(
-            { command: `sleep 1 && echo tick && sleep 1 && echo done` },
-            collector(warned),
-          )
+          const result = yield* run({ command: `sleep 1 && echo tick && sleep 1 && echo done` }, collector(warned))
           expect(result.metadata.exit).toBe(0)
           expect(result.output).toContain("tick")
           expect(result.output).toContain("done")
