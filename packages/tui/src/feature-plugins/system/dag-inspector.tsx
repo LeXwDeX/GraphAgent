@@ -13,6 +13,7 @@ import { selectedForeground, useTheme } from "../../context/theme"
 import {
   computeNodeRowIndex,
   computeWaves,
+  sameDagNodes,
   dagControlProgressMessage,
   dagControlUnavailableMessage,
   dagNodeGlyph,
@@ -161,7 +162,7 @@ function DagInspector(props: { api: TuiPluginApi }) {
 
   const [selectedWorkflow, setSelectedWorkflow] = createSignal<string | undefined>(undefined)
   const [selectedNode, setSelectedNode] = createSignal<string | undefined>(undefined)
-  const [nodes, setNodes] = createSignal<DagNode[]>([])
+  const [nodes, setNodes] = createSignal<DagNode[]>([], { equals: sameDagNodes })
   const [fetchedWorkflows, setFetchedWorkflows] = createSignal<ReadonlyArray<DagWorkflowSummary> | undefined>()
   const [projectWorkflows, setProjectWorkflows] = createSignal<ReadonlyArray<DagWorkflowSummary>>([])
   const [workflowLoad, setWorkflowLoad] = createSignal<"loading" | "loaded" | "error">("loading")
