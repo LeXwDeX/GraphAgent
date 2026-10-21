@@ -38,13 +38,21 @@ const TODO_WRITE_TOOL = "todowrite"
 // reminder this turn. One entry per live session, overwritten each turn.
 const remindedTurns = new Map<string, string>()
 
+// sessionID -> the per-step reminder decided for the current user message.
+// The reminder sits before every tool round-trip of the turn, so re-rendering
+// it each step (or dropping it after a todowrite) would invalidate the cached
+// prompt for the whole turn. It is decided once per user message; mid-turn
+// changes reach the model through the pre-tool-call seam at the tail.
+const pinnedTurns = new Map<string, { userMessageID: string; text: string | undefined }>()
+
 function uncompletedOf(todos: Todo.Info[]): Todo.Info[] {
   return todos.filter((item) => item.status !== "completed" && item.status !== "cancelled")
 }
 
 function turnJustUpdatedTodos(messages: SessionV1.WithParts[]): boolean {
-  const lastAssistant = messages.findLast((msg) => msg.info.role === "assistant")
-  if (!lastAssistant) return false
+  const lastAssistant = messages.at(-1)
+  // A todowrite from a previous turn must not suppress this turn's reminder.
+  if (lastAssistant?.info.role !== "assistant") return false
   return lastAssistant.parts.some(
     (part): part is SessionV1.ToolPart =>
       part.type === "tool" && part.tool === TODO_WRITE_TOOL && part.state.status === "completed",
@@ -64,19 +72,27 @@ export const apply = Effect.fn("TodoReminders.apply")(function* (input: {
   messages: SessionV1.WithParts[]
   sessionID: SessionID
 }) {
-  const todo = yield* Todo.Service
-  const todos = yield* todo.get(input.sessionID)
-  const uncompleted = uncompletedOf(todos)
-  if (uncompleted.length === 0) return input.messages
   const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
   if (!userMessage) return input.messages
-  if (turnJustUpdatedTodos(input.messages)) return input.messages
+  const pinned = pinnedTurns.get(input.sessionID)
+  const text =
+    pinned?.userMessageID === userMessage.info.id
+      ? pinned.text
+      : yield* Effect.gen(function* () {
+          const todo = yield* Todo.Service
+          const uncompleted = uncompletedOf(yield* todo.get(input.sessionID))
+          const next =
+            uncompleted.length === 0 || turnJustUpdatedTodos(input.messages) ? undefined : renderReminder(uncompleted)
+          pinnedTurns.set(input.sessionID, { userMessageID: userMessage.info.id, text: next })
+          return next
+        })
+  if (!text) return input.messages
   userMessage.parts.push({
     id: PartID.ascending(),
     messageID: userMessage.info.id,
     sessionID: input.sessionID,
     type: "text",
-    text: renderReminder(uncompleted),
+    text,
     synthetic: true,
   } satisfies SessionV1.TextPart)
   return input.messages

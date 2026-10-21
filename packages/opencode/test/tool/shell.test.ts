@@ -1170,8 +1170,8 @@ describe("tool.shell abort", () => {
             ...ctx,
             metadata: (input) =>
               Effect.sync(() => {
-                const output = (input.metadata as { output?: string })?.output
-                if (output) updates.push(output)
+                const output: unknown = input.metadata?.output
+                if (typeof output === "string" && output) updates.push(output)
               }),
           },
         )
