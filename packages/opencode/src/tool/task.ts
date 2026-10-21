@@ -299,6 +299,17 @@ export const TaskTool = Tool.define(
           { internalDelegation: true },
         )
         const text = result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        // A child that ended on a provider or output error must not read as a
+        // completed task carrying an empty or partial answer. Cancellation keeps
+        // its existing interrupt path.
+        const error = result.info.role === "assistant" ? result.info.error : undefined
+        if (error && error.name !== "MessageAbortedError") {
+          const detail = "message" in error.data && typeof error.data.message === "string" ? error.data.message : ""
+          const reason = detail ? `${error.name}: ${detail}` : error.name
+          return yield* Effect.fail(
+            new Error(text ? `Subagent failed (${reason}). Partial output:\n${text}` : `Subagent failed (${reason})`),
+          )
+        }
         return text
       })
 
