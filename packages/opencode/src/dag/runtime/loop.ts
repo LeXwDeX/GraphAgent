@@ -608,6 +608,17 @@ const serviceLayer = Layer.effect(
           const entry = runtimes.get(dagID)
           if (!entry) return
           if (!entry.runtime.isComplete()) return
+          // Graph-generation fence: a replan commits its NodeCancelled rows and
+          // WorkflowReplanned (graph_rev + 1) in one durable batch, but the two
+          // event types are consumed by independent handlers. When the
+          // cancellation handler wins, it evaluates the OBSOLETE runtime graph:
+          // a cancelled required node cascades its old dependents to
+          // unsatisfied, so the stale graph looks complete with a required
+          // failure even though the new revision rewired them. Only the
+          // runtime paired with the durable revision may terminalize the
+          // workflow; the WorkflowReplanned handler rebuilds and re-checks.
+          const current = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+          if (current && current.graphRev !== entry.graphRev) return
           // A reporting leaf checkpoint is already runtime-complete. Recover
           // and enforce its veto before publishing WorkflowCompleted.
           if (yield* enforceCheckpointGate(dagID, entry)) return

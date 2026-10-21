@@ -438,6 +438,77 @@ describe("DagLoop replan vs stale NodeFailed", () => {
     )
   })
 
+  it("keeps running when replan cancels a running required node and rewires its dependent", async () => {
+    // The NodeCancelled handler can win the cross-stream race against
+    // WorkflowReplanned. Hold the rebuild so the cancellation is evaluated
+    // against the obsolete graph: X (required) cascades its old dependent Y
+    // to unsatisfied, the old runtime looks complete with a required failure,
+    // and the workflow must still not be failed on the replaced segment.
+    const holdReplan = await Effect.runPromise(Deferred.make<void>())
+    await Effect.runPromise(
+      runLoopTest(
+        ({ dag, store, childPrompts, parentPrompts }) =>
+          Effect.gen(function* () {
+            const dagID = yield* dag.create({
+              projectID: "project-1",
+              sessionID: "ses_parent",
+              title: "Replan required cancel",
+              config: {
+                name: "replan-required-cancel",
+                result_protocol: "submit_result",
+                nodes: [
+                  { ...node("a"), report_to_parent: false },
+                  { ...node("x", ["a"]), report_to_parent: false },
+                  node("y", ["x"]),
+                ],
+              },
+            })
+            const a = yield* takeWithin(childPrompts, "a did not start")
+            expect(a.title).toBe("a")
+            yield* Deferred.succeed(a.release, "a done")
+            const x = yield* takeWithin(childPrompts, "x did not start")
+            expect(x.title).toBe("x")
+
+            const plan = yield* dag.replan(dagID, {
+              nodes: [
+                { ...node("x", ["a"]), report_to_parent: false, cancel: true },
+                node("y", ["a"]),
+              ],
+            })
+            expect(plan.cancel).toEqual(["x"])
+            expect(plan.replace).toEqual(["y"])
+
+            // The cancellation handler runs against the old graph while the
+            // rebuild is held. It must not terminalize the workflow.
+            yield* pollWithTimeout(
+              store.getNode(dagID, "x").pipe(
+                Effect.map((row) => (row?.status === "failed" ? row : undefined)),
+              ),
+              "x was not cancelled",
+            )
+            yield* Effect.sleep("300 millis")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+            expect((yield* store.getNode(dagID, "y"))?.status).toBe("pending")
+
+            yield* Deferred.succeed(holdReplan, undefined)
+            const y = yield* takeWithin(childPrompts, "y did not run under the rewired graph")
+            expect(y.title).toBe("y")
+            yield* Deferred.succeed(y.release, "y done")
+            const workflow = yield* pollWithTimeout(
+              store.getWorkflow(dagID).pipe(
+                Effect.map((row) => (row && row.status !== "running" ? row : undefined)),
+              ),
+              "workflow did not settle under the rewired graph",
+            )
+            expect(workflow.status).toBe("completed")
+            const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")
+            yield* Deferred.succeed(parent.release, "success")
+          }),
+        { holdReplan },
+      ),
+    )
+  })
+
   it("interrupts the replan-restarted node's old fiber so its timeout cannot poison the new generation", async () => {
     await Effect.runPromise(
       runLoopTest(({ dag, store, childPrompts, parentPrompts }) =>
