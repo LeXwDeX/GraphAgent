@@ -1,21 +1,18 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Option, Schema } from "effect"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 import type { WorkflowConfig } from "../dag"
-
-const ReplanVerdict = Schema.Struct({ verdict: Schema.Literal("replan") })
-const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+import { verdictField } from "./verdict"
 
 export interface ReplanCheckpoint {
   readonly id: string
   readonly seq: number
 }
 
+/** A `{ verdict: "replan" }` object output (any case, JSON string or fenced). */
 export function isReplanVerdict(output: unknown) {
-  const value = typeof output === "string" ? Option.getOrElse(parseJsonOption(output), () => output) : output
-  return Option.isSome(Schema.decodeUnknownOption(ReplanVerdict)(value))
+  return verdictField(output) === "REPLAN"
 }
 
 export function latestReplanCheckpoint(

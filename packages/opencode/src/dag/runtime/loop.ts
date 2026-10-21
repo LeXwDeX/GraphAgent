@@ -66,6 +66,7 @@ import {
   makeLastAssistantMessageReader,
 } from "./recovery"
 import { Checkpoint } from "./checkpoint"
+import { normalizeOutput } from "./verdict"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
 import { makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
@@ -352,18 +353,13 @@ const serviceLayer = Layer.effect(
                 // equality gate was permanently false, every gated dependent
                 // was skipped as condition_false, and checkCompletion still
                 // reported the workflow COMPLETED (silent half-graph loss).
-                // Mirrors the replan-verdict gate's parseJsonOption
+                // Shares the replan-verdict gate's normalizeOutput
                 // normalization in the NodeCompleted handler below (issue
                 // #322). Non-JSON strings fall back to the raw value:
                 // whole-output equality still works, field paths stay
                 // undefined (documented condition_false), and numeric
                 // comparisons keep their loud failure.
-                outputs[dep] = {
-                  output:
-                    typeof depNode.output === "string"
-                      ? Option.getOrElse(parseJsonOption(depNode.output), () => depNode.output)
-                      : depNode.output,
-                }
+                outputs[dep] = { output: normalizeOutput(depNode.output) }
               }
               const condResult = evaluateCondition(nodeConfig.condition, outputs)
               if (!condResult.ok) {
