@@ -228,6 +228,7 @@ export const layer = Layer.effect(
     const { db } = yield* Database.Service
     const transaction = <A, E, R>(body: (tx: Tx) => Effect.Effect<A, E, R>) =>
       db.transaction(body, { behavior: "immediate" }).pipe(Effect.orDie)
+    const read = <A, E, R>(body: (tx: Tx) => Effect.Effect<A, E, R>) => db.transaction(body).pipe(Effect.orDie)
     const workflow = (tx: Tx, id: string) => tx.get<Workflow>(sql`SELECT * FROM workflow WHERE id = ${id}`)
     const node = (tx: Tx, workflowID: string, nodeID: string) =>
       tx.get<Node>(sql`SELECT * FROM workflow_node WHERE workflow_id = ${workflowID} AND id = ${nodeID}`)
@@ -769,8 +770,10 @@ export const layer = Layer.effect(
             return success(yield* metadata(tx, endpoint))
           }),
         ),
+      // Polled every 250ms per directory: a read-only scan must not take the
+      // write reservation that stream persistence and acceptance compete for.
       pendingRecipients: (scope) =>
-        transaction((tx) =>
+        read((tx) =>
           Effect.gen(function* () {
             const limit = Math.min(64, Math.max(1, Math.floor(scope.limit ?? 20)))
             if (!Number.isFinite(limit)) return []
