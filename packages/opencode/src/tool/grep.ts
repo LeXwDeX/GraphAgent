@@ -7,6 +7,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./grep.txt"
 import { describeSearchPathFailure } from "./search-path"
 import * as Tool from "./tool"
+import * as Truncate from "./truncate"
 
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The regex pattern to search for in file contents" }),
@@ -81,25 +82,32 @@ export const GrepTool = Tool.define(
           })
           if (result.length === 0) return empty
 
-          const truncated = result.length > limit
           const rows = result.slice(0, limit).map((item) => ({
             path: path.resolve(cwd, item.entry.path),
             line: item.line,
             text: item.text,
           }))
 
-          const total = rows.length
-          const output = [`Found ${total} matches${truncated ? " (more matches available)" : ""}`]
-
+          // Setting metadata.truncated opts out of the shared output cap, so the
+          // listing enforces the same byte budget itself.
+          const body: string[] = []
+          let bytes = 0
+          let shown = 0
           let current = ""
           for (const match of rows) {
-            if (current !== match.path) {
-              if (current !== "") output.push("")
-              current = match.path
-              output.push(`${match.path}:`)
-            }
-            output.push(`  Line ${match.line}: ${match.text}`)
+            const lines = current === match.path ? [] : [...(current === "" ? [] : [""]), `${match.path}:`]
+            lines.push(`  Line ${match.line}: ${match.text}`)
+            const size = Buffer.byteLength(lines.join("\n"), "utf8") + 1
+            if (shown > 0 && bytes + size > Truncate.MAX_BYTES) break
+            body.push(...lines)
+            bytes += size
+            shown++
+            current = match.path
           }
+
+          const total = shown
+          const truncated = result.length > shown
+          const output = [`Found ${total} matches${truncated ? " (more matches available)" : ""}`, ...body]
 
           if (truncated) {
             output.push("")
