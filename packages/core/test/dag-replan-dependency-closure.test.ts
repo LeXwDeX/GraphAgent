@@ -88,4 +88,45 @@ describe("replan dependency closure (#697)", () => {
     expect(plan.cancel).toEqual([])
     expect(plan.mergedGraph.hasEdge("running", "done")).toBe(true)
   })
+  it("rejects a new node depending on a node an earlier replan superseded", () => {
+    // A superseded row is out of the current graph revision: the runtime
+    // rebuilds from current rows only and would drop the edge, running the
+    // dependent as a root. The plan must reject it with an actionable error.
+    const plan = planReplan(
+      { nodes: [
+        { id: "done", status: NodeStatus.COMPLETED, depends_on: [] },
+        { id: "old", status: NodeStatus.FAILED, depends_on: ["done"], superseded: true },
+      ] },
+      { nodes: [{ id: "new", depends_on: ["old"] }] },
+    )
+    expect(plan.errors).toEqual([
+      expect.stringContaining('Node "new" depends on "old", which an earlier replan superseded'),
+    ])
+  })
+
+  it("rejects a pending replacement rewired onto a superseded node", () => {
+    const plan = planReplan(
+      { nodes: [
+        { id: "old", status: NodeStatus.FAILED, depends_on: [], superseded: true },
+        { id: "next", status: NodeStatus.PENDING, depends_on: [] },
+      ] },
+      { nodes: [{ id: "next", depends_on: ["old"] }] },
+    )
+    expect(plan.errors).toEqual([expect.stringContaining('Node "next" depends on "old"')])
+  })
+
+  it("keeps terminal history on superseded nodes and excludes them from the merged graph", () => {
+    const plan = planReplan(
+      { nodes: [
+        { id: "old", status: NodeStatus.FAILED, depends_on: [], superseded: true },
+        { id: "done", status: NodeStatus.COMPLETED, depends_on: ["old"] },
+      ] },
+      { nodes: [{ id: "old", depends_on: [] }, { id: "next", depends_on: ["done"] }] },
+    )
+    expect(plan.errors).toEqual([])
+    expect(plan.ignore).toEqual(["old"])
+    expect(plan.add).toEqual(["next"])
+    expect(plan.mergedGraph.hasNode("old")).toBe(false)
+    expect(plan.mergedGraph.hasEdge("next", "done")).toBe(true)
+  })
 })

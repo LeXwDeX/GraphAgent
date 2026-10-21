@@ -509,6 +509,39 @@ describe("DagLoop replan vs stale NodeFailed", () => {
     )
   })
 
+  it("rejects a replan that wires a new node onto a node an earlier replan superseded", async () => {
+    await Effect.runPromise(
+      runLoopTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Superseded dependency",
+            config: {
+              name: "superseded-dependency",
+              result_protocol: "submit_result",
+              nodes: [{ ...node("a"), report_to_parent: false }, { ...node("x"), report_to_parent: false }],
+            },
+          })
+          const first = yield* takeWithin(childPrompts, "first root did not start")
+          const second = yield* takeWithin(childPrompts, "second root did not start")
+          const x = [first, second].find((gate) => gate.title === "x")
+          expect(x).toBeDefined()
+
+          yield* dag.replan(dagID, { nodes: [{ ...node("x"), report_to_parent: false, cancel: true }] })
+          expect((yield* store.getNode(dagID, "x"))?.superseded).toBe(true)
+
+          const outcome = yield* dag
+            .replan(dagID, { nodes: [{ ...node("late", ["x"]), report_to_parent: false }] })
+            .pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => "accepted" }))
+          expect(outcome).toContain('Node "late" depends on "x", which an earlier replan superseded')
+          expect(yield* store.getNode(dagID, "late")).toBeUndefined()
+          for (const gate of [first, second]) yield* Deferred.succeed(gate.release, "done")
+        }),
+      ),
+    )
+  })
+
   it("interrupts the replan-restarted node's old fiber so its timeout cannot poison the new generation", async () => {
     await Effect.runPromise(
       runLoopTest(({ dag, store, childPrompts, parentPrompts }) =>
