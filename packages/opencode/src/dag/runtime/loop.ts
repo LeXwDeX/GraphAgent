@@ -280,6 +280,8 @@ const serviceLayer = Layer.effect(
         })
 
         let startMessageContinuations: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
+        // Forward reference for the condition-skip rescan inside spawnReady.
+        let rescanReady: (dagID: string) => Effect.Effect<void, Error, Scope.Scope> = () => Effect.void
         const spawnReady = Effect.fn("DagLoop.spawnReady")(function* (dagID: string) {
           const entry = runtimes.get(dagID)
           if (!entry) return
@@ -309,6 +311,13 @@ const serviceLayer = Layer.effect(
           // dag.jsonc defaults are read once per scheduling round (lazy, like
           // templates) so edits apply to the next round without a restart.
           const dagConfig: DagConfig.Info = ready.length > 0 ? yield* DagConfig.load(ctx.directory) : {}
+          // A condition_false skip settles a node inside this round, after the
+          // ready set was computed. Its NodeSkipped handler sees the node
+          // already settled and does not reschedule, so a mixed fan-in it just
+          // unlocked (e.g. a review decision over skipped lanes plus a
+          // completed verification) would stay pending forever. Rescan once
+          // the round is done; step mode keeps its one-node-per-step contract.
+          let rescan = false
           for (const nodeID of ready) {
             const node = nodesSnapshot.find((n) => n.id === nodeID)
             if (!node) continue
@@ -374,6 +383,7 @@ const serviceLayer = Layer.effect(
                 if (skipped) {
                   entry.runtime.markSkipped(nodeID)
                   yield* convergeSkippedNodes(dagID, entry)
+                  rescan = true
                 }
                 continue
               }
@@ -611,7 +621,9 @@ const serviceLayer = Layer.effect(
               Effect.ignore,
             )
           }
+          if (rescan && !entry.runtime.isStepMode()) yield* rescanReady(dagID)
         })
+        rescanReady = spawnReady
 
         const checkCompletion = Effect.fn("DagLoop.checkCompletion")(function* (dagID: string) {
           const entry = runtimes.get(dagID)

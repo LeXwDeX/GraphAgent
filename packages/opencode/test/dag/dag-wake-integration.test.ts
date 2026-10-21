@@ -757,6 +757,48 @@ describe("DagLoop atomic wake integration", () => {
     )
   })
 
+  it("schedules a mixed fan-in unlocked by a condition-false skip in the same round", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Condition skip fan-in",
+            config: {
+              name: "condition-skip-fan-in",
+              nodes: [
+                { ...node("gate"), report_to_parent: false },
+                {
+                  ...node("lane", ["gate"]),
+                  required: false,
+                  report_to_parent: false,
+                  condition: 'gate.output == "go"',
+                },
+                { ...node("decision", ["lane", "gate"]), report_to_parent: false },
+              ],
+            },
+          })
+          const gate = yield* takeWithin(childPrompts, "gate did not start")
+          yield* Deferred.succeed(gate.release, "stop")
+
+          // The lane is skipped inside the scheduling round that also made
+          // the decision ready; the decision must still be dispatched.
+          const decision = yield* takeWithin(childPrompts, "decision did not start after its lane was skipped")
+          expect(decision.title).toBe("decision")
+          expect((yield* store.getNode(dagID, "lane"))?.errorReason).toBe("condition_false")
+          yield* Deferred.succeed(decision.release, "decided")
+          yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined)),
+            ),
+            "workflow did not complete",
+          )
+        }),
+      ),
+    )
+  })
+
   it("injects direct dependency outputs into an aggregate node by default", async () => {
     await Effect.runPromise(
       runWakeTest(({ dag, childPrompts }) =>
