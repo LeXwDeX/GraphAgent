@@ -75,6 +75,14 @@ import { deliverReport, selectReportNode } from "./report-delivery"
 import { Logging } from "@opencode-ai/core/observability/logging"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+
+/** Explicit input text for a dependency that settled without output. */
+function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
+  if (node?.status === "failed") return `Dependency "${node.id}" failed: ${node.errorReason ?? "unknown error"}`
+  if (node?.status === "skipped") return `Dependency "${node.id}" skipped: ${node.errorReason ?? "no output"}`
+  if (node?.status === "aborted") return `Dependency "${node.id}" aborted`
+  return undefined
+}
 const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
 
 /** Stable local receipt for the exact durable wake batch, including execution
@@ -409,7 +417,15 @@ const serviceLayer = Layer.effect(
             if (nodeConfig.input_mapping) {
               const resolved = resolveInputMappingChecked(inputMapping, (dependency) => {
                 const source = nodesSnapshot.find((candidate) => candidate.id === dependency)
-                return source?.status === "completed" ? { found: true, output: source.output } : { found: false }
+                if (source?.status === "completed") return { found: true, output: source.output }
+                // A source that settled without output can only reach this
+                // point through the scheduling rules that unlock dependents
+                // anyway (an optional failure, or a skipped/aborted mixed
+                // fan-in). Give the consumer the same explicit placeholder
+                // the default mapping uses rather than failing it — e.g. one
+                // crashed review lane must not fail the review decision.
+                const placeholder = settledWithoutOutputPlaceholder(source)
+                return placeholder === undefined ? { found: false } : { found: false, placeholder }
               })
               if (!resolved.ok) {
                 yield* dag
@@ -429,15 +445,8 @@ const serviceLayer = Layer.effect(
                 const depNode = nodesSnapshot.find((n) => n.id === depId)
                 if (!depNode) return null
                 if (depNode.output !== null) return depNode.output
-                if (depNode.status === "failed") {
-                  return `Dependency "${depId}" failed: ${depNode.errorReason ?? "unknown error"}`
-                }
-                if (depNode.status === "skipped") {
-                  return `Dependency "${depId}" skipped: ${depNode.errorReason ?? "no output"}`
-                }
-                if (depNode.status === "aborted") return `Dependency "${depId}" aborted`
                 if (depNode.status === "completed") return `Dependency "${depId}" completed without output`
-                return null
+                return settledWithoutOutputPlaceholder(depNode) ?? null
               })
             }
 

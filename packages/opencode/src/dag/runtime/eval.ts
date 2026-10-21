@@ -162,7 +162,13 @@ export function parseInputMappingReference(
   return { ok: true, nodeID, path: parts }
 }
 
-export type InputMappingOutput = { found: true; output: unknown } | { found: false }
+/** `placeholder`: the source settled without output (an optional node that
+ * failed, or a skipped/aborted node). Scheduling already lets such sources
+ * unlock their dependents, so the variable receives this explicit text for
+ * the whole source reference instead of failing the consumer. */
+export type InputMappingOutput =
+  | { found: true; output: unknown }
+  | { found: false; placeholder?: string }
 
 /** Strict execution-boundary resolution. Structural validation guarantees
  * ordering for new graphs; this result also protects resumed historical
@@ -182,6 +188,10 @@ export function resolveInputMappingChecked(
       }
     }
     const resolved = getOutput(parsed.nodeID)
+    if (!resolved.found && resolved.placeholder !== undefined) {
+      value[variable] = resolved.placeholder
+      continue
+    }
     if (!resolved.found) {
       return {
         ok: false,
