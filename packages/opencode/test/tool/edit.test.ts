@@ -200,6 +200,21 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("refuses to rewrite a non-UTF-8 file and leaves its bytes intact", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "gbk.txt")
+        // "你好\nA\n" encoded as GBK.
+        const original = Buffer.from([0xc4, 0xe3, 0xba, 0xc3, 0x0a, 0x41, 0x0a])
+        yield* Effect.promise(() => fs.writeFile(filepath, original))
+
+        expect((yield* fail({ filePath: filepath, oldString: "A", newString: "B" })).message).toContain(
+          "not valid UTF-8",
+        )
+        expect(Buffer.compare(yield* Effect.promise(() => fs.readFile(filepath)), original)).toBe(0)
+      }),
+    )
+
     it.instance("throws error when oldString not found in file", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance

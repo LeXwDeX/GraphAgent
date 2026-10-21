@@ -281,6 +281,23 @@ describe("tool.apply_patch freeform", () => {
     }),
   )
 
+  it.instance("refuses to update a non-UTF-8 file and leaves its bytes intact", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx } = makeCtx()
+      const target = path.join(test.directory, "gbk.txt")
+      // "你好\nA\n" encoded as GBK.
+      const original = Buffer.from([0xc4, 0xe3, 0xba, 0xc3, 0x0a, 0x41, 0x0a])
+      yield* Effect.promise(() => fs.writeFile(target, original))
+
+      yield* expectFailure(
+        execute({ patchText: "*** Begin Patch\n*** Update File: gbk.txt\n@@\n-A\n+B\n*** End Patch" }, ctx),
+        "not valid UTF-8",
+      )
+      expect(Buffer.compare(yield* Effect.promise(() => fs.readFile(target)), original)).toBe(0)
+    }),
+  )
+
   it.instance("move onto the same path updates in place instead of deleting", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

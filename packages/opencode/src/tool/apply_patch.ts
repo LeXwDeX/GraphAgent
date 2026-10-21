@@ -112,7 +112,7 @@ export const ApplyPatchTool = Tool.define(
               )
             }
 
-            const source = yield* Bom.readFile(afs, filePath)
+            const source = yield* Bom.readEditableFile(afs, filePath)
             const oldContent = source.text
             let newContent = oldContent
             let bom = source.bom
