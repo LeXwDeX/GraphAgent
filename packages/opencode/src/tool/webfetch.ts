@@ -183,8 +183,11 @@ export const WebFetchTool = Tool.define(
   }),
 )
 
+// Explicitly binary formats only. Generic types such as application/octet-stream
+// are often served for plain source or config files, so they fall through to
+// content inspection.
 const BINARY_MIME =
-  /^(?:audio|video|font)\/|^application\/(?:pdf|zip|gzip|x-gzip|x-tar|x-7z-compressed|x-rar-compressed|octet-stream|wasm|vnd\.ms-|vnd\.openxmlformats-)/
+  /^(?:audio|video|font)\/|^application\/(?:pdf|zip|gzip|x-gzip|x-tar|x-7z-compressed|x-rar-compressed|wasm|vnd\.ms-|vnd\.openxmlformats-)/
 const TEXT_MIME = /^text\/|[/+](?:json|xml|javascript|ecmascript|yaml|x-yaml|csv|toml)$/
 
 /** Decoding PDFs, archives or executables as text only feeds the model noise. */

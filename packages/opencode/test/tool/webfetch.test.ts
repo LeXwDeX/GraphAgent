@@ -151,6 +151,16 @@ it.instance("refuses binary responses instead of decoding them as text", () =>
   ),
 )
 
+it.instance("inspects generic octet-stream bodies instead of rejecting readable text", () =>
+  withFetch(
+    () => new Response("export const answer = 42\n", { headers: { "content-type": "application/octet-stream" } }),
+    (url) =>
+      Effect.gen(function* () {
+        expect((yield* exec({ url: url.href, format: "text" })).output).toBe("export const answer = 42\n")
+      }),
+  ),
+)
+
 it.instance("keeps json responses as text output", () =>
   withFetch(
     () => new Response('{"ok":true}', { headers: { "content-type": "application/vnd.api+json" } }),
