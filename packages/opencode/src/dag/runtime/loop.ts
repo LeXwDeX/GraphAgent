@@ -567,12 +567,18 @@ const serviceLayer = Layer.effect(
               })
             }
 
+            // A rejected or pre-admission-failed spawn returns placeholder
+            // fibers. They must never replace the tables: a queued attempt
+            // rebuilt as pending can be re-admitted while its original fiber
+            // is still live, and that original attempt owns the node.
+            let admitted = false
             yield* spawnNode(entry.semaphore, {
               dagID,
               nodeID,
               node,
               graphRev: entry.graphRev,
               onAdmitted: Effect.gen(function* () {
+                admitted = true
                 entry.runtime.markRunning(nodeID)
                 const oldFiber = entry.fibers.get(nodeID)
                 const oldWatcher = entry.watchers.get(nodeID)
@@ -601,6 +607,7 @@ const serviceLayer = Layer.effect(
             }).pipe(
               Effect.tap((result) =>
                 Effect.sync(() => {
+                  if (!admitted) return
                   entry.fibers.set(nodeID, result.fiber)
                   entry.watchers.set(nodeID, result.watcherFiber)
                 }),
