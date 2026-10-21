@@ -71,12 +71,12 @@ function chainGuidance(name: string) {
     return "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell (5.1) does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
   }
   if (PS.has(name)) {
-    return "If the commands depend on each other and must run sequentially, use a single bash tool call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like New-Item before Copy-Item, Write before bash for git operations, or git add before git commit), run these operations sequentially instead."
+    return "If the commands depend on each other and must run sequentially, use a single bash tool call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like New-Item before Copy-Item, file edits before bash for git operations, or git add before git commit), run these operations sequentially instead."
   }
   if (CMD.has(name)) {
     return "If the commands depend on each other and must run sequentially, use a single bash tool call with `&&` to chain them together (e.g., `mkdir out && dir out`). For instance, if one operation must complete before another starts, run these operations sequentially instead."
   }
-  return "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
+  return "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, file edits before Bash for git operations, or git add before git commit), run these operations sequentially instead."
 }
 
 function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: number, silenceWarnMs: number) {
@@ -106,8 +106,8 @@ Usage notes:
     - File search: Use Glob (NOT find or ls)
     - Content search: Use Grep (NOT grep or rg)
     - Read files: Use Read (NOT cat/head/tail)
-    - Edit files: Use Edit (NOT sed/awk)
-    - Write files: Use Write (NOT echo >/cat <<EOF)
+    - Edit files: Use the file-editing tool (NOT sed/awk)
+    - Write files: Use the file-editing tool (NOT echo >/cat <<EOF)
     - Communication: Output text directly (NOT echo/printf)
   - When issuing multiple commands:
     - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two bash tool calls in parallel.
@@ -159,8 +159,8 @@ Usage notes:
     - File search: Use Glob (NOT Get-ChildItem)
     - Content search: Use Grep (NOT Select-String)
     - Read files: Use Read (NOT Get-Content)
-    - Edit files: Use Edit (NOT Set-Content)
-    - Write files: Use Write (NOT Set-Content/Out-File or here-strings)
+    - Edit files: Use the file-editing tool (NOT Set-Content)
+    - Write files: Use the file-editing tool (NOT Set-Content/Out-File or here-strings)
     - Communication: Output text directly (NOT Write-Output/Write-Host)
   - When issuing multiple commands:
     - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two bash tool calls in parallel.
@@ -209,8 +209,8 @@ Usage notes:
     - File search: Use Glob (NOT dir /s)
     - Content search: Use Grep (NOT findstr)
     - Read files: Use Read (NOT type)
-    - Edit files: Use Edit (NOT copy)
-    - Write files: Use Write (NOT echo > file)
+    - Edit files: Use the file-editing tool (NOT copy)
+    - Write files: Use the file-editing tool (NOT echo > file)
     - Communication: Output text directly (NOT echo)
   - When issuing multiple commands:
     - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "dir" and "where cmd", send a single message with two bash tool calls in parallel.
