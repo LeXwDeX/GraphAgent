@@ -122,6 +122,45 @@ describe("workflow blocks", () => {
     })
   })
 
+  it("makes a review-route verification gate a reporting checkpoint gated by its dependents", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Fix the parser",
+      blocks: [
+        { id: "coding", kind: "coding" },
+        { id: "verify", kind: "verify", depends_on: ["coding"] },
+        { id: "review", kind: "review", depends_on: ["verify"] },
+      ],
+    })
+    const verify = nodes.find((node) => node.id === "verify")
+    expect(verify?.report_to_parent).toBe(true)
+    expect(verify?.prompt_template.inline).not.toContain("hypotheses to verify")
+    for (const dependent of nodes.filter((node) => node.depends_on.includes("verify"))) {
+      expect(dependent.condition).toBe('verify.output.verdict == "PASS"')
+    }
+  })
+
+  it("keeps a verification with an ungated dependent non-reporting", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Fix the parser",
+      blocks: [
+        { id: "coding", kind: "coding" },
+        { id: "verify", kind: "verify", depends_on: ["coding"] },
+        { id: "review", kind: "review", depends_on: ["verify"] },
+        { id: "notes", kind: "synthesize", depends_on: ["verify"] },
+      ],
+    })
+    expect(nodes.find((node) => node.id === "verify")?.report_to_parent).toBe(false)
+    const explicit = DagBlocks.compileWorkflowBlocks({
+      objective: "Fix the parser",
+      blocks: [
+        { id: "coding", kind: "coding" },
+        { id: "verify", kind: "verify", depends_on: ["coding"], report_to_parent: false },
+        { id: "review", kind: "review", depends_on: ["verify"] },
+      ],
+    })
+    expect(explicit.find((node) => node.id === "verify")?.report_to_parent).toBe(false)
+  })
+
   it("keeps a pruned design delivery route valid when evidence is already supplied", () => {
     const nodes = DagBlocks.compileWorkflowBlocks({
       objective: "Implement the confirmed design from supplied file-level evidence",

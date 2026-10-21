@@ -24,6 +24,7 @@ import { Provider } from "@opencode-ai/schema/provider"
 import { Agent } from "@/agent/agent"
 import { Provider as RuntimeProvider } from "@/provider/provider"
 import { fingerprintBrief } from "@/dag/admission"
+import { DagBlocks } from "@/dag/blocks"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop, isPausedReminderDue } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -1999,6 +2000,82 @@ describe("DagLoop atomic wake integration", () => {
               ]).run()
             }),
           ).pipe(Effect.orDie),
+      ),
+    )
+  })
+
+  // A block review route: verify FAIL skips the review lanes and decision
+  // (condition false) and cascade-skips the synthesis, so the graph settles
+  // COMPLETED. The parent must receive the verification verdict and be able
+  // to route back through reopen-extend — the verify gate is the reporting
+  // checkpoint of that terminal shape.
+  it("reports a failed review-route verification and reopens it via extend", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          const nodes = DagBlocks.compileWorkflowBlocks({
+            objective: "Fix the parser",
+            blocks: [
+              { id: "impl", kind: "coding" },
+              { id: "check", kind: "verify", depends_on: ["impl"] },
+              { id: "audit", kind: "review", depends_on: ["check"] },
+              { id: "final", kind: "synthesize", depends_on: ["audit"] },
+            ],
+          })
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Review route verify failure",
+            config: { name: "review-route-verify-failure", result_protocol: "submit_result", nodes },
+          })
+
+          const impl = yield* takeWithin(childPrompts, "impl did not start")
+          expect(impl.title).toBe("impl: coding")
+          yield* dag.nodeCompleted(dagID, "impl", {
+            summary: "patched",
+            changed_files: ["src/parser.ts"],
+            fingerprint: "fp-1",
+          })
+          const check = yield* takeWithin(childPrompts, "check did not start")
+          expect(check.title).toBe("check: verify")
+          yield* dag.nodeCompleted(dagID, "check", {
+            verdict: "FAIL",
+            summary: "parser regression test still fails",
+            evidence: [],
+          })
+
+          const workflow = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((row) => (row && row.status !== "running" ? row : undefined)),
+            ),
+            "workflow did not settle after the verification failed",
+          )
+          expect(workflow.status).toBe("completed")
+          expect((yield* store.getNode(dagID, "audit"))?.status).toBe("skipped")
+          expect((yield* store.getNode(dagID, "final"))?.status).toBe("skipped")
+
+          const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")
+          const text = promptText(parent.input)
+          expect(text).toContain('Node "check: verify" completed')
+          expect(text).toContain("parser regression test still fails")
+          yield* Deferred.succeed(parent.release, "success")
+
+          const plan = yield* dag.extend(dagID, [
+            {
+              id: "impl-fix",
+              name: "impl-fix",
+              worker_type: "build",
+              depends_on: ["check"],
+              required: true,
+              prompt_template: { inline: "fix the failing regression" },
+            },
+          ])
+          expect(plan.add).toEqual(["impl-fix"])
+          const fix = yield* takeWithin(childPrompts, "the reopened workflow did not run the fix")
+          expect(fix.title).toBe("impl-fix")
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+          for (const gate of [impl, check, fix]) yield* Deferred.succeed(gate.release, "late")
+        }),
       ),
     )
   })
