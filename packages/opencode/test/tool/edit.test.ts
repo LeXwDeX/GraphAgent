@@ -267,6 +267,18 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("replaceAll keeps dollar sequences in newString literal", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.sh")
+        yield* put(filepath, "echo A\necho A\n")
+
+        yield* run({ filePath: filepath, oldString: "A", newString: "$'\\n' $$ $&", replaceAll: true })
+
+        expect(yield* load(filepath)).toBe("echo $'\\n' $$ $&\necho $'\\n' $$ $&\n")
+      }),
+    )
+
     it.instance("emits change event for existing files", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance

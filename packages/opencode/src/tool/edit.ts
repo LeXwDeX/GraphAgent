@@ -712,7 +712,8 @@ export function replace(content: string, oldString: string, newString: string, r
         )
       }
       if (replaceAll) {
-        return content.replaceAll(search, newString)
+        // A function replacement keeps `$&`, `$$` and `$'` in newString literal.
+        return content.replaceAll(search, () => newString)
       }
       const lastIndex = content.lastIndexOf(search)
       if (index !== lastIndex) continue
