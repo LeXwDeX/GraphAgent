@@ -531,3 +531,69 @@ EOF`
     }),
   )
 })
+
+describe("tool.apply_patch diagnostics", () => {
+  let active = 0
+  let peak = 0
+  const touched: string[] = []
+  const slowLsp = Layer.succeed(
+    LSP.Service,
+    LSP.Service.of({
+      init: () => Effect.void,
+      status: () => Effect.succeed([]),
+      hasClients: () => Effect.succeed(false),
+      touchFile: (file) =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            active++
+            peak = Math.max(peak, active)
+          }),
+          () => Effect.sleep("50 millis").pipe(Effect.andThen(Effect.sync(() => touched.push(file)))),
+          () => Effect.sync(() => active--),
+        ),
+      diagnostics: () => Effect.succeed({}),
+      hover: () => Effect.succeed(undefined),
+      definition: () => Effect.succeed([]),
+      references: () => Effect.succeed([]),
+      implementation: () => Effect.succeed([]),
+      documentSymbol: () => Effect.succeed([]),
+      workspaceSymbol: () => Effect.succeed([]),
+      prepareCallHierarchy: () => Effect.succeed([]),
+      incomingCalls: () => Effect.succeed([]),
+      outgoingCalls: () => Effect.succeed([]),
+    }),
+  )
+  const slow = testEffect(
+    Layer.mergeAll(
+      slowLsp,
+      FSUtil.defaultLayer,
+      Format.defaultLayer,
+      EventV2Bridge.defaultLayer,
+      Truncate.defaultLayer,
+      Agent.defaultLayer,
+    ),
+  )
+
+  slow.instance(
+    "waits for every edited file's diagnostics concurrently",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const names = ["a.txt", "b.txt", "c.txt", "d.txt"]
+        yield* writeText(path.join(test.directory, "gone.txt"), "gone\n")
+        const patchText = [
+          "*** Begin Patch",
+          ...names.flatMap((name) => [`*** Add File: ${name}`, `+${name}`]),
+          "*** Delete File: gone.txt",
+          "*** End Patch",
+        ].join("\n")
+
+        yield* execute({ patchText }, ctx)
+
+        expect(touched.map((file) => path.basename(file)).sort()).toEqual(names)
+        expect(peak).toBeGreaterThan(1)
+      }),
+    { git: true },
+  )
+})

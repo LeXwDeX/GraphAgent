@@ -262,12 +262,14 @@ export const ApplyPatchTool = Tool.define(
         yield* events.publish(Watcher.Event.Updated, update)
       }
 
-      // Notify LSP of file changes and collect diagnostics
-      for (const change of fileChanges) {
-        if (change.type === "delete") continue
-        const target = change.movePath ?? change.filePath
-        yield* lsp.touchFile(target, "document")
-      }
+      // Notify LSP of file changes and collect diagnostics. Each touch may wait
+      // up to the diagnostics timeout, so files settle concurrently rather than
+      // stacking one wait per file.
+      yield* Effect.forEach(
+        fileChanges.filter((change) => change.type !== "delete"),
+        (change) => lsp.touchFile(change.movePath ?? change.filePath, "document"),
+        { concurrency: 8, discard: true },
+      )
       const diagnostics = yield* lsp.diagnostics()
 
       // Generate output summary
