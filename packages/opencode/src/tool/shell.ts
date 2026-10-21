@@ -1,6 +1,6 @@
 import { HookTranscript, type Message } from "@/hook/transcript"
 import { promptIdentity } from "@/hook/prompt-identity"
-import { Effect, Fiber, Stream } from "effect"
+import { Effect, Fiber, Semaphore, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -35,6 +35,7 @@ const shellSilenceNote = (ms: number) =>
   `shell tool emitted an inactivity warning after ${ms} ms without output; the command was left running. If this command is expected to stay silent, pass expectedSilent: true to opt out.`
 
 const MAX_METADATA_LENGTH = 30_000
+const METADATA_INTERVAL_MS = 200
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -498,6 +499,31 @@ export const ShellTool = Tool.define(
         ).pipe(Effect.catch(() => Effect.void))
       })
 
+      // Each preview is a durable part update, so chunk bursts coalesce into at
+      // most one write per interval. The lock keeps the stream, the trailing
+      // flush and the silence guard from publishing out of order. Only output
+      // whose chunk was fully handled (including any spill to the truncation
+      // file) is published, so a visible preview never runs ahead of it.
+      const publishLock = Semaphore.makeUnsafe(1)
+      let published = 0
+      let pending = false
+      let settled = ""
+      const emit = (output?: string) =>
+        publishLock.withPermits(1)(
+          Effect.suspend(() => {
+            pending = false
+            published = Date.now()
+            return ctx.metadata({ metadata: { output: output ?? settled } })
+          }),
+        )
+      const streamPreview = Effect.suspend(() => {
+        settled = last
+        if (Date.now() - published >= METADATA_INTERVAL_MS) return emit()
+        pending = true
+        return Effect.void
+      })
+      const flushPreview = Effect.suspend(() => (pending ? emit() : Effect.void))
+
       yield* ctx.metadata({
         metadata: {
           output: "",
@@ -539,23 +565,19 @@ export const ShellTool = Tool.define(
                         full = ""
                       }),
                     ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                        },
-                      }),
-                    ),
+                    Effect.andThen(streamPreview),
                   )
                 }
               }
 
-              return ctx.metadata({
-                metadata: {
-                  output: last,
-                },
-              })
+              return streamPreview
             }),
+          )
+
+          // Trailing edge of the preview throttle: a command that pauses after a
+          // burst still shows its latest output without waiting for exit.
+          yield* Effect.forkScoped(
+            Effect.forever(Effect.sleep(`${METADATA_INTERVAL_MS} millis`).pipe(Effect.andThen(flushPreview))),
           )
 
           // Warn-only silence guard: lives on its own fiber and must never
@@ -569,11 +591,7 @@ export const ShellTool = Tool.define(
                   if (silenceWarned || Date.now() - lastActivity < silenceWarnMs) return
                   silenceWarned = true
                   silenceWarnings++
-                  yield* ctx.metadata({
-                    metadata: {
-                      output: last + `\n\n${shellSilenceNote(silenceWarnMs)}`,
-                    },
-                  })
+                  yield* emit(last + `\n\n${shellSilenceNote(silenceWarnMs)}`)
                 }),
               ),
             )
@@ -613,6 +631,7 @@ export const ShellTool = Tool.define(
           return exit.kind === "exit" ? exit.code : null
         }),
       ).pipe(Effect.orDie)
+      yield* flushPreview
 
       const meta: string[] = []
       if (expired) {
