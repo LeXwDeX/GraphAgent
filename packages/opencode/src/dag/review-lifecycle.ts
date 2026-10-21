@@ -5,6 +5,7 @@ export * as DagReviewLifecycle from "./review-lifecycle"
 
 import type { NodeConfig, WorkflowConfig } from "./dag"
 import { evaluateCondition } from "./runtime/eval"
+import { normalizeOutput, verdictField } from "./runtime/verdict"
 
 /** `grandfathered`: review nodes carried with a persisted definition (runtime
  * replan/extend/recover). Their PASS gate keeps the legacy textual check it
@@ -345,16 +346,18 @@ function hasEvidence(value: unknown): boolean {
   return Object.values(value).some(hasEvidence)
 }
 
+// Verdicts use the shared output normalization (JSON strings, code fences,
+// verdict case) so a review input check never disagrees with the condition
+// gate that admitted the same output.
 function hasPassVerdict(value: unknown): boolean {
-  if (value === "PASS") return true
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
-  return "verdict" in value && value.verdict === "PASS"
+  const normalized = normalizeOutput(value)
+  if (typeof normalized === "string") return normalized.trim().toUpperCase() === "PASS"
+  return verdictField(normalized) === "PASS"
 }
 
 function reviewVerdict(value: unknown): "ACCEPT" | "REJECT" | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
-  if (!("verdict" in value)) return undefined
-  return value.verdict === "ACCEPT" || value.verdict === "REJECT" ? value.verdict : undefined
+  const verdict = verdictField(value)
+  return verdict === "ACCEPT" || verdict === "REJECT" ? verdict : undefined
 }
 
 function dependsTransitively(config: WorkflowConfig, startID: string, targetID: string) {

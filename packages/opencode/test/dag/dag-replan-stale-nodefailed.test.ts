@@ -93,7 +93,9 @@ function loopLayer(input: {
   readonly parentPrompts: Queue.Queue<ParentPromptGate>
   readonly settlements: Queue.Queue<AttemptSettlement>
   readonly admissions: Queue.Queue<AdmissionAttempt>
+  readonly interrupts: Queue.Queue<string>
   readonly holdReplan?: Deferred.Deferred<void>
+  readonly agentGate?: (workerType: string) => Effect.Effect<void>
 }) {
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
@@ -171,12 +173,16 @@ function loopLayer(input: {
       return reply(sessionID, "parent handled wake")
     }
     const release = yield* Deferred.make<string>()
+    const title = childTitles.get(sessionID) ?? sessionID
     yield* Queue.offer(input.childPrompts, {
-      title: childTitles.get(sessionID) ?? sessionID,
+      title,
       text: value.parts.find((part) => part.type === "text")?.text ?? "",
       release,
     })
-    return reply(sessionID, yield* Deferred.await(release))
+    return reply(
+      sessionID,
+      yield* Deferred.await(release).pipe(Effect.onInterrupt(() => Queue.offer(input.interrupts, title))),
+    )
   })
   const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
     cancel: () => Effect.void,
@@ -184,7 +190,7 @@ function loopLayer(input: {
     promptIfIdle: (value) => deliver(value).pipe(Effect.map(Option.some)),
   }))
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: (workerType) => (input.agentGate ? input.agentGate(workerType) : Effect.void).pipe(Effect.as({
       name: "build",
       mode: "all",
       permission: [],
@@ -194,7 +200,7 @@ function loopLayer(input: {
       model: { providerID: "test" as never, modelID: "test-model" as never },
       tools: {},
       hooks: {},
-    }),
+    })),
   })
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
@@ -213,14 +219,19 @@ function runLoopTest<A>(
     readonly parentPrompts: Queue.Queue<ParentPromptGate>
     readonly settlements: Queue.Queue<AttemptSettlement>
     readonly admissions: Queue.Queue<AdmissionAttempt>
+    readonly interrupts: Queue.Queue<string>
   }) => Effect.Effect<A, Error>,
-  options: { readonly holdReplan?: Deferred.Deferred<void> } = {},
+  options: {
+    readonly holdReplan?: Deferred.Deferred<void>
+    readonly agentGate?: (workerType: string) => Effect.Effect<void>
+  } = {},
 ) {
   return Effect.gen(function* () {
     const childPrompts = yield* Queue.unbounded<PromptGate>()
     const parentPrompts = yield* Queue.unbounded<ParentPromptGate>()
     const settlements = yield* Queue.unbounded<AttemptSettlement>()
     const admissions = yield* Queue.unbounded<AdmissionAttempt>()
+    const interrupts = yield* Queue.unbounded<string>()
     return yield* Effect.gen(function* () {
       const dag = yield* Dag.Service
       const loop = yield* DagLoop.Service
@@ -240,9 +251,19 @@ function runLoopTest<A>(
         version: "test",
       }).run().pipe(Effect.orDie)
       yield* loop.init()
-      return yield* test({ dag, store, childPrompts, parentPrompts, settlements, admissions })
+      return yield* test({ dag, store, childPrompts, parentPrompts, settlements, admissions, interrupts })
     }).pipe(
-      Effect.provide(loopLayer({ childPrompts, parentPrompts, settlements, admissions, holdReplan: options.holdReplan })),
+      Effect.provide(
+        loopLayer({
+          childPrompts,
+          parentPrompts,
+          settlements,
+          admissions,
+          interrupts,
+          holdReplan: options.holdReplan,
+          agentGate: options.agentGate,
+        }),
+      ),
       Effect.provideService(InstanceRef, {
         directory: process.cwd(),
         worktree: process.cwd(),
@@ -434,6 +455,179 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           expect(state.replacement?.status).toBe("running")
           yield* Deferred.succeed(replacement.release, "done")
         }),
+      ),
+    )
+  })
+
+  it("keeps running when replan cancels a running required node and rewires its dependent", async () => {
+    // The NodeCancelled handler can win the cross-stream race against
+    // WorkflowReplanned. Hold the rebuild so the cancellation is evaluated
+    // against the obsolete graph: X (required) cascades its old dependent Y
+    // to unsatisfied, the old runtime looks complete with a required failure,
+    // and the workflow must still not be failed on the replaced segment.
+    const holdReplan = await Effect.runPromise(Deferred.make<void>())
+    await Effect.runPromise(
+      runLoopTest(
+        ({ dag, store, childPrompts, parentPrompts }) =>
+          Effect.gen(function* () {
+            const dagID = yield* dag.create({
+              projectID: "project-1",
+              sessionID: "ses_parent",
+              title: "Replan required cancel",
+              config: {
+                name: "replan-required-cancel",
+                result_protocol: "submit_result",
+                nodes: [
+                  { ...node("a"), report_to_parent: false },
+                  { ...node("x", ["a"]), report_to_parent: false },
+                  node("y", ["x"]),
+                ],
+              },
+            })
+            const a = yield* takeWithin(childPrompts, "a did not start")
+            expect(a.title).toBe("a")
+            yield* Deferred.succeed(a.release, "a done")
+            const x = yield* takeWithin(childPrompts, "x did not start")
+            expect(x.title).toBe("x")
+
+            const plan = yield* dag.replan(dagID, {
+              nodes: [
+                { ...node("x", ["a"]), report_to_parent: false, cancel: true },
+                node("y", ["a"]),
+              ],
+            })
+            expect(plan.cancel).toEqual(["x"])
+            expect(plan.replace).toEqual(["y"])
+
+            // The cancellation handler runs against the old graph while the
+            // rebuild is held. It must not terminalize the workflow.
+            yield* pollWithTimeout(
+              store.getNode(dagID, "x").pipe(
+                Effect.map((row) => (row?.status === "failed" ? row : undefined)),
+              ),
+              "x was not cancelled",
+            )
+            yield* Effect.sleep("300 millis")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+            expect((yield* store.getNode(dagID, "y"))?.status).toBe("pending")
+
+            yield* Deferred.succeed(holdReplan, undefined)
+            const y = yield* takeWithin(childPrompts, "y did not run under the rewired graph")
+            expect(y.title).toBe("y")
+            yield* Deferred.succeed(y.release, "y done")
+            const workflow = yield* pollWithTimeout(
+              store.getWorkflow(dagID).pipe(
+                Effect.map((row) => (row && row.status !== "running" ? row : undefined)),
+              ),
+              "workflow did not settle under the rewired graph",
+            )
+            expect(workflow.status).toBe("completed")
+            const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")
+            yield* Deferred.succeed(parent.release, "success")
+          }),
+        { holdReplan },
+      ),
+    )
+  })
+
+  it("rejects a replan that wires a new node onto a node an earlier replan superseded", async () => {
+    await Effect.runPromise(
+      runLoopTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Superseded dependency",
+            config: {
+              name: "superseded-dependency",
+              result_protocol: "submit_result",
+              nodes: [{ ...node("a"), report_to_parent: false }, { ...node("x"), report_to_parent: false }],
+            },
+          })
+          const first = yield* takeWithin(childPrompts, "first root did not start")
+          const second = yield* takeWithin(childPrompts, "second root did not start")
+          const x = [first, second].find((gate) => gate.title === "x")
+          expect(x).toBeDefined()
+
+          yield* dag.replan(dagID, { nodes: [{ ...node("x"), report_to_parent: false, cancel: true }] })
+          expect((yield* store.getNode(dagID, "x"))?.superseded).toBe(true)
+
+          const outcome = yield* dag
+            .replan(dagID, { nodes: [{ ...node("late", ["x"]), report_to_parent: false }] })
+            .pipe(Effect.match({ onFailure: (error) => error.message, onSuccess: () => "accepted" }))
+          expect(outcome).toContain('Node "late" depends on "x", which an earlier replan superseded')
+          expect(yield* store.getNode(dagID, "late")).toBeUndefined()
+          for (const gate of [first, second]) yield* Deferred.succeed(gate.release, "done")
+        }),
+      ),
+    )
+  })
+
+  it("keeps tracking a queued attempt whose rebuilt re-admission is rejected", async () => {
+    // A replan rebuild maps the durable queued row to pending, so the next
+    // round re-admits it while its original fiber still waits for a permit.
+    // When that original attempt starts first, the re-admission is rejected;
+    // the rejected spawn must not replace the live fiber in the loop's
+    // tables, or a later cancellation interrupts an empty placeholder and the
+    // real child keeps running unowned.
+    const gateQ = await Effect.runPromise(Deferred.make<void>())
+    const readmissionQ = await Effect.runPromise(Deferred.make<void>())
+    let agentCallsQ = 0
+    const agentGate = (workerType: string) =>
+      workerType !== "build-q"
+        ? Effect.void
+        : Effect.suspend(() => {
+            agentCallsQ++
+            return agentCallsQ === 2
+              ? Deferred.succeed(readmissionQ, undefined).pipe(Effect.andThen(Deferred.await(gateQ)))
+              : Effect.void
+          })
+    const q = { ...node("q"), worker_type: "build-q", report_to_parent: false }
+    const r = { ...node("r"), report_to_parent: false }
+    await Effect.runPromise(
+      runLoopTest(
+        ({ dag, store, childPrompts, interrupts }) =>
+          Effect.gen(function* () {
+            const dagID = yield* dag.create({
+              projectID: "project-1",
+              sessionID: "ses_parent",
+              title: "Rejected re-admission",
+              config: {
+                name: "rejected-readmission",
+                result_protocol: "submit_result",
+                max_concurrency: 1,
+                nodes: [q, r],
+              },
+            })
+            const runner = yield* takeWithin(childPrompts, "r did not start")
+            expect(runner.title).toBe("r")
+            yield* pollWithTimeout(
+              store.getNode(dagID, "q").pipe(Effect.map((row) => (row?.status === "queued" ? row : undefined))),
+              "q was not queued behind r",
+            )
+
+            // Same definitions: the rebuild resets q to pending in memory and
+            // re-admits it; hold that re-admission inside agent resolution.
+            yield* dag.replan(dagID, { nodes: [q, r] })
+            yield* Deferred.await(readmissionQ).pipe(Effect.timeout("2 seconds"))
+
+            // r finishes, the original queued q attempt takes the permit.
+            yield* Deferred.succeed(runner.release, "r done")
+            const original = yield* takeWithin(childPrompts, "original q attempt did not start")
+            expect(original.title).toBe("q")
+            yield* pollWithTimeout(
+              store.getNode(dagID, "q").pipe(Effect.map((row) => (row?.status === "running" ? row : undefined))),
+              "original q attempt did not reach running",
+            )
+            // The held re-admission now meets a running row and is rejected.
+            yield* Deferred.succeed(gateQ, undefined)
+            yield* Effect.sleep("200 millis")
+
+            yield* dag.replan(dagID, { nodes: [{ ...q, cancel: true }] })
+            const interrupted = yield* takeWithin(interrupts, "the cancelled q attempt was not interrupted")
+            expect(interrupted).toBe("q")
+          }),
+        { agentGate },
       ),
     )
   })

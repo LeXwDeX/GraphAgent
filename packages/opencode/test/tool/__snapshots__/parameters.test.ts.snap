@@ -1012,7 +1012,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "type": "string",
                           },
                           "report_to_parent": {
-                            "description": "Override wake behavior. Review decisions and synthesis report by default",
+                            "description": "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default",
                             "type": "boolean",
                           },
                           "required": {

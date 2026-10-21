@@ -474,6 +474,47 @@ describe("DagLoop input_mapping execution boundary", () => {
     ),
   )
 
+  it.live("maps a failed optional source to a failure placeholder instead of failing the consumer", () =>
+    runLoopTest(({ dag, loop, store, records }) =>
+      Effect.gen(function* () {
+        yield* loop.init()
+        const dagID = yield* dag.create({
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Optional lane failure",
+          config: {
+            name: "optional-lane-failure",
+            nodes: [
+              { ...node("lane-a"), required: false },
+              { ...node("lane-b"), required: false },
+              node("decision", ["lane-a", "lane-b"], {
+                a_review: "lane-a.output.findings",
+                b_review: "lane-b.output",
+              }),
+            ],
+          },
+        })
+        const first = yield* awaitWithTimeout(Queue.take(records), "first lane did not start")
+        const second = yield* awaitWithTimeout(Queue.take(records), "second lane did not start")
+        expect([first.title, second.title].sort()).toEqual(["lane-a", "lane-b"])
+        yield* dag.nodeFailed(dagID, "lane-a", "lane crashed", "exec_failed")
+        yield* dag.nodeCompleted(dagID, "lane-b", "b findings")
+
+        const decision = yield* awaitWithTimeout(Queue.take(records), "decision did not start after an optional lane failed")
+        expect(decision.title).toBe("decision")
+        expect(decision.text).toContain('"a_review": "Dependency \\"lane-a\\" failed: lane crashed"')
+        expect(decision.text).toContain('"b_review": "b findings"')
+        yield* Deferred.succeed(decision.release, "decision done")
+        const workflow = yield* pollWithTimeout(
+          store.getWorkflow(dagID).pipe(Effect.map((row) => (row && row.status !== "running" ? row : undefined))),
+          "workflow did not settle after the decision",
+        )
+        expect(workflow.status).toBe("completed")
+        for (const lane of [first, second]) yield* Deferred.succeed(lane.release, "late")
+      }),
+    ),
+  )
+
   it.live("preserves a completed null whole output as a declared value", () =>
     runLoopTest(({ dag, loop, store, records }) =>
       Effect.gen(function* () {

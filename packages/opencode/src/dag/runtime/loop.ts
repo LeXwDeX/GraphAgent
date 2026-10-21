@@ -66,6 +66,7 @@ import {
   makeLastAssistantMessageReader,
 } from "./recovery"
 import { Checkpoint } from "./checkpoint"
+import { normalizeOutput } from "./verdict"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
 import { makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
@@ -75,6 +76,14 @@ import { deliverReport, selectReportNode } from "./report-delivery"
 import { Logging } from "@opencode-ai/core/observability/logging"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+
+/** Explicit input text for a dependency that settled without output. */
+function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
+  if (node?.status === "failed") return `Dependency "${node.id}" failed: ${node.errorReason ?? "unknown error"}`
+  if (node?.status === "skipped") return `Dependency "${node.id}" skipped: ${node.errorReason ?? "no output"}`
+  if (node?.status === "aborted") return `Dependency "${node.id}" aborted`
+  return undefined
+}
 const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
 
 /** Stable local receipt for the exact durable wake batch, including execution
@@ -272,6 +281,8 @@ const serviceLayer = Layer.effect(
         })
 
         let startMessageContinuations: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
+        // Forward reference for the condition-skip rescan inside spawnReady.
+        let rescanReady: (dagID: string) => Effect.Effect<void, Error, Scope.Scope> = () => Effect.void
         const spawnReady = Effect.fn("DagLoop.spawnReady")(function* (dagID: string) {
           const entry = runtimes.get(dagID)
           if (!entry) return
@@ -301,6 +312,13 @@ const serviceLayer = Layer.effect(
           // dag.jsonc defaults are read once per scheduling round (lazy, like
           // templates) so edits apply to the next round without a restart.
           const dagConfig: DagConfig.Info = ready.length > 0 ? yield* DagConfig.load(ctx.directory) : {}
+          // A condition_false skip settles a node inside this round, after the
+          // ready set was computed. Its NodeSkipped handler sees the node
+          // already settled and does not reschedule, so a mixed fan-in it just
+          // unlocked (e.g. a review decision over skipped lanes plus a
+          // completed verification) would stay pending forever. Rescan once
+          // the round is done; step mode keeps its one-node-per-step contract.
+          let rescan = false
           for (const nodeID of ready) {
             const node = nodesSnapshot.find((n) => n.id === nodeID)
             if (!node) continue
@@ -335,18 +353,13 @@ const serviceLayer = Layer.effect(
                 // equality gate was permanently false, every gated dependent
                 // was skipped as condition_false, and checkCompletion still
                 // reported the workflow COMPLETED (silent half-graph loss).
-                // Mirrors the replan-verdict gate's parseJsonOption
+                // Shares the replan-verdict gate's normalizeOutput
                 // normalization in the NodeCompleted handler below (issue
                 // #322). Non-JSON strings fall back to the raw value:
                 // whole-output equality still works, field paths stay
                 // undefined (documented condition_false), and numeric
                 // comparisons keep their loud failure.
-                outputs[dep] = {
-                  output:
-                    typeof depNode.output === "string"
-                      ? Option.getOrElse(parseJsonOption(depNode.output), () => depNode.output)
-                      : depNode.output,
-                }
+                outputs[dep] = { output: normalizeOutput(depNode.output) }
               }
               const condResult = evaluateCondition(nodeConfig.condition, outputs)
               if (!condResult.ok) {
@@ -366,6 +379,7 @@ const serviceLayer = Layer.effect(
                 if (skipped) {
                   entry.runtime.markSkipped(nodeID)
                   yield* convergeSkippedNodes(dagID, entry)
+                  rescan = true
                 }
                 continue
               }
@@ -409,7 +423,15 @@ const serviceLayer = Layer.effect(
             if (nodeConfig.input_mapping) {
               const resolved = resolveInputMappingChecked(inputMapping, (dependency) => {
                 const source = nodesSnapshot.find((candidate) => candidate.id === dependency)
-                return source?.status === "completed" ? { found: true, output: source.output } : { found: false }
+                if (source?.status === "completed") return { found: true, output: source.output }
+                // A source that settled without output can only reach this
+                // point through the scheduling rules that unlock dependents
+                // anyway (an optional failure, or a skipped/aborted mixed
+                // fan-in). Give the consumer the same explicit placeholder
+                // the default mapping uses rather than failing it — e.g. one
+                // crashed review lane must not fail the review decision.
+                const placeholder = settledWithoutOutputPlaceholder(source)
+                return placeholder === undefined ? { found: false } : { found: false, placeholder }
               })
               if (!resolved.ok) {
                 yield* dag
@@ -429,15 +451,8 @@ const serviceLayer = Layer.effect(
                 const depNode = nodesSnapshot.find((n) => n.id === depId)
                 if (!depNode) return null
                 if (depNode.output !== null) return depNode.output
-                if (depNode.status === "failed") {
-                  return `Dependency "${depId}" failed: ${depNode.errorReason ?? "unknown error"}`
-                }
-                if (depNode.status === "skipped") {
-                  return `Dependency "${depId}" skipped: ${depNode.errorReason ?? "no output"}`
-                }
-                if (depNode.status === "aborted") return `Dependency "${depId}" aborted`
                 if (depNode.status === "completed") return `Dependency "${depId}" completed without output`
-                return null
+                return settledWithoutOutputPlaceholder(depNode) ?? null
               })
             }
 
@@ -552,12 +567,18 @@ const serviceLayer = Layer.effect(
               })
             }
 
+            // A rejected or pre-admission-failed spawn returns placeholder
+            // fibers. They must never replace the tables: a queued attempt
+            // rebuilt as pending can be re-admitted while its original fiber
+            // is still live, and that original attempt owns the node.
+            let admitted = false
             yield* spawnNode(entry.semaphore, {
               dagID,
               nodeID,
               node,
               graphRev: entry.graphRev,
               onAdmitted: Effect.gen(function* () {
+                admitted = true
                 entry.runtime.markRunning(nodeID)
                 const oldFiber = entry.fibers.get(nodeID)
                 const oldWatcher = entry.watchers.get(nodeID)
@@ -586,6 +607,7 @@ const serviceLayer = Layer.effect(
             }).pipe(
               Effect.tap((result) =>
                 Effect.sync(() => {
+                  if (!admitted) return
                   entry.fibers.set(nodeID, result.fiber)
                   entry.watchers.set(nodeID, result.watcherFiber)
                 }),
@@ -602,12 +624,25 @@ const serviceLayer = Layer.effect(
               Effect.ignore,
             )
           }
+          if (rescan && !entry.runtime.isStepMode()) yield* rescanReady(dagID)
         })
+        rescanReady = spawnReady
 
         const checkCompletion = Effect.fn("DagLoop.checkCompletion")(function* (dagID: string) {
           const entry = runtimes.get(dagID)
           if (!entry) return
           if (!entry.runtime.isComplete()) return
+          // Graph-generation fence: a replan commits its NodeCancelled rows and
+          // WorkflowReplanned (graph_rev + 1) in one durable batch, but the two
+          // event types are consumed by independent handlers. When the
+          // cancellation handler wins, it evaluates the OBSOLETE runtime graph:
+          // a cancelled required node cascades its old dependents to
+          // unsatisfied, so the stale graph looks complete with a required
+          // failure even though the new revision rewired them. Only the
+          // runtime paired with the durable revision may terminalize the
+          // workflow; the WorkflowReplanned handler rebuilds and re-checks.
+          const current = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+          if (current && current.graphRev !== entry.graphRev) return
           // A reporting leaf checkpoint is already runtime-complete. Recover
           // and enforce its veto before publishing WorkflowCompleted.
           if (yield* enforceCheckpointGate(dagID, entry)) return

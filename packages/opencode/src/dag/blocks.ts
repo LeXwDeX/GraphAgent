@@ -44,7 +44,7 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
       "Whether failure is terminal. Decision and verification blocks default to true; volume blocks to false",
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
-    description: "Override wake behavior. Review decisions and synthesis report by default",
+    description: "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default",
   }),
 }) {}
 
@@ -136,7 +136,10 @@ export function compileWorkflowBlocks(
   requireValidBlockGraph(graph, options)
   requireValidReviewRoutes(graph.blocks)
   const { blocks, aggregations, verifyAggregators } = aggregateParallelWriters(graph.blocks)
-  const nodes = blocks.flatMap((block) => compileBlock(graph.objective, block, blocks, aggregations, verifyAggregators))
+  const reportingVerifications = reviewRouteVerificationGates(blocks, aggregations)
+  const nodes = blocks.flatMap((block) =>
+    compileBlock(graph.objective, block, blocks, aggregations, verifyAggregators, reportingVerifications),
+  )
   const duplicateNodeIDs = uniqueDuplicates(nodes.map((node) => node.id))
   if (duplicateNodeIDs.length > 0) {
     throw new Error(
@@ -152,6 +155,7 @@ function compileBlock(
   blocks: WorkflowBlock[],
   aggregations: Map<string, WriterAggregation>,
   verifyAggregators: Map<string, string[]>,
+  reportingVerifications: ReadonlySet<string>,
 ): NodeConfig[] {
   const dependencies = block.depends_on ?? []
   const required = block.required ?? (block.kind === "plan" || block.kind === "verify" || block.kind === "synthesize")
@@ -310,6 +314,13 @@ function compileBlock(
     block.kind === "synthesize" && reviewDependency
       ? { [`${reviewDependency.replace(/-/g, "_")}_review`]: `${reviewDependency}.output` }
       : undefined
+  // A review-route verification gate reports to the parent by default: on
+  // FAIL every review lane and the decision are condition-skipped and the
+  // route settles COMPLETED. Without a reporting node the parent never sees
+  // the failed verdict and reopen-extend has no reporting checkpoint to
+  // route the correction back through. Its dependents are all gated on its
+  // verdict, so it is a well-formed reporting checkpoint.
+  const routeVerificationGate = block.report_to_parent === undefined && reportingVerifications.has(block.id)
   return [
     node({
       id: block.id,
@@ -320,7 +331,10 @@ function compileBlock(
       instruction: block.instruction,
       contract: BLOCK_CONTRACTS[block.kind],
       required,
-      reportToParent: block.report_to_parent ?? block.kind === "synthesize",
+      reportToParent: block.report_to_parent ?? (block.kind === "synthesize" || routeVerificationGate),
+      // The verification contract already demands a deterministic PASS/FAIL;
+      // the direction-adjudication clause (replan/reject) does not apply.
+      adversarial: routeVerificationGate ? false : undefined,
       workerConfig: block.worker_config,
       condition,
       inputMapping: verifyAggregator
@@ -353,6 +367,8 @@ function node(input: {
   inputMapping?: Record<string, string>
   review?: NodeConfig["review"]
   outputSchema?: Record<string, unknown>
+  /** Overrides the reporting-checkpoint adjudication clause (default: reportToParent). */
+  adversarial?: boolean
 }): NodeConfig {
   // issue #387: an instruction equal to the objective (after trim and
   // line-ending normalization) would render the same content twice in the
@@ -368,7 +384,7 @@ function node(input: {
   // incident: a gate confirmed parent-supplied "defect evidence" that was a
   // production no-op because it re-read the parent's narrative instead of
   // the source. Upstream claims are hypotheses, not facts.
-  const adversarial = input.reportToParent
+  const adversarial = (input.adversarial ?? input.reportToParent)
     ? "As a reporting checkpoint you adjudicate this direction: treat upstream and parent-supplied claims as hypotheses to verify, never facts to confirm. Independently read the relevant source before endorsing, spot-check at least three of the most load-bearing claims (name the count you actually inspected), cite what you actually inspected, and replan or reject the direction when a load-bearing claim does not survive inspection."
     : ""
   return {
@@ -529,6 +545,28 @@ function aggregateParallelWriters(blocks: WorkflowBlock[]) {
   })
   topologicalBlocks(rewired)
   return { blocks: rewired, aggregations, verifyAggregators }
+}
+
+/**
+ * Verify blocks that serve as the verification gate of a review route and
+ * whose every direct dependent is a review block routed through them. Those
+ * dependents compile into lanes and a decision conditioned on the verify
+ * verdict, so the gate may report to the parent without an ungated dependent.
+ */
+function reviewRouteVerificationGates(blocks: WorkflowBlock[], aggregations: Map<string, WriterAggregation>) {
+  const routedReviews = new Map<string, Set<string>>()
+  for (const block of blocks) {
+    if (block.kind !== "review") continue
+    const verificationID = aggregations.get(block.id)?.verificationID ?? implementationReviewRoute(block, blocks)?.verification.id
+    if (!verificationID) continue
+    routedReviews.set(verificationID, new Set([...(routedReviews.get(verificationID) ?? []), block.id]))
+  }
+  return new Set(
+    [...routedReviews].flatMap(([verificationID, reviews]) => {
+      const dependents = blocks.filter((block) => (block.depends_on ?? []).includes(verificationID))
+      return dependents.length > 0 && dependents.every((block) => reviews.has(block.id)) ? [verificationID] : []
+    }),
+  )
 }
 
 function requireValidReviewRoutes(blocks: WorkflowBlock[]) {

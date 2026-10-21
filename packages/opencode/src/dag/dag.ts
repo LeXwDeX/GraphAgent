@@ -806,7 +806,14 @@ export const layer = Layer.effect(
       }
       const nodes = yield* store.getNodes(dagID)
       const plan = planReplan(
-        { nodes: nodes.map((n) => ({ id: n.id, status: n.status as never, depends_on: n.dependsOn })) },
+        {
+          nodes: nodes.map((n) => ({
+            id: n.id,
+            status: n.status as never,
+            depends_on: n.dependsOn,
+            superseded: n.superseded,
+          })),
+        },
         {
           nodes: normalizedFragment.nodes.map((n) => ({
             id: n.id,

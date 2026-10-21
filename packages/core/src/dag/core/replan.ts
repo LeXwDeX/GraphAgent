@@ -52,6 +52,10 @@ export interface CurrentNodeState {
   id: string
   status: NodeStatus
   depends_on: string[]
+  /** Rev-view: the row left the current graph revision in an earlier replan.
+   * It is terminal history — never a valid dependency for work that can still
+   * execute, because the runtime rebuilds from current rows only. */
+  superseded?: boolean
 }
 
 /** The structured plan returned by {@link planReplan}. */
@@ -174,8 +178,11 @@ export function planReplan(
   }
   // 3. Resolve the effective dependencies from the same classified plan.
   const cancelledIds = new Set(cancel)
+  const supersededIds = new Set(current.nodes.filter((node) => node.superseded === true).map((node) => node.id))
   const survivingIds = new Set([
-    ...current.nodes.filter((node) => !cancelledIds.has(node.id)).map((node) => node.id),
+    ...current.nodes
+      .filter((node) => !cancelledIds.has(node.id) && !supersededIds.has(node.id))
+      .map((node) => node.id),
     ...add,
   ])
   const mergedDependencies = new Map<string, string[]>()
@@ -191,6 +198,12 @@ export function planReplan(
     // must resolve in the actual post-merge graph.
     if (terminal) continue
     for (const depId of deps) {
+      if (supersededIds.has(depId)) {
+        errors.push(
+          `Node "${id}" depends on "${depId}", which an earlier replan superseded and is no longer part of the current graph — depend on its replacement node, or add a new node under a new id that recomputes it`,
+        )
+        continue
+      }
       if (!survivingIds.has(depId)) {
         errors.push(
           `Node "${id}" depends on "${depId}" which is not present after merge (the dep was cancelled, superseded, or never existed)`,
