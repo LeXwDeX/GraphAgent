@@ -11,7 +11,7 @@
  * via NodeStarted, so each attempt starts with a clean slate).
  */
 
-import { validateReviewResult } from "../review-lifecycle"
+import { acceptConsistencyErrors, validateReviewResult, type VerdictEvidence } from "../review-lifecycle"
 import { validateAgainstSchema } from "./schema-validator"
 import { validateInWorker, type Validation } from "./schema-validation"
 export { validateAgainstSchema, unsupportedSchemaKeywords } from "./schema-validator"
@@ -135,6 +135,7 @@ export function settleCapturedOutput(
   reviewFingerprint: string | undefined,
   suffix = "",
   submitted = captured !== undefined && captured !== null,
+  evidence: readonly VerdictEvidence[] = [],
 ): CapturedSettlement {
   if (!submitted)
     return { kind: "fail", reason: `output_schema declared but submit_result was never successfully called${suffix}` }
@@ -143,5 +144,8 @@ export function settleCapturedOutput(
     if (!result.valid)
       return { kind: "fail", reason: `Review result contract failed${suffix}: ${result.errors.join("; ")}` }
   }
+  const inconsistent = acceptConsistencyErrors(captured, evidence)
+  if (inconsistent.length > 0)
+    return { kind: "fail", reason: `Verdict consistency contract failed${suffix}: ${inconsistent.join("; ")}` }
   return { kind: "complete", output: captured }
 }

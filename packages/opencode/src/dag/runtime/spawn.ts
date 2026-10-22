@@ -47,6 +47,7 @@ import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
 import type { ResultProtocol } from "../dag"
+import type { VerdictEvidence } from "../review-lifecycle"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
@@ -96,6 +97,8 @@ export interface NodeSpawnInput {
   timeoutMs?: number
   reportToParent?: boolean
   reviewImplementationFingerprint?: string
+  /** Completed direct dependency outputs an ACCEPT verdict must account for. */
+  verdictEvidence?: readonly VerdictEvidence[]
   /** dag.jsonc tier default — authoritative unless a persisted legacy node model exists. */
   fallbackModel?: { modelID: string; providerID: string }
   /** dag.jsonc thinking_depth — forwarded as the prompt variant (no-op unless the model defines it). */
@@ -865,7 +868,13 @@ export function spawnNode(
                       reason: captured.code,
                     })
                   const settlement = captured.ok
-                    ? settleCapturedOutput(captured.output, input.reviewImplementationFingerprint, "", true)
+                    ? settleCapturedOutput(
+                        captured.output,
+                        input.reviewImplementationFingerprint,
+                        "",
+                        true,
+                        input.verdictEvidence,
+                      )
                     : ({ kind: "fail", reason: captured.reason } as const)
                   yield* (
                     settlement.kind === "complete"
@@ -905,6 +914,7 @@ export function spawnNode(
                         input.reviewImplementationFingerprint,
                         "",
                         updatedNode.capturedOutputPresent,
+                        input.verdictEvidence,
                       ),
                     }
                   })

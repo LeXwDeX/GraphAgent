@@ -463,4 +463,49 @@ describe("spawnNode submit_result capture", () => {
       trigger: "verdict_fail",
     })
   })
+
+  describe("ACCEPT consistency", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        verdict: { enum: ["ACCEPT", "REJECT"] },
+        required_actions: { type: "array" },
+        refuted: { type: "array" },
+      },
+      required: ["verdict", "required_actions"],
+    }
+    const lane = { nodeID: "decision--standards", output: { verdict: "REJECT", required_actions: ["Add a test"] } }
+
+    it("fails an ACCEPT that ignores a lane's required action", async () => {
+      const { events, dagLayer } = makeEventTracker()
+      await runSpawn(
+        dagLayer,
+        makePromptLayerWithCapture(reply("ignored"), [{ verdict: "ACCEPT", required_actions: [] }], schema),
+        schema,
+        { verdictEvidence: [lane] },
+      )
+      expect(events.find((event) => event.type === "nodeCompleted")).toBeUndefined()
+      expect(events.find((event) => event.type === "nodeFailed")).toEqual({
+        type: "nodeFailed",
+        nodeID: "node-1",
+        reason:
+          "Verdict consistency contract failed: ACCEPT leaves required actions unrefuted: decision--standards[0]; refute each as { node, index, reason } or submit REJECT",
+        trigger: "verdict_fail",
+      })
+    })
+
+    it("completes an ACCEPT that refutes every lane action", async () => {
+      const { events, dagLayer } = makeEventTracker()
+      const accepted = {
+        verdict: "ACCEPT",
+        required_actions: [],
+        refuted: [{ node: "decision--standards", index: 0, reason: "The test exists at src/a.test.ts:4" }],
+      }
+      await runSpawn(dagLayer, makePromptLayerWithCapture(reply("ignored"), [accepted], schema), schema, {
+        verdictEvidence: [lane],
+      })
+      expect(events.find((event) => event.type === "nodeFailed")).toBeUndefined()
+      expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(accepted)
+    })
+  })
 })
