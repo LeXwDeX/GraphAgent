@@ -39,6 +39,7 @@ import {
   isTerminalWorkflowStatusValue,
 } from "@opencode-ai/core/dag/core/types"
 import { Dag, type WorkflowConfig, parseWorkflowConfig, resultProtocol } from "../dag"
+import { DagFanOut } from "../fan-out"
 import { projectBriefForNode } from "../admission"
 import {
   reviewImplementationFingerprint,
@@ -383,6 +384,42 @@ const serviceLayer = Layer.effect(
                 }
                 continue
               }
+            }
+
+            // A fan-out writer is never spawned as authored: it is replaced
+            // through the durable extend path first (parallel writers plus an
+            // aggregator under its id, or itself without the marker), and the
+            // WorkflowReplanned handler schedules the reshaped graph. The
+            // marker lives in the persisted definition, so a crash before the
+            // extend commits simply expands again on the next round.
+            if (nodeConfig.fan_out !== undefined) {
+              const source = nodesSnapshot.find((candidate) => candidate.id === nodeConfig.fan_out)
+              const plan = DagFanOut.planFanOut(
+                nodeConfig,
+                source?.status === "completed" ? source.output : undefined,
+                new Set(nodesSnapshot.map((candidate) => candidate.id)),
+              )
+              const applied = yield* dag.extend(dagID, plan.kind === "expand" ? plan.nodes : [plan.node]).pipe(
+                Effect.as(plan),
+                Effect.catch((error) => {
+                  if (plan.kind !== "expand") return Effect.fail(error)
+                  const declined = DagFanOut.declineFanOut(nodeConfig, `the expanded graph was rejected: ${error.message}`)
+                  return dag.extend(dagID, [declined.node]).pipe(Effect.as<DagFanOut.FanOutPlan>(declined))
+                }),
+                Effect.catch((error) =>
+                  dag
+                    .nodeFailed(dagID, nodeID, `Fan-out expansion failed: ${error.message}`, "exec_failed", admissionAttempt)
+                    .pipe(Effect.ignore, Effect.as(undefined)),
+                ),
+              )
+              if (applied?.kind === "single" && applied.reason) {
+                yield* Effect.logWarning("DAG fan-out declined; running the writer serially", {
+                  dagID,
+                  nodeID,
+                  reason: applied.reason,
+                })
+              }
+              return
             }
 
             const promptParts: { type: "text"; text: string }[] = []

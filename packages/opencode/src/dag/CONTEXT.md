@@ -16,6 +16,7 @@ Workflow Orchestration turns one user objective into one durable DAG. Its model-
 | Reporting Checkpoint | A `report_to_parent: true` node with dependents; its dependents must gate on its output via `condition`, or it must be a reporting leaf. |
 | Workflow Brief | The recommended route, scope, acceptance evidence, assumptions, risks, and material alternatives presented at a Decision Checkpoint. |
 | Block | A reusable high-level orchestration capability such as explore, plan, debug, coding, verify, or review. Blocks compile into Nodes. |
+| Fan-out Writer | A writer whose `fan_out` dependency's `packages` output decides, at admission, whether it runs as parallel package writers joined by an aggregator under its id or as itself. |
 | Node | A low-level durable unit of child-agent work with dependencies, prompt input, policy, and output contract. |
 | Validation Profile | `portable` checks source-contained structure without user environment state; `environment` additionally resolves live agents, prompt assets, and models. |
 | Runtime Admission | The READY/WAIVED gate for a deep workflow. It is a lifecycle policy after authoring, not another name for Workflow Authoring Check. |
@@ -52,3 +53,4 @@ Workflow Orchestration turns one user objective into one durable DAG. Its model-
 - [ADR-0001: One Workflow Authoring Check authority](docs/adr/0001-workflow-authoring-check.md)
 - [ADR-0002: Parallel workspace writers with an implementation aggregator](docs/adr/0002-parallel-writers-aggregator.md)
 - [ADR-0003: Reporting checkpoint gating at the authoring boundary](docs/adr/0003-reporting-checkpoint-gating.md)
+- [ADR-0004: Plan-driven fan-out of implementation writers](docs/adr/0004-plan-driven-fan-out.md)

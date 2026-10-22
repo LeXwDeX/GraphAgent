@@ -103,6 +103,7 @@ export function planRecovery(
         ),
       ),
       ...(condition !== undefined ? { condition } : {}),
+      ...(node.fan_out !== undefined ? { fan_out: mapID(node.fan_out) } : {}),
       prompt_template: {
         ...node.prompt_template,
         input: {

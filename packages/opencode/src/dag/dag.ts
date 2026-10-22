@@ -123,6 +123,9 @@ export interface NodeConfig {
     implementation_node_id?: string
     verification_node_id?: string
   }
+  /** Direct dependency whose `packages` output fans this writer out at
+   * admission; cleared by the expansion that replaces this node. */
+  fan_out?: string
 }
 
 export interface NodeDefaults {

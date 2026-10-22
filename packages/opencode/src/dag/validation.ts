@@ -242,6 +242,10 @@ export const NodeSchema = Schema.Struct({
     description:
       "(deep review workers) design reviews pre-implementation artifacts; diff reviews require implementation_node_id, verification_node_id, and authoring-validated wiring: transitive review→verification→implementation dependencies, input_mapping for the diff artifact, fingerprint, and verification output, a PASS-gated condition, and a verdict+implementation_fingerprint output_schema; deep mode additionally requires the diff review to feed a required final gate conditioned on verdict ACCEPT. Violations are authoring errors in deep mode, warnings in standard mode.",
   }),
+  fan_out: Schema.optional(Schema.String).annotate({
+    description:
+      "(implementation writers) Direct dependency whose output.packages [{ id, instruction, write_set }] fans this writer out when it becomes ready: two or more disjoint packages run as parallel writers <id>--<package-id> and this node becomes their implementation aggregator under the same id; fewer packages, or an unsafe shape, run this writer unchanged",
+  }),
 })
 
 const NodeDefaults = Schema.Struct({
@@ -1025,6 +1029,42 @@ function outputSchemaKeywordDiagnostics(nodes: readonly NodeConfig[]): Diagnosti
 
 /** Pure structural validation. No events, no store, no logging — callers
  * decide how to surface the diagnostics (tool output vs. create rejection). */
+/** A fan-out writer expands from a direct dependency's `packages` output into
+ * parallel writers plus an aggregator under its own id, so downstream
+ * implementation bindings must already read the implementation shape. */
+function fanOutDiagnostics(nodes: readonly NodeConfig[], graph: readonly NodeConfig[] = nodes): Diagnostic[] {
+  return nodes.flatMap((node) => {
+    if (node.fan_out === undefined) return []
+    const path = `nodes[${node.id}].fan_out`
+    const source = graph.find((candidate) => candidate.id === node.fan_out)
+    const problems = [
+      ...(node.depends_on.includes(node.fan_out) ? [] : [`"${node.fan_out}" is not in its depends_on`]),
+      ...(source && !isRecord(schemaProperties(source.output_schema)?.packages)
+        ? [`source "${node.fan_out}" has no output_schema.properties.packages`]
+        : []),
+      ...(["changed_files", "fingerprint"].every((field) => schemaRequired(node.output_schema).includes(field))
+        ? []
+        : ["its output_schema must require changed_files and fingerprint"]),
+    ]
+    return problems.map((problem) =>
+      diagnostic({
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path,
+        message: `node "${node.id}" fan_out ${problem}`,
+        hint: "fan_out names a direct dependency that outputs packages [{ id, instruction, write_set }] on an implementation writer",
+      }),
+    )
+  })
+}
+
+function schemaProperties(schema: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  return isRecord(schema?.properties) ? schema.properties : undefined
+}
+
+function schemaRequired(schema: Record<string, unknown> | undefined): string[] {
+  return Array.isArray(schema?.required) ? schema.required.filter((field) => typeof field === "string") : []
+}
+
 export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
   const duplicates = duplicateNodeIds(input.nodes)
   const review = reviewLifecycleDiagnostics({
@@ -1047,6 +1087,7 @@ export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
     ...tagLegacyClass(danglingDependencyDiagnostics(input.nodes, input.known_node_ids), 1),
     ...tagLegacyClass(inputMappingDiagnostics(input.nodes), 1),
     ...tagLegacyClass(conditionDiagnostics(input.nodes), 2),
+    ...tagLegacyClass(fanOutDiagnostics(input.nodes), 2),
     ...tagLegacyClass(bindingDiagnostics(input.nodes), 3),
     ...tagLegacyClass(ceilingDiagnostics(input), 4),
     ...tagLegacyClass(review.errors, 5),
@@ -1107,6 +1148,7 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     ...tagLegacyClass(danglingDependencyDiagnostics(input.rerunNodes, knownIds), 1),
     ...tagLegacyClass(inputMappingDiagnostics(input.rerunNodes, input.merged.nodes), 1),
     ...tagLegacyClass(conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds), 2),
+    ...tagLegacyClass(fanOutDiagnostics(input.rerunNodes, input.merged.nodes), 2),
     ...tagLegacyClass(bindingDiagnostics(input.rerunNodes), 3),
     ...tagLegacyClass(ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes), 4),
     ...tagLegacyClass(review.errors, 5),

@@ -185,6 +185,16 @@ point. Total-ordered writer chains compile unchanged. Read-only lanes remain
 parallel throughout. The resident Orchestration Router owns route selection and
 phase pruning; this guide owns block fields, contracts, and graph mechanics.
 
+When the number of independent slices is only known after planning, declare
+one `coding` block with `fan_out: <plan-block-id>` (the plan must also be in
+its `depends_on`) instead of guessing writer blocks. That plan then returns
+`packages` of `{ id, instruction, write_set }`. When the writer becomes ready,
+two or more disjoint packages run as parallel writers `<writer>--<package>`
+and the writer's own id becomes their aggregator, so verify and review
+bindings stay unchanged. One package runs the writer as authored; overlapping
+or malformed packages, or a node-ceiling breach, run it serially with the
+reason in its prompt.
+
 ## When to use low-level nodes
 
 Drop to `nodes` for custom template bindings, several conditional branches,

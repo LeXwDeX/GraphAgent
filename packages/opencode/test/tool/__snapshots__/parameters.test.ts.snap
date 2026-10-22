@@ -989,6 +989,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             },
                             "type": "array",
                           },
+                          "fan_out": {
+                            "description": "(coding only) Plan block ID in depends_on whose work packages fan this writer out at runtime: two or more disjoint packages run as parallel writers joined by an implementation aggregator under this block's ID; fewer packages run this writer unchanged",
+                            "type": "string",
+                          },
                           "id": {
                             "description": "Unique block identifier; dependencies target block IDs",
                             "type": "string",
@@ -1164,6 +1168,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                               "type": "string",
                             },
                             "type": "array",
+                          },
+                          "fan_out": {
+                            "description": "(implementation writers) Direct dependency whose output.packages [{ id, instruction, write_set }] fans this writer out when it becomes ready: two or more disjoint packages run as parallel writers <id>--<package-id> and this node becomes their implementation aggregator under the same id; fewer packages, or an unsafe shape, run this writer unchanged",
+                            "type": "string",
                           },
                           "id": {
                             "description": "Unique node identifier, used in depends_on",
