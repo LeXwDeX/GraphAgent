@@ -157,7 +157,9 @@ or existing durable node IDs during **extend** and replan.
 - `review`: design/content inputs expand to independent standards and intent
   reviews plus a general arbiter. An implementation input must follow a
   `coding → verify(PASS) → review` route; the compiler binds the implementation
-  fingerprint through both reviews into an `ACCEPT | REJECT` decision.
+  fingerprint through both reviews into an `ACCEPT | REJECT` decision. Lanes
+  return structured `required_actions`; the runtime fails an ACCEPT that lists
+  its own required actions or leaves a lane's action unrefuted.
 - `synthesize`: resolves dependency outputs into the parent-facing result.
 
 Block contracts are self-contained. `instruction` specializes a lifecycle kind

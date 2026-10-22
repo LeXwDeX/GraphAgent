@@ -61,6 +61,21 @@ export interface WorkflowBlockCompileOptions {
   known_dependencies?: string[]
 }
 
+// An ACCEPT must refute, by lane and index, every required action a review
+// lane raised (review-lifecycle acceptConsistencyErrors enforces it).
+const REFUTED_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    required: ["node", "index", "reason"],
+    properties: {
+      node: { type: "string" },
+      index: { type: "integer" },
+      reason: { type: "string" },
+    },
+  },
+} as const
+
 const GENERAL_VERDICT_SCHEMA = {
   type: "object",
   required: ["verdict", "summary", "findings", "required_actions"],
@@ -72,6 +87,18 @@ const GENERAL_VERDICT_SCHEMA = {
     summary: { type: "string" },
     findings: { type: "array" },
     required_actions: { type: "array" },
+    refuted: REFUTED_SCHEMA,
+  },
+} as const
+
+const LANE_REVIEW_SCHEMA = {
+  type: "object",
+  required: ["verdict", "summary", "findings", "required_actions"],
+  properties: {
+    verdict: { type: "string", enum: ["ACCEPT", "REJECT"] },
+    summary: { type: "string" },
+    findings: { type: "array" },
+    required_actions: { type: "array", items: { type: "string" } },
   },
 } as const
 
@@ -129,6 +156,7 @@ const DIFF_REVIEW_SCHEMA = {
     summary: { type: "string" },
     findings: { type: "array" },
     required_actions: { type: "array" },
+    refuted: REFUTED_SCHEMA,
   },
 } as const
 
@@ -248,12 +276,13 @@ function compileBlock(
         dependencies,
         objective,
         instruction: block.instruction,
-        contract: `${BLOCK_CONTRACTS.review} Focus on documented repository standards, architecture constraints, correctness, and verification evidence.`,
+        contract: `${BLOCK_CONTRACTS.review} Focus on documented repository standards, architecture constraints, correctness, and verification evidence. List only blocking items in required_actions; ACCEPT requires it to be empty.`,
         required: false,
         reportToParent: false,
         workerConfig: block.worker_config,
         condition: reviewCondition,
         inputMapping: reviewEvidence,
+        outputSchema: LANE_REVIEW_SCHEMA,
       }),
       node({
         id: `${block.id}--intent`,
@@ -262,12 +291,13 @@ function compileBlock(
         dependencies,
         objective,
         instruction: block.instruction,
-        contract: `${BLOCK_CONTRACTS.review} Focus on the confirmed goal, scope, acceptance criteria, and user-visible behavior.`,
+        contract: `${BLOCK_CONTRACTS.review} Focus on the confirmed goal, scope, acceptance criteria, and user-visible behavior. List only blocking items in required_actions; ACCEPT requires it to be empty.`,
         required: false,
         reportToParent: false,
         workerConfig: block.worker_config,
         condition: reviewCondition,
         inputMapping: reviewEvidence,
+        outputSchema: LANE_REVIEW_SCHEMA,
       }),
       node({
         id: block.id,
@@ -281,7 +311,7 @@ function compileBlock(
           route
             ? "Reject unsupported claims, deduplicate overlaps, and submit ACCEPT or REJECT while echoing the supplied implementation fingerprint exactly."
             : "Reject unsupported claims, deduplicate overlaps, and submit one structured result with verdict ACCEPT, REVISE, REJECT, or BLOCKED.",
-          "Use ACCEPT only when no material required action remains.",
+          "Use ACCEPT only when no material required action remains: leave required_actions empty and list every required action a review lane raised in refuted as { node, index, reason } with the evidence that disproves it. The runtime rejects an ACCEPT that does neither.",
         ].join(" "),
         required: block.required ?? true,
         reportToParent: block.report_to_parent ?? true,

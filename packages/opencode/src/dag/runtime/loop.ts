@@ -642,6 +642,9 @@ const serviceLayer = Layer.effect(
               reviewImplementationFingerprint: nodeConfig
                 ? reviewImplementationFingerprint(nodeConfig, resolvedMapping)
                 : undefined,
+              verdictEvidence: nodesSnapshot
+                .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
+                .map((source) => ({ nodeID: source.id, output: source.output })),
               fallbackModel: DagConfig.tierModel(dagConfig, { required: node.required, workerType: node.workerType }),
               variant: dagConfig.thinking_depth,
               maxTimeoutExtensions:
