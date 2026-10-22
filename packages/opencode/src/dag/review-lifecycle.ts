@@ -158,6 +158,60 @@ export function validateReviewResult(output: unknown, currentFingerprint: string
   }
 }
 
+/** A completed direct dependency whose structured output may raise required actions. */
+export interface VerdictEvidence {
+  nodeID: string
+  output: unknown
+}
+
+/**
+ * ACCEPT means nothing blocking remains. A structured verdict output that says
+ * ACCEPT must therefore carry no required_actions of its own, and every
+ * required action raised by a structured evidence dependency (review lanes)
+ * must be listed in `refuted` as { node, index, reason }. Anything else is a
+ * silent gate opening, so settlement rejects it like a fingerprint mismatch.
+ * Non-ACCEPT verdicts and free-text (legacy) evidence are not constrained.
+ */
+export function acceptConsistencyErrors(output: unknown, evidence: readonly VerdictEvidence[] = []): string[] {
+  const result = structuredRecord(output)
+  if (result?.verdict !== "ACCEPT") return []
+  const own = Array.isArray(result.required_actions) ? result.required_actions.length : 0
+  const refuted = (Array.isArray(result.refuted) ? result.refuted : []).flatMap((entry) => {
+    const item = structuredRecord(entry)
+    return item && typeof item.reason === "string" && item.reason.trim() !== "" ? [item] : []
+  })
+  const unrefuted = evidence.flatMap((item) => {
+    const raised = structuredRecord(item.output)?.required_actions
+    if (!Array.isArray(raised)) return []
+    return raised.flatMap((_, index) =>
+      refuted.some((entry) => entry.node === item.nodeID && entry.index === index) ? [] : [`${item.nodeID}[${index}]`],
+    )
+  })
+  return [
+    ...(own > 0 ? [`ACCEPT must not list required_actions (${own} listed); submit REJECT instead`] : []),
+    ...(unrefuted.length > 0
+      ? [
+          `ACCEPT leaves required actions unrefuted: ${unrefuted.join(", ")}; refute each as { node, index, reason } or submit REJECT`,
+        ]
+      : []),
+  ]
+}
+
+function structuredRecord(value: unknown): Record<string, unknown> | undefined {
+  const parsed = typeof value === "string" ? parseJson(value) : value
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? Object.fromEntries(Object.entries(parsed))
+    : undefined
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
 export function unresolvedReviewOutcomes(
   config: WorkflowConfig,
   nodes: ReadonlyArray<{ id: string; status: string; output: unknown }>,

@@ -816,12 +816,19 @@ export function continueRecoveredMessageNode(
  * untouched by the sanitizer.
  */
 function recoveredSettlement(
-  nodeConfig: Pick<NodeConfig, "review" | "input_mapping">,
+  nodeConfig: Pick<NodeConfig, "id" | "review" | "input_mapping">,
   rows: readonly DagStore.NodeRow[],
   captured: unknown,
   submitted?: boolean,
 ): CapturedSettlement {
-  if (nodeConfig.review?.phase !== "diff") return settleCapturedOutput(captured, undefined, " (recovered)", submitted)
+  // Same evidence the spawn path passes: completed direct dependencies, read
+  // from the node's durable edges.
+  const dependsOn = rows.find((row) => row.id === nodeConfig.id)?.dependsOn ?? []
+  const evidence = rows
+    .filter((row) => dependsOn.includes(row.id) && row.status === "completed")
+    .map((row) => ({ nodeID: row.id, output: row.output }))
+  if (nodeConfig.review?.phase !== "diff")
+    return settleCapturedOutput(captured, undefined, " (recovered)", submitted, evidence)
   const resolved = resolveInputMapping(
     nodeConfig.input_mapping,
     (nodeID) => rows.find((row) => row.id === nodeID)?.output,
@@ -832,7 +839,7 @@ function recoveredSettlement(
       kind: "fail",
       reason: "review implementation fingerprint could not be resolved from durable state (recovered)",
     }
-  return settleCapturedOutput(captured, fingerprint, " (recovered)", submitted)
+  return settleCapturedOutput(captured, fingerprint, " (recovered)", submitted, evidence)
 }
 
 export function makeSessionStatusChecker(
