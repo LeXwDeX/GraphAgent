@@ -123,6 +123,9 @@ export interface NodeConfig {
     implementation_node_id?: string
     verification_node_id?: string
   }
+  /** Direct dependency whose `packages` output fans this writer out at
+   * admission; cleared by the expansion that replaces this node. */
+  fan_out?: string
 }
 
 export interface NodeDefaults {
@@ -370,6 +373,9 @@ export interface Interface {
   readonly extend: (
     dagID: string,
     nodes: NodeConfig[],
+    /** Runtime-initiated extends (fan-out) apply only while this pending node
+     * still matches the scheduling attempt that planned them. */
+    fence?: { nodeID: string; attempt: NodeExecutionAttempt },
   ) => Effect.Effect<{ cancel: string[]; restart: string[]; replace: string[]; add: string[]; ignore: string[] }, Error>
   readonly recover: (
     dagID: string,
@@ -1054,10 +1060,34 @@ export const layer = Layer.effect(
       }
     })
 
-    const _extend = Effect.fn("Dag._extend")(function* (lock: WorkflowLock, dagID: string, newNodes: NodeConfig[]) {
+    const _extend = Effect.fn("Dag._extend")(function* (
+      lock: WorkflowLock,
+      dagID: string,
+      newNodes: NodeConfig[],
+      fence?: { nodeID: string; attempt: NodeExecutionAttempt },
+    ) {
       const wf = yield* store.getWorkflow(dagID)
       if (!wf) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
       const nodes = yield* store.getNodes(dagID)
+      if (fence) {
+        // Checked under the same lock that applies the mutation: a parent
+        // replan or cancel between the scheduling snapshot and here wins.
+        const fenced = nodes.find((node) => node.id === fence.nodeID)
+        if (!fenced) return yield* Effect.fail(new Error(`Node not found: ${fence.nodeID}`))
+        yield* guardNodeAttempt(fenced, wf.graphRev, fence.attempt)
+        // Only a still-pending writer may be reshaped; anything else is a
+        // stale attempt even when the caller supplied no node sequence.
+        if (fenced.status !== "pending") {
+          return yield* Effect.fail(
+            new StaleNodeAttemptError(fence.nodeID, fence.attempt, {
+              replanAttempts: fenced.replanAttempts,
+              nodeSeq: fenced.seq,
+              childSessionID: fenced.childSessionId,
+              graphRev: wf.graphRev,
+            }),
+          )
+        }
+      }
       const config = parseWorkflowConfig(wf.config)
       const cfgById = new Map((config?.nodes ?? []).map((n) => [n.id, n]))
       const newIds = new Set(newNodes.map((n) => n.id))
@@ -1634,8 +1664,8 @@ export const layer = Layer.effect(
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
       replan: (dagID, fragment) =>
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
-      extend: (dagID, nodes) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes))),
+      extend: (dagID, nodes, fence) =>
+        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _extend(lock, dagID, nodes, fence))),
       recover,
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
         withWorkflowLock(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),

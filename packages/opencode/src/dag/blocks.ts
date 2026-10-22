@@ -46,6 +46,10 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
     description: "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default",
   }),
+  fan_out: Schema.optional(Schema.String).annotate({
+    description:
+      "(coding only) Plan block ID in depends_on whose work packages fan this writer out at runtime: two or more disjoint packages run as parallel writers joined by an implementation aggregator under this block's ID; fewer packages run this writer unchanged",
+  }),
 }) {}
 
 export interface WorkflowBlockGraph {
@@ -98,7 +102,7 @@ const LANE_REVIEW_SCHEMA = {
   },
 } as const
 
-const IMPLEMENTATION_SCHEMA = {
+export const IMPLEMENTATION_SCHEMA = {
   type: "object",
   required: ["summary", "changed_files", "fingerprint"],
   properties: {
@@ -107,6 +111,31 @@ const IMPLEMENTATION_SCHEMA = {
     fingerprint: { type: "string" },
   },
 } as const
+
+// A plan that drives a fan-out writer submits its work packages structurally;
+// how many packages and where the boundaries fall stay the planner's call.
+const WORK_PACKAGES_SCHEMA = {
+  type: "object",
+  required: ["summary", "packages"],
+  properties: {
+    summary: { type: "string" },
+    packages: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "instruction", "write_set"],
+        properties: {
+          id: { type: "string" },
+          instruction: { type: "string" },
+          write_set: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+} as const
+
+const FAN_OUT_PLAN_CONTRACT =
+  "Your packages drive parallel implementation: each package becomes one writer running concurrently in the same workspace. Split only where the work is genuinely independent; return a single package when it is not. Give each package a short id (letters, numbers, hyphens, underscores), a self-contained instruction, and its write_set of repository-relative files or directories. Write sets must be triple-disjoint across packages: source files, generated artifacts, and lockfiles never overlap, and no package may trigger a shared build."
 
 const VERIFICATION_SCHEMA = {
   type: "object",
@@ -191,6 +220,7 @@ function compileBlock(
     (dependency) => blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
   )
   const condition = reviewDependency ? `${reviewDependency}.output.verdict == "ACCEPT"` : undefined
+  const drivesFanOut = block.kind === "plan" && blocks.some((candidate) => candidate.fan_out === block.id)
 
   if (block.kind === "debug") {
     const evidenceID = `${block.id}--evidence`
@@ -359,7 +389,7 @@ function compileBlock(
       dependencies,
       objective,
       instruction: block.instruction,
-      contract: BLOCK_CONTRACTS[block.kind],
+      contract: drivesFanOut ? `${BLOCK_CONTRACTS.plan} ${FAN_OUT_PLAN_CONTRACT}` : BLOCK_CONTRACTS[block.kind],
       required,
       reportToParent: block.report_to_parent ?? (block.kind === "synthesize" || routeVerificationGate),
       // The verification contract already demands a deterministic PASS/FAIL;
@@ -377,7 +407,10 @@ function compileBlock(
         ? IMPLEMENTATION_SCHEMA
         : block.kind === "verify"
           ? VERIFICATION_SCHEMA
-          : undefined,
+          : drivesFanOut
+            ? WORK_PACKAGES_SCHEMA
+            : undefined,
+      fanOut: block.fan_out,
     }),
   ]
 }
@@ -399,6 +432,7 @@ function node(input: {
   outputSchema?: Record<string, unknown>
   /** Overrides the reporting-checkpoint adjudication clause (default: reportToParent). */
   adversarial?: boolean
+  fanOut?: string
 }): NodeConfig {
   // issue #387: an instruction equal to the objective (after trim and
   // line-ending normalization) would render the same content twice in the
@@ -444,6 +478,7 @@ function node(input: {
     ...(input.inputMapping ? { input_mapping: input.inputMapping } : {}),
     ...(input.review ? { review: input.review } : {}),
     ...(input.outputSchema ? { output_schema: input.outputSchema } : {}),
+    ...(input.fanOut ? { fan_out: input.fanOut } : {}),
   }
 }
 
@@ -475,6 +510,7 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
         throw new Error(`Block "${block.id}" depends on unknown block "${dependency}"`)
       }
     })
+    if (block.fan_out !== undefined) requireValidFanOut(block, graph.blocks)
     const reviewDependencies = (block.depends_on ?? []).filter(
       (dependency) => graph.blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
     )
@@ -487,6 +523,21 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
   topologicalBlocks(graph.blocks)
 }
 
+function requireValidFanOut(block: WorkflowBlock, blocks: WorkflowBlock[]) {
+  if (block.kind !== "coding") throw new Error(`Block "${block.id}" uses fan_out, which only coding blocks support`)
+  const source = blocks.find((candidate) => candidate.id === block.fan_out)
+  if (source?.kind !== "plan") {
+    throw new Error(`Block "${block.id}" fan_out "${block.fan_out}" must name a plan block`)
+  }
+  if (!(block.depends_on ?? []).includes(source.id)) {
+    throw new Error(`Block "${block.id}" fan_out "${source.id}" must also be listed in its depends_on`)
+  }
+  const sharing = blocks.filter((candidate) => candidate.fan_out === source.id).map((candidate) => candidate.id)
+  if (sharing.length > 1) {
+    throw new Error(`Plan block "${source.id}" fans out more than one writer (${sharing.join(", ")}); keep one`)
+  }
+}
+
 // Injected between parallel implementation writers and their verification
 // gate: an explore-type worker enforcing the contract below. Detection is a
 // behavioral contract, not an engine guarantee (#347) — the engine computes
@@ -494,7 +545,7 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
 // the declared write-sets against the workspace's actual git status so
 // undeclared edits fail loudly instead of escaping the union+fingerprint
 // review binding, and computes the fingerprint over the actually-changed set.
-const AGGREGATOR_CONTRACT =
+export const AGGREGATOR_CONTRACT =
   "Collect the supplied changed-file lists and summaries from each parallel implementation writer. Run git status --porcelain in the workspace to observe the actually-changed set. If any file path appears in more than one declared list, do not submit; fail the node naming the exact overlapping paths. If the actually-changed set contains paths no writer declared, do not submit; fail the node naming the undeclared paths — undeclared edits must not slip past the review binding. Otherwise submit the union of the actually-changed set and one stable fingerprint computed at this convergence point over exactly that set (for example a sha256 over the sorted union of current file contents, reporting the exact commands used). Do not modify any file."
 
 interface WriterAggregation {
@@ -510,7 +561,7 @@ interface WriterAggregation {
  * one writer's evidence (and its files escape the aggregator's overlap
  * detection), so the shape is rejected at compile time.
  */
-function aggregatorEvidenceMapping(writerIDs: string[]): Record<string, string> {
+export function aggregatorEvidenceMapping(writerIDs: string[]): Record<string, string> {
   const seen = new Map<string, string>()
   for (const writerID of writerIDs) {
     const key = writerID.replace(/-/g, "_")
