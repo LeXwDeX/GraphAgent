@@ -34,9 +34,9 @@ describe("acceptConsistencyErrors", () => {
         { node: "review--intent", index: 0, reason: "Out of the confirmed scope" },
       ],
     }
-    expect(
-      acceptConsistencyErrors(output, [lane("review--standards", ["A"]), lane("review--intent", ["C"])]),
-    ).toEqual([])
+    expect(acceptConsistencyErrors(output, [lane("review--standards", ["A"]), lane("review--intent", ["C"])])).toEqual(
+      [],
+    )
   })
 
   it("does not count a refutation without a reason, or one aimed at the wrong lane or index", () => {
@@ -50,6 +50,15 @@ describe("acceptConsistencyErrors", () => {
       ],
     }
     expect(acceptConsistencyErrors(output, [lane("review--standards", ["A"])])).toHaveLength(1)
+  })
+
+  it("treats fenced JSON evidence like plain JSON", () => {
+    const fenced = "```json\n" + JSON.stringify({ verdict: "REJECT", required_actions: ["A"] }) + "\n```"
+    expect(
+      acceptConsistencyErrors({ verdict: "ACCEPT", required_actions: [] }, [{ nodeID: "fenced", output: fenced }]),
+    ).toEqual([
+      "ACCEPT leaves required actions unrefuted: fenced[0]; refute each as { node, index, reason } or submit REJECT",
+    ])
   })
 
   it("reads JSON-string outputs and ignores free-text legacy evidence", () => {

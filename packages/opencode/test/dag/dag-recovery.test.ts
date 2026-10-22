@@ -15,6 +15,7 @@ import type { DagStore } from "@opencode-ai/core/dag/store"
 import { WorkflowRuntime, toSchedulingNodes } from "@opencode-ai/core/dag/core/scheduling"
 import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
 import { makeNodeRow } from "./fixtures"
+import { testEffect } from "../lib/effect"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
 
 const tmpRoots: string[] = []
@@ -30,6 +31,8 @@ type TrackedEvent = {
   reason?: string
   trigger?: string
 }
+
+const effectIt = testEffect(Layer.empty)
 
 function makeDagLayer(
   nodes: DagStore.NodeRow[],
@@ -338,38 +341,38 @@ describe("reconcileWorkflow", () => {
     expect(events.find((event) => event.type === "nodeFailed")).toBeUndefined()
   })
 
-  it("fails a recovered ACCEPT that leaves a lane's required action unrefuted", async () => {
-    const events: TrackedEvent[] = []
-    const nodes = [
-      makeNodeRow({
-        id: "lane",
-        status: "completed",
-        output: { verdict: "REJECT", required_actions: ["Handle the empty input"] },
-      }),
-      makeNodeRow({
-        id: "decision",
-        status: "running",
-        childSessionId: "ses_1",
-        dependsOn: ["lane"],
-        capturedOutput: { verdict: "ACCEPT", required_actions: [] },
-      }),
-    ]
-    const dagLayer = makeDagLayer(nodes, events)
-    const checkStatus = () => Effect.succeed("completed" as const)
-    const workflowConfig = { nodes: [{ id: "lane" }, { id: "decision", output_schema: { type: "object" } }] }
+  effectIt.effect("fails a recovered ACCEPT that leaves a lane's required action unrefuted", () =>
+    Effect.gen(function* () {
+      const events: TrackedEvent[] = []
+      const nodes = [
+        makeNodeRow({
+          id: "lane",
+          status: "completed",
+          output: { verdict: "REJECT", required_actions: ["Handle the empty input"] },
+        }),
+        makeNodeRow({
+          id: "decision",
+          status: "running",
+          childSessionId: "ses_1",
+          dependsOn: ["lane"],
+          capturedOutput: { verdict: "ACCEPT", required_actions: [] },
+        }),
+      ]
+      const dagLayer = makeDagLayer(nodes, events)
+      const checkStatus = () => Effect.succeed("completed" as const)
+      const workflowConfig = { nodes: [{ id: "lane" }, { id: "decision", output_schema: { type: "object" } }] }
 
-    await Effect.runPromise(
-      reconcileWorkflow("wf-1", checkStatus, undefined, workflowConfig).pipe(Effect.provide(dagLayer)),
-    )
+      yield* reconcileWorkflow("wf-1", checkStatus, undefined, workflowConfig).pipe(Effect.provide(dagLayer))
 
-    expect(events).toContainEqual({
-      type: "nodeFailed",
-      nodeID: "decision",
-      reason:
-        "Verdict consistency contract failed (recovered): ACCEPT leaves required actions unrefuted: lane[0]; refute each as { node, index, reason } or submit REJECT",
-      trigger: "verdict_fail",
-    })
-  })
+      expect(events).toContainEqual({
+        type: "nodeFailed",
+        nodeID: "decision",
+        reason:
+          "Verdict consistency contract failed (recovered): ACCEPT leaves required actions unrefuted: lane[0]; refute each as { node, index, reason } or submit REJECT",
+        trigger: "verdict_fail",
+      })
+    }),
+  )
 
   it("fails an already completed child whose required structured output was never captured", async () => {
     const events: TrackedEvent[] = []

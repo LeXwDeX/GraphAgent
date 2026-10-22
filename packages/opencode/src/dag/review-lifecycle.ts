@@ -197,19 +197,13 @@ export function acceptConsistencyErrors(output: unknown, evidence: readonly Verd
   ]
 }
 
+// Same normalization as verdict gates: plain or fenced JSON strings count as
+// structured output, so a fenced legacy lane cannot slip past refutation.
 function structuredRecord(value: unknown): Record<string, unknown> | undefined {
-  const parsed = typeof value === "string" ? parseJson(value) : value
+  const parsed = normalizeOutput(value)
   return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
     ? Object.fromEntries(Object.entries(parsed))
     : undefined
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return undefined
-  }
 }
 
 export function unresolvedReviewOutcomes(
