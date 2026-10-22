@@ -42,7 +42,7 @@ function nodes() {
   })
 }
 
-async function run(planOutput: unknown) {
+async function run(planOutput: unknown, expectedWriters: number) {
   const prompts: string[] = []
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
@@ -134,9 +134,10 @@ async function run(planOutput: unknown) {
       yield* loop.init()
       const running = () =>
         storeSvc.getNodes(dagID).pipe(Effect.map((rows) => rows.filter((row) => row.status === "running")))
-      for (let i = 0; i < 300 && (yield* running()).length === 0; i++) yield* realSleep(10)
-      // Let a wrongly unexpanded writer, if any, also reach admission.
-      yield* realSleep(100)
+      // Bounded wait for every expected admission (running row + child prompt).
+      const admitted = () =>
+        running().pipe(Effect.map((rows) => rows.length >= expectedWriters && prompts.length >= expectedWriters))
+      for (let i = 0; i < 500 && !(yield* admitted()); i++) yield* realSleep(10)
 
       const config = parseWorkflowConfig((yield* storeSvc.getWorkflow(dagID))!.config)!
       return {
@@ -158,7 +159,7 @@ async function run(planOutput: unknown) {
 
 describe("DagLoop fan_out expansion", () => {
   it("runs disjoint packages as parallel writers joined under the original writer id", async () => {
-    const result = await run({ summary: "split", packages: [pkg("api", ["src/api"]), pkg("ui", ["src/ui"]), pkg("docs", ["docs"])] })
+    const result = await run({ summary: "split", packages: [pkg("api", ["src/api"]), pkg("ui", ["src/ui"]), pkg("docs", ["docs"])] }, 3)
     const byID = new Map(result.config.nodes.map((node) => [node.id, node]))
 
     expect(result.running).toEqual(["slices--api", "slices--docs", "slices--ui"])
@@ -175,7 +176,7 @@ describe("DagLoop fan_out expansion", () => {
   })
 
   it("runs the writer unchanged when the planner keeps one package", async () => {
-    const result = await run({ summary: "one", packages: [pkg("all", ["src"])] })
+    const result = await run({ summary: "one", packages: [pkg("all", ["src"])] }, 1)
     const writer = result.config.nodes.find((node) => node.id === "slices")
     expect(result.running).toEqual(["slices"])
     expect(writer?.worker_type).toBe("build")
@@ -184,7 +185,7 @@ describe("DagLoop fan_out expansion", () => {
   })
 
   it("declines overlapping packages and runs one serial writer that is told why", async () => {
-    const result = await run({ summary: "bad", packages: [pkg("a", ["src"]), pkg("b", ["src/b.ts"])] })
+    const result = await run({ summary: "bad", packages: [pkg("a", ["src"]), pkg("b", ["src/b.ts"])] }, 1)
     expect(result.running).toEqual(["slices"])
     expect(result.config.nodes.find((node) => node.id === "slices")?.fan_out).toBeUndefined()
     expect(result.prompts.some((text) => text.includes("Parallel fan-out was declined"))).toBe(true)
@@ -192,8 +193,69 @@ describe("DagLoop fan_out expansion", () => {
 
   it("declines when the expanded graph would breach the node ceiling", async () => {
     const many = Array.from({ length: 120 }, (_, index) => pkg(`p${index}`, [`src/p${index}`]))
-    const result = await run({ summary: "huge", packages: many })
+    const result = await run({ summary: "huge", packages: many }, 1)
     expect(result.running).toEqual(["slices"])
     expect(result.prompts.some((text) => text.includes("the expanded graph was rejected"))).toBe(true)
+  })
+})
+
+describe("Dag.extend fan-out fence", () => {
+  it("rejects an expansion planned against a stale scheduling attempt", async () => {
+    const database = Database.layerFromPath(":memory:")
+    const events = EventV2.layer.pipe(Layer.provide(database))
+    const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
+    const store = DagStore.layer.pipe(Layer.provide(database))
+    const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+    const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+    const layer = Layer.mergeAll(database, events, bridge, store, projector, dag)
+
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const dagSvc = yield* Dag.Service
+        const storeSvc = yield* DagStore.Service
+        const db = yield* Database.Service
+        yield* db.db
+          .insert(ProjectTable)
+          .values({ id: Project.ID.make("project-1"), worktree: AbsolutePath.make(process.cwd()), sandboxes: [] })
+          .run()
+          .pipe(Effect.orDie)
+        yield* db.db
+          .insert(SessionTable)
+          .values({
+            id: SessionID.make("ses_parent"),
+            project_id: Project.ID.make("project-1"),
+            slug: "parent",
+            directory: AbsolutePath.make(process.cwd()),
+            title: "Parent",
+            version: "test",
+          })
+          .run()
+          .pipe(Effect.orDie)
+        const dagID = yield* dagSvc.create({
+          projectID: "project-1",
+          sessionID: "ses_parent",
+          title: "Fence",
+          config: { name: "fence", nodes: nodes() },
+        })
+        const writer = (yield* storeSvc.getNode(dagID, "slices"))!
+        const graphRev = (yield* storeSvc.getWorkflow(dagID))!.graphRev
+        const attempt = { replanAttempts: writer.replanAttempts, nodeSeq: writer.seq, graphRev }
+        const single = nodes().find((node) => node.id === "slices")!
+        const { fan_out: _fanOut, ...unmarked } = single
+        const stale = yield* dagSvc
+          .extend(dagID, [unmarked], { nodeID: "slices", attempt: { ...attempt, graphRev: graphRev - 1 } })
+          .pipe(Effect.flip)
+        const config = parseWorkflowConfig((yield* storeSvc.getWorkflow(dagID))!.config)!
+        yield* dagSvc.extend(dagID, [unmarked], { nodeID: "slices", attempt })
+        const after = parseWorkflowConfig((yield* storeSvc.getWorkflow(dagID))!.config)!
+        return {
+          stale: stale.name,
+          markerKept: config.nodes.find((node) => node.id === "slices")?.fan_out,
+          markerAfterCurrent: after.nodes.find((node) => node.id === "slices")?.fan_out ?? null,
+        }
+      }).pipe(Effect.provide(layer)),
+    )
+
+    expect(outcome).toEqual({ stale: "StaleNodeAttemptError", markerKept: "plan", markerAfterCurrent: null })
   })
 })

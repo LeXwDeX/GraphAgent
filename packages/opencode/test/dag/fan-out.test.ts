@@ -137,6 +137,8 @@ describe("planFanOut", () => {
     ["duplicate ids", [pkg("a", ["x"]), pkg("a", ["y"])], 'package id "a" is duplicated'],
     ["an unsafe id", [pkg("a b", ["x"]), pkg("c", ["y"])], "must use only letters"],
     ["traversal", [pkg("a", ["../etc"]), pkg("b", ["y"])], "not a repository-relative path"],
+    ["a dot-segment spelling of the same file", [pkg("a", ["src/./a.ts"]), pkg("b", ["src/a.ts"])], 'overlap at "src/a.ts" / "src/a.ts"'],
+    ["repeated separators", [pkg("a", ["src//a"]), pkg("b", ["src/a/b.ts"])], 'overlap at "src/a" / "src/a/b.ts"'],
     ["an empty write set", [pkg("a", []), pkg("b", ["y"])], "declares no write_set"],
     ["a malformed package", [{ id: "a" }, pkg("b", ["y"])], "is not { id, instruction, write_set }"],
     ["normalized id collisions", [pkg("a-b", ["x"]), pkg("a_b", ["y"])], "normalize to the same input-mapping key"],
@@ -147,6 +149,17 @@ describe("planFanOut", () => {
     expect(plan.reason).toContain(reason)
     expect(plan.node.fan_out).toBeUndefined()
     expect(plan.node.prompt_template.inline).toContain("Parallel fan-out was declined")
+  })
+
+  it("gives package writers their own recovery identity and keeps the writer's on the aggregator", () => {
+    const recovered = { ...writer(), recovery: { logical_node_id: "slices", attempt: 2, previous_node_id: "slices" } }
+    const plan = DagFanOut.planFanOut(recovered, { packages: [pkg("a", ["x"]), pkg("b", ["y"])] }, new Set())
+    expect(plan.kind).toBe("expand")
+    if (plan.kind !== "expand") return
+    const byID = new Map(plan.nodes.map((node) => [node.id, node]))
+    expect(byID.get("slices--a")?.recovery).toBeUndefined()
+    expect(byID.get("slices--b")?.recovery).toBeUndefined()
+    expect(byID.get("slices")?.recovery).toEqual(recovered.recovery)
   })
 
   it("declines when a writer id is already taken", () => {

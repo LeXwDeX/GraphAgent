@@ -38,7 +38,9 @@ export function planFanOut(
   const evidence = evidenceMapping(writerIDs)
   if (typeof evidence === "string") return declineFanOut(writer, evidence)
 
-  const { fan_out: _fanOut, ...definition } = writer
+  // Package writers are new logical nodes: an inherited recovery identity
+  // would give every package the same replacement id on recovery.
+  const { fan_out: _fanOut, recovery: _recovery, ...definition } = writer
   const writers = accepted.map(
     (item, index): NodeConfig => ({
       ...definition,
@@ -73,6 +75,8 @@ export function planFanOut(
     ...(writer.worker_config ? { worker_config: writer.worker_config } : {}),
     input_mapping: evidence,
     output_schema: IMPLEMENTATION_SCHEMA,
+    // The aggregator continues the writer's logical node.
+    ...(writer.recovery ? { recovery: writer.recovery } : {}),
   }
   return { kind: "expand", nodes: [...writers, aggregator], writerIDs }
 }
@@ -151,16 +155,14 @@ function isPackage(value: unknown): value is WorkPackage {
   )
 }
 
-/** Repository-relative, slash-separated, no traversal; "" means the whole tree. */
+/** Canonical repository-relative path: slash-separated, no empty or "."
+ * segments, no traversal; "" means the whole tree. */
 function normalizeWritePath(raw: string): string | undefined {
-  const path = raw
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/^(\.\/)+/, "")
-    .replace(/\/+$/, "")
+  const path = raw.trim().replace(/\\/g, "/")
   if (path.startsWith("/") || /^[A-Za-z]:/.test(path)) return undefined
-  if (path.split("/").some((part) => part === "..")) return undefined
-  return path === "." ? "" : path
+  const segments = path.split("/").filter((part) => part !== "" && part !== ".")
+  if (segments.includes("..")) return undefined
+  return segments.join("/")
 }
 
 function pathsOverlap(left: string, right: string) {
