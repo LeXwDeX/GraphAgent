@@ -187,7 +187,7 @@ export function Prompt(props: PromptProps) {
   })
   const preparation = createMemo(() => {
     const current = status()
-    return current.type === "busy" ? current.preparation : undefined
+    return current.type === "busy" && current.preparation?.stage !== "memory" ? current.preparation : undefined
   })
   const history = usePromptHistory()
   const stash = usePromptStash()
