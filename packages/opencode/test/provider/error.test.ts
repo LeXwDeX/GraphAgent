@@ -21,6 +21,7 @@ function apiCallError(options: {
   responseBody?: string
   responseHeaders?: Record<string, string>
   cause?: unknown
+  data?: unknown
 }) {
   return new APICallError({
     message: options.message,
@@ -30,6 +31,7 @@ function apiCallError(options: {
     responseHeaders: options.responseHeaders ?? { "content-type": "application/json", "x-request-id": "req_test" },
     responseBody: options.responseBody,
     cause: options.cause,
+    data: options.data,
     isRetryable: options.isRetryable,
   })
 }
@@ -152,6 +154,41 @@ describe("provider API call errors", () => {
       responseBody: undefined,
       metadata: { url: wrapped.url },
     })
+  })
+
+  test("uses a plain object cause message for the generic wrapper", () => {
+    const wrapped = wrappedSuccessResponse({ error: { message: "socket hang up" } })
+    const parsed = ProviderError.parseAPICallError({
+      providerID: ProviderV2.ID.make("relay"),
+      error: wrapped,
+    })
+
+    expect(parsed).toEqual({
+      type: "api_error",
+      message: "socket hang up",
+      statusCode: undefined,
+      isRetryable: false,
+      responseHeaders: undefined,
+      responseBody: undefined,
+      metadata: { url: wrapped.url },
+    })
+  })
+
+  test("does not invent metadata code from unrelated APICallError data", () => {
+    const error = apiCallError({
+      message: "provider rejected the request",
+      statusCode: 400,
+      isRetryable: false,
+      data: { message: "business message" },
+    })
+
+    const parsed = ProviderError.parseAPICallError({
+      providerID: ProviderV2.ID.make("relay"),
+      error,
+    })
+    expect(parsed.type).toBe("api_error")
+    if (parsed.type !== "api_error") throw new Error("Expected api_error")
+    expect(parsed.metadata).toEqual({ url: error.url })
   })
 
   test("keeps a plain cause message without a generic wrapper untouched", () => {

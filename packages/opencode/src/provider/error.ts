@@ -162,6 +162,12 @@ function causeMessage(input: unknown): string | undefined {
     seen.add(current)
     if (current instanceof Error && current.message) return current.message
     if (typeof current === "string" && current) return current
+    if (isRecord(current)) {
+      if (typeof current.message === "string" && current.message) return current.message
+      if (isRecord(current.error) && typeof current.error.message === "string" && current.error.message) {
+        return current.error.message
+      }
+    }
     if (typeof current !== "object" || !("cause" in current)) return undefined
     current = current.cause
   }

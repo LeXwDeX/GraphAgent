@@ -55,16 +55,42 @@ describe("plugin.openai.ws", () => {
     const socket = new (class extends EventEmitter {
       send(_data: string, _callback: (error?: Error) => void) {}
     })() as unknown as WebSocket
-    const invalid: string[] = []
+    const invalid: ProviderError.ResponseStreamError[] = []
     const response = OpenAIWebSocket.streamResponsesWebSocket({
       socket,
       body: { stream: true, input: "hi" },
       idleTimeout: 20,
-      onConnectionInvalid: (error) => invalid.push(error.message),
+      onConnectionInvalid: (error) => invalid.push(error),
     })
 
-    expect((await readTextError(response.text())).message).toContain("idle timeout sending websocket request")
-    expect(invalid).toEqual(["idle timeout sending websocket request"])
+    const error = await readTextError(response.text())
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    if (!(error instanceof ProviderError.ResponseStreamError)) throw new Error("Expected ResponseStreamError")
+    expect(error.message).toContain("idle timeout sending websocket request")
+    expect(error.kind).toBe("idle-timeout")
+    expect(invalid[0]?.kind).toBe("idle-timeout")
+  })
+
+  test("classifies websocket socket errors", async () => {
+    const socket = new (class extends EventEmitter {
+      send(_data: string, callback: (error?: Error) => void) {
+        callback()
+        this.emit("error", new Error("socket boom"))
+      }
+    })() as unknown as WebSocket
+    const invalid: ProviderError.ResponseStreamError[] = []
+    const response = OpenAIWebSocket.streamResponsesWebSocket({
+      socket,
+      body: { stream: true, input: "hi" },
+      onConnectionInvalid: (error) => invalid.push(error),
+    })
+
+    const error = await readTextError(response.text())
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    if (!(error instanceof ProviderError.ResponseStreamError)) throw new Error("Expected ResponseStreamError")
+    expect(error.kind).toBe("socket-error")
+    expect(error.message).toBe("socket boom")
+    expect(invalid[0]?.kind).toBe("socket-error")
   })
 
   test("streams websocket events as SSE and handles response.done", async () => {
@@ -566,7 +592,11 @@ describe("plugin.openai.ws-pool", () => {
     })
 
     const first = await fetch(server.url, streamRequest())
-    expect((await readTextError(first.text())).message).toContain("Responses websocket connection limit reached")
+    const firstError = await readTextError(first.text())
+    expect(firstError).toBeInstanceOf(ProviderError.ResponseStreamError)
+    if (!(firstError instanceof ProviderError.ResponseStreamError)) throw new Error("Expected ResponseStreamError")
+    expect(firstError.kind).toBe("connection-limit")
+    expect(firstError.message).toContain("Responses websocket connection limit reached")
     const second = await fetch(server.url, streamRequest())
     const text = await second.text()
 
