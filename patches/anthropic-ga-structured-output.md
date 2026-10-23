@@ -2,9 +2,11 @@
 
 Issue: [#767](https://github.com/LeXwDeX/OpenCode-GraphAgent/issues/767)
 
-`@ai-sdk/anthropic@3.0.125` already sends JSON schemas as `output_config.format`.
+`@ai-sdk/anthropic@3.0.134` already sends JSON schemas as `output_config.format`.
 Its function-tool preparation still adds `structured-outputs-2025-11-13`
-automatically, even for ordinary tools without a JSON response schema.
+automatically, even for ordinary tools without a JSON response schema. The
+3.0.126 through 3.0.134 releases did not change that behavior, so the patch
+stays version-bound to 3.0.134.
 [Anthropic's GA API](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)
 does not require that beta. Upgrading alone was not a demonstrated fix.
 
