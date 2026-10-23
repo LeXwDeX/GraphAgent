@@ -474,6 +474,58 @@ test("cancellation is immediately stopping, survives HTTP success, and ends on s
   }
 })
 
+test("memory preparation stays hidden while other preparation stages and memory retry errors remain visible", async () => {
+  const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
+  try {
+    configureModel(route)
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const render = async () => {
+      await route.app.renderOnce()
+      return route.app.captureCharFrame()
+    }
+    const busy = (stage: "memory" | "reasoning" | "tools") => {
+      route.sync.set("session_status", routeSessionID, {
+        type: "busy",
+        preparation: { stage, startedAt: Date.now() },
+      })
+    }
+    busy("memory")
+    const hidden = await render()
+    expect(hidden).not.toContain("Preparing memory")
+    expect(hidden).toContain("interrupt")
+
+    busy("reasoning")
+    expect(await render()).toContain("Preparing reasoning")
+    busy("tools")
+    expect(await render()).toContain("Preparing tools")
+
+    route.sync.set("session_status", routeSessionID, {
+      type: "retry",
+      attempt: 1,
+      message: "memory preparation failed",
+      next: Date.now() + 60_000,
+    })
+    expect(await render()).toContain("memory preparation failed")
+
+    route.app.resize(40, 24)
+    busy("memory")
+    const narrow = await render()
+    expect(narrow).not.toContain("Preparing memory")
+    expect(narrow).toContain("interrupt")
+
+    route.sync.set("session_status", routeSessionID, {
+      type: "retry",
+      attempt: 1,
+      message: "memory preparation failed",
+      next: Date.now() + 60_000,
+    })
+    expect(await render()).toContain("preparation failed")
+  } finally {
+    await route.dispose()
+  }
+})
+
 for (const newerDraft of [false, true]) {
   test(`failed submission ${newerDraft ? "preserves newer draft and can restore failed input" : "restores its owned empty draft"}`, async () => {
     let release!: () => void
