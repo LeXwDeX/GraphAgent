@@ -61,7 +61,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 }
 ```
 
-取消当前回合不会取消后台整理；删除会话或释放所属目录实例时会取消这些任务。`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` 限制整理调用无响应的等待时长。
+取消当前回合不会取消后台整理；删除会话或释放所属目录实例时会取消这些任务。思考片段没有大小上限：所有符合条件的片段都会发给整理模型，输出上限取模型声明的输出上限。`OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS`（默认 120 秒）限制整理调用无响应的等待时长，持续流式返回的响应不会被截断。
 
 `OPENCODE_DISABLE_REASONING_DISTILLATION=1` 可以无视配置直接关闭。日志会记录每一次整理（`reasoning distillation`）以及失败后的原文回退。
 

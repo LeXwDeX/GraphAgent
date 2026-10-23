@@ -82,7 +82,7 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 ```
 
 Cancelling a turn leaves its background organization jobs running. Deleting the session or disposing its directory
-cancels those jobs. `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` bounds organizer inactivity.
+cancels those jobs. There is no size limit on a reasoning part: every eligible part is sent to the organizer, whose output cap is the model's declared output limit. `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` (default 120 s) bounds organizer inactivity; a streaming response is never cut off.
 `OPENCODE_DISABLE_REASONING_DISTILLATION=1` turns the feature off regardless of configuration. Logs report every
 rewrite (`reasoning distillation`) and fallbacks that keep the original reasoning.
 

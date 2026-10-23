@@ -130,7 +130,6 @@ export async function organizeReasoning(
   if (detectToolCallEnvelope(slot.text)) return skipped("control-markup-source")
   const language = input.language ?? "zh"
   const prompt = organizePrompt(slot.text, language)
-  if (Token.estimateReserve(prompt) > ReasoningDistillationPolicy.tokens.maxInputTokens) return skipped("work-limit")
   const modelStarted = performance.now()
   called = true
   modelCalls = 1
@@ -145,7 +144,6 @@ export async function organizeReasoning(
   // response for budget accounting, otherwise consecutive failures never pause the session.
   if (output.finishReason === "error") return skipped("model-failure", false)
   usageTokens = addUsage(usageTokens, output.usageTokens)
-  if (output.text.length > ReasoningDistillationPolicy.tokens.maxOutputTokens * 4) return skipped("truncated")
   if (output.finishReason && !COMPLETE_FINISH.includes(output.finishReason)) return skipped("truncated")
   const parseStarted = performance.now()
   let raw = output.text.trim()
@@ -181,10 +179,7 @@ export async function organizeReasoning(
     }
     usageTokens = addUsage(usageTokens, output.usageTokens)
     // A truncated or malformed retry is not a second verdict; retain the first.
-    if (
-      output.text.length > ReasoningDistillationPolicy.tokens.maxOutputTokens * 4 ||
-      (output.finishReason && !COMPLETE_FINISH.includes(output.finishReason))
-    ) {
+    if (output.finishReason && !COMPLETE_FINISH.includes(output.finishReason)) {
       output = firstOutput
       return skipped("rejected-noise-verdict")
     }

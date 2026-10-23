@@ -250,17 +250,35 @@ describe("single-part reasoning organizer", () => {
     }
   })
 
-  test("truncated, oversized and failed calls retain the original", async () => {
+  test("very long reasoning is always sent to the organizer and its complete rewrite adopted", async () => {
+    // A thunder-scale part far beyond any former fixed cap: 400k CJK characters plus English.
+    const text = "先确认 #42 的修复范围，排除 cache.ts。".repeat(20_000) + " checked src/a.ts:10".repeat(10_000)
+    const prompts: string[] = []
+    const result = await organizeReasoning({
+      slot: { ...slot, text },
+      callModel: async ({ prompt }) => (
+        prompts.push(prompt),
+        { text: "已确认 #42 修复范围，排除 cache.ts；已查 src/a.ts:10。", finishReason: "stop" }
+      ),
+    })
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toContain(text)
+    expect(result).toMatchObject({ status: "organized", called: true })
+    // A long but complete response is not mistaken for truncation.
+    const long = "x".repeat(200_000)
+    const complete = await organizeReasoning({
+      slot: { ...slot, text: text + long + long },
+      callModel: async () => ({ text: long, finishReason: "stop" }),
+    })
+    expect(complete.reason).not.toBe("truncated")
+  })
+
+  test("truncated and failed calls retain the original", async () => {
     const truncated = await organizeReasoning({
       slot,
       callModel: async () => ({ text: "方案 A。", finishReason: "length" }),
     })
     expect(truncated).toMatchObject({ status: "skipped", reason: "truncated", output: "方案 A。" })
-    const oversized = await organizeReasoning({
-      slot,
-      callModel: async () => ({ text: "x".repeat(ReasoningDistillationPolicy.tokens.maxOutputTokens * 4 + 1) }),
-    })
-    expect(oversized.reason).toBe("truncated")
     const failed = await organizeReasoning({
       slot,
       callModel: async () => {
@@ -273,7 +291,7 @@ describe("single-part reasoning organizer", () => {
     expect(missing).toMatchObject({ status: "skipped", reason: "model-failure", called: true })
   })
 
-  test("parts below the minimum size or above the input limit skip without a model call", async () => {
+  test("parts below the minimum size or blank skip without a model call", async () => {
     let calls = 0
     const callModel = async () => {
       calls++
@@ -281,11 +299,6 @@ describe("single-part reasoning organizer", () => {
     }
     const small = await organizeReasoning({ slot: { ...slot, text: "短。" }, callModel })
     expect(small).toMatchObject({ status: "skipped", reason: "below-minimum", called: false })
-    const large = await organizeReasoning({
-      slot: { ...slot, text: "长".repeat(ReasoningDistillationPolicy.tokens.maxInputTokens + 1) },
-      callModel,
-    })
-    expect(large).toMatchObject({ status: "skipped", reason: "work-limit", called: false })
     const blank = await organizeReasoning({ slot: { ...slot, text: "  " }, callModel })
     expect(blank.reason).toBe("empty-input")
     expect(calls).toBe(0)

@@ -8,9 +8,8 @@ export const ReasoningDistillationPolicy = {
     maxConsecutiveFailures: 3,
   },
   tokens: {
-    /** One organizer prompt may not exceed this estimate. */
-    maxInputTokens: 32_768,
-    /** maxOutputTokens must leave room for interleaved reasoning: reasoning models on openai-compatible relays spend
+    /** Output cap for organizer models that declare no output limit; a declared limit is used as is.
+     * It must leave room for interleaved reasoning: reasoning models on openai-compatible relays spend
      * the cap on reasoning_content before emitting the answer, so a small cap yields empty answers (observed on real
      * qwen/deepseek/glm relays, 2026-09-27). */
     maxOutputTokens: 24_576,

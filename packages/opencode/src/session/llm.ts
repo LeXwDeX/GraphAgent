@@ -750,10 +750,7 @@ const live: Layer.Layer<
         call: (signal: AbortSignal, onResponseStarted?: () => void): OrganizeCall =>
           sdkOrganizerCall({
             model: language,
-            maxOutputTokens: ProviderTransform.maxOutputTokens(
-              selected,
-              ReasoningDistillationPolicy.tokens.maxOutputTokens,
-            ),
+            maxOutputTokens: selected.limit.output || ReasoningDistillationPolicy.tokens.maxOutputTokens,
             effort,
             timeoutMs,
             signal,
