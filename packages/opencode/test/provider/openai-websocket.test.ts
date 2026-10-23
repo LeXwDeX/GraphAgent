@@ -1,20 +1,28 @@
-import { expect, spyOn } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
+import { $ } from "bun"
 import { streamText } from "ai"
 import { pathToFileURL } from "node:url"
+import { createOpencodeClient, type Event } from "@opencode-ai/sdk"
 import { ConfigProvider, Effect, Layer } from "effect"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Location } from "@opencode-ai/core/location"
+import { Project } from "@opencode-ai/core/project"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 import { Provider } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
 import { Env } from "@/env"
 import { Plugin } from "@/plugin"
 import { Session } from "@/session/session"
 import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
+import { CodexAuthPlugin } from "@/plugin/openai/codex"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { disposeAllInstancesEffect, provideTmpdirInstance, withTmpdirInstance } from "../fixture/fixture"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 
@@ -25,6 +33,7 @@ const layer = Layer.mergeAll(
   Session.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
   RuntimeFlags.defaultLayer,
+  EventV2Bridge.defaultLayer,
 )
 const it = testEffect(layer)
 const plainTransport = testEffect(
@@ -628,3 +637,303 @@ it.live("custom provider preserves the existing WS retry budget and sticky POST/
     )
   }),
 )
+
+const toolCall = {
+  type: "function_call",
+  id: "fc_test",
+  call_id: "call_test",
+  name: "read",
+  arguments: "{}",
+  status: "completed",
+}
+const toolCallEvents = [
+  { type: "response.created", response: { id: "resp_tool", model: "test-model", created_at: 0 } },
+  { type: "response.output_item.added", output_index: 0, item: toolCall },
+  { type: "response.output_item.done", output_index: 0, item: toolCall },
+  {
+    type: "response.completed",
+    response: {
+      id: "resp_tool",
+      model: "test-model",
+      created_at: 0,
+      output: [toolCall],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  },
+]
+const missingToolOutput = {
+  type: "error",
+  error: {
+    type: "invalid_request_error",
+    param: "input",
+    message: "No tool output found for function call call_test.",
+  },
+  status: 400,
+}
+
+// Upstream model: a connection that already delivered an unanswered tool call
+// rejects the next response.create. State lives on the socket, not the payload.
+function chainedServer() {
+  type Data = { session: string; pendingCalls: boolean }
+  type Signal = { promise: Promise<void>; resolve: () => void; settled: boolean }
+  const sessions = new Map<string, { connections: number; closes: Signal[] }>()
+  const messages: string[] = []
+  const entry = (session: string) => {
+    const existing = sessions.get(session)
+    if (existing) return existing
+    const created = { connections: 0, closes: [] as Signal[] }
+    sessions.set(session, created)
+    return created
+  }
+  const server = Bun.serve<Data>({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request, server) {
+      if (new URL(request.url).pathname !== "/v1/responses") return new Response("unexpected", { status: 404 })
+      if (request.headers.get("upgrade") !== "websocket") return new Response("http")
+      const session = request.headers.get("x-session-affinity") ?? request.headers.get("session-id") ?? ""
+      entry(session).connections++
+      if (server.upgrade(request, { data: { session, pendingCalls: false } })) return undefined
+      return new Response(null, { status: 400 })
+    },
+    websocket: {
+      message(socket, raw) {
+        messages.push(socket.data.session)
+        if (socket.data.session.startsWith("delete:")) {
+          socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "started" }))
+          return
+        }
+        const text = String(raw)
+        if (text.includes("compaction-continue") && socket.data.pendingCalls) {
+          socket.send(JSON.stringify(missingToolOutput))
+          return
+        }
+        if (text.includes("tool-call-step")) {
+          socket.data.pendingCalls = true
+          for (const event of toolCallEvents) socket.send(JSON.stringify(event))
+          return
+        }
+        for (const event of events) socket.send(JSON.stringify(event))
+      },
+      close(socket) {
+        const signal = entry(socket.data.session).closes.find((item) => !item.settled)
+        if (!signal) return
+        signal.settled = true
+        signal.resolve()
+      },
+    },
+  })
+  return {
+    url: server.url,
+    server,
+    connections: (session: string) => sessions.get(session)?.connections ?? 0,
+    messages: (session: string) => messages.filter((item) => item === session).length,
+    closing(session: string) {
+      const resolver = Promise.withResolvers<void>()
+      entry(session).closes.push({ ...resolver, settled: false })
+      return resolver.promise
+    },
+    [Symbol.asyncDispose]: () => server.stop(true),
+  }
+}
+
+plainTransport.live("custom provider resets idle Responses sockets on committed compaction with directory filter", () =>
+  Effect.gen(function* () {
+    const upstream = yield* Effect.acquireRelease(
+      Effect.sync(() => chainedServer()),
+      (upstream) => Effect.promise(() => upstream[Symbol.asyncDispose]()),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const bridge = yield* EventV2Bridge.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const first = yield* Session.use.create({})
+          const second = yield* Session.use.create({})
+          const turn = (sessionID: string) =>
+            Effect.promise(
+              () =>
+                streamText({
+                  model: language,
+                  prompt: "hello",
+                  headers: { "x-session-affinity": sessionID },
+                  maxRetries: 0,
+                }).text,
+            )
+
+          expect(yield* turn(first.id)).toBe("ok")
+          expect(yield* turn(second.id)).toBe("ok")
+
+          const secondClosed = upstream.closing(second.id)
+          yield* bridge.publish(SessionCompactionEvent.Compacted, { sessionID: second.id })
+          yield* awaitWithTimeout(
+            Effect.promise(() => secondClosed),
+            "compaction must reset the session socket",
+          )
+          expect(yield* turn(first.id)).toBe("ok")
+          expect(upstream.connections(first.id)).toBe(1)
+
+          yield* bridge.publish(
+            SessionCompactionEvent.Compacted,
+            { sessionID: first.id },
+            {
+              location: new Location.Info({
+                directory: AbsolutePath.make("/tmp/other-directory"),
+                project: {
+                  id: Project.ID.make("other-project"),
+                  directory: AbsolutePath.make("/tmp/other-directory"),
+                },
+              }),
+            },
+          )
+          expect(yield* turn(first.id)).toBe("ok")
+          expect(upstream.connections(first.id)).toBe(1)
+
+          const firstClosed = upstream.closing(first.id)
+          yield* bridge.publish(SessionCompactionEvent.Compacted, { sessionID: first.id })
+          yield* awaitWithTimeout(
+            Effect.promise(() => firstClosed),
+            "compaction must reset the session socket",
+          )
+          expect(yield* turn(first.id)).toBe("ok")
+          expect(upstream.connections(first.id)).toBe(2)
+          expect(upstream.connections(second.id)).toBe(1)
+        }),
+      { config: providerConfig(new URL("/v1", upstream.url).toString(), true) },
+    )
+  }),
+)
+
+plainTransport.live("custom provider compaction boundary rejects a reused socket that chains tool calls", () =>
+  Effect.gen(function* () {
+    const upstream = yield* Effect.acquireRelease(
+      Effect.sync(() => chainedServer()),
+      (upstream) => Effect.promise(() => upstream[Symbol.asyncDispose]()),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const bridge = yield* EventV2Bridge.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const session = yield* Session.use.create({})
+          const turn = (prompt: string) =>
+            Effect.promise(
+              () =>
+                streamText({
+                  model: language,
+                  prompt,
+                  headers: { "x-session-affinity": session.id },
+                  maxRetries: 0,
+                }).text,
+            )
+
+          // First turn ends in a tool call; its output is dropped by compaction.
+          yield* turn("tool-call-step").pipe(Effect.exit)
+          expect(upstream.connections(session.id)).toBe(1)
+
+          const closed = upstream.closing(session.id)
+          yield* bridge.publish(SessionCompactionEvent.Compacted, { sessionID: session.id })
+          yield* awaitWithTimeout(
+            Effect.promise(() => closed),
+            "compaction must reset the session socket",
+          )
+
+          // The summary contains no function call, so a fresh socket is required.
+          expect(yield* turn("compaction-continue")).toBe("ok")
+          expect(upstream.connections(session.id)).toBe(2)
+        }),
+      { config: providerConfig(new URL("/v1", upstream.url).toString(), true) },
+    )
+  }),
+)
+
+async function failureError(promise: Promise<string>) {
+  try {
+    await promise
+  } catch (error) {
+    if (!(error instanceof Error)) throw new Error(`Expected an Error, received ${String(error)}`, { cause: error })
+    return error
+  }
+  throw new Error("Expected response text to reject")
+}
+
+test("built-in openai plugin resets its Responses socket on session.compacted and still aborts session.deleted", async () => {
+  const upstream = chainedServer()
+  try {
+    const hooks = await CodexAuthPlugin(
+      {
+        client: createOpencodeClient({ baseUrl: upstream.url.toString() }),
+        project: { id: "builtin-openai", worktree: "/tmp/issue868", time: { created: 0 } },
+        directory: "/tmp/issue868",
+        worktree: "/tmp/issue868",
+        experimental_workspace: { register() {} },
+        serverUrl: new URL(upstream.url),
+        $,
+      },
+      { experimentalWebSockets: true },
+    )
+    try {
+      const loaded = await hooks.auth!.loader!(async () => ({ type: "api", key: "sk-test" }), {
+        id: "openai",
+        name: "OpenAI",
+        source: "api",
+        env: [],
+        options: {},
+        models: {},
+      })
+      const send = (sessionID: string) =>
+        loaded.fetch!(new URL("/v1/responses", upstream.url).toString(), {
+          method: "POST",
+          headers: { "session-id": sessionID },
+          body: JSON.stringify({ stream: true, input: "hello" }),
+        })
+      const completed = async (sessionID: string) => {
+        const response = await send(sessionID)
+        expect(await response.text()).toContain("data: [DONE]")
+      }
+
+      await completed("builtin-session")
+      expect(upstream.connections("builtin-session")).toBe(1)
+      const closed = upstream.closing("builtin-session")
+      const compacted: Event = { type: "session.compacted", properties: { sessionID: "builtin-session" } }
+      await hooks.event!({ event: compacted })
+      await closed
+      await completed("builtin-session")
+      expect(upstream.connections("builtin-session")).toBe(2)
+
+      const pending = await send("delete:builtin")
+      const failure = pending.text()
+      const deadline = Date.now() + 1_000
+      while (upstream.messages("delete:builtin") === 0) {
+        if (Date.now() > deadline) throw new Error("the built-in plugin did not send its delete request")
+        await Bun.sleep(1)
+      }
+      const deleted: Event = {
+        type: "session.deleted",
+        properties: {
+          info: {
+            id: "delete:builtin",
+            projectID: "builtin-openai",
+            directory: "/tmp/issue868",
+            title: "Deleted",
+            version: "1",
+            time: { created: 0, updated: 0 },
+          },
+        },
+      }
+      await hooks.event!({ event: deleted })
+      expect(await failureError(failure)).toMatchObject({
+        name: "AbortError",
+        message: "WebSocket session removed",
+      })
+    } finally {
+      await hooks.dispose?.()
+    }
+  } finally {
+    await upstream[Symbol.asyncDispose]()
+  }
+})

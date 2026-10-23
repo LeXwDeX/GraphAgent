@@ -33,6 +33,7 @@ interface PoolEntry {
   connectedAt?: number
   lastUsedAt: number
   busy: boolean
+  pendingReset: boolean
   fallback: boolean
   streamFailures: number
 }
@@ -93,6 +94,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
       httpActive: 0,
       lastUsedAt: Date.now(),
       busy: false,
+      pendingReset: false,
       fallback: false,
       streamFailures: 0,
     }
@@ -134,7 +136,8 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
           entry.busy = false
           entry.lastUsedAt = Date.now()
           entry.streamFailures = 0
-          if (event.type !== "response.completed" && event.type !== "response.done") {
+          if (entry.pendingReset || (event.type !== "response.completed" && event.type !== "response.done")) {
+            entry.pendingReset = false
             invalidate(entry)
           }
         },
@@ -144,6 +147,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
           if (closeCode === OpenAIWebSocket.MESSAGE_TOO_BIG_CLOSE_CODE) entry.fallback = true
           else if (!entry.fallback) recordStreamFailure(entry)
           invalidate(entry)
+          entry.pendingReset = false
           resolveFirstEvent(false)
         },
         onAbort: (error) => {
@@ -151,6 +155,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
           entry.lastUsedAt = Date.now()
           entry.streamFailures = 0
           invalidate(entry)
+          entry.pendingReset = false
           rejectFirstEvent(error)
         },
         onRetryableTerminal: async (event) => {
@@ -176,6 +181,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     } catch (error) {
       entry.busy = false
       entry.lastUsedAt = Date.now()
+      entry.pendingReset = false
       if (signal.aborted || OpenAIWebSocket.isAbortError(error)) {
         entry.streamFailures = 0
         invalidate(entry)
@@ -312,7 +318,18 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     pool.delete(key)
   }
 
-  return registerTitleHeaderConsumer(Object.assign(websocketFetch, { close, remove }))
+  // Compaction rewrites continuity; keep the entry so fallback and active HTTP survive.
+  function reset(sessionID: string) {
+    const entry = pool.get(`${sessionID}:conversation`)
+    if (!entry) return
+    if (entry.busy) {
+      entry.pendingReset = true
+      return
+    }
+    invalidate(entry)
+  }
+
+  return registerTitleHeaderConsumer(Object.assign(websocketFetch, { close, remove, reset }))
 }
 
 function requestSignal(entry: PoolEntry, input: RequestInfo | URL, init?: RequestInit) {

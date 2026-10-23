@@ -238,6 +238,29 @@ export function streamResponsesWebSocket(options: StreamResponsesWebSocketOption
       return
     }
 
+    if (
+      event &&
+      (event.type === "error" || event.type === "response.failed") &&
+      ProviderError.isReasoningStateFailure(event)
+    ) {
+      if (!emitted) options.onFirstEvent?.()
+      completed = true
+      cleanup()
+      options.onTerminal?.(event)
+      const diagnostics = ProviderError.reasoningStateDiagnostics(event)
+      controller?.error(
+        new APICallError({
+          message: ProviderError.REASONING_STATE_MESSAGE,
+          url: socket.url,
+          requestBodyValues: options.body,
+          ...(diagnostics.statusCode !== undefined ? { statusCode: diagnostics.statusCode } : {}),
+          ...(diagnostics.responseHeaders !== undefined ? { responseHeaders: diagnostics.responseHeaders } : {}),
+          responseBody: text,
+        }),
+      )
+      return
+    }
+
     if (!emitted) options.onFirstEvent?.()
     controller?.enqueue(
       encoder.encode(

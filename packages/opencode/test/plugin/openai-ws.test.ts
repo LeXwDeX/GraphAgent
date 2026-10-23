@@ -139,6 +139,115 @@ describe("plugin.openai.ws", () => {
     expect((await readTextError(response.text())).message).toContain("Unexpected binary WebSocket frame")
     expect(invalid).toEqual(["Unexpected binary WebSocket frame"])
   })
+
+  test("surfaces a code-only reasoning-state failure nested in response.failed", async () => {
+    const event = {
+      type: "response.failed",
+      response: {
+        id: "resp_1",
+        status: "failed",
+        error: { code: "invalid_encrypted_content", message: "Bad request" },
+      },
+    }
+    await using server = await createWebSocketServer((socket) => {
+      socket.once("message", () => socket.send(JSON.stringify(event)))
+    })
+
+    const socket = await OpenAIWebSocket.connectResponsesWebSocket({ url: server.wsUrl, headers: {} })
+    const response = OpenAIWebSocket.streamResponsesWebSocket({
+      socket,
+      body: { stream: true, input: "hi" },
+    })
+    const error = await readTextError(response.text())
+
+    expect(APICallError.isInstance(error)).toBe(true)
+    if (!APICallError.isInstance(error)) throw new Error("Expected APICallError")
+    expect(error.message).toContain("/compact")
+    expect(error.responseBody).toContain("invalid_encrypted_content")
+  })
+
+  test("preserves nested status and headers for a statusless reasoning failure", async () => {
+    const event = {
+      type: "response.failed",
+      response: {
+        id: "resp_1",
+        status: 400,
+        headers: { "x-request-id": "req_1" },
+        error: { code: "invalid_encrypted_content", message: "Bad request" },
+      },
+    }
+    await using server = await createWebSocketServer((socket) => {
+      socket.once("message", () => socket.send(JSON.stringify(event)))
+    })
+
+    const socket = await OpenAIWebSocket.connectResponsesWebSocket({ url: server.wsUrl, headers: {} })
+    const response = OpenAIWebSocket.streamResponsesWebSocket({
+      socket,
+      body: { stream: true, input: "hi" },
+    })
+    const error = await readTextError(response.text())
+
+    expect(APICallError.isInstance(error)).toBe(true)
+    if (!APICallError.isInstance(error)) throw new Error("Expected APICallError")
+    expect(error.message).toContain("/compact")
+    expect(error.statusCode).toBe(400)
+    expect(error.responseHeaders).toEqual({ "x-request-id": "req_1" })
+    expect(error.responseBody).toBe(JSON.stringify(event))
+  })
+
+  test("does not classify a completed response that carries failure-looking message text", async () => {
+    const event = {
+      type: "response.completed",
+      message: "The encrypted content could not be verified.",
+      response: { id: "resp_1" },
+    }
+    await using server = await createWebSocketServer((socket) => {
+      socket.once("message", () => socket.send(JSON.stringify(event)))
+    })
+
+    const socket = await OpenAIWebSocket.connectResponsesWebSocket({ url: server.wsUrl, headers: {} })
+    const response = OpenAIWebSocket.streamResponsesWebSocket({
+      socket,
+      body: { stream: true, input: "hi" },
+    })
+
+    expect(await response.text()).toContain("data: [DONE]")
+  })
+
+  for (const midstream of [false, true] as const)
+    test(`surfaces a statusless reasoning-state failure before ${midstream ? "and during" : "the"} stream as an actionable API error`, async () => {
+      const event = {
+        type: "response.failed",
+        response: {
+          id: "resp_1",
+          status: "failed",
+          error: {
+            type: "invalid_request_error",
+            code: "invalid_encrypted_content",
+            message: "The encrypted content gAAA could not be verified.",
+          },
+        },
+      }
+      await using server = await createWebSocketServer((socket) => {
+        socket.once("message", () => {
+          if (midstream) socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "started" }))
+          socket.send(JSON.stringify(event))
+        })
+      })
+
+      const socket = await OpenAIWebSocket.connectResponsesWebSocket({ url: server.wsUrl, headers: {} })
+      const response = OpenAIWebSocket.streamResponsesWebSocket({
+        socket,
+        body: { stream: true, input: "hi" },
+      })
+      const error = await readTextError(response.text())
+
+      expect(APICallError.isInstance(error)).toBe(true)
+      if (!APICallError.isInstance(error)) throw new Error("Expected APICallError")
+      expect(error.message).toContain("/compact")
+      expect(error.responseBody).toContain("invalid_encrypted_content")
+      expect(error.statusCode).toBeUndefined()
+    })
 })
 
 describe("plugin.openai.ws-pool", () => {

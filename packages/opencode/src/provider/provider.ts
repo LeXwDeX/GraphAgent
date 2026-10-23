@@ -34,6 +34,7 @@ import { ProviderError } from "./error"
 import { OpenAIWebSocketPool } from "@/plugin/openai/ws-pool"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
 
@@ -1694,6 +1695,16 @@ export const layer = Layer.effect(
                 if (event.location?.directory !== ctx.directory) return
                 for (const websocketFetch of websocketFetches.fetches.values())
                   websocketFetch.remove(event.data.sessionID)
+              }),
+            ),
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          yield* events.subscribe(SessionCompactionEvent.Compacted).pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => {
+                if (event.location?.directory !== ctx.directory) return
+                for (const websocketFetch of websocketFetches.fetches.values())
+                  websocketFetch.reset(event.data.sessionID)
               }),
             ),
             Effect.forkScoped({ startImmediately: true }),

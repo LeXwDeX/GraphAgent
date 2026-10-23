@@ -2,7 +2,7 @@ import { ThinkingReplay } from "./thinking-replay"
 import { SessionID, MessageID } from "./schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { isContextOverflowFailure, ProviderErrorEvent } from "@opencode-ai/llm"
+import { isContextOverflowFailure, ProviderErrorEvent, ReasoningCarrier } from "@opencode-ai/llm"
 import {
   APIError,
   AbortedError,
@@ -161,6 +161,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
     toolOutputMaxChars?: number
     reasoningDistillationEnabled?: boolean
     stripSignedThinking?: boolean
+    stripOpaqueReasoning?: boolean
   },
 ) {
   const result: UIMessage[] = []
@@ -290,15 +291,15 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       const media: Array<{ mime: string; url: string; filename?: string }> = []
 
       if (!isReplayableAssistantMessage(msg)) continue
-      // A successful client compaction inserts a summary before the retained old
-      // tail. Its old thinking is bound to the replaced prefix, and the summary's
-      // own thinking was produced under the separate summarizer system/tools.
-      // Fresh main-conversation thinking after this boundary remains replayable.
+      // Any successful compaction inserts a summary before the retained old tail,
+      // so opaque reasoning from that replaced prefix and from the summary itself
+      // is not replayable. Every summarizer input strips opaque reasoning too,
+      // whatever the prior marker. Fresh post-boundary reasoning stays replayable.
       const invalidatedThinking =
-        claudeReplay &&
-        (options?.stripSignedThinking === true ||
-          msg.info.summary === true ||
-          (compactedThrough !== undefined && before(msg.info, compactedThrough)))
+        options?.stripOpaqueReasoning === true ||
+        msg.info.summary === true ||
+        (compactedThrough !== undefined && before(msg.info, compactedThrough)) ||
+        (claudeReplay && options?.stripSignedThinking === true)
       const assistantMessage: UIMessage = {
         id: msg.info.id,
         role: "assistant",
@@ -413,9 +414,16 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             distillation: part.distillation,
             enabled: options?.reasoningDistillationEnabled === true,
           })
+          const carrier = ReasoningCarrier.classify(replay.metadata, replay.text)
           const knownThinking = ThinkingReplay.origin(replay.metadata) !== undefined
-          if (invalidatedThinking && claudeThinking(replay.metadata, msg.info.providerID) && !knownThinking) continue
-          if (differentModel && !knownThinking) {
+          if (
+            invalidatedThinking &&
+            claudeReplay &&
+            claudeThinking(replay.metadata, msg.info.providerID) &&
+            !knownThinking
+          )
+            continue
+          if (!knownThinking && (differentModel || (invalidatedThinking && carrier.kind === "opaque"))) {
             if (replay.text.trim().length > 0)
               assistantMessage.parts.push({
                 type: "text",
@@ -481,6 +489,7 @@ export function toModelMessages(
     toolOutputMaxChars?: number
     reasoningDistillationEnabled?: boolean
     stripSignedThinking?: boolean
+    stripOpaqueReasoning?: boolean
   },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
@@ -783,6 +792,25 @@ export function fromError(
       ).toObject()
     case isContextOverflowFailure(e):
       return new ContextOverflowError({ message: errorMessage(e) }).toObject()
+    case ProviderError.isReasoningStateFailure(e): {
+      const diagnostics = ProviderError.reasoningStateDiagnostics(e)
+      return new APIError(
+        {
+          message: ProviderError.REASONING_STATE_MESSAGE,
+          statusCode: diagnostics.statusCode,
+          isRetryable: false,
+          responseHeaders: diagnostics.responseHeaders,
+          responseBody:
+            diagnostics.responseBody ??
+            (typeof e === "string"
+              ? e
+              : typeof e === "object" && e !== null && !(e instanceof Error)
+                ? JSON.stringify(e)
+                : undefined),
+        },
+        { cause: e },
+      ).toObject()
+    }
     case Schema.is(ProviderErrorEvent)(e):
       return new APIError({ message: e.message, isRetryable: e.retryable ?? false }).toObject()
     case e instanceof Error:
