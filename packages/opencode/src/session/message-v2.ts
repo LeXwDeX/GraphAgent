@@ -757,9 +757,12 @@ export function fromError(
       return new APIError(
         {
           message: e.message,
-          isRetryable: true,
+          isRetryable: ProviderError.isRetryableResponseStreamError(e),
           metadata: {
             code: e.name,
+            ...(e.kind ? { kind: e.kind } : {}),
+            ...(e.closeCode !== undefined ? { closeCode: String(e.closeCode) } : {}),
+            ...(e.closeReason ? { closeReason: e.closeReason } : {}),
           },
         },
         { cause: e },

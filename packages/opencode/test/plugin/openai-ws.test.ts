@@ -98,7 +98,7 @@ describe("plugin.openai.ws", () => {
   })
 
   test("errors the SSE stream when the server closes before a terminal event", async () => {
-    const invalid: Error[] = []
+    const invalid: ProviderError.ResponseStreamError[] = []
     await using server = await createWebSocketServer((socket) => {
       socket.once("message", () => {
         socket.close(1009, "payload too large")
@@ -112,17 +112,26 @@ describe("plugin.openai.ws", () => {
       onConnectionInvalid: (error) => invalid.push(error),
     })
 
-    expect((await readTextError(response.text())).message).toContain(
+    const error = await readTextError(response.text())
+    expect(error.message).toContain(
       "WebSocket closed before response.completed (code 1009: message too big: payload too large)",
     )
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    if (!(error instanceof ProviderError.ResponseStreamError)) throw new Error("Expected ResponseStreamError")
+    expect(error.kind).toBe("close")
+    expect(error.closeCode).toBe(1009)
+    expect(error.closeReason).toBe("payload too large")
     expect(invalid[0]).toBeInstanceOf(ProviderError.ResponseStreamError)
+    expect(invalid[0]?.kind).toBe("close")
+    expect(invalid[0]?.closeCode).toBe(1009)
+    expect(invalid[0]?.closeReason).toBe("payload too large")
     expect(invalid.map((error) => error.message)).toEqual([
       "WebSocket closed before response.completed (code 1009: message too big: payload too large)",
     ])
   })
 
   test("rejects unexpected binary websocket frames", async () => {
-    const invalid: string[] = []
+    const invalid: ProviderError.ResponseStreamError[] = []
     await using server = await createWebSocketServer((socket) => {
       socket.once("message", () => {
         socket.send(Buffer.from("not json text"))
@@ -133,11 +142,16 @@ describe("plugin.openai.ws", () => {
     const response = OpenAIWebSocket.streamResponsesWebSocket({
       socket,
       body: { stream: true, input: "hi" },
-      onConnectionInvalid: (error) => invalid.push(error.message),
+      onConnectionInvalid: (error) => invalid.push(error),
     })
 
-    expect((await readTextError(response.text())).message).toContain("Unexpected binary WebSocket frame")
-    expect(invalid).toEqual(["Unexpected binary WebSocket frame"])
+    const error = await readTextError(response.text())
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    if (!(error instanceof ProviderError.ResponseStreamError)) throw new Error("Expected ResponseStreamError")
+    expect(error.message).toContain("Unexpected binary WebSocket frame")
+    expect(error.kind).toBe("protocol-error")
+    expect(invalid[0]?.kind).toBe("protocol-error")
+    expect(invalid.map((error) => error.message)).toEqual(["Unexpected binary WebSocket frame"])
   })
 
   test("surfaces a code-only reasoning-state failure nested in response.failed", async () => {
