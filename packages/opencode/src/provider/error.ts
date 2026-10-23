@@ -1,6 +1,7 @@
 import { APICallError } from "ai"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
+import { isRecord } from "@/util/record"
 import type { ProviderV2 } from "@opencode-ai/core/provider"
 import { isContextOverflow } from "@opencode-ai/llm"
 
@@ -18,6 +19,80 @@ export class ResponseStreamError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
   }
+}
+
+export const REASONING_STATE_MESSAGE =
+  "The provider rejected saved reasoning state. Run /compact, or start a new session, to discard it and continue."
+
+const reasoningFailureWords = /could not|cannot|can't|failed|invalid|unable|not be|mismatch|corrupt|expired/
+
+function isReasoningFailureText(value: string) {
+  const text = value.toLowerCase()
+  if (/\binvalid_encrypted_content\b/.test(text)) return true
+  if (/encrypted[\s_-]?content/.test(text) && reasoningFailureWords.test(text)) return true
+  return text.includes("signature") && /thinking|reasoning/.test(text) && reasoningFailureWords.test(text)
+}
+
+/** Recognize only failures the model reports for replayed opaque reasoning, never generic auth signatures. */
+export function isReasoningStateFailure(input: unknown) {
+  const seen = new Set<unknown>()
+  const visit = (value: unknown, depth: number): boolean => {
+    if (depth > 8 || value == null || seen.has(value)) return false
+    if (typeof value === "string") return isReasoningFailureText(value)
+    if (typeof value !== "object") return false
+    if (value instanceof Error && visit(value.message, depth + 1)) return true
+    seen.add(value)
+    if (Array.isArray(value)) return value.some((item) => visit(item, depth + 1))
+    if (!isRecord(value)) return false
+    return ["message", "responseBody", "value", "cause", "error", "reason", "detail", "body", "response", "code"].some(
+      (key) => visit(value[key], depth + 1),
+    )
+  }
+  return visit(input, 0)
+}
+
+/** Preserve the original upstream body and status when a rejected-reasoning error is wrapped by the SDK. */
+export function reasoningStateDiagnostics(input: unknown): {
+  responseBody?: string
+  statusCode?: number
+  responseHeaders?: Record<string, string>
+} {
+  let responseBody: string | undefined
+  let statusCode: number | undefined
+  let responseHeaders: Record<string, string> | undefined
+  const seen = new Set<unknown>()
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 8 || value == null || typeof value !== "object" || seen.has(value)) return
+    seen.add(value)
+    if (!isRecord(value)) return
+    if (responseBody === undefined && typeof value.responseBody === "string") responseBody = value.responseBody
+    if (responseBody === undefined && value.value !== undefined) {
+      try {
+        const body = typeof value.value === "string" ? value.value : JSON.stringify(value.value)
+        if (body && isReasoningFailureText(body)) responseBody = body
+      } catch {}
+    }
+    if (statusCode === undefined) {
+      const status = [value.statusCode, value.status, value.status_code].find((item) => typeof item === "number")
+      if (typeof status === "number") statusCode = status
+    }
+    if (responseHeaders === undefined) {
+      for (const key of ["responseHeaders", "headers"]) {
+        const headers = value[key]
+        if (!isRecord(headers)) continue
+        const found = Object.fromEntries(
+          Object.entries(headers).flatMap(([name, header]) => (typeof header === "string" ? [[name, header]] : [])),
+        )
+        if (Object.keys(found).length > 0) {
+          responseHeaders = found
+          break
+        }
+      }
+    }
+    for (const key of ["cause", "value", "error", "response"]) visit(value[key], depth + 1)
+  }
+  visit(input, 0)
+  return { responseBody, statusCode, responseHeaders }
 }
 
 export function findResponseStreamError(input: unknown): ResponseStreamError | undefined {
@@ -113,6 +188,16 @@ export type ParsedStreamError =
 export function parseStreamError(input: unknown): ParsedStreamError | undefined {
   const raw = json(input)
   const body = typeof raw?.message === "string" ? (json(raw.message) ?? raw) : raw
+  if (isReasoningStateFailure(input)) {
+    return {
+      type: "api_error",
+      message: REASONING_STATE_MESSAGE,
+      isRetryable: false,
+      responseBody:
+        reasoningStateDiagnostics(input).responseBody ??
+        (typeof input === "string" ? input : body ? JSON.stringify(body) : "{}"),
+    }
+  }
   if (!body) return
 
   const responseBody = JSON.stringify(body)
@@ -192,6 +277,17 @@ export function parseAPICallError(input: { providerID: ProviderV2.ID; error: API
   }
 
   const metadata = input.error.url ? { url: input.error.url } : undefined
+  if (isReasoningStateFailure(input.error) || isReasoningStateFailure(m)) {
+    return {
+      type: "api_error",
+      message: REASONING_STATE_MESSAGE,
+      statusCode: input.error.statusCode,
+      isRetryable: false,
+      responseHeaders: input.error.responseHeaders,
+      responseBody: input.error.responseBody ?? reasoningStateDiagnostics(input.error).responseBody,
+      metadata,
+    }
+  }
   return {
     type: "api_error",
     message: m,

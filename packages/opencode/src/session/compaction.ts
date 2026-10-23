@@ -473,7 +473,7 @@ export const layer = Layer.effect(
           stripMedia: true,
           toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
           reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
-          stripSignedThinking: true,
+          stripOpaqueReasoning: true,
         })
         recent =
           tailIndex < 0

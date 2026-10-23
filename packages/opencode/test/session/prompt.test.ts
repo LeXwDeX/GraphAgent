@@ -67,7 +67,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { raw, reply, TestLLMServer } from "../lib/llm-server"
+import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -665,6 +665,196 @@ const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (ur
   yield* writeConfig(dir, config(llm.url))
   return { dir, llm }
 })
+
+function wsResponseEvents(input: {
+  id: string
+  text?: string
+  tools?: Array<{ call: string; name: string; args: string }>
+  usage: { input: number; output: number }
+}) {
+  let sequence = 0
+  const next = () => ++sequence
+  const events: Array<Record<string, unknown>> = [
+    {
+      type: "response.created",
+      sequence_number: next(),
+      response: { id: input.id, created_at: Math.floor(Date.now() / 1000), model: "test-model", service_tier: null },
+    },
+  ]
+  if (input.text !== undefined) {
+    events.push({
+      type: "response.output_item.added",
+      sequence_number: next(),
+      output_index: 0,
+      item: { type: "message", id: "msg_continue" },
+    })
+    events.push({
+      type: "response.output_text.delta",
+      sequence_number: next(),
+      item_id: "msg_continue",
+      output_index: 0,
+      content_index: 0,
+      delta: input.text,
+      logprobs: null,
+    })
+    events.push({
+      type: "response.output_item.done",
+      sequence_number: next(),
+      output_index: 0,
+      item: { type: "message", id: "msg_continue" },
+    })
+  }
+  for (const [index, tool] of (input.tools ?? []).entries()) {
+    const item = `fc_${index}`
+    events.push({
+      type: "response.output_item.added",
+      sequence_number: next(),
+      output_index: index,
+      item: {
+        type: "function_call",
+        id: item,
+        call_id: tool.call,
+        name: tool.name,
+        arguments: "",
+        status: "in_progress",
+      },
+    })
+    events.push({
+      type: "response.function_call_arguments.delta",
+      sequence_number: next(),
+      output_index: index,
+      item_id: item,
+      delta: tool.args,
+    })
+    events.push({
+      type: "response.function_call_arguments.done",
+      sequence_number: next(),
+      output_index: index,
+      item_id: item,
+      arguments: tool.args,
+    })
+    events.push({
+      type: "response.output_item.done",
+      sequence_number: next(),
+      output_index: index,
+      item: {
+        type: "function_call",
+        id: item,
+        call_id: tool.call,
+        name: tool.name,
+        arguments: tool.args,
+        status: "completed",
+      },
+    })
+  }
+  events.push({
+    type: "response.completed",
+    sequence_number: next(),
+    response: {
+      incomplete_details: null,
+      service_tier: null,
+      usage: {
+        input_tokens: input.usage.input,
+        input_tokens_details: { cached_tokens: null },
+        output_tokens: input.usage.output,
+        output_tokens_details: { reasoning_tokens: null },
+      },
+    },
+  })
+  return events
+}
+
+// Fake gateway whose connection, not the outgoing payload, retains the last
+// response. A reused socket with unanswered calls rejects the next create.
+function chainedResponsesUpstream(tools: Array<{ call: string; name: string; args: string }>) {
+  type Data = { pending: boolean }
+  let requests = 0
+  let upgrades = 0
+  const toolEvents = wsResponseEvents({ id: "resp_tools", tools, usage: { input: 30_000, output: 10 } })
+  const textEvents = wsResponseEvents({ id: "resp_continue", text: "continued", usage: { input: 1, output: 1 } })
+  const sse = `${textEvents.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`
+  const server = Bun.serve<Data>({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request, server) {
+      if (new URL(request.url).pathname !== "/v1/responses") return new Response("unexpected", { status: 404 })
+      if (request.headers.get("upgrade") !== "websocket") {
+        // Title requests keep the transport on HTTP.
+        return new Response(sse, { headers: { "content-type": "text/event-stream" } })
+      }
+      upgrades++
+      return server.upgrade(request, { data: { pending: false } }) ? undefined : new Response(null, { status: 400 })
+    },
+    websocket: {
+      message(socket, raw) {
+        requests++
+        const body = JSON.parse(String(raw))
+        const hasToolOutput = JSON.stringify(body.input ?? "").includes("function_call_output")
+        if (socket.data.pending && !hasToolOutput) {
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              status: 400,
+              error: {
+                type: "invalid_request_error",
+                param: "input",
+                message: `No tool output found for function call ${tools[0]?.call}.`,
+              },
+            }),
+          )
+          return
+        }
+        if (requests === 1) {
+          socket.data.pending = true
+          for (const event of toolEvents) socket.send(JSON.stringify(event))
+          return
+        }
+        socket.data.pending = false
+        for (const event of textEvents) socket.send(JSON.stringify(event))
+      },
+    },
+  })
+  return {
+    url: server.url,
+    requests: () => requests,
+    upgrades: () => upgrades,
+    close: () => server.stop(true),
+  }
+}
+
+function automaticWebSocketConfig(url: string, upstream: string) {
+  const base = providerCfg(url)
+  return {
+    ...base,
+    model: "relay/test-model",
+    compaction: { auto: true, tail_turns: 0, preserve_recent_tokens: 0 },
+    agent: { compaction: { model: "test/test-model" } },
+    provider: {
+      ...base.provider,
+      relay: {
+        name: "Relay",
+        id: "relay",
+        env: [],
+        npm: "@ai-sdk/openai",
+        models: {
+          "test-model": {
+            id: "test-model",
+            name: "Relay Model",
+            attachment: false,
+            reasoning: false,
+            temperature: false,
+            tool_call: true,
+            release_date: "2025-01-01",
+            limit: { context: 35_000, output: 10_000 },
+            cost: { input: 0, output: 0 },
+            options: {},
+          },
+        },
+        options: { apiKey: "test-key", baseURL: upstream, experimentalWebSockets: true },
+      },
+    },
+  } satisfies Partial<ConfigV1.Info>
+}
 
 const seedAgentConversation = Effect.fn("test.seedAgentConversation")(function* () {
   const sessions = yield* Session.Service
@@ -3677,6 +3867,63 @@ for (const [runtime, runner] of [
     }),
   )
 }
+
+it.instance("automatic compaction resets the Responses WebSocket before auto-continue", () =>
+  Effect.gen(function* () {
+    const { directory } = yield* TestInstance
+    const first = path.join(directory, "parallel-first.txt")
+    const second = path.join(directory, "parallel-second.txt")
+    const upstream = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        chainedResponsesUpstream([
+          { call: "call_parallel_a", name: "write", args: JSON.stringify({ filePath: first, content: "first" }) },
+          { call: "call_parallel_b", name: "write", args: JSON.stringify({ filePath: second, content: "second" }) },
+        ]),
+      ),
+      (upstream) => Effect.sync(() => upstream.close()),
+    )
+    const { llm } = yield* useServerConfig((url) =>
+      automaticWebSocketConfig(url, new URL("/v1", upstream.url).toString()),
+    )
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const fs = yield* FSUtil.Service
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      noReply: true,
+      parts: [{ type: "text", text: "Write both files in parallel, then continue." }],
+    })
+    // Compaction summarizes over the separate HTTP provider, so the Responses
+    // socket keeps its prior tool call response across the boundary.
+    yield* llm.push(reply().text("Two files were written. Continue with the task.").stop())
+    const result = yield* prompt.loop({ sessionID: chat.id })
+
+    if (result.info.role !== "assistant") throw new Error("Expected an assistant response")
+    expect(result.info.error).toBeUndefined()
+    expect(result.parts.some((part) => part.type === "text" && part.text.includes("continued"))).toBe(true)
+    expect(upstream.upgrades()).toBe(2)
+    expect(upstream.requests()).toBe(2)
+
+    const history = yield* sessions.messages({ sessionID: chat.id })
+    const tools = history.flatMap((message) =>
+      message.parts.filter((part): part is SessionV1.ToolPart => part.type === "tool"),
+    )
+    expect(tools.map((part) => part.callID).sort()).toEqual(["call_parallel_a", "call_parallel_b"])
+    expect(tools.every((part) => part.state.status === "completed")).toBe(true)
+    expect(yield* fs.readFileString(first)).toBe("first")
+    expect(yield* fs.readFileString(second)).toBe("second")
+    const compaction = history
+      .flatMap((message) => message.parts)
+      .find((part): part is SessionV1.CompactionPart => part.type === "compaction")
+    expect(compaction?.auto).toBe(true)
+    expect(history.some((message) => message.info.role === "assistant" && message.info.summary === true)).toBe(true)
+    expect(history.filter((message) => message.info.role === "assistant" && message.info.error)).toHaveLength(0)
+  }),
+)
 
 it.instance("glob tool keeps instance context during prompt runs", () =>
   Effect.gen(function* () {
@@ -8695,3 +8942,142 @@ for (const scenario of ["available", "user-disabled", "last-step", "non-cli", "d
     }),
   )
 }
+
+const recoveryConfig = (url: string) => {
+  const config = providerCfg(url)
+  return {
+    ...config,
+    compaction: { auto: false, tail_turns: 2, preserve_recent_tokens: 200 },
+    provider: {
+      ...config.provider,
+      test: {
+        ...config.provider.test,
+        npm: "@ai-sdk/openai",
+        models: {
+          "test-model": {
+            ...config.provider.test.models["test-model"],
+            id: "gpt-test",
+            reasoning: true,
+          },
+        },
+      },
+    },
+  }
+}
+
+it.instance("manual compaction strips persisted encrypted reasoning from the summarizer input", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(recoveryConfig)
+    const { prompt, chat } = yield* boot()
+    const compaction = yield* SessionCompaction.Service
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "first question" }],
+    })
+    yield* llm.push(reply().reason("think first").encryptedReason("bad-cipher").text("b".repeat(8000)).stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "second question" }],
+    })
+    yield* llm.push(reply().reason("think second").encryptedReason("bad-cipher-2").text("second answer").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+
+    yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
+    yield* llm.text("compaction summary")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const summarizer = JSON.stringify((yield* llm.inputs).at(-1))
+    expect(summarizer).toContain("first question")
+    expect(summarizer).not.toContain("bad-cipher")
+  }),
+)
+
+it.instance("manual compaction recovers a session whose upstream rejects persisted encrypted reasoning", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(recoveryConfig)
+    const { prompt, sessions, chat } = yield* boot()
+    const compaction = yield* SessionCompaction.Service
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "first question" }],
+    })
+    yield* llm.push(reply().reason("think first").encryptedReason("bad-cipher").text("b".repeat(8000)).stop())
+    yield* prompt.loop({ sessionID: chat.id })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "second question" }],
+    })
+    yield* llm.push(reply().reason("think second").encryptedReason("bad-cipher-2").text("second answer").stop())
+    yield* prompt.loop({ sessionID: chat.id })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "third question" }],
+    })
+    yield* llm.pushMatch(
+      (hit) => JSON.stringify(hit.body).includes("bad-cipher"),
+      httpError(400, {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "invalid_encrypted_content",
+          message: "The encrypted content could not be verified.",
+        },
+      }),
+    )
+    const rejected = yield* prompt.loop({ sessionID: chat.id })
+    expect(rejected.info.role).toBe("assistant")
+    if (rejected.info.role !== "assistant") throw new Error("Expected assistant")
+    expect(rejected.info.error?.name).toBe("APIError")
+    if (rejected.info.error?.name === "APIError") {
+      expect(rejected.info.error.data.message).toContain("/compact")
+      expect(rejected.info.error.data.isRetryable).toBe(false)
+    }
+    expect(JSON.stringify((yield* llm.inputs).at(-1))).toContain("bad-cipher")
+
+    yield* compaction.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
+    yield* llm.text("compaction summary")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const stored = (yield* sessions.messages({ sessionID: chat.id })).flatMap((message) => message.parts)
+    const tail = stored.find((part) => part.type === "reasoning" && part.text === "think second")
+    expect(JSON.stringify(tail?.type === "reasoning" ? tail.metadata : undefined)).toContain("bad-cipher-2")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "next question" }],
+    })
+    yield* llm.pushMatch(
+      (hit) => JSON.stringify(hit.body).includes("bad-cipher"),
+      httpError(400, {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          code: "invalid_encrypted_content",
+          message: "The encrypted content could not be verified.",
+        },
+      }),
+    )
+    yield* llm.pushMatch((hit) => !JSON.stringify(hit.body).includes("bad-cipher"), reply().text("recovered").stop())
+
+    const answer = yield* prompt.loop({ sessionID: chat.id })
+    expect(answer.info.role).toBe("assistant")
+    if (answer.info.role !== "assistant") throw new Error("Expected assistant")
+    expect(answer.info.error).toBeUndefined()
+    expect(answer.parts.some((part) => part.type === "text" && part.text === "recovered")).toBe(true)
+    expect(JSON.stringify((yield* llm.inputs).at(-1))).not.toContain("bad-cipher")
+  }),
+)

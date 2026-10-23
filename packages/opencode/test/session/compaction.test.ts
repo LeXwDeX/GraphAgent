@@ -996,6 +996,182 @@ describe("session.compaction.process", () => {
     }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 10_000 }) }))
   })
 
+  itCompaction.instance("strips opaque reasoning from the summarizer input", () => {
+    const stub = llm()
+    const captured: string[] = []
+    stub.push(reply("summary", (input) => captured.push(JSON.stringify(input.messages))))
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const root = (yield* TestInstance).directory
+      const user = yield* createUserMessage(session.id, "question")
+      const assistant = yield* createAssistantMessage(session.id, user.id, root)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "reasoning",
+        text: "opaque thinking",
+        time: { start: 0, end: 1 },
+        metadata: { openai: { itemId: "rs_opaque", reasoningEncryptedContent: "cipher-opaque" } },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "text",
+        text: "answer",
+      })
+      yield* createSummaryCompaction(session.id)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      const parentID = messages.at(-1)!.info.id
+      yield* SessionCompaction.use.process({ parentID, messages, sessionID: session.id, auto: false })
+
+      expect(captured).toHaveLength(1)
+      expect(captured[0]).toContain("answer")
+      expect(captured[0]).toContain("opaque thinking")
+      expect(captured[0]).not.toContain("cipher-opaque")
+      expect(captured[0]).not.toContain("rs_opaque")
+    }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+  })
+
+  itCompaction.instance("strips opaque reasoning from every fallback summarizer input", () => {
+    const seen: string[] = []
+    const stub = llm()
+    const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("small") }
+    const conversation = createModel({ context: 100_000, output: 32_000 })
+    const provider = ProviderTest.fake({
+      model: conversation,
+      getSmallModel: () => Effect.succeed(small),
+    })
+    stub.push((input) => {
+      seen.push(JSON.stringify(input.messages))
+      return Stream.make(
+        LLMEvent.textStart({ id: "partial" }),
+        LLMEvent.textDelta({ id: "partial", text: "partial summary" }),
+      ).pipe(
+        Stream.concat(
+          Stream.fail(new CompactionTimeoutError({ message: "Compaction stream timed out without progress" })),
+        ),
+      )
+    })
+    stub.push(
+      reply("recovered summary", (input) => {
+        seen.push(JSON.stringify(input.messages))
+      }),
+    )
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const root = (yield* TestInstance).directory
+      const user = yield* createUserMessage(session.id, "question")
+      const assistant = yield* createAssistantMessage(session.id, user.id, root)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "reasoning",
+        text: "opaque thinking",
+        time: { start: 0, end: 1 },
+        metadata: { openai: { itemId: "rs_opaque", reasoningEncryptedContent: "cipher-opaque" } },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: session.id,
+        type: "text",
+        text: "answer",
+      })
+      yield* createSummaryCompaction(session.id)
+      const messages = yield* ssn.messages({ sessionID: session.id })
+      const parentID = messages.at(-1)!.info.id
+      const result = yield* SessionCompaction.use.process({
+        parentID,
+        messages,
+        sessionID: session.id,
+        auto: false,
+      })
+
+      expect(result).toBe("continue")
+      expect(seen).toHaveLength(2)
+      for (const input of seen) {
+        expect(input).toContain("opaque thinking")
+        expect(input).not.toContain("cipher-opaque")
+        expect(input).not.toContain("rs_opaque")
+      }
+    }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ tail_turns: 0 }) }))
+  })
+
+  itCompaction.instance("drops opaque reasoning from retained tails across repeated compactions", () => {
+    const stub = llm()
+    const captured: string[] = []
+    stub.push(reply("summary one", (input) => captured.push(JSON.stringify(input.messages))))
+    stub.push(reply("summary two", (input) => captured.push(JSON.stringify(input.messages))))
+    return Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const root = (yield* TestInstance).directory
+      const u1 = yield* createUserMessage(session.id, "a".repeat(8000))
+      const a1 = yield* createAssistantMessage(session.id, u1.id, root)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: a1.id,
+        sessionID: session.id,
+        type: "reasoning",
+        text: "old thinking",
+        time: { start: 0, end: 1 },
+        metadata: { openai: { itemId: "rs_old", reasoningEncryptedContent: "cipher-old" } },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: a1.id,
+        sessionID: session.id,
+        type: "text",
+        text: "b".repeat(8000),
+      })
+      const u2 = yield* createUserMessage(session.id, "second")
+      const a2 = yield* createAssistantMessage(session.id, u2.id, root)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: a2.id,
+        sessionID: session.id,
+        type: "reasoning",
+        text: "tail thinking",
+        time: { start: 0, end: 1 },
+        metadata: { openai: { itemId: "rs_tail", reasoningEncryptedContent: "cipher-tail" } },
+      })
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: a2.id,
+        sessionID: session.id,
+        type: "text",
+        text: "tail answer",
+      })
+      yield* createCompactionMarker(session.id)
+
+      let messages = yield* ssn.messages({ sessionID: session.id })
+      let parentID = messages.at(-1)!.info.id
+      yield* SessionCompaction.use.process({ parentID, messages, sessionID: session.id, auto: false })
+
+      yield* createUserMessage(session.id, "third")
+      yield* createCompactionMarker(session.id)
+      messages = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+      parentID = messages.at(-1)!.info.id
+      yield* SessionCompaction.use.process({ parentID, messages, sessionID: session.id, auto: false })
+
+      expect(captured).toHaveLength(2)
+      for (const input of captured) expect(input).not.toContain("cipher-tail")
+      expect(captured[0]).not.toContain("cipher-old")
+
+      const final = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+      const wire = JSON.stringify(
+        yield* MessageV2.toModelMessagesEffect(final, createModel({ context: 100_000, output: 32_000 })),
+      )
+      expect(wire).not.toContain("cipher-tail")
+      expect(wire).not.toContain("cipher-old")
+    }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 2, preserve_recent_tokens: 200 }) }))
+  })
+
   itCompaction.instance(
     "persists tail_start_id for retained recent turns",
     Effect.gen(function* () {

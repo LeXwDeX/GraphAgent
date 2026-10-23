@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { APICallError } from "ai"
+import { APICallError, TypeValidationError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
@@ -1637,6 +1637,307 @@ describe("session.message-v2.fromError", () => {
     const result = MessageV2.fromError(zlibError, { providerID, aborted: true })
 
     expect(result.name).toBe("MessageAbortedError")
+  })
+
+  test("classifies wrapped reasoning-state verification failures as actionable APIError", () => {
+    const body = {
+      type: "error",
+      status: 400,
+      error: {
+        type: "invalid_request_error",
+        code: "invalid_encrypted_content",
+        message: "The encrypted content could not be verified.",
+      },
+    }
+    const error = new TypeValidationError({ value: body, cause: new Error("Invalid input") })
+    const result = MessageV2.fromError(error, { providerID })
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    const data = result.data
+    expect(data.message).toContain("/compact")
+    expect(data.message).toContain("new session")
+    expect(data.isRetryable).toBe(false)
+    expect(data.responseBody).toContain("invalid_encrypted_content")
+  })
+
+  test("classifies APICallError reasoning-state failures and keeps the raw body", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        code: "invalid_encrypted_content",
+        message: "The encrypted content could not be verified.",
+      },
+    })
+    const error = new APICallError({
+      message: "invalid encrypted content",
+      url: "https://example.com",
+      requestBodyValues: {},
+      statusCode: 400,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: body,
+      isRetryable: true,
+    })
+    const result = MessageV2.fromError(error, { providerID })
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    const data = result.data
+    expect(data.message).toContain("/compact")
+    expect(data.isRetryable).toBe(false)
+    expect(data.statusCode).toBe(400)
+    expect(data.responseBody).toBe(body)
+  })
+
+  test("classifies Anthropic invalid thinking signatures as actionable APIError", () => {
+    const result = MessageV2.fromError(new Error("messages.1.content.0: Invalid signature in thinking block"), {
+      providerID,
+    })
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    expect(result.data.message).toContain("/compact")
+    expect(result.data.isRetryable).toBe(false)
+  })
+
+  test("classifies native provider-error events that name rejected reasoning state", () => {
+    const result = MessageV2.fromError(
+      LLMEvent.providerError({
+        message: "invalid_encrypted_content: The encrypted content could not be verified.",
+        retryable: true,
+      }),
+      { providerID },
+    )
+
+    expect(result.name).toBe("APIError")
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    expect(result.data.message).toContain("/compact")
+    expect(result.data.isRetryable).toBe(false)
+  })
+
+  test("classifies a code-only invalid_encrypted_content payload and keeps the raw body", () => {
+    const body = { type: "error", error: { code: "invalid_encrypted_content", message: "Bad request" } }
+    for (const input of [body, JSON.stringify(body), "invalid_encrypted_content"]) {
+      const result = MessageV2.fromError(input, { providerID })
+      expect(SessionV1.APIError.isInstance(result)).toBe(true)
+      if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+      expect(result.data.message).toContain("/compact")
+      expect(result.data.isRetryable).toBe(false)
+      expect(result.data.responseBody).toBe(typeof input === "string" ? input : JSON.stringify(input))
+    }
+  })
+
+  test("classifies SDK-wrapped code-only invalid_encrypted_content payloads", () => {
+    const body = { type: "error", error: { code: "invalid_encrypted_content", message: "Bad request" } }
+    const wrapped = new TypeValidationError({ value: body, cause: new Error("Bad request") })
+    const result = MessageV2.fromError(wrapped, { providerID })
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    const data = result.data
+    expect(data.message).toContain("/compact")
+    expect(data.isRetryable).toBe(false)
+    expect(data.responseBody).toContain("invalid_encrypted_content")
+  })
+
+  test("keeps unrelated encrypted-file failures unclassified", () => {
+    const result = MessageV2.fromError(new Error("Cannot open encrypted file"), { providerID })
+
+    expect(result.name).toBe("UnknownError")
+  })
+
+  test("leaves unrelated signature errors unclassified", () => {
+    const result = MessageV2.fromError(
+      new Error(
+        "The request signature we calculated does not match the signature you provided. Check your AWS Secret Access Key and signing method.",
+      ),
+      { providerID },
+    )
+
+    expect(result.name).toBe("UnknownError")
+  })
+})
+
+describe("session.message-v2 reasoning replay boundaries", () => {
+  const openaiModel: Provider.Model = {
+    ...model,
+    id: ModelV2.ID.make("test-model"),
+    api: { ...model.api, npm: "@ai-sdk/openai" },
+  }
+
+  const text = (messageID: string, id: string, value: string) => ({
+    ...basePart(messageID, id),
+    type: "text" as const,
+    text: value,
+  })
+
+  const reasoning = (
+    messageID: string,
+    id: string,
+    value: string,
+    metadata: Record<string, any> = {
+      openai: { itemId: `rs_${id}`, reasoningEncryptedContent: `cipher-${id}` },
+    },
+  ) =>
+    ({
+      ...basePart(messageID, id),
+      type: "reasoning" as const,
+      text: value,
+      time: { start: 0 },
+      metadata,
+    }) as SessionV1.Part
+
+  const userMessage = (id: string, created: number, parts: SessionV1.Part[]) => ({
+    info: { ...userInfo(id), time: { created } },
+    parts,
+  })
+
+  const assistantMessage = (id: string, parentID: string, created: number, parts: SessionV1.Part[], extra = {}) => ({
+    info: { ...assistantInfo(id, parentID), finish: "stop", time: { created }, ...extra } as SessionV1.Assistant,
+    parts,
+  })
+
+  const compaction = (id: string, created: number, flags: { auto?: boolean; overflow?: boolean } = {}) => ({
+    info: { ...userInfo(id), time: { created } },
+    parts: [
+      {
+        ...basePart(id, "compact"),
+        type: "compaction" as const,
+        auto: flags.auto ?? false,
+        ...(flags.overflow ? { overflow: true } : {}),
+      },
+    ] as SessionV1.Part[],
+  })
+
+  const wire = async (input: SessionV1.WithParts[], options?: Parameters<typeof MessageV2.toModelMessages>[2]) =>
+    JSON.stringify(await MessageV2.toModelMessages(input, openaiModel, options))
+
+  test("keeps same-model encrypted reasoning on ordinary turns", async () => {
+    const json = await wire([
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage("a1", "u1", 2, [reasoning("a1", "r1", "old thinking"), text("a1", "a1t", "answer")]),
+    ])
+
+    expect(json).toContain("cipher-r1")
+    expect(json).toContain("rs_r1")
+  })
+
+  for (const [name, flags] of [
+    ["manual", {}],
+    ["automatic", { auto: true }],
+    ["overflow", { auto: true, overflow: true }],
+  ] as const) {
+    test(`drops retained pre-compaction opaque reasoning after a successful ${name} compaction`, async () => {
+      const json = await wire([
+        compaction("c1", 3, flags),
+        assistantMessage("s1", "c1", 4, [text("s1", "s1t", "summary")], { summary: true }),
+        userMessage("u1", 1, [text("u1", "u1t", "question")]),
+        assistantMessage("a1", "u1", 2, [reasoning("a1", "r1", "old thinking"), text("a1", "a1t", "old answer")]),
+        assistantMessage("a2", "u1", 5, [reasoning("a2", "r2", "fresh thinking"), text("a2", "a2t", "fresh answer")]),
+      ])
+
+      expect(json).not.toContain("cipher-r1")
+      expect(json).not.toContain("rs_r1")
+      expect(json).toContain("old thinking")
+      expect(json).toContain("cipher-r2")
+    })
+  }
+
+  test("replays cross-model opaque reasoning as text under the existing compatibility policy", async () => {
+    const json = await wire([
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage("a1", "u1", 2, [reasoning("a1", "r1", "old thinking"), text("a1", "a1t", "answer")], {
+        providerID: "other",
+        modelID: "other",
+      }),
+    ])
+
+    expect(json).not.toContain("cipher-r1")
+    expect(json).toContain("old thinking")
+  })
+
+  test("keeps pre-compaction reasoning when the summary did not finish successfully", async () => {
+    const cases = [
+      { name: "unfinished", summary: { finish: undefined } },
+      {
+        name: "failed",
+        summary: { finish: "error", error: new SessionV1.APIError({ message: "boom", isRetryable: false }).toObject() },
+      },
+      {
+        name: "aborted",
+        summary: {
+          finish: "error",
+          error: new SessionV1.AbortedError({ message: "aborted" }).toObject(),
+        },
+      },
+    ]
+    for (const item of cases) {
+      const json = await wire([
+        compaction("c1", 3),
+        assistantMessage("s1", "c1", 4, [text("s1", "s1t", "summary")], { summary: true, ...item.summary }),
+        userMessage("u1", 1, [text("u1", "u1t", "question")]),
+        assistantMessage("a1", "u1", 2, [reasoning("a1", "r1", "old thinking"), text("a1", "a1t", "old answer")]),
+      ])
+      expect({ name: item.name, kept: json.includes("cipher-r1") }).toEqual({ name: item.name, kept: true })
+    }
+  })
+
+  test("drops opaque reasoning on the summary message itself", async () => {
+    const json = await wire([
+      compaction("c1", 3),
+      assistantMessage(
+        "s1",
+        "c1",
+        4,
+        [reasoning("s1", "summary-reasoning", "summarizer thinking"), text("s1", "s1t", "summary")],
+        { summary: true },
+      ),
+    ])
+
+    expect(json).not.toContain("cipher-summary-reasoning")
+    expect(json).toContain("summarizer thinking")
+  })
+
+  test("stripOpaqueReasoning removes opaque carriers but keeps plain, mirror and unknown carriers", async () => {
+    const input = [
+      userMessage("u1", 1, [text("u1", "u1t", "question")]),
+      assistantMessage("a1", "u1", 2, [
+        reasoning("a1", "claude", "claude thinking", { anthropic: { signature: "opaque-claude" } }),
+        reasoning("a1", "plain", "plain thinking", {}),
+        reasoning("a1", "mirror", "mirror thinking", {
+          openrouter: {
+            reasoning_details: [{ type: "reasoning.text", text: "mirror thinking", format: "unknown", index: 0 }],
+          },
+        }),
+        reasoning("a1", "unknown", "unknown thinking", { foo: { bar: "baz" } }),
+        text("a1", "a1t", "answer"),
+      ]),
+    ]
+    const saved = structuredClone(input)
+    const json = await wire(input, { stripOpaqueReasoning: true })
+
+    expect(json).not.toContain("opaque-claude")
+    expect(json).toContain("claude thinking")
+    expect(json).toContain("plain thinking")
+    expect(json).toContain("mirror thinking")
+    expect(json).toContain("unknown thinking")
+    expect(input).toEqual(saved)
+  })
+
+  test("drops empty opaque reasoning instead of replaying text that was not there", async () => {
+    const json = await wire(
+      [
+        userMessage("u1", 1, [text("u1", "u1t", "question")]),
+        assistantMessage("a1", "u1", 2, [
+          reasoning("a1", "empty", "", { openai: { reasoningEncryptedContent: "cipher-empty" } }),
+          text("a1", "a1t", "answer"),
+        ]),
+      ],
+      { stripOpaqueReasoning: true },
+    )
+
+    expect(json).not.toContain("cipher-empty")
   })
 })
 

@@ -370,8 +370,13 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       websocketFetches.length = 0
     },
     async event(input) {
-      if (input.event.type !== "session.deleted") return
-      for (const websocketFetch of websocketFetches) websocketFetch.remove(input.event.properties.info.id)
+      if (input.event.type === "session.deleted") {
+        for (const websocketFetch of websocketFetches) websocketFetch.remove(input.event.properties.info.id)
+        return
+      }
+      if (input.event.type === "session.compacted") {
+        for (const websocketFetch of websocketFetches) websocketFetch.reset(input.event.properties.sessionID)
+      }
     },
     provider: {
       id: "openai",
