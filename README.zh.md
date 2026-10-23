@@ -372,6 +372,7 @@ bun dev serve        # headless API 服务（端口 4096）
 ## 文档
 
 - [`docs/architecture.md`](./docs/architecture.md) —— 系统总览、客户端/API 边界与源码索引
+- [`docs/功能清单.md`](./docs/功能清单.md)：功能与源码入口索引（非完整上游差异报告）
 - [`docs/reasoning-rewrite-engine-2026-10-08.md`](./docs/reasoning-rewrite-engine-2026-10-08.md) —— 思考自动塑形的设计、测量与验收
 - [`packages/opencode/src/memory/CONTEXT.md`](./packages/opencode/src/memory/CONTEXT.md) —— 项目 Memory 的模型与不变量
 - [hooks 指南](./packages/core/src/plugin/skill/configure-hooks.md) —— 事件、schema 与验证方法
