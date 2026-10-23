@@ -8,6 +8,15 @@ import { ProviderError } from "../../src/provider/error"
 import { OpenAIWebSocket } from "../../src/plugin/openai/ws"
 import { OpenAIWebSocketPool, TITLE_HEADER } from "../../src/plugin/openai/ws-pool"
 
+function fakeWebSocket() {
+  return new (class extends EventEmitter {
+    send(_data: string, _callback: (error?: Error) => void) {}
+    fail(error: Error) {
+      this.emit("error", error)
+    }
+  })() as unknown as WebSocket & { fail(error: Error): void }
+}
+
 describe("plugin.openai.ws", () => {
   test("derives websocket URLs and sends auth plus protocol headers", async () => {
     let headers: IncomingMessage["headers"] | undefined
@@ -52,9 +61,7 @@ describe("plugin.openai.ws", () => {
   })
 
   test("enforces websocket send idle timeout", async () => {
-    const socket = new (class extends EventEmitter {
-      send(_data: string, _callback: (error?: Error) => void) {}
-    })() as unknown as WebSocket
+    const socket = fakeWebSocket()
     const invalid: ProviderError.ResponseStreamError[] = []
     const response = OpenAIWebSocket.streamResponsesWebSocket({
       socket,
@@ -72,18 +79,14 @@ describe("plugin.openai.ws", () => {
   })
 
   test("classifies websocket socket errors", async () => {
-    const socket = new (class extends EventEmitter {
-      send(_data: string, callback: (error?: Error) => void) {
-        callback()
-        this.emit("error", new Error("socket boom"))
-      }
-    })() as unknown as WebSocket
+    const socket = fakeWebSocket()
     const invalid: ProviderError.ResponseStreamError[] = []
     const response = OpenAIWebSocket.streamResponsesWebSocket({
       socket,
       body: { stream: true, input: "hi" },
       onConnectionInvalid: (error) => invalid.push(error),
     })
+    socket.fail(new Error("socket boom"))
 
     const error = await readTextError(response.text())
     expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
