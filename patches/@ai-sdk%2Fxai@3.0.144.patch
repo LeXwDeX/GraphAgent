@@ -100,6 +100,6 @@ diff --git a/src/responses/xai-responses-api.ts b/src/responses/xai-responses-ap
 +      file_data?: string;
 +      filename?: string;
 +    };
-
+ 
  export type XaiResponsesUserMessage = {
    role: 'user';

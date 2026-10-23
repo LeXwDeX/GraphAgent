@@ -175,13 +175,16 @@ export function streamResponsesWebSocket(options: StreamResponsesWebSocketOption
     if (completed) return
     if (!options.idleTimeout) return
     if (idleTimer) clearTimeout(idleTimer)
-    idleTimer = setTimeout(() => invalidate(new ProviderError.ResponseStreamError(message)), options.idleTimeout)
+    idleTimer = setTimeout(
+      () => invalidate(new ProviderError.ResponseStreamError(message, { kind: "idle-timeout" })),
+      options.idleTimeout,
+    )
   }
 
   async function onMessage(data: WebSocket.RawData, isBinary: boolean) {
     if (completed) return
     if (isBinary) {
-      invalidate(new ProviderError.ResponseStreamError("Unexpected binary WebSocket frame"))
+      invalidate(new ProviderError.ResponseStreamError("Unexpected binary WebSocket frame", { kind: "protocol-error" }))
       return
     }
 
@@ -213,6 +216,7 @@ export function streamResponsesWebSocket(options: StreamResponsesWebSocketOption
         invalidate(
           new ProviderError.ResponseStreamError(error instanceof Error ? error.message : String(error), {
             cause: error,
+            kind: "connection-limit",
           }),
         )
         return
@@ -283,6 +287,7 @@ export function streamResponsesWebSocket(options: StreamResponsesWebSocketOption
       return
     }
 
+    // Forward terminal failures as SSE so the SDK keeps the upstream message and code.
     if (event.type === "response.failed" || event.type === "response.incomplete" || event.type === "error") {
       completed = true
       options.onTerminal?.(event)
@@ -291,13 +296,18 @@ export function streamResponsesWebSocket(options: StreamResponsesWebSocketOption
   }
 
   function onError(error: Error) {
-    invalidate(new ProviderError.ResponseStreamError(error.message, { cause: error }))
+    invalidate(new ProviderError.ResponseStreamError(error.message, { cause: error, kind: "socket-error" }))
   }
 
   function onClose(code: number, reason: Buffer) {
     if (completed) return
+    const detail = reason.toString()
     invalidate(
-      new ProviderError.ResponseStreamError(closeMessage("WebSocket closed before response.completed", code, reason)),
+      new ProviderError.ResponseStreamError(closeMessage("WebSocket closed before response.completed", code, reason), {
+        kind: "close",
+        closeCode: code,
+        ...(detail ? { closeReason: detail } : {}),
+      }),
       code,
     )
   }
@@ -336,7 +346,8 @@ export function streamResponsesWebSocket(options: StreamResponsesWebSocketOption
     socket.send(JSON.stringify({ type: "response.create", ...payload }), (error) => {
       if (completed) return
       resetIdleTimeout("idle timeout waiting for websocket")
-      if (error) invalidate(new ProviderError.ResponseStreamError(error.message, { cause: error }))
+      if (error)
+        invalidate(new ProviderError.ResponseStreamError(error.message, { cause: error, kind: "socket-error" }))
     })
   }
 

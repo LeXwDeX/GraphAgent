@@ -13,12 +13,35 @@ export class HeaderTimeoutError extends Error {
   }
 }
 
+export type ResponseStreamFailureKind =
+  "close" | "socket-error" | "idle-timeout" | "connection-limit" | "protocol-error"
+
 export class ResponseStreamError extends Error {
   public override readonly name = "ProviderResponseStreamError"
+  public readonly kind?: ResponseStreamFailureKind
+  public readonly closeCode?: number
+  public readonly closeReason?: string
 
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    options?: ErrorOptions & { kind?: ResponseStreamFailureKind; closeCode?: number; closeReason?: string },
+  ) {
     super(message, options)
+    this.kind = options?.kind
+    this.closeCode = options?.closeCode
+    this.closeReason = options?.closeReason
   }
+}
+
+const RETRYABLE_STREAM_CLOSE_CODES = new Set([1001, 1006, 1011, 1012, 1013, 1014])
+
+/** Only transient transport failures are retryable; deterministic or policy closes are not. */
+export function isRetryableResponseStreamError(error: ResponseStreamError) {
+  if (error.kind === "protocol-error") return false
+  if (error.kind === "close") {
+    return error.closeCode !== undefined && RETRYABLE_STREAM_CLOSE_CODES.has(error.closeCode)
+  }
+  return true
 }
 
 export const REASONING_STATE_MESSAGE =
@@ -104,6 +127,73 @@ export function findResponseStreamError(input: unknown): ResponseStreamError | u
     if (typeof current !== "object" || !("cause" in current)) return
     current = current.cause
   }
+}
+
+const WRAPPED_SUCCESS_RESPONSE = "Failed to process successful response"
+
+function isWrappedSuccessResponse(error: APICallError) {
+  return (
+    error.message === WRAPPED_SUCCESS_RESPONSE &&
+    error.statusCode !== undefined &&
+    error.statusCode >= 200 &&
+    error.statusCode < 300
+  )
+}
+
+/** Unwrap the provider-utils status-200 wrapper so upstream status and body stay observable. */
+function unwrapSuccessResponseError(input: APICallError): APICallError | ResponseStreamError | undefined {
+  if (!isWrappedSuccessResponse(input)) return undefined
+  let current: unknown = input.cause
+  const seen = new Set<unknown>()
+  for (let depth = 0; depth < 8 && current != null && !seen.has(current); depth++) {
+    seen.add(current)
+    if (current instanceof ResponseStreamError) return current
+    if (APICallError.isInstance(current) && !isWrappedSuccessResponse(current)) return current
+    if (typeof current !== "object" || !("cause" in current)) return undefined
+    current = current.cause
+  }
+  return undefined
+}
+
+function causeMessage(input: unknown): string | undefined {
+  let current = input
+  const seen = new Set<unknown>()
+  for (let depth = 0; depth < 8 && current != null && !seen.has(current); depth++) {
+    seen.add(current)
+    if (current instanceof Error && current.message) return current.message
+    if (typeof current === "string" && current) return current
+    if (isRecord(current)) {
+      if (typeof current.message === "string" && current.message) return current.message
+      if (isRecord(current.error) && typeof current.error.message === "string" && current.error.message) {
+        return current.error.message
+      }
+    }
+    if (typeof current !== "object" || !("cause" in current)) return undefined
+    current = current.cause
+  }
+  return undefined
+}
+
+function errorDetail(input: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (depth > 4 || !isRecord(input)) return undefined
+  if (isRecord(input.error)) return input.error
+  if (isRecord(input.response) && isRecord(input.response.error)) return input.response.error
+  if (isRecord(input.response)) {
+    const found = errorDetail(input.response, depth + 1)
+    if (found) return found
+  }
+  return undefined
+}
+
+function apiCallErrorMetadata(error: APICallError) {
+  const metadata: Record<string, string> = {}
+  if (error.url) metadata.url = error.url
+  const detail = errorDetail(error.data)
+  if (detail) {
+    if (typeof detail.code === "string") metadata.code = detail.code
+    if (typeof detail.type === "string") metadata.type = detail.type
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
 function isOpenAiErrorRetryable(e: APICallError) {
@@ -266,35 +356,57 @@ export type ParsedAPICallError =
     }
 
 export function parseAPICallError(input: { providerID: ProviderV2.ID; error: APICallError }): ParsedAPICallError {
-  const m = message(input.providerID, input.error)
-  const body = json(input.error.responseBody)
-  if (isContextOverflow(m) || input.error.statusCode === 413 || body?.error?.code === "context_length_exceeded") {
+  const unwrapped = unwrapSuccessResponseError(input.error)
+  if (unwrapped instanceof ResponseStreamError) {
+    return {
+      type: "api_error",
+      message: unwrapped.message,
+      isRetryable: isRetryableResponseStreamError(unwrapped),
+      metadata: {
+        code: unwrapped.name,
+        ...(unwrapped.kind ? { kind: unwrapped.kind } : {}),
+        ...(unwrapped.closeCode !== undefined ? { closeCode: String(unwrapped.closeCode) } : {}),
+        ...(unwrapped.closeReason ? { closeReason: unwrapped.closeReason } : {}),
+      },
+    }
+  }
+  const genericWrapper = unwrapped === undefined && isWrappedSuccessResponse(input.error)
+  const error = unwrapped ?? input.error
+  const m = genericWrapper
+    ? (causeMessage(input.error.cause) ?? message(input.providerID, error))
+    : message(input.providerID, error)
+  const body = json(error.responseBody)
+  if (isContextOverflow(m) || error.statusCode === 413 || body?.error?.code === "context_length_exceeded") {
     return {
       type: "context_overflow",
       message: m,
-      responseBody: input.error.responseBody,
+      responseBody: error.responseBody,
     }
   }
 
-  const metadata = input.error.url ? { url: input.error.url } : undefined
-  if (isReasoningStateFailure(input.error) || isReasoningStateFailure(m)) {
+  const metadata = apiCallErrorMetadata(error)
+  if (isReasoningStateFailure(error) || isReasoningStateFailure(m)) {
     return {
       type: "api_error",
       message: REASONING_STATE_MESSAGE,
-      statusCode: input.error.statusCode,
+      statusCode: error.statusCode,
       isRetryable: false,
-      responseHeaders: input.error.responseHeaders,
-      responseBody: input.error.responseBody ?? reasoningStateDiagnostics(input.error).responseBody,
+      responseHeaders: error.responseHeaders,
+      responseBody: error.responseBody ?? reasoningStateDiagnostics(error).responseBody,
       metadata,
     }
   }
   return {
     type: "api_error",
     message: m,
-    statusCode: input.error.statusCode,
-    isRetryable: input.providerID.startsWith("openai") ? isOpenAiErrorRetryable(input.error) : input.error.isRetryable,
-    responseHeaders: input.error.responseHeaders,
-    responseBody: input.error.responseBody,
+    statusCode: genericWrapper ? undefined : error.statusCode,
+    isRetryable: genericWrapper
+      ? false
+      : input.providerID.startsWith("openai")
+        ? isOpenAiErrorRetryable(error)
+        : error.isRetryable,
+    responseHeaders: genericWrapper ? undefined : error.responseHeaders,
+    responseBody: error.responseBody,
     metadata,
   }
 }

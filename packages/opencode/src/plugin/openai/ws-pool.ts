@@ -141,10 +141,11 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
             invalidate(entry)
           }
         },
-        onConnectionInvalid: (_error, closeCode) => {
+        onConnectionInvalid: (error, closeCode) => {
+          const code = error.closeCode ?? closeCode
           entry.busy = false
           entry.lastUsedAt = Date.now()
-          if (closeCode === OpenAIWebSocket.MESSAGE_TOO_BIG_CLOSE_CODE) entry.fallback = true
+          if (code === OpenAIWebSocket.MESSAGE_TOO_BIG_CLOSE_CODE) entry.fallback = true
           else if (!entry.fallback) recordStreamFailure(entry)
           invalidate(entry)
           entry.pendingReset = false

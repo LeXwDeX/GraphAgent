@@ -1,7 +1,7 @@
 diff --git a/dist/index.js b/dist/index.js
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -1632,9 +1632,6 @@ async function prepareTools({
+@@ -1669,9 +1669,6 @@ async function prepareTools({
              )
            } : {}
          });
@@ -14,7 +14,7 @@ diff --git a/dist/index.js b/dist/index.js
 diff --git a/dist/index.mjs b/dist/index.mjs
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -1662,9 +1662,6 @@ async function prepareTools({
+@@ -1699,9 +1699,6 @@ async function prepareTools({
              )
            } : {}
          });
@@ -27,7 +27,7 @@ diff --git a/dist/index.mjs b/dist/index.mjs
 diff --git a/dist/internal/index.js b/dist/internal/index.js
 --- a/dist/internal/index.js
 +++ b/dist/internal/index.js
-@@ -1626,9 +1626,6 @@ async function prepareTools({
+@@ -1663,9 +1663,6 @@ async function prepareTools({
              )
            } : {}
          });
@@ -40,7 +40,7 @@ diff --git a/dist/internal/index.js b/dist/internal/index.js
 diff --git a/dist/internal/index.mjs b/dist/internal/index.mjs
 --- a/dist/internal/index.mjs
 +++ b/dist/internal/index.mjs
-@@ -1646,9 +1646,6 @@ async function prepareTools({
+@@ -1683,9 +1683,6 @@ async function prepareTools({
              )
            } : {}
          });

@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { APICallError, TypeValidationError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderTransform } from "@/provider/transform"
+import { ProviderError } from "@/provider/error"
 import type { Provider } from "@/provider/provider"
 
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
@@ -1688,6 +1689,133 @@ describe("session.message-v2.fromError", () => {
     expect(data.isRetryable).toBe(false)
     expect(data.statusCode).toBe(400)
     expect(data.responseBody).toBe(body)
+  })
+
+  test("preserves a nested non-retryable provider error through the SDK success-stream wrapper", () => {
+    const body = JSON.stringify({ error: { message: "invalid request", type: "invalid_request_error" } })
+    const inner = new APICallError({
+      message: "invalid request",
+      url: "https://example.com/v1/responses",
+      requestBodyValues: {},
+      statusCode: 400,
+      responseHeaders: { "content-type": "application/json", "x-request-id": "req_nested" },
+      responseBody: body,
+      isRetryable: false,
+    })
+    const wrapped = new APICallError({
+      message: "Failed to process successful response",
+      url: "https://example.com/v1/responses",
+      requestBodyValues: {},
+      statusCode: 200,
+      responseHeaders: { "content-type": "text/event-stream" },
+      cause: inner,
+    })
+    const result = MessageV2.fromError(wrapped, { providerID })
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    expect(result.data).toStrictEqual({
+      message: "invalid request",
+      statusCode: 400,
+      isRetryable: false,
+      responseHeaders: { "content-type": "application/json", "x-request-id": "req_nested" },
+      responseBody: body,
+      metadata: { url: "https://example.com/v1/responses" },
+    })
+  })
+
+  test("preserves nested wrapped reasoning diagnostics instead of the outer status", () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: { code: "invalid_encrypted_content", message: "The encrypted content could not be verified." },
+    })
+    const inner = new APICallError({
+      message: ProviderError.REASONING_STATE_MESSAGE,
+      url: "https://example.com/v1/responses",
+      requestBodyValues: {},
+      statusCode: 400,
+      responseHeaders: { "x-request-id": "req_reasoning" },
+      responseBody: body,
+    })
+    const result = MessageV2.fromError(
+      new APICallError({
+        message: "Failed to process successful response",
+        url: "https://example.com/v1/responses",
+        requestBodyValues: {},
+        statusCode: 200,
+        responseHeaders: { "content-type": "text/event-stream" },
+        cause: inner,
+      }),
+      { providerID },
+    )
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    expect(result.data.message).toBe(ProviderError.REASONING_STATE_MESSAGE)
+    expect(result.data.statusCode).toBe(400)
+    expect(result.data.isRetryable).toBe(false)
+    expect(result.data.responseHeaders).toEqual({ "x-request-id": "req_reasoning" })
+    expect(result.data.responseBody).toBe(body)
+  })
+
+  test("keeps nested wrapped context overflow as ContextOverflowError", () => {
+    const body = JSON.stringify({ error: { message: "prompt is too long: 213462 tokens > 200000 maximum" } })
+    const inner = new APICallError({
+      message: "prompt is too long: 213462 tokens > 200000 maximum",
+      url: "https://example.com/v1/responses",
+      requestBodyValues: {},
+      statusCode: 400,
+      responseBody: body,
+      isRetryable: false,
+    })
+    const result = MessageV2.fromError(
+      new APICallError({
+        message: "Failed to process successful response",
+        url: "https://example.com/v1/responses",
+        requestBodyValues: {},
+        statusCode: 200,
+        cause: inner,
+      }),
+      { providerID },
+    )
+
+    expect(SessionV1.ContextOverflowError.isInstance(result)).toBe(true)
+    if (!SessionV1.ContextOverflowError.isInstance(result)) throw new Error("Expected ContextOverflowError")
+    expect(result.data.responseBody).toBe(body)
+  })
+
+  test("serializes a wrapped WebSocket close failure with its close details", () => {
+    const streamError = new ProviderError.ResponseStreamError(
+      "WebSocket closed before response.completed (code 1011: upstream interrupted)",
+      { kind: "close", closeCode: 1011, closeReason: "upstream interrupted" },
+    )
+    const result = MessageV2.fromError(
+      new APICallError({
+        message: "Failed to process successful response",
+        url: "https://example.com/v1/responses",
+        requestBodyValues: {},
+        statusCode: 200,
+        cause: streamError,
+      }),
+      { providerID },
+    )
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    if (!SessionV1.APIError.isInstance(result)) throw new Error("Expected APIError")
+    expect(result.data.message).toBe("WebSocket closed before response.completed (code 1011: upstream interrupted)")
+    expect(result.data.isRetryable).toBe(true)
+    expect(result.data.metadata).toStrictEqual({
+      code: "ProviderResponseStreamError",
+      kind: "close",
+      closeCode: "1011",
+      closeReason: "upstream interrupted",
+    })
+  })
+
+  test("keeps aborts aborted", () => {
+    const result = MessageV2.fromError(new DOMException("The operation was aborted.", "AbortError"), { providerID })
+
+    expect(result.name).toBe("MessageAbortedError")
   })
 
   test("classifies Anthropic invalid thinking signatures as actionable APIError", () => {

@@ -18,6 +18,7 @@ import { ProviderError } from "@/provider/error"
 import { Env } from "@/env"
 import { Plugin } from "@/plugin"
 import { Session } from "@/session/session"
+import { MessageV2 } from "@/session/message-v2"
 import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
 import { CodexAuthPlugin } from "@/plugin/openai/codex"
 import { LLMRequestPrep } from "@/session/llm/request"
@@ -619,6 +620,12 @@ it.live("custom provider preserves the existing WS retry budget and sticky POST/
             })
             if (!(error instanceof Error)) throw new Error("the SDK must expose the WS failure")
             expect(error.cause).toBeInstanceOf(ProviderError.ResponseStreamError)
+            const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("relay") })
+            expect(SessionV1.APIError.isInstance(parsed)).toBe(true)
+            if (!SessionV1.APIError.isInstance(parsed)) throw new Error("Expected APIError")
+            expect(parsed.data.message).toContain("WebSocket connection")
+            expect(parsed.data.isRetryable).toBe(true)
+            expect(parsed.data.statusCode).toBeUndefined()
             expect(posts).toBe(0)
           }
           for (let attempt = 0; attempt < 2; attempt++) {
@@ -632,6 +639,322 @@ it.live("custom provider preserves the existing WS retry budget and sticky POST/
           }
           expect(upgrades).toBe(6)
           expect(posts).toBe(2)
+        }),
+      { config: providerConfig(new URL("/v1", server.url).toString(), true) },
+    )
+  }),
+)
+
+plainTransport.live("custom provider preserves nested WebSocket provider error status and body", () =>
+  Effect.gen(function* () {
+    const errorEvent = JSON.stringify({
+      type: "error",
+      status: 400,
+      headers: { "x-request-id": "req_nested" },
+      error: { message: "invalid request" },
+    })
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch(request, server) {
+            if (request.headers.get("upgrade") === "websocket") {
+              return server.upgrade(request) ? undefined : new Response(null, { status: 400 })
+            }
+            return new Response(null, { status: 400 })
+          },
+          websocket: {
+            message(socket) {
+              socket.send(errorEvent)
+            },
+          },
+        }),
+      ),
+      (server) => Effect.sync(() => server.stop(true)),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const result = streamText({
+            model: language,
+            prompt: "hello",
+            headers: { "x-session-affinity": "nested-error-session" },
+            maxRetries: 0,
+            onError: () => undefined,
+          })
+          let error: unknown
+          yield* Effect.promise(async () => {
+            for await (const chunk of result.fullStream) if (chunk.type === "error") error = chunk.error
+          })
+          if (!(error instanceof Error)) throw new Error("the SDK must expose the WebSocket provider failure")
+          const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("relay") })
+          expect(SessionV1.APIError.isInstance(parsed)).toBe(true)
+          if (!SessionV1.APIError.isInstance(parsed)) throw new Error("Expected APIError")
+          expect(parsed.data).toStrictEqual({
+            message: "invalid request",
+            statusCode: 400,
+            isRetryable: false,
+            responseHeaders: { "content-type": "application/json", "x-request-id": "req_nested" },
+            responseBody: errorEvent,
+            metadata: { url: `http://127.0.0.1:${server.port}/v1/responses` },
+          })
+        }),
+      { config: providerConfig(new URL("/v1", server.url).toString(), true) },
+    )
+  }),
+)
+
+plainTransport.live("custom provider preserves the SDK error part for a terminal response.failed", () =>
+  Effect.gen(function* () {
+    const errorEvent = JSON.stringify({
+      type: "response.failed",
+      sequence_number: 1,
+      response: {
+        id: "resp_terminal",
+        status: 200,
+        error: { type: "server_error", code: "server_error", message: "upstream failed" },
+      },
+    })
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch(request, server) {
+            if (request.headers.get("upgrade") === "websocket") {
+              return server.upgrade(request) ? undefined : new Response(null, { status: 400 })
+            }
+            return new Response(null, { status: 400 })
+          },
+          websocket: {
+            message(socket) {
+              socket.send(errorEvent)
+            },
+          },
+        }),
+      ),
+      (server) => Effect.sync(() => server.stop(true)),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const result = streamText({
+            model: language,
+            prompt: "hello",
+            headers: { "x-session-affinity": "terminal-failure-session" },
+            maxRetries: 0,
+            onError: () => undefined,
+          })
+          let error: unknown
+          yield* Effect.promise(async () => {
+            for await (const chunk of result.fullStream) if (chunk.type === "error") error = chunk.error
+          })
+          if (!(error instanceof Error)) throw new Error("the SDK must expose the terminal provider failure")
+          const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("relay") })
+          expect(SessionV1.APIError.isInstance(parsed)).toBe(true)
+          if (!SessionV1.APIError.isInstance(parsed)) throw new Error("Expected APIError")
+          expect(parsed.data.message).toBe("upstream failed")
+          expect(parsed.data.statusCode).toBe(500)
+          expect(parsed.data.isRetryable).toBe(true)
+          expect(parsed.data.responseBody).toContain("upstream failed")
+          expect(parsed.data.metadata).toStrictEqual({
+            url: `http://127.0.0.1:${server.port}/v1/responses`,
+            code: "server_error",
+          })
+        }),
+      { config: providerConfig(new URL("/v1", server.url).toString(), true) },
+    )
+  }),
+)
+
+plainTransport.live("custom provider keeps response.incomplete max_output_tokens as a length finish", () =>
+  Effect.gen(function* () {
+    const event = {
+      type: "response.incomplete",
+      sequence_number: 1,
+      response: {
+        id: "resp_incomplete",
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+      },
+    }
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch(request, server) {
+            if (request.headers.get("upgrade") === "websocket") {
+              return server.upgrade(request) ? undefined : new Response(null, { status: 400 })
+            }
+            return new Response(null, { status: 400 })
+          },
+          websocket: {
+            message(socket) {
+              socket.send(JSON.stringify(event))
+            },
+          },
+        }),
+      ),
+      (server) => Effect.sync(() => server.stop(true)),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const result = streamText({
+            model: language,
+            prompt: "hello",
+            headers: { "x-session-affinity": "incomplete-length-session" },
+            maxRetries: 0,
+            onError: () => undefined,
+          })
+          let finishReason: string | undefined
+          let error: unknown
+          yield* Effect.promise(async () => {
+            for await (const chunk of result.fullStream) {
+              if (chunk.type === "error") error = chunk.error
+              if (chunk.type === "finish") finishReason = chunk.finishReason
+            }
+          })
+          expect(error).toBeUndefined()
+          expect(finishReason).toBe("length")
+        }),
+      { config: providerConfig(new URL("/v1", server.url).toString(), true) },
+    )
+  }),
+)
+
+plainTransport.live("custom provider keeps response.incomplete content_filter as a content-filter finish", () =>
+  Effect.gen(function* () {
+    const event = {
+      type: "response.incomplete",
+      sequence_number: 1,
+      response: {
+        id: "resp_filtered",
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+      },
+    }
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch(request, server) {
+            if (request.headers.get("upgrade") === "websocket") {
+              return server.upgrade(request) ? undefined : new Response(null, { status: 400 })
+            }
+            return new Response(null, { status: 400 })
+          },
+          websocket: {
+            message(socket) {
+              socket.send(JSON.stringify(event))
+            },
+          },
+        }),
+      ),
+      (server) => Effect.sync(() => server.stop(true)),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const result = streamText({
+            model: language,
+            prompt: "hello",
+            headers: { "x-session-affinity": "incomplete-filter-session" },
+            maxRetries: 0,
+            onError: () => undefined,
+          })
+          let finishReason: string | undefined
+          let error: unknown
+          yield* Effect.promise(async () => {
+            for await (const chunk of result.fullStream) {
+              if (chunk.type === "error") error = chunk.error
+              if (chunk.type === "finish") finishReason = chunk.finishReason
+            }
+          })
+          expect(error).toBeUndefined()
+          expect(finishReason).toBe("content-filter")
+        }),
+      { config: providerConfig(new URL("/v1", server.url).toString(), true) },
+    )
+  }),
+)
+
+plainTransport.live("custom provider keeps a 2xx error event as a structured SDK error part", () =>
+  Effect.gen(function* () {
+    const event = {
+      type: "error",
+      sequence_number: 1,
+      status: 200,
+      error: { type: "server_error", code: "server_error", message: "temporary upstream error" },
+    }
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch(request, server) {
+            if (request.headers.get("upgrade") === "websocket") {
+              return server.upgrade(request) ? undefined : new Response(null, { status: 400 })
+            }
+            return new Response(null, { status: 400 })
+          },
+          websocket: {
+            message(socket) {
+              socket.send(JSON.stringify(event))
+            },
+          },
+        }),
+      ),
+      (server) => Effect.sync(() => server.stop(true)),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("relay"), ModelV2.ID.make("test-model"))
+          const language = yield* provider.getLanguage(model)
+          const result = streamText({
+            model: language,
+            prompt: "hello",
+            headers: { "x-session-affinity": "2xx-error-session" },
+            maxRetries: 0,
+            onError: () => undefined,
+          })
+          let error: unknown
+          yield* Effect.promise(async () => {
+            for await (const chunk of result.fullStream) if (chunk.type === "error") error = chunk.error
+          })
+          if (!(error instanceof Error)) throw new Error("the SDK must expose the 2xx error event")
+          const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("relay") })
+          expect(SessionV1.APIError.isInstance(parsed)).toBe(true)
+          if (!SessionV1.APIError.isInstance(parsed)) throw new Error("Expected APIError")
+          expect(parsed.data).toMatchObject({
+            message: "temporary upstream error",
+            statusCode: 500,
+            isRetryable: true,
+            responseHeaders: { "content-type": "text/event-stream" },
+            metadata: {
+              url: `http://127.0.0.1:${server.port}/v1/responses`,
+              code: "server_error",
+              type: "server_error",
+            },
+          })
+          expect(parsed.data.responseBody).toContain("temporary upstream error")
         }),
       { config: providerConfig(new URL("/v1", server.url).toString(), true) },
     )
