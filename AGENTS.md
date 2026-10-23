@@ -75,7 +75,7 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 
 ## Delivery (SpecGit 2)
 
-- SpecGit is a shared user-level CLI; resolve its version and contract with `specgit --version`, `specgit --help`, and `specgit --schema`. The declaration `.specgit.yaml` is local, per-checkout configuration (Git-excluded, not tracked). Initialize or refresh each checkout or worktree with `specgit init --provider github --remote origin --target main --language en --native-auto-merge false` and `specgit setup --agent opencode`; both are maintenance and refresh their owned blocks below.
+- SpecGit is a shared user-level CLI; resolve its version and contract with `specgit --version`, `specgit --help`, and `specgit --schema`. The declaration `.specgit.yaml` is local, per-checkout configuration (Git-excluded, not tracked). Initialize or refresh each checkout or worktree with `specgit init --provider github --remote origin --target main --language en --native-auto-merge false` and `specgit setup --agent claude --agent opencode --opencode-claude-hooks --hook-purpose guard --hook-purpose context` (hooks mode for both agents; this fork supports Claude-compatible hooks); both are maintenance and refresh their owned blocks below. Set `validation.labels: kind` in `.specgit.yaml` so each Issue/PR gets one `kind::<type>` label derived from its title (use `--create-labels` if the forge lacks them). Issue and PR titles and bodies are written in English.
 - Track complete Why/Scope/Approach/Acceptance Issues with `specgit issue`, aggregate with `specgit pr` (created as a draft, then `specgit pr --ready`), and observe native evidence with `specgit pr --status` / bounded `specgit watch`. Branch names remain `{type}/short-name`; feature work targets `main`. Parallel deliveries use separate worktrees; each worktree keeps its own checkpoint.
 - GitHub owns acceptance and merge. Repository policy requires `Typecheck`, `Unit Tests (linux)`, and both E2E platforms to pass before merge. Merge with merge commits only (`gh pr merge --merge`); squash and rebase merges are disabled because they break branch and worktree tracking. Verify the current PR head and actual native requirements; check merge state and linked Issue closure separately. Never weaken required checks to complete delivery.
 - Automatic merge and supplementary Issue closure default off. Native `gh` operations require user authorization from the current task; configuration grants none.
@@ -104,38 +104,5 @@ This block is written and re-added by `turbo` before repository-scoped commands 
 <!-- specgit:project:v2:start -->
 ## SpecGit 2
 
-SpecGit integration is permanently project-only.
-Read this project's AGENTS.md and local `.specgit.yaml`. Load the same specgit-native Skill for new tasks and existing PR/MR CI/review repair, including tool choice, waiting and recovery.
-The binary is optional; installed guard/checkpoint and project constraints still apply. When using the shared CLI, follow `specgit --help` and `specgit --schema`.
-Before tracked product edits, inspect duplicate work and select a complete relevant Issue.
-Read-only research and review need no delivery Issue.
-Follow repository documentation guidance and installed hook checkpoint requirements.
-Local init/setup is maintenance. Existing session authorization remains valid within its scope.
-Issue/PR writes require existing user authorization. Declarations and previews grant no permission.
-Finish against the user's scope. Review, repair or tracking delivers its result and limits; platform delivery requires current evidence and native readback of the target merge and every associated Issue that should close.
-Refresh only owned, unedited blocks and assets; preserve manual text and other tools' content, and retain conflict protection.
+Read project-root `.agents/skills/specgit-native/SKILL.md` before work; if missing, initialize with the shared `specgit init` CLI or restore an existing integration with `specgit setup` ([installation](https://github.com/LeXwDeX/SpecGit/blob/main/docs/agent-install.md)).
 <!-- specgit:project:v2:end -->
-
-<!-- specgit:v2:start -->
-## SpecGit 2
-
-Runtime: 2.11.1. Declaration: `.specgit.yaml` (v2, local configuration).
-
-Load specgit-native Skill for new tasks and existing PR/MR CI/review repair.
-The Skill holds the workflow and recovery steps; the binary is optional, not a waiver of project guard/checkpoint constraints.
-Use native gh/glab proactively within authorization. GitHub free/paid plans, account type and repository visibility, and GitLab Community/commercial tiers are context, not proof of project/identity capability; report plan limits, permission failures and unknown causes separately; 403/404 alone cannot decide. See Skill.
-Milestone is optional; Issue holds the specification and work ledger; PR/MR integrates changes, not a version; Release needs separate authorization.
-When using the shared CLI, its installed `specgit --help` and `specgit --schema` are the contract.
-Before tracked product edits, inspect duplicate work and select a complete relevant Issue: Why / Scope / Approach / Acceptance.
-Read-only inspection, audit and review need no Issue checkpoint; pure documentation follows repository policy and installed hooks.
-Writes, including marking a request ready, need existing user authorization; it remains valid within its scope.
-Declarations, `--dry-run` previews and Hook notices grant no permission.
-GitHub/GitLab owns CI, review, protection and actual merge.
-Finish against the user's goal: review, repair or tracking reports verified results and limits.
-Platform delivery requires native readback of the intended target merge and closure of every associated Issue that should close.
-After updates, run status/doctor, read generated Skill/guidance and repeat dry-runs; init dry-run reports planned paths, not per-path changed state. Follow Skill recovery for blockers.
-For an authorized refresh, let the CLI replace edited text in assets/complete unique blocks with verified ownership; preserve outside bytes/config/checkpoints/hooks. Unknown ownership or damaged/duplicate markers conflict. Do not handwrite, restore old blocks or add manual backups; use CLI recovery. Uninstall/rollback preserves later edits.
-
-Declared rules: `{"agent":{"close_issues_after_merge":false,"native_auto_merge":false},"issue_template":"builtin","language":"en","pr_template":"builtin","validation":{"bodies":true,"labels":"off","titles":true}}`
-<!-- specgit:v2:sha256 83d9e203fc2c267d9460f9f8040faaa2153c0a0d4b2ffc01c6e3318f35c79974 -->
-<!-- specgit:v2:end -->
