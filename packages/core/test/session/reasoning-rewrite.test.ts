@@ -142,7 +142,7 @@ describe("engine organizer transport", () => {
     }),
   )
 
-  it.effect("caps the organizer output at the model's declared output limit", () =>
+  it.effect("sets the organizer output cap to the model's declared output limit", () =>
     Effect.gen(function* () {
       const requests: LLMRequest[] = []
       const llm = client((request) => Effect.sync(() => (requests.push(request), response("ok"))))
@@ -156,10 +156,7 @@ describe("engine organizer transport", () => {
           engineOrganizerCall({ llm, model: limited, effort: "low", timeoutMs: 1_000 })({ prompt: "p" }),
         )
       }
-      expect(requests.map((request) => request.generation?.maxTokens)).toEqual([
-        4_096,
-        ReasoningDistillationPolicy.tokens.maxOutputTokens,
-      ])
+      expect(requests.map((request) => request.generation?.maxTokens)).toEqual([4_096, 100_000])
     }),
   )
 
@@ -259,9 +256,7 @@ describe("reasoning rewrite job", () => {
       for (let index = 0; index < ReasoningDistillationPolicy.calls.maxConsecutiveFailures; index++)
         expect((yield* runReasoningRewrite(failing)).reason).toBe("model-failure")
       expect((yield* runReasoningRewrite(failing)).reason).toBe("budget-paused")
-      expect(budget.snapshot("s").consecutiveFailures).toBe(
-        ReasoningDistillationPolicy.calls.maxConsecutiveFailures,
-      )
+      expect(budget.snapshot("s").consecutiveFailures).toBe(ReasoningDistillationPolicy.calls.maxConsecutiveFailures)
     }),
   )
 

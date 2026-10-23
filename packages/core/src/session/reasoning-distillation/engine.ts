@@ -21,11 +21,12 @@ export const declaresNoReasoning = (model: LLMRequest["model"]) =>
         (isRecord(body.thinking) && body.thinking.type === "disabled")),
   )
 
-/** The organizer's output cap, lowered to the model's declared output limit so capped providers accept the call. */
+/** The organizer's output cap: the model's declared output limit, so long reasoning is never cut short by a fixed cap. */
 export const organizerMaxTokens = (model: LLMRequest["model"]) => {
   const limit = model.defaults?.limits?.output ?? model.route.defaults.limits?.output
-  const cap = ReasoningDistillationPolicy.tokens.maxOutputTokens
-  return limit !== undefined && Number.isFinite(limit) && limit > 0 ? Math.min(limit, cap) : cap
+  return limit !== undefined && Number.isFinite(limit) && limit > 0
+    ? limit
+    : ReasoningDistillationPolicy.tokens.maxOutputTokens
 }
 
 const effortBody = (protocol: string, effort: "none" | "low") =>

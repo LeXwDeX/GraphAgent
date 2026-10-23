@@ -57,11 +57,11 @@ export const Flag = {
   get OPENCODE_DISABLE_REASONING_DISTILLATION() {
     return truthy("OPENCODE_DISABLE_REASONING_DISTILLATION")
   },
-  /** Organizer response-start and stream idle timeout in milliseconds (#643). Defaults to 30s; progressing streams
-   * may run longer. Invalid or non-positive values fall back to the default. */
+  /** Organizer response-start and stream idle timeout in milliseconds (#643). Defaults to 120s so a long prompt
+   * has time to prefill; progressing streams may run longer. Invalid or non-positive values fall back to the default. */
   get OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS() {
     const parsed = Number(process.env["OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS"])
-    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30_000
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 120_000
   },
   get OPENCODE_EXPERIMENTAL_REFERENCES() {
     return enabledByExperimental("OPENCODE_EXPERIMENTAL_REFERENCES")
