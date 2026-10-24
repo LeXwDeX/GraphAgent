@@ -130,6 +130,8 @@ function harness(input: {
   readonly onActivate?: Effect.Effect<void>
   readonly transactionalAdmission?: boolean
   readonly afterAdmissionRollback?: Effect.Effect<void>
+  readonly onGoalCommitted?: Effect.Effect<void>
+  readonly onRetryClaimed?: Effect.Effect<void>
 }) {
   const judge = { calls: 0 }
   const compaction: CompactionState = { creates: 0, attempts: 0, loops: 0, calls: [] as CompactionCall[] }
@@ -221,13 +223,39 @@ function harness(input: {
         },
       } as never)
     : Layer.empty
+  const goalLayer =
+    input.onGoalCommitted || input.onRetryClaimed
+      ? Layer.effect(
+          Goal.Service,
+          Effect.gen(function* () {
+            const goal = yield* Goal.Service
+            return Goal.Service.of({
+              ...goal,
+              updateAfterJudge: (...args: Parameters<Goal.Interface["updateAfterJudge"]>) =>
+                goal
+                  .updateAfterJudge(...args)
+                  .pipe(Effect.tap((result) => (result ? (input.onGoalCommitted ?? Effect.void) : Effect.void))),
+              claimRecovery: (...args: Parameters<Goal.Interface["claimRecovery"]>) =>
+                goal
+                  .claimRecovery(...args)
+                  .pipe(
+                    Effect.tap((result) =>
+                      result.tag === "allowed" && args[2] === "retry"
+                        ? (input.onRetryClaimed ?? Effect.void)
+                        : Effect.void,
+                    ),
+                  ),
+            })
+          }),
+        ).pipe(Layer.provide(Goal.defaultLayer))
+      : Goal.defaultLayer
   const layer = GoalLoop.layer.pipe(
     Layer.provide(sessionMock),
     Layer.provide(promptMock),
     Layer.provide(Layer.succeed(Provider.Service, {} as never)),
     Layer.provide(judgeMock),
     Layer.provideMerge(compactionMock),
-    Layer.provideMerge(Goal.defaultLayer),
+    Layer.provideMerge(goalLayer),
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
     Layer.provideMerge(SessionAutomationLease.defaultLayer),
@@ -272,6 +300,8 @@ describe("GoalLoop — #892 failed assistant turns", () => {
   let beforeAdmission: Effect.Effect<void> | undefined
   let onPrepare: Effect.Effect<void> | undefined
   let onActivate: Effect.Effect<void> | undefined
+  let onGoalCommitted: Effect.Effect<void> | undefined
+  let onRetryClaimed: Effect.Effect<void> | undefined
   let onContinue:
     ((input: SessionPrompt.PromptInput) => Effect.Effect<SessionV1.WithParts, never, EventV2Bridge.Service>) | undefined
   const { layer, judge, compaction, admissions } = harness({
@@ -283,6 +313,8 @@ describe("GoalLoop — #892 failed assistant turns", () => {
     beforeAdmission: Effect.suspend(() => beforeAdmission ?? Effect.void),
     onPrepare: Effect.suspend(() => onPrepare ?? Effect.void),
     onActivate: Effect.suspend(() => onActivate ?? Effect.void),
+    onGoalCommitted: Effect.suspend(() => onGoalCommitted ?? Effect.void),
+    onRetryClaimed: Effect.suspend(() => onRetryClaimed ?? Effect.void),
   })
   const it = testEffect(layer)
 
@@ -297,6 +329,8 @@ describe("GoalLoop — #892 failed assistant turns", () => {
       beforeAdmission = undefined
       onPrepare = undefined
       onActivate = undefined
+      onGoalCommitted = undefined
+      onRetryClaimed = undefined
       onContinue = undefined
       window = [
         userMessage("user-1", Date.now() + 60_000),
@@ -551,33 +585,224 @@ describe("GoalLoop — #892 failed assistant turns", () => {
     }),
   )
 
-  it.instance("a duplicate idle during backoff does not dispatch a second retry", () =>
+  it.instance("duplicate idles during backoff dedupe before any retry is dispatched", () =>
     Effect.gen(function* () {
       const { goal, sessionID } = yield* setup(
-        apiError({ message: "Connection reset by server", isRetryable: true, retryAfterMs: 200 }),
+        apiError({ message: "Connection reset by server", isRetryable: true, retryAfterMs: 500 }),
       )
       yield* idle(sessionID)
-      yield* Effect.sleep("100 millis")
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const current = yield* goal.load(sessionID)
+          return current?.recovery?.attempts === 1 ? true : undefined
+        }),
+        "the retry reservation was not committed",
+        "5 seconds",
+      )
+      // The first evaluation has projected its self-made revision before the
+      // backoff sleep. Duplicate idle events for the same failure must not
+      // replace that fiber and consume the remaining reservation.
+      yield* Effect.sleep("50 millis")
       yield* idle(sessionID)
-      yield* Effect.sleep("1 second")
+      yield* idle(sessionID)
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompts.filter((call) => call.kind === "continue").length === 1 ? true : undefined)),
+        "the first retry was not dispatched",
+        "5 seconds",
+      )
+      yield* Effect.sleep("300 millis")
       expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(1)
+      expect((yield* goal.load(sessionID))?.recovery?.attempts).toBe(1)
       expect(Number((yield* goal.load(sessionID))?.turns_used)).toBe(0)
     }),
   )
 
-  it.instance("a user takeover during backoff is honored instead of sending the retry", () =>
+  it.instance("duplicate idle after backoff but before admission keeps one dispatch", () =>
     Effect.gen(function* () {
       const { goal, sessionID } = yield* setup(
+        apiError({ message: "Connection reset by server", isRetryable: true, retryAfterMs: 50 }),
+      )
+      let prepareEntries = 0
+      let prepareReached = false
+      const releasePrepare = yield* Deferred.make<void>()
+      onPrepare = Effect.gen(function* () {
+        prepareEntries += 1
+        if (prepareEntries > 1) return
+        prepareReached = true
+        yield* Deferred.await(releasePrepare)
+      })
+      yield* idle(sessionID)
+      yield* pollWithTimeout(
+        Effect.sync(() => (prepareReached ? true : undefined)),
+        "the retry admission never entered prepareIfIdle",
+        "5 seconds",
+      )
+      // Dedupe must remain latched after the sleep and until admission
+      // resolves; a duplicate idle here must not replace the pending fiber.
+      yield* idle(sessionID)
+      yield* Effect.sleep("100 millis")
+      expect(prepareEntries).toBe(1)
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
+
+      yield* Deferred.succeed(releasePrepare, undefined)
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompts.filter((call) => call.kind === "continue").length === 1 ? true : undefined)),
+        "the retry admission did not dispatch",
+        "5 seconds",
+      )
+      yield* Effect.sleep("200 millis")
+      expect(prepareEntries).toBe(1)
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(1)
+      expect((yield* goal.load(sessionID))?.recovery?.attempts).toBe(1)
+    }),
+  )
+
+  it.instance("a duplicate idle after the retry claim commits keeps one reservation", () =>
+    Effect.gen(function* () {
+      const { goal, sessionID } = yield* setup(
+        apiError({ message: "Connection reset by server", isRetryable: true, retryAfterMs: 100 }),
+      )
+      let claimReached = false
+      const releaseClaim = yield* Deferred.make<void>()
+      onRetryClaimed = Effect.gen(function* () {
+        claimReached = true
+        yield* Deferred.await(releaseClaim)
+      })
+      yield* idle(sessionID)
+      yield* pollWithTimeout(
+        Effect.sync(() => (claimReached ? true : undefined)),
+        "the retry claim never committed",
+        "5 seconds",
+      )
+      // Duplicate idle lands after the durable claim but before the admission
+      // resolves. It must be deduped without consuming another reservation.
+      yield* idle(sessionID)
+      yield* Deferred.succeed(releaseClaim, undefined)
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompts.filter((call) => call.kind === "continue").length === 1 ? true : undefined)),
+        "the retry was not dispatched",
+        "5 seconds",
+      )
+      yield* Effect.sleep("200 millis")
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(1)
+      expect((yield* goal.load(sessionID))?.recovery?.attempts).toBe(1)
+    }),
+  )
+
+  it.instance("a goal edit before retry admission is rejected by the exact-revision fence", () =>
+    Effect.gen(function* () {
+      const { goal, sessionID } = yield* setup(
+        apiError({ message: "Connection reset by server", isRetryable: true, retryAfterMs: 50 }),
+      )
+      const admissionReached = yield* Deferred.make<void>()
+      const releaseAdmission = yield* Deferred.make<void>()
+      let editedRevision: number | undefined
+      beforeAdmission = Effect.gen(function* () {
+        yield* Deferred.succeed(admissionReached, undefined)
+        yield* Deferred.await(releaseAdmission)
+        const edited = yield* goal.addSubgoal(sessionID, "user edit")
+        editedRevision = edited?.revision
+      })
+      yield* idle(sessionID)
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const current = yield* goal.load(sessionID)
+          return current?.recovery?.attempts === 1 ? true : undefined
+        }),
+        "the retry reservation was not committed",
+        "5 seconds",
+      )
+      yield* Deferred.succeed(releaseAdmission, undefined)
+      yield* Effect.sleep("500 millis")
+      const current = yield* goal.load(sessionID)
+      expect(editedRevision).toBeDefined()
+      expect(current?.status).toBe("active")
+      expect(current?.revision).toBe(editedRevision)
+      expect(current?.subgoals).toContain("user edit")
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
+    }),
+  )
+
+  it.instance("a user message after judge commit pauses at the committed revision without dispatch", () =>
+    Effect.gen(function* () {
+      reset(prompts, compaction)
+      onGoalCommitted = undefined
+      window = [
+        userMessage("user-1", Date.now() + 60_000),
+        assistantMessage({ id: "assistant-success", created: Date.now() + 60_001, text: "progress" }),
+      ]
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      yield* loop.init()
+      const sessionID = SessionID.descending()
+      yield* goal.set(sessionID, "ship the feature", 10)
+      yield* Effect.yieldNow
+      const release = yield* Deferred.make<void>()
+      let committed = false
+      onGoalCommitted = Effect.gen(function* () {
+        window = [...window, userMessage("user-2", Date.now() + 70_000, "take over")]
+        committed = true
+        yield* Deferred.await(release)
+      })
+      yield* idle(sessionID)
+      yield* pollWithTimeout(
+        Effect.sync(() => (committed ? true : undefined)),
+        "the judge commit was not reached",
+        "5 seconds",
+      )
+      yield* Deferred.succeed(release, undefined)
+      const current = yield* paused(sessionID)
+      expect(String(current.paused_reason)).toContain("当前轮被中断")
+      expect(current.turns_used).toBe(1)
+      expect(continuation).toBe(0)
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
+    }),
+  )
+
+  it.instance("a same-goal edit after judge commit is not dispatched on a stale admission", () =>
+    Effect.gen(function* () {
+      reset(prompts, compaction)
+      judge.calls = 0
+      onGoalCommitted = undefined
+      window = [
+        userMessage("user-1", Date.now() + 60_000),
+        assistantMessage({ id: "assistant-success", created: Date.now() + 60_001, text: "progress" }),
+      ]
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      yield* loop.init()
+      const sessionID = SessionID.descending()
+      const initial = yield* goal.set(sessionID, "ship the feature", 10)
+      yield* Effect.yieldNow
+      let editedRevision: number | undefined
+      onGoalCommitted = Effect.gen(function* () {
+        const edited = yield* goal.addSubgoal(sessionID, "user edit")
+        editedRevision = edited?.revision
+      })
+      yield* idle(sessionID)
+      yield* Effect.sleep("500 millis")
+      const current = yield* goal.load(sessionID)
+      expect(editedRevision).toBe((initial.revision ?? 0) + 2)
+      expect(current?.status).toBe("active")
+      expect(current?.revision).toBe(editedRevision)
+      expect(current?.subgoals).toContain("user edit")
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
+      expect(judge.calls).toBe(1)
+    }),
+  )
+
+  it.instance("a user takeover during backoff pauses at the claimed revision without dispatching", () =>
+    Effect.gen(function* () {
+      const { sessionID } = yield* setup(
         apiError({ message: "Connection reset by server", isRetryable: true, retryAfterMs: 300 }),
       )
       yield* idle(sessionID)
       yield* Effect.sleep("80 millis")
       window = [...window, userMessage("user-2", Date.now() + 80_000, "stop and do this instead")]
-      const status = yield* SessionStatus.Service
-      yield* status.set(sessionID, { type: "busy" })
-      yield* Effect.sleep("1 second")
+      const current = yield* paused(sessionID)
+      expect(String(current.paused_reason)).toContain("最新的用户消息尚未得到回复")
       expect(continuation).toBe(0)
-      expect((yield* goal.load(sessionID))?.status).toBe("active")
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
     }),
   )
 
@@ -973,7 +1198,6 @@ describe("GoalLoop — #892 real encrypted-reasoning rejection sequence", () => 
           yield* Effect.yieldNow
           const events = yield* EventV2Bridge.Service
           yield* events.publish(SessionStatus.Event.Status, { sessionID: chat.id, status: { type: "idle" } })
-
           // The first continuation replays the ciphertext and fails with 400.
           yield* pollWithTimeout(
             Effect.gen(function* () {
@@ -990,7 +1214,6 @@ describe("GoalLoop — #892 real encrypted-reasoning rejection sequence", () => 
           yield* events.publish(SessionStatus.Event.Status, { sessionID: chat.id, status: { type: "idle" } })
 
           const baselineTurns = Number((yield* goal.load(chat.id))?.turns_used)
-
           // The reset must commit a real compaction marker and a summary
           // continuation before the clean post-summary request is sent.
           yield* pollWithTimeout(
@@ -1016,10 +1239,12 @@ describe("GoalLoop — #892 real encrypted-reasoning rejection sequence", () => 
             "the second encrypted-reasoning rejection was not persisted",
             "10 seconds",
           )
-          yield* events.publish(SessionStatus.Event.Status, { sessionID: chat.id, status: { type: "idle" } })
-
           const paused = yield* pollWithTimeout(
             Effect.gen(function* () {
+              // Re-publish idle while polling to synchronize with the real
+              // runner handle release. The assertion remains an actual pause;
+              // this helper does not accept an active goal.
+              yield* events.publish(SessionStatus.Event.Status, { sessionID: chat.id, status: { type: "idle" } })
               const current = yield* goal.load(chat.id)
               return current?.status === "paused" ? current : undefined
             }),
