@@ -519,6 +519,9 @@ const serviceLayer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("GoalLoop.state")(function* (ctx) {
+        // startImmediately runs the stream through its PubSub subscription
+        // before init returns (same contract as EventV2Bridge startup), so an
+        // idle published immediately after boot cannot race subscription.
         yield* events.subscribe(SessionStatus.Event.Status).pipe(
           Stream.filter((evt) => evt.data.status.type === "idle"),
           // D4 (fiber lifecycle): triggerEvaluation below carries the full
@@ -551,7 +554,7 @@ const serviceLayer = Layer.effect(
               ),
             ),
           ),
-          Effect.forkScoped,
+          Effect.forkScoped({ startImmediately: true }),
         )
         // GOAL-FP-01-04: the startup resume scan. The durable snapshot is
         // captured HERE — at instance boot (the builder runs at the first
