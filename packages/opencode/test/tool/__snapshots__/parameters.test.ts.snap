@@ -1016,7 +1016,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "type": "string",
                           },
                           "report_to_parent": {
-                            "description": "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default",
+                            "description": "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default; a reporting block with dependents becomes a blocking checkpoint, and the compiler gates its dependents on verdicts",
                             "type": "boolean",
                           },
                           "required": {
@@ -1159,7 +1159,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "type": "boolean",
                           },
                           "condition": {
-                            "description": "Expression evaluated before spawn; node is skipped if false",
+                            "description": "One comparison on one direct dependency's output: "<dep>.output.<field> <op> <literal>" with ==, !=, <, <=, >, or >=; no && or ||. The node is skipped when the comparison is false",
                             "type": "string",
                           },
                           "depends_on": {
@@ -1228,7 +1228,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "description": "Template: exactly one of { id: "..." } or { inline: "...", input: {...} }. Direct dependency outputs are available as {{node-id}} by default",
                           },
                           "report_to_parent": {
-                            "description": "If true, the parent agent is woken when this node completes or fails. Inherits config.node_defaults.report_to_parent",
+                            "description": "If true and the node has dependents, it is a blocking reporting checkpoint: every direct dependent must gate on its output via condition, and the node must declare output_schema. Without dependents it is a reporting leaf (a progress wake). Inherits config.node_defaults.report_to_parent",
                             "type": "boolean",
                           },
                           "required": {

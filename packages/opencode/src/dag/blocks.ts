@@ -44,7 +44,8 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
       "Whether failure is terminal. Decision and verification blocks default to true; volume blocks to false",
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
-    description: "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default",
+    description:
+      "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default; a reporting block with dependents becomes a blocking checkpoint, and the compiler gates its dependents on verdicts",
   }),
   fan_out: Schema.optional(Schema.String).annotate({
     description:

@@ -1736,7 +1736,7 @@ describe("workflow tool execution", () => {
     }),
   )
 
-  runtime.effect("invalid extend on a completed workflow reports its terminal state", () =>
+  runtime.effect("invalid extend on a completed workflow reports its unchanged terminal state", () =>
     Effect.gen(function* () {
       published.length = 0
       const workflow = yield* (yield* WorkflowTool).init()
@@ -1750,11 +1750,22 @@ describe("workflow tool execution", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
         const message = Cause.pretty(exit.cause)
-        expect(message).toContain("Workflow state: completed")
-        expect(message).toContain("Automatic pause failed")
+        expect(message).toContain("Workflow state: completed (unchanged)")
+        expect(message).toContain("retry extend")
+        expect(message).not.toContain("Automatic pause failed")
+        expect(message).not.toContain("InvalidTransitionError")
         expect(message).not.toContain("Workflow state: paused (durably parked)")
       }
       expect(published.some((event) => event.type === DagEvent.WorkflowPaused.type)).toBe(false)
+    }),
+  )
+
+  runtime.effect("accepts a flat { action } call without the params wrapper", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const result = yield* workflow.execute({ action: "guide", topic: "blocks" } as never, toolContext())
+      expect(result.title).toBe("Workflow guide: blocks")
+      expect(result.output.length).toBeGreaterThan(0)
     }),
   )
 

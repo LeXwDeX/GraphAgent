@@ -3,6 +3,7 @@ import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
 import type * as ModelsDev from "@opencode-ai/core/models-dev"
+import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { iife } from "@/util/iife"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
@@ -1400,8 +1401,20 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
   return { [key]: normalized }
 }
 
-export function maxOutputTokens(model: Provider.Model, outputTokenMax = OUTPUT_TOKEN_MAX): number {
-  return Math.min(model.limit.output, outputTokenMax) || outputTokenMax
+/** Explicitly configured model output limit; absent when the limit only comes from the catalog. */
+export function configuredOutputLimit(cfg: ConfigV1.Info | undefined, model: Provider.Model): number | undefined {
+  const output = cfg?.provider?.[model.providerID]?.models?.[model.id]?.limit?.output
+  return output !== undefined && output > 0 ? output : undefined
+}
+
+export function maxOutputTokens(model: Provider.Model, outputTokenMax?: number, configuredOutput?: number): number {
+  // An explicit config lifts the conservative default. An environment override replaces it too, but the
+  // catalog limit still caps larger values; keep the conservative default only when neither applies.
+  const limit =
+    configuredOutput !== undefined && configuredOutput > 0
+      ? model.limit.output || configuredOutput
+      : Math.min(model.limit.output, outputTokenMax ?? OUTPUT_TOKEN_MAX) || outputTokenMax || OUTPUT_TOKEN_MAX
+  return outputTokenMax === undefined ? limit : Math.min(limit, outputTokenMax)
 }
 
 type JsonRecord = Record<string, unknown>

@@ -37,12 +37,14 @@ function node(id: string, dependsOn: string[] = []): NodeConfig {
 function createExpectingError(config: Partial<WorkflowConfig> & { nodes: NodeConfig[] }) {
   return Effect.gen(function* () {
     const dag = yield* Dag.Service
-    const error = yield* dag.create({
-      projectID: "project-1",
-      sessionID: "ses_create",
-      title: "create-validation",
-      config: { name: "create-validation", ...config },
-    }).pipe(Effect.catch((e: Error) => Effect.succeed(e)))
+    const error = yield* dag
+      .create({
+        projectID: "project-1",
+        sessionID: "ses_create",
+        title: "create-validation",
+        config: { name: "create-validation", ...config },
+      })
+      .pipe(Effect.catch((e: Error) => Effect.succeed(e)))
     expect(error).toBeInstanceOf(Error)
     return error as Error
   })
@@ -51,8 +53,23 @@ function createExpectingError(config: Partial<WorkflowConfig> & { nodes: NodeCon
 function setupFKs() {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
-    yield* db.insert(ProjectTable).values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] }).run().pipe(Effect.orDie)
-    yield* db.insert(SessionTable).values({ id: "ses_create" as never, project_id: Project.ID.global, slug: "create", directory: "/project", title: "create", version: "test" }).run().pipe(Effect.orDie)
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id: "ses_create" as never,
+        project_id: Project.ID.global,
+        slug: "create",
+        directory: "/project",
+        title: "create",
+        version: "test",
+      })
+      .run()
+      .pipe(Effect.orDie)
   })
 }
 
@@ -85,6 +102,35 @@ describe("Dag.create structural validation", () => {
           nodes: [node("a"), node("b"), node("c")],
         })
         expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
+        // Only a start document owns the graph budget; the start hint may say so.
+        expect((error as Dag.StructuralValidationError).diagnostics[0]?.hint).toContain("raise config.max_total_nodes")
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
+    )
+  })
+
+  it("rejects a replan over the ceiling without suggesting a field the fragment cannot carry", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "replan-ceiling",
+            config: { name: "replan-ceiling", max_total_nodes: 2, nodes: [node("a")] },
+          })
+          .pipe(Effect.orDie)
+        const error = yield* dag
+          .replan(dagID, { nodes: [node("b"), node("c")] })
+          .pipe(Effect.catch((e: Error) => Effect.succeed(e)))
+        expect(error).toBeInstanceOf(Dag.StructuralValidationError)
+        const ceiling = (error as Dag.StructuralValidationError).diagnostics.find((d) =>
+          d.message.includes("Total node ceiling exceeded: 3 nodes > 2 max"),
+        )!
+        expect(ceiling.hint).not.toContain("raise max_total_nodes")
+        expect(ceiling.hint).toContain("fixed by the start document")
+        expect(ceiling.hint).toContain("Shrink the fragment")
       }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
     )
   })
@@ -111,15 +157,17 @@ describe("Dag.create structural validation", () => {
       Effect.gen(function* () {
         yield* setupFKs()
         const dag = yield* Dag.Service
-        const dagID = yield* dag.create({
-          projectID: Project.ID.global,
-          sessionID: "ses_create",
-          title: "create-validation",
-          config: {
-            name: "create-validation",
-            nodes: [node("gate"), { ...node("impl", ["gate"]), condition: 'gate.output.verdict == "ACCEPT"' }],
-          },
-        }).pipe(Effect.orDie)
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "create-validation",
+            config: {
+              name: "create-validation",
+              nodes: [node("gate"), { ...node("impl", ["gate"]), condition: 'gate.output.verdict == "ACCEPT"' }],
+            },
+          })
+          .pipe(Effect.orDie)
         expect(dagID.startsWith("dag")).toBe(true)
       }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
     )
@@ -146,15 +194,17 @@ describe("Dag prompt_template binding validation", () => {
       Effect.gen(function* () {
         yield* setupFKs()
         const dag = yield* Dag.Service
-        const dagID = yield* dag.create({
-          projectID: Project.ID.global,
-          sessionID: "ses_create",
-          title: "binding-input",
-          config: {
-            name: "binding-input",
-            nodes: [{ ...node("repair"), prompt_template: { inline: "Work in {{path}}", input: { path: "/repo" } } }],
-          },
-        }).pipe(Effect.orDie)
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "binding-input",
+            config: {
+              name: "binding-input",
+              nodes: [{ ...node("repair"), prompt_template: { inline: "Work in {{path}}", input: { path: "/repo" } } }],
+            },
+          })
+          .pipe(Effect.orDie)
         expect(dagID.startsWith("dag")).toBe(true)
       }).pipe(Effect.scoped, Effect.provide(dagLayer)),
     )
@@ -165,15 +215,20 @@ describe("Dag prompt_template binding validation", () => {
       Effect.gen(function* () {
         yield* setupFKs()
         const dag = yield* Dag.Service
-        const dagID = yield* dag.create({
-          projectID: Project.ID.global,
-          sessionID: "ses_create",
-          title: "binding-identity",
-          config: {
-            name: "binding-identity",
-            nodes: [node("explore"), { ...node("repair", ["explore"]), prompt_template: { inline: "Use {{explore}}" } }],
-          },
-        }).pipe(Effect.orDie)
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "binding-identity",
+            config: {
+              name: "binding-identity",
+              nodes: [
+                node("explore"),
+                { ...node("repair", ["explore"]), prompt_template: { inline: "Use {{explore}}" } },
+              ],
+            },
+          })
+          .pipe(Effect.orDie)
         expect(dagID.startsWith("dag")).toBe(true)
       }).pipe(Effect.scoped, Effect.provide(dagLayer)),
     )
@@ -184,22 +239,24 @@ describe("Dag prompt_template binding validation", () => {
       Effect.gen(function* () {
         yield* setupFKs()
         const dag = yield* Dag.Service
-        const dagID = yield* dag.create({
-          projectID: Project.ID.global,
-          sessionID: "ses_create",
-          title: "binding-mapping",
-          config: {
-            name: "binding-mapping",
-            nodes: [
-              node("explore"),
-              {
-                ...node("repair", ["explore"]),
-                input_mapping: { findings: "explore.output" },
-                prompt_template: { inline: "Use {{findings}}" },
-              },
-            ],
-          },
-        }).pipe(Effect.orDie)
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "binding-mapping",
+            config: {
+              name: "binding-mapping",
+              nodes: [
+                node("explore"),
+                {
+                  ...node("repair", ["explore"]),
+                  input_mapping: { findings: "explore.output" },
+                  prompt_template: { inline: "Use {{findings}}" },
+                },
+              ],
+            },
+          })
+          .pipe(Effect.orDie)
         expect(dagID.startsWith("dag")).toBe(true)
       }).pipe(Effect.scoped, Effect.provide(dagLayer)),
     )
@@ -210,15 +267,17 @@ describe("Dag prompt_template binding validation", () => {
       Effect.gen(function* () {
         yield* setupFKs()
         const dag = yield* Dag.Service
-        const dagID = yield* dag.create({
-          projectID: Project.ID.global,
-          sessionID: "ses_create",
-          title: "binding-id-template",
-          config: {
-            name: "binding-id-template",
-            nodes: [{ ...node("repair"), prompt_template: { id: "not-on-disk" } }],
-          },
-        }).pipe(Effect.orDie)
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "binding-id-template",
+            config: {
+              name: "binding-id-template",
+              nodes: [{ ...node("repair"), prompt_template: { id: "not-on-disk" } }],
+            },
+          })
+          .pipe(Effect.orDie)
         expect(dagID.startsWith("dag")).toBe(true)
       }).pipe(Effect.scoped, Effect.provide(dagLayer)),
     )
@@ -229,17 +288,19 @@ describe("Dag prompt_template binding validation", () => {
       Effect.gen(function* () {
         yield* setupFKs()
         const dag = yield* Dag.Service
-        const dagID = yield* dag.create({
-          projectID: Project.ID.global,
-          sessionID: "ses_create",
-          title: "binding-extend",
-          config: { name: "binding-extend", nodes: [node("explore")] },
-        }).pipe(Effect.orDie)
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "binding-extend",
+            config: { name: "binding-extend", nodes: [node("explore")] },
+          })
+          .pipe(Effect.orDie)
         // extend internally routes through _replan, which now uses the same
         // StructuralValidationError as create (shared authority).
-        const error = yield* dag.extend(dagID, [
-          { ...node("repair", ["explore"]), prompt_template: { inline: "Use {{path}}" } },
-        ]).pipe(Effect.catch((e: unknown) => Effect.succeed(e)))
+        const error = yield* dag
+          .extend(dagID, [{ ...node("repair", ["explore"]), prompt_template: { inline: "Use {{path}}" } }])
+          .pipe(Effect.catch((e: unknown) => Effect.succeed(e)))
         expect(error).toBeInstanceOf(Dag.StructuralValidationError)
         if (!(error instanceof Error)) throw error
         expect(error.message).toContain('node "repair" prompt_template references unbound variable "{{path}}"')

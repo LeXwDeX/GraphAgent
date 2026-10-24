@@ -3,6 +3,8 @@ import { Effect } from "effect"
 import { ProviderTransform } from "@/provider/transform"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import type { Provider } from "@/provider/provider"
+import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { generateText, jsonSchema, type ModelMessage } from "ai"
@@ -5271,5 +5273,73 @@ describe("ProviderTransform sampling defaults - DeepSeek", () => {
     expect(ProviderTransform.temperature(model(providerID, id))).toBeUndefined()
     expect(ProviderTransform.topP(model(providerID, id))).toBeUndefined()
     expect(ProviderTransform.topK(model(providerID, id))).toBeUndefined()
+  })
+})
+
+describe("ProviderTransform.maxOutputTokens", () => {
+  const model = (output: number) =>
+    ({
+      id: ModelV2.ID.make("reasoner"),
+      providerID: ProviderV2.ID.make("local"),
+      api: { id: "reasoner", url: "", npm: "@ai-sdk/openai-compatible" },
+      name: "Reasoner",
+      capabilities: {
+        temperature: false,
+        reasoning: true,
+        attachment: false,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 1_000_000, output },
+      status: "active",
+      options: {},
+      headers: {},
+      release_date: "2026-01-01",
+    }) satisfies Provider.Model
+
+  test("keeps the conservative default for catalog-only limits", () => {
+    expect(ProviderTransform.maxOutputTokens(model(384_000))).toBe(32_000)
+    expect(ProviderTransform.maxOutputTokens(model(8_192))).toBe(8_192)
+    expect(ProviderTransform.maxOutputTokens(model(0))).toBe(32_000)
+  })
+
+  test("honors an explicitly configured limit above the conservative default", () => {
+    expect(ProviderTransform.maxOutputTokens(model(384_000), undefined, 384_000)).toBe(384_000)
+  })
+
+  test("lets the environment override replace the conservative default for catalog-only limits", () => {
+    expect(ProviderTransform.maxOutputTokens(model(128_000), 64_000)).toBe(64_000)
+    expect(ProviderTransform.maxOutputTokens(model(0), 64_000)).toBe(64_000)
+  })
+
+  test("keeps a smaller environment cap, the catalog cap and the conservative default", () => {
+    expect(ProviderTransform.maxOutputTokens(model(128_000), 16_000)).toBe(16_000)
+    expect(ProviderTransform.maxOutputTokens(model(128_000), 500_000)).toBe(128_000)
+    expect(ProviderTransform.maxOutputTokens(model(8_192), 64_000)).toBe(8_192)
+    expect(ProviderTransform.maxOutputTokens(model(128_000))).toBe(32_000)
+  })
+
+  test("keeps OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX as the highest-priority override", () => {
+    expect(ProviderTransform.maxOutputTokens(model(384_000), 48_000, 384_000)).toBe(48_000)
+    expect(ProviderTransform.maxOutputTokens(model(384_000), 500_000, 384_000)).toBe(384_000)
+    expect(ProviderTransform.maxOutputTokens(model(16_000), 48_000)).toBe(16_000)
+    expect(ProviderTransform.maxOutputTokens(model(64_000), 128_000, 64_000)).toBe(64_000)
+  })
+
+  test("reads only a configured model entry as explicit", () => {
+    const cfg = {
+      provider: { local: { models: { reasoner: { limit: { context: 1_000_000, output: 384_000 } } } } },
+    } satisfies ConfigV1.Info
+    expect(ProviderTransform.configuredOutputLimit(cfg, model(384_000))).toBe(384_000)
+    expect(ProviderTransform.configuredOutputLimit({} satisfies ConfigV1.Info, model(384_000))).toBeUndefined()
+    expect(
+      ProviderTransform.configuredOutputLimit(
+        { provider: { local: { models: { reasoner: { name: "Reasoner" } } } } } satisfies ConfigV1.Info,
+        model(384_000),
+      ),
+    ).toBeUndefined()
   })
 })

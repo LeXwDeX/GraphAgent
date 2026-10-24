@@ -65,7 +65,7 @@ import {
   settleCapturedOutput,
   settlePlainTextOutput,
 } from "./capture"
-import { captureFinalResponse, finalAssistantText } from "./final-response"
+import { captureFinalResponse, finalAssistantText, outputLimitReason } from "./final-response"
 import {
   commitOutputFileRef,
   ensureReportAreaGitignore,
@@ -74,6 +74,10 @@ import {
 } from "./output-ref"
 import { artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
+import { Config } from "@/config/config"
+import { Provider } from "@/provider/provider"
+import { ProviderTransform } from "@/provider/transform"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 
 type PromptParts = SessionPrompt.PromptInput["parts"]
 
@@ -453,6 +457,24 @@ export function spawnNode(
       providerID: ProviderV2.ID.make(resolvedModel.providerID),
     }
 
+    // Same effective request budget as the LLM request path, resolved lazily so diagnostics
+    // never change the spawn service requirements when provider/config services are absent.
+    const resolveOutputCap = Effect.gen(function* () {
+      const provider = Option.getOrUndefined(yield* Effect.serviceOption(Provider.Service))
+      const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
+      const flags = Option.getOrUndefined(yield* Effect.serviceOption(RuntimeFlags.Service))
+      if (!provider || !config || !flags) return undefined
+      const resolved = Option.getOrUndefined(
+        yield* provider.getModel(model.providerID, model.modelID).pipe(Effect.option),
+      )
+      if (!resolved) return undefined
+      return ProviderTransform.maxOutputTokens(
+        resolved,
+        flags.outputTokenMax,
+        ProviderTransform.configuredOutputLimit(yield* config.get(), resolved),
+      )
+    })
+
     const childPermission = [
       ...deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
@@ -660,6 +682,58 @@ export function spawnNode(
           const caller = workflow?.directory
             ? { projectID: workflow.projectId, directory: workflow.directory, sessionID: childSession.id }
             : undefined
+          const readSettlement = Effect.fn("DagRuntime.spawn.readSettlement")(function* () {
+            const updatedNode = yield* dag.store.getNode(input.dagID, input.nodeID).pipe(Effect.orDie)
+            if (
+              !updatedNode ||
+              updatedNode.replanAttempts !== settlementAttempt.replanAttempts ||
+              updatedNode.childSessionId !== settlementAttempt.childSessionID
+            )
+              return undefined
+            const captured = updatedNode?.capturedOutput
+            return {
+              neverCalled: !(updatedNode.capturedOutputPresent ?? (captured !== undefined && captured !== null)),
+              snapshotID: updatedNode.capturedSnapshotID ?? undefined,
+              // Single settlement authority shared with crash recovery
+              // (capture.ts settleCapturedOutput).
+              settlement: settleCapturedOutput(
+                captured,
+                input.reviewImplementationFingerprint,
+                "",
+                updatedNode.capturedOutputPresent,
+                input.verdictEvidence,
+              ),
+            }
+          })
+          // Best-effort local fence before another model prompt in the same child
+          // session. The durable row is read without the workflow lock, so a
+          // concurrent control op can still land between this read and the
+          // prompt; settlement attempt guards reject such a stale result. A
+          // paused workflow holds the continuation until resume; cancellation,
+          // deletion and attempt replacement abandon it without publishing a
+          // failure — their owner settles the attempt.
+          const awaitContinuationAdmission = Effect.gen(function* () {
+            const isCurrent = (candidate: DagStore.NodeRow | undefined) =>
+              candidate !== undefined &&
+              candidate.status === "running" &&
+              candidate.childSessionId === childSession.id &&
+              candidate.replanAttempts === settlementAttempt.replanAttempts
+            let node = yield* dag.store.getNode(input.dagID, input.nodeID)
+            if (!isCurrent(node)) return false
+            let currentWorkflow = yield* dag.store.getWorkflow(input.dagID)
+            for (;;) {
+              const paused = currentWorkflow?.status === "paused"
+              const overdue =
+                node !== undefined && node.deadlineMs !== null && (yield* Clock.currentTimeMillis) >= node.deadlineMs
+              if (!paused && !overdue) break
+              yield* Effect.sleep(250)
+              currentWorkflow = yield* dag.store.getWorkflow(input.dagID)
+              node = yield* dag.store.getNode(input.dagID, input.nodeID)
+              if (!isCurrent(node)) return false
+              if (!currentWorkflow || !["running", "stepping", "paused"].includes(currentWorkflow.status)) return false
+            }
+            return !!currentWorkflow && ["running", "stepping"].includes(currentWorkflow.status)
+          })
           const claimResubmission = Effect.gen(function* () {
             if (Option.isNone(messageService) || !caller) return true
             const revision = yield* messageService.value.revisions(caller)
@@ -815,12 +889,15 @@ export function spawnNode(
             ),
           )
           yield* Effect.gen(function* () {
+            // Issue #888: one bounded same-session length continuation per attempt. A later
+            // loop iteration (stale-input or resubmission continuation) must not re-arm it.
+            let continuedFromLength = false
             for (;;) {
               let inputSnapshot =
                 Option.isSome(messageService) && caller
                   ? yield* messageService.value.snapshotForTurn(caller, result.info.id)
                   : undefined
-              const snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
+              let snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
               const settled = yield* Effect.gen(function* () {
                 if (result.info.role !== "assistant") {
                   yield* dag.nodeFailed(
@@ -842,6 +919,97 @@ export function spawnNode(
                   )
                   return
                 }
+                if (result.info.finish === "length" && !continuedFromLength) {
+                  const submitResultProtocol = input.outputSchema && input.resultProtocol !== "final_response"
+                  // A validated submit_result payload persisted for THIS attempt is the node's
+                  // authoritative result: the turn only ran out of text budget after recording
+                  // it. Settle that capture instead of spending another prompt, and never let a
+                  // failed follow-up turn turn this success into a failure.
+                  if (submitResultProtocol) {
+                    clearCaptureSlot(childSession.id)
+                    const captured = yield* readSettlement()
+                    // A stale attempt (or deleted node) is settled by its owner.
+                    if (!captured) return
+                    if (!captured.neverCalled) {
+                      const settlement = captured.settlement
+                      yield* (
+                        settlement.kind === "complete"
+                          ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
+                              ...settlementAttempt,
+                              inputSnapshotID: captured.snapshotID,
+                            })
+                          : dag.nodeFailed(
+                              input.dagID,
+                              input.nodeID,
+                              settlement.reason,
+                              "verdict_fail",
+                              settlementAttempt,
+                            )
+                      ).pipe(
+                        Effect.catchIf(isTransitionRejection, () =>
+                          Effect.logWarning("output-cap capture settlement guard rejected — node already terminal"),
+                        ),
+                      )
+                      return
+                    }
+                  }
+                  if (!(yield* awaitContinuationAdmission)) return
+                  // submit_result needs its capture slot re-armed for the continued turn.
+                  if (input.outputSchema && input.resultProtocol !== "final_response")
+                    registerCaptureSlot(childSession.id, input.outputSchema)
+                  result = yield* promptSvc.prompt(
+                    {
+                      messageID: MessageID.ascending(),
+                      sessionID: childSession.id,
+                      model,
+                      agent: agent.name,
+                      ...(input.variant ? { variant: input.variant } : {}),
+                      parts: [
+                        {
+                          type: "text",
+                          text:
+                            input.outputSchema && input.resultProtocol !== "final_response"
+                              ? "Your previous turn hit the output token limit. Do not redo the work. If the work is complete, call submit_result with your full result matching the schema from your instructions and end your turn; otherwise finish the remaining work first."
+                              : "Your previous turn hit the output token limit. Do not redo the work; finish and emit only the final response now.",
+                        },
+                      ],
+                    },
+                    { continueToolBudget: true, internalDelegation: true },
+                  )
+                  continuedFromLength = true
+                  if (Option.isSome(messageService) && caller) {
+                    inputSnapshot = yield* messageService.value.snapshotForTurn(caller, result.info.id)
+                    snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
+                  }
+                  if (result.info.role !== "assistant") {
+                    yield* dag.nodeFailed(
+                      input.dagID,
+                      input.nodeID,
+                      "child model turn stopped before a successful result",
+                      "exec_failed",
+                      settlementAttempt,
+                    )
+                    return
+                  }
+                  if (result.info.error) {
+                    yield* dag.nodeFailed(
+                      input.dagID,
+                      input.nodeID,
+                      childFailureReason("child model turn stopped before a successful result", result.info.error),
+                      "exec_failed",
+                      settlementAttempt,
+                    )
+                    return
+                  }
+                }
+                const lengthReason = Effect.gen(function* () {
+                  return outputLimitReason({
+                    cap: yield* resolveOutputCap,
+                    output: result.info.role === "assistant" ? result.info.tokens.output : 0,
+                    reasoning: result.info.role === "assistant" ? result.info.tokens.reasoning : 0,
+                    continued: continuedFromLength,
+                  })
+                })
                 if (input.outputSchema && input.resultProtocol === "final_response") {
                   if (Option.isSome(messageService) && caller && !snapshotID)
                     yield* new Dag.StaleMessageInputError({
@@ -875,7 +1043,10 @@ export function spawnNode(
                         true,
                         input.verdictEvidence,
                       )
-                    : ({ kind: "fail", reason: captured.reason } as const)
+                    : ({
+                        kind: "fail",
+                        reason: result.info.finish === "length" ? yield* lengthReason : captured.reason,
+                      } as const)
                   yield* (
                     settlement.kind === "complete"
                       ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
@@ -892,32 +1063,6 @@ export function spawnNode(
                     ),
                   )
                 } else if (input.outputSchema) {
-                  const readSettlement = Effect.fn("DagRuntime.spawn.readSettlement")(function* () {
-                    const updatedNode = yield* dag.store.getNode(input.dagID, input.nodeID).pipe(Effect.orDie)
-                    if (
-                      !updatedNode ||
-                      updatedNode.replanAttempts !== settlementAttempt.replanAttempts ||
-                      updatedNode.childSessionId !== settlementAttempt.childSessionID
-                    )
-                      return undefined
-                    const captured = updatedNode?.capturedOutput
-                    return {
-                      neverCalled: !(
-                        updatedNode.capturedOutputPresent ??
-                        (captured !== undefined && captured !== null)
-                      ),
-                      snapshotID: updatedNode.capturedSnapshotID ?? undefined,
-                      // Single settlement authority shared with crash recovery
-                      // (capture.ts settleCapturedOutput).
-                      settlement: settleCapturedOutput(
-                        captured,
-                        input.reviewImplementationFingerprint,
-                        "",
-                        updatedNode.capturedOutputPresent,
-                        input.verdictEvidence,
-                      ),
-                    }
-                  })
                   clearCaptureSlot(childSession.id)
                   let verdict = yield* readSettlement()
                   if (!verdict) return
@@ -927,7 +1072,8 @@ export function spawnNode(
                   // structured hand-back is missing. A captured-but-invalid payload
                   // is NOT nudged: that is a deterministic contract violation and
                   // a retry would only re-bill the same mistake.
-                  if (verdict.settlement.kind === "fail" && verdict.neverCalled) {
+                  const lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
+                  if (verdict.settlement.kind === "fail" && verdict.neverCalled && !lengthLimited) {
                     if (!(yield* claimResubmission)) return
                     registerCaptureSlot(childSession.id, input.outputSchema)
                     result = yield* promptSvc.prompt(
@@ -954,7 +1100,12 @@ export function spawnNode(
                     verdict = yield* readSettlement()
                     if (!verdict) return
                   }
-                  const settlement = verdict.settlement
+                  // The length cap explains only a missing result; a captured schema,
+                  // contract or evidence failure remains the node's verdict.
+                  const settlement =
+                    verdict.settlement.kind === "fail" && verdict.neverCalled && lengthLimited
+                      ? ({ kind: "fail", reason: yield* lengthReason } as const)
+                      : verdict.settlement
                   yield* (
                     settlement.kind === "complete"
                       ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
@@ -974,10 +1125,16 @@ export function spawnNode(
                   const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
                   if (settlement.kind === "fail") {
                     yield* dag
-                      .nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", {
-                        ...settlementAttempt,
-                        ...(input.resultProtocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
-                      })
+                      .nodeFailed(
+                        input.dagID,
+                        input.nodeID,
+                        result.info.finish === "length" ? yield* lengthReason : settlement.reason,
+                        "verdict_fail",
+                        {
+                          ...settlementAttempt,
+                          ...(input.resultProtocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                        },
+                      )
                       .pipe(
                         Effect.catchIf(isTransitionRejection, () =>
                           Effect.logWarning("nodeFailed (empty output) guard rejected — node already terminal"),
@@ -1063,32 +1220,7 @@ export function spawnNode(
                 break
               }
               if (input.outputSchema) registerCaptureSlot(childSession.id, input.outputSchema)
-              let current = yield* dag.store.getNode(input.dagID, input.nodeID)
-              if (
-                !current ||
-                current.status !== "running" ||
-                current.childSessionId !== childSession.id ||
-                current.replanAttempts !== settlementAttempt.replanAttempts
-              )
-                break
-              let currentWorkflow = yield* dag.store.getWorkflow(input.dagID)
-              while (
-                currentWorkflow?.status === "paused" ||
-                (current.deadlineMs !== null && (yield* Clock.currentTimeMillis) >= current.deadlineMs)
-              ) {
-                yield* Effect.sleep(250)
-                currentWorkflow = yield* dag.store.getWorkflow(input.dagID)
-                current = yield* dag.store.getNode(input.dagID, input.nodeID)
-                if (
-                  !current ||
-                  current.status !== "running" ||
-                  current.childSessionId !== childSession.id ||
-                  current.replanAttempts !== settlementAttempt.replanAttempts
-                )
-                  return
-                if (!currentWorkflow || !["running", "stepping", "paused"].includes(currentWorkflow.status)) return
-              }
-              if (!currentWorkflow || !["running", "stepping"].includes(currentWorkflow.status)) break
+              if (!(yield* awaitContinuationAdmission)) break
               const revisions =
                 Option.isSome(messageService) && caller ? yield* messageService.value.revisions(caller) : undefined
               if (revisions?.ok && revisions.value.queued === 0 && revisions.value.undeliverable > 0) {

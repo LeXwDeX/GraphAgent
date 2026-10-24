@@ -16,12 +16,20 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
   const context = input.model.limit.context
   if (context === 0) return 0
 
-  const reserved =
-    input.cfg.compaction?.reserved ??
-    Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
-  return input.model.limit.input
-    ? Math.max(0, input.model.limit.input - reserved)
-    : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
+  const output = ProviderTransform.maxOutputTokens(
+    input.model,
+    input.outputTokenMax,
+    ProviderTransform.configuredOutputLimit(input.cfg, input.model),
+  )
+  if (input.model.limit.input) {
+    const reserved = input.cfg.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, output)
+    return Math.max(0, input.model.limit.input - reserved)
+  }
+  // A budget that fits keeps the normal context-minus-output reserve. A budget at least as large as
+  // the context window cannot be reserved without leaving no usable input, so keep up to
+  // COMPACTION_BUFFER for automatic compaction instead.
+  if (output >= context) return Math.min(context, COMPACTION_BUFFER)
+  return Math.max(0, context - output)
 }
 
 /** Automatic compaction uses the model's usable context window and nothing else. */

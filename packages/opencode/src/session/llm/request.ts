@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import type { Auth } from "@/auth"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
@@ -31,6 +32,7 @@ type PrepareInput = {
   readonly small?: boolean
   readonly tools: Record<string, Tool>
   readonly provider: Provider.Info
+  readonly cfg?: ConfigV1.Info
   readonly auth: Auth.Info | undefined
   readonly plugin: Plugin.Interface
   readonly flags: RuntimeFlags.Info
@@ -129,7 +131,11 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
         : undefined,
       topP: input.agent.topP ?? ProviderTransform.topP(input.model),
       topK: ProviderTransform.topK(input.model),
-      maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
+      maxOutputTokens: ProviderTransform.maxOutputTokens(
+        input.model,
+        input.flags.outputTokenMax,
+        ProviderTransform.configuredOutputLimit(input.cfg, input.model),
+      ),
       options,
     },
   )

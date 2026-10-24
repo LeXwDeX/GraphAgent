@@ -790,6 +790,7 @@ export const layer = Layer.effect(
       dagID: string,
       fragment: { nodes: NodeConfig[] },
       reopenCompleted = false,
+      action: "extend" | "replan" = "replan",
     ) {
       const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
       if (!workflow) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
@@ -886,6 +887,7 @@ export const layer = Layer.effect(
         existingNodeCount: nodes.length,
         addCount: plan.add.length,
         merged,
+        action,
         config: { mode: wfConfig.mode, max_total_nodes: wfConfig.max_total_nodes },
         terminalNodeIds,
         grandfatheredNodeIds: persistedGateNodeIds(merged.nodes, cfgById),
@@ -1166,7 +1168,7 @@ export const layer = Layer.effect(
       }
       // Internal call to _replan — shares the caller's lock holding period,
       // does NOT re-acquire the per-workflow lock or go through Service.of.
-      return yield* _replan(lock, dagID, { nodes: [...preserved, ...newNodes] }, reopenCompleted)
+      return yield* _replan(lock, dagID, { nodes: [...preserved, ...newNodes] }, reopenCompleted, "extend")
     })
 
     const recover: Interface["recover"] = Effect.fn("Dag.recover")(function* (dagID, input) {
@@ -1222,6 +1224,7 @@ export const layer = Layer.effect(
         // Recovery authors no definitions: retries and termination collateral
         // are copies of stored nodes, so every gate keeps its accepted form.
         grandfatheredNodeIds: new Set(plan.config.nodes.map((node) => node.id)),
+        action: "recover",
         config,
       }).filter((diagnostic) => diagnostic.severity === "error")
       if (diagnostics.length > 0) return yield* Effect.fail(new StructuralValidationError({ diagnostics }))
