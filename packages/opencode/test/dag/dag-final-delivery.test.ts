@@ -38,7 +38,12 @@ function fixture(
     visibleReports: EventV2.Payload[]
     flush: () => Effect.Effect<void>
   }) => Effect.Effect<unknown, unknown, Database.Service>,
-  options?: { output: unknown; schema: Record<string, unknown>; source?: SessionV1.WithParts },
+  options?: {
+    output: unknown
+    schema: Record<string, unknown>
+    source?: SessionV1.WithParts
+    acknowledge?: boolean
+  },
 ) {
   const database = Database.layerFromPath(":memory:")
   const eventsLayer = EventV2.layer.pipe(Layer.provide(database))
@@ -199,6 +204,7 @@ function fixture(
             sessions,
             directory: "/tmp",
             batch: { nodes, workflows: [workflow] },
+            acknowledge: options?.acknowledge,
           })
         }).pipe(Effect.orDie)
       yield* work({
@@ -244,6 +250,92 @@ it("copies the answer verbatim with source metadata and adopts the same receipt 
       expect(yield* database.db.select().from(PartTable)).toHaveLength(first.length)
       expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
     }),
+  ))
+
+it("marks only the workflow completion row and never consumes a node wake", () =>
+  fixture(({ store, deliver }) =>
+    Effect.gen(function* () {
+      expect(yield* deliver()).toBe(true)
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+      expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(false)
+    }),
+  ))
+
+it("attributes the report to the parent model instead of a differing child source", () =>
+  fixture(
+    ({ database, sessions, workflow, deliver }) =>
+      Effect.gen(function* () {
+        yield* sessions.updateMessage({
+          id: "msg_parent_user" as never,
+          sessionID: "ses_parent" as never,
+          role: "user",
+          time: { created: 50 },
+          agent: "build",
+          model: { providerID: "parent-provider" as never, modelID: "parent-model" as never },
+        })
+        yield* sessions.updateMessage({
+          ...parentAnswer("msg_parent_answer", "msg_parent_user"),
+          providerID: "parent-provider" as never,
+          modelID: "parent-model" as never,
+        })
+        expect(yield* deliver()).toBe(true)
+        const report = (yield* database.db.select().from(MessageTable)).find(
+          (row) => row.id === reportIdentity(workflow).messageID,
+        )
+        expect(report?.data.role).toBe("assistant")
+        const data = report?.data as SessionV1.Assistant | undefined
+        if (!data) throw new Error("report assistant message missing")
+        expect(String(data.providerID)).toBe("parent-provider")
+        expect(String(data.modelID)).toBe("parent-model")
+      }),
+    {
+      output: "child text",
+      schema: {},
+      source: {
+        info: {
+          ...parentAnswer("msg_child_final", "msg_child_input"),
+          providerID: "child-provider" as never,
+          modelID: "child-model" as never,
+        },
+        parts: [],
+      },
+    },
+  ))
+
+it("defers the completion acknowledgement to the wake admission without duplicating the report", () =>
+  fixture(
+    ({ database, store, workflow, deliver }) =>
+      Effect.gen(function* () {
+        expect(yield* deliver()).toBe(true)
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(false)
+        const parts = yield* database.db.select().from(PartTable)
+        yield* store.markWakeBatchReported({ nodes: [], workflows: [workflow] })
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+        expect(yield* deliver()).toBe(true)
+        expect(yield* database.db.select().from(PartTable)).toHaveLength(parts.length)
+      }),
+    { output: "deferred report", schema: {}, acknowledge: false },
+  ))
+
+it("keeps a deferred report uncommitted while a parent user turn is unanswered", () =>
+  fixture(
+    ({ database, sessions, store, deliver }) =>
+      Effect.gen(function* () {
+        yield* sessions.updateMessage({
+          id: "msg_deferred_user" as never,
+          sessionID: "ses_parent" as never,
+          role: "user",
+          time: { created: 50 },
+          agent: "build",
+          model: { providerID: "test" as never, modelID: "test" as never },
+        })
+        expect(yield* deliver()).toBe(false)
+        expect(yield* database.db.select().from(PartTable)).toHaveLength(0)
+        yield* sessions.updateMessage(parentAnswer("msg_deferred_answer", "msg_deferred_user"))
+        expect(yield* deliver()).toBe(true)
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(false)
+      }),
+    { output: "deferred report", schema: {}, acknowledge: false },
   ))
 
 it("rolls back the entire transcript and wake mark when receipt persistence fails", () =>

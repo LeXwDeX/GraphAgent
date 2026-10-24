@@ -73,7 +73,7 @@ import { makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
-import { deliverReport, selectReportNode } from "./report-delivery"
+import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-delivery"
 import { Logging } from "@opencode-ai/core/observability/logging"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
@@ -86,6 +86,10 @@ function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
   return undefined
 }
 const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
+
+function completionReportReference(workflow: DagStore.WorkflowRow) {
+  return `[DAG Final Report] The final report for workflow "${workflow.title}" was delivered to the parent transcript before this turn (workflow_id="${workflow.id}", completion_seq=${workflow.seq}). Continue the plan from it: if it names bounded remaining work, act with the workflow tool (control replan / extend, or control extend_timeout for a running escalation); otherwise stop without restating the report.`
+}
 
 /** Stable local receipt for the exact durable wake batch, including execution
  * identity and event revisions. Repeated text from a new attempt is new input. */
@@ -1804,6 +1808,41 @@ const serviceLayer = Layer.effect(
           ]
           const workflowsByID = new Map(snapshot.workflows.map((workflow) => [workflow.id, workflow]))
           const workflows = workflowIDs.map((workflowID) => workflowsByID.get(workflowID))
+          // A completed final-response workflow either displays its final report
+          // without a model turn, or owns reporting checkpoints and therefore
+          // needs one completion turn. Durable node evidence decides: a delivery
+          // leaf reports the final answer itself, while every other
+          // `report_to_parent` node remains a parent checkpoint.
+          const finalResponseCompletions = new Map<string, boolean>()
+          for (const workflow of workflows) {
+            if (!workflow || workflow.status !== "completed") continue
+            const config = parseWorkflowConfig(workflow.config)
+            if (!config || resultProtocol(config) !== "final_response") continue
+            const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+            finalResponseCompletions.set(workflow.id, reportingCheckpoints(config, nodes).length > 0)
+          }
+          const needsCompletionTurn = (workflowID: string) => finalResponseCompletions.get(workflowID) === true
+          // A reporting checkpoint that completed while its downstream nodes
+          // are still running is informative, not a stalled/actionable
+          // boundary. It must reach the parent as its own coalesced batch
+          // without entering the orchestrator-unresponsive net.
+          const runningReportWorkflowIDs = new Set(
+            snapshot.nodes
+              // The snapshot predicate already limits wake-eligible rows to
+              // completed/failed; escalation-only rows have wakeEligible=false.
+              .filter((node) => node.wakeEligible)
+              .filter((node) => {
+                const workflow = workflowsByID.get(node.workflowId)
+                if (workflow?.status !== "running") return false
+                // Final-response workflows deliver progress checkpoints while
+                // downstream work continues. Legacy submit_result keeps its
+                // terminal-batch contract for compatibility.
+                if (resultProtocol(parseWorkflowConfig(workflow.config)) !== "final_response") return false
+                const entry = runtimes.get(workflow.id)
+                return !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode()
+              })
+              .map((node) => node.workflowId),
+          )
           const boundaryWorkflows = workflows.filter((workflow): workflow is DagStore.WorkflowRow => {
             if (!workflow) return false
             if (isWorkflowTerminalStatus(workflow.status as never)) return true
@@ -1821,17 +1860,24 @@ const serviceLayer = Layer.effect(
             if (entry.runtime.hasRunning()) return false
             return entry.runtime.getReadyNodes().length === 0
           })
-          const atBoundary = new Set(boundaryWorkflows.map((workflow) => workflow.id))
+          const atBoundary = new Set([...boundaryWorkflows.map((workflow) => workflow.id), ...runningReportWorkflowIDs])
           const batch = {
-            nodes: snapshot.nodes.filter((node) => atBoundary.has(node.workflowId)),
+            // Display-only completion reports never consume node wakes. Their
+            // delivery leaf is the report itself; leave every node row to its
+            // own durable lifecycle instead of acking it under the display path.
+            nodes: snapshot.nodes.filter(
+              (node) => atBoundary.has(node.workflowId) && finalResponseCompletions.get(node.workflowId) !== false,
+            ),
             workflows: reportableWorkflows.filter((workflow) => atBoundary.has(workflow.id)),
           } satisfies DagStore.WakeBatch
+          const atDeliveryBoundary = new Set(boundaryWorkflows.map((workflow) => workflow.id))
           return {
             batch,
-            completedReports: boundaryWorkflows.filter(
-              (workflow) =>
-                workflow.status === "completed" &&
-                resultProtocol(parseWorkflowConfig(workflow.config)) === "final_response",
+            completedReports: reportableWorkflows.filter(
+              (workflow) => atDeliveryBoundary.has(workflow.id) && finalResponseCompletions.get(workflow.id) === false,
+            ),
+            completionReports: reportableWorkflows.filter(
+              (workflow) => atDeliveryBoundary.has(workflow.id) && needsCompletionTurn(workflow.id),
             ),
             actionableDagIDs: new Set(
               boundaryWorkflows
@@ -1949,10 +1995,10 @@ const serviceLayer = Layer.effect(
               ) {
                 for (const workflow of plan.completedReports) {
                   const reportBatch = {
-                    nodes: batch.nodes.filter((node) => node.workflowId === workflow.id),
+                    nodes: [],
                     workflows: batch.workflows.filter((row) => row.id === workflow.id),
                   }
-                  if (reportBatch.nodes.length === 0 && reportBatch.workflows.length === 0) continue
+                  if (reportBatch.workflows.length === 0) continue
                   yield* automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id })
                   const lease = Option.getOrUndefined(
                     yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }),
@@ -2057,6 +2103,7 @@ const serviceLayer = Layer.effect(
                   )
                 }
               }
+              const completionIDs = new Set(plan.completionReports.map((workflow) => workflow.id))
               const summaries = [
                 ...batch.nodes.map((node) => {
                   // The timeout advisory is for a running node awaiting
@@ -2084,7 +2131,7 @@ const serviceLayer = Layer.effect(
                   const attribution = failures ? `\nFailed nodes:\n${failures.join("\n")}` : ""
                   return workflow.status === "paused"
                     ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
-                    : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status.${attribution}`
+                    : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status.${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
                 }),
               ]
               const summary = [
@@ -2111,6 +2158,43 @@ const serviceLayer = Layer.effect(
                 yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }),
               )
               if (!wakeLease) return
+
+              // A completed workflow with reporting checkpoints keeps both its
+              // final report and a parent turn. Deliver the report first so the
+              // completion wake can reference durable, already-visible content;
+              // the wake admission below marks the workflow completion row and
+              // any pending checkpoint nodes in one transaction. A crash between
+              // the two steps adopts the report receipt on retry.
+              if (!alreadyAdmitted) {
+                for (const workflow of plan.completionReports) {
+                  if (!batch.workflows.some((row) => row.id === workflow.id)) continue
+                  const config = parseWorkflowConfig(workflow.config)
+                  const reportNodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+                  const node =
+                    (config ? selectReportNode(config, reportNodes) : undefined) ??
+                    reportNodes.find((candidate) => candidate.status === "completed")
+                  const source = node?.childSessionId
+                    ? yield* lastAssistantMessage(node.childSessionId).pipe(Effect.orDie)
+                    : undefined
+                  const delivered = yield* automation.use(
+                    wakeLease,
+                    promptSvc.withIdle(
+                      SessionID.make(sessionID),
+                      deliverReport({
+                        workflow,
+                        batch: { nodes: [], workflows: [workflow] },
+                        store,
+                        sessions: sessionSvc,
+                        events,
+                        directory: ctx.directory,
+                        source,
+                        acknowledge: false,
+                      }).pipe(Effect.provideService(Database.Service, database)),
+                    ),
+                  )
+                  if (Option.isNone(delivered) || Option.isNone(delivered.value) || !delivered.value.value) return
+                }
+              }
 
               // The part is marked synthetic: model-visible (the orchestrator
               // receives the node result and can act) but NOT rendered as a user

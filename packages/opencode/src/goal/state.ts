@@ -10,6 +10,26 @@ export type Status = Schema.Schema.Type<typeof Status>
 export const Verdict = Schema.Literals(["done", "continue", "blocked"])
 export type Verdict = Schema.Schema.Type<typeof Verdict>
 
+/**
+ * #892: durable automatic-recovery budget for one failure chain.
+ *
+ * The chain starts at the first errored turn and ends only at a committed
+ * non-summary work turn, a user resume, or a new Goal instance. Compaction
+ * summaries never end it. Persisting the counters (instead of deriving them
+ * from a bounded transcript window) keeps the two-attempt / one-reset limits
+ * true across long histories and restarts, and prevents an intervening error
+ * class from resetting the other budget.
+ */
+export const Recovery = Schema.Struct({
+  /** Number of automatic retry turns already dispatched for this chain. */
+  attempts: NonNegativeInt,
+  /** Whether the one allowed reasoning-state reset was already dispatched. */
+  reset: Schema.Boolean,
+  /** Last errored assistant message observed (diagnostics and audit). */
+  boundary: Schema.String,
+})
+export type Recovery = Schema.Schema.Type<typeof Recovery>
+
 export class Info extends Schema.Class<Info>("GoalState")({
   goal_id: Schema.String.pipe(
     Schema.optional,
@@ -34,6 +54,7 @@ export class Info extends Schema.Class<Info>("GoalState")({
   // process-local evaluatedRevisions map dies with the process).
   last_judged_msg: Schema.optional(Schema.String),
   consecutive_parse_failures: NonNegativeInt,
+  recovery: Schema.optional(Recovery),
   subgoals: Schema.Array(Schema.String).pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed([] as ReadonlyArray<string>))),
 }) {}
 
@@ -61,6 +82,7 @@ export function advance(state: Info, patch: Partial<Omit<Info, "revision">>) {
     paused_reason: state.paused_reason,
     last_judged_msg: state.last_judged_msg,
     consecutive_parse_failures: state.consecutive_parse_failures,
+    recovery: state.recovery,
     subgoals: state.subgoals,
     ...patch,
   })
