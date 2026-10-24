@@ -164,6 +164,25 @@ export interface Interface {
       expected?: { readonly goalID: string; readonly revision: number },
     ) => Effect.Effect<GoalState.Info | undefined>
     /**
+     * #892: durably reserve one automatic recovery action for the current
+     * failure chain (one serialized read/decide/save transition).
+     *
+     * "retry" permits at most two dispatched retry turns; "reset" permits at
+     * most one reasoning-state reset. The returned state carries the new
+     * revision that later version-bound pauses must use. A failed identity or
+     * revision match is `stale` and mutates nothing.
+     */
+    readonly claimRecovery: (
+      sessionID: SessionID,
+      expected: { readonly goalID: string; readonly revision: number },
+      kind: "retry" | "reset",
+      boundary: string,
+    ) => Effect.Effect<
+      | { readonly tag: "allowed"; readonly state: GoalState.Info }
+      | { readonly tag: "exhausted"; readonly state: GoalState.Info }
+      | { readonly tag: "stale" }
+    >
+    /**
      * Goal-turn provenance (GOAL-TURN-SCOPE). Marks the session's CURRENT
      * turn as goal-driven (kick / judge continuation / resume-kick) so
      * SessionPrompt.cancel can map a user ESC on a goal turn into a goal
@@ -642,6 +661,42 @@ const serviceLayer = Layer.effect(
       })
     })
 
+    // #892: one automatic recovery chain is bounded by durable counters. A
+    // user resume explicitly starts a new chain, so its budgets reset with the
+    // paused state; retries/resets themselves never do.
+    const claimRecovery = Effect.fn("Goal.claimRecovery")(function* (
+      sessionID: SessionID,
+      expected: { readonly goalID: string; readonly revision: number },
+      kind: "retry" | "reset",
+      boundary: string,
+    ) {
+      type Claim =
+        | { readonly tag: "allowed"; readonly state: GoalState.Info }
+        | { readonly tag: "exhausted"; readonly state: GoalState.Info }
+        | { readonly tag: "stale" }
+      return yield* transition<Claim>(sessionID, (state) => {
+        if (!state || state.status !== "active" || !matchesExpected(state, expected))
+          return { tag: "noop", value: { tag: "stale" as const } }
+        const recovery = state.recovery ?? {
+          attempts: GoalState.nni(0),
+          reset: false,
+          boundary,
+        }
+        if (kind === "retry" && recovery.attempts >= 2)
+          return { tag: "noop", value: { tag: "exhausted" as const, state } }
+        if (kind === "reset" && recovery.reset)
+          return { tag: "noop", value: { tag: "exhausted" as const, state } }
+        const next = GoalState.advance(state, {
+          recovery: {
+            attempts: kind === "retry" ? GoalState.nni(recovery.attempts + 1) : recovery.attempts,
+            reset: kind === "reset" ? true : recovery.reset,
+            boundary,
+          },
+        })
+        return { tag: "save", state: next, value: { tag: "allowed" as const, state: next } }
+      })
+    })
+
     const resume = Effect.fn("Goal.resume")(function* (sessionID: SessionID, maxTurns?: number) {
       const updated = yield* transition(sessionID, (state) => {
         if (!state || state.status !== "paused") return { tag: "noop", value: undefined }
@@ -651,6 +706,7 @@ const serviceLayer = Layer.effect(
           status: "active",
           max_turns: GoalState.nni(maxTurns ?? state.max_turns),
           consecutive_parse_failures: GoalState.nni(0),
+          recovery: undefined,
           paused_reason: undefined,
           last_turn_at: Date.now(),
         })
@@ -711,6 +767,7 @@ const serviceLayer = Layer.effect(
                 status: "active",
                 max_turns: GoalState.nni(maxTurns),
                 consecutive_parse_failures: GoalState.nni(0),
+                recovery: undefined,
                 paused_reason: undefined,
                 last_turn_at: Date.now(),
               })
@@ -923,6 +980,9 @@ const serviceLayer = Layer.effect(
           last_reason: reason,
           paused_reason: pauseReason,
           consecutive_parse_failures: GoalState.nni(newParseFailures),
+          // #892: a committed non-summary work turn ends the automatic
+          // recovery chain; summaries never reach this transition.
+          recovery: undefined,
           // issue #285: record the judged boundary for the durable scan gate.
           // GOAL-03: only a judge that actually returned a verdict judged the
           // boundary (see turnsUsed above).
@@ -1186,6 +1246,7 @@ const serviceLayer = Layer.effect(
       clearLoopFiberIf: clearFiberIf,
       deleteAndPublishDone,
       pauseAndPublish,
+      claimRecovery,
       markTurnDriven,
       clearTurnDriven,
       isTurnDriven,

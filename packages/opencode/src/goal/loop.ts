@@ -1,6 +1,6 @@
 export * as GoalLoop from "./loop"
 
-import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause } from "effect"
+import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
@@ -10,11 +10,15 @@ import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { Provider } from "@/provider/provider"
+import { ProviderError } from "@/provider/error"
+import { SessionCompaction } from "@/session/compaction"
+import { SessionRetry } from "@/session/retry"
 import { Goal } from "./goal"
+import { GoalState } from "./state"
 import { GoalJudge } from "./judge"
 import { GoalPrompts } from "./prompts"
 import { generateText } from "ai"
-import { SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
 import { SessionAutomationLease } from "@/session/automation-lease"
 import { NotFoundError } from "@/storage/storage"
 
@@ -108,6 +112,48 @@ const SCAN_BUSY_RETRY_DELAY = "2 seconds"
 
 const PREEMPT_PAUSE_REASON = "最新的用户消息尚未得到回复，目标已暂停。使用 /goal resume 继续。"
 
+type AssistantError = NonNullable<SessionV1.Assistant["error"]>
+type ExpectedGoal = { readonly goalID: string; readonly revision: number }
+
+// A reset admission was invalidated between prepare and commit (goal replaced,
+// user takeover, or a newer assistant boundary). The admission transaction is
+// rolled back; the caller must not pause whatever goal now owns the session.
+class RecoveryFenceLost extends Error {}
+class GoalDispatchFenceLost extends Error {}
+
+type InFlightEvaluation = {
+  readonly goalID: string
+  readonly assistantID: string | undefined
+  readonly entryRevision: number
+  /** Set only while a retry claim is between backoff and admission. */
+  dedupeRevision: number | undefined
+  dedupeFailureID: string | undefined
+}
+
+const expectedOf = (state: { readonly goal_id?: string; readonly revision?: number }): ExpectedGoal => ({
+  goalID: state.goal_id ?? "legacy",
+  revision: state.revision ?? 0,
+})
+
+// Safe, bounded diagnostic for a visible pause. Never include the provider
+// response body: it can be large and may contain request material.
+function describeError(error: AssistantError): string {
+  const data = typeof error.data === "object" && error.data !== null ? (error.data as Record<string, unknown>) : {}
+  const message = typeof data.message === "string" ? data.message.replace(/\s+/g, " ").trim().slice(0, 160) : ""
+  const status = typeof data.statusCode === "number" ? ` ${data.statusCode}` : ""
+  return message ? `${error.name}${status}: ${message}` : `${error.name}${status}`
+}
+
+// A compaction summary is a transcript record, never a work boundary: it must
+// not hide an earlier failed turn, clear a recovery budget, or be judged.
+function workAssistant(messages: ReadonlyArray<SessionV1.WithParts>) {
+  return [...messages].reverse().find((message) => message.info.role === "assistant" && !message.info.summary)
+}
+
+function isAPIError(error: AssistantError): error is SessionV1.APIError {
+  return SessionV1.APIError.isInstance(error)
+}
+
 const serviceLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -129,12 +175,338 @@ const serviceLayer = Layer.effect(
       }
     })
 
-    const pauseGoal = Effect.fnUntraced(function* (sessionID: SessionID, reason: string) {
-      const paused = yield* goal.pauseAndPublish(sessionID, reason)
+    // `expected` binds a delayed decision to the Goal instance/revision it
+    // observed. Recovery paths always pass it: a stale failure must never
+    // pause a replacement goal.
+    const pauseGoal = Effect.fnUntraced(function* (sessionID: SessionID, reason: string, expected?: ExpectedGoal) {
+      const paused = yield* goal.pauseAndPublish(sessionID, reason, expected)
       if (paused) yield* automation.unregister(sessionID, { kind: "goal", id: paused.goal_id ?? "legacy" })
       return paused
     })
 
+    // Only announce a pause that this evaluation actually committed. A stale
+    // expected identity makes pauseAndPublish a no-op, and a no-op must not
+    // inject a misleading "paused" line into the replacement goal's turn.
+    const visiblePause = Effect.fnUntraced(function* (sessionID: SessionID, reason: string, expected?: ExpectedGoal) {
+      const paused = yield* pauseGoal(sessionID, reason, expected).pipe(
+        Effect.catchCause(() => Effect.succeed(undefined)),
+      )
+      if (!paused) return false
+      yield* promptSvc
+        .prompt({ sessionID, noReply: true, parts: [{ type: "text", text: `⏸ 目标已暂停 — ${reason}` }] })
+        .pipe(Effect.ignore)
+      return true
+    })
+
+    // Pause ONLY the exact Goal revision this recovery observed or claimed.
+    // Never reload a fresher revision as authority: a manual pause/resume/edit
+    // on the same goal after the observed failure must not be overwritten by a
+    // delayed decision. Callers that committed their own recovery claim pass
+    // that claim's revision explicitly.
+    const pauseAfterFailure = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      reason: string,
+      expected: ExpectedGoal,
+    ) {
+      return yield* visiblePause(sessionID, reason, expected)
+    })
+
+    // A recovery failure can surface after the admission transaction rolled
+    // back a locally observed claim. Read durable state only to choose between
+    // the TWO identities this evaluation is authorized to pause: the entrance
+    // observation and its own committed claim. Any other revision is a user
+    // resume/edit/replacement and must not be overwritten.
+    const pauseOwnedFailure = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      reason: string,
+      entrance: ExpectedGoal,
+      claim: GoalState.Info | undefined,
+    ) {
+      const current = yield* goal.load(sessionID)
+      if (!current || current.status !== "active") return false
+      const matches = (expected: ExpectedGoal) =>
+        (current.goal_id ?? "legacy") === expected.goalID && (current.revision ?? 0) === expected.revision
+      if (matches(entrance)) return yield* visiblePause(sessionID, reason, entrance)
+      if (!claim) return false
+      const claimed = { goalID: claim.goal_id ?? "legacy", revision: claim.revision ?? 0 }
+      if (!matches(claimed)) return false
+      // A bare goal_id+revision collision is not proof this claim committed: a
+      // same-goal edit can advance a rolled-back revision to the same number.
+      // Only the reset marker (same failed boundary, reset still set, same
+      // attempts) proves the durable row is this evaluation's reset claim.
+      const durable = current.recovery
+      const claimedRecovery = claim.recovery
+      if (durable?.reset !== true || !claimedRecovery) return false
+      if (durable.boundary !== claimedRecovery.boundary || durable.attempts !== claimedRecovery.attempts) return false
+      return yield* visiblePause(sessionID, reason, claimed)
+    })
+
+    // #892: an assistant turn that ended with an error is never progress. The
+    // caller consults this before the judge and synthetic continue paths.
+    // Return "retry" only after a bounded backoff and a fresh identity/idle
+    // check; every terminal outcome is a visible pause (or a silent stop for
+    // user aborts, whose cancel path already pauses the goal).
+    const handleAssistantError = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      state: GoalState.Info
+      messages: ReadonlyArray<SessionV1.WithParts>
+      assistant: SessionV1.WithParts
+      lease: SessionAutomationLease.Token
+      beginRetryDedupe: (revision: number, failureID: string) => void
+      endRetryDedupe: () => void
+    }) {
+      const info = input.assistant.info
+      if (info.role !== "assistant") return "none" as const
+      const error = info.error
+      if (!error) return "none" as const
+      if (SessionV1.AbortedError.isInstance(error)) return "stop" as const
+
+      const expected = expectedOf(input.state)
+      const failed = info.id
+      // One reasoning reset per recovery chain. The claim is persisted inside
+      // the admission transaction below, so a lost goal/user takeover consumes
+      // no reset budget and can never continue a replacement goal.
+      if (isAPIError(error) && ProviderError.isReasoningStateFailure(error.data)) {
+        const compaction = Option.getOrUndefined(yield* Effect.serviceOption(SessionCompaction.Service))
+        const user = [...input.messages].reverse().find((message) => message.info.role === "user")
+        if (!compaction || !user || user.info.role !== "user") {
+          yield* visiblePause(
+            input.sessionID,
+            `自动重置推理状态不可用（${describeError(error)}）。使用 /goal resume 重试。`,
+            expected,
+          )
+          return "stop" as const
+        }
+        if ((yield* status.get(input.sessionID)).type !== "idle") return "stop" as const
+        // Re-check user takeover at the reset boundary: the entry snapshot may
+        // be stale by the time the reset path resolves its services.
+        const before = yield* workMessages(input.sessionID).pipe(
+          Effect.catchIf(
+            (e) => NotFoundError.isInstance(e),
+            () => Effect.succeed([] as SessionV1.WithParts[]),
+          ),
+        )
+        if (shouldPreempt(before) || workAssistant(before)?.info.id !== failed) return "stop" as const
+
+        // The compaction marker must be the newest user message so the normal
+        // prompt loop identifies its compaction task and parent correctly. The
+        // supported production shape is an automatic compaction (marker only)
+        // that appends its own synthetic continuation after the summary; a
+        // manual marker leaves a summary-only turn and NO continuation.
+        const admissionMessageID = MessageID.ascending()
+        const continuationText = GoalPrompts.renderContinuation({
+          goal: input.state.goal,
+          subgoals: input.state.subgoals ?? [],
+          turnsUsed: input.state.turns_used,
+          maxTurns: input.state.max_turns,
+          lastJudgeReason: input.state.last_reason,
+        })
+        let claim:
+          | { readonly tag: "allowed"; readonly state: GoalState.Info }
+          | { readonly tag: "exhausted"; readonly state: GoalState.Info }
+          | { readonly tag: "stale" }
+          | undefined
+        // GOAL-TURN-SCOPE: mark BEFORE the admission fence activates the
+        // runner. An ESC in the activation gap must map to a goal pause; the
+        // mark is speculative and cleared below when admission is denied or
+        // the turn fails/interrupts.
+        yield* goal.markTurnDriven(input.sessionID)
+        const admitted = yield* automation
+          .handoff(
+            input.lease,
+            promptSvc.prepareIfIdle(
+              {
+                sessionID: input.sessionID,
+                messageID: admissionMessageID,
+                parts: [{ type: "text", text: continuationText, synthetic: true }],
+              },
+              Effect.gen(function* () {
+                // prepareIfIdle already holds the prompt lock and confirmed
+                // idle. Re-read durable identity immediately before the atomic
+                // message commit: a replacement goal or user takeover must
+                // roll back the whole admission, not consume reset budget.
+                const current = yield* goal.load(input.sessionID)
+                if (
+                  !current ||
+                  current.status !== "active" ||
+                  (current.goal_id ?? "legacy") !== expected.goalID ||
+                  (current.revision ?? 0) !== expected.revision
+                ) {
+                  throw new RecoveryFenceLost()
+                }
+                const latestMessages = yield* workMessages(input.sessionID).pipe(
+                  Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])),
+                )
+                if (
+                  shouldPreempt(latestMessages.filter((message) => message.info.id !== admissionMessageID)) ||
+                  workAssistant(latestMessages)?.info.id !== failed
+                ) {
+                  throw new RecoveryFenceLost()
+                }
+                const observed = yield* goal.claimRecovery(input.sessionID, expected, "reset", failed)
+                if (observed.tag !== "allowed") {
+                  claim = observed
+                  throw new RecoveryFenceLost()
+                }
+                claim = observed
+                const owner = user.info
+                if (owner.role !== "user") throw new RecoveryFenceLost()
+                yield* compaction.create({
+                  sessionID: input.sessionID,
+                  agent: owner.agent,
+                  model: owner.model,
+                  auto: true,
+                })
+              }),
+              { continueToolBudget: true },
+            ),
+          )
+          .pipe(
+            Effect.catchCause((cause) => {
+              const clear = goal.clearTurnDriven(input.sessionID)
+              if (Cause.hasInterrupts(cause)) return clear.pipe(Effect.andThen(Effect.failCause(cause)))
+              if (Cause.squash(cause) instanceof RecoveryFenceLost) return clear.pipe(Effect.as(Option.none()))
+              // The admission transaction may have rolled back the local
+              // `claim` after the nested transition savepoint returned. Read
+              // durable state and pause only the entrance identity or this
+              // evaluation's own claimed identity; never an arbitrary fresh
+              // revision (that would overwrite a same-goal user resume/edit).
+              const observedClaim = claim
+              if (!observedClaim) return clear.pipe(Effect.andThen(Effect.failCause(cause)))
+              const claimState = observedClaim.tag === "allowed" ? observedClaim.state : undefined
+              return clear.pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    const reason = `自动压缩失败（${describeError(error)}）。使用 /goal resume 重试。`
+                    yield* Effect.logWarning("goal reasoning reset failed", {
+                      sessionID: input.sessionID,
+                      cause: Cause.pretty(cause),
+                    })
+                    yield* pauseOwnedFailure(input.sessionID, reason, expected, claimState).pipe(
+                      Effect.catchCause((pauseCause) =>
+                        Effect.logWarning("goal reset rollback pause check failed", {
+                          sessionID: input.sessionID,
+                          cause: Cause.pretty(pauseCause),
+                        }),
+                      ),
+                    )
+                  }),
+                ),
+                Effect.as(Option.none()),
+              )
+            }),
+          )
+
+        if (Option.isNone(admitted)) {
+          // Admission was denied or invalidated. Clear the speculative mark
+          // even if the catch above already did (idempotent).
+          yield* goal.clearTurnDriven(input.sessionID)
+          if (claim?.tag === "exhausted")
+            yield* visiblePause(
+              input.sessionID,
+              `自动重置推理状态后再次失败（${describeError(error)}）。使用 /goal resume 重试。`,
+              expectedOf(claim.state),
+            )
+          return "stop" as const
+        }
+        yield* admitted.value.pipe(
+          Effect.catchCause((cause) => {
+            const clear = goal.clearTurnDriven(input.sessionID)
+            if (Cause.hasInterrupts(cause)) return clear.pipe(Effect.asVoid)
+            return clear.pipe(
+              Effect.andThen(
+                Effect.gen(function* () {
+                  const reason = `自动压缩失败（${describeError(error)}）。使用 /goal resume 重试。`
+                  yield* Effect.logWarning("goal reasoning reset failed", {
+                    sessionID: input.sessionID,
+                    cause: Cause.pretty(cause),
+                  })
+                  yield* visiblePause(
+                    input.sessionID,
+                    reason,
+                    claim?.tag === "allowed" ? expectedOf(claim.state) : expected,
+                  )
+                }),
+              ),
+            )
+          }),
+        )
+        return "stop" as const
+      }
+
+      if (!isAPIError(error)) {
+        yield* visiblePause(
+          input.sessionID,
+          `上一轮请求失败（${describeError(error)}）。使用 /goal resume 重试。`,
+          expected,
+        )
+        return "stop" as const
+      }
+      const retry = SessionRetry.retryable(error, info.providerID)
+      if (!retry) {
+        yield* visiblePause(
+          input.sessionID,
+          `上一轮请求失败（${describeError(error)}）。使用 /goal resume 重试。`,
+          expected,
+        )
+        return "stop" as const
+      }
+
+      // Durable retry budget: two dispatched retries per recovery chain,
+      // independent of transcript length, restart, and other error classes.
+      // Publish the expected post-claim revision BEFORE the transition commits
+      // so a duplicate idle cannot slip into the claim->dedupe window. The
+      // transition is +1 and remains the only writer at this revision.
+      input.beginRetryDedupe((expected.revision ?? 0) + 1, failed)
+      const claimed = yield* goal.claimRecovery(input.sessionID, expected, "retry", failed)
+      if (claimed.tag === "stale") {
+        input.endRetryDedupe()
+        return "stop" as const
+      }
+      if (claimed.tag === "exhausted") {
+        input.endRetryDedupe()
+        yield* visiblePause(
+          input.sessionID,
+          `上一轮请求连续失败 3 次（${describeError(error)}）。使用 /goal resume 重试。`,
+          expectedOf(claimed.state),
+        )
+        return "stop" as const
+      }
+      // attempts is the count INCLUDING this reservation: first failure -> 1.
+      yield* Effect.sleep(Duration.millis(SessionRetry.delay(claimed.state.recovery?.attempts ?? 1, error)))
+      // The dedupe stays latched until the continuation admission resolves in
+      // afterIdle. Any early exit below must release it immediately.
+      const current = yield* goal.load(input.sessionID)
+      if (
+        !current ||
+        current.status !== "active" ||
+        (current.goal_id ?? "legacy") !== expected.goalID ||
+        (current.revision ?? 0) !== (claimed.state.revision ?? 0)
+      ) {
+        input.endRetryDedupe()
+        return "stop" as const
+      }
+      if ((yield* status.get(input.sessionID)).type !== "idle") {
+        input.endRetryDedupe()
+        return "stop" as const
+      }
+      const fresh = yield* workMessages(input.sessionID).pipe(
+        Effect.catchIf(
+          (e) => NotFoundError.isInstance(e),
+          () => Effect.succeed([] as SessionV1.WithParts[]),
+        ),
+      )
+      if (workAssistant(fresh)?.info.id !== failed) {
+        input.endRetryDedupe()
+        return "stop" as const
+      }
+      if (shouldPreempt(fresh)) {
+        yield* visiblePause(input.sessionID, PREEMPT_PAUSE_REASON, expectedOf(claimed.state))
+        input.endRetryDedupe()
+        return "stop" as const
+      }
+      return { tag: "retry" as const, state: claimed.state }
+    })
     // GOAL-FP-01-04 (D-1): the instance directory the scan scopes to. The
     // state builder runs under the ScopedCache layer-build environment,
     // which does NOT include InstanceRef in production — resolving
@@ -147,6 +519,9 @@ const serviceLayer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("GoalLoop.state")(function* (ctx) {
+        // startImmediately runs the stream through its PubSub subscription
+        // before init returns (same contract as EventV2Bridge startup), so an
+        // idle published immediately after boot cannot race subscription.
         yield* events.subscribe(SessionStatus.Event.Status).pipe(
           Stream.filter((evt) => evt.data.status.type === "idle"),
           // D4 (fiber lifecycle): triggerEvaluation below carries the full
@@ -179,7 +554,7 @@ const serviceLayer = Layer.effect(
               ),
             ),
           ),
-          Effect.forkScoped,
+          Effect.forkScoped({ startImmediately: true }),
         )
         // GOAL-FP-01-04: the startup resume scan. The durable snapshot is
         // captured HERE — at instance boot (the builder runs at the first
@@ -248,9 +623,27 @@ const serviceLayer = Layer.effect(
     // at the same terminal points where afterIdle unregisters the goal
     // automation.
     const evaluatedRevisions = new Map<SessionID, number>()
-    const inFlight = new Map<SessionID, string>()
+    const inFlight = new Map<SessionID, InFlightEvaluation>()
 
-    const afterIdle = Effect.fn("GoalLoop.afterIdle")(function* (sessionID: SessionID, scanResume?: boolean) {
+    // A retry claim advances the durable revision before its backoff sleep.
+    // The dedupe spans the claim, backoff, and admission window; user edits/
+    // resumes advance the revision and still replace the pending evaluation.
+    const beginRetryDedupe = (sessionID: SessionID, owner: InFlightEvaluation, revision: number, failureID: string) => {
+      if (inFlight.get(sessionID) !== owner) return
+      owner.dedupeRevision = revision
+      owner.dedupeFailureID = failureID
+    }
+    const endRetryDedupe = (sessionID: SessionID, owner: InFlightEvaluation) => {
+      if (inFlight.get(sessionID) !== owner) return
+      owner.dedupeRevision = undefined
+      owner.dedupeFailureID = undefined
+    }
+
+    const afterIdle = Effect.fn("GoalLoop.afterIdle")(function* (
+      sessionID: SessionID,
+      scanResume: boolean | undefined,
+      owner: InFlightEvaluation,
+    ) {
       // GOAL-TURN-SCOPE: the goal-driven turn that produced this idle has
       // ended. Clear the mark up front; the continuation branch below re-marks
       // when it dispatches the next turn. This also retires a stale mark when
@@ -277,7 +670,7 @@ const serviceLayer = Layer.effect(
             () => Effect.succeed([] as SessionV1.WithParts[]),
           ),
         )
-        const lastSeen = [...win].reverse().find((m) => m.info.role === "assistant")
+        const lastSeen = workAssistant(win)
         if (lastSeen && lastSeen.info.id === goalState.last_judged_msg) suppressJudge = true
       }
       const goalOwner = { kind: "goal" as const, id: goalState.goal_id ?? "legacy" }
@@ -306,7 +699,7 @@ const serviceLayer = Layer.effect(
             () => Effect.succeed([] as SessionV1.WithParts[]),
           ),
         )
-        const hasAssistant = probeMsgs.some((m) => m.info.role === "assistant")
+        const hasAssistant = workAssistant(probeMsgs) !== undefined
         if (isStaleZombie(goalState, hasAssistant)) {
           yield* pauseGoal(
             sessionID,
@@ -327,22 +720,60 @@ const serviceLayer = Layer.effect(
           () => Effect.succeed([] as SessionV1.WithParts[]),
         ),
       )
-      const lastAssistant = [...msgs].reverse().find((m) => m.info.role === "assistant")
+      const lastAssistant = workAssistant(msgs)
       if (!lastAssistant) {
         // No assistant message in the last 20 — the conversation may have
         // been compacted or the initial kick failed after the stale-zombie
         // guard window. Pause visibly instead of silently stalling.
         const pauseMsg = "近期消息中无 assistant 回复，目标已暂停。使用 /goal resume 重试。"
-        yield* pauseGoal(sessionID, pauseMsg).pipe(Effect.ignore)
-        yield* promptSvc
-          .prompt({ sessionID, noReply: true, parts: [{ type: "text", text: `⏸ 目标已暂停 — ${pauseMsg}` }] })
-          .pipe(Effect.ignore)
+        yield* visiblePause(sessionID, pauseMsg, expectedOf(goalState))
         return
+      }
+      // #892: an errored assistant turn is not tool progress. Decide before
+      // the judge / synthetic-continue paths. A user message newer than the
+      // failure is user preemption: leave it to the existing preempt branch.
+      const lastError = lastAssistant.info.role === "assistant" ? lastAssistant.info.error : undefined
+      const errorOutcome =
+        !lastError || shouldPreempt(msgs)
+          ? ("none" as const)
+          : yield* handleAssistantError({
+              sessionID,
+              state: goalState,
+              messages: msgs,
+              assistant: lastAssistant,
+              lease: observedLease,
+              beginRetryDedupe: (revision, failureID) => beginRetryDedupe(sessionID, owner, revision, failureID),
+              endRetryDedupe: () => endRetryDedupe(sessionID, owner),
+            }).pipe(
+              Effect.catchCause((cause) => {
+                // Recovery defects (e.g. a failed compaction write) must not
+                // vanish into the fiber's log-only boundary. Interrupts and
+                // disposal stay silent: they are never retried or paused here.
+                if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+                const reason = `上一轮请求失败后无法恢复（${describeError(lastError)}）。使用 /goal resume 重试。`
+                return Effect.logWarning("goal error recovery failed", {
+                  sessionID,
+                  cause: Cause.pretty(cause),
+                }).pipe(
+                  Effect.andThen(pauseAfterFailure(sessionID, reason, expectedOf(goalState))),
+                  Effect.as("stop" as const),
+                )
+              }),
+            )
+      if (errorOutcome === "stop") return
+      let dispatchState = goalState
+      if (typeof errorOutcome === "object") dispatchState = errorOutcome.state
+      const retryDispatch = typeof errorOutcome === "object"
+      const clearRetryDedupe = () => {
+        if (retryDispatch) endRetryDedupe(sessionID, owner)
       }
       // GOAL-01: on a boundary-gate hit the judge call and its commit are
       // skipped wholesale (see suppressJudge above) — execution falls through
-      // to the shared continuation dispatch below.
-      if (!suppressJudge) {
+      // to the shared continuation dispatch below. A retryable error recovery
+      // also skips the judge: there is no new work output to classify, and
+      // the retry must not consume a goal turn.
+      const skipJudge = suppressJudge || typeof errorOutcome === "object"
+      if (!skipJudge) {
         // A user message newer than the judged reply (noReply prompt, a
         // command turn, ESC before any reply, a blocked submit) means the
         // reply is no longer the work boundary: skip the judge and let the
@@ -436,7 +867,7 @@ const serviceLayer = Layer.effect(
                     // Goal instance and revision.
                     if (shouldPreempt(current))
                       return { preempted: yield* goal.pauseAndPublish(sessionID, PREEMPT_PAUSE_REASON, expected) }
-                    const latest = [...current].reverse().find((m) => m.info.role === "assistant")
+                    const latest = workAssistant(current)
                     if (!verdict || latest?.info.id !== lastAssistant.info.id) return undefined
                     return {
                       update: yield* goal.updateAfterJudge(
@@ -455,7 +886,10 @@ const serviceLayer = Layer.effect(
             .pipe(
               Effect.catchIf(
                 (error) => NotFoundError.isInstance(error),
-                () => pauseGoal(sessionID, "评审期间会话消息已不可用，目标已暂停").pipe(Effect.as(Option.none())),
+                () =>
+                  pauseAfterFailure(sessionID, "评审期间会话消息已不可用，目标已暂停", expectedOf(goalState)).pipe(
+                    Effect.as(Option.none()),
+                  ),
               ),
             ),
         )
@@ -536,7 +970,8 @@ const serviceLayer = Layer.effect(
           }
           return
         }
-      } else {
+        dispatchState = updateResult.state
+      } else if (suppressJudge) {
         // GOAL-01 gate hit: mark the current revision as drive-restored so a
         // duplicate scan trigger on the SAME revision is skipped by the D-4
         // gate above (at most one continuation per revision per process).
@@ -544,7 +979,10 @@ const serviceLayer = Layer.effect(
       }
 
       const currentStatus = yield* status.get(sessionID)
-      if (currentStatus.type !== "idle") return
+      if (currentStatus.type !== "idle") {
+        clearRetryDedupe()
+        return
+      }
 
       // Reload messages before dispatch — the pre-judge snapshot may be stale
       // (the user can send messages during the 5-30s judge latency, or during
@@ -566,23 +1004,21 @@ const serviceLayer = Layer.effect(
         // publishGoal(paused) reaches the event bus. Use pauseAndPublish
         // which skips fiber management — the fiber naturally terminates
         // when this function returns.
-        yield* pauseGoal(sessionID, "当前轮被中断").pipe(Effect.ignore) // user preempted
+        yield* pauseGoal(sessionID, "当前轮被中断", expectedOf(dispatchState)).pipe(Effect.ignore) // user preempted
+        clearRetryDedupe()
         return
       }
-
-      const reloadedState = yield* goal.load(sessionID)
-      if (!reloadedState || reloadedState.status !== "active") return
 
       // Synthetic user text reaches the model while preserving its automation
       // provenance: Memory must not treat this as human input or expire the
       // current user's retrieved context. Goal events carry visible progress;
       // the full continuation does not need a repeated user-message bubble.
       const continuationText = GoalPrompts.renderContinuation({
-        goal: reloadedState.goal,
-        subgoals: reloadedState.subgoals ?? [],
-        turnsUsed: reloadedState.turns_used,
-        maxTurns: reloadedState.max_turns,
-        lastJudgeReason: reloadedState.last_reason,
+        goal: dispatchState.goal,
+        subgoals: dispatchState.subgoals ?? [],
+        turnsUsed: dispatchState.turns_used,
+        maxTurns: dispatchState.max_turns,
+        lastJudgeReason: dispatchState.last_reason,
       })
 
       // Continuation dispatch can fail (provider fault, session write error,
@@ -593,7 +1029,11 @@ const serviceLayer = Layer.effect(
       // paused state via the fiber-safe pauseAndPublish (goal.pause would
       // clearFiber — us — mid-publish; see the preempt branches above).
       const continuationLease = Option.getOrUndefined(yield* automation.claim(sessionID, goalOwner))
-      if (!continuationLease) return
+      if (!continuationLease) {
+        clearRetryDedupe()
+        return
+      }
+      let admittedStarted = false
       yield* Effect.gen(function* () {
         // GOAL-TURN-SCOPE: mark BEFORE admission so the goal-turn provenance is
         // already visible the instant the continuation can start — no window
@@ -602,19 +1042,45 @@ const serviceLayer = Layer.effect(
         yield* goal.markTurnDriven(sessionID)
         // The judge continues the same user input; a manual new/resume command
         // admits a new input and owns its fresh budget in SessionPrompt.
-        const admitted = yield* SessionPrompt.admitIfIdle(
-          promptSvc,
-          automation,
-          continuationLease,
-          { sessionID, parts: [{ type: "text", text: continuationText, synthetic: true }] },
-          { continueToolBudget: true },
-        )
+        const dispatchExpected = expectedOf(dispatchState)
+        const admitted = yield* automation
+          .handoff(
+            continuationLease,
+            promptSvc.prepareIfIdle(
+              { sessionID, parts: [{ type: "text", text: continuationText, synthetic: true }] },
+              Effect.gen(function* () {
+                const current = yield* goal.load(sessionID)
+                if (
+                  !current ||
+                  current.status !== "active" ||
+                  (current.goal_id ?? "legacy") !== dispatchExpected.goalID ||
+                  (current.revision ?? 0) !== dispatchExpected.revision
+                ) {
+                  throw new GoalDispatchFenceLost()
+                }
+              }),
+              { continueToolBudget: true },
+            ),
+          )
+          .pipe(
+            Effect.catchCause((cause) =>
+              Cause.squash(cause) instanceof GoalDispatchFenceLost
+                ? Effect.succeed(Option.none())
+                : Effect.failCause(cause),
+            ),
+          )
         if (Option.isNone(admitted)) {
+          clearRetryDedupe()
           yield* goal.clearTurnDriven(sessionID)
           return
         }
+        // Clear before running the turn: a real idle produced by the new
+        // assistant must not be deduped as if this retry were still pending.
+        clearRetryDedupe()
+        admittedStarted = true
         yield* admitted.value
       }).pipe(
+        Effect.ensuring(Effect.suspend(() => (admittedStarted ? Effect.void : Effect.sync(() => clearRetryDedupe())))),
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             // F1: Only pause for non-interrupt causes. An interrupt (user
@@ -651,10 +1117,7 @@ const serviceLayer = Layer.effect(
             // until /goal clear). pauseGoal keeps the fiber-safe
             // pauseAndPublish (goal.pause would clearFiber — us —
             // mid-publish) and releases the lease registration inline.
-            yield* pauseGoal(sessionID, errMsg).pipe(Effect.ignore)
-            yield* promptSvc
-              .prompt({ sessionID, noReply: true, parts: [{ type: "text", text: `⏸ 目标已暂停 — ${errMsg}` }] })
-              .pipe(Effect.ignore)
+            yield* pauseAfterFailure(sessionID, errMsg, expectedOf(dispatchState))
             return Option.none()
           }),
         ),
@@ -703,9 +1166,18 @@ const serviceLayer = Layer.effect(
           () => Effect.succeed([] as SessionV1.WithParts[]),
         ),
       )
-      const last = [...messages].reverse().find((m) => m.info.role === "assistant")
-      const boundary = `${goalState.goal_id}:${goalState.revision}:${last?.info.id}`
-      if (inFlight.get(sessionID) === boundary) return
+      const last = workAssistant(messages)
+      const goalID = goalState.goal_id ?? "legacy"
+      const pending = inFlight.get(sessionID)
+      if (
+        pending &&
+        pending.goalID === goalID &&
+        (((goalState.revision ?? 0) === pending.entryRevision && pending.assistantID === last?.info.id) ||
+          (pending.dedupeRevision !== undefined &&
+            pending.dedupeFailureID === last?.info.id &&
+            (goalState.revision ?? 0) === pending.dedupeRevision))
+      )
+        return
       // D-4 gate (scan path only): skip when this process already evaluated
       // the CURRENT revision — the boot snapshot went stale after a
       // legitimate evaluation (e.g. the session's own idle event ran before
@@ -724,11 +1196,18 @@ const serviceLayer = Layer.effect(
       // zero logs — an invisible stall. Interrupts (fiber replacement by a
       // newer idle, scope disposal) stay silent: they are the normal
       // overwrite path, same F1 discipline as the continuation catch below.
-      inFlight.set(sessionID, boundary)
-      const fiber = yield* afterIdle(sessionID, scanResume).pipe(
+      const evaluation: InFlightEvaluation = {
+        goalID,
+        assistantID: last?.info.id,
+        entryRevision: goalState.revision ?? 0,
+        dedupeRevision: undefined,
+        dedupeFailureID: undefined,
+      }
+      inFlight.set(sessionID, evaluation)
+      const fiber = yield* afterIdle(sessionID, scanResume, evaluation).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            if (inFlight.get(sessionID) === boundary) inFlight.delete(sessionID)
+            if (inFlight.get(sessionID) === evaluation) inFlight.delete(sessionID)
           }),
         ),
         Effect.catchCause((cause) =>
@@ -856,6 +1335,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(Session.defaultLayer),
   Layer.provide(SessionPrompt.defaultLayer),
+  Layer.provide(SessionCompaction.defaultLayer),
   Layer.provide(Provider.defaultLayer),
   Layer.provide(Goal.defaultLayer),
   Layer.provide(SessionStatus.defaultLayer),
@@ -865,6 +1345,7 @@ export const node = LayerNode.make(layer, [
   EventV2Bridge.node,
   Session.node,
   SessionPrompt.node,
+  SessionCompaction.node,
   Provider.node,
   Goal.node,
   SessionStatus.node,

@@ -41,6 +41,29 @@ export function selectReportNode(config: WorkflowConfig, nodes: readonly DagStor
     : nodes.find((node) => node.id === config.delivery_node && !node.superseded && node.status === "completed")
 }
 
+/**
+ * Durable parent-involvement signal for a completed final-response workflow.
+ * `wakeEligible` is the persisted `report_to_parent` evidence from the node's
+ * execution attempt; the current config proves the node still belongs to the
+ * graph. The selected delivery node is informational when it is an ordinary
+ * leaf: its output is the final report itself, so the display delivery already
+ * carries it. A delivery node with dependents, or any other reporting node,
+ * remains a checkpoint and requires a parent turn.
+ */
+export function reportingCheckpoints(config: WorkflowConfig, nodes: readonly DagStore.NodeRow[]) {
+  const configured = new Map(config.nodes.map((node) => [node.id, node]))
+  const isOrdinaryDeliveryLeaf = (node: DagStore.NodeRow) =>
+    node.id === config.delivery_node &&
+    !nodes.some((candidate) => !candidate.superseded && candidate.dependsOn.includes(node.id))
+  return nodes.filter((node) => {
+    if (node.superseded || !node.wakeEligible) return false
+    const definition = configured.get(node.id)
+    if (!definition) return false
+    if (definition.report_to_parent === false) return false
+    return !isOrdinaryDeliveryLeaf(node)
+  })
+}
+
 export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagStore.NodeRow[]) {
   return [
     `Workflow "${workflow.title}" completed. Results:`,
@@ -163,11 +186,19 @@ export function deliverReport(input: {
   events: EventV2.Interface
   directory: string
   source?: SessionV1.WithParts
+  /**
+   * Display delivery acknowledges only the workflow completion row by
+   * default. The loop defers acknowledgement while a parent wake turn will
+   * mark the same completion row atomically with that turn's admission.
+   */
+  acknowledge?: boolean
 }): Effect.Effect<boolean, never, Database.Service> {
   return Effect.gen(function* () {
     const { workflow, store, sessions } = input
     const config = parseWorkflowConfig(workflow.config)
     if (workflow.status !== "completed" || config?.result_protocol !== "final_response") return false
+    const acknowledge = input.acknowledge ?? true
+    const completionBatch = { nodes: [], workflows: input.batch.workflows } satisfies DagStore.WakeBatch
     const identity = reportIdentity(workflow)
     const sessionID = SessionID.make(workflow.sessionId)
     const getReceipt = () => sessions.getPart({ sessionID, messageID: identity.messageID, partID: identity.answerID })
@@ -226,6 +257,7 @@ export function deliverReport(input: {
       if (!receiptMatches(receipt))
         return yield* Effect.die(new Error("DAG final report receipt does not match its completion episode"))
       // Adopting a committed receipt appends no transcript and cannot consume a pending user turn.
+      if (!acknowledge) return true
       return yield* database.db
         .transaction(
           () =>
@@ -233,7 +265,7 @@ export function deliverReport(input: {
               if (!(yield* currentEpisode)) return false
               const current = yield* getReceipt()
               if (!current || !receiptMatches(current)) return false
-              yield* store.markWakeBatchReported(input.batch)
+              yield* store.markWakeBatchReported(completionBatch)
               return true
             }),
           { behavior: "immediate" },
@@ -253,15 +285,15 @@ export function deliverReport(input: {
     }
     const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
     const time = workflow.completedAt ?? workflow.timeUpdated
-    const source = input.source?.info.role === "assistant" ? input.source.info : undefined
     const parentUser = user?.info.role === "user" ? user.info : undefined
     const originUser = history
       .filter((item) => item.info.role === "user" && item.info.time.created <= workflow.timeCreated)
       .toSorted(newestFirst)[0]
-    const providerID =
-      source?.providerID ?? parentUser?.model.providerID ?? session.model?.providerID ?? Provider.ID.make("dag")
-    const modelID = source?.modelID ?? parentUser?.model.modelID ?? session.model?.id ?? Model.ID.make("result")
-    const agent = session.agent ?? source?.agent ?? "build"
+    // The report is a parent-session artifact. A child source may differ from
+    // the parent model; it is only report text input, never attribution.
+    const providerID = parentUser?.model.providerID ?? session.model?.providerID ?? Provider.ID.make("dag")
+    const modelID = parentUser?.model.modelID ?? session.model?.id ?? Model.ID.make("result")
+    const agent = session.agent ?? "build"
     if (!originUser) {
       appendMessage({
         id: identity.anchorID,
@@ -317,7 +349,9 @@ export function deliverReport(input: {
     // top-level event batch transaction. Notifications are emitted only after it commits.
     entries[entries.length - 1] = {
       ...entries[entries.length - 1],
-      options: { commit: () => store.markWakeBatchReported(input.batch).pipe(Effect.orDie) },
+      options: {
+        commit: () => (acknowledge ? store.markWakeBatchReported(completionBatch) : Effect.void).pipe(Effect.orDie),
+      },
     }
     const declined = new Error("DAG report admission changed")
     const validate = Effect.gen(function* () {

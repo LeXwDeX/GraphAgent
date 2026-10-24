@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { Effect, PubSub, Ref, Stream } from "effect"
 import { fileURLToPath } from "node:url"
 
 // The production AppRuntime singleton must not reuse a fixture's noopBootstrap
@@ -36,3 +37,28 @@ test("Goal production wiring in an isolated process", async () => {
     await Promise.all([stdout, stderr])
   }
 }, 55_000)
+
+// Scheduler-level contract used by GoalLoop's idle subscription and
+// EventV2Bridge: startImmediately runs the forked stream through its PubSub
+// subscription before returning, so the first publish cannot race startup.
+// Without the option the subscription is scheduled later and this publish is
+// lost.
+test("startImmediately installs the PubSub subscription before the first publish", async () => {
+  const seen = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const pubsub = yield* PubSub.unbounded<number>()
+        const count = yield* Ref.make(0)
+        yield* Stream.fromPubSub(pubsub).pipe(
+          Stream.take(1),
+          Stream.runForEach(() => Ref.update(count, (value) => value + 1)),
+          Effect.forkScoped({ startImmediately: true }),
+        )
+        yield* PubSub.publish(pubsub, 1)
+        yield* Effect.yieldNow
+        return yield* Ref.get(count)
+      }),
+    ),
+  )
+  expect(seen).toBe(1)
+})
