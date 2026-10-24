@@ -9,7 +9,10 @@ import type { DagStore } from "@opencode-ai/core/dag/store"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
-import { finalAssistantText, parseFinalResponse } from "@/dag/runtime/final-response"
+import { finalAssistantText, outputLimitReason, parseFinalResponse } from "@/dag/runtime/final-response"
+import { Provider } from "@/provider/provider"
+import { Config } from "@/config/config"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
 import { continueRecoveredMessageNode, makeLastAssistantMessageReader, reconcileWorkflow } from "@/dag/runtime/recovery"
 import { spawnNode } from "@/dag/runtime/spawn"
@@ -18,7 +21,12 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { makeNodeRow } from "./fixtures"
 
-function assistant(parts: Array<Partial<SessionV1.TextPart>>, finish = "stop"): SessionV1.WithParts {
+function assistant(
+  parts: Array<Partial<SessionV1.TextPart>>,
+  finish = "stop",
+  output = 0,
+  reasoning = 0,
+): SessionV1.WithParts {
   return {
     info: {
       id: MessageID.ascending(),
@@ -29,7 +37,7 @@ function assistant(parts: Array<Partial<SessionV1.TextPart>>, finish = "stop"): 
       agent: "build",
       cost: 0,
       path: { cwd: "/tmp", root: "/tmp" },
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      tokens: { input: 0, output, reasoning, cache: { read: 0, write: 0 } },
       modelID: "test-model" as never,
       providerID: "test" as never,
       time: { created: Date.now() },
@@ -50,6 +58,9 @@ describe("final assistant response", () => {
     expect(finalAssistantText(final)).toEqual({ ok: true, text: '{"status":"ok"}' })
     expect(finalAssistantText(assistant([{ text: "old result" }], "tool-calls")).ok).toBe(false)
     expect(finalAssistantText(assistant([{ text: "truncated" }], "length")).ok).toBe(false)
+    expect(outputLimitReason({ cap: 32_000, output: 885, reasoning: 31_115, continued: true })).toContain(
+      "reasoning 31115, text 885",
+    )
     expect(parseFinalResponse('{"status":"ok"}\nextra').ok).toBe(false)
     expect(parseFinalResponse("null")).toEqual({ ok: true, payload: null })
   })
@@ -86,10 +97,12 @@ describe("spawn final-response protocol", () => {
     create: () => Effect.succeed({ id: "ses_final_child" as never } as never),
   })
 
-  async function run(message: SessionV1.WithParts, schema?: Record<string, unknown>) {
+  async function run(messages: SessionV1.WithParts | SessionV1.WithParts[], schema?: Record<string, unknown>) {
+    const queue = Array.isArray(messages) ? [...messages] : [messages]
     const events: Array<{ type: string; output?: unknown; reason?: string }> = []
     let receipt: { present: boolean; value: unknown } | undefined
     let prompts = 0
+    const promptSessions: string[] = []
     const store = {
       tryClaimAdoption: () => Effect.succeed(true),
       getNode: () =>
@@ -98,6 +111,7 @@ describe("spawn final-response protocol", () => {
           capturedOutput: receipt?.value,
           capturedOutputPresent: receipt?.present,
         }),
+      getWorkflow: () => Effect.succeed({ status: "running" }),
       setCapturedOutput: (_sessionID: string, value: unknown) =>
         Effect.sync(() => {
           receipt = { present: true, value }
@@ -117,11 +131,42 @@ describe("spawn final-response protocol", () => {
         }),
     })
     const prompt = Layer.mock(SessionPrompt.Service, {
-      prompt: () =>
+      prompt: (input) =>
         Effect.sync(() => {
           prompts++
-          return message
+          promptSessions.push(input.sessionID)
+          return queue.length > 1 ? queue.shift()! : queue[0]
         }),
+    })
+    const provider = Layer.mock(Provider.Service, {
+      getModel: () =>
+        Effect.succeed({
+          id: "test-model",
+          providerID: "test",
+          api: { id: "test-model", url: "", npm: "@ai-sdk/openai-compatible" },
+          name: "Test",
+          capabilities: {
+            temperature: false,
+            reasoning: true,
+            attachment: false,
+            toolcall: true,
+            input: { text: true, audio: false, image: false, video: false, pdf: false },
+            output: { text: true, audio: false, image: false, video: false, pdf: false },
+            interleaved: false,
+          },
+          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+          limit: { context: 128_000, output: 384_000 },
+          status: "active",
+          options: {},
+          headers: {},
+          release_date: "2026-01-01",
+        } as never),
+    })
+    const config = Layer.mock(Config.Service, {
+      get: () =>
+        Effect.succeed({
+          provider: { test: { models: { "test-model": { limit: { context: 128_000, output: 384_000 } } } } },
+        } as never),
     })
     await Effect.runPromise(
       Effect.scoped(
@@ -136,10 +181,10 @@ describe("spawn final-response protocol", () => {
             resultProtocol: "final_response",
           })
           yield* Fiber.await(result.fiber)
-        }).pipe(Effect.provide(Layer.mergeAll(dag, agent, sessions, prompt))),
+        }).pipe(Effect.provide(Layer.mergeAll(dag, agent, sessions, prompt, provider, config, RuntimeFlags.layer({})))),
       ) as Effect.Effect<never>,
     )
-    return { events, receipt, prompts }
+    return { events, receipt, prompts, promptSessions }
   }
 
   it("captures a null JSON result as present without a submit_result call", async () => {
@@ -170,6 +215,32 @@ describe("spawn final-response protocol", () => {
   it("preserves every plaintext part for a node without a schema", async () => {
     const result = await run(assistant([{ text: "first " }, { text: "second" }]))
     expect(result.events).toEqual([{ type: "completed", output: "first second" }])
+  })
+
+  it("continues once in the same child session when the final turn hits the output cap", async () => {
+    const result = await run([assistant([{ text: "" }], "length", 885, 31_115), assistant([{ text: '{"ok":true}' }])], {
+      type: "object",
+    })
+    expect(result.events).toEqual([{ type: "completed", output: { ok: true } }])
+    expect(result.prompts).toBe(2)
+    expect(result.promptSessions).toEqual(["ses_final_child", "ses_final_child"])
+  })
+
+  it("continues a plaintext final response that hit the output cap", async () => {
+    const result = await run([assistant([{ text: "" }], "length", 885, 31_115), assistant([{ text: "final answer" }])])
+    expect(result.events).toEqual([{ type: "completed", output: "final answer" }])
+    expect(result.prompts).toBe(2)
+  })
+
+  it("fails with the cap and reasoning/text split when the continuation still ends in length", async () => {
+    const result = await run(
+      [assistant([{ text: "" }], "length", 885, 31_115), assistant([{ text: "" }], "length", 885, 31_115)],
+      { type: "object" },
+    )
+    expect(result.events[0]?.type).toBe("failed")
+    expect(result.events[0]?.reason).toContain("output token cap (384000; reasoning 31115, text 885)")
+    expect(result.events[0]?.reason).toContain("limit.output")
+    expect(result.events[0]?.reason).toContain("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
   })
 })
 

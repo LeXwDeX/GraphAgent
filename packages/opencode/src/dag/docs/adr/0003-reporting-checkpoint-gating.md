@@ -34,9 +34,10 @@ behind the `structural === start-only` branch, so a fragment could attach an
 ungated dependent to a reporting checkpoint and the engine spawned it before
 the parent read the verdict) — and into `replanStructuralDiagnostics`, which
 re-checks the MERGED graph at the runtime replan/extend mutation seam, so a
-fragment dependent on an EXISTING checkpoint cannot escape either. Every
-ungated dependent emits one error-severity `dag.invalid` diagnostic in both
-`portable` and `environment` profiles.
+fragment dependent on an EXISTING checkpoint cannot escape either. Each
+reporting checkpoint emits one grouped error-severity `dag.invalid` diagnostic
+listing its ungated direct dependents in both `portable` and `environment`
+profiles.
 
 Two deliberate carve-outs:
 
@@ -61,8 +62,8 @@ issue #294's wake-chain and reopen-extend behavior.
 
 - Ungated reporting checkpoints fail fast at start/validate — and since
   DAG-02 also at replan/extend fragment authoring and at the runtime
-  replan/extend mutation seam — with a diagnostic naming the checkpoint, the
-  dependent, and the legal fixes.
+  replan/extend mutation seam — with a grouped diagnostic naming the
+  checkpoint, its ungated dependents, and the legal fixes.
 - Runtime create, wake chains, and reopen-extend semantics are unchanged;
   trusted internal callers retain full runtime flexibility at create time.
 - Saved and curated workflows were audited: 14 curated block workflows are

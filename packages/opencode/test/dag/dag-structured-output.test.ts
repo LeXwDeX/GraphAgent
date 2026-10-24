@@ -8,6 +8,12 @@ import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
+import { Provider } from "@/provider/provider"
+import { Config } from "@/config/config"
+import { RuntimeFlags } from "@/effect/runtime-flags"
+import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { evaluateCondition, resolveInputMapping } from "@/dag/runtime/eval"
 import { registerCaptureSlot, validatePayload, clearCaptureSlot, validateAgainstSchema } from "@/dag/runtime/capture"
 import { makeNodeRow } from "./fixtures"
@@ -27,6 +33,7 @@ function makeEventTracker() {
         ...makeNodeRow({ id: nodeID, status: "running", childSessionId: "ses_child" }),
         capturedOutput: capturedStore.get(nodeID),
       }))),
+    getWorkflow: Effect.fn("s")(() => Effect.succeed({ status: "running" } as never)),
     setCapturedOutput: Effect.fn("s")((_childSessionID: string, payload: unknown) =>
       Effect.sync(() => { capturedStore.set("node-1", payload) })),
   }
@@ -61,15 +68,15 @@ const sessionLayer = Layer.mock(Session.Service, {
   messages: () => Effect.succeed([]),
 })
 
-function reply(text: string): SessionV1.WithParts {
+function reply(text: string, finish = "stop", output = 0, reasoning = 0): SessionV1.WithParts {
   return {
     info: {
       id: MessageID.ascending(), role: "assistant", parentID: MessageID.ascending(),
       sessionID: "ses_child" as never, mode: "build", agent: "build", cost: 0,
       path: { cwd: "/tmp", root: "/tmp" },
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      tokens: { input: 0, output, reasoning, cache: { read: 0, write: 0 } },
       modelID: "test-model" as never, providerID: "test" as never,
-      time: { created: Date.now() }, finish: "stop",
+      time: { created: Date.now() }, finish,
     },
     parts: text ? [{ type: "text", text }] as never : [],
   }
@@ -112,9 +119,10 @@ async function runSpawn(
   promptLayer: Layer.Layer<never>,
   outputSchema?: Record<string, unknown>,
   overrides: Partial<NodeSpawnInput> = {},
+  support: Layer.Layer<never> = Layer.empty,
 ) {
   const semaphore = Semaphore.makeUnsafe(1)
-  const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer)
+  const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer, support)
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -344,6 +352,65 @@ describe("validatePayload", () => {
 // --- Integration tests for submit_result structured output ---
 
 describe("spawnNode submit_result capture", () => {
+  const modelInfo = {
+    id: ModelV2.ID.make("test-model"),
+    providerID: ProviderV2.ID.make("test"),
+    api: { id: "test-model", url: "", npm: "@ai-sdk/openai-compatible" },
+    name: "Test",
+    capabilities: {
+      temperature: false,
+      reasoning: true,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 128_000, output: 384_000 },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "2026-01-01",
+  } satisfies Provider.Model
+  const outputSupport = Layer.mergeAll(
+    Layer.mock(Provider.Service, { getModel: () => Effect.succeed(modelInfo) }),
+    Layer.mock(Config.Service, {
+      get: () =>
+        Effect.succeed({
+          provider: { test: { models: { "test-model": { limit: { context: 128_000, output: 384_000 } } } } },
+        } as ConfigV1.Info),
+    }),
+    RuntimeFlags.layer({}),
+  )
+
+  function makeSequencePromptLayer(
+    steps: Array<{ result: SessionV1.WithParts; submit?: unknown }>,
+    seen: Array<{ sessionID: string; text: string }>,
+    strict = false,
+  ) {
+    let index = 0
+    return Layer.mock(SessionPrompt.Service, {
+      prompt: (input) =>
+        Effect.gen(function* () {
+          if (strict && index >= steps.length) return yield* Effect.die(new Error("unexpected extra prompt"))
+          const step = steps[Math.min(index++, steps.length - 1)]
+          seen.push({
+            sessionID: input.sessionID,
+            text: input.parts
+              .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+              .map((part) => part.text)
+              .join(""),
+          })
+          if (step.submit !== undefined) {
+            const result = validatePayload("ses_child", step.submit)
+            if (result.ok) capturedStore.set("node-1", step.submit)
+          }
+          return step.result
+        }),
+    })
+  }
+
   for (const max of [1, 2]) {
     it(`missing-output nudge retains the child budget with ${max} tool slot(s)`, async () => {
       const { events, dagLayer } = makeEventTracker()
@@ -433,6 +500,152 @@ describe("spawnNode submit_result capture", () => {
     const completed = events.find((e) => e.type === "nodeCompleted")
     expect(completed).toBeDefined()
     expect(completed!.output).toBe("Task completed")
+  })
+
+  it("(e) a length-limited submit_result turn continues once in the same session and completes", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = { type: "object", required: ["status"] }
+    const seen: Array<{ sessionID: string; text: string }> = []
+    const promptLayer = makeSequencePromptLayer(
+      [{ result: reply("", "length", 885, 31_115) }, { result: reply("done"), submit: { status: "ok" } }],
+      seen,
+    )
+    await runSpawn(dagLayer, promptLayer, schema, {}, outputSupport)
+    expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual({ status: "ok" })
+    expect(seen).toHaveLength(2)
+    expect(seen.every((entry) => entry.sessionID === "ses_child")).toBe(true)
+    expect(seen[1]?.text).toContain("output token limit")
+    expect(seen[1]?.text).toContain("submit_result")
+  })
+
+  it("(f) a continuation that still ends in length fails with the cap and reasoning/text split", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const seen: Array<{ sessionID: string; text: string }> = []
+    const promptLayer = makeSequencePromptLayer(
+      [{ result: reply("", "length", 885, 31_115) }, { result: reply("", "length", 885, 31_115) }],
+      seen,
+    )
+    await runSpawn(dagLayer, promptLayer, { type: "object" }, {}, outputSupport)
+    const failed = events.find((event) => event.type === "nodeFailed")
+    expect(events.find((event) => event.type === "nodeCompleted")).toBeUndefined()
+    expect(failed?.trigger).toBe("verdict_fail")
+    expect(failed?.reason).toContain("output token cap (384000; reasoning 31115, text 885)")
+    expect(failed?.reason).toContain("limit.output")
+    expect(seen).toHaveLength(2)
+  })
+
+  for (const resultProtocol of ["submit_result", undefined] as const) {
+    it(`(g) a captured submit_result wins over finish=length without another prompt (${resultProtocol ?? "historical"})`, async () => {
+      const { events, dagLayer } = makeEventTracker()
+      const seen: Array<{ sessionID: string; text: string }> = []
+      const promptLayer = makeSequencePromptLayer(
+        [{ result: reply("", "length", 885, 31_115), submit: { status: "ok" } }],
+        seen,
+        true,
+      )
+      await runSpawn(
+        dagLayer,
+        promptLayer,
+        { type: "object", required: ["status"] },
+        resultProtocol ? { resultProtocol } : {},
+        outputSupport,
+      )
+      expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual({ status: "ok" })
+      expect(events.find((event) => event.type === "nodeFailed")).toBeUndefined()
+      expect(seen).toHaveLength(1)
+    })
+  }
+
+  it("(j) a captured-but-invalid submit_result fails without a length continuation", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const seen: Array<{ sessionID: string; text: string }> = []
+    const promptLayer = makeSequencePromptLayer(
+      [{ result: reply("", "length", 885, 31_115), submit: { status: "ok" } }],
+      seen,
+      true,
+    )
+    await runSpawn(
+      dagLayer,
+      promptLayer,
+      { type: "object", required: ["status"] },
+      { resultProtocol: "submit_result", reviewImplementationFingerprint: "expected" },
+      outputSupport,
+    )
+    const failed = events.find((event) => event.type === "nodeFailed")
+    expect(events.find((event) => event.type === "nodeCompleted")).toBeUndefined()
+    expect(failed?.trigger).toBe("verdict_fail")
+    expect(failed?.reason).toContain("Review result contract failed")
+    expect(seen).toHaveLength(1)
+  })
+
+  it("(k) a length continuation that captures an invalid review contract keeps the contract reason", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const seen: Array<{ sessionID: string; text: string }> = []
+    const schema = {
+      type: "object",
+      properties: {
+        verdict: { enum: ["ACCEPT", "REJECT"] },
+        implementation_fingerprint: { type: "string" },
+      },
+      required: ["verdict", "implementation_fingerprint"],
+    }
+    const promptLayer = makeSequencePromptLayer(
+      [
+        { result: reply("", "length", 885, 31_115) },
+        {
+          result: reply("", "length", 885, 31_115),
+          submit: { verdict: "ACCEPT", implementation_fingerprint: "sha256:revision-1" },
+        },
+      ],
+      seen,
+      true,
+    )
+    await runSpawn(
+      dagLayer,
+      promptLayer,
+      schema,
+      { resultProtocol: "submit_result", reviewImplementationFingerprint: "sha256:revision-2" },
+      outputSupport,
+    )
+    const failed = events.find((event) => event.type === "nodeFailed")
+    expect(events.find((event) => event.type === "nodeCompleted")).toBeUndefined()
+    expect(failed?.trigger).toBe("verdict_fail")
+    expect(failed?.reason).toBe(
+      "Review result contract failed: review result fingerprint sha256:revision-1 does not match current implementation sha256:revision-2",
+    )
+    expect(seen).toHaveLength(2)
+  })
+
+  it("(h) a plaintext turn without an output_schema continues once after length", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const seen: Array<{ sessionID: string; text: string }> = []
+    const promptLayer = makeSequencePromptLayer(
+      [{ result: reply("", "length", 885, 31_115) }, { result: reply("final answer") }],
+      seen,
+      true,
+    )
+    await runSpawn(dagLayer, promptLayer, undefined, {}, outputSupport)
+    expect(events.find((event) => event.type === "nodeCompleted")?.output).toBe("final answer")
+    expect(events.find((event) => event.type === "nodeFailed")).toBeUndefined()
+    expect(seen).toHaveLength(2)
+    expect(seen.every((entry) => entry.sessionID === "ses_child")).toBe(true)
+    expect(seen[1]?.text).toContain("output token limit")
+  })
+
+  it("(i) a plaintext continuation that still ends in length fails once with the cap", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const seen: Array<{ sessionID: string; text: string }> = []
+    const promptLayer = makeSequencePromptLayer(
+      [{ result: reply("", "length", 885, 31_115) }, { result: reply("", "length", 885, 31_115) }],
+      seen,
+      true,
+    )
+    await runSpawn(dagLayer, promptLayer, undefined, {}, outputSupport)
+    const failed = events.find((event) => event.type === "nodeFailed")
+    expect(events.find((event) => event.type === "nodeCompleted")).toBeUndefined()
+    expect(failed?.trigger).toBe("verdict_fail")
+    expect(failed?.reason).toContain("after one continuation")
+    expect(seen).toHaveLength(2)
   })
 
   it("fails a diff review whose result targets a stale implementation fingerprint", async () => {

@@ -25,6 +25,21 @@ export function finalAssistantText(message: SessionV1.WithParts | undefined, all
   return { ok: true, text }
 }
 
+/** Readable settlement reason for a child turn that ended at the output token cap. */
+export function outputLimitReason(input: {
+  cap: number | undefined
+  output: number
+  reasoning: number
+  continued: boolean
+}): string {
+  // Session tokens.output already excludes reasoning tokens.
+  const text = Math.max(0, input.output)
+  const cap = input.cap === undefined ? "configured output limit" : String(input.cap)
+  return `child turn hit the output token cap (${cap}; reasoning ${input.reasoning}, text ${text})${
+    input.continued ? " after one continuation" : ""
+  }. Raise this model's limit.output or OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX, or use a lower reasoning variant.`
+}
+
 export type ParsedFinalResponse = { ok: true; payload: unknown } | { ok: false; reason: string }
 
 /** JSON.parse consumes exactly one complete JSON value (including falsy values). */

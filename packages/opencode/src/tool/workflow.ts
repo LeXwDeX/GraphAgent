@@ -16,7 +16,7 @@ import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { createAdmissionRecord } from "@/dag/admission"
 import { isOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
-import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
+import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -232,8 +232,21 @@ export const WorkflowTool = Tool.define<
       return workflow
     })
 
-    const parkRejectedWorkflow = (workflowID: Dag.ID) =>
+    const parkRejectedWorkflow = (workflowID: Dag.ID, action: "extend" | "replan") =>
       Effect.gen(function* () {
+        // A terminal workflow cannot pause: the attempt only produces an
+        // InvalidTransitionError that reads like a second failure. Nothing was
+        // mutated, so report the unchanged state and let the caller retry.
+        const currentExit = yield* dag.store.getWorkflow(workflowID).pipe(Effect.exit)
+        if (Exit.isFailure(currentExit) && Cause.hasInterrupts(currentExit.cause)) return yield* Effect.interrupt
+        const currentStatus = Exit.isSuccess(currentExit) ? currentExit.value?.status : undefined
+        if (currentStatus && isTerminalWorkflowStatusValue(currentStatus)) {
+          const retry =
+            currentStatus === "archived"
+              ? "Archived workflows are immutable — start a new workflow instead."
+              : `Correct the fragment and retry ${action}.`
+          return `Workflow state: ${currentStatus} (unchanged). ${retry}`
+        }
         const pauseExit = yield* dag.pause(workflowID).pipe(Effect.exit)
         if (Exit.isFailure(pauseExit) && Cause.hasInterrupts(pauseExit.cause)) return yield* Effect.interrupt
         if (Exit.isSuccess(pauseExit))
@@ -246,13 +259,17 @@ export const WorkflowTool = Tool.define<
           : `Workflow state: ${actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${String(Cause.squash(pauseExit.cause))}`
       })
 
-    const runRecoverableMutation = <A>(workflowID: Dag.ID, mutation: Effect.Effect<A, Error>) =>
+    const runRecoverableMutation = <A>(
+      workflowID: Dag.ID,
+      mutation: Effect.Effect<A, Error>,
+      action: "extend" | "replan",
+    ) =>
       mutation.pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.failCause(cause)
             : Effect.gen(function* () {
-                const workflowState = yield* parkRejectedWorkflow(workflowID)
+                const workflowState = yield* parkRejectedWorkflow(workflowID, action)
                 return yield* Effect.die(
                   new Error(`${String(Cause.squash(cause))}\n${workflowState}\n${WORKFLOW_RECOVERY.instruction}`),
                 )
@@ -260,7 +277,11 @@ export const WorkflowTool = Tool.define<
         ),
       )
 
-    const rejectDiagnostics = (diagnostics: Diagnostic[], context: string, parkWorkflowID?: Dag.ID) => {
+    const rejectDiagnostics = (
+      diagnostics: Diagnostic[],
+      context: string,
+      parking?: { workflowID: Dag.ID; action: "extend" | "replan" },
+    ) => {
       // P1-F: a missing replan envelope is a deterministic, self-correcting
       // mistake. Emit a machine-readable retry signal alongside the prose so the
       // parent keys its next attempt off a stable error_code instead of reusing
@@ -277,7 +298,7 @@ export const WorkflowTool = Tool.define<
         // A rejected mutation parks a live workflow durably. When the pause
         // fails, read back the actual state instead of claiming it is parked:
         // a terminal race or a storage defect needs a different recovery path.
-        const workflowState = parkWorkflowID ? yield* parkRejectedWorkflow(parkWorkflowID) : ""
+        const workflowState = parking ? yield* parkRejectedWorkflow(parking.workflowID, parking.action) : ""
         return yield* Effect.die(
           new Error(
             `${context} rejected by workflow validation:\n${diagnostics
@@ -316,6 +337,7 @@ export const WorkflowTool = Tool.define<
       description: CommandPlugin.WorkflowContent,
       parameters: Parameters,
       parseOptions: { onExcessProperty: "error" },
+      repairArguments: repairFlatWorkflowCall,
       formatValidationError: (error) =>
         [
           `Workflow call rejected by the action schema: ${error instanceof Error ? error.message : String(error)}`,
@@ -744,13 +766,17 @@ export const WorkflowTool = Tool.define<
                 node_defaults: workflowDefaults,
               })
               if (!result.valid || !result.prepared)
-                return yield* rejectDiagnostics(result.errors, "Workflow extend", params.workflow_id)
+                return yield* rejectDiagnostics(result.errors, "Workflow extend", {
+                  workflowID: params.workflow_id,
+                  action: "extend",
+                })
               const r = yield* runRecoverableMutation(
                 params.workflow_id,
                 withTerminalRecovery(
                   dag.extend(params.workflow_id, result.prepared.nodes),
                   "Terminal workflows are immutable except for the additive-extend reopen, which requires the workflow to have completed naturally at a wake-eligible reporting checkpoint (fragment adds new node ids; no early control(complete); no executed node beyond the checkpoint — condition-skipped dependents are fine). For failed workflows, use control(recover) with node_ids and expected_graph_rev from status. Cancelled workflows additionally require explicit resume_cancelled: true.",
                 ),
+                "extend",
               ).pipe(Effect.orDie)
               // #381: extend shares replan's resume contract — a paused
               // workflow must resume for the added nodes to ever run (pause
@@ -831,7 +857,10 @@ export const WorkflowTool = Tool.define<
                   node_defaults: workflowDefaults,
                 })
                 if (!result.valid || !result.prepared)
-                  return yield* rejectDiagnostics(result.errors, "Workflow replan", wfId)
+                  return yield* rejectDiagnostics(result.errors, "Workflow replan", {
+                    workflowID: wfId,
+                    action: "replan",
+                  })
                 // The graph raced to terminal while the fragment was being
                 // composed (the pause-first protocol was skipped). Surface
                 // the recovery options instead of a bare iron-law rejection.
@@ -841,6 +870,7 @@ export const WorkflowTool = Tool.define<
                     dag.replan(wfId, { nodes: result.prepared.nodes }),
                     "The workflow reached a terminal status before the replan arrived. For a local retry of failed work, use control(recover) with current node_ids and expected_graph_rev; cancelled work also requires explicit resume_cancelled: true. Additive extend remains available after a qualifying naturally completed checkpoint. Pause live scheduling before composing a changed graph.",
                   ),
+                  "replan",
                 ).pipe(Effect.orDie)
                 // A paused workflow (explicit pause-first protocol, or the
                 // runtime's gate pause after a checkpoint replan verdict) must
@@ -952,6 +982,17 @@ function resultPageEnd(content: string, offset: number, limit: number) {
     content.charCodeAt(end) <= 0xdfff
   if (!splitsSurrogatePair) return end
   return end - offset === 1 ? end + 1 : end - 1
+}
+
+/** A call shaped `{ action, ... }` without the `{ params }` wrapper is the
+ * same request. Wrap it before the action schema runs; the schema itself keeps
+ * its object-rooted `params` contract for providers. Anything else is left
+ * unchanged so strict decoding still rejects it. */
+function repairFlatWorkflowCall(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value
+  if (Object.hasOwn(value, "params")) return value
+  if (!Object.hasOwn(value, "action")) return value
+  return { params: value }
 }
 
 function validationOutput(result: DagValidation.ValidationResult) {

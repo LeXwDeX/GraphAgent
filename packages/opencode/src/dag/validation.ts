@@ -218,10 +218,11 @@ export const NodeSchema = Schema.Struct({
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
     description:
-      "If true, the parent agent is woken when this node completes or fails. Inherits config.node_defaults.report_to_parent",
+      "If true and the node has dependents, it is a blocking reporting checkpoint: every direct dependent must gate on its output via condition, and the node must declare output_schema. Without dependents it is a reporting leaf (a progress wake). Inherits config.node_defaults.report_to_parent",
   }),
   condition: Schema.optional(Schema.String).annotate({
-    description: "Expression evaluated before spawn; node is skipped if false",
+    description:
+      'One comparison on one direct dependency\'s output: "<dep>.output.<field> <op> <literal>" with ==, !=, <, <=, >, or >=; no && or ||. The node is skipped when the comparison is false',
   }),
   restart: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -624,6 +625,10 @@ export interface StructuralInput {
   /** Graph node_defaults for nodes that omit a field (authoring graphs are not
    * default-normalized). */
   node_defaults?: { readonly required?: boolean }
+  /** Node graphs are hand-authored, so redundant transitive edges are worth a
+   * warning. Block-compiled graphs are compiler-owned; their edges are not
+   * linted (default true for direct callers such as Dag.create). */
+  redundant_dependency_lint?: boolean
 }
 
 // Legacy byte-compat: Dag.create has always reported one structural class at
@@ -794,6 +799,167 @@ export function inputMappingDiagnostics(
   })
 }
 
+/** A redundant edge is one whose target stays reachable through another direct
+ * dependency. The wrapper names the edge and the path so the author can remove
+ * it without re-deriving the ordering. */
+export interface RedundantDependencyEdge {
+  consumer: string
+  dependency: string
+  /** Direct dependency whose path makes `dependency` reachable. */
+  via: string
+  /** Full path: consumer -> via -> ... -> dependency. */
+  path: string[]
+}
+
+/** The path between two node ids along `depends_on` edges (from `from` down to
+ * `target`), or undefined when `target` is not a transitive dependency. Iterative
+ * and cycle-safe: topology errors are reported separately. */
+function dependencyPath(byID: ReadonlyMap<string, NodeConfig>, from: string, target: string): string[] | undefined {
+  const pending: Array<{ id: string; path: string[] }> = [{ id: from, path: [from] }]
+  const seen = new Set<string>()
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    if (current.id === target) return current.path
+    if (seen.has(current.id)) continue
+    seen.add(current.id)
+    const node = byID.get(current.id)
+    if (!node) continue
+    for (const dependency of node.depends_on) pending.push({ id: dependency, path: [...current.path, dependency] })
+  }
+  return undefined
+}
+
+/** A redundant edge still supplies the implicit prompt binding for its id, so
+ * removing it can turn a working template into prompt.unbound_variable. An
+ * inline template names the variables it uses, so only removed dependencies
+ * with a matching placeholder need a repair. A prompt asset's content is
+ * unknown here, so keep every former direct-dependency binding unless a static
+ * input already binds that name (static input wins at render time). The repair
+ * must use input_mapping — because input_mapping replaces ALL implicit
+ * direct-dependency bindings — and an explicit mapping is already unaffected. */
+function implicitBindingRepair(node: NodeConfig, removedDependencies: readonly string[]): string {
+  if (node.input_mapping !== undefined || removedDependencies.length === 0) return ""
+  const inline = node.prompt_template.inline
+  const placeholders = inline === undefined ? undefined : new Set(placeholderKeys(inline))
+  if (placeholders && !removedDependencies.some((dependency) => placeholders.has(dependency))) return ""
+  const staticInput = node.prompt_template.input ?? {}
+  const mapping = Object.fromEntries(
+    [...new Set(node.depends_on)]
+      .filter(
+        (dependency) =>
+          !Object.hasOwn(staticInput, dependency) && (placeholders === undefined || placeholders.has(dependency)),
+      )
+      .map((dependency) => [dependency, dependency]),
+  )
+  if (Object.keys(mapping).length === 0) return ""
+  return (
+    `keep the implicit depends_on prompt bindings with input_mapping ${JSON.stringify(mapping)}` +
+    ` (input_mapping replaces every implicit direct-dependency binding; keep one entry for each direct dependency the prompt uses)`
+  )
+}
+
+/** `depends_on` edges whose target is already reachable through another direct
+ * dependency. Redundancy is legal (it still schedules and binds), so callers
+ * report it as a warning; it matters because redundant edges inflate checkpoint
+ * diagnostics and can make a satisfiable gate look unsatisfiable. */
+export function redundantDependencyEdges(
+  consumer: NodeConfig,
+  byID: ReadonlyMap<string, NodeConfig>,
+): RedundantDependencyEdge[] {
+  const dependencies = [...new Set(consumer.depends_on)]
+  return dependencies.flatMap((dependency) => {
+    for (const via of dependencies) {
+      if (via === dependency) continue
+      const path = dependencyPath(byID, via, dependency)
+      if (path) return [{ consumer: consumer.id, dependency, via, path: [consumer.id, ...path] }]
+    }
+    return []
+  })
+}
+
+export function redundantDependencyDiagnostics(
+  consumers: readonly NodeConfig[],
+  graph: readonly NodeConfig[] = consumers,
+): Diagnostic[] {
+  const byID = new Map(graph.map((node) => [node.id, node]))
+  return consumers.flatMap((consumer) =>
+    redundantDependencyEdges(consumer, byID).map((edge) => {
+      const repair = implicitBindingRepair(consumer, [edge.dependency])
+      return diagnostic({
+        severity: "warning",
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: `nodes[${consumer.id}].depends_on`,
+        message:
+          `node "${consumer.id}" depends directly on "${edge.dependency}", but that edge is redundant:` +
+          ` ${edge.path.join(" -> ")} already orders it via "${edge.via}"`,
+        hint:
+          `Remove the redundant depends_on edge "${consumer.id} -> ${edge.dependency}"; it is implied via "${edge.via}". Redundancy is legal, so this is a warning` +
+          (repair ? `. To remove it safely, ${repair}.` : ""),
+      })
+    }),
+  )
+}
+
+/** The `report_to_parent: false` exit is the easiest one to reach and silently
+ * removes verdict gating for the whole downstream graph; name that cost and the
+ * block form that keeps the gate whenever the hint offers it. */
+const CHECKPOINT_WEAKENING =
+  'Setting report_to_parent: false removes verdict gating for every downstream node; for review/decision pipelines prefer the blocks form (workflow guide topic "blocks"), whose compiled graphs gate dependents on verdicts.'
+
+function plural(count: number): string {
+  return count === 1 ? "" : "s"
+}
+
+/** One fix line per ungated dependent. A single `condition` reads exactly one
+ * direct dependency, so a condition gate is only suggested when removing the
+ * named redundant edges leaves exactly one reporting checkpoint. The removal
+ * carries the input_mapping repair whenever it drops an implicit prompt
+ * binding. */
+function checkpointDependentFix(
+  dependent: NodeConfig,
+  reportingCheckpointIds: ReadonlySet<string>,
+  byID: ReadonlyMap<string, NodeConfig>,
+): string {
+  const redundant = redundantDependencyEdges(dependent, byID).filter((edge) =>
+    reportingCheckpointIds.has(edge.dependency),
+  )
+  const redundantDependencies = new Set(redundant.map((edge) => edge.dependency))
+  const remaining = [...new Set(dependent.depends_on)].filter(
+    (dependency) => reportingCheckpointIds.has(dependency) && !redundantDependencies.has(dependency),
+  )
+  const repair = implicitBindingRepair(
+    dependent,
+    redundant.map((edge) => edge.dependency),
+  )
+  const removal =
+    redundant.length === 0
+      ? ""
+      : [
+          `remove the redundant edge${plural(redundant.length)} ` +
+            redundant
+              .map(
+                (edge) =>
+                  `"${edge.consumer} -> ${edge.dependency}" (implied via "${edge.via}": ${edge.path.join(" -> ")})`,
+              )
+              .join(", "),
+          ...(repair ? [repair] : []),
+        ].join("; ") + "; "
+  if (remaining.length === 1) {
+    return (
+      `- "${dependent.id}": ${removal}then gate "${dependent.id}" with condition: "${remaining[0]}.output.<field> == ..."` +
+      ` (e.g. on its verdict) and declare output_schema on "${remaining[0]}" so the gate reads a schema-validated verdict`
+    )
+  }
+  if (remaining.length > 1) {
+    return (
+      `- "${dependent.id}" directly depends on ${remaining.length} reporting checkpoints (${remaining.map((id) => `"${id}"`).join(", ")})` +
+      ` that are not redundant; one condition reads one direct dependency, so a single condition cannot gate all of them. ` +
+      `${removal}Keep one reporting checkpoint for this dependent, or use the blocks form for review/decision pipelines`
+    )
+  }
+  return `- "${dependent.id}": ${removal}no reporting checkpoint remains as a direct dependency after that removal`
+}
+
 /** A report_to_parent node wakes the parent for adjudication; a dependent
  * without a condition on that node's output is spawned the moment the
  * checkpoint completes, so the checkpoint verdict can never act first.
@@ -823,24 +989,31 @@ export function checkpointGateDiagnostics(
   const reportsToParent = (node: NodeConfig) =>
     node.report_to_parent ?? defaults?.report_to_parent ?? DEFAULT_WORKFLOW_CONFIG.reportToParent
   const requireOutputSchema = options?.requireOutputSchema ?? true
+  const byID = new Map(nodes.map((node) => [node.id, node]))
+  const reportingCheckpointIds = new Set(
+    nodes.filter((node) => reportsToParent(node) && !options?.exemptCheckpointIds?.has(node.id)).map((node) => node.id),
+  )
   return nodes.flatMap((checkpoint) => {
-    if (!reportsToParent(checkpoint)) return []
-    if (options?.exemptCheckpointIds?.has(checkpoint.id)) return []
+    if (!reportingCheckpointIds.has(checkpoint.id)) return []
     const dependents = nodes.filter((dependent) => dependent.depends_on.includes(checkpoint.id))
-    const ungated = dependents
-      .filter((dependent) => conditionReference(dependent.condition) !== checkpoint.id)
-      .map((dependent) =>
-        diagnostic({
-          code: DIAGNOSTIC_CODES.dagInvalid,
-          path: `nodes[${dependent.id}].condition`,
-          message:
-            `reporting checkpoint "${checkpoint.id}" has dependent "${dependent.id}" that is not gated on its output` +
-            ` — the engine spawns "${dependent.id}" as soon as "${checkpoint.id}" completes, so the checkpoint verdict cannot be acted on first`,
-          hint:
-            `Gate "${dependent.id}" with condition: "${checkpoint.id}.output.<field> == ..." (e.g. on its verdict) and declare output_schema on "${checkpoint.id}" so the gate reads a schema-validated verdict,` +
-            ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally`,
-        }),
-      )
+    const ungated = dependents.filter((dependent) => conditionReference(dependent.condition) !== checkpoint.id)
+    const fixes = ungated.map((dependent) => checkpointDependentFix(dependent, reportingCheckpointIds, byID))
+    const grouped =
+      ungated.length === 0
+        ? []
+        : [
+            diagnostic({
+              code: DIAGNOSTIC_CODES.dagInvalid,
+              path: `nodes[${checkpoint.id}]`,
+              message:
+                `reporting checkpoint "${checkpoint.id}" has ${ungated.length} dependent${plural(ungated.length)} that ` +
+                `${ungated.length === 1 ? "is" : "are"} not gated on its output: ${ungated.map((dependent) => `"${dependent.id}"`).join(", ")}` +
+                ` — the engine spawns each as soon as "${checkpoint.id}" completes, so the checkpoint verdict cannot be acted on first`,
+              hint:
+                `${fixes.join("\n")}\n` +
+                `Keep "${checkpoint.id}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
+            }),
+          ]
     // DAG-01: a checkpoint whose output a gate reads must declare
     // output_schema. Without a schema the child may complete with a raw
     // string; the runtime normalizes JSON strings, but a prose reply
@@ -860,11 +1033,11 @@ export function checkpointGateDiagnostics(
                 ` — without a schema the child may complete with prose that resolves no fields, leaving the gate permanently false and silently skipping the gated subtree`,
               hint:
                 `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),` +
-                ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally`,
+                ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
             }),
           ]
         : []
-    return [...ungated, ...schemaRequired]
+    return [...grouped, ...schemaRequired]
   })
 }
 
@@ -883,18 +1056,30 @@ export function effectiveMaxTotalNodes(maxTotalNodes: number | undefined) {
   return maxTotalNodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes
 }
 
+/** Which document carries the ceiling. Only `start` can change it: extend,
+ * replan, and recover documents have no graph-budget fields, so a hint that
+ * says "raise max_total_nodes" cannot be followed there. */
+export type CeilingAction = "start" | "extend" | "replan" | "recover"
+
 /** Reusable ceiling check: produces the historical diagnostic when the
  * cumulative node count exceeds the configured maximum. Shared by create
  * (existing_node_count + nodes.length) and replan (existing + add count). */
-function ceilingExceeded(totalNodes: number, maxTotalNodes: number | undefined): Diagnostic[] {
+function ceilingExceeded(
+  totalNodes: number,
+  maxTotalNodes: number | undefined,
+  action: CeilingAction = "start",
+): Diagnostic[] {
   const max = effectiveMaxTotalNodes(maxTotalNodes)
   if (totalNodes <= max) return []
   return [
     diagnostic({
       code: DIAGNOSTIC_CODES.dagInvalid,
-      path: "config.max_total_nodes",
+      path: action === "start" ? "config.max_total_nodes" : "nodes",
       message: `Total node ceiling exceeded: ${totalNodes} nodes > ${max} max`,
-      hint: "Reduce the graph or raise max_total_nodes deliberately",
+      hint:
+        action === "start"
+          ? "Reduce the graph or raise config.max_total_nodes deliberately"
+          : `The ceiling is fixed by the start document (this ${action} would reach ${totalNodes} nodes; limit ${max}); a ${action} document cannot carry config.max_total_nodes. Shrink the fragment or start a new workflow with a higher config.max_total_nodes`,
     }),
   ]
 }
@@ -1094,6 +1279,7 @@ export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
     ...tagLegacyClass(review.warnings, 5),
     ...(duplicates.length === 0 ? topologyDiagnostics(input.nodes) : []),
     ...tagLegacyClass(outputSchemaKeywordDiagnostics(input.nodes), 8),
+    ...tagLegacyClass(input.redundant_dependency_lint === false ? [] : redundantDependencyDiagnostics(input.nodes), 8),
   ])
 }
 
@@ -1127,6 +1313,9 @@ export interface ReplanStructuralInput {
    * them, so a legacy workflow stays mutable; new fragment conditions are
    * still held to the full grammar. */
   grandfatheredNodeIds?: ReadonlySet<string>
+  /** The document that triggered this check. Only a start document owns the
+   * graph budget; extend/replan/recover hints must not suggest raising it. */
+  action?: Exclude<CeilingAction, "start">
   config: { mode?: ExecutionMode; max_total_nodes?: number }
 }
 
@@ -1150,11 +1339,15 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     ...tagLegacyClass(conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds), 2),
     ...tagLegacyClass(fanOutDiagnostics(input.rerunNodes, input.merged.nodes), 2),
     ...tagLegacyClass(bindingDiagnostics(input.rerunNodes), 3),
-    ...tagLegacyClass(ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes), 4),
+    ...tagLegacyClass(
+      ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
+      4,
+    ),
     ...tagLegacyClass(review.errors, 5),
     ...tagLegacyClass(review.warnings, 5),
     ...(duplicates.length === 0 ? topologyDiagnostics(input.rerunNodes) : []),
     ...tagLegacyClass(outputSchemaKeywordDiagnostics(input.rerunNodes), 8),
+    ...tagLegacyClass(redundantDependencyDiagnostics(input.rerunNodes, input.merged.nodes), 8),
     // DAG-02: the checkpoint gate must police the MERGED graph too — a
     // fragment can attach a new dependent to an EXISTING reporting
     // checkpoint, which the fragment-scoped authoring check cannot see.
@@ -1350,6 +1543,7 @@ export function validatePostCompile(input: {
             mode: input.config.mode,
             max_total_nodes: input.config.max_total_nodes,
             node_defaults: input.config.node_defaults,
+            redundant_dependency_lint: input.blocks === undefined,
           })),
       // DAG-02: the checkpoint gate is NOT a whole-graph structural check —
       // fragment actions (replan/extend) must satisfy it exactly like start.

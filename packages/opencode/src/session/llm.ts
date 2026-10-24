@@ -238,6 +238,7 @@ const live: Layer.Layer<
         ...input,
         tools: toolChoice === "none" ? {} : input.tools,
         provider: item,
+        cfg,
         auth: info,
         plugin,
         flags,

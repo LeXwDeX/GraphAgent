@@ -17,7 +17,7 @@ import { hasCaptureSlot } from "@/dag/runtime/capture"
 import { spawnNode } from "@/dag/runtime/spawn"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 
-function reply(text: string): SessionV1.WithParts {
+function reply(text: string, finish: "stop" | "length" = "stop"): SessionV1.WithParts {
   const id = MessageID.ascending(),
     sessionID = SessionID.make("ses_child")
   return {
@@ -34,7 +34,7 @@ function reply(text: string): SessionV1.WithParts {
       modelID: ModelV2.ID.make("test"),
       providerID: ProviderV2.ID.make("test"),
       time: { created: Date.now() },
-      finish: "stop",
+      finish,
     },
     parts: [{ id: PartID.ascending(), sessionID, messageID: id, type: "text", text }],
   }
@@ -55,6 +55,8 @@ type Case = {
   modelError?: boolean
   deadline?: boolean
   replaceWhilePaused?: boolean
+  /** First turn ends at the output cap; mutate durable state before the continuation. */
+  lengthFence?: "paused" | "extended" | "replaced" | "cancelled"
 }
 async function exercise(options: Case = {}) {
   let node = makeNodeRow({
@@ -77,6 +79,7 @@ async function exercise(options: Case = {}) {
     completions = 0,
     toolWrites = 0
   const events: { type: string; output?: unknown; reason?: string }[] = []
+  const promptStates: Array<{ status: string; overdue: boolean }> = []
   const initial = reply(options.artifactPath ?? "old"),
     updated = reply(options.artifactPath ?? "updated")
   if (options.modelError && initial.info.role === "assistant")
@@ -108,7 +111,7 @@ async function exercise(options: Case = {}) {
           nodeCompleted: (_dag, _node, output) =>
             Effect.gen(function* () {
               completions++
-              if ((completions === 1 || options.noResubmission) && !options.staleReceipt) {
+              if ((completions === 1 || options.noResubmission) && !options.staleReceipt && !options.lengthFence) {
                 if (options.replaced) node = { ...node, replanAttempts: 1, childSessionId: "ses_replaced" }
                 if (options.paused || options.replaceWhilePaused) workflow = { ...workflow, status: "paused" }
                 if (options.deadline) node = { ...node, deadlineMs: Date.now() - 1 }
@@ -236,11 +239,21 @@ async function exercise(options: Case = {}) {
     prompt: () =>
       Effect.gen(function* () {
         prompts++
+        const fence = options.lengthFence
+        promptStates.push({
+          status: workflow.status,
+          overdue: node.deadlineMs !== null && Date.now() >= node.deadlineMs,
+        })
         if (options.modelDefect) return yield* Effect.die(new Error("live preparation defect"))
         if (prompts > 3) return yield* Effect.die(new Error("unbounded nudge regression"))
         if (prompts === 1) {
           toolWrites++
-          return initial
+          if (!fence) return initial
+          if (fence === "paused") workflow = { ...workflow, status: "paused" }
+          if (fence === "cancelled") workflow = { ...workflow, status: "cancelled" }
+          if (fence === "replaced") node = { ...node, replanAttempts: 1, childSessionId: "ses_replaced" }
+          if (fence === "extended") node = { ...node, deadlineMs: Date.now() - 1 }
+          return reply("", "length")
         }
         return yield* next
       }),
@@ -263,13 +276,20 @@ async function exercise(options: Case = {}) {
           promptParts: [{ type: "text", text: "work" }],
           ...(options.structured ? { outputSchema: { type: "object" } } : {}),
         })
-        if (options.paused || options.deadline || options.replaceWhilePaused)
+        if (
+          options.paused ||
+          options.deadline ||
+          options.replaceWhilePaused ||
+          options.lengthFence === "paused" ||
+          options.lengthFence === "extended"
+        )
           yield* Effect.forkChild(
             Effect.sleep(300).pipe(
               Effect.andThen(
                 Effect.sync(() => {
                   workflow = { ...workflow, status: "running" }
-                  if (options.deadline) node = { ...node, deadlineMs: Date.now() + 60_000 }
+                  if (options.deadline || options.lengthFence === "extended")
+                    node = { ...node, deadlineMs: Date.now() + 60_000 }
                   if (options.replaceWhilePaused) node = { ...node, replanAttempts: 1, childSessionId: "ses_replaced" }
                 }),
               ),
@@ -283,7 +303,18 @@ async function exercise(options: Case = {}) {
       }),
     ).pipe(Effect.provide(layer)),
   )
-  return { events, created, loops, prompts, toolWrites, node, receipts, permitReleased, captureRegistered }
+  return {
+    events,
+    created,
+    loops,
+    prompts,
+    promptStates,
+    toolWrites,
+    node,
+    receipts,
+    permitReleased,
+    captureRegistered,
+  }
 }
 
 describe("live durable message continuation", () => {
@@ -374,6 +405,33 @@ describe("live durable message continuation", () => {
     const r = await exercise({ queued: 0, undeliverable: 1 })
     expect(r.loops).toBe(0)
     expect(r.events[0]?.reason).toContain("unavailable")
+  })
+  test("a length continuation waits for resume after a durable pause", async () => {
+    const r = await exercise({ lengthFence: "paused" })
+    expect(r.prompts).toBe(2)
+    expect(r.promptStates).toEqual([
+      { status: "running", overdue: false },
+      { status: "running", overdue: false },
+    ])
+    expect(r.loops).toBe(0)
+    expect(r.events).toEqual([{ type: "completed", output: "updated" }])
+  })
+  test("a length continuation waits for a durable deadline extension", async () => {
+    const r = await exercise({ lengthFence: "extended" })
+    expect(r.prompts).toBe(2)
+    expect(r.promptStates[1]).toEqual({ status: "running", overdue: false })
+    expect(r.events).toEqual([{ type: "completed", output: "updated" }])
+  })
+  test("attempt replacement fences the length continuation", async () => {
+    const r = await exercise({ lengthFence: "replaced" })
+    expect(r.prompts).toBe(1)
+    expect(r.events).toEqual([])
+    expect(r.node.childSessionId).toBe("ses_replaced")
+  })
+  test("cancellation fences the length continuation", async () => {
+    const r = await exercise({ lengthFence: "cancelled" })
+    expect(r.prompts).toBe(1)
+    expect(r.events).toEqual([])
   })
   test("a failed model result never publishes success", async () => {
     const r = await exercise({ modelError: true })

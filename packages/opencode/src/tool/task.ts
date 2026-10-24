@@ -13,7 +13,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -48,6 +48,65 @@ const BACKGROUND_UPDATED = [
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
   "Work on non-overlapping tasks, or briefly tell the user what you sent and end your response.",
 ].join("\n")
+const TRUNCATION_CONTINUATION =
+  "Your previous turn hit the output token limit. Do not redo the work; write the final answer now."
+
+function finalText(result: SessionV1.WithParts) {
+  return result.parts.findLast((part) => part.type === "text")?.text ?? ""
+}
+
+// A continuation answers the same task. Keep the earlier partial when the
+// continuation adds nothing, but do not duplicate an answer it already contains.
+function mergePartial(prior: string, text: string) {
+  if (!prior || prior === text) return text || prior
+  if (!text) return prior
+  return text.includes(prior) ? text : `${prior}\n${text}`
+}
+
+// A child has no human to type "continue" after the output cap cuts its turn.
+// Never let that truncation read as a completed task with an empty result.
+function settle(result: SessionV1.WithParts, prior = ""): { text: string; error?: Error } {
+  const text = finalText(result)
+  const partial = mergePartial(prior, text)
+  const info = result.info.role === "assistant" ? result.info : undefined
+  if (info?.finish === "length") {
+    const { output, reasoning } = info.tokens
+    const detail = `${output + reasoning}; reasoning ${reasoning}, text ${output}`
+    return {
+      text,
+      error: new Error(
+        `Subagent output truncated at the output token cap (${detail})` +
+          (partial ? `. Partial output:\n${partial}` : ""),
+      ),
+    }
+  }
+  if (!text.trim())
+    return {
+      text,
+      error: new Error("Subagent returned an empty final answer" + (partial ? `. Partial output:\n${partial}` : "")),
+    }
+  return { text }
+}
+
+function providerFailure(result: SessionV1.WithParts, prior = ""): Error | undefined {
+  const error = result.info.role === "assistant" ? result.info.error : undefined
+  if (!error || error.name === "MessageAbortedError") return undefined
+  const detail = "message" in error.data && typeof error.data.message === "string" ? error.data.message : ""
+  const reason = detail ? `${error.name}: ${detail}` : error.name
+  const partial = mergePartial(prior, finalText(result))
+  return new Error(partial ? `Subagent failed (${reason}). Partial output:\n${partial}` : `Subagent failed (${reason})`)
+}
+
+function continuationFailure(cause: Cause.Cause<unknown>, prior: string): Effect.Effect<never, unknown> {
+  if (Cause.hasInterrupts(cause)) return Effect.failCause(cause)
+  const defect = Cause.squash(cause)
+  const detail = defect instanceof Error ? defect.message : String(defect)
+  return Effect.die(
+    new Error(`Subagent continuation failed (${detail})` + (prior ? `. Partial output:\n${prior}` : ""), {
+      cause: defect,
+    }),
+  )
+}
 
 const BaseParameterFields = {
   description: Schema.String.annotate({ description: "A short (3-5 words) description of the task" }),
@@ -284,7 +343,7 @@ export const TaskTool = Tool.define(
             if (text) yield* startCtx.append(nextSession.id, text)
           }
         }
-        const result = yield* ops.prompt(
+        let result = yield* ops.prompt(
           {
             messageID: MessageID.ascending(),
             sessionID: nextSession.id,
@@ -298,19 +357,40 @@ export const TaskTool = Tool.define(
           },
           { internalDelegation: true },
         )
-        const text = result.parts.findLast((item) => item.type === "text")?.text ?? ""
         // A child that ended on a provider or output error must not read as a
         // completed task carrying an empty or partial answer. Cancellation keeps
         // its existing interrupt path.
-        const error = result.info.role === "assistant" ? result.info.error : undefined
-        if (error && error.name !== "MessageAbortedError") {
-          const detail = "message" in error.data && typeof error.data.message === "string" ? error.data.message : ""
-          const reason = detail ? `${error.name}: ${detail}` : error.name
-          return yield* Effect.fail(
-            new Error(text ? `Subagent failed (${reason}). Partial output:\n${text}` : `Subagent failed (${reason})`),
-          )
+        const failure = providerFailure(result)
+        if (failure) return yield* Effect.fail(failure)
+        let prior = ""
+        // One bounded continuation in the same child session: the cap cut the
+        // child's turn, and it has no human to ask for the rest.
+        if (result.info.role === "assistant" && result.info.finish === "length") {
+          prior = finalText(result)
+          const continued = yield* ops
+            .prompt(
+              {
+                messageID: MessageID.ascending(),
+                sessionID: nextSession.id,
+                model: {
+                  modelID: model.modelID,
+                  providerID: model.providerID,
+                },
+                variant: next.model ? undefined : variant,
+                agent: next.name,
+                parts: [{ type: "text", synthetic: true, text: TRUNCATION_CONTINUATION }],
+              },
+              { continueToolBudget: true, internalDelegation: true },
+            )
+            .pipe(Effect.exit)
+          if (Exit.isFailure(continued)) return yield* continuationFailure(continued.cause, prior)
+          result = continued.value
+          const continuedFailure = providerFailure(result, prior)
+          if (continuedFailure) return yield* Effect.fail(continuedFailure)
         }
-        return text
+        const settled = settle(result, prior)
+        if (settled.error) return yield* Effect.fail(settled.error)
+        return settled.text
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
@@ -565,21 +645,34 @@ export const TaskTool = Tool.define(
                 { continueToolBudget: true, internalDelegation: true },
               )
               .pipe(Effect.exit)
-            if (Exit.isFailure(cont)) {
-              lastStillBlocked = false
-              break
-            }
+            // A failed continuation is not a clean stop: propagate its
+            // interruption, defect, or failure instead of returning stale output.
+            if (Exit.isFailure(cont)) return yield* Effect.failCause(cont.cause)
             const after = yield* sessions.messages({ sessionID: nextSession.id }).pipe(Effect.orDie)
             // Like the main Stop budget, only consecutive feedback turns without tool work count.
             if (countTools(after) > toolsBefore) i = -1
+            const failure = providerFailure(cont.value)
+            if (failure) {
+              lastStillBlocked = false
+              output = {
+                ...output,
+                output: renderOutput({ sessionID: nextSession.id, state: "error", text: failure.message }),
+              }
+              break
+            }
             // The parent receives the continuation's final answer, not the stale first one.
+            const settled = settle(cont.value)
+            if (settled.error) {
+              lastStillBlocked = false
+              output = {
+                ...output,
+                output: renderOutput({ sessionID: nextSession.id, state: "error", text: settled.error.message }),
+              }
+              break
+            }
             output = {
               ...output,
-              output: renderOutput({
-                sessionID: nextSession.id,
-                state: "completed",
-                text: cont.value.parts.findLast((item) => item.type === "text")?.text ?? "",
-              }),
+              output: renderOutput({ sessionID: nextSession.id, state: "completed", text: settled.text }),
             }
           }
           if (lastStillBlocked) {

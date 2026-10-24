@@ -21,6 +21,13 @@ const it = testEffect(
   ),
 )
 
+const itOutputOverride = testEffect(
+  Layer.mergeAll(
+    RuntimeFlags.layer({ outputTokenMax: 64_000 }),
+    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
+  ),
+)
+
 function fixture(providerName: string, modelName: string, npm: string) {
   const providerID = ProviderV2.ID.make(providerName)
   const model: Provider.Model = {
@@ -63,6 +70,7 @@ const request = (providerName = "deepseek", modelName = "deepseek-chat", npm = "
     return {
       model,
       provider,
+      cfg: {},
       user: {
         id: SessionV1.MessageID.make("msg_test"),
         sessionID: SessionID.make("ses_test"),
@@ -170,11 +178,74 @@ describe("runtime capabilities in model requests", () => {
     }),
   )
 
+  it.instance("honors an explicitly configured output limit above 32k", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: { context: 128_000, output: 384_000 } },
+        cfg: {
+          provider: { deepseek: { models: { "deepseek-chat": { limit: { context: 128_000, output: 384_000 } } } } },
+        },
+      })
+      expect(prepared.params.maxOutputTokens).toBe(384_000)
+    }),
+  )
+
+  it.instance("keeps the conservative default when the limit only comes from the catalog", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: { context: 1_000_000, output: 384_000 } },
+      })
+      expect(prepared.params.maxOutputTokens).toBe(32_000)
+    }),
+  )
+
   it.instance("small helper requests omit the product catalog", () =>
     Effect.gen(function* () {
       const prepared = yield* prepare({ ...(yield* request()), small: true })
       expect(prepared.system.join("\n")).not.toContain(RUNTIME_CAPABILITIES)
       expect(prepared.system.join("\n")).toContain(DEFAULT_WRITING_STYLE)
+    }),
+  )
+})
+
+describe("output token override", () => {
+  itOutputOverride.instance("an override above the conservative default applies to a catalog-only limit", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: { context: 128_000, output: 128_000 } },
+      })
+      expect(prepared.params.maxOutputTokens).toBe(64_000)
+    }),
+  )
+
+  itOutputOverride.instance("keeps a catalog cap below the override", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: { context: 128_000, output: 8_192 } },
+      })
+      expect(prepared.params.maxOutputTokens).toBe(8_192)
+    }),
+  )
+
+  itOutputOverride.instance("caps an explicitly configured limit with the override", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        model: { ...input.model, limit: { context: 128_000, output: 384_000 } },
+        cfg: {
+          provider: { deepseek: { models: { "deepseek-chat": { limit: { context: 128_000, output: 384_000 } } } } },
+        },
+      })
+      expect(prepared.params.maxOutputTokens).toBe(64_000)
     }),
   )
 })

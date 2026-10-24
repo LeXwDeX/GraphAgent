@@ -14,6 +14,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
+import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { WorkflowTool } from "../../src/tool/workflow"
 import { Truncate } from "@/tool/truncate"
@@ -21,7 +22,7 @@ import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstances } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { awaitWithTimeout, testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -52,6 +53,24 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
 
 const it = testEffect(layer())
 const background = testEffect(layer({ experimentalBackgroundSubagents: true }))
+const stopped = testEffect(
+  Layer.mergeAll(
+    layer(),
+    Layer.mock(SettingsHook.Service, {
+      trigger: (payload): Effect.Effect<TriggerResult> =>
+        Effect.succeed(
+          payload.event === "SubagentStop" && !payload.stopHookActive
+            ? {
+                additionalContexts: [],
+                systemMessages: [],
+                blocked: { reason: "verify the continuation", command: "mock" },
+              }
+            : { additionalContexts: [], systemMessages: [] },
+        ),
+      unregisterScoped: () => Effect.void,
+    }),
+  ),
+)
 const executeRaw = (execute: Tool.Def["execute"]) =>
   // oxlint-disable-next-line typescript-eslint(no-unsafe-type-assertion) -- test shim: invoke the wrapped execute with unrepaired raw args
   execute as unknown as (args: unknown, ctx: Tool.Context) => Effect.Effect<Tool.ExecuteResult>
@@ -135,6 +154,29 @@ function reply(input: SessionPrompt.PromptInput, text: string): SessionV1.WithPa
     ],
   }
 }
+
+function assistantReply(
+  input: SessionPrompt.PromptInput,
+  options: { text: string; finish?: string; reasoning?: number; output?: number; error?: SessionV1.Assistant["error"] },
+): SessionV1.WithParts {
+  const message = reply(input, options.text)
+  if (message.info.role !== "assistant") return message
+  return {
+    ...message,
+    info: {
+      ...message.info,
+      ...(options.error ? { error: options.error } : {}),
+      finish: options.finish ?? "stop",
+      tokens: {
+        ...message.info.tokens,
+        output: options.output ?? 0,
+        reasoning: options.reasoning ?? 0,
+      },
+    },
+  }
+}
+
+const TRUNCATED = { text: "", finish: "length", reasoning: 32_000, output: 0 } as const
 
 describe("tool.task", () => {
   it.instance("rejects direct task execution from a child before permission or session creation", () =>
@@ -560,6 +602,553 @@ describe("tool.task", () => {
         expect(message).toContain("MessageOutputLengthError")
         expect(message).toContain("half an answer")
       }
+    }),
+  )
+
+  it.instance("continues a child truncated at the output cap once and returns the continued answer", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const prompts: { input: SessionPrompt.PromptInput; options?: SessionPrompt.AdmissionOptions }[] = []
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input, options) =>
+          Effect.sync(() => {
+            prompts.push({ input, options })
+            return prompts.length === 1
+              ? assistantReply(input, TRUNCATED)
+              : assistantReply(input, { text: "CONTINUED ANSWER" })
+          }),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "review the diff",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('state="completed"')
+      expect(result.output).toContain("CONTINUED ANSWER")
+      expect(prompts).toHaveLength(2)
+      expect(prompts[0]?.options).toEqual({ internalDelegation: true })
+      expect(prompts[1]?.options).toEqual({ continueToolBudget: true, internalDelegation: true })
+      expect(prompts[1]?.input.sessionID).toBe(prompts[0]?.input.sessionID)
+      const continuation = prompts[1]?.input.parts[0]
+      expect(continuation?.type).toBe("text")
+      if (continuation?.type === "text") expect(continuation.text).toContain("output token limit")
+    }),
+  )
+
+  it.instance("fails a foreground child still truncated after one continuation with the token split", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            prompts += 1
+            return assistantReply(input, TRUNCATED)
+          }),
+      }
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "review the diff",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(prompts).toBe(2)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("output token cap")
+        expect(message).toContain("reasoning 32000")
+        expect(message).toContain("text 0")
+      }
+    }),
+  )
+
+  it.instance("fails a foreground child whose continued answer is empty", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            prompts += 1
+            return prompts === 1 ? assistantReply(input, TRUNCATED) : assistantReply(input, { text: "" })
+          }),
+      }
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "review the diff",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(prompts).toBe(2)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("empty final answer")
+      }
+    }),
+  )
+
+  const PARTIAL = { text: "PARTIAL", finish: "length", output: 100 } as const
+
+  const partialRetention = [
+    {
+      name: "empty continued answer",
+      second: (input: SessionPrompt.PromptInput) => Effect.succeed(assistantReply(input, { text: "" })),
+      expected: "empty final answer",
+    },
+    {
+      name: "continued provider error",
+      second: (input: SessionPrompt.PromptInput) =>
+        Effect.succeed(
+          assistantReply(input, { text: "", error: { name: "MessageOutputLengthError" as const, data: {} } }),
+        ),
+      expected: "MessageOutputLengthError",
+    },
+    {
+      name: "continued execution defect",
+      second: () => Effect.die(new Error("continuation socket closed")),
+      expected: "continuation socket closed",
+    },
+  ] as const
+
+  for (const scenario of partialRetention) {
+    it.instance(`retains the first partial answer when the continuation fails with ${scenario.name}`, () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let prompts = 0
+        const promptOps: TaskPromptOps = {
+          cancel: () => Effect.void,
+          resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+          prompt: (input) => {
+            prompts += 1
+            return prompts === 1 ? Effect.succeed(assistantReply(input, PARTIAL)) : scenario.second(input)
+          },
+        }
+
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "review the diff",
+              subagent_type: "general",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(prompts).toBe(2)
+        if (Exit.isFailure(exit)) {
+          const message = Cause.pretty(exit.cause)
+          expect(message).toContain(scenario.expected)
+          expect(message).toContain("PARTIAL")
+        }
+      }),
+    )
+  }
+
+  background.instance("background task truncated after one continuation settles as an error", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      let childPrompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id)
+            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "noted")))
+          childPrompts += 1
+          return Effect.succeed(assistantReply(input, TRUNCATED))
+        },
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "review the diff",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      expect(waited.timedOut).toBe(false)
+      expect(waited.info?.status).toBe("error")
+      expect(waited.info?.error).toContain("output token cap")
+      expect(waited.info?.error).toContain("reasoning 32000")
+      expect(childPrompts).toBe(2)
+      const notification = yield* awaitWithTimeout(
+        Deferred.await(injected),
+        "background truncation result was not injected into the parent",
+      )
+      const part = notification.parts[0]
+      expect(part?.type).toBe("text")
+      if (part?.type === "text") {
+        expect(part.text).toContain('state="error"')
+        expect(part.text).toContain("output token cap")
+        expect(part.text).not.toContain('state="completed"')
+      }
+    }),
+  )
+
+  background.instance("background task failure notification retains the first partial answer", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      let childPrompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id)
+            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "noted")))
+          childPrompts += 1
+          return Effect.succeed(
+            childPrompts === 1 ? assistantReply(input, PARTIAL) : assistantReply(input, { text: "" }),
+          )
+        },
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "review the diff",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      expect(waited.timedOut).toBe(false)
+      expect(waited.info?.status).toBe("error")
+      expect(waited.info?.error).toContain("empty final answer")
+      expect(waited.info?.error).toContain("PARTIAL")
+      expect(childPrompts).toBe(2)
+      const notification = yield* awaitWithTimeout(
+        Deferred.await(injected),
+        "background failure result was not injected into the parent",
+      )
+      const part = notification.parts[0]
+      expect(part?.type).toBe("text")
+      if (part?.type === "text") {
+        expect(part.text).toContain('state="error"')
+        expect(part.text).toContain("PARTIAL")
+        expect(part.text).not.toContain('state="completed"')
+      }
+    }),
+  )
+
+  stopped.instance("fails a SubagentStop continuation whose continued answer is truncated", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            prompts += 1
+            return prompts === 1 ? assistantReply(input, { text: "FIRST ANSWER" }) : assistantReply(input, TRUNCATED)
+          }),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "review the diff",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('state="error"')
+      expect(result.output).toContain("output token cap")
+      expect(result.output).toContain("reasoning 32000")
+      expect(result.output).not.toContain('state="completed"')
+      expect(prompts).toBe(2)
+    }),
+  )
+
+  stopped.instance("returns a complete SubagentStop continuation answer to the parent", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            prompts += 1
+            return prompts === 1
+              ? assistantReply(input, { text: "STALE-FIRST-ANSWER" })
+              : assistantReply(input, { text: "FINAL-VERIFIED-ANSWER" })
+          }),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "review the diff",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('state="completed"')
+      expect(result.output).toContain("FINAL-VERIFIED-ANSWER")
+      expect(result.output).not.toContain("STALE-FIRST-ANSWER")
+      expect(prompts).toBe(2)
+    }),
+  )
+
+  stopped.instance("fails the task when a SubagentStop continuation execution fails", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          prompts += 1
+          return prompts === 1
+            ? Effect.succeed(assistantReply(input, { text: "FIRST ANSWER" }))
+            : Effect.die(new Error("stop continuation socket closed"))
+        },
+      }
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "review the diff",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(prompts).toBe(2)
+      if (Exit.isFailure(exit)) {
+        const message = Cause.pretty(exit.cause)
+        expect(message).toContain("stop continuation socket closed")
+        expect(message).not.toContain('state="completed"')
+      }
+    }),
+  )
+
+  stopped.instance("fails the task when a SubagentStop continuation ends on a provider error", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.succeed(
+            prompts++ === 0
+              ? assistantReply(input, { text: "FIRST ANSWER" })
+              : assistantReply(input, {
+                  text: "PARTIAL",
+                  error: { name: "MessageOutputLengthError" as const, data: {} },
+                }),
+          ),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "review the diff",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('state="error"')
+      expect(result.output).toContain("MessageOutputLengthError")
+      expect(result.output).toContain("PARTIAL")
+      expect(result.output).not.toContain('state="completed"')
+      expect(prompts).toBe(2)
+    }),
+  )
+
+  stopped.instance("propagates interruption from a SubagentStop continuation", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          prompts += 1
+          return prompts === 1 ? Effect.succeed(assistantReply(input, { text: "FIRST ANSWER" })) : Effect.interrupt
+        },
+      }
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "review the diff",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(prompts).toBe(2)
+      if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
     }),
   )
 
