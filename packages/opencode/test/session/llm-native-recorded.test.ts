@@ -29,6 +29,8 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { EventV2Bridge } from "@/event-v2-bridge"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "../fixtures/recordings")
+// Recordings used the 32k default output budget.
+const RECORDED_OUTPUT_TOKEN_MAX = 32_000
 
 const zenURL = (connection: string) => `https://console.opencode.ai/proxy/connections/${connection}/v1`
 
@@ -107,7 +109,12 @@ const providerConfig = (input: {
       env: input.env,
       npm: input.npm,
       api: input.api,
-      models: { [input.model.id]: cloneModel(input.model) },
+      models: {
+        [input.model.id]: {
+          ...cloneModel(input.model),
+          limit: { ...input.model.limit, output: Math.min(input.model.limit.output, RECORDED_OUTPUT_TOKEN_MAX) },
+        },
+      },
       options: input.options,
     },
   },

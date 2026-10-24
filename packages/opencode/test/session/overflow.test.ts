@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Token } from "@/util/token"
-import { estimateOverhead, estimateRequest, usable } from "../../src/session/overflow"
+import { estimateOverhead, estimateRequest, isOverflow, usable } from "../../src/session/overflow"
 
 describe("estimateRequest", () => {
   test("counts CJK text near one token per character", () => {
@@ -85,6 +85,23 @@ describe("usable output reserve", () => {
     expect(usable({ cfg: cfg(384_000), model: small })).toBe(20_000)
     expect(usable({ cfg: cfg(), model: model(128_000, 32_000) })).toBe(96_000)
     expect(usable({ cfg: cfg(), model: model(8_000, 32_000) })).toBe(8_000)
+  })
+
+  test("compacts a small context window at the input budget left by the output reserve", () => {
+    const small = model(8_192, 2_048)
+    const none = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    expect(usable({ cfg: cfg(), model: small })).toBe(6_144)
+    expect(isOverflow({ cfg: cfg(), model: small, tokens: none, estimatedInputTokens: 6_143 })).toBe(false)
+    expect(isOverflow({ cfg: cfg(), model: small, tokens: none, estimatedInputTokens: 6_144 })).toBe(true)
+    expect(isOverflow({ cfg: cfg(), model: small, tokens: none, estimatedInputTokens: 7_000 })).toBe(true)
+  })
+
+  test("keeps a configured output budget above the window from disabling compaction", () => {
+    const small = model(128_000, 384_000)
+    const none = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+    expect(usable({ cfg: cfg(384_000), model: small })).toBe(20_000)
+    expect(isOverflow({ cfg: cfg(384_000), model: small, tokens: none, estimatedInputTokens: 19_999 })).toBe(false)
+    expect(isOverflow({ cfg: cfg(384_000), model: small, tokens: none, estimatedInputTokens: 20_000 })).toBe(true)
   })
 
   test("keeps the input-cap reserve independent of the output budget", () => {
