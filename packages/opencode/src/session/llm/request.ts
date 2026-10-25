@@ -63,7 +63,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   const system = [
     [
       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model, Object.keys(tools))),
-      ...(input.small ? [] : [RUNTIME_CAPABILITIES]),
+      // Product knowledge answers the user's questions in the main conversation. Subagents and DAG workers do
+      // not need it.
+      ...(input.small || input.parentSessionID ? [] : [RUNTIME_CAPABILITIES]),
       DEFAULT_WRITING_STYLE,
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),

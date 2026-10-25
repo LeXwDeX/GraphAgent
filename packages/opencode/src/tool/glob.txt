@@ -2,6 +2,6 @@
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths
 - Use this tool when you need to find files by name patterns
-- When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the Task tool instead
+- When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the task tool instead
 - You can call multiple tools in one response. Batch searches when they are likely to help.
 - Returns at most 100 matching paths; a truncation notice appears only when additional matches exist.

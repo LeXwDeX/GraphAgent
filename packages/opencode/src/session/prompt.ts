@@ -56,6 +56,7 @@ import { type Tool as AITool, tool, jsonSchema, asSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
+import { RuntimeContext } from "./runtime-context"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
@@ -579,6 +580,10 @@ export const layer = Layer.effect(
     // of the request it is about to send do not exist yet. Keep the measured overhead of the previous
     // prepared request per session, and include it when provider usage cannot cover it.
     const requestOverheads = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, number>()))
+    // Runtime-context blocks already sent per session, so later requests re-send them at the same positions.
+    const runtimeContexts = yield* InstanceState.make(() =>
+      Effect.succeed(new Map<SessionID, readonly RuntimeContext.Entry[]>()),
+    )
     const activateAgentHooks = Effect.fn("SessionPrompt.activateAgentHooks")(function* (
       session: Session.Info,
       name?: string,
@@ -2474,6 +2479,7 @@ export const layer = Layer.effect(
         let consecutiveAutoCompactions = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
         const requestOverheadBySession = yield* InstanceState.get(requestOverheads)
+        const runtimeContextBySession = yield* InstanceState.get(runtimeContexts)
         // Capture the lastAssistant helper before the loop's destructured `lastAssistant`
         // (the latest assistant info) shadows it inside the step body.
         const getLastAssistant = lastAssistant
@@ -3143,10 +3149,12 @@ export const layer = Layer.effect(
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
               ...(skills ? [skills] : []),
-              ...goalDocs,
+              ...goalDocs.system,
               ...hooksDocs,
-              ...memoryDocs,
+              RuntimeContext.SYSTEM_NOTE,
             ]
+            const runtimeState = [...goalDocs.context, ...memoryDocs]
+            const runtimeEvents: string[] = []
             const format = lastUser.format ?? { type: "text" as const }
             if (!toolsDisabled && format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const processInput: LLM.StreamInput = {
@@ -3198,17 +3206,32 @@ export const layer = Layer.effect(
               if (endpoint.ok && endpoint.value.endpoint.kind === "node")
                 setCaptureSnapshot(sessionID, agentSnapshot.id)
             }
-            processInput.system.push(...(yield* modelSwitchContext(sessionID, model.api.id)))
+            runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)))
             // Async hooks contribute at the next model boundary without manufacturing a user turn.
             if (settingsHook?.drainAsync) {
               const queued = yield* settingsHook.drainAsync(sessionID)
-              processInput.system.push(...queued.additionalContexts)
+              runtimeEvents.push(...queued.additionalContexts)
             }
+            // Runtime context goes into the history, before any assistant prefill, so the system prefix stays
+            // constant and each request extends the previous one.
+            const runtime = RuntimeContext.place({
+              ledger: runtimeContextBySession.get(sessionID) ?? [],
+              messages: modelMsgs,
+              state: runtimeState,
+              events: runtimeEvents,
+            })
+            if (runtime.ledger.length > 0) runtimeContextBySession.set(sessionID, runtime.ledger)
+            else runtimeContextBySession.delete(sessionID)
+            processInput.messages.splice(0, modelMsgs.length, ...runtime.messages)
+            processInput.system.push(...runtime.unplaced)
             // Record what this request carries besides its messages. The next limit check runs before the
             // next request is prepared, when system text and tool schemas are not available yet.
             requestOverheadBySession.set(
               sessionID,
-              estimateOverhead({ system: processInput.system, tools: processInput.tools }),
+              estimateOverhead({
+                system: [...processInput.system, ...runtime.ledger.map((entry) => entry.content)],
+                tools: processInput.tools,
+              }),
             )
             const modelStarted = performance.now()
             let result = yield* handle.process(processInput).pipe(

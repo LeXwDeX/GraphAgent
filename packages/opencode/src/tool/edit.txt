@@ -1,7 +1,7 @@
 Replaces text in files. Provide exact oldString content; compatibility matching may tolerate whitespace or nearby context differences.
 
 Usage:
-- Read the existing file with the `Read` tool before editing. This is an operating requirement; the tool does not enforce a prior-read check.
+- Read the existing file with the `read` tool before editing. This is an operating requirement; the tool does not enforce a prior-read check.
 - When editing text from Read output, preserve the exact indentation after the line-number prefix. The prefix is a line number, colon, and space (for example, `1: `). Match only the file content after that prefix. Do not include the prefix in `oldString` or `newString`.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.

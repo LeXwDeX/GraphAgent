@@ -51,7 +51,8 @@ export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
-  readonly goal: (sessionID: SessionID) => Effect.Effect<string[]>
+  /** `system` is constant while a goal stays active or paused; `context` is the live state for this request. */
+  readonly goal: (sessionID: SessionID) => Effect.Effect<{ system: string[]; context: string[] }>
   readonly hooks: () => Effect.Effect<string[]>
   readonly memory: (input: {
     sessionID: SessionID
@@ -148,16 +149,17 @@ export const layer = Layer.effect(
 
       goal: Effect.fn("SystemPrompt.goal")(function* (sessionID: SessionID) {
         // No Goal service wired into this entry point → degrade to a terse note.
-        if (!goalSvc) return ["No autonomous goal is active for this session."]
+        const none = { system: ["No autonomous goal is active for this session."], context: [] }
+        if (!goalSvc) return none
         const state = yield* goalSvc.load(sessionID)
         // Only active/paused goals carry a live-state block. `done` is transient
         // (auto-cleared) and treated the same as "no goal" here.
-        if (!state || (state.status !== "active" && state.status !== "paused"))
-          return ["No autonomous goal is active for this session."]
+        if (!state || (state.status !== "active" && state.status !== "paused")) return none
         // Active/paused: the trimmed static mechanism + the live-state block.
         // The mechanism is intentionally NOT injected when no goal is active, to
         // avoid prompt bloat (spec: no-active-goal-injected-as-terse-note).
-        return [PROMPT_GOAL, GoalPrompts.renderGoalSystemBlock(state)]
+        // The live state changes every goal turn, so it goes to the runtime context, not the system prefix.
+        return { system: [PROMPT_GOAL], context: [GoalPrompts.renderGoalSystemBlock(state)] }
       }),
 
       // Active Hooks block — dynamic, mirrors goal's economy: no hooks → empty

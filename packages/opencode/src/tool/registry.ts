@@ -361,7 +361,7 @@ export const layer = Layer.effect(
                 output.description,
                 tool.id === TaskTool.id
                   ? yield* describeAgents(input.agent, {
-                      heading: "Available agent types and the tools they have access to:",
+                      heading: "Available agent types:",
                       includeHidden: true,
                       includeModelState: false,
                     })

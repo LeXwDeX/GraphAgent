@@ -155,6 +155,15 @@ describe("runtime capabilities in model requests", () => {
     }),
   )
 
+  it.instance("child sessions keep the writing style but omit product knowledge", () =>
+    Effect.gen(function* () {
+      const prepared = yield* prepare({ ...(yield* request()), parentSessionID: "ses_parent" })
+      const system = prepared.system.join("\n")
+      expect(system).not.toContain("## GraphAgent / OpenCode capabilities")
+      expect(system.split(DEFAULT_WRITING_STYLE)).toHaveLength(2)
+    }),
+  )
+
   it.instance("OpenAI OAuth carries capabilities through instructions", () =>
     Effect.gen(function* () {
       const input = yield* request("openai", "gpt-5", "@ai-sdk/openai")

@@ -397,7 +397,7 @@ describe("tool.task", () => {
         const taskDescription = tools.find((tool) => tool.id === TaskTool.id)?.description ?? ""
         const workflowDescription = tools.find((tool) => tool.id === WorkflowTool.id)?.description ?? ""
 
-        expect(taskDescription).toContain("Available agent types and the tools they have access to:")
+        expect(taskDescription).toContain("Available agent types:")
         expect(taskDescription).toContain("- alpha: Alpha agent")
         expect(taskDescription).not.toContain("Available workflow worker_type values:")
         expect(workflowDescription).toContain("Available workflow worker_type values:")
