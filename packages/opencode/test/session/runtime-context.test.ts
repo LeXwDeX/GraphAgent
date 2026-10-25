@@ -11,7 +11,12 @@ function request(
   state: string[],
   events: string[] = [],
 ) {
-  return RuntimeContext.place({ ledger, messages, state, events })
+  return RuntimeContext.place({
+    ledger,
+    messages,
+    state: [{ key: "state", parts: state, cleared: "No autonomous goal or project memory state is active." }],
+    events,
+  })
 }
 
 describe("RuntimeContext.render", () => {
@@ -97,5 +102,46 @@ describe("RuntimeContext.place", () => {
     expect(pending.unplaced).toEqual(["hook finished"])
     const answered = request(pending.ledger, [user("q1"), call, result], ["memory"])
     expect(answered.messages).toEqual([user("q1"), call, result, user(RuntimeContext.render(["memory"])!)])
+  })
+
+  test("tracks each state kind separately so one change does not resend the others", () => {
+    const state = (turns: string) => [
+      { key: "goal", parts: [turns], cleared: "No autonomous goal is active." },
+      { key: "memory", parts: ["memory data"], cleared: "No project memory data applies." },
+    ]
+    const first = RuntimeContext.place({ ledger: [], messages: [user("q1")], state: state("Turns: 1/20"), events: [] })
+    expect(first.ledger.map((entry) => entry.key)).toEqual(["goal", "memory"])
+    const second = RuntimeContext.place({
+      ledger: first.ledger,
+      messages: [user("q1"), assistant("a1"), user("q2")],
+      state: state("Turns: 2/20"),
+      events: [],
+    })
+    expect(second.ledger.map((entry) => entry.key)).toEqual(["goal", "memory", "goal"])
+    expect(JSON.stringify(second.messages).split("memory data")).toHaveLength(2)
+  })
+
+  test("adds no block after a tool result when the provider rejects that order", () => {
+    const result: ModelMessage = {
+      role: "tool",
+      content: [
+        { type: "tool-result", toolCallId: "call_1", toolName: "glob", output: { type: "text", value: "none" } },
+      ],
+    }
+    const placed = RuntimeContext.place({
+      ledger: [],
+      messages: [user("q1"), result],
+      state: [{ key: "memory", parts: ["memory"], cleared: "none" }],
+      events: ["hook finished"],
+      afterTool: false,
+    })
+    expect(placed.messages).toEqual([user("q1"), result])
+    expect(placed.unplaced).toEqual(["hook finished"])
+  })
+
+  test("marks only the messages it inserted", () => {
+    const placed = request([], [user("q1")], ["memory"])
+    expect(placed.messages.map(RuntimeContext.isMessage)).toEqual([false, true])
+    expect(RuntimeContext.isMessage(user(RuntimeContext.render(["memory"])!))).toBe(false)
   })
 })

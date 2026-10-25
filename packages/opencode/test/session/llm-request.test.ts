@@ -10,6 +10,7 @@ import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Plugin } from "../../src/plugin"
 import { Provider } from "../../src/provider/provider"
 import { prepare } from "../../src/session/llm/request"
+import { RuntimeContext } from "../../src/session/runtime-context"
 import { testEffect } from "../lib/effect"
 import { jsonSchema, tool } from "ai"
 import { Permission } from "@/permission"
@@ -173,6 +174,21 @@ describe("runtime capabilities in model requests", () => {
       })
       expect(prepared.params.options.instructions).toContain(RUNTIME_CAPABILITIES)
       expect(prepared.params.options.instructions).toContain(DEFAULT_WRITING_STYLE)
+      expect(prepared.messages).toEqual(input.messages)
+    }),
+  )
+
+  it.instance("workflow requests move runtime context into their system field", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const placed = RuntimeContext.place({
+        ledger: [],
+        messages: input.messages,
+        state: [{ key: "memory", parts: ["workflow-memory-probe"], cleared: "none" }],
+        events: [],
+      })
+      const prepared = yield* prepare({ ...input, isWorkflow: true, messages: placed.messages })
+      expect(prepared.system.join("\n")).toContain("workflow-memory-probe")
       expect(prepared.messages).toEqual(input.messages)
     }),
   )

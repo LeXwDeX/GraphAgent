@@ -1,7 +1,6 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import type { Model } from "@opencode-ai/sdk/v2"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { iife } from "@/util/iife"
 import { setTimeout as sleep } from "node:timers/promises"
 import { CopilotModels } from "./models"
 import { MessageV2 } from "@/session/message-v2"
@@ -40,6 +39,87 @@ function imgMsg(msg: any): boolean {
     (part: any) =>
       (part?.type === "text" || part?.type === "input_text") && part.text === MessageV2.SYNTHETIC_ATTACHMENT_PROMPT,
   )
+}
+
+const RUNTIME_CONTEXT = "<runtime_context>"
+
+function runtimeText(part: any): boolean {
+  return typeof part?.text === "string" && part.text.startsWith(RUNTIME_CONTEXT)
+}
+
+// GraphAgent may append a runtime-context user message after tool results. It is application state, not a user
+// action, so the request still continues the agent's tool loop. Only a block that directly follows a tool result
+// counts; any other user message keeps its user attribution.
+function runtimeOnly(msg: any): boolean {
+  if (msg?.role !== "user") return false
+  if (typeof msg.content === "string") return msg.content.startsWith(RUNTIME_CONTEXT)
+  return Array.isArray(msg.content) && msg.content.length > 0 && msg.content.every(runtimeText)
+}
+
+function runtimeAfterTool(list: any[], isTool: (msg: any) => boolean): boolean {
+  let index = list.length - 1
+  while (index >= 0 && runtimeOnly(list[index])) index--
+  return index < list.length - 1 && index >= 0 && isTool(list[index])
+}
+
+/** Classify a Copilot request body for the `x-initiator` and vision headers. */
+export function classifyRequest(url: string, rawBody: unknown): { isVision: boolean; isAgent: boolean } {
+  try {
+    const body = typeof rawBody === "string" ? JSON.parse(rawBody) : rawBody
+
+    // Completions API
+    if (body?.messages && url.includes("completions")) {
+      const last = body.messages[body.messages.length - 1]
+      return {
+        isVision: body.messages.some(
+          (msg: any) => Array.isArray(msg.content) && msg.content.some((part: any) => part.type === "image_url"),
+        ),
+        isAgent:
+          last?.role !== "user" || imgMsg(last) || runtimeAfterTool(body.messages, (msg) => msg?.role === "tool"),
+      }
+    }
+
+    // Responses API
+    if (body?.input) {
+      const last = body.input[body.input.length - 1]
+      return {
+        isVision: body.input.some(
+          (item: any) => Array.isArray(item?.content) && item.content.some((part: any) => part.type === "input_image"),
+        ),
+        isAgent:
+          last?.role !== "user" ||
+          imgMsg(last) ||
+          runtimeAfterTool(body.input, (item) => item?.type === "function_call_output"),
+      }
+    }
+
+    // Messages API
+    if (body?.messages) {
+      const last = body.messages[body.messages.length - 1]
+      const content: any[] = Array.isArray(last?.content) ? last.content : []
+      const hasToolResult = content.some((part: any) => part?.type === "tool_result")
+      // Anthropic merges a runtime block into the tool-result turn; it does not make the turn user-initiated.
+      const hasNonToolCalls = content.some(
+        (part: any) => part?.type !== "tool_result" && !(hasToolResult && runtimeText(part)),
+      )
+      return {
+        isVision: body.messages.some(
+          (item: any) =>
+            Array.isArray(item?.content) &&
+            item.content.some(
+              (part: any) =>
+                part?.type === "image" ||
+                // images can be nested inside tool_result content
+                (part?.type === "tool_result" &&
+                  Array.isArray(part?.content) &&
+                  part.content.some((nested: any) => nested?.type === "image")),
+            ),
+        ),
+        isAgent: !(last?.role === "user" && hasNonToolCalls) || imgMsg(last),
+      }
+    }
+  } catch {}
+  return { isVision: false, isAgent: false }
 }
 
 function fix(model: Model, url: string): Model {
@@ -104,58 +184,7 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
             if (info.type !== "oauth") return fetch(request, init)
 
             const url = request instanceof URL ? request.href : typeof request === "string" ? request : request.url
-            const { isVision, isAgent } = iife(() => {
-              try {
-                const body = typeof init?.body === "string" ? JSON.parse(init.body) : init?.body
-
-                // Completions API
-                if (body?.messages && url.includes("completions")) {
-                  const last = body.messages[body.messages.length - 1]
-                  return {
-                    isVision: body.messages.some(
-                      (msg: any) =>
-                        Array.isArray(msg.content) && msg.content.some((part: any) => part.type === "image_url"),
-                    ),
-                    isAgent: last?.role !== "user" || imgMsg(last),
-                  }
-                }
-
-                // Responses API
-                if (body?.input) {
-                  const last = body.input[body.input.length - 1]
-                  return {
-                    isVision: body.input.some(
-                      (item: any) =>
-                        Array.isArray(item?.content) && item.content.some((part: any) => part.type === "input_image"),
-                    ),
-                    isAgent: last?.role !== "user" || imgMsg(last),
-                  }
-                }
-
-                // Messages API
-                if (body?.messages) {
-                  const last = body.messages[body.messages.length - 1]
-                  const hasNonToolCalls =
-                    Array.isArray(last?.content) && last.content.some((part: any) => part?.type !== "tool_result")
-                  return {
-                    isVision: body.messages.some(
-                      (item: any) =>
-                        Array.isArray(item?.content) &&
-                        item.content.some(
-                          (part: any) =>
-                            part?.type === "image" ||
-                            // images can be nested inside tool_result content
-                            (part?.type === "tool_result" &&
-                              Array.isArray(part?.content) &&
-                              part.content.some((nested: any) => nested?.type === "image")),
-                        ),
-                    ),
-                    isAgent: !(last?.role === "user" && hasNonToolCalls) || imgMsg(last),
-                  }
-                }
-              } catch {}
-              return { isVision: false, isAgent: false }
-            })
+            const { isVision, isAgent } = classifyRequest(url, init?.body)
 
             const headers: Record<string, string> = {
               "x-initiator": isAgent ? "agent" : "user",

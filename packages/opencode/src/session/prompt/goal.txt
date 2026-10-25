@@ -2,7 +2,7 @@
 
 Use `goal(action: "create", text: "...")` or `/goal <description>` to set a persistent goal. The agent works across turns until completion or its turn budget is exhausted.
 
-Each request's <runtime_context> block includes a live "Current Goal" block while a goal is active or paused. Read its text, status, turn budget, subgoals, and last judge verdict. A status call is not required to learn this state.
+While a goal is active or paused, the latest "Current Goal" block in a <runtime_context> message holds its live state. A new block appears when that state changes. Read its text, status, turn budget, subgoals, and last judge verdict. A status call is not required to learn this state.
 
 # User commands
 - `/goal <text>`: create a goal. Default budget: 20 turns.

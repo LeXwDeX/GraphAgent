@@ -57,6 +57,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
 import { RuntimeContext } from "./runtime-context"
+import { ProviderTransform } from "@/provider/transform"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
@@ -582,7 +583,21 @@ export const layer = Layer.effect(
     const requestOverheads = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, number>()))
     // Runtime-context blocks already sent per session, so later requests re-send them at the same positions.
     const runtimeContexts = yield* InstanceState.make(() =>
-      Effect.succeed(new Map<SessionID, readonly RuntimeContext.Entry[]>()),
+      Effect.gen(function* () {
+        const ledgers = new Map<SessionID, readonly RuntimeContext.Entry[]>()
+        yield* Effect.acquireRelease(
+          events.listen((event) => {
+            if (event.type !== Session.Event.Deleted.type) return Effect.void
+            const data = event.data
+            if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+            const sessionID = data.sessionID
+            if (typeof sessionID !== "string") return Effect.void
+            return Effect.sync(() => ledgers.delete(SessionID.make(sessionID)))
+          }),
+          (unsubscribe) => unsubscribe,
+        )
+        return ledgers
+      }),
     )
     const activateAgentHooks = Effect.fn("SessionPrompt.activateAgentHooks")(function* (
       session: Session.Info,
@@ -3153,7 +3168,10 @@ export const layer = Layer.effect(
               ...hooksDocs,
               RuntimeContext.SYSTEM_NOTE,
             ]
-            const runtimeState = [...goalDocs.context, ...memoryDocs]
+            const runtimeState: RuntimeContext.State[] = [
+              { key: "goal", parts: goalDocs.context, cleared: "No autonomous goal is active." },
+              { key: "memory", parts: memoryDocs, cleared: "No project memory data applies to the current request." },
+            ]
             const runtimeEvents: string[] = []
             const format = lastUser.format ?? { type: "text" as const }
             if (!toolsDisabled && format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
@@ -3219,6 +3237,7 @@ export const layer = Layer.effect(
               messages: modelMsgs,
               state: runtimeState,
               events: runtimeEvents,
+              afterTool: !ProviderTransform.mistralFamily(model),
             })
             if (runtime.ledger.length > 0) runtimeContextBySession.set(sessionID, runtime.ledger)
             else runtimeContextBySession.delete(sessionID)
