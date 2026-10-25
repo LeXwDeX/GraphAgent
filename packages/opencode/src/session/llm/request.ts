@@ -9,6 +9,7 @@ import type { Agent } from "@/agent/agent"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
+import { RuntimeContext } from "../runtime-context"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { RUNTIME_CAPABILITIES } from "@opencode-ai/core/system-context/capabilities"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
@@ -60,13 +61,22 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const tools = resolveTools(input)
+  // GitLab workflow models take their goal from the last user message and read state only from the system text.
+  const workflowContext = input.isWorkflow
+    ? input.messages.flatMap((message) =>
+        RuntimeContext.isMessage(message) && typeof message.content === "string" ? [message.content] : [],
+      )
+    : []
   const system = [
     [
       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model, Object.keys(tools))),
-      ...(input.small ? [] : [RUNTIME_CAPABILITIES]),
+      // Product knowledge answers the user's questions in the main conversation. Subagents and DAG workers do
+      // not need it.
+      ...(input.small || input.parentSessionID ? [] : [RUNTIME_CAPABILITIES]),
       DEFAULT_WRITING_STYLE,
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),
+      ...workflowContext,
     ]
       .filter((x) => x)
       .join("\n"),
@@ -105,9 +115,10 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
-  const messages =
-    isOpenaiOauth || input.isWorkflow
-      ? input.messages
+  const messages = isOpenaiOauth
+    ? input.messages
+    : input.isWorkflow
+      ? input.messages.filter((message) => !RuntimeContext.isMessage(message))
       : [
           ...system.map((x): ModelMessage => ({
             role: "system",

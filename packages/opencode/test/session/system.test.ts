@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import * as fs from "fs/promises"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
@@ -7,6 +7,9 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { Skill } from "../../src/skill"
 import { Permission } from "../../src/permission"
 import { SystemPrompt } from "../../src/session/system"
+import { SessionID } from "../../src/session/schema"
+import { Goal } from "../../src/goal/goal"
+import { GoalState } from "../../src/goal/state"
 import { MCP } from "../../src/mcp"
 import { SettingsHook, type HookSummary } from "../../src/hook/settings"
 import { SessionHooks } from "../../src/hook/session-hooks"
@@ -285,5 +288,37 @@ describe("session.system integration (real SettingsHook)", () => {
           )
         }),
     },
+  )
+})
+
+const goalState = Schema.decodeUnknownSync(GoalState.Info)({
+  goal: "ship the feature",
+  status: "active",
+  turns_used: 3,
+  max_turns: 20,
+  created_at: 1000,
+  last_turn_at: 2000,
+  consecutive_parse_failures: 0,
+  subgoals: [],
+})
+
+const withGoal = testEffect(
+  SystemPrompt.layer.pipe(
+    Layer.provide(LocationServiceMap.layer),
+    Layer.provide(Layer.mock(MCP.Service, { instructions: () => Effect.succeed([]) })),
+    Layer.provide(Layer.mock(Skill.Service, { available: () => Effect.succeed([]) })),
+    Layer.provide(Layer.mock(Goal.Service, { load: () => Effect.succeed(goalState) })),
+  ),
+)
+
+describe("session.system goal", () => {
+  withGoal.effect("keeps the goal mechanism in the system prompt and the live state in runtime context", () =>
+    Effect.gen(function* () {
+      const goal = yield* (yield* SystemPrompt.Service).goal(SessionID.make("ses_goal_context"))
+      expect(goal.system.join("\n")).toContain("# Autonomous goals")
+      expect(goal.system.join("\n")).not.toContain("Turns: 3/20")
+      expect(goal.context.join("\n")).toContain("## Current Goal (autonomous loop)")
+      expect(goal.context.join("\n")).toContain("Turns: 3/20")
+    }),
   )
 })

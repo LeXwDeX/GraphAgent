@@ -1,11 +1,11 @@
 Launch a new agent to handle complex, multistep tasks autonomously. Use only agent types exposed to the current session and respect inherited permissions. Each subagent uses the same `maxToolCalls` setting with its own per-input budget.
 
-When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+When using the task tool, you must specify a subagent_type parameter to select which agent type to use.
 
-When NOT to use the Task tool:
-- If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use the Grep tool instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
+When NOT to use the task tool:
+- If you want to read a specific file path, use the read or glob tool instead of the task tool, to find the match more quickly
+- If you are searching for a specific class definition like "class Foo", use the grep tool instead, to find the match more quickly
+- If you are searching for code within a specific file or set of 2-3 files, use the read tool instead of the task tool, to find the match more quickly
 - If no available agent is a good fit for the task, use other tools directly
 
 
@@ -14,7 +14,7 @@ Usage notes:
 2. After delegation, do not repeat the agent's work. Continue with an independent task or wait. When experimental background execution is enabled, background tasks notify you when they finish.
 3. The agent returns one message. The user cannot see it. Send the user a concise summary. The result includes a `task_id` for continuing that session.
 4. Each new agent starts with fresh context. Pass `task_id` to resume a session with its history. For a fresh session, give a detailed task and specify what its final message must contain.
-5. The agent's outputs should generally be trusted
+5. Check the agent's key claims, such as changed files or test results, before you rely on them or report them
 6. State whether the agent should write code or research. It does not know the user's intent. Give verification steps, such as test commands, when possible.
 7. If the agent description says to use it proactively, do so without waiting for the user to ask. Use your judgment.
 

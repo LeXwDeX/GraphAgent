@@ -84,6 +84,15 @@ function sdkKey(npm: string): string | undefined {
   return undefined
 }
 
+/** Mistral models reject a user message directly after a tool result; `message` inserts an assistant turn there. */
+export function mistralFamily(model: Provider.Model) {
+  const modelID = model.api.id.toLowerCase()
+  return (
+    model.providerID === "mistral" ||
+    ["mistral", "devstral", "codestral", "pixtral", "mixtral"].some((family) => modelID.includes(family))
+  )
+}
+
 // TODO: fix this stupid inefficient dogshit function
 export function toolCallID(id: string, model: Provider.Model) {
   if (model.api.id.includes("claude")) return id.replace(/[^a-zA-Z0-9_-]/g, "_")

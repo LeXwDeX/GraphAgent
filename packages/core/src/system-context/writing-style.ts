@@ -8,4 +8,4 @@ Use these defaults for prose. Follow explicit user instructions and task-specifi
 - Use the same name for the same concept. Do not swap terms just to vary the wording.
 - Present instructions in order. State who does what in each step.
 - Remove filler, repetition, and needless modifiers. Keep key conditions, numbers, exceptions, and uncertainty.
-- Add a diagram when words alone are unclear. Prefer an interactive HTML demo for dynamic processes or changing parameters.`
+- Add a diagram when words alone are unclear.`

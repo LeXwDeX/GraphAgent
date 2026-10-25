@@ -91,8 +91,8 @@ export function renderContinuation(input: ContinuationInput): string {
   return lines.join("\n")
 }
 
-// Renders the dynamic system-prompt fragment for an active/paused goal.
-// Pure: injected into the system prompt by SystemPrompt.goal(sessionID).
+// Renders the live-state fragment for an active/paused goal.
+// Pure: SystemPrompt.goal(sessionID) returns it as runtime context, outside the cached system prefix.
 export function renderGoalSystemBlock(state: GoalState.Info): string {
   const turnsUsed = state.turns_used
   const maxTurns = state.max_turns
