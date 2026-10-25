@@ -38,6 +38,7 @@ type RenderOpts = {
   nodes?: DagNode[]
   initialRoute?: TuiRouteCurrent
   summary?: (sessionID: string) => Promise<{ data: DagWorkflowSummary[] }>
+  fetchNodes?: (dagID: string, call: number) => Promise<{ data: DagNode[] }> | undefined
   fetchTimeoutMs?: number
   width?: number
 }
@@ -115,7 +116,7 @@ async function renderDagInspector(opts: RenderOpts = {}) {
           },
           nodes: async (input: { dagID: string }) => {
             nodesCalls.push(input.dagID)
-            return { data: nodesState }
+            return opts.fetchNodes?.(input.dagID, nodesCalls.length) ?? { data: nodesState }
           },
           control: async (input: { dagID: string; operation: string }) => {
             controlCalls.push(input)
@@ -843,6 +844,55 @@ describe("DagInspector", () => {
       // while session summaries never run (an empty list has no sessions).
       expect(viewer.listCalls()).toBe(1)
       expect(viewer.summaryCalls()).toEqual([])
+    } finally {
+      viewer.app.renderer.destroy()
+    }
+  })
+
+  test("a stalled node fetch does not wedge the refresh poll", async () => {
+    const viewer = await renderDagInspector({
+      workflows: [wfSummary({ nodeCount: 1 })],
+      nodes: [dagNode({ id: "n-1", name: "recovered node" })],
+      // The mount fetch and the first poll never settle; later polls succeed.
+      fetchNodes: (_dagID, call) => (call <= 2 ? new Promise(() => {}) : undefined),
+      fetchTimeoutMs: 60,
+    })
+    try {
+      await waitForCondition(() => viewer.nodesCalls().length >= 3, 8_000)
+      await viewer.app.waitForFrame((frame) => frame.includes("recovered node"))
+    } finally {
+      viewer.app.renderer.destroy()
+    }
+  }, 10_000)
+
+  test("a failed refresh keeps the last rendered nodes", async () => {
+    const viewer = await renderDagInspector({
+      workflows: [wfSummary({ nodeCount: 1 })],
+      nodes: [dagNode({ id: "n-1", name: "kept node" })],
+      fetchNodes: (_dagID, call) => (call === 1 ? undefined : Promise.reject(new Error("server busy"))),
+    })
+    try {
+      await viewer.app.waitForFrame((frame) => frame.includes("kept node"))
+      await waitForCondition(() => viewer.nodesCalls().length >= 2, 4_000)
+      await Bun.sleep(50)
+      const frame = viewer.app.captureCharFrame()
+      expect(frame).toContain("kept node")
+      expect(frame).toContain("1 node")
+    } finally {
+      viewer.app.renderer.destroy()
+    }
+  }, 10_000)
+
+  test("does not claim zero nodes before the first node fetch settles", async () => {
+    const viewer = await renderDagInspector({
+      workflows: [wfSummary({ nodeCount: 2 })],
+      fetchNodes: () => new Promise(() => {}),
+    })
+    try {
+      await viewer.app.waitForFrame((frame) => frame.includes("Test workflow") && frame.includes("running"))
+      const frame = viewer.app.captureCharFrame()
+      expect(frame).not.toContain("0 nodes")
+      expect(frame).toContain("loading nodes")
     } finally {
       viewer.app.renderer.destroy()
     }

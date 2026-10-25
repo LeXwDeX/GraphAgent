@@ -5,7 +5,7 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import { createMemo, For, Show, Switch, Match, createSignal, createEffect, onCleanup } from "solid-js"
+import { createMemo, For, Show, Switch, Match, createSignal, createEffect, onCleanup, untrack } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Spinner } from "../../component/spinner"
 import { useBindings, useCommandShortcut } from "../../keymap"
@@ -163,6 +163,9 @@ function DagInspector(props: { api: TuiPluginApi }) {
   const [selectedWorkflow, setSelectedWorkflow] = createSignal<string | undefined>(undefined)
   const [selectedNode, setSelectedNode] = createSignal<string | undefined>(undefined)
   const [nodes, setNodes] = createSignal<DagNode[]>([], { equals: sameDagNodes })
+  // Whether the selected workflow's node set has loaded. "0 nodes" is only
+  // truthful once a fetch has succeeded; before that the status line says so.
+  const [nodeLoad, setNodeLoad] = createSignal<"loading" | "loaded" | "error">("loading")
   const [fetchedWorkflows, setFetchedWorkflows] = createSignal<ReadonlyArray<DagWorkflowSummary> | undefined>()
   const [projectWorkflows, setProjectWorkflows] = createSignal<ReadonlyArray<DagWorkflowSummary>>([])
   const [workflowLoad, setWorkflowLoad] = createSignal<"loading" | "loaded" | "error">("loading")
@@ -265,15 +268,18 @@ function DagInspector(props: { api: TuiPluginApi }) {
 
   // Fetch nodes for the selected workflow. Guard against stale responses: if the
   // user switched workflows between fetch-start and fetch-resolve, discard the result.
+  // The timeout bounds every fetch so a stalled request cannot pin the refresh
+  // poll's in-flight guard; a failed refresh keeps the last rendered node set.
   const fetchNodes = async (dagID: string) => {
     try {
-      const res = await props.api.client.dag.nodes({ dagID })
+      const res = await withTimeout(props.api.client.dag.nodes({ dagID }), fetchTimeoutMs(props.api))
       // Discard if the user selected a different workflow while this fetch was in flight.
       if (selectedWorkflow() !== dagID) return
       setNodes(res.data ?? [])
+      setNodeLoad("loaded")
     } catch {
       if (selectedWorkflow() !== dagID) return
-      setNodes([])
+      if (nodeLoad() !== "loaded") setNodeLoad("error")
     }
   }
 
@@ -295,14 +301,17 @@ function DagInspector(props: { api: TuiPluginApi }) {
 
   createEffect(() => {
     const wf = selectedWorkflow()
+    // A new selection never shows the previous workflow's nodes.
+    setNodes([])
+    setNodeLoad("loading")
     if (!wf) {
-      setNodes([])
       lastSignature = ""
       return
     }
     // Snapshot the signature at open time so the first summary event after
-    // open has something to compare against.
-    lastSignature = signatureFor(wf)
+    // open has something to compare against. Untracked: summary changes are
+    // handled by the event below, not by restarting this selection effect.
+    lastSignature = untrack(() => signatureFor(wf))
     void fetchNodes(wf)
     // Message acceptance and input association do not change topology or node
     // status. Refresh the selected workflow while this route is mounted so
@@ -655,8 +664,11 @@ function DagInspector(props: { api: TuiPluginApi }) {
                     </span>
                     <span style={{ fg: theme().textMuted }}>
                       {" · "}
-                      {nodes().length} {nodes().length === 1 ? "node" : "nodes"} · {layers().length}{" "}
-                      {layers().length === 1 ? "wave" : "waves"}
+                      {nodeLoad() === "loading"
+                        ? "loading nodes…"
+                        : nodeLoad() === "error"
+                          ? "nodes unavailable · retrying"
+                          : `${nodes().length} ${nodes().length === 1 ? "node" : "nodes"} · ${layers().length} ${layers().length === 1 ? "wave" : "waves"}`}
                     </span>
                     <Show when={actionMessage()}>
                       <span style={{ fg: theme().warning }}> · {actionMessage()}</span>
