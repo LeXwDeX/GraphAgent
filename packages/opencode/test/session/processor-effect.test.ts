@@ -1606,6 +1606,8 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
       }),
     { config: cfg },
   ),
+  // The unclassified provider error goes through the 3s/6s/6s reconnect fallback first.
+  30_000,
 )
 
 const displayLLM = Layer.succeed(
