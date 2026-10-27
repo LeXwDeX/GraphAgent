@@ -222,6 +222,11 @@ describe("session.retry.retryable", () => {
     "The model is currently at capacity due to high demand",
     "The service is temporarily at capacity",
     "upstream returned status 524",
+    "all targets recovering (half-open probe in flight)",
+    "upstream target is half-open",
+    "circuit breaker open",
+    "Circuit breaker is open for this channel",
+    "circuit open",
   ])("retries matching API error text: %s", (message) => {
     expect(SessionRetry.retryable(wrap(message), retryProvider)).toEqual({ message })
   })
@@ -242,6 +247,19 @@ describe("session.retry.retryable", () => {
       }).toObject(),
     )
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Request failed" })
+  })
+
+  test("retries 4xx circuit-breaker rejections from gateways", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "all targets recovering (half-open probe in flight)",
+        isRetryable: false,
+        statusCode: 400,
+      }).toObject(),
+    )
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({
+      message: "all targets recovering (half-open probe in flight)",
+    })
   })
 
   test("retries transport timeout errors", () => {

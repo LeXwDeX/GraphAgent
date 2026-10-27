@@ -69,6 +69,8 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
   /try your request again|retry your request|resource exhausted|resource_exhausted/i,
   /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
+  // Gateway circuit breakers reject while every upstream target is tripped, often with a 4xx status.
+  /\ball targets recovering\b|\bhalf[-_\s]open\b|\bcircuit(?:[-_\s]breaker)?(?:\s+is)?[-_\s]open\b/i,
 ]
 
 function cap(ms: number) {
