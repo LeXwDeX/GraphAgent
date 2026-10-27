@@ -208,7 +208,8 @@ export function retryable(error: Err, provider: string) {
 
 /**
  * Unrecognised failures get a bounded reconnect attempt. Failures with a known
- * terminal meaning stay terminal: retrying them cannot change the outcome.
+ * terminal meaning stay terminal, and so does any 4xx: the provider answered
+ * the request and a resend cannot change that answer.
  */
 export function fallback(error: Err): Retryable | undefined {
   if (
@@ -222,7 +223,7 @@ export function fallback(error: Err): Retryable | undefined {
     return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
-    if (status === 401 || status === 403) return undefined
+    if (status !== undefined && status >= 400 && status < 500) return undefined
     if (error.data.message === REASONING_STATE_MESSAGE) return undefined
   }
   const message = isRecord(error.data) ? error.data.message : undefined

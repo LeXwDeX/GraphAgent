@@ -185,6 +185,7 @@ describe("session.retry.delay", () => {
       new SessionV1.AuthError({ providerID: "test", message: "bad key" }).toObject(),
       new SessionV1.ContentFilterError({ message: "filtered" }).toObject(),
       new SessionV1.APIError({ message: "denied", isRetryable: false, statusCode: 401 }).toObject(),
+      new SessionV1.APIError({ message: "no_kv_space", isRetryable: false, statusCode: 400 }).toObject(),
       new SessionV1.APIError({ message: ProviderError.REASONING_STATE_MESSAGE, isRetryable: false }).toObject(),
     ]
     expect(terminal.map(SessionRetry.fallback)).toStrictEqual(terminal.map(() => undefined))
