@@ -3,7 +3,8 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Clock, Effect, Exit, Fiber, Schedule, Schema } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
@@ -146,6 +147,55 @@ describe("session.retry.delay", () => {
       expect(attempts).toStrictEqual([1, 2, 3, 4, 5])
     }),
   )
+
+  test("policy reconnects unrecognised failures up to three times", () =>
+    Effect.gen(function* () {
+      const waits: number[] = []
+      let calls = 0
+      const fiber = yield* Effect.suspend(() => {
+        calls++
+        return Effect.fail(new Error("socket went sideways"))
+      }).pipe(
+        Effect.retry(
+          SessionRetry.policy({
+            provider: "test",
+            parse: (error) => MessageV2.fromError(error, { providerID }),
+            set: (info) =>
+              Effect.gen(function* () {
+                waits.push(info.next - (yield* Clock.currentTimeMillis))
+              }),
+          }),
+        ),
+        Effect.exit,
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust("30 seconds")
+      const exit = yield* Fiber.join(fiber)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(calls).toBe(SessionRetry.FALLBACK_MAX_RETRIES + 1)
+      expect(waits).toStrictEqual([3000, 6000, 6000])
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
+  )
+
+  test("keeps terminal failures out of the fallback", () => {
+    const terminal = [
+      new SessionV1.AbortedError({ message: "Aborted" }).toObject(),
+      new SessionV1.ContextOverflowError({ message: "too long" }).toObject(),
+      new SessionV1.AuthError({ providerID: "test", message: "bad key" }).toObject(),
+      new SessionV1.ContentFilterError({ message: "filtered" }).toObject(),
+      new SessionV1.APIError({ message: "denied", isRetryable: false, statusCode: 401 }).toObject(),
+      new SessionV1.APIError({ message: ProviderError.REASONING_STATE_MESSAGE, isRetryable: false }).toObject(),
+    ]
+    expect(terminal.map(SessionRetry.fallback)).toStrictEqual(terminal.map(() => undefined))
+    expect(SessionRetry.fallback(wrap("socket went sideways"))).toEqual({ message: "socket went sideways" })
+  })
+})
+
+describe("session.retry.fallbackDelay", () => {
+  test("backs off from 3 seconds and caps at 6 seconds", () => {
+    expect([1, 2, 3].map(SessionRetry.fallbackDelay)).toStrictEqual([3000, 6000, 6000])
+  })
 })
 
 describe("session.retry.retryable", () => {

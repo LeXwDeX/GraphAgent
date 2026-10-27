@@ -14,6 +14,7 @@ import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionProcessor } from "../../src/session/processor"
+import { SessionRetry } from "../../src/session/retry"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
@@ -554,13 +555,14 @@ it.live("session.processor effect tests reset reasoning state across retries", (
   ),
 )
 
-it.live("session.processor effect tests do not retry unknown json errors", () =>
+it.live("session.processor effect tests reconnect unknown json errors three times before stopping", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
 
-        yield* llm.error(400, { error: { message: "no_kv_space" } })
+        for (let i = 0; i <= SessionRetry.FALLBACK_MAX_RETRIES; i++)
+          yield* llm.error(400, { error: { message: "no_kv_space" } })
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "json")
@@ -590,11 +592,12 @@ it.live("session.processor effect tests do not retry unknown json errors", () =>
         })
 
         expect(value).toBe("stop")
-        expect(yield* llm.calls).toBe(1)
+        expect(yield* llm.calls).toBe(SessionRetry.FALLBACK_MAX_RETRIES + 1)
         expect(handle.message.error?.name).toBe("APIError")
       }),
     { config: (url) => providerCfg(url) },
   ),
+  30_000,
 )
 
 it.live("session.processor effect tests retry recognized structured json errors", () =>
@@ -1606,6 +1609,7 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
       }),
     { config: cfg },
   ),
+  30_000,
 )
 
 const displayLLM = Layer.succeed(

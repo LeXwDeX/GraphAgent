@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Cause, Clock, Duration, Effect, Schedule, Schema } from "effect"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
+import { REASONING_STATE_MESSAGE } from "@/provider/error"
 
 export type Err = ReturnType<NamedError["toObject"]>
 
@@ -60,6 +61,11 @@ export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 export const RETRY_MAX_RETRIES = 5
 
+// Catch-all reconnect for failures no rule recognises: 3s, 6s, 6s.
+export const FALLBACK_INITIAL_DELAY = 3000
+export const FALLBACK_MAX_DELAY = 6000
+export const FALLBACK_MAX_RETRIES = 3
+
 const RETRYABLE_MESSAGE_PATTERNS = [
   // Bounded so token counts or IDs in a 4xx body ("150000 tokens") never read as a status.
   /\b(?:429|500|502|503|504|524)\b/i,
@@ -108,6 +114,10 @@ export function delay(attempt: number, error?: SessionV1.APIError, random = Math
   }
 
   return cap(Math.min(exponential(attempt, random), RETRY_MAX_DELAY_NO_HEADERS))
+}
+
+export function fallbackDelay(attempt: number) {
+  return Math.min(FALLBACK_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), FALLBACK_MAX_DELAY)
 }
 
 function exponential(attempt: number, random: number) {
@@ -196,6 +206,29 @@ export function retryable(error: Err, provider: string) {
   return undefined
 }
 
+/**
+ * Unrecognised failures get a bounded reconnect attempt. Failures with a known
+ * terminal meaning stay terminal: retrying them cannot change the outcome.
+ */
+export function fallback(error: Err): Retryable | undefined {
+  if (
+    SessionV1.AbortedError.isInstance(error) ||
+    SessionV1.ContextOverflowError.isInstance(error) ||
+    SessionV1.AuthError.isInstance(error) ||
+    SessionV1.OutputLengthError.isInstance(error) ||
+    SessionV1.StructuredOutputError.isInstance(error) ||
+    SessionV1.ContentFilterError.isInstance(error)
+  )
+    return undefined
+  if (SessionV1.APIError.isInstance(error)) {
+    const status = error.data.statusCode
+    if (status === 401 || status === 403) return undefined
+    if (error.data.message === REASONING_STATE_MESSAGE) return undefined
+  }
+  const message = isRecord(error.data) ? error.data.message : undefined
+  return { message: typeof message === "string" && message ? message : "Unknown error, reconnecting" }
+}
+
 function matchesRetryableMessage(value: unknown) {
   return typeof value === "string" && RETRYABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(value))
 }
@@ -233,11 +266,14 @@ export function policy(opts: {
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       if (opts.shouldRetry?.(meta.input) === false) return Cause.done(meta.attempt)
       const error = opts.parse(meta.input)
-      const retry = retryable(error, opts.provider)
+      const known = retryable(error, opts.provider)
+      const retry = known ?? fallback(error)
       if (!retry) return Cause.done(meta.attempt)
-      if (meta.attempt > RETRY_MAX_RETRIES) return Cause.done(meta.attempt)
+      if (meta.attempt > (known ? RETRY_MAX_RETRIES : FALLBACK_MAX_RETRIES)) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+        const wait = known
+          ? delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+          : fallbackDelay(meta.attempt)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
           attempt: meta.attempt,
