@@ -99,9 +99,10 @@ describe("Dag.create structural validation", () => {
       Effect.gen(function* () {
         const error = yield* createExpectingError({
           max_total_nodes: 2,
-          nodes: [node("a"), node("b"), node("c")],
+          nodes: Array.from({ length: 101 }, (_, i) => node(`n${i}`)),
         })
-        expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
+        // A lower configured cap is raised to the 100-node floor.
+        expect(error.message).toContain("Total node ceiling exceeded: 101 nodes > 100 max")
         // Only a start document owns the graph budget; the start hint may say so.
         expect((error as Dag.StructuralValidationError).diagnostics[0]?.hint).toContain("raise config.max_total_nodes")
       }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
@@ -122,15 +123,16 @@ describe("Dag.create structural validation", () => {
           })
           .pipe(Effect.orDie)
         const error = yield* dag
-          .replan(dagID, { nodes: [node("b"), node("c")] })
+          .replan(dagID, { nodes: Array.from({ length: 100 }, (_, i) => node(`b${i}`)) })
           .pipe(Effect.catch((e: Error) => Effect.succeed(e)))
         expect(error).toBeInstanceOf(Dag.StructuralValidationError)
         const ceiling = (error as Dag.StructuralValidationError).diagnostics.find((d) =>
-          d.message.includes("Total node ceiling exceeded: 3 nodes > 2 max"),
+          d.message.includes("Total node ceiling exceeded: 101 nodes > 100 max"),
         )!
         expect(ceiling.hint).not.toContain("raise max_total_nodes")
         expect(ceiling.hint).toContain("fixed by the start document")
         expect(ceiling.hint).toContain("Shrink the fragment")
+        expect(ceiling.hint).toContain("bounded successor workflow")
       }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
     )
   })

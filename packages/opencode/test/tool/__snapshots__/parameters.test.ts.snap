@@ -1061,7 +1061,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       "type": "number",
                     },
                     "max_total_nodes": {
-                      "description": "Cumulative node cap across the workflow lifetime. Default: 100",
+                      "description": "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
                       "type": "number",
                     },
                     "name": {
@@ -1123,7 +1123,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       "type": "number",
                     },
                     "max_total_nodes": {
-                      "description": "Cumulative node cap across the workflow lifetime. Default: 100",
+                      "description": "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
                       "type": "number",
                     },
                     "name": {

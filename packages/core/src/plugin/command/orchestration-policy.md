@@ -264,9 +264,9 @@ repair and verification. A green build alone does not prove acceptance.
 
 Useful follow-ups include a direct bounded repair, one delegated check, a
 targeted `extend`, or a paused `control(replan)` when dependencies need to
-change. Reuse valid outputs where useful. A new workflow is an option when the
-existing graph cannot represent the work, not a requirement of a changed risk
-label. A non-`ACCEPT` verdict does not mandate more agents or a full template.
+change. Reuse valid outputs where useful. A new workflow is the expected path when the
+existing graph cannot represent the work (terminal, or out of node budget), not
+a requirement of a changed risk label. A non-`ACCEPT` verdict does not mandate more agents or a full template.
 
 Report blockers and the actual workflow state when stopping or asking for a
 decision. Do not claim rejected work passed. A replan or extend rejected by
@@ -283,8 +283,20 @@ prefer `control(extend_timeout)` to grant more time in place — no replan, no
 lost child session. If ending the work, settle live scheduling rather than
 abandoning active children. Naturally completed workflows can be extended, but
 cannot be paused or replanned. For a ceiling breach, do not retry the identical
-plan; report the remaining findings and stop or change approach within the
-user's authorization.
+plan; change approach instead.
+
+## Keep Going Past a Terminal Graph
+
+A terminal workflow, a node-ceiling rejection, or a refused `recover`/`extend`
+ends that graph, not the task. When work the user's request already covers
+remains (verification, review, acceptance, a bounded repair), continue it
+yourself: start a bounded successor workflow scoped to the remaining steps, or
+do it directly. Reuse the predecessor's valid outputs, cite its failure
+evidence, and leave the old workflow untouched. Do not pause, end the turn, or
+ask the user for permission to do this; the original request is the
+authorization. Ask only when the next step would widen scope, need new
+permissions or credentials, take an irreversible external action, or repeat a
+plan that has already failed twice for the same reason.
 
 ## Actionable Checkpoints
 
@@ -314,7 +326,7 @@ operations targeting the remaining findings. Direct repair may be simpler once
 child writers have stopped. You MUST NOT create cyclic `depends_on` or bypass
 runtime budgets. Additional waves need a concrete evidence gap, not a quota.
 
-Declare a finite `max_node_replan_attempts`. When the ceiling is exhausted, stop with `BLOCKED`, report the remaining findings, and do not retry the identical plan.
+Declare a finite `max_node_replan_attempts`. When the ceiling is exhausted, do not retry the identical plan: change approach (direct repair or a successor workflow with a different decomposition). Stop with `BLOCKED` only when no in-scope approach remains.
 
 ## Replan Protocol (pause-first)
 
