@@ -326,7 +326,7 @@ operations targeting the remaining findings. Direct repair may be simpler once
 child writers have stopped. You MUST NOT create cyclic `depends_on` or bypass
 runtime budgets. Additional waves need a concrete evidence gap, not a quota.
 
-Declare a finite `max_node_replan_attempts`. When the ceiling is exhausted, do not retry the identical plan: change approach (direct repair or a successor workflow with a different decomposition). Stop with `BLOCKED` only when no in-scope approach remains.
+Declare a finite `max_node_replan_attempts`. When the ceiling is exhausted, do not retry the identical plan: change approach (direct repair or a successor workflow with a different decomposition). Only stop with `BLOCKED` when no in-scope approach remains.
 
 ## Replan Protocol (pause-first)
 
