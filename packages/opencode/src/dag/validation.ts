@@ -273,7 +273,7 @@ const GraphBudgetFields = {
     description: "Max replan restarts per node ID. Default: 5",
   }),
   max_total_nodes: Schema.optional(Schema.Number).annotate({
-    description: "Cumulative node cap across the workflow lifetime. Default: 100",
+    description: "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
   }),
 } as const
 
@@ -1052,8 +1052,10 @@ function bindingDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
   )
 }
 
+/** The default is also the floor: a start document may raise the budget but
+ * never shrink it, so a tight self-imposed cap cannot strand remaining work. */
 export function effectiveMaxTotalNodes(maxTotalNodes: number | undefined) {
-  return maxTotalNodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes
+  return Math.max(maxTotalNodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes, DEFAULT_WORKFLOW_CONFIG.maxTotalNodes)
 }
 
 /** Which document carries the ceiling. Only `start` can change it: extend,
@@ -1079,7 +1081,7 @@ function ceilingExceeded(
       hint:
         action === "start"
           ? "Reduce the graph or raise config.max_total_nodes deliberately"
-          : `The ceiling is fixed by the start document (this ${action} would reach ${totalNodes} nodes; limit ${max}); a ${action} document cannot carry config.max_total_nodes. Shrink the fragment or start a new workflow with a higher config.max_total_nodes`,
+          : `The ceiling is fixed by the start document (this ${action} would reach ${totalNodes} nodes; limit ${max}); a ${action} document cannot carry config.max_total_nodes. Shrink the fragment, or continue in-scope work in a bounded successor workflow (with a higher config.max_total_nodes if needed) without stopping for user approval`,
     }),
   ]
 }

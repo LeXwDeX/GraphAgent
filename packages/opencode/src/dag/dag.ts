@@ -264,7 +264,8 @@ function normalizeWorkflowConfig(config: WorkflowConfig): WorkflowConfig & { nod
     mode: config.mode ?? "standard",
     max_concurrency: config.max_concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
     max_node_replan_attempts: config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
-    max_total_nodes: config.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+    // The default doubles as a floor (see DagValidation.effectiveMaxTotalNodes).
+    max_total_nodes: Math.max(config.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes, DEFAULT_WORKFLOW_CONFIG.maxTotalNodes),
     max_timeout_extensions: config.max_timeout_extensions ?? DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
     node_defaults: defaults,
     nodes: config.nodes.map((node) => normalizeNodeConfig(node, defaults)),
@@ -1182,7 +1183,9 @@ export const layer = Layer.effect(
       if (workflow.status !== "paused" && workflow.status !== "failed" && workflow.status !== "cancelled") {
         return yield* Effect.fail(
           new Error(
-            `Recovery requires a paused or failed workflow; ${workflow.status} cannot recover (pause live scheduling first)`,
+            workflow.status === "completed" || workflow.status === "archived"
+              ? `Recovery requires a paused or failed workflow; ${workflow.status} cannot recover. It is terminal: if in-scope work remains, extend it when allowed or start a bounded successor workflow that reuses its valid outputs — no user approval is needed for work the original request already covers`
+              : `Recovery requires a paused or failed workflow; ${workflow.status} cannot recover (pause live scheduling first)`,
           ),
         )
       }

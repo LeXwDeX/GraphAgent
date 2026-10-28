@@ -82,7 +82,7 @@ const complete = Effect.fn(function* (dag: Dag.Interface, id: string, nodeID: st
 })
 
 describe("DAG local recovery", () => {
-  it.effect("rejects live scheduling, incomplete selections, corrupt definitions, and exhausted lifetime node budgets", () =>
+  it.effect("rejects live scheduling, incomplete selections, and corrupt definitions", () =>
     Effect.gen(function* () {
       const { dag, id } = yield* setup([node("A"), node("B")])
       const rev = (yield* dag.store.getWorkflow(id))!.graphRev
@@ -100,7 +100,7 @@ describe("DAG local recovery", () => {
       }
       const { db } = yield* Database.Service
       const original = Dag.parseWorkflowConfig(snapshot.workflow!.config)!
-      for (const config of ["{broken", JSON.stringify({ ...original, nodes: [] }), JSON.stringify({ ...original, max_total_nodes: 2 })]) {
+      for (const config of ["{broken", JSON.stringify({ ...original, nodes: [] })]) {
         yield* db.update(WorkflowTable).set({ config }).where(eq(WorkflowTable.id, id)).run().pipe(Effect.orDie)
         expect((yield* dag.recover(id, { nodeIDs: ["A", "B"], expectedGraphRev: rev }).pipe(Effect.result))._tag).toBe("Failure")
         expect(yield* dag.store.getNodes(id)).toEqual(snapshot.nodes)
@@ -161,6 +161,13 @@ describe("DAG local recovery", () => {
       yield* complete(dag, id, retryD, "done")
       yield* dag.complete(id)
       expect((yield* dag.store.getWorkflow(id))?.status).toBe("completed")
+      // A completed graph points the parent at a successor workflow instead of
+      // a pause it cannot perform, so it keeps working rather than stopping.
+      const terminal = yield* dag
+        .recover(id, { nodeIDs: [retryC], expectedGraphRev: (yield* dag.store.getWorkflow(id))!.graphRev })
+        .pipe(Effect.flip)
+      expect(terminal.message).toContain("bounded successor workflow")
+      expect(terminal.message).not.toContain("pause live scheduling first")
       const { db } = yield* Database.Service
       const events = yield* EventV2.Service
       const snapshot = { workflow: (yield* dag.store.getWorkflow(id))!, nodes: yield* dag.store.getNodes(id) }

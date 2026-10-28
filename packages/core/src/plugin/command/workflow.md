@@ -386,7 +386,7 @@ a reporting leaf naturally completed the graph).
 
 ### Escalation: change approach after repeated failures
 
-**Change your approach** when a node or workflow repeatedly fails. Triggers include `orchestrator_unresponsive` (the turn ended with the workflow still RUNNING and stalled), a replan-attempt ceiling rejection, or repeated review failures. A rejected replan or extend parks the workflow as paused and recoverable, not failed. Call `control(pause)` before stopping to ask the user. Try a different decomposition, model, or prompt, or split the node into smaller steps. Repeating the same failing plan wastes budget. Never cancel the graph just to avoid `orchestrator_unresponsive`; pause and ask the user instead of destroying in-flight work.
+**Change your approach** when a node or workflow repeatedly fails. Triggers include `orchestrator_unresponsive` (the turn ended with the workflow still RUNNING and stalled), a replan-attempt ceiling rejection, or repeated review failures. A rejected replan or extend parks the workflow as paused and recoverable, not failed. Try a different decomposition, model, or prompt, or split the node into smaller steps. Repeating the same failing plan wastes budget. A rejected or impossible graph action is not a reason to stop: if the workflow is terminal or out of node budget and in-scope work remains, start a bounded successor workflow for just the remaining steps (reusing valid outputs) or do them directly, without asking the user (see Keep Going Past a Terminal Graph in the orchestration policy). Ask the user only when continuing would widen scope, need new permissions, or take an irreversible external action; call `control(pause)` on a live workflow first. Never cancel the graph just to avoid `orchestrator_unresponsive`; pause instead of destroying in-flight work.
 
 ### Crash recovery: a recovered workflow arrives paused
 
@@ -436,13 +436,14 @@ The value set above is what the runtime produces today; `push_exhausted`
 exists in the schema but is reserved and currently never emitted.
 
 Budget exhaustion is a separate class: `replan attempt ceiling exceeded` or
-`Total node ceiling exceeded` means the budget is spent — change the approach
-or stop, do not retry the identical plan (see Escalation).
+`Total node ceiling exceeded` means this graph's budget is spent — do not retry
+the identical plan; continue the remaining in-scope work in a bounded successor
+workflow or directly (see Escalation).
 
 Where to apply the repair:
 
 - **Local retry in the same workflow**: pause live scheduling, read `status`, then call `control(recover)` with the current `expected_graph_rev` and selected `node_ids`. Failed workflows can recover directly. The runtime creates new attempts for these nodes and their downstream closure, preserves unrelated nodes, checks reusable managed artifacts, and resumes scheduling atomically. Old attempts and results remain readable; no BUILD or replacement YAML is needed.
-- **Cancelled workflow**: recovery additionally requires `resume_cancelled: true`, reflecting an explicit request to resume cancelled work. Completed and archived workflows do not use this recovery action.
+- **Cancelled workflow**: recovery additionally requires `resume_cancelled: true`, reflecting an explicit request to resume cancelled work. Completed and archived workflows do not use this recovery action: continue remaining in-scope work with `extend` when allowed, otherwise a bounded successor workflow.
 - **Change the work definition**: use existing `replan`/`extend` for a different graph. Recovery retries the stored definitions; it does not rewrite prompts, reset budgets, roll back code, or undo external actions.
 
 An isolated failure often calls for targeted recovery rather than starting
@@ -525,7 +526,7 @@ large. Higher concurrency is useful only for genuinely independent work:
 
 - `max_concurrency`: default 5. Balance independent work against host and provider capacity.
 - `max_node_replan_attempts`: default 5. Increase only if you expect iterative quality-driven convergence (review → revise → review cycles on a single artifact).
-- `max_total_nodes`: default 100. Increase for large-scale decompositions.
+- `max_total_nodes`: default and minimum 100 (lower values are raised to 100). Increase for large-scale decompositions.
 - `worker_config.timeout_ms`: default 10 minutes. Increase for long-running nodes (compilation, large test suites). Verifier and aggregator nodes are the most common timeout victims: a node that consumes several parallel reports and re-checks their claims against code runs sequentially and routinely needs 20–30 minutes (e.g. `timeout_ms: 1800000`) — declaring the fan-out lanes' budget for the fan-in lane is a recurring failure pattern.
 
 ## Single-Workspace Discipline
