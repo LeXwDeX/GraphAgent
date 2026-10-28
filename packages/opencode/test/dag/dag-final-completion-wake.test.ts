@@ -472,6 +472,52 @@ it("treats a reporting delivery leaf as display-only and never acknowledges its 
   )
 })
 
+it("wakes the parent when a gate skips the delivery node and only a result index remains", async () => {
+  await runTest(({ dag, store, childPrompts, parentPrompts, reports }) =>
+    Effect.gen(function* () {
+      const dagID = yield* dag.create({
+        projectID: "project-1",
+        sessionID: "ses_parent",
+        title: "Gated delivery",
+        config: {
+          name: "gated-delivery",
+          result_protocol: "final_response",
+          delivery_node: "summary",
+          nodes: [
+            { ...node("verify"), report_to_parent: false, output_schema: verdictSchema },
+            {
+              ...node("summary", ["verify"]),
+              report_to_parent: false,
+              condition: 'verify.output.verdict == "PASS"',
+            },
+          ],
+        },
+      })
+      const verify = yield* childGate(childPrompts, "verify")
+      yield* Deferred.succeed(verify.release, '{"verdict":"FAIL"}')
+      yield* waitForCompletion(store, dagID)
+      expect((yield* store.getNode(dagID, "summary"))?.status).toBe("skipped")
+
+      const index = yield* pollWithTimeout(
+        Effect.sync(() => reports.map(isAnswerPart).find((part) => part !== undefined)),
+        "result index was not delivered",
+        "5 seconds",
+      )
+      expect(index?.text).toContain('node_id="summary"')
+
+      // The workflow produced no final answer: the orchestrator must get a turn
+      // to repair, extend or start a successor instead of silently stalling.
+      const completion = yield* takeWithin(parentPrompts, "skipped delivery did not wake the parent")
+      const completionText = promptText(completion.input)
+      yield* Deferred.succeed(completion.release, "success")
+      expect(completionText).toContain("[DAG Workflow completed]")
+      expect(completionText).toContain("[DAG Final Report]")
+      expect(completionText).toContain('"summary" (skipped')
+      expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
+    }),
+  )
+})
+
 it("delivers a direct final answer once without a redundant parent turn", async () => {
   await runTest(({ dag, store, childPrompts, parentPrompts, reports }) =>
     Effect.gen(function* () {

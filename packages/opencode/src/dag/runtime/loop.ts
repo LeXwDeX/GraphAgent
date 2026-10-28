@@ -1812,14 +1812,21 @@ const serviceLayer = Layer.effect(
           // without a model turn, or owns reporting checkpoints and therefore
           // needs one completion turn. Durable node evidence decides: a delivery
           // leaf reports the final answer itself, while every other
-          // `report_to_parent` node remains a parent checkpoint.
+          // `report_to_parent` node remains a parent checkpoint. Without a
+          // completed delivery node there is no final answer, only a result
+          // index: a gate (verify FAIL, review REJECT) skipped the delivery
+          // path and settled the graph as completed so the parent can repair
+          // or reopen it (#294). That outcome always needs a parent turn.
           const finalResponseCompletions = new Map<string, boolean>()
           for (const workflow of workflows) {
             if (!workflow || workflow.status !== "completed") continue
             const config = parseWorkflowConfig(workflow.config)
             if (!config || resultProtocol(config) !== "final_response") continue
             const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
-            finalResponseCompletions.set(workflow.id, reportingCheckpoints(config, nodes).length > 0)
+            finalResponseCompletions.set(
+              workflow.id,
+              reportingCheckpoints(config, nodes).length > 0 || !selectReportNode(config, nodes),
+            )
           }
           const needsCompletionTurn = (workflowID: string) => finalResponseCompletions.get(workflowID) === true
           // A reporting checkpoint that completed while its downstream nodes
@@ -2104,6 +2111,23 @@ const serviceLayer = Layer.effect(
                 }
               }
               const completionIDs = new Set(plan.completionReports.map((workflow) => workflow.id))
+              // A completed workflow can still leave required work undone when a
+              // gate skipped it; name those nodes so the turn acts on them.
+              const incompleteByWorkflow = new Map<string, string[]>()
+              for (const workflow of batch.workflows) {
+                if (workflow.status !== "completed" || !completionIDs.has(workflow.id)) continue
+                const incomplete = (yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)).filter(
+                  (node) => node.required && node.status !== "completed",
+                )
+                if (incomplete.length > 0) {
+                  incompleteByWorkflow.set(
+                    workflow.id,
+                    incomplete.map((node) =>
+                      `- "${node.id}" (${node.status}${node.errorClass ? `: ${node.errorClass}` : ""})`.slice(0, 300),
+                    ),
+                  )
+                }
+              }
               const summaries = [
                 ...batch.nodes.map((node) => {
                   // The timeout advisory is for a running node awaiting
@@ -2128,7 +2152,12 @@ const serviceLayer = Layer.effect(
                 }),
                 ...batch.workflows.map((workflow) => {
                   const failures = failuresByWorkflow.get(workflow.id)
-                  const attribution = failures ? `\nFailed nodes:\n${failures.join("\n")}` : ""
+                  const incomplete = incompleteByWorkflow.get(workflow.id)
+                  const attribution = failures
+                    ? `\nFailed nodes:\n${failures.join("\n")}`
+                    : incomplete
+                      ? `\nRequired nodes not completed (no final answer was produced):\n${incomplete.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
+                      : ""
                   return workflow.status === "paused"
                     ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
                     : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status.${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
