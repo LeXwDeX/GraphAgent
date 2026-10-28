@@ -107,5 +107,5 @@
     "@vscode/test-cli": "0.0.15",
     "@vscode/test-electron": "2.5.2"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.4"
 }

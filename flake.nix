@@ -28,8 +28,8 @@
         bun = if prev.stdenv.hostPlatform.system == "x86_64-darwin" then
           (toolchain.requireVersion "bun" (prev.callPackage "${nixpkgs}/pkgs/by-name/bu/bun/package.nix" { })).overrideAttrs (old: {
             src = final.fetchurl {
-              url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-darwin-x64-baseline.zip";
-              hash = "sha256-utW71s8U0JgNEV9ZVMn/kE32GdXplNLaH/zNPzFjALA=";
+              url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-darwin-x64-baseline.zip";
+              hash = "sha256-1KFVrfv9CRVes7oFyeOlRPOSl9emhhbTx3WfZ6tcR9w=";
             };
             meta = old.meta // { platforms = old.meta.platforms ++ [ "x86_64-darwin" ]; };
           }) else prev.bun;

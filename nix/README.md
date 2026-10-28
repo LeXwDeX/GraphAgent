@@ -14,7 +14,7 @@ the build's Node process a 4096 MiB old-space budget, preserving other caller
 it does not change the packaged Electron application's runtime heap.
 
 The reviewed [`nixpkgs-unstable` input](https://github.com/NixOS/nixpkgs/tree/c9fe7d12cd78d1adcd12dd15e24432dde5b155a0)
-provides Bun 1.4.2, Node 24.21.0 and Go 1.27.1. Nixpkgs 26.11 removed Intel
+provides Bun 1.4.4, Node 24.21.0 and Go 1.27.1. Nixpkgs 26.11 removed Intel
 macOS support. Only `x86_64-darwin` therefore selects the official
 [26.05 Darwin input](https://github.com/NixOS/nixpkgs/tree/68e5b9f7e82a76a5171d10b5d316e0ae5e1df6e9),
 which supplies the same Node and Go pins and receives upstream support through 2026. That platform calls the current official Bun recipe with the legacy

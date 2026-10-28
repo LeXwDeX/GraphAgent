@@ -30,7 +30,7 @@ function fixture(t) {
   mkdirSync(join(dir, "config_assistant"))
   mkdirSync(join(dir, "packages/containers"), { recursive: true })
   const pkg = {
-    packageManager: "bun@1.4.2",
+    packageManager: "bun@1.4.4",
     devDependencies: { turbo: "catalog:" },
     workspaces: { catalog: { turbo: "2.11.5" } },
   }
@@ -44,7 +44,7 @@ function fixture(t) {
 
 void test("central versions resolve exact pins, including catalog Turbo", (t) => {
   const { dir } = fixture(t)
-  assert.deepEqual(readToolchain(dir), { bun: "1.4.2", node: "24.21.0", go: "1.27.1", turbo: "2.11.5", rust: "1.98.1" })
+  assert.deepEqual(readToolchain(dir), { bun: "1.4.4", node: "24.21.0", go: "1.27.1", turbo: "2.11.5", rust: "1.98.1" })
 })
 
 void test("build dependency versions resolve default and named catalogs without changing declarations", (t) => {
@@ -61,10 +61,10 @@ void test("build dependency versions resolve default and named catalogs without 
 
 void test("central pins reject floating ranges and conflicting Go toolchain directives", (t) => {
   const { dir, pkg, writePackage } = fixture(t)
-  pkg.packageManager = "bun@^1.4.2"
+  pkg.packageManager = "bun@^1.4.4"
   writePackage()
   assert.throws(() => readToolchain(dir), /exact/)
-  pkg.packageManager = "bun@1.4.2"
+  pkg.packageManager = "bun@1.4.4"
   writePackage()
   writeFileSync(join(dir, ".node-version"), "24\n")
   assert.throws(() => readToolchain(dir), /exact/)
@@ -77,9 +77,9 @@ void test("central pins reject floating ranges and conflicting Go toolchain dire
 })
 
 void test("runtime validation rejects another patch and reports every mismatch", () => {
-  const expected = { bun: "1.4.2", node: "24.21.0", go: "1.27.1", rust: "1.98.1" }
+  const expected = { bun: "1.4.4", node: "24.21.0", go: "1.27.1", rust: "1.98.1" }
   assert.doesNotThrow(() => assertRuntimeVersions(expected, expected))
-  assert.throws(() => assertRuntimeVersions(expected, { bun: "1.4.3" }), /bun@1\.4\.2.*bun@1\.4\.3/)
+  assert.throws(() => assertRuntimeVersions(expected, { bun: "1.4.3" }), /bun@1\.4\.4.*bun@1\.4\.3/)
   assert.throws(
     () => assertRuntimeVersions(expected, { node: "24.21.1", go: "1.27.2" }),
     (error) => {
