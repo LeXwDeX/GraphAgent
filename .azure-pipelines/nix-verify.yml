@@ -1,0 +1,84 @@
+# ============================================================================
+# Nix verification (Azure Pipelines)
+# ----------------------------------------------------------------------------
+# Purpose : Verify the native Nix toolchain, dependency hash and both packages
+# Trigger : PRs touching Nix inputs, manual run (optionally regenerating
+#           native hashes and returning them as artifacts for review)
+# Agents  : "GitHub-hosted Agents" pool, billed per minute:
+#           ubuntu-24.04-8-core (x86_64-linux) and macos-26-arm64
+#           (aarch64-darwin). aarch64-linux and x86_64-darwin are not covered
+#           here; the Nix system is derived from the agent itself.
+# ============================================================================
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+
+pr:
+  autoCancel: true
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - flake.nix
+      - flake.lock
+      - nix
+      - package.json
+      - bun.lock
+      - .node-version
+      - config_assistant/go.mod
+      - packages/desktop/package.json
+      - .azure-pipelines/nix-verify.yml
+
+parameters:
+  - name: regenerateHashes
+    displayName: Measure and apply native hashes before building
+    type: boolean
+    default: false
+  - name: agents
+    type: object
+    default:
+      - name: linux
+        image: ubuntu-24.04-8-core
+      - name: macos
+        image: macos-26-arm64
+
+jobs:
+  - ${{ each agent in parameters.agents }}:
+      - job: nix_${{ agent.name }}
+        displayName: Nix (${{ agent.name }})
+        pool:
+          name: GitHub-hosted Agents
+          vmImage: ${{ agent.image }}
+        timeoutInMinutes: 90
+        steps:
+          - checkout: self
+            fetchDepth: 1
+            persistCredentials: false
+          - bash: |
+              set -euo pipefail
+              sh <(curl --fail --location --silent --show-error --retry 3 \
+                https://releases.nixos.org/nix/nix-2.35.0/install) --daemon --yes
+            displayName: Install Nix
+          - bash: |
+              set -euo pipefail
+              . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+              export NIX_CONFIG="experimental-features = nix-command flakes"
+              case "$(uname -s)-$(uname -m)" in
+                Linux-x86_64) system=x86_64-linux ;;
+                Linux-aarch64) system=aarch64-linux ;;
+                Darwin-x86_64) system=x86_64-darwin ;;
+                Darwin-arm64) system=aarch64-darwin ;;
+                *) echo "##vso[task.logissue type=error]Unsupported agent $(uname -sm)"; exit 1 ;;
+              esac
+              echo "Nix system: $system"
+              python3 nix/scripts/test_verify_build.py
+              args=(--system "$system")
+              if [[ "${{ parameters.regenerateHashes }}" == "True" ]]; then args+=(--apply); fi
+              python3 nix/scripts/verify_build.py "${args[@]}"
+            displayName: Verify native toolchain, dependency hash and both packages
+          - publish: nix-evidence
+            artifact: nix-${{ agent.name }}-$(Build.SourceVersion)-$(System.JobAttempt)
+            displayName: Preserve measured hashes and native build evidence
+            condition: always()

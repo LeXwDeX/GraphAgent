@@ -25,6 +25,12 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+// --arch=arm64,x64 makes --single build the current OS for these CPU
+// architectures (cross-compiled) instead of only the host's.
+const singleArchs = process.argv
+  .find((arg) => arg.startsWith("--arch="))
+  ?.slice("--arch=".length)
+  .split(",") ?? [process.arch]
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -126,7 +132,7 @@ const allTargets: {
 
 const targets = singleFlag
   ? allTargets.filter((item) => {
-      if (item.os !== process.platform || item.arch !== process.arch) {
+      if (item.os !== process.platform || !singleArchs.includes(item.arch)) {
         return false
       }
 

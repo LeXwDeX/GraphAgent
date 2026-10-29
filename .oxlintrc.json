@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicolo-ribaudo/oxc-project.github.io/refs/heads/json-schema/src/public/.oxlintrc.schema.json",
-  // Enforced in CI (ci-typecheck.yml) and pre-commit via the root `lint`
+  // Enforced in CI (.azure-pipelines/ci.yml Typecheck) and pre-commit via the root `lint`
   // script's --max-warnings ratchet: new warnings fail the gate. When fixing
   // existing warnings, lower the threshold in package.json to match.
   "options": {
