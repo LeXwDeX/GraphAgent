@@ -61,7 +61,7 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 - CI push and PR targets are `main`. Development branches use `{type}/short-name`.
 - `ci.yml` job `Typecheck`: toolchain and pipeline-definition tests → lint → typecheck → DAG-core gate → `oc` installer boundary test.
 - `ci.yml` unit jobs: workspace tests, Go tests, both client generation checks, 4 opencode shards (shard 1 also runs focused lifecycle checks) and the HttpAPI exerciser, aggregated by `Unit Tests (linux)`. Playwright E2E runs on Linux and Windows.
-- Every job runs on the Azure DevOps `GitHub-hosted Agents` pool (8 vCPU, 32 GB images), billed per minute; the organization keeps no paid parallel jobs.
+- Every job runs on the Azure DevOps `GitHub-hosted Agents` pool (8 vCPU, 32 GB images), billed per minute; the organization keeps no paid parallel jobs. Windows jobs use the free Microsoft-hosted `windows-latest` tier until Windows 8-core images reach that pool.
 - `nix-verify.yml` runs on PRs touching Nix inputs (x86_64-linux and aarch64-darwin agents).
 - Pipeline files define jobs and triggers. Read current GitHub settings to verify which checks are required by branch protection.
 

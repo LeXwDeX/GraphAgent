@@ -19,7 +19,8 @@
 # Role    : Fallback for .github/workflows/release-fork.yml when GitHub
 #           Actions cannot run; never publish the same version from both.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute:
-#           ubuntu-24.04-8-core, windows-2025-8-core and macos-26-arm64.
+#           ubuntu-24.04-8-core and macos-26-arm64; Windows uses the free
+#           Microsoft-hosted windows-latest tier for now.
 # macOS   : The arm64 macOS job cross-compiles darwin-arm64 and darwin-x64;
 #           install acceptance runs against the native darwin-arm64 archive.
 # Output  : Pipeline artifacts opencode-{linux,macos,windows},
@@ -56,7 +57,7 @@ parameters:
         # build installs them itself instead of using --skip-install.
         buildArgs: --single --arch=arm64,x64
       - name: windows
-        image: windows-2025-8-core
+        image: windows-latest
         buildArgs: --single --skip-install
 
 jobs:
@@ -145,9 +146,15 @@ jobs:
             dependsOn:
               - version
               - package_templates
-            pool:
-              name: GitHub-hosted Agents
-              vmImage: ${{ target.image }}
+            # Windows 8-core images have not reached the GitHub-hosted Agents
+            # pool yet, so Windows builds on the free Microsoft-hosted tier.
+            ${{ if eq(target.name, 'windows') }}:
+              pool:
+                vmImage: ${{ target.image }}
+            ${{ else }}:
+              pool:
+                name: GitHub-hosted Agents
+                vmImage: ${{ target.image }}
             timeoutInMinutes: 60
             variables:
               OPENCODE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]

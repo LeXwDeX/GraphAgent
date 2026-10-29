@@ -16,8 +16,9 @@
 #           gates. Every PR and every main push runs the full suite; there is
 #           no result reuse. Fork PRs build only after a member comments.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute with
-#           no reserved parallel jobs: ubuntu-24.04-8-core and
-#           windows-2025-8-core (8 vCPU, 32 GB).
+#           no reserved parallel jobs: ubuntu-24.04-8-core (8 vCPU, 32 GB).
+#           Windows E2E uses the free Microsoft-hosted windows-latest tier
+#           until Windows 8-core images reach that pool.
 # Release : GitHub Actions release-fork.yml; .azure-pipelines/release.yml is
 #           the fallback.
 # ============================================================================
@@ -225,9 +226,15 @@ jobs:
   - ${{ each platform in parameters.e2ePlatforms }}:
       - job: e2e_${{ platform }}
         displayName: E2E Tests (${{ platform }})
-        pool:
-          name: GitHub-hosted Agents
-          vmImage: ${{ replace(replace(platform, 'linux', 'ubuntu-24.04'), 'windows', 'windows-2025') }}-8-core
+        # Windows 8-core images have not reached the GitHub-hosted Agents
+        # pool yet, so Windows uses the free Microsoft-hosted tier.
+        ${{ if eq(platform, 'windows') }}:
+          pool:
+            vmImage: windows-latest
+        ${{ else }}:
+          pool:
+            name: GitHub-hosted Agents
+            vmImage: ubuntu-24.04-8-core
         timeoutInMinutes: 75
         variables:
           PLAYWRIGHT_BROWSERS_PATH: $(Pipeline.Workspace)/.playwright-browsers
