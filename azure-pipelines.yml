@@ -1,10 +1,12 @@
 # ============================================================================
 # Azure Pipelines runner smoke
 # ----------------------------------------------------------------------------
-# Purpose : Manual probe that the Azure DevOps connection, Microsoft-hosted
-#           pools and parallel-job capacity actually run jobs
+# Purpose : Manual probe that the Azure DevOps connection, agent pools and
+#           parallel-job capacity actually run jobs
 # Trigger : None. Queue it by hand from Azure DevOps (any branch)
-# Jobs    : one per Microsoft-hosted image: linux, windows, macos
+# Jobs    : pool=microsoft-hosted (default): linux, windows, macos on
+#           Microsoft-hosted images
+#           pool=managed: linux only, on the `yc-ci-linux` Managed DevOps Pool
 # Notes   : GitHub Actions stays the CI of record. No checkout, no secrets,
 #           no service connections; each job is bounded to 10 minutes and
 #           reports agent identity and installed tool versions only.
@@ -14,11 +16,24 @@
 trigger: none
 pr: none
 
+parameters:
+  - name: pool
+    displayName: Agent pool
+    type: string
+    default: microsoft-hosted
+    values:
+      - microsoft-hosted
+      - managed
+
 jobs:
   - job: smoke_linux
-    displayName: Runner smoke (linux)
-    pool:
-      vmImage: ubuntu-latest
+    displayName: Runner smoke (linux, ${{ parameters.pool }})
+    ${{ if eq(parameters.pool, 'managed') }}:
+      pool:
+        name: yc-ci-linux
+    ${{ else }}:
+      pool:
+        vmImage: ubuntu-latest
     timeoutInMinutes: 10
     steps:
       - checkout: none
@@ -50,68 +65,69 @@ jobs:
           fi
         displayName: Report agent identity and tooling
 
-  - job: smoke_windows
-    displayName: Runner smoke (windows)
-    pool:
-      vmImage: windows-latest
-    timeoutInMinutes: 10
-    steps:
-      - checkout: none
-      - pwsh: |
-          Write-Output "platform=windows"
-          Write-Output "agent_name=$env:AGENT_NAME"
-          Write-Output "agent_os=$env:AGENT_OS"
-          Write-Output "agent_arch=$env:AGENT_OSARCHITECTURE"
-          Write-Output "build_id=$env:BUILD_BUILDID"
-          Write-Output "source_branch=$env:BUILD_SOURCEBRANCH"
-          Write-Output "commit=$env:BUILD_SOURCEVERSION"
-          Write-Output "hostname=$env:COMPUTERNAME"
-          Write-Output "whoami=$(whoami)"
-          Write-Output "cpus=$env:NUMBER_OF_PROCESSORS"
-          Write-Output "memory_gb=$([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1))"
-          Write-Output "os_version=$([System.Environment]::OSVersion.VersionString)"
-          Write-Output "pwsh_version=$($PSVersionTable.PSVersion)"
-          foreach ($tool in @('git', 'node', 'python', 'go')) {
-            $resolved = Get-Command $tool -ErrorAction SilentlyContinue
-            if ($resolved) {
-              Write-Output "tool.$tool=$($resolved.Source)"
-            } else {
-              Write-Output "tool.$tool=missing"
-            }
-          }
-        displayName: Report agent identity and tooling
+  - ${{ if eq(parameters.pool, 'microsoft-hosted') }}:
+      - job: smoke_windows
+        displayName: Runner smoke (windows)
+        pool:
+          vmImage: windows-latest
+        timeoutInMinutes: 10
+        steps:
+          - checkout: none
+          - pwsh: |
+              Write-Output "platform=windows"
+              Write-Output "agent_name=$env:AGENT_NAME"
+              Write-Output "agent_os=$env:AGENT_OS"
+              Write-Output "agent_arch=$env:AGENT_OSARCHITECTURE"
+              Write-Output "build_id=$env:BUILD_BUILDID"
+              Write-Output "source_branch=$env:BUILD_SOURCEBRANCH"
+              Write-Output "commit=$env:BUILD_SOURCEVERSION"
+              Write-Output "hostname=$env:COMPUTERNAME"
+              Write-Output "whoami=$(whoami)"
+              Write-Output "cpus=$env:NUMBER_OF_PROCESSORS"
+              Write-Output "memory_gb=$([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1))"
+              Write-Output "os_version=$([System.Environment]::OSVersion.VersionString)"
+              Write-Output "pwsh_version=$($PSVersionTable.PSVersion)"
+              foreach ($tool in @('git', 'node', 'python', 'go')) {
+                $resolved = Get-Command $tool -ErrorAction SilentlyContinue
+                if ($resolved) {
+                  Write-Output "tool.$tool=$($resolved.Source)"
+                } else {
+                  Write-Output "tool.$tool=missing"
+                }
+              }
+            displayName: Report agent identity and tooling
 
-  - job: smoke_macos
-    displayName: Runner smoke (macos)
-    pool:
-      vmImage: macOS-latest
-    timeoutInMinutes: 10
-    steps:
-      - checkout: none
-      - bash: |
-          echo "platform=macos"
-          echo "agent_name=${AGENT_NAME:-unknown}"
-          echo "agent_os=${AGENT_OS:-unknown}"
-          echo "agent_arch=${AGENT_OSARCHITECTURE:-unknown}"
-          echo "build_id=${BUILD_BUILDID:-unknown}"
-          echo "source_branch=${BUILD_SOURCEBRANCH:-unknown}"
-          echo "commit=${BUILD_SOURCEVERSION:-unknown}"
-          echo "hostname=$(hostname)"
-          echo "identity=$(id -un):$(id -gn) uid=$(id -u) gid=$(id -g)"
-          echo "cpus=$(sysctl -n hw.ncpu)"
-          echo "memory_bytes=$(sysctl -n hw.memsize)"
-          sw_vers
-          uname -a
-          for tool in bash git node python3; do
-            if command -v "$tool" >/dev/null 2>&1; then
-              echo "tool.$tool=$(command -v "$tool") :: $("$tool" --version 2>&1 | head -n 1)"
-            else
-              echo "tool.$tool=missing"
-            fi
-          done
-          if command -v go >/dev/null 2>&1; then
-            echo "tool.go=$(command -v go) :: $(go version)"
-          else
-            echo "tool.go=missing"
-          fi
-        displayName: Report agent identity and tooling
+      - job: smoke_macos
+        displayName: Runner smoke (macos)
+        pool:
+          vmImage: macOS-latest
+        timeoutInMinutes: 10
+        steps:
+          - checkout: none
+          - bash: |
+              echo "platform=macos"
+              echo "agent_name=${AGENT_NAME:-unknown}"
+              echo "agent_os=${AGENT_OS:-unknown}"
+              echo "agent_arch=${AGENT_OSARCHITECTURE:-unknown}"
+              echo "build_id=${BUILD_BUILDID:-unknown}"
+              echo "source_branch=${BUILD_SOURCEBRANCH:-unknown}"
+              echo "commit=${BUILD_SOURCEVERSION:-unknown}"
+              echo "hostname=$(hostname)"
+              echo "identity=$(id -un):$(id -gn) uid=$(id -u) gid=$(id -g)"
+              echo "cpus=$(sysctl -n hw.ncpu)"
+              echo "memory_bytes=$(sysctl -n hw.memsize)"
+              sw_vers
+              uname -a
+              for tool in bash git node python3; do
+                if command -v "$tool" >/dev/null 2>&1; then
+                  echo "tool.$tool=$(command -v "$tool") :: $("$tool" --version 2>&1 | head -n 1)"
+                else
+                  echo "tool.$tool=missing"
+                fi
+              done
+              if command -v go >/dev/null 2>&1; then
+                echo "tool.go=$(command -v go) :: $(go version)"
+              else
+                echo "tool.go=missing"
+              fi
+            displayName: Report agent identity and tooling
