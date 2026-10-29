@@ -1,0 +1,337 @@
+# ============================================================================
+# Release · Fork Build (Azure Pipelines)
+# ----------------------------------------------------------------------------
+# Purpose : Build GraphAgent CLI binaries (linux / macos / windows), package
+#           the reference templates, assemble a verified release candidate
+#           and optionally publish it as a GitHub Release.
+# Trigger : Manual run from `main` only.
+# Version : Independent GraphAgent SemVer derived only from graphagent-v* tags.
+#           main builds X.Y.Z and marks it Latest.
+# Params  : createRelease — publish the candidate as a GitHub Release. The
+#                           default (false) exercises the full candidate path
+#                           without publishing.
+#           platforms     — comma-separated subset of linux,macos,windows.
+# Secrets : GITHUB_RELEASE_TOKEN (secret pipeline variable) — a GitHub token
+#           with contents:write on LeXwDeX/GraphAgent; only the publish job
+#           reads it.
+# macOS   : Free hosted macOS agents are Intel, so the macOS job
+#           cross-compiles darwin-arm64 and darwin-x64; install acceptance
+#           runs against the natively executable darwin-x64 archive.
+# Output  : Pipeline artifacts opencode-{linux,macos,windows},
+#           dag-templates and release-candidate-<version>.
+# ============================================================================
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+pr: none
+
+parameters:
+  - name: createRelease
+    displayName: Create a GitHub Release with the built binaries
+    type: boolean
+    default: false
+  - name: platforms
+    displayName: Platforms to build (comma-separated subset of linux,macos,windows)
+    type: string
+    default: linux,macos,windows
+  - name: buildTargets
+    type: object
+    default:
+      - name: linux
+        image: ubuntu-latest
+        buildArgs: --single --skip-install
+      - name: macos
+        image: macOS-15
+        # Cross-compiling needs every platform's native packages, so the
+        # build installs them itself instead of using --skip-install.
+        buildArgs: --single --arch=arm64,x64
+      - name: windows
+        image: windows-latest
+        buildArgs: --single --skip-install
+
+jobs:
+  - job: version
+    displayName: Resolve GraphAgent Version
+    pool:
+      vmImage: ubuntu-latest
+    timeoutInMinutes: 10
+    steps:
+      - bash: |
+          if [ "$(Build.SourceBranch)" != "refs/heads/main" ]; then
+            echo "##vso[task.logissue type=error]Stable GraphAgent releases must be run from main."
+            exit 1
+          fi
+        displayName: Require main branch
+      - checkout: self
+        fetchDepth: 0
+        fetchTags: true
+        persistCredentials: false
+      - template: templates/toolchain.yml
+      - bash: |
+          set -euo pipefail
+          out="$AGENT_TEMPDIRECTORY/release-version.txt"
+          : > "$out"
+          GITHUB_OUTPUT="$out" GITHUB_REF_NAME="$(Build.SourceBranchName)" \
+            bun run ./packages/opencode/script/release-version.ts
+          while IFS='=' read -r key value; do
+            [ -n "$key" ] || continue
+            echo "$key=$value"
+            echo "##vso[task.setvariable variable=$key;isOutput=true]$value"
+          done < "$out"
+        name: resolve
+        displayName: Resolve version
+
+  # Package the latest reference templates from LeXwDeX/opencode-dag-config.
+  # The releasing runtime commit validates the config repo HEAD before any
+  # packaging; an invalid template or unavailable validator fails closed.
+  - job: package_templates
+    displayName: Package Reference Templates
+    pool:
+      vmImage: ubuntu-latest
+    timeoutInMinutes: 30
+    steps:
+      - checkout: self
+        fetchDepth: 1
+        persistCredentials: false
+      - bash: git clone --depth 1 https://github.com/LeXwDeX/opencode-dag-config.git dag-config
+        displayName: Clone config repo
+      - template: templates/toolchain.yml
+      - bash: |
+          set -euo pipefail
+          root="$(Build.SourcesDirectory)"
+          echo "Packaging config commit $(git -C "$root/dag-config" rev-parse HEAD) with runtime commit $(git rev-parse HEAD)"
+          mkdir -p "$root/templates-out"
+          bun run script/package-dag-templates.ts \
+            "$root/dag-config" \
+            "$root/templates-out/dag-templates.tar.gz" \
+            | tee "$root/templates-out/dag-template-provenance.json"
+        displayName: Validate and package templates (fail closed)
+        workingDirectory: packages/opencode
+      - bash: |
+          RUNTIME_COMMIT="$(git rev-parse HEAD)" \
+          TEMPLATE_COMMIT="$(git -C dag-config rev-parse HEAD)" \
+          PROVENANCE_PATH="templates-out/dag-template-provenance.json" \
+          bun -e '
+            const report = await Bun.file(process.env.PROVENANCE_PATH).json()
+            for (const key of ["runtime_commit", "template_commit", "compat_runtime_sha"]) {
+              if (typeof report[key] !== "string" || !/^[0-9a-f]{40}$/.test(report[key])) {
+                throw new Error("invalid " + key + " in template provenance")
+              }
+            }
+            if (report.runtime_commit !== process.env.RUNTIME_COMMIT) throw new Error("runtime provenance mismatch")
+            if (report.template_commit !== process.env.TEMPLATE_COMMIT) throw new Error("template provenance mismatch")
+          '
+        displayName: Verify template provenance
+      - publish: templates-out
+        artifact: dag-templates
+        displayName: Upload templates artifact
+
+  - ${{ each target in parameters.buildTargets }}:
+      - ${{ if contains(parameters.platforms, target.name) }}:
+          - job: build_${{ target.name }}
+            displayName: Build CLI (${{ target.name }})
+            dependsOn:
+              - version
+              - package_templates
+            pool:
+              vmImage: ${{ target.image }}
+            timeoutInMinutes: 60
+            variables:
+              OPENCODE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
+              OPENCODE_CHANNEL: latest
+            steps:
+              - checkout: self
+                fetchDepth: 0
+                fetchTags: true
+                persistCredentials: false
+              - template: templates/toolchain.yml
+              # Embed a models.dev catalog snapshot so air-gapped users can
+              # start without reaching https://models.dev at runtime.
+              - bash: |
+                  snapshot_path="$AGENT_TEMPDIRECTORY/models-dev-api.json"
+                  if command -v cygpath >/dev/null 2>&1; then snapshot_path="$(cygpath -m "$snapshot_path")"; fi
+                  for attempt in 1 2 3; do
+                    if curl -fsSL --max-time 30 https://models.dev/api.json -o "$snapshot_path"; then
+                      echo "models.dev snapshot downloaded (attempt $attempt)"
+                      echo "##vso[task.setvariable variable=MODELS_DEV_API_JSON]$snapshot_path"
+                      exit 0
+                    fi
+                    echo "models.dev download failed (attempt $attempt), retrying..."
+                    sleep 5
+                  done
+                  echo "##vso[task.logissue type=warning]Failed to download models.dev api.json; the build falls back to @opencode-ai/models or an empty catalog"
+                displayName: Fetch models.dev snapshot
+              # Embed the DAG reference templates (see dag/workflows.ts builtin
+              # scope and script/generate.ts DAG_TEMPLATES_DIR loading).
+              - download: current
+                artifact: dag-templates
+                displayName: Download templates artifact
+              - bash: |
+                  set -euo pipefail
+                  mkdir -p dag-templates-src
+                  tar -xzf "$(Pipeline.Workspace)/dag-templates/dag-templates.tar.gz" -C dag-templates-src
+                  templates_dir="$(pwd)/dag-templates-src"
+                  if command -v cygpath >/dev/null 2>&1; then templates_dir="$(cygpath -m "$templates_dir")"; fi
+                  echo "##vso[task.setvariable variable=DAG_TEMPLATES_DIR]$templates_dir"
+                displayName: Extract templates
+              - bash: ./packages/opencode/script/build.ts ${{ target.buildArgs }}
+                displayName: Build CLI
+              # Bundle ripgrep into each dist/opencode-*/bin for air-gapped use.
+              - bash: bun run ./packages/opencode/script/prefetch-ripgrep.ts
+                displayName: Prefetch ripgrep
+              - ${{ if ne(target.name, 'macos') }}:
+                  - bash: |
+                      set -euo pipefail
+                      for dir in packages/opencode/dist/opencode-*/; do
+                        cli="$dir/bin/opencode"
+                        if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
+                        actual="$("$cli" --version)"
+                        if [[ "$actual" != "$OPENCODE_VERSION" ]]; then
+                          echo "Unexpected CLI version: $actual" >&2
+                          exit 1
+                        fi
+                        "$cli" --help > /dev/null
+                      done
+                    displayName: Verify CLI executable
+                    timeoutInMinutes: 5
+              - bash: |
+                  set -euo pipefail
+                  for dir in opencode-*/; do
+                    base="${dir%/}"
+                    if [[ "$base" == *linux* ]]; then
+                      bun run ../script/package-cli-artifact.ts "$base" "${base}.tar.gz"
+                    else
+                      bun run ../script/package-cli-artifact.ts "$base" "${base}.zip"
+                    fi
+                  done
+                  mkdir -p "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli"
+                  cp opencode-*.tar.gz opencode-*.zip "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli/" 2>/dev/null || true
+                  ls "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli"
+                displayName: Package artifacts
+                workingDirectory: packages/opencode/dist
+              # #498 B2: macOS release acceptance — after the installer-style
+              # xattr + ad-hoc re-sign mutation, assert codesign validity and
+              # executable smoke on the archive this Intel agent can execute.
+              - ${{ if eq(target.name, 'macos') }}:
+                  - bash: bash script/oc-macos-acceptance.test.sh packages/opencode/dist/opencode-darwin-x64.zip
+                    displayName: macOS install acceptance
+                    timeoutInMinutes: 10
+              - publish: $(Build.ArtifactStagingDirectory)/cli
+                artifact: opencode-${{ target.name }}
+                displayName: Upload artifacts
+
+  - job: prepare_release
+    displayName: Prepare Release Candidate
+    dependsOn:
+      - version
+      - package_templates
+      - ${{ each target in parameters.buildTargets }}:
+          - ${{ if contains(parameters.platforms, target.name) }}:
+              - build_${{ target.name }}
+    pool:
+      vmImage: ubuntu-latest
+    timeoutInMinutes: 15
+    variables:
+      RELEASE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
+      RELEASE_CHANNEL: $[ dependencies.version.outputs['resolve.channel'] ]
+      RELEASE_TAG: $[ dependencies.version.outputs['resolve.tag'] ]
+      RELEASE_PREVIOUS_TAG: $[ dependencies.version.outputs['resolve.previous_tag'] ]
+    steps:
+      - checkout: self
+        fetchDepth: 1
+        persistCredentials: false
+      - download: current
+        displayName: Download artifacts
+      - bash: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find "$(Pipeline.Workspace)" -maxdepth 2 -type f \
+            \( -name 'opencode-*.tar.gz' -o -name 'opencode-*.zip' -o -name 'dag-templates.tar.gz' -o -name 'dag-template-provenance.json' \) \
+            -exec cp {} release-assets/ \;
+          cd release-assets
+          shopt -s nullglob
+          assets=(opencode-*.tar.gz opencode-*.zip dag-templates.tar.gz dag-template-provenance.json)
+          if (( ${#assets[@]} < 3 )); then
+            echo "##vso[task.logissue type=error]Release candidate is incomplete: expected templates, provenance, and at least one CLI archive."
+            exit 1
+          fi
+          selected="${{ parameters.platforms }}"
+          require_archive() {
+            if [[ "$selected" == *"$1"* ]] && ! compgen -G "$2" >/dev/null; then
+              echo "##vso[task.logissue type=error]Release candidate is missing the selected $1 archive ($2)."
+              exit 1
+            fi
+          }
+          require_archive linux "opencode-linux-*.tar.gz"
+          require_archive macos "opencode-darwin-*.zip"
+          require_archive windows "opencode-windows-*.zip"
+          sha256sum "${assets[@]}" > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+        displayName: Generate SHA256SUMS
+      - template: templates/toolchain.yml
+      # Render + validate the per-series notes file (.github/releases/vX.Y.Z.md)
+      # before a candidate can be published. Fail closed: a missing or invalid
+      # series file stops the job here.
+      - bash: |
+          bun run ./packages/opencode/script/release-notes.ts \
+            --notes-dir ".github/releases" \
+            --version "$RELEASE_VERSION" \
+            --channel "$RELEASE_CHANNEL" \
+            --branch "$(Build.SourceBranchName)" \
+            --tag "$RELEASE_TAG" \
+            --previous-tag "$RELEASE_PREVIOUS_TAG" \
+            --repo "$(Build.Repository.Name)" \
+            --out "$(Build.SourcesDirectory)/release-assets/RELEASE_NOTES.md"
+        displayName: Render release notes (fail closed)
+      - bash: |
+          set -euo pipefail
+          test -s SHA256SUMS
+          test -s RELEASE_NOTES.md
+          test -s dag-template-provenance.json
+          sha256sum --check SHA256SUMS
+        displayName: Verify release candidate
+        workingDirectory: release-assets
+      - publish: release-assets
+        artifact: release-candidate-$(RELEASE_VERSION)
+        displayName: Upload release candidate
+
+  - ${{ if parameters.createRelease }}:
+      - job: publish_release
+        displayName: Create GitHub Release
+        dependsOn:
+          - version
+          - prepare_release
+        pool:
+          vmImage: ubuntu-latest
+        timeoutInMinutes: 10
+        variables:
+          RELEASE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
+          RELEASE_TAG: $[ dependencies.version.outputs['resolve.tag'] ]
+        steps:
+          - checkout: none
+          - download: current
+            artifact: release-candidate-$(RELEASE_VERSION)
+            displayName: Download release candidate
+          # Stable releases are explicitly promoted to Latest.
+          - bash: |
+              set -euo pipefail
+              # An undefined variable leaves the literal macro text behind.
+              if [ -z "${GH_TOKEN:-}" ] || [[ "$GH_TOKEN" == '$('* ]]; then
+                echo "##vso[task.logissue type=error]The GITHUB_RELEASE_TOKEN secret pipeline variable is not set."
+                exit 1
+              fi
+              dir="$(Pipeline.Workspace)/release-candidate-$RELEASE_VERSION"
+              shopt -s nullglob
+              assets=("$dir"/*.tar.gz "$dir"/*.zip "$dir/SHA256SUMS" "$dir/dag-template-provenance.json")
+              gh release create "$RELEASE_TAG" \
+                --repo "$(Build.Repository.Name)" \
+                --title "OpenCode GraphAgent v$RELEASE_VERSION" \
+                --notes-file "$dir/RELEASE_NOTES.md" \
+                --target "$(Build.SourceVersion)" \
+                --latest \
+                "${assets[@]}"
+            displayName: Create GitHub Release
+            env:
+              GH_TOKEN: $(GITHUB_RELEASE_TOKEN)

@@ -1,10 +1,10 @@
 /**
  * Release packaging gate (change repair-workflow-authoring-validation, §6).
  *
- * One executable shape for the release-fork package-templates job: validate
+ * One executable shape for the release pipeline's package_templates job: validate
  * (fail closed) → copy validated root YAML plus provenance/license files →
  * tar.gz → manifest JSON on
- * stdout. release-fork.yml and the packaging smoke test invoke this same
+ * stdout. .azure-pipelines/release.yml and the packaging smoke test invoke this same
  * script, so CI and the test can never drift apart on the copy/tar contract.
  *
  * Usage: bun run script/package-dag-templates.ts <templates-dir> <out-archive>

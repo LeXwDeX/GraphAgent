@@ -6,12 +6,12 @@ builds dispatched from `main`. Historical `X.Y.Z-dev.N` tags and notes remain
 valid records, but they no longer provide a release entry point or advance the
 next stable version.
 
-The read-only `prepare-release` job (`.github/workflows/release-fork.yml`)
+The read-only `prepare_release` job (`.azure-pipelines/release.yml`)
 renders and validates the file, generates and verifies `SHA256SUMS`, and
-uploads one release-candidate artifact on every manual dispatch from `main`. A
-dispatch from another branch fails before building. The separate
-`publish-release` job receives the workflow's only `contents: write`
-permission and runs only when `create_release=true`. A missing or invalid notes
+uploads one release-candidate artifact on every manual run from `main`. A run
+from another branch fails before building. The separate `publish_release` job
+is the only one that reads the `GITHUB_RELEASE_TOKEN` secret and exists only
+when `createRelease=true`. A missing or invalid notes
 file therefore blocks both a non-publishing candidate and a real release.
 
 ## Lifecycle

@@ -55,12 +55,14 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 - UI changes: exercise rendering and interaction on every affected client (TUI, app, or direct `run`), including relevant state transitions and terminal cleanup; a backend-only test is insufficient. Use package-local browser/TUI harnesses and isolated configuration.
 - Dependency or toolchain changes: run `bun run toolchain:check`, affected package checks, and relevant toolchain/container/Go tests. Nix acceptance requires builds on a Nix host.
 
-## CI gates (.github/workflows)
+## CI gates (.azure-pipelines)
 
+- CI runs on Azure Pipelines (Microsoft-hosted agents, reported to GitHub by the Azure Pipelines app); there are no GitHub Actions workflows. Shared toolchain setup lives in `.azure-pipelines/templates/toolchain.yml`.
 - CI push and PR targets are `main`. Development branches use `{type}/short-name`.
-- `ci-typecheck.yml`: lint → typecheck → DAG-core gate → `oc` installer boundary test, plus toolchain checks.
-- `ci-test.yml`: Linux workspace tests, Go tests, both client generation checks, and the HttpAPI exerciser. Playwright E2E runs on Linux and Windows. The workflow also defines focused lifecycle checks.
-- Workflow files define jobs and triggers. Read current GitHub settings to verify which checks are required by branch protection.
+- `ci.yml` job `Typecheck`: toolchain and pipeline-definition tests → lint → typecheck → DAG-core gate → `oc` installer boundary test.
+- `ci.yml` unit jobs: workspace tests, Go tests, both client generation checks, 4 opencode shards (shard 1 also runs focused lifecycle checks) and the HttpAPI exerciser, aggregated by `Unit Tests (linux)`. Playwright E2E runs on Linux and Windows.
+- `nix-verify.yml` runs on PRs touching Nix inputs (x86_64-linux and x86_64-darwin agents only).
+- Pipeline files define jobs and triggers. Read current GitHub settings to verify which checks are required by branch protection.
 
 ## Generated code
 
@@ -82,7 +84,7 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 
 ## Releases
 
-- `release-fork.yml` manual `workflow_dispatch` from `main` is the release pipeline. Its default `create_release: false` builds and verifies artifacts. `create_release: true` publishes the stable `X.Y.Z` release and marks it Latest.
+- `.azure-pipelines/release.yml`, run manually from `main`, is the release pipeline. Its default `createRelease: false` builds and verifies artifacts. `createRelease: true` publishes the stable `X.Y.Z` release and marks it Latest, using the `GITHUB_RELEASE_TOKEN` secret pipeline variable.
 - Release versions derive from stable `graphagent-vX.Y.Z` tags (`packages/opencode/script/release-version.ts`); package versions and historical `-dev.N` tags do not advance that selection. Notes files must be named `.github/releases/v<derived-version>.md` exactly (fail-closed).
 
 ## Agent references

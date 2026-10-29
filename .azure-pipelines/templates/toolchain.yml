@@ -1,0 +1,118 @@
+# ============================================================================
+# Toolchain setup (step template)
+# ----------------------------------------------------------------------------
+# Installs the repository's exact Node (.node-version), Bun (packageManager)
+# and optionally Go (config_assistant/go.mod) pins, verifies them with
+# script/toolchain.mjs, restores the Bun download cache and runs
+# `bun install --frozen-lockfile`. Works on Linux, macOS and Windows agents
+# (Windows steps run in Git Bash).
+# ============================================================================
+
+parameters:
+  - name: go
+    type: boolean
+    default: false
+  - name: ripgrep
+    type: boolean
+    default: false
+  - name: gitIdentity
+    type: boolean
+    default: false
+  - name: install
+    type: boolean
+    default: true
+
+steps:
+  - bash: |
+      set -euo pipefail
+      echo "##vso[task.setvariable variable=NODE_VERSION]$(tr -d '[:space:]' < .node-version)"
+      echo "##vso[task.setvariable variable=GO_VERSION]$(awk '$1 == "go" { print $2 }' config_assistant/go.mod)"
+      echo "##vso[task.setvariable variable=BUN_INSTALL_CACHE_DIR]$(Pipeline.Workspace)/.bun-cache"
+    displayName: Read toolchain pins
+
+  - task: UseNode@1
+    displayName: Setup Node
+    inputs:
+      version: $(NODE_VERSION)
+
+  - ${{ if parameters.go }}:
+      - task: GoTool@0
+        displayName: Setup Go
+        inputs:
+          version: $(GO_VERSION)
+
+  - bash: |
+      set -euo pipefail
+      version="$(node script/toolchain.mjs get bun)"
+      case "$(uname -s)" in
+        Linux) os=linux ;;
+        Darwin) os=darwin ;;
+        MINGW* | MSYS* | CYGWIN*) os=windows ;;
+        *) echo "##vso[task.logissue type=error]Unsupported OS $(uname -s)"; exit 1 ;;
+      esac
+      case "$(uname -m)" in
+        # Baseline builds avoid AVX2 assumptions on shared x64 agents.
+        x86_64 | amd64) arch=x64-baseline ;;
+        arm64 | aarch64) arch=aarch64 ;;
+        *) echo "##vso[task.logissue type=error]Unsupported arch $(uname -m)"; exit 1 ;;
+      esac
+      asset="bun-${os}-${arch}"
+      dir="$AGENT_TEMPDIRECTORY/bun-${version}"
+      mkdir -p "$dir"
+      curl --fail --location --silent --show-error --retry 3 --retry-delay 2 \
+        --output "$dir/$asset.zip" \
+        "https://github.com/oven-sh/bun/releases/download/bun-v${version}/${asset}.zip"
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -q -o "$dir/$asset.zip" -d "$dir"
+      else
+        python -m zipfile -e "$dir/$asset.zip" "$dir"
+      fi
+      bin="$dir/$asset"
+      chmod +x "$bin"/bun* || true
+      if command -v cygpath >/dev/null 2>&1; then bin="$(cygpath -w "$bin")"; fi
+      echo "##vso[task.prependpath]$bin"
+    displayName: Setup Bun
+
+  - bash: node script/toolchain.mjs check ${{ iif(parameters.go, '--go', '') }}
+    displayName: Verify toolchain
+
+  - ${{ if parameters.install }}:
+      - task: Cache@2
+        displayName: Cache Bun dependencies
+        inputs:
+          key: 'bun | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | bun.lock'
+          restoreKeys: |
+            bun | "$(Agent.OS)" | "$(Agent.OSArchitecture)"
+          path: $(BUN_INSTALL_CACHE_DIR)
+
+      - bash: python3 -m pip install setuptools || python -m pip install setuptools || true
+        displayName: Install setuptools for distutils compatibility
+
+      - bash: |
+          set -euo pipefail
+          # Workaround for patched peer variants (./patches/), see
+          # https://github.com/oven-sh/bun/issues/28147
+          if [ "$AGENT_OS" = "Windows_NT" ]; then
+            bun install --frozen-lockfile --linker hoisted
+          else
+            bun install --frozen-lockfile
+          fi
+        displayName: Install dependencies
+
+  - ${{ if parameters.ripgrep }}:
+      # tool.glob tests hit ripgrep; without the system binary, binary.ts
+      # downloads rg from GitHub releases every run.
+      - bash: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ripgrep
+          fi
+          rg --version | head -1
+        displayName: Setup ripgrep
+
+  - ${{ if parameters.gitIdentity }}:
+      - bash: |
+          git config --global user.email "bot@opencode.ai"
+          git config --global user.name "opencode"
+        displayName: Configure Git identity
