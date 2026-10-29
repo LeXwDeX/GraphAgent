@@ -21,8 +21,8 @@
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute:
 #           ubuntu-24.04-8-core and macos-26-arm64; Windows uses the free
 #           Microsoft-hosted windows-latest tier for now.
-# macOS   : The arm64 macOS job cross-compiles darwin-arm64 and darwin-x64;
-#           install acceptance runs against the native darwin-arm64 archive.
+# macOS   : Like release-fork.yml, the arm64 macOS job builds darwin-arm64
+#           natively and runs install acceptance against that archive.
 # Output  : Pipeline artifacts opencode-{linux,macos,windows},
 #           dag-templates and release-candidate-<version>.
 # ============================================================================
@@ -53,9 +53,7 @@ parameters:
         buildArgs: --single --skip-install
       - name: macos
         image: macos-26-arm64
-        # Cross-compiling needs every platform's native packages, so the
-        # build installs them itself instead of using --skip-install.
-        buildArgs: --single --arch=arm64,x64
+        buildArgs: --single --skip-install
       - name: windows
         image: windows-latest
         buildArgs: --single --skip-install
@@ -189,7 +187,10 @@ jobs:
               - bash: |
                   set -euo pipefail
                   mkdir -p dag-templates-src
-                  tar -xzf "$(Pipeline.Workspace)/dag-templates/dag-templates.tar.gz" -C dag-templates-src
+                  archive="$(Pipeline.Workspace)/dag-templates/dag-templates.tar.gz"
+                  # GNU tar reads "D:\..." as host "D"; give it a POSIX path.
+                  if command -v cygpath >/dev/null 2>&1; then archive="$(cygpath -u "$archive")"; fi
+                  tar -xzf "$archive" -C dag-templates-src
                   templates_dir="$(pwd)/dag-templates-src"
                   if command -v cygpath >/dev/null 2>&1; then templates_dir="$(cygpath -m "$templates_dir")"; fi
                   echo "##vso[task.setvariable variable=DAG_TEMPLATES_DIR]$templates_dir"
