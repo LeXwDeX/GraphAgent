@@ -10,6 +10,9 @@
 # Params  : createRelease — publish the candidate as a GitHub Release. The
 #                           default (false) exercises the full candidate path
 #                           without publishing.
+#           draftRelease  — with createRelease, create an unpublished draft
+#                           instead: no tag, not Latest. Used to prove the
+#                           publish path; delete the draft afterwards.
 #           platforms     — comma-separated subset of linux,macos,windows.
 # Secrets : none. Only the publish job uses the github.com_LeXwDeX service
 #           connection (Azure Pipelines GitHub App) to create the release.
@@ -31,6 +34,10 @@ pr: none
 parameters:
   - name: createRelease
     displayName: Create a GitHub Release with the built binaries
+    type: boolean
+    default: false
+  - name: draftRelease
+    displayName: Create the release as an unpublished draft (publish-path test)
     type: boolean
     default: false
   - name: platforms
@@ -341,4 +348,5 @@ jobs:
                 $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/SHA256SUMS
                 $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/dag-template-provenance.json
               isPreRelease: false
+              isDraft: ${{ parameters.draftRelease }}
               addChangeLog: false
