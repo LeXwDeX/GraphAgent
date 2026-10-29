@@ -236,7 +236,7 @@ jobs:
       - job: e2e_${{ platform }}
         displayName: E2E Tests (${{ platform }})
         pool:
-          vmImage: ${{ platform }}-latest
+          vmImage: ${{ replace(platform, 'linux', 'ubuntu') }}-latest
         timeoutInMinutes: 75
         variables:
           PLAYWRIGHT_BROWSERS_PATH: $(Pipeline.Workspace)/.playwright-browsers
