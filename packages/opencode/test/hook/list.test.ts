@@ -98,19 +98,6 @@ describe("summarizeChain — descriptor derivation by type", () => {
     }
   })
 
-  test("exec-form command descriptor includes its args", async () => {
-    const projectDir = await mktmp("desc-args")
-    try {
-      await writeHooksJson(projectDir, {
-        Stop: [{ hooks: [{ type: "command", command: "bun", args: ["watch.ts", "guidance"] }] }],
-      })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
-      expect(summary.descriptor).toBe("bun watch.ts guidance")
-    } finally {
-      await fs.rm(projectDir, { recursive: true, force: true })
-    }
-  })
-
   test("command descriptor truncates to 60 chars", async () => {
     const longCommand = "x".repeat(100)
     const projectDir = await mktmp("desc-long")

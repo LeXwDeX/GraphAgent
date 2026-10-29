@@ -978,14 +978,13 @@ function mcpInput(entry: HookCommand, envelope: HookEnvelope): Record<string, un
 
 /**
  * Short human-readable description of a hook entry for the Active Hooks block.
- * All types are uniformly truncated to 60 chars: command → command text plus args,
+ * All types are uniformly truncated to 60 chars: command → command text,
  * http → URL, mcp → tool name, prompt/agent → first line of the prompt/goal.
  */
 function descriptorFor(entry: HookCommand): string {
   switch (entry.type) {
     case "command":
-      // Exec-form hooks keep the script in args; the bare executable alone names nothing.
-      return [commandText(entry), ...(entry.args ?? [])].join(" ").slice(0, 60)
+      return commandText(entry).slice(0, 60)
     case "http":
       return httpUrl(entry).slice(0, 60)
     case "mcp":
