@@ -1,0 +1,294 @@
+# ============================================================================
+# CI (Azure Pipelines)
+# ----------------------------------------------------------------------------
+# Purpose : Lint, typecheck, DAG core gate, unit/HttpAPI/generated-code tests
+#           and Playwright E2E on Linux & Windows
+# Trigger : Push to `main`, PRs targeting `main`, manual run
+# Jobs    : Typecheck               — lint, typecheck, DAG core gate, oc tests
+#           Unit Tests (workspace)  — workspace tests except opencode, Go,
+#                                     VS Code and generated-code checks
+#           Unit Tests (opencode N/8) — opencode tests in parallel shards
+#           Unit Tests (HttpAPI)    — HttpAPI exerciser gates
+#           Unit Tests (linux)      — aggregate; succeeds only when every
+#                                     unit job succeeded
+#           E2E Tests (linux|windows) — Playwright chromium
+# Gate    : Typecheck, Unit Tests (linux) and both E2E jobs are the merge
+#           gates. Every PR and every main push runs the full suite; there is
+#           no result reuse. Fork PRs build only after a member comments.
+# Agents  : Microsoft-hosted ubuntu-latest / windows-latest (2 vCPU, hence 8
+#           opencode shards). heavyPool=managed moves the opencode shards and
+#           HttpAPI to the yc-ci-linux Managed DevOps Pool.
+# Release : GitHub Actions release-fork.yml; .azure-pipelines/release.yml is
+#           the fallback.
+# ============================================================================
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  batch: false
+  branches:
+    include:
+      - main
+
+pr:
+  autoCancel: true
+  drafts: true
+  branches:
+    include:
+      - main
+
+parameters:
+  - name: shards
+    displayName: opencode unit test shards
+    type: object
+    default: [1, 2, 3, 4, 5, 6, 7, 8]
+  - name: heavyPool
+    displayName: Pool for opencode shards and HttpAPI
+    type: string
+    default: microsoft-hosted
+    values:
+      - microsoft-hosted
+      - managed
+  - name: e2ePlatforms
+    displayName: E2E platforms
+    type: object
+    default: [linux, windows]
+
+variables:
+  GOTOOLCHAIN: local
+
+jobs:
+  - job: typecheck
+    displayName: Typecheck
+    pool:
+      vmImage: ubuntu-latest
+    timeoutInMinutes: 45
+    steps:
+      - checkout: self
+        fetchDepth: 1
+      - template: templates/toolchain.yml
+      - bash: node --test script/toolchain.test.mjs script/ci-azure.test.mjs && bash script/setup-gh.test.sh
+        displayName: Test toolchain pins and pipeline definitions
+      - bash: bun run lint
+        displayName: Run lint
+      - bash: bun typecheck
+        displayName: Run typecheck
+      - bash: bun run test:dag-core
+        displayName: Run DAG core behavior and coverage gate
+        workingDirectory: packages/opencode
+        timeoutInMinutes: 10
+      # #498 B1: archive integrity boundary of the `oc` installer — SHA256SUMS
+      # must be verified before extraction and fail closed on mismatch.
+      - bash: bash script/oc-install-boundary.test.sh && bash script/oc-path-priority.test.sh
+        displayName: Run oc install boundary tests
+        timeoutInMinutes: 5
+
+  - job: unit_workspace
+    displayName: Unit Tests (workspace)
+    pool:
+      vmImage: ubuntu-latest
+    timeoutInMinutes: 45
+    steps:
+      - checkout: self
+        fetchDepth: 1
+      - template: templates/toolchain.yml
+        parameters:
+          go: true
+          ripgrep: true
+          gitIdentity: true
+      - task: Cache@2
+        displayName: Cache Turbo
+        inputs:
+          key: 'turbo | "$(Agent.OS)" | turbo.json | package.json | bun.lock | "$(Build.SourceVersion)"'
+          restoreKeys: |
+            turbo | "$(Agent.OS)" | turbo.json | package.json | bun.lock
+            turbo | "$(Agent.OS)"
+          path: .turbo/cache
+      # opencode:test runs in the sharded jobs below. Workspace tasks run one
+      # at a time to avoid CPU contention timing out 250ms Node workers.
+      - bash: bun turbo test --concurrency=1 --filter='!opencode'
+        displayName: Run workspace unit tests
+        timeoutInMinutes: 20
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+      - bash: go test ./...
+        displayName: Run config assistant tests
+        workingDirectory: config_assistant
+      - bash: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run test:unit
+        displayName: Run VS Code connection tests
+        workingDirectory: sdks/vscode
+        timeoutInMinutes: 5
+      - bash: bun run check:generated
+        displayName: Check generated client
+        workingDirectory: packages/client
+      - bash: bun run check:generated
+        displayName: Check generated SDK
+        workingDirectory: packages/sdk/js
+
+  - ${{ each shard in parameters.shards }}:
+      - job: unit_opencode_${{ shard }}
+        displayName: Unit Tests (opencode ${{ shard }}/${{ length(parameters.shards) }})
+        ${{ if eq(parameters.heavyPool, 'managed') }}:
+          pool:
+            name: yc-ci-linux
+        ${{ else }}:
+          pool:
+            vmImage: ubuntu-latest
+        timeoutInMinutes: 45
+        steps:
+          - checkout: self
+            fetchDepth: 1
+          - template: templates/toolchain.yml
+            parameters:
+              ripgrep: true
+              gitIdentity: true
+          # Mirrors opencode#test's ^build dependency in turbo.json.
+          - bash: bun turbo run build --filter='opencode^...'
+            displayName: Build opencode test dependencies
+          - ${{ if eq(shard, 1) }}:
+              - bash: >-
+                  bun test --timeout 30000 --only-failures test/session/prompt.test.ts
+                  --test-name-pattern '^(runs builtin read/grep/glob settlement through stored history into the next (AI SDK|Native) request|automatically compacts (AI SDK|Native) folded history at the token threshold|recovers (AI SDK|Native) overflow through an unprojected summary and a continued turn|terminates (AI SDK|Native) overflow when the full compaction request is also rejected)$'
+                displayName: Run context-folding lifecycle preflight
+                workingDirectory: packages/opencode
+                timeoutInMinutes: 3
+          # --shard splits the suite's files into disjoint subsets; --timings
+          # balances them by recorded per-file durations. Refresh
+          # test/ci-timings.json with --update-timings when shards drift apart.
+          - bash: bun test --timeout 30000 --only-failures --shard=${{ shard }}/${{ length(parameters.shards) }} --timings=test/ci-timings.json
+            displayName: Run opencode unit test shard
+            workingDirectory: packages/opencode
+            timeoutInMinutes: 20
+            env:
+              OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+
+  - job: unit_httpapi
+    displayName: Unit Tests (HttpAPI)
+    ${{ if eq(parameters.heavyPool, 'managed') }}:
+      pool:
+        name: yc-ci-linux
+    ${{ else }}:
+      pool:
+        vmImage: ubuntu-latest
+    timeoutInMinutes: 45
+    steps:
+      - checkout: self
+        fetchDepth: 1
+      - template: templates/toolchain.yml
+        parameters:
+          ripgrep: true
+          gitIdentity: true
+      - bash: bun turbo run build --filter='opencode^...'
+        displayName: Build opencode test dependencies
+      # The exerciser prints its report in one flush, so this step is silent
+      # while it runs. --progress arms an out-of-process watchdog that kills
+      # the runner after 120s without progress and names the last scenario;
+      # the step timeout is the final backstop (slowest passing runs ~15m).
+      - bash: bun run test:httpapi:ci
+        displayName: Run HttpAPI exerciser gates
+        workingDirectory: packages/opencode
+        timeoutInMinutes: 25
+
+  # Aggregate required check. It runs even when a unit job failed or was
+  # skipped, and fails unless every unit job succeeded, so a skipped
+  # dependency can never satisfy branch protection.
+  - job: unit_tests
+    displayName: Unit Tests (linux)
+    dependsOn:
+      - unit_workspace
+      - unit_httpapi
+      - ${{ each shard in parameters.shards }}:
+          - unit_opencode_${{ shard }}
+    condition: always()
+    pool:
+      vmImage: ubuntu-latest
+    timeoutInMinutes: 5
+    variables:
+      UNIT_RESULT_WORKSPACE: $[ dependencies.unit_workspace.result ]
+      UNIT_RESULT_HTTPAPI: $[ dependencies.unit_httpapi.result ]
+      ${{ each shard in parameters.shards }}:
+        UNIT_RESULT_OPENCODE_${{ shard }}: $[ dependencies.unit_opencode_${{ shard }}.result ]
+    steps:
+      - checkout: none
+      - bash: |
+          set -euo pipefail
+          expected=$(( 2 + ${{ length(parameters.shards) }} ))
+          count=0
+          while IFS='=' read -r name result; do
+            count=$((count + 1))
+            echo "$name=$result"
+            if [ "$result" != "Succeeded" ]; then
+              echo "##vso[task.logissue type=error]$name finished with result: $result"
+              exit 1
+            fi
+          done < <(env | grep '^UNIT_RESULT_' | sort)
+          if [ "$count" -ne "$expected" ]; then
+            echo "##vso[task.logissue type=error]Expected $expected unit gate results, found $count"
+            exit 1
+          fi
+          echo "All unit gates passed."
+        displayName: Require every unit gate
+
+  - ${{ each platform in parameters.e2ePlatforms }}:
+      - job: e2e_${{ platform }}
+        displayName: E2E Tests (${{ platform }})
+        pool:
+          vmImage: ${{ platform }}-latest
+        timeoutInMinutes: 75
+        variables:
+          PLAYWRIGHT_BROWSERS_PATH: $(Pipeline.Workspace)/.playwright-browsers
+        steps:
+          - checkout: self
+            fetchDepth: 1
+          - template: templates/toolchain.yml
+          - bash: |
+              set -euo pipefail
+              version=$(node -e 'console.log(require("./package.json").workspaces.catalog["@playwright/test"])')
+              echo "##vso[task.setvariable variable=PLAYWRIGHT_VERSION]$version"
+            displayName: Read Playwright version
+          - task: Cache@2
+            displayName: Cache Playwright browsers
+            inputs:
+              key: 'playwright | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "$(PLAYWRIGHT_VERSION)" | chromium'
+              path: $(PLAYWRIGHT_BROWSERS_PATH)
+              cacheHitVar: PLAYWRIGHT_CACHE_HIT
+          - ${{ if eq(platform, 'linux') }}:
+              - bash: bunx playwright install-deps chromium
+                displayName: Install Playwright system dependencies
+                workingDirectory: packages/app
+          - bash: bunx playwright install chromium
+            displayName: Install Playwright browsers
+            condition: and(succeeded(), ne(variables.PLAYWRIGHT_CACHE_HIT, 'true'))
+            workingDirectory: packages/app
+          - ${{ if eq(platform, 'windows') }}:
+              - bash: bun test --timeout 30000 --only-failures test/dag/dag-output-ref.test.ts test/dag/dag-output-ref-result.test.ts test/dag/dag-input-mapping-runtime.test.ts test/dag/dag-artifact-permissions.test.ts
+                displayName: Verify DAG artifact storage on Windows
+                workingDirectory: packages/opencode
+                timeoutInMinutes: 5
+          - bash: bun test test/sanitize-markdown.test.ts --timeout 30000 --only-failures
+            displayName: Verify shared Markdown in Chromium
+            workingDirectory: packages/web
+            timeoutInMinutes: 3
+            env:
+              OPENCODE_TEST_BROWSER: "1"
+          - bash: bun --cwd packages/app test:e2e:local
+            displayName: Run app e2e tests
+            timeoutInMinutes: 30
+            env:
+              CI: "true"
+          - bash: |
+              set -euo pipefail
+              out="$BUILD_ARTIFACTSTAGINGDIRECTORY/playwright"
+              mkdir -p "$out"
+              for dir in packages/app/e2e/test-results packages/app/e2e/playwright-report; do
+                if [ -d "$dir" ]; then cp -R "$dir" "$out/"; fi
+              done
+            displayName: Collect Playwright artifacts
+            condition: always()
+          - publish: $(Build.ArtifactStagingDirectory)/playwright
+            artifact: playwright-${{ platform }}-$(System.JobAttempt)
+            displayName: Upload Playwright artifacts
+            condition: always()

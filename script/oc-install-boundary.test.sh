@@ -24,7 +24,7 @@
 # touched. All do_upgrade invocations run in subshells because `die` calls
 # exit, which under `source` would kill the harness.
 #
-# Wired into ci-typecheck.yml (#498); also runnable manually on any bash host:
+# Wired into .azure-pipelines/ci.yml Typecheck (#498); also runnable manually on any bash host:
 #   bash script/oc-install-boundary.test.sh
 set -u
 

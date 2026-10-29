@@ -138,28 +138,25 @@ void test("Nix's copied source includes every shared policy input and the GitHub
   assert.doesNotMatch(read("flake.nix"), /nodejs_20/)
 })
 
-void test("CI installs the central Node pin before evidence or repository scripts", () => {
-  const nodeAction = read(".github/actions/setup-node/action.yml")
-  assert.match(nodeAction, /uses: actions\/setup-node@[a-f0-9]{40}/)
-  assert.match(nodeAction, /node-version-file: \.node-version/)
-  assert.doesNotMatch(nodeAction, /\bnode-version:/)
-  for (const path of [".github/workflows/ci-test.yml", ".github/workflows/ci-typecheck.yml"]) {
-    const workflow = read(path)
-    assert.doesNotMatch(workflow, /uses: actions\/setup-node|\bnode-version:/)
-    const jobs = workflow.split(/\n    steps:\n/).slice(1)
-    assert.ok(jobs.length > 0)
-    for (const job of jobs) {
-      // Jobs without a checkout (the unit aggregate) run no repository scripts.
-      if (!job.includes("uses: actions/checkout@")) continue
-      const steps = job.split(/\n      - name: /).slice(1)
-      const node = steps.findIndex((step) => step.includes("uses: ./.github/actions/setup-node"))
-      const evidence = steps.findIndex((step) => step.includes("uses: ./.github/actions/verified-content"))
-      assert.ok(node >= 0 && node < evidence, path)
-      assert.doesNotMatch(steps[node], /\n        if:/)
+void test("CI installs the central toolchain pins before repository scripts", () => {
+  const template = read(".azure-pipelines/templates/toolchain.yml")
+  assert.match(template, /tr -d '\[:space:\]' < \.node-version/)
+  assert.match(template, /task: UseNode@1\n\s+displayName: Setup Node\n\s+inputs:\n\s+version: \$\(NODE_VERSION\)/)
+  assert.match(template, /node script\/toolchain\.mjs get bun/)
+  assert.match(template, /node script\/toolchain\.mjs check/)
+  assert.match(template, /bun install --frozen-lockfile/)
+  assert.ok(template.indexOf("UseNode@1") < template.indexOf("toolchain.mjs get bun"))
+  assert.ok(template.indexOf("toolchain.mjs check") < template.lastIndexOf("bun install --frozen-lockfile"))
+  for (const path of [".azure-pipelines/ci.yml", ".azure-pipelines/release.yml"]) {
+    const pipeline = read(path)
+    assert.doesNotMatch(pipeline, /UseNode@|NodeTool@|versionSpec:/, path)
+    // Every job that checks out the repository sets up the pinned toolchain
+    // before its first repository script.
+    for (const job of pipeline.split(/\n\s+- job: /).slice(1)) {
+      if (!/- checkout: self/.test(job) || !/bun /.test(job)) continue
+      const setup = job.indexOf("template: templates/toolchain.yml")
+      assert.ok(setup >= 0, `${path}: ${job.split("\n")[0]} lacks toolchain setup`)
+      assert.ok(setup < job.search(/\bbun (run|test|turbo|typecheck|--cwd|-e)\b/), `${path}: ${job.split("\n")[0]}`)
     }
   }
-  const bunAction = read(".github/actions/setup-bun/action.yml")
-  assert.match(bunAction, /uses: \.\/\.github\/actions\/setup-node/)
-  assert.match(bunAction, /node script\/toolchain\.mjs check/)
-  assert.match(bunAction, /bun install --frozen-lockfile/)
 })
