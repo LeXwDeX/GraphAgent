@@ -60,9 +60,9 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 - Development CI runs on Azure Pipelines (Azure DevOps org `yc-github`, reported to GitHub by the Azure Pipelines app). GitHub Actions keeps only `release-fork.yml`. Shared toolchain setup lives in `.azure-pipelines/templates/toolchain.yml`.
 - CI push and PR targets are `main`. Development branches use `{type}/short-name`.
 - `ci.yml` job `Typecheck`: toolchain and pipeline-definition tests → lint → typecheck → DAG-core gate → `oc` installer boundary test.
-- `ci.yml` unit jobs: workspace tests, Go tests, both client generation checks, 8 opencode shards (shard 1 also runs focused lifecycle checks) and the HttpAPI exerciser, aggregated by `Unit Tests (linux)`. Playwright E2E runs on Linux and Windows.
-- `ci.yml` run parameter `heavyPool=managed` moves the opencode shards and HttpAPI onto the `yc-ci-linux` Managed DevOps Pool.
-- `nix-verify.yml` runs on PRs touching Nix inputs (x86_64-linux and x86_64-darwin agents only).
+- `ci.yml` unit jobs: workspace tests, Go tests, both client generation checks, 4 opencode shards (shard 1 also runs focused lifecycle checks) and the HttpAPI exerciser, aggregated by `Unit Tests (linux)`. Playwright E2E runs on Linux and Windows.
+- Every job runs on the Azure DevOps `GitHub-hosted Agents` pool (8 vCPU, 32 GB images), billed per minute; the organization keeps no paid parallel jobs.
+- `nix-verify.yml` runs on PRs touching Nix inputs (x86_64-linux and aarch64-darwin agents).
 - Pipeline files define jobs and triggers. Read current GitHub settings to verify which checks are required by branch protection.
 
 ## Generated code

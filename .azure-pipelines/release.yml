@@ -15,9 +15,10 @@
 #           connection (Azure Pipelines GitHub App) to create the release.
 # Role    : Fallback for .github/workflows/release-fork.yml when GitHub
 #           Actions cannot run; never publish the same version from both.
-# macOS   : Free hosted macOS agents are Intel, so the macOS job
-#           cross-compiles darwin-arm64 and darwin-x64; install acceptance
-#           runs against the natively executable darwin-x64 archive.
+# Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute:
+#           ubuntu-24.04-8-core, windows-2025-8-core and macos-26-arm64.
+# macOS   : The arm64 macOS job cross-compiles darwin-arm64 and darwin-x64;
+#           install acceptance runs against the native darwin-arm64 archive.
 # Output  : Pipeline artifacts opencode-{linux,macos,windows},
 #           dag-templates and release-candidate-<version>.
 # ============================================================================
@@ -40,22 +41,23 @@ parameters:
     type: object
     default:
       - name: linux
-        image: ubuntu-latest
+        image: ubuntu-24.04-8-core
         buildArgs: --single --skip-install
       - name: macos
-        image: macOS-15
+        image: macos-26-arm64
         # Cross-compiling needs every platform's native packages, so the
         # build installs them itself instead of using --skip-install.
         buildArgs: --single --arch=arm64,x64
       - name: windows
-        image: windows-latest
+        image: windows-2025-8-core
         buildArgs: --single --skip-install
 
 jobs:
   - job: version
     displayName: Resolve GraphAgent Version
     pool:
-      vmImage: ubuntu-latest
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 10
     steps:
       - bash: |
@@ -89,7 +91,8 @@ jobs:
   - job: package_templates
     displayName: Package Reference Templates
     pool:
-      vmImage: ubuntu-latest
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 30
     steps:
       - checkout: self
@@ -136,6 +139,7 @@ jobs:
               - version
               - package_templates
             pool:
+              name: GitHub-hosted Agents
               vmImage: ${{ target.image }}
             timeoutInMinutes: 60
             variables:
@@ -215,7 +219,7 @@ jobs:
               # xattr + ad-hoc re-sign mutation, assert codesign validity and
               # executable smoke on the archive this Intel agent can execute.
               - ${{ if eq(target.name, 'macos') }}:
-                  - bash: bash script/oc-macos-acceptance.test.sh packages/opencode/dist/opencode-darwin-x64.zip
+                  - bash: bash script/oc-macos-acceptance.test.sh packages/opencode/dist/opencode-darwin-arm64.zip
                     displayName: macOS install acceptance
                     timeoutInMinutes: 10
               - publish: $(Build.ArtifactStagingDirectory)/cli
@@ -231,7 +235,8 @@ jobs:
           - ${{ if contains(parameters.platforms, target.name) }}:
               - build_${{ target.name }}
     pool:
-      vmImage: ubuntu-latest
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 15
     variables:
       RELEASE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
@@ -305,7 +310,8 @@ jobs:
           - version
           - prepare_release
         pool:
-          vmImage: ubuntu-latest
+          name: GitHub-hosted Agents
+          vmImage: ubuntu-24.04-8-core
         timeoutInMinutes: 10
         variables:
           RELEASE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]

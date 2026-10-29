@@ -18,7 +18,7 @@ await test("CI keeps the required gate names", () => {
   ])
     assert(ci.includes(name), name)
   assert.match(ci, /name: e2ePlatforms\n[\s\S]*?default: \[linux, windows\]/)
-  assert.match(ci, /name: shards\n[\s\S]*?default: \[1, 2, 3, 4, 5, 6, 7, 8\]/)
+  assert.match(ci, /name: shards\n[\s\S]*?default: \[1, 2, 3, 4\]/)
 })
 
 await test("every main PR and main push runs the full suite", () => {
@@ -72,7 +72,11 @@ await test("Azure Pipelines runs development CI and GitHub Actions keeps only th
   assert.match(nix, /\n  paths:\n    include:\n      - flake\.nix\n/)
 })
 
-await test("heavyPool moves only the opencode shards and HttpAPI", () => {
-  assert.match(ci, /name: heavyPool\n[\s\S]*?default: microsoft-hosted\n[\s\S]*?- managed\n/)
-  assert.equal(ci.match(/name: yc-ci-linux/g)?.length, 2)
+await test("every job runs on the per-minute GitHub-hosted Agents pool", () => {
+  for (const file of ["ci.yml", "nix-verify.yml", "release.yml"]) {
+    const pipeline = read(`.azure-pipelines/${file}`)
+    const pools = pipeline.match(/\n\s+pool:\n[^\n]+/g) ?? []
+    assert(pools.length > 0, file)
+    for (const pool of pools) assert.match(pool, /name: GitHub-hosted Agents$/, `${file}: ${pool.trim()}`)
+  }
 })

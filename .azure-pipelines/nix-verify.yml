@@ -4,10 +4,10 @@
 # Purpose : Verify the native Nix toolchain, dependency hash and both packages
 # Trigger : PRs touching Nix inputs, manual run (optionally regenerating
 #           native hashes and returning them as artifacts for review)
-# Agents  : Microsoft-hosted ubuntu-24.04 (x86_64-linux) and macOS-15
-#           (x86_64-darwin). Hosted Azure agents offer no Linux arm64 or free
-#           Apple Silicon image, so aarch64-linux / aarch64-darwin are not
-#           covered here; the Nix system is derived from the agent itself.
+# Agents  : "GitHub-hosted Agents" pool, billed per minute:
+#           ubuntu-24.04-8-core (x86_64-linux) and macos-26-arm64
+#           (aarch64-darwin). aarch64-linux and x86_64-darwin are not covered
+#           here; the Nix system is derived from the agent itself.
 # ============================================================================
 
 name: $(Date:yyyyMMdd)$(Rev:.r)
@@ -40,15 +40,16 @@ parameters:
     type: object
     default:
       - name: linux
-        image: ubuntu-24.04
+        image: ubuntu-24.04-8-core
       - name: macos
-        image: macOS-15
+        image: macos-26-arm64
 
 jobs:
   - ${{ each agent in parameters.agents }}:
       - job: nix_${{ agent.name }}
         displayName: Nix (${{ agent.name }})
         pool:
+          name: GitHub-hosted Agents
           vmImage: ${{ agent.image }}
         timeoutInMinutes: 90
         steps:

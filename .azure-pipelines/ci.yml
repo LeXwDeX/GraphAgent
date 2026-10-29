@@ -7,7 +7,7 @@
 # Jobs    : Typecheck               — lint, typecheck, DAG core gate, oc tests
 #           Unit Tests (workspace)  — workspace tests except opencode, Go,
 #                                     VS Code and generated-code checks
-#           Unit Tests (opencode N/8) — opencode tests in parallel shards
+#           Unit Tests (opencode N/4) — opencode tests in parallel shards
 #           Unit Tests (HttpAPI)    — HttpAPI exerciser gates
 #           Unit Tests (linux)      — aggregate; succeeds only when every
 #                                     unit job succeeded
@@ -15,9 +15,9 @@
 # Gate    : Typecheck, Unit Tests (linux) and both E2E jobs are the merge
 #           gates. Every PR and every main push runs the full suite; there is
 #           no result reuse. Fork PRs build only after a member comments.
-# Agents  : Microsoft-hosted ubuntu-latest / windows-latest (2 vCPU, hence 8
-#           opencode shards). heavyPool=managed moves the opencode shards and
-#           HttpAPI to the yc-ci-linux Managed DevOps Pool.
+# Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute with
+#           no reserved parallel jobs: ubuntu-24.04-8-core and
+#           windows-2025-8-core (8 vCPU, 32 GB).
 # Release : GitHub Actions release-fork.yml; .azure-pipelines/release.yml is
 #           the fallback.
 # ============================================================================
@@ -41,14 +41,7 @@ parameters:
   - name: shards
     displayName: opencode unit test shards
     type: object
-    default: [1, 2, 3, 4, 5, 6, 7, 8]
-  - name: heavyPool
-    displayName: Pool for opencode shards and HttpAPI
-    type: string
-    default: microsoft-hosted
-    values:
-      - microsoft-hosted
-      - managed
+    default: [1, 2, 3, 4]
   - name: e2ePlatforms
     displayName: E2E platforms
     type: object
@@ -61,7 +54,8 @@ jobs:
   - job: typecheck
     displayName: Typecheck
     pool:
-      vmImage: ubuntu-latest
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 45
     steps:
       - checkout: self
@@ -86,7 +80,8 @@ jobs:
   - job: unit_workspace
     displayName: Unit Tests (workspace)
     pool:
-      vmImage: ubuntu-latest
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 45
     steps:
       - checkout: self
@@ -131,12 +126,9 @@ jobs:
   - ${{ each shard in parameters.shards }}:
       - job: unit_opencode_${{ shard }}
         displayName: Unit Tests (opencode ${{ shard }}/${{ length(parameters.shards) }})
-        ${{ if eq(parameters.heavyPool, 'managed') }}:
-          pool:
-            name: yc-ci-linux
-        ${{ else }}:
-          pool:
-            vmImage: ubuntu-latest
+        pool:
+          name: GitHub-hosted Agents
+          vmImage: ubuntu-24.04-8-core
         timeoutInMinutes: 45
         steps:
           - checkout: self
@@ -167,12 +159,9 @@ jobs:
 
   - job: unit_httpapi
     displayName: Unit Tests (HttpAPI)
-    ${{ if eq(parameters.heavyPool, 'managed') }}:
-      pool:
-        name: yc-ci-linux
-    ${{ else }}:
-      pool:
-        vmImage: ubuntu-latest
+    pool:
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 45
     steps:
       - checkout: self
@@ -204,7 +193,8 @@ jobs:
           - unit_opencode_${{ shard }}
     condition: always()
     pool:
-      vmImage: ubuntu-latest
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
     timeoutInMinutes: 5
     variables:
       UNIT_RESULT_WORKSPACE: $[ dependencies.unit_workspace.result ]
@@ -236,7 +226,8 @@ jobs:
       - job: e2e_${{ platform }}
         displayName: E2E Tests (${{ platform }})
         pool:
-          vmImage: ${{ replace(platform, 'linux', 'ubuntu') }}-latest
+          name: GitHub-hosted Agents
+          vmImage: ${{ replace(replace(platform, 'linux', 'ubuntu-24.04'), 'windows', 'windows-2025') }}-8-core
         timeoutInMinutes: 75
         variables:
           PLAYWRIGHT_BROWSERS_PATH: $(Pipeline.Workspace)/.playwright-browsers
