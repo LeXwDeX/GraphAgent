@@ -60,7 +60,10 @@ test("adopted thinking replaces the existing displayed part and survives a fresh
     )
   }
   async function visible(app: Awaited<ReturnType<typeof mount>>["app"], text: string) {
-    for (let attempt = 0; attempt < 20; attempt++) {
+    // A deadline rather than a fixed attempt count: 2 vCPU CI agents can need
+    // well over 100ms to render the frame.
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline) {
       await app.renderOnce()
       if (app.captureCharFrame().includes(text)) return true
       await Bun.sleep(5)

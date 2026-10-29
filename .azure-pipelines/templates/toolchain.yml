@@ -69,6 +69,12 @@ steps:
       fi
       bin="$dir/$asset"
       chmod +x "$bin"/bun* || true
+      # The release zip ships only bun; setup-bun adds bunx the same way.
+      if [ "$os" = windows ]; then
+        cp "$bin/bun.exe" "$bin/bunx.exe"
+      else
+        ln -sf bun "$bin/bunx"
+      fi
       if command -v cygpath >/dev/null 2>&1; then bin="$(cygpath -w "$bin")"; fi
       echo "##vso[task.prependpath]$bin"
     displayName: Setup Bun
