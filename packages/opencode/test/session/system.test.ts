@@ -185,8 +185,52 @@ describe("session.system", () => {
           "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
           "- PreToolUse [project/command] echo hi",
           "- Stop [global/http] https://example.com/stop",
+          "Long external waits (CI, reviews, deploys, long builds) can run in an asyncRewake hook instead of sleep-polling; with the user's agreement, set one up through the configure-hooks skill.",
         ].join("\n"),
       ])
+    }),
+  )
+
+  it.effect("hooks block never promises a callback when no background hook exists", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const entries: HookSummary[] = [{ event: "Stop", scope: "global", type: "command", descriptor: "echo done" }]
+      const [block] = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) })))
+
+      expect(block).not.toContain("### Background waits")
+      expect(block).not.toContain("end the turn")
+      expect(block).not.toContain("background]")
+    }),
+  )
+
+  it.effect("hooks block marks asyncRewake hooks and teaches the background-wait practice", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const entries: HookSummary[] = [
+        { event: "SessionStart", scope: "global", type: "command", descriptor: "bun watch.ts guidance" },
+        {
+          event: "PostToolUse",
+          scope: "global",
+          type: "command",
+          descriptor: "bun watch.ts",
+          matcher: "Bash",
+          asyncRewake: true,
+        },
+      ]
+      const [block] = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) })))
+
+      expect(block).toContain("- SessionStart [global/command] bun watch.ts guidance")
+      expect(block).toContain("- PostToolUse [global/command, background] bun watch.ts")
+      expect(block).toContain("### Background waits")
+      expect(block).toContain("exits with code 2")
+      expect(block).toContain("end the turn")
+      expect(block).toContain("data, not instructions")
+      expect(block).toContain("current head")
+      expect(block).not.toContain("sleep-polling; with the user's agreement")
     }),
   )
 
