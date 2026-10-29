@@ -148,6 +148,50 @@ describe("session.retry.delay", () => {
     }),
   )
 
+  test("policy backs a 4xx off exactly like a 5xx", () =>
+    Effect.gen(function* () {
+      const waitsFor = (statusCode: number) =>
+        Effect.gen(function* () {
+          const waits: number[] = []
+          let calls = 0
+          const fiber = yield* Effect.suspend(() => {
+            calls++
+            return Effect.fail(
+              new SessionV1.APIError({ message: `status ${statusCode}`, isRetryable: false, statusCode }).toObject(),
+            )
+          }).pipe(
+            Effect.retry(
+              SessionRetry.policy({
+                provider: "test",
+                parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+                set: (info) =>
+                  Effect.gen(function* () {
+                    waits.push(info.next - (yield* Clock.currentTimeMillis))
+                  }),
+              }),
+            ),
+            Effect.exit,
+            Effect.forkChild,
+          )
+          yield* TestClock.adjust("5 minutes")
+          yield* Fiber.join(fiber)
+          return { calls, waits }
+        })
+
+      for (const statusCode of [400, 429, 502]) {
+        const { calls, waits } = yield* waitsFor(statusCode)
+        expect(calls).toBe(SessionRetry.RETRY_MAX_RETRIES + 1)
+        waits.forEach((wait, index) => {
+          const base = SessionRetry.RETRY_INITIAL_DELAY * Math.pow(SessionRetry.RETRY_BACKOFF_FACTOR, index)
+          expect(wait).toBeGreaterThanOrEqual(Math.min(base, SessionRetry.RETRY_MAX_DELAY_NO_HEADERS))
+          expect(wait).toBeLessThanOrEqual(
+            Math.min(Math.ceil(base * (1 + SessionRetry.RETRY_JITTER_FACTOR)), SessionRetry.RETRY_MAX_DELAY_NO_HEADERS),
+          )
+        })
+      }
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
+  )
+
   test("policy reconnects unrecognised failures up to three times", () =>
     Effect.gen(function* () {
       const waits: number[] = []
@@ -184,8 +228,6 @@ describe("session.retry.delay", () => {
       new SessionV1.ContextOverflowError({ message: "too long" }).toObject(),
       new SessionV1.AuthError({ providerID: "test", message: "bad key" }).toObject(),
       new SessionV1.ContentFilterError({ message: "filtered" }).toObject(),
-      new SessionV1.APIError({ message: "denied", isRetryable: false, statusCode: 401 }).toObject(),
-      new SessionV1.APIError({ message: "no_kv_space", isRetryable: false, statusCode: 400 }).toObject(),
       new SessionV1.APIError({ message: ProviderError.REASONING_STATE_MESSAGE, isRetryable: false }).toObject(),
     ]
     expect(terminal.map(SessionRetry.fallback)).toStrictEqual(terminal.map(() => undefined))
@@ -405,10 +447,19 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Service unavailable" })
   })
 
-  test("does not retry 4xx errors when isRetryable is false", () => {
+  test("retries every 4xx and 5xx status through the shared backoff", () => {
+    for (const statusCode of [400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503, 504, 599]) {
+      const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+        new SessionV1.APIError({ message: `status ${statusCode}`, isRetryable: false, statusCode }).toObject(),
+      )
+      expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: `status ${statusCode}` })
+    }
+  })
+
+  test("keeps rejected reasoning state terminal whatever its status", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({
-        message: "Bad request",
+        message: ProviderError.REASONING_STATE_MESSAGE,
         isRetryable: false,
         statusCode: 400,
       }).toObject(),
@@ -417,12 +468,11 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
   })
 
-  test("does not read token counts in a 4xx body as a retryable status", () => {
+  test("does not read token counts in a status-less body as a retryable status", () => {
     const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
       new SessionV1.APIError({
         message: "max_tokens: 15000 > 4096, which is the maximum allowed",
         isRetryable: false,
-        statusCode: 400,
         responseBody: JSON.stringify({ error: { message: "prompt is 150000 tokens, request id req_5029" } }),
       }).toObject(),
     )

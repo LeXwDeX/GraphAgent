@@ -1476,6 +1476,14 @@ export const layer = Layer.effect(
                   !ctx.anyToolCalled &&
                   ctx.pendingToolExecutions.size === 0 &&
                   !ctx.attemptRetryBlockingSuppressedActivity,
+                gates: () => ({
+                  aborted,
+                  blocked: ctx.blocked,
+                  needsCompaction: ctx.needsCompaction,
+                  anyToolCalled: ctx.anyToolCalled,
+                  pendingToolExecutions: ctx.pendingToolExecutions.size,
+                  suppressedActivity: ctx.attemptRetryBlockingSuppressedActivity,
+                }),
                 // Compaction timeouts immediately advance the model ladder, without retry backoff.
                 parse: (error) =>
                   IncompleteResponseError.isInstance(error)

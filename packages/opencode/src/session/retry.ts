@@ -139,11 +139,14 @@ export function retryable(error: Err, provider: string) {
   }
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
-    // 5xx errors are transient server failures and should always be retried,
-    // even when the provider SDK doesn't explicitly mark them as retryable.
+    // Resending rejected signed reasoning cannot succeed; /compact is the recovery.
+    if (error.data.message === REASONING_STATE_MESSAGE) return undefined
+    // Every HTTP 4xx and 5xx answer shares one exponential backoff, whatever the
+    // provider SDK says: gateways and relays report transient failures with
+    // either class, and the attempt cap bounds a genuinely terminal one.
     if (
       !error.data.isRetryable &&
-      !(status !== undefined && status >= 500) &&
+      !(status !== undefined && status >= 400 && status < 600) &&
       !matchesRetryableMessage(error.data.message) &&
       !matchesRetryableMessage(error.data.responseBody)
     )
@@ -208,8 +211,8 @@ export function retryable(error: Err, provider: string) {
 
 /**
  * Unrecognised failures get a bounded reconnect attempt. Failures with a known
- * terminal meaning stay terminal, and so does any 4xx: the provider answered
- * the request and a resend cannot change that answer.
+ * terminal meaning stay terminal. HTTP 4xx/5xx answers never reach here:
+ * `retryable` already gives them the shared exponential backoff.
  */
 export function fallback(error: Err): Retryable | undefined {
   if (
@@ -222,8 +225,6 @@ export function fallback(error: Err): Retryable | undefined {
   )
     return undefined
   if (SessionV1.APIError.isInstance(error)) {
-    const status = error.data.statusCode
-    if (status !== undefined && status >= 400 && status < 500) return undefined
     if (error.data.message === REASONING_STATE_MESSAGE) return undefined
   }
   const message = isRecord(error.data) ? error.data.message : undefined
@@ -261,16 +262,32 @@ export function policy(opts: {
   parse: (error: unknown) => Err
   /** Attempt-local safety gate, checked for every failure before classification. */
   shouldRetry?: (error: unknown) => boolean
+  /** Gate state logged when `shouldRetry` stops an otherwise retryable failure. */
+  gates?: () => Record<string, unknown>
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
-      if (opts.shouldRetry?.(meta.input) === false) return Cause.done(meta.attempt)
+      // A retryable failure that ends here is logged with its reason, so a
+      // surfaced provider error shows whether a gate or the cap stopped it.
+      const stop = (reason: string, retry: Retryable, extra?: Record<string, unknown>) =>
+        Effect.logWarning("retry stopped", {
+          reason,
+          attempt: meta.attempt,
+          provider: opts.provider,
+          error: retry.message,
+          ...extra,
+        }).pipe(Effect.andThen(Cause.done(meta.attempt)))
+      if (opts.shouldRetry?.(meta.input) === false) {
+        const error = opts.parse(meta.input)
+        const retry = retryable(error, opts.provider) ?? fallback(error)
+        return retry ? stop("gated", retry, opts.gates?.()) : Cause.done(meta.attempt)
+      }
       const error = opts.parse(meta.input)
       const known = retryable(error, opts.provider)
       const retry = known ?? fallback(error)
       if (!retry) return Cause.done(meta.attempt)
-      if (meta.attempt > (known ? RETRY_MAX_RETRIES : FALLBACK_MAX_RETRIES)) return Cause.done(meta.attempt)
+      if (meta.attempt > (known ? RETRY_MAX_RETRIES : FALLBACK_MAX_RETRIES)) return stop("exhausted", retry)
       return Effect.gen(function* () {
         const wait = known
           ? delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
