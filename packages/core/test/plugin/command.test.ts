@@ -27,6 +27,18 @@ describe("CommandPlugin.Plugin", () => {
       expect(content).toContain("coordination cost")
       expect(content).toContain("Explicit user instructions take precedence")
       expect(content).toContain("No routing checklist is needed for routine direct work")
+      expect(content).toContain("Promote to a DAG on your own judgment; the user need not ask.")
+    }),
+  )
+
+  it.effect("teaches declared structure up front and checkpoint-driven per-item expansion", () =>
+    Effect.sync(() => {
+      const blocks = CommandPlugin.WorkflowBlocksContent.replace(/\s+/g, " ")
+      expect(blocks).toContain("Every live `extend` or `control(replan)` costs a parent turn")
+      expect(blocks).toContain("mutate at runtime only for structure that depends on results")
+      const policy = CommandPlugin.OrchestrationPolicyContent.replace(/\s+/g, " ")
+      expect(policy).toContain("add the item nodes with a bounded `extend`")
+      expect(policy).toContain("`fan_out` only expands writers from a plan's `packages`")
     }),
   )
 

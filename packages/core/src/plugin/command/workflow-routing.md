@@ -10,22 +10,22 @@ Choose direct execution, a `task` child, or a `workflow` DAG according to the
 expected benefit and coordination cost, not a task-category rule.
 
 - Direct execution: useful when the work fits the current context and can be
-  completed and checked without delegation. Small edits, bounded debugging,
-  and read-only questions often fit here, including project source and tests.
-- One `task` child: useful for a bounded independent question or work package
-  when isolation or specialist attention helps without a durable graph.
+  checked without delegation. Small edits, bounded debugging, and read-only
+  questions often fit here, including project source and tests.
+- One `task` child: useful for a bounded question or work package when
+  isolation or specialist attention helps without a durable graph.
 - One `workflow` DAG: useful when parallel work, isolated contexts, dependent
   stages, independent assurance, or recoverable execution justify orchestration.
 
 These are examples, not thresholds. File count, module boundaries, CI/release,
 or the word "review" alone do not require a DAG. Risk can justify stronger
 verification without adding agents. No routing checklist is needed for routine
-direct work.
+direct work. Promote to a DAG on your own judgment; the user need not ask.
 
 Explicit user instructions take precedence: one agent, direct work, or no DAG
 means no delegation; an explicit DAG request calls for an appropriately scoped
-graph. Reconsider the approach when evidence changes. Before taking over work
-from an active child, stop or isolate its writes to avoid concurrent edits.
+graph. Reconsider the approach when evidence changes. Before taking over an
+active child's work, stop or isolate its writes.
 
 A read-only request keeps every selected child read-only. Preserve named roles,
 configured model constraints, scope limits, and prohibited actions in child prompts.

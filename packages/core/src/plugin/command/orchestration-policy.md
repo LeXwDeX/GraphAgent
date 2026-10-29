@@ -315,6 +315,12 @@ The child reports evidence and required actions only. The parent interprets
 the verdict and chooses any workflow control action under the Verdict Disposal
 Contract.
 
+When later work depends on the items a node produces — for example one
+verifier per finding — make that node an actionable checkpoint, then
+deduplicate and rank its `findings` and add the item nodes with a bounded
+`extend`. `fan_out` only expands writers from a plan's `packages`; it is not a
+general per-item expansion. Expand only the items that need separate work.
+
 Do not poll `status` merely to wait. Wakes report checkpoints and terminal
 outcomes. Use `status` when fresh durable state is needed for diagnosis, a
 control decision, or an accurate user-facing report.
