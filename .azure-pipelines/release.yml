@@ -11,9 +11,10 @@
 #                           default (false) exercises the full candidate path
 #                           without publishing.
 #           platforms     — comma-separated subset of linux,macos,windows.
-# Secrets : GITHUB_RELEASE_TOKEN (secret pipeline variable) — a GitHub token
-#           with contents:write on LeXwDeX/GraphAgent; only the publish job
-#           reads it.
+# Secrets : none. Only the publish job uses the github.com_LeXwDeX service
+#           connection (Azure Pipelines GitHub App) to create the release.
+# Role    : Fallback for .github/workflows/release-fork.yml when GitHub
+#           Actions cannot run; never publish the same version from both.
 # macOS   : Free hosted macOS agents are Intel, so the macOS job
 #           cross-compiles darwin-arm64 and darwin-x64; install acceptance
 #           runs against the natively executable darwin-x64 archive.
@@ -314,24 +315,24 @@ jobs:
           - download: current
             artifact: release-candidate-$(RELEASE_VERSION)
             displayName: Download release candidate
-          # Stable releases are explicitly promoted to Latest.
-          - bash: |
-              set -euo pipefail
-              # An undefined variable leaves the literal macro text behind.
-              if [ -z "${GH_TOKEN:-}" ] || [[ "$GH_TOKEN" == '$('* ]]; then
-                echo "##vso[task.logissue type=error]The GITHUB_RELEASE_TOKEN secret pipeline variable is not set."
-                exit 1
-              fi
-              dir="$(Pipeline.Workspace)/release-candidate-$RELEASE_VERSION"
-              shopt -s nullglob
-              assets=("$dir"/*.tar.gz "$dir"/*.zip "$dir/SHA256SUMS" "$dir/dag-template-provenance.json")
-              gh release create "$RELEASE_TAG" \
-                --repo "$(Build.Repository.Name)" \
-                --title "OpenCode GraphAgent v$RELEASE_VERSION" \
-                --notes-file "$dir/RELEASE_NOTES.md" \
-                --target "$(Build.SourceVersion)" \
-                --latest \
-                "${assets[@]}"
+          # Publishes through the project's GitHub App service connection, so
+          # no personal token is stored. A non-prerelease becomes Latest.
+          - task: GitHubRelease@1
             displayName: Create GitHub Release
-            env:
-              GH_TOKEN: $(GITHUB_RELEASE_TOKEN)
+            inputs:
+              gitHubConnection: github.com_LeXwDeX
+              repositoryName: $(Build.Repository.Name)
+              action: create
+              target: $(Build.SourceVersion)
+              tagSource: userSpecifiedTag
+              tag: $(RELEASE_TAG)
+              title: OpenCode GraphAgent v$(RELEASE_VERSION)
+              releaseNotesSource: filePath
+              releaseNotesFilePath: $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/RELEASE_NOTES.md
+              assets: |
+                $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/*.tar.gz
+                $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/*.zip
+                $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/SHA256SUMS
+                $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/dag-template-provenance.json
+              isPreRelease: false
+              addChangeLog: false

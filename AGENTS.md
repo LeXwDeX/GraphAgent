@@ -86,7 +86,7 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 ## Releases
 
 - `.github/workflows/release-fork.yml` manual `workflow_dispatch` from `main` is the release pipeline. Its default `create_release: false` builds and verifies artifacts. `create_release: true` publishes the stable `X.Y.Z` release and marks it Latest.
-- `.azure-pipelines/release.yml` is the fallback when GitHub Actions cannot run a release (minutes or concurrency exhausted). Run it manually from `main`; `createRelease: true` publishes the same way, using the `GITHUB_RELEASE_TOKEN` secret pipeline variable. Never run both for the same version.
+- `.azure-pipelines/release.yml` is the fallback when GitHub Actions cannot run a release (minutes or concurrency exhausted). Run it manually from `main`; `createRelease: true` publishes the same way through the `github.com_LeXwDeX` service connection (no token). Never run both for the same version.
 - Release versions derive from stable `graphagent-vX.Y.Z` tags (`packages/opencode/script/release-version.ts`); package versions and historical `-dev.N` tags do not advance that selection. Notes files must be named `.github/releases/v<derived-version>.md` exactly (fail-closed).
 
 ## Agent references
