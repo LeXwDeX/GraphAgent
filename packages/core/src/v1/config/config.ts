@@ -170,7 +170,7 @@ export const Info = Schema.Struct({
       }),
       prune: Schema.optional(Schema.Boolean).annotate({
         description:
-          "@deprecated Compatibility alias for 'dynamic'. Used only when 'dynamic' is omitted; it does not enable context folding by itself.",
+          "@deprecated Ignored. Context folding is off by default; set 'dynamic' to true to enable the legacy behavior.",
       }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:

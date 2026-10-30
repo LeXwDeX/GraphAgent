@@ -25,12 +25,12 @@ describe("ConfigCompaction.resolveDynamic", () => {
       expected: { configured: false, enabled: false, source: "dynamic", deprecatedPrune: false, skipped: "disabled" },
     },
     {
-      name: "falls back to deprecated prune true",
+      name: "ignores deprecated prune true",
       input: { prune: true },
-      expected: { configured: true, enabled: true, source: "prune", deprecatedPrune: true },
+      expected: { configured: false, enabled: false, source: "prune", deprecatedPrune: true, skipped: "disabled" },
     },
     {
-      name: "falls back to deprecated prune false",
+      name: "ignores deprecated prune false",
       input: { prune: false },
       expected: { configured: false, enabled: false, source: "prune", deprecatedPrune: true, skipped: "disabled" },
     },
