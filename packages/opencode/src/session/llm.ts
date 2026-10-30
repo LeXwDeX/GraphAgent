@@ -165,6 +165,8 @@ export type StreamInput = {
   contextFolding?: ContextFoldingHistorySnapshot
   /** In-process safety signal for activity that can precede or outlive stream events. */
   onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
+  /** The session processor owns retry timing; native runtime must not retry underneath it. */
+  sessionRetry?: boolean
   /** Persist local replay tombstones before a request can leave this process. */
   onThinkingInvalidated?: (blocks: readonly string[]) => Effect.Effect<void>
 }
@@ -443,6 +445,7 @@ const live: Layer.Layer<
           providerOptions: prepared.params.options,
           headers: prepared.headers,
           abort: input.abort,
+          sessionRetry: input.sessionRetry,
           contextFolding: folding,
           onThinkingInvalidated: input.onThinkingInvalidated,
           sessionID: input.sessionID,

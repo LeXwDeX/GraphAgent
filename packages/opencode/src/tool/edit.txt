@@ -2,5 +2,5 @@ Edit a file by replacing oldString with newString. Use this for targeted changes
 
 - Read the file first. oldString must match the file exactly, including whitespace and line endings. When copying from read output, omit the `N: ` line-number prefix.
 - Include enough surrounding context to make oldString unique. Whitespace-only differences may still match, but the tool never picks one of several fuzzy candidates: it fails and reports the candidate line numbers. Add context or set replaceAll to replace every exact occurrence.
-- If nothing matches, the error includes the closest snippet. Re-read that area and retry with the exact text.
+- If nothing matches, the error includes the closest snippet when a line is at least 20% similar; otherwise re-read that area and retry with the exact text.
 - Use replaceAll for a deliberate rename or a repeated exact string.

@@ -1,12 +1,12 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
-import { ShellTool } from "../../src/tool/shell"
+import { outputFooter, ShellTool, trimPartialHead } from "../../src/tool/shell"
 import { SHELL_TAIL_LINES } from "../../src/tool/shell/prompt"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
@@ -109,11 +109,13 @@ const cmdShell = shells.find((item) => item.label === "cmd")
 const sh = () => Shell.name(Shell.acceptable())
 const evalarg = (text: string) => (sh() === "cmd" ? quote(text) : squote(text))
 
-const fill = (mode: "lines" | "bytes", n: number) => {
+const fill = (mode: "lines" | "bytes" | "line", n: number) => {
   const code =
     mode === "lines"
       ? "console.log(Array.from({length:Number(Bun.argv[1])},(_,i)=>i+1).join(String.fromCharCode(10)))"
-      : "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1])))"
+      : mode === "bytes"
+        ? "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1])))"
+        : "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1]))+String.fromCharCode(10))"
   const text = `${bin} -e ${evalarg(code)} ${n}`
   if (PS.has(sh())) return `& ${text}`
   return text
@@ -1290,6 +1292,24 @@ describe("tool.shell silence guard", () => {
 })
 
 describe("tool.shell truncation", () => {
+  test("advertises only negative pages that exist", () => {
+    expect(outputFooter("/tmp/out", 450, 4500, 20)).toContain(
+      `back:   read filePath="/tmp/out" page=-2   (page=-3)`,
+    )
+    expect(outputFooter("/tmp/out", 450, 4500, 20)).not.toContain("page=-4")
+    expect(outputFooter("/tmp/out", 300, 3000, 20)).not.toContain("page=-3")
+    expect(outputFooter("/tmp/out", 650, 6500, 20)).toContain("(page=-3, -4)")
+    expect(outputFooter("/tmp/out", 650, 6500, 20)).not.toContain("back to -5")
+    expect(outputFooter("/tmp/out", 1050, 10500, 20)).toContain("(page=-3, -4, ... back to -6)")
+  })
+
+  test("trims a dropped partial head without emptying the last line", () => {
+    expect(trimPartialHead("frag\n1\n2")).toEqual({ text: "1\n2", partialHead: false })
+    expect(trimPartialHead("frag\n")).toEqual({ text: "frag", partialHead: true })
+    expect(trimPartialHead("frag")).toEqual({ text: "frag", partialHead: true })
+    expect(trimPartialHead("\n1\n2")).toEqual({ text: "1\n2", partialHead: false })
+  })
+
   it.live("keeps the last 20 lines and points at the full output", () =>
     runIn(
       projectRoot,
@@ -1306,10 +1326,24 @@ describe("tool.shell truncation", () => {
         expect(result.output).toContain("--------- full output ---------")
         expect(result.output).toContain("path: ")
         expect(result.output).toContain(`size: `)
+        expect(result.output).toContain(`last:   read filePath=`)
         expect(result.output).toContain(`page=-1`)
-        expect(result.output).toContain(`page=-2`)
+        // 100 lines fit one page, so there is no page before the last one.
+        expect(result.output).not.toContain(`back:`)
+        expect(result.output).not.toContain(`page=-2`)
         expect(result.output).toContain(`grep pattern="<regex>"`)
         expect(result.output).toContain(`context=10`)
+
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        expect(result.output).toContain(`path: ${filepath}`)
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        const bytes = Buffer.byteLength(saved, "utf-8")
+        // Trailing newline terminates the last line; it does not start a new one.
+        const lines = saved.replace(/\n$/, "").split("\n").length
+        expect(result.output).toContain(
+          `size: ${Truncate.formatSize(bytes)} (${bytes} bytes), ${lines} lines, 1 pages of ${Truncate.PAGE_LINES} lines`,
+        )
       }),
     ),
   )
@@ -1324,8 +1358,58 @@ describe("tool.shell truncation", () => {
         })
         mustTruncate(result)
         expect(result.output).toMatch(/\[truncated: showing the last .+ of line 1/)
+        expect(result.output).toContain(
+          `(line is ${Truncate.formatSize(byteCount)}; ${Truncate.formatSize(byteCount)} total output)`,
+        )
         expect(result.output).toContain("--------- full output ---------")
         expect(result.output).toContain("page=-1")
+      }),
+    ),
+  )
+
+  it.live("reports the full line size when the head of one long line was dropped", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        // Larger than the shell's 100 KB in-memory keep budget, so whole
+        // chunks of this single line are dropped before the preview is built.
+        const byteCount = 150_000
+        const result = yield* run({
+          command: fill("bytes", byteCount),
+        })
+        mustTruncate(result)
+        expect(result.output).toContain(
+          `(line is ${Truncate.formatSize(byteCount)}; ${Truncate.formatSize(byteCount)} total output)`,
+        )
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        expect(Buffer.byteLength(saved, "utf-8")).toBe(byteCount)
+      }),
+    ),
+  )
+
+  it.live("keeps the tail of one huge line that ends with a newline", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        // The only newline is the terminator of this one line. Trimming the
+        // dropped partial head must keep the retained prefix instead of
+        // reporting that a 195 KB command produced no output.
+        const byteCount = 200_000
+        const result = yield* run({ command: fill("line", byteCount) })
+        mustTruncate(result)
+        expect(result.output).not.toContain("(no output)")
+        expect(result.output).not.toContain("showing the last 0")
+        expect(result.output).toContain("[truncated: showing the last")
+        expect(result.output).toContain(
+          `(line is ${Truncate.formatSize(byteCount)}; ${Truncate.formatSize(byteCount + 1)} total output)`,
+        )
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        expect(Buffer.byteLength(saved, "utf-8")).toBe(byteCount + 1)
+        expect(saved.endsWith("\n")).toBe(true)
       }),
     ),
   )
@@ -1366,6 +1450,94 @@ describe("tool.shell truncation", () => {
         expect(lines.length).toBe(lineCount)
         expect(lines[0]).toBe("1")
         expect(lines[lineCount - 1]).toBe(String(lineCount))
+      }),
+    ),
+  )
+
+  it.live("reports complete line counts after dropped chunks", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const big = 200_000
+        const code =
+          `process.stdout.write(String.fromCharCode(97).repeat(${big})` +
+          `+String.fromCharCode(10)` +
+          `+Array.from({length:30},(_,i)=>i+1).join(String.fromCharCode(10)))`
+        const result = yield* run({ command: `${bin} -e ${evalarg(code)}` })
+        mustTruncate(result)
+
+        // The shell keeps its last-20-lines preview; the dropped partial head
+        // must not consume one of those preview slots.
+        expect(result.output).toContain(`[truncated: showing the last ${SHELL_TAIL_LINES} of 31 lines`)
+        expect(result.output).toMatch(/^30$/m)
+        expect(result.output).not.toMatch(/^29a+$/m)
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        const bytes = Buffer.byteLength(saved, "utf-8")
+        expect(saved.startsWith("a".repeat(big) + "\n")).toBe(true)
+        expect(result.output).toContain(
+          `size: ${Truncate.formatSize(bytes)} (${bytes} bytes), 31 lines, 1 pages of ${Truncate.PAGE_LINES} lines`,
+        )
+      }),
+    ),
+  )
+
+  it.live("offers page=-2 only when a page actually precedes the last one", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const lineCount = 450
+        const result = yield* run({ command: fill("lines", lineCount) })
+        mustTruncate(result)
+        expect(result.output).toContain(`[truncated: showing the last ${SHELL_TAIL_LINES} of ${lineCount} lines`)
+        expect(result.output).toContain(`back:   read filePath=`)
+        expect(result.output).toContain("page=-2")
+        // 450 lines make exactly three pages; page=-4 does not exist.
+        expect(result.output).toContain("(page=-3)")
+        expect(result.output).not.toContain("page=-4")
+
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        const lines = saved.replace(/\n$/, "").split("\n").length
+        expect(lines).toBe(lineCount)
+        const bytes = Buffer.byteLength(saved, "utf-8")
+        const pages = Math.ceil(lines / Truncate.PAGE_LINES)
+        expect(result.output).toContain(
+          `size: ${Truncate.formatSize(bytes)} (${bytes} bytes), ${lines} lines, ${pages} pages of ${Truncate.PAGE_LINES} lines`,
+        )
+      }),
+    ),
+  )
+
+  it.live("points a dense last page at its byte-cap continuation", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const lineCount = 300
+        const padding = "d".repeat(400)
+        const code =
+          `process.stdout.write(Array.from({length:${lineCount}},` +
+          `(_,i)=>String(i+1)+String.fromCharCode(32)+"${padding}").join(String.fromCharCode(10)))`
+        const result = yield* run({ command: `${bin} -e ${evalarg(code)}` })
+        mustTruncate(result)
+        expect(result.output).toContain(`[truncated: showing the last ${SHELL_TAIL_LINES} of ${lineCount} lines`)
+        // The 200-line last page here is denser than read's 50 KB byte cap, so
+        // the footer must defer to that page's byte-cap notice instead of
+        // promising that page=-1 reaches the final line by itself.
+        expect(result.output).toContain("last page; follow its notice if the read byte cap stops early")
+        expect(result.output).toContain(`page=-1`)
+        expect(result.output).toContain(`back:   read filePath=`)
+        expect(result.output).toContain(`page=-2`)
+
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        const lines = saved.replace(/\n$/, "").split("\n")
+        expect(lines.length).toBe(lineCount)
+        const lastPageBytes = Buffer.byteLength(lines.slice(-Truncate.PAGE_LINES).join("\n"), "utf-8")
+        expect(lastPageBytes).toBeGreaterThan(Truncate.MAX_BYTES)
       }),
     ),
   )

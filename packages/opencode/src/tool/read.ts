@@ -25,7 +25,9 @@ class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 // purpose in the LLM tool-call path (the model emits typed JSON). The JSON
 // Schema requires positive integers; callers must send numbers rather than strings.
 export const Parameters = Schema.Struct({
-  filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
+  filePath: Schema.String.annotate({
+    description: "Path to the file or directory to read; relative paths resolve from the project directory",
+  }),
   offset: Schema.optional(PositiveInt).annotate({
     description: "The line number or directory entry to start reading from (1-indexed positive integer)",
   }),
@@ -205,7 +207,11 @@ export const ReadTool = Tool.define<
             }
 
             let line = text
-            if (opts.charOffset !== undefined || text.length > opts.maxLineLength) {
+            if (
+              opts.charOffset !== undefined ||
+              text.length > opts.maxLineLength ||
+              Buffer.byteLength(text, "utf-8") > MAX_BYTES
+            ) {
               const chars = Array.from(text)
               const from = Math.min(Math.max((opts.charOffset ?? 1) - 1, 0), chars.length)
               const to = fitLine(chars, from, Math.min(chars.length, from + opts.maxLineLength))
@@ -287,7 +293,25 @@ export const ReadTool = Tool.define<
       if (total === undefined) {
         return yield* Effect.fail(new Error("A negative page needs the total line count."))
       }
-      return { offset: Math.max(1, total + params.page * pageSize + 1), limit: pageSize }
+      // An empty file or directory still has one empty page. page=-1 is the
+      // documented way to read that page, so return it instead of failing the
+      // disjoint-page guard below.
+      if (total === 0 && params.page === -1) return { offset: 1, limit: pageSize }
+      const requested = total + params.page * pageSize + 1
+      if (requested >= 1) return { offset: requested, limit: pageSize }
+      // A page before the first one must not replay the start of the file. Keep
+      // negative pages disjoint by returning only the lines before the next page.
+      const limit = total - (Math.abs(params.page) - 1) * pageSize
+      if (limit <= 0) {
+        const pages = Math.max(1, Math.ceil(total / pageSize))
+        return yield* Effect.fail(
+          new Error(
+            `page ${params.page} is before the first page; ${total} lines make ` +
+              `${pages} ${pages === 1 ? "page" : "pages"} of ${pageSize} lines.`,
+          ),
+        )
+      }
+      return { offset: 1, limit }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {

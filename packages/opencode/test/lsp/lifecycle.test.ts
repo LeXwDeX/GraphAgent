@@ -168,6 +168,11 @@ describe("LSP.Diagnostic", () => {
     expect(ranges).toEqual([{ start: 2, end: 2 }])
   })
 
+  test("changedRanges() ignores a line-ending-only rewrite", () => {
+    const ranges = LSP.Diagnostic.changedRanges("a\r\nb\r\nc\r\nd\r\n", "a\nb\nc\nX\nd\n")
+    expect(ranges).toEqual([{ start: 4, end: 4 }])
+  })
+
   test("afterEdit() keeps errors in and around the change and drops pre-existing ones", () => {
     const issues = (line: number, message: string) =>
       ({

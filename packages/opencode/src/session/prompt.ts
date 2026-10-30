@@ -71,6 +71,7 @@ import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
 import { Config } from "@/config/config"
+import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -3119,6 +3120,16 @@ export const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            // Building the folding history walks every message; only do it when
+            // built-in dynamic folding is enabled for this request.
+            const foldingConfig = (yield* config.get()).compaction
+            const folding = ConfigCompaction.resolveDynamic({
+              disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
+              dynamic: foldingConfig?.dynamic,
+              prune: foldingConfig?.prune,
+              knownExternalDcp: (yield* plugin.contextFoldingCompatibility()).knownExternalDcp,
+            })
+
             const transcriptPath =
               settingsHook && (yield* hasSettingsEvent("InstructionsLoaded", sessionID))
                 ? yield* HookTranscript.materialize({ sessionID, directory: ctx.directory, messages: msgs }).pipe(
@@ -3147,7 +3158,9 @@ export const layer = Layer.effect(
                 MessageV2.toModelMessagesEffect(msgs, model, {
                   reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
                 }),
-                MessageV2.contextFoldingHistory({ messages: msgs, ledger: toolSources }),
+                folding.enabled
+                  ? MessageV2.contextFoldingHistory({ messages: msgs, ledger: toolSources })
+                  : Effect.succeed(undefined),
               ],
               { concurrency: "unbounded" },
             )

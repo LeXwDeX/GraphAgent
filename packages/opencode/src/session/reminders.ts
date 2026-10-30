@@ -47,16 +47,23 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
         synthetic: true,
       })
     }
-    const wasPlan = input.messages.some((msg) => msg.info.role === "assistant" && msg.info.agent === "plan")
-    if (wasPlan && input.agent.name === "build") {
-      userMessage.parts.push({
-        id: PartID.ascending(),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        text: BUILD_SWITCH,
-        synthetic: true,
-      })
+    // Only the turn that leaves plan mode needs the switch. An older plan turn
+    // left in history must not re-inject it on every later build step.
+    const lastAssistant = input.messages.findLast((msg) => msg.info.role === "assistant")
+    if (lastAssistant?.info.agent === "plan" && input.agent.name === "build") {
+      const already = userMessage.parts.some(
+        (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH,
+      )
+      if (!already) {
+        userMessage.parts.push({
+          id: PartID.ascending(),
+          messageID: userMessage.info.id,
+          sessionID: userMessage.info.sessionID,
+          type: "text",
+          text: BUILD_SWITCH,
+          synthetic: true,
+        })
+      }
     }
     return input.messages
   }

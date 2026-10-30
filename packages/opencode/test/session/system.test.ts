@@ -19,19 +19,12 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { testEffect } from "../lib/effect"
 import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 
-for (const id of [
-  "Claude-Sonnet-4",
-  "GEMINI-2.5-Pro",
-  "GPT-4.1",
-  "o1",
-  "openai/O3-mini",
-  "studio1",
-  "foo3-bar",
-  "deepseek-chat",
-])
-  test(`every model receives the unified prompt for ${id}`, () => {
-    expect(SystemPrompt.provider()).toEqual([GraphAgentPrompt.render(["edit", "write"])])
-  })
+test("every provider receives the same unified prompt", () => {
+  const prompt = SystemPrompt.provider()
+  expect(prompt).toEqual([GraphAgentPrompt.render(["edit", "write"])])
+  expect(prompt.join("\n")).toContain("Do not guess tool parameters, paths, or file contents.")
+  expect(prompt.join("\n")).toContain("answer the approach first and wait for their direction.")
+})
 
 test("the editing instruction follows the exposed tools", () => {
   expect(SystemPrompt.provider(["apply_patch"]).join("\n")).toContain("Use apply_patch for manual file edits.")

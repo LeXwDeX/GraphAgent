@@ -52,6 +52,26 @@ describe("file HttpApi", () => {
     expect(await status.json()).toEqual([])
   })
 
+  test("marks a truncated long line in findText", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Bun.write(
+      path.join(tmp.path, "lines.txt"),
+      ["needle short", `needle${"a".repeat(2_500)}`].join("\n"),
+    )
+
+    const response = await request(FilePaths.findText, tmp.path, { pattern: "needle" })
+
+    expect(response.status).toBe(200)
+    const lines = (await response.json()) as Array<{ line_number: number; lines: { text: string } }>
+    const short = lines.find((line) => line.line_number === 1)
+    const long = lines.find((line) => line.line_number === 2)
+
+    expect(short?.lines.text.endsWith("...")).toBe(false)
+    expect(long?.lines.text).toHaveLength(2_003)
+    expect(long?.lines.text.startsWith("needle")).toBe(true)
+    expect(long?.lines.text.endsWith("...")).toBe(true)
+  })
+
   test("serves search endpoints", async () => {
     await using tmp = await tmpdir({ git: true })
     await Bun.write(path.join(tmp.path, "hello.txt"), "needle")

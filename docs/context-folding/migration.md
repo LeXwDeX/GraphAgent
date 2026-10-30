@@ -40,23 +40,30 @@ duplicate-output folding.
 
 ## External DCP compatibility
 
-OpenCode defers its built-in folding only when the server-plugin loader identifies the exact package
-`@lexwdex-org/opencode-dcp` and that load leaves an active context-folding hook registered:
+When folding is opted in via `compaction.dynamic: true`, OpenCode defers its built-in folding only when the
+server-plugin loader identifies the exact package `@lexwdex-org/opencode-dcp` and that load leaves an active
+context-folding hook registered:
 
 - npm declarations are matched by their parsed package name;
 - file declarations require exact `package.json` name metadata;
 - the registered capability must be a callable `experimental.chat.messages.transform` or
   `experimental.session.compacting` hook;
-- a successful empty plugin return, including DCP's `enabled: false` and `dtc.enabled: false` paths, keeps the built-in
-  implementation enabled and emits no migration warning;
+- a successful empty plugin return, including DCP's `enabled: false` and `dtc.enabled: false` paths, does not trigger
+  the external-DCP retreat; the built-in implementation's own enablement still follows `compaction.dynamic`, and no
+  migration warning is emitted;
 - configuration alone, install/import/compatibility/apply failures without a retained relevant hook, substring
   matches, legacy single files without metadata, and pure mode do not count as active;
-- if a legacy module registers a relevant hook before a later export fails, that retained hook is still active, so the
-  built-in implementation retreats rather than running a second transformation over the same request.
+- if a legacy module registers a relevant hook before a later export fails, that retained hook is still active, so an
+  opted-in built-in implementation retreats rather than running a second transformation over the same request.
 
-The first model request that observes an active known DCP in each OpenCode instance emits one migration warning.
-Further sessions in that instance do not repeat it; a restarted instance may warn once again. The warning contains
-only the known package identity, source kind, and disable-or-remove/restart action.
+With the default configuration (`compaction.dynamic` unset or false), the built-in implementation is off regardless of
+DCP state; an inactive or empty DCP return only means the external-DCP retreat does not apply, and diagnostics report
+`enabled: false` with `skipReason: "disabled"`, not `"external-dcp"`.
+
+The first model request that observes an active known DCP while folding is opted in, in each OpenCode instance, emits
+one migration warning. Further sessions in that instance do not repeat it; a restarted instance may warn once again.
+The warning contains only the known package identity, source kind, and the disable-or-remove/restart action, and states
+that removing the plugin alone does not enable built-in folding: `compaction.dynamic: true` must also be set.
 
 Core runner has no server-plugin loading capability. It reports external DCP state as `unknown` and never infers a
 loaded plugin. Other or unknown message-rewriting plugins are not automatically detected; operators must disable one

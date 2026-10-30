@@ -149,15 +149,17 @@ export const Info = Schema.Struct({
   tool_output: Schema.optional(
     Schema.Struct({
       max_lines: Schema.optional(PositiveInt).annotate({
-        description: "Maximum lines of tool output before it is truncated and saved to disk (default: 2000)",
+        description:
+          "Maximum lines of generic tool output before it is truncated and saved to disk (default: 2000); read, grep, glob and shell use their own line budgets",
       }),
       max_bytes: Schema.optional(PositiveInt).annotate({
-        description: "Maximum bytes of tool output before it is truncated and saved to disk (default: 51200)",
+        description:
+          "Maximum bytes of generic tool output before it is truncated and saved to disk (default: 51200); shell's inline tail and saved-file threshold also use this byte budget",
       }),
     }),
   ).annotate({
     description:
-      "Thresholds for truncating tool output. When output exceeds either limit, the full text is written to the truncation directory and a preview is returned.",
+      "Thresholds for truncating generic tool output. When output exceeds either limit, the full text is written to the truncation directory and a preview is returned. read, grep and glob use fixed per-tool budgets instead, while shell shares max_bytes and keeps its own 20-line tail.",
   }),
   compaction: Schema.optional(
     Schema.Struct({

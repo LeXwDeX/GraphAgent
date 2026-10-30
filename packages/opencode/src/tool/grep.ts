@@ -133,6 +133,7 @@ export const GrepTool = Tool.define(
             path: path.resolve(cwd, row.match.entry.path),
             line: row.match.line,
             text: row.match.text,
+            textLength: row.match.textLength,
           }))
 
           // Every match keeps its context window in the saved listing; the
@@ -157,11 +158,11 @@ export const GrepTool = Tool.define(
             if (row.kind === "match") matchIndex++
             const owner = matchIndex >= 0 ? matchIndex : 0
             const text =
-              row.text.length > MATCH_TEXT_LIMIT
-                ? `${row.text.slice(0, MATCH_TEXT_LIMIT)}... (line truncated to ${MATCH_TEXT_LIMIT} of ${row.text.length} chars; ` +
+              row.textLength !== undefined && row.textLength > MATCH_TEXT_LIMIT
+                ? `${row.text}... (line truncated to ${MATCH_TEXT_LIMIT} of ${row.textLength} chars; ` +
                   `continue with read filePath="${row.path}" offset=${row.line} limit=1 ` +
                   `charOffset=${MATCH_TEXT_LIMIT + 1} ` +
-                  `maxLineLength=${Math.min(row.text.length - MATCH_TEXT_LIMIT, Truncate.MAX_LINE_FETCH)})`
+                  `maxLineLength=${Math.min(row.textLength - MATCH_TEXT_LIMIT, Truncate.MAX_LINE_FETCH)})`
                 : row.text
             const lines: string[] = []
             if (current !== row.path) {
@@ -196,7 +197,8 @@ export const GrepTool = Tool.define(
             if (entry.match) shown++
           }
 
-          const truncated = more || matches.length > previewLimit || shown < Math.min(matches.length, previewLimit)
+          const truncated =
+            more || matches.length > previewLimit || shown < Math.min(matches.length, previewLimit) || byBytes
           const output = [header, ...body]
           if (!truncated) {
             return {
@@ -210,26 +212,33 @@ export const GrepTool = Tool.define(
           const full = yield* trunc.write(saved)
           // Match text may carry its trailing newline, so an entry can render as
           // more than one line. Count rendered lines, not array entries, or the
-          // continuation points back into the preview. When the scan itself was
-          // capped there is nothing left to page through in the saved listing,
-          // so continue past its last line.
-          const next = (more ? saved : output.join("\n")).split("\n").length + 1
+          // continuation points back into the preview. When the preview did not
+          // cover every saved entry, continue at the first unshown saved line;
+          // only the scan-cap case can exhaust the saved listing itself.
+          const next = output.join("\n").split("\n").length + 1
+          const hasMoreSaved = next <= saved.split("\n").length
           const omitted = matches.length - shown
           output.push("")
           output.push(
             `[truncated: showing ${shown} of ${total} matches. ` +
               (more
                 ? "The scan stopped at the match cap. "
-                : `${omitted} ${omitted === 1 ? "match" : "matches"} omitted. `) +
+                : byBytes
+                  ? (omitted > 0
+                      ? `${omitted} ${omitted === 1 ? "match" : "matches"} omitted by the output byte budget. `
+                      : "Context lines were omitted by the output byte budget. ")
+                  : `${omitted} ${omitted === 1 ? "match" : "matches"} omitted. `) +
               `Full output: ${full}]`,
           )
           output.push(
-            `Continue: read filePath="${full}" offset=${next}` +
-              (more
-                ? "; narrow path/include or use a more specific pattern for matches beyond the saved listing."
-                : byBytes
-                  ? "; the byte budget stopped the preview, so read the saved listing or narrow the search."
-                  : `; raise grep limit to ${Math.min(Math.max(previewLimit * 2, previewLimit + 1), MAX_LIMIT)} to show more.`),
+            hasMoreSaved
+              ? `Continue: read filePath="${full}" offset=${next}` +
+                  (more
+                    ? "; narrow path/include or use a more specific pattern for matches beyond the saved listing."
+                    : byBytes
+                      ? "; the byte budget stopped the preview, so read the saved listing for the omitted context."
+                      : `; raise grep limit to ${Math.min(Math.max(previewLimit * 2, previewLimit + 1), MAX_LIMIT)} to show more.`)
+              : `Continue: narrow path/include or use a more specific pattern for matches beyond the saved listing.`,
           )
 
           return {

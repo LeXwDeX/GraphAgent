@@ -202,11 +202,11 @@ jobs:
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         uses: ./.github/actions/setup-bun
         with:
-          # Linux and Windows bun caches are each owned by a single saver
-          # elsewhere (ci-typecheck.yml linux, ci-test.yml e2e windows) to
-          # avoid racing on the same {OS}-bun-{hash} key when this manual
-          # release build runs concurrently with a push-triggered CI run.
-          # macOS has no other job in the repo, so it's safe to save here.
+          # Development CI runs on Azure Pipelines, whose Azure DevOps Cache@2
+          # store (key `bun | OS | arch | bun.lock`) is a separate cache
+          # system. No GitHub Actions workflow saves Linux or Windows bun
+          # caches, so there is no {OS}-bun-{hash} key race to avoid; macOS is
+          # the only GitHub-hosted build in this repository.
           save-cache: ${{ matrix.name == 'macos' }}
 
       # Embed a models.dev catalog snapshot into the binary so air-gapped

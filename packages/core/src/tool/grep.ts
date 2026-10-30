@@ -35,6 +35,17 @@ export const Input = Schema.Struct({
 export const Output = Schema.Array(FileSystem.Match)
 type ModelOutput = typeof Output.Encoded
 
+/**
+ * `textLength` is set only when the preview is shorter than the line, so make
+ * the cut visible here as well: the HTTP and v1 surfaces are not the only
+ * consumers of a raw ripgrep match.
+ */
+const matchText = (match: ModelOutput[number]) => {
+  if (match.textLength === undefined) return match.text
+  const shown = Array.from(match.text).length
+  return `${match.text}... (line truncated to ${shown} of ${match.textLength} chars)`
+}
+
 /** Format raw search matches into the familiar concise model output. */
 export const toModelOutput = (output: ModelOutput) => {
   const lines = output.length === 0 ? ["No files found"] : [`Found ${output.length} matches`]
@@ -45,7 +56,7 @@ export const toModelOutput = (output: ModelOutput) => {
       current = match.entry.path
       lines.push(`${match.entry.path}:`)
     }
-    lines.push(`  Line ${match.line}: ${match.text}`)
+    lines.push(`  Line ${match.line}: ${matchText(match)}`)
   }
   return lines.join("\n")
 }

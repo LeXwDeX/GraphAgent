@@ -32,6 +32,8 @@ export interface Details {
   endLine: number
   /** Bytes in the preview. */
   outputBytes: number
+  /** Bytes in the complete line that `partialLine` cut (0 when not partial). */
+  lineBytes: number
   /** Byte budget that stopped the preview. */
   maxBytes: number
   /** The preview is a byte slice of one line instead of whole lines. */
@@ -118,11 +120,13 @@ export function headPreview(text: string, maxLines: number, maxBytes: number): P
   let bytes = 0
   let hitBytes = false
   let partialLine = false
+  let lineBytes = 0
   for (let i = 0; i < lines.length && i < maxLines; i++) {
     const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
     if (bytes + size > maxBytes) {
       hitBytes = true
       if (out.length === 0) {
+        lineBytes = Buffer.byteLength(lines[i], "utf-8")
         const cut = headBytes(lines[i], maxBytes)
         out.push(cut)
         bytes = Buffer.byteLength(cut, "utf-8")
@@ -145,6 +149,7 @@ export function headPreview(text: string, maxLines: number, maxBytes: number): P
       startLine: 1,
       endLine: Math.max(1, out.length),
       outputBytes: bytes,
+      lineBytes,
       maxBytes,
       partialLine,
     },
@@ -161,11 +166,13 @@ export function tailPreview(text: string, maxLines: number, maxBytes: number): P
   let bytes = 0
   let hitBytes = false
   let partialLine = false
+  let lineBytes = 0
   for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
     const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
     if (bytes + size > maxBytes) {
       hitBytes = true
       if (out.length === 0) {
+        lineBytes = Buffer.byteLength(lines[i], "utf-8")
         const cut = tailBytes(lines[i], maxBytes)
         out.unshift(cut)
         bytes = Buffer.byteLength(cut, "utf-8")
@@ -188,6 +195,7 @@ export function tailPreview(text: string, maxLines: number, maxBytes: number): P
       startLine: Math.max(1, lines.length - out.length + 1),
       endLine: lines.length,
       outputBytes: bytes,
+      lineBytes,
       maxBytes,
       partialLine,
     },
@@ -203,7 +211,7 @@ export function notice(file: string, details: Details): string {
     const edge = details.direction === "head" ? "first" : "last"
     return [
       `[truncated: showing the ${edge} ${formatSize(details.outputBytes)} of line ${details.startLine} ` +
-        `(${formatSize(details.totalBytes)} total). Full output: ${file}]`,
+        `(line is ${formatSize(details.lineBytes)}; ${formatSize(details.totalBytes)} total output). Full output: ${file}]`,
       `Continue: read filePath="${file}" offset=${details.startLine} limit=1 maxLineLength=${MAX_LINE_FETCH}; ` +
         `use the shell tool for characters beyond that.`,
     ].join("\n")

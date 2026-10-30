@@ -153,15 +153,17 @@ credential-refresh retry, `413` and context overflow hand off to compaction inst
 credentials, output-length and structured-output limits, content filters and rejected reasoning state stay terminal.
 When the processor gate or the attempt cap stops a retry, the session logs `retry stopped` with the branch, status,
 attempt, cap and gate state. The opt-in experimental native runtime (`OPENCODE_EXPERIMENTAL_NATIVE_LLM`, off by default)
-keeps its own bounded `RequestExecutor` retry instead of this table. See
-[compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
+disables its `RequestExecutor` retries when the session processor drives the request, so this table owns retry timing
+and the attempt count; direct native-runtime calls that bypass the processor keep the executor's own bounded retry
+budget. See [compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
 
 ---
 
 ## Context management
 
 - **Bounded tool use**: generic tool output is bounded by `tool_output.max_lines`/`tool_output.max_bytes`, while
-  `read`, `grep`, `glob` and `shell` enforce their own per-tool budgets (`maxLineLength`, `limit`, tail capture);
+  `read`, `grep` and `glob` enforce their own fixed budgets (`maxLineLength`, `limit`) and `shell` keeps its own
+  20-line tail while sharing `tool_output.max_bytes` as its inline byte cap and saved-file threshold;
   `maxToolCalls` caps tool calls per user input. Truncated results state what was omitted and the exact continuation —
   a saved file with its offset, a character offset, a larger `limit`, or a narrower query — so the model can continue
   without guessing.
@@ -410,7 +412,7 @@ Curated reference topologies — design decision deep-dive, parallel project del
 
 - **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
 - **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
-- **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~20 KB to ~9 KB), strict `edit` matching that lists ambiguous candidate lines and the closest line instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
+- **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~31 KB to ~20 KB, 36.5 percent), strict `edit` matching that lists ambiguous candidate lines and the closest line when one is close instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
 - **CJK & IME fixes**: corrections for Chinese/Japanese/Korean input in the terminal UI (IME composition flushing, full-width text handling), plus a Korean IME fix script under [`patches/`](./patches).
 - **Worktree isolation**: per-workflow `git worktree` isolation, with experimental sandbox-worktree HTTP endpoints.
 - **Configuration assistant**: a standalone Go TUI under [`config_assistant`](./config_assistant) for locating, validating, and editing opencode configuration (`cd config_assistant && go run ./cmd/ocfg`).

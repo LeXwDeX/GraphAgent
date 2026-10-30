@@ -275,6 +275,14 @@ export const layer = Layer.effect(
                 .replace(/^(?:\.[\\/])+/u, "")
                 .replace(/^[\\/]+/u, "")
                 .replaceAll("\\", "/")
+              // Truncate by code point, the same unit `read` uses for
+              // `charOffset`, and carry the true length so consumers can point
+              // at the exact continuation instead of an off-by-preview value.
+              // The limit applies to the visible content: a line terminator
+              // must not make an exactly-2000-code-point line look truncated.
+              const content = row.lines.text.replace(/\r?\n$/u, "")
+              const chars = content.length > 2_000 ? Array.from(content) : undefined
+              const truncated = chars !== undefined && chars.length > 2_000
               return {
                 kind: row.kind,
                 match: Match.make({
@@ -284,10 +292,8 @@ export const layer = Layer.effect(
                   }),
                   line: row.line_number,
                   offset: row.absolute_offset,
-                  text:
-                    row.lines.text.length > 2_000
-                      ? row.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
-                      : row.lines.text,
+                  text: truncated ? chars!.slice(0, 2_000).join("") : row.lines.text,
+                  ...(truncated ? { textLength: chars!.length } : {}),
                   submatches: row.submatches.map((submatch) => ({
                     text: submatch.match.text,
                     start: submatch.start,

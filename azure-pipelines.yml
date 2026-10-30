@@ -7,10 +7,11 @@
 # Jobs    : pool=microsoft-hosted (default): linux, windows, macos on
 #           Microsoft-hosted images
 #           pool=managed: linux only, on the `yc-ci-linux` Managed DevOps Pool
-# Notes   : GitHub Actions stays the CI of record. No checkout, no secrets,
-#           no service connections; each job is bounded to 10 minutes and
-#           reports agent identity and installed tool versions only.
-#           `pr: none` keeps fork pull requests from queueing runs.
+# Notes   : Manual capacity probe only; development CI is
+#           .azure-pipelines/ci.yml on Azure Pipelines. No checkout, no
+#           secrets, no service connections; each job is bounded to 10
+#           minutes and reports agent identity and installed tool versions
+#           only. `pr: none` keeps fork pull requests from queueing runs.
 # ============================================================================
 
 trigger: none
