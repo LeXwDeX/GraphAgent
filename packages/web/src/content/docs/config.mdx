@@ -768,14 +768,13 @@ You can control context compaction behavior through the `compaction` option.
   "$schema": "https://opencode.ai/config.json",
   "compaction": {
     "auto": true,
-    "prune": false,
     "reserved": 10000
   }
 }
 ```
 
 - `auto` - Automatically compact the session when context is full (default: `true`).
-- `prune` - Remove old tool outputs to save tokens (default: `false`). Set to `true` to enable pruning.
+- `prune` - Deprecated. Accepted for compatibility, but it no longer removes tool output or enables context folding.
 - `reserved` - Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
 
 ---
