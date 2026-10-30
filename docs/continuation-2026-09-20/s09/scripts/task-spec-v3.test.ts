@@ -49,7 +49,7 @@ describe("S09 task fixture v3", () => {
     expect(total("t1-read-then-edit")).toBe(152_024)
     expect(total("t2-repeated-search")).toBe(154_092)
     expect(total("t3-aba")).toBe(152_048)
-    expect(total("t4-return-earlier")).toBe(144_028)
+    expect(total("t4-return-earlier")).toBe(166_030)
   })
 
   test("makes the T1 answer attributable to the final filler read", () => {

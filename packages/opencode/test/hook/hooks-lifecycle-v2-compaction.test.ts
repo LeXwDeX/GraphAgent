@@ -156,7 +156,7 @@ cliIt.live(
       // A failed summarizer may run PreCompact, but it must not publish a
       // completed compaction or its PostCompact/SessionStart follow-up.
       yield* llm.fail("summary failed")
-      expect((yield* prompt("W".repeat(10_000))).status).toBe(200)
+      expect((yield* prompt("W".repeat(40_000))).status).toBe(200)
       const afterFailure = yield* Effect.promise(async () => {
         const deadline = Date.now() + 5_000
         while (Date.now() < deadline) {

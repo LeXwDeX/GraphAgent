@@ -193,12 +193,12 @@ export const V3_TASKS: Readonly<Record<V3TaskID, V3Task>> = {
   "t4-return-earlier": {
     order: 3,
     files: [
-      { path: "p1/a.txt", bytes: 44_000, inject: "GATE-CODE-5521" },
-      { path: "p1/b.txt", bytes: 8_000 },
-      { path: "p1/c.txt", bytes: 4_000 },
-      { path: "p1/d.txt", bytes: 4_000 },
-      { path: "p2/x.txt", bytes: 8_000 },
-      { path: "p2/y.txt", bytes: 8_000 },
+      { path: "p1/a.txt", bytes: 47_000, inject: "GATE-CODE-5521" },
+      { path: "p1/b.txt", bytes: 10_000 },
+      { path: "p1/c.txt", bytes: 6_000 },
+      { path: "p1/d.txt", bytes: 6_000 },
+      { path: "p2/x.txt", bytes: 10_000 },
+      { path: "p2/y.txt", bytes: 10_000 },
     ],
     prompts: [
       {
