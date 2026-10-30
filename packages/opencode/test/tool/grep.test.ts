@@ -206,6 +206,31 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("points the saved-listing continuation at an existing line when the match cap is hit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "many.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 1001 }, (_, index) => `needle ${index}`).join("\n") + "\n"),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute(
+        { pattern: "needle", path: test.directory, include: "*.txt", limit: 1000 },
+        ctx,
+      )
+
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("The scan stopped at the match cap.")
+      const full = /Full output: (.+)\]/m.exec(result.output)?.[1]
+      const next = /offset=(\d+)/.exec(result.output)?.[1]
+      expect(full).toBeTruthy()
+      expect(next).toBeTruthy()
+      const lines = (yield* Effect.promise(() => fs.readFile(full!, "utf8"))).split("\n")
+      expect(Number(next)).toBeLessThanOrEqual(lines.length)
+    }),
+  )
+
   it.instance("supports exact file paths", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

@@ -478,8 +478,51 @@ describe("tool.read truncation", () => {
 
       const result = yield* exec(dir, { filePath: path.join(dir, "long-line.txt") })
       expect(result.output).toContain("(line truncated to 2000 of 3000 chars;")
-      expect(result.output).toContain("offset=1 limit=1 maxLineLength=3000")
+      expect(result.output).toContain("offset=1 limit=1 charOffset=2001 maxLineLength=1000")
       expect(result.output.length).toBeLessThan(3000)
+    }),
+  )
+
+  it.live("continues a line beyond the per-line fetch cap with charOffset", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "very-long-line.txt")
+      yield* put(filepath, "x".repeat(60_000))
+
+      const first = yield* exec(dir, { filePath: filepath })
+      expect(first.output).toContain("charOffset=2001 maxLineLength=2000")
+
+      const second = yield* exec(dir, { filePath: filepath, offset: 1, limit: 1, charOffset: 2001, maxLineLength: 50_000 })
+      expect(second.output).toContain("x".repeat(50_000))
+      expect(second.output).toContain("charOffset=52001 maxLineLength=8000")
+
+      const third = yield* exec(dir, {
+        filePath: filepath,
+        offset: 1,
+        limit: 1,
+        charOffset: 52_001,
+        maxLineLength: 8000,
+      })
+      expect(third.output).toContain("x".repeat(8000))
+      expect(third.output).not.toContain("line truncated")
+    }),
+  )
+
+  it.live("continues a multibyte line whose bytes exceed the output cap", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "multibyte-line.txt")
+      yield* put(filepath, "😀".repeat(20_000))
+
+      const first = yield* exec(dir, { filePath: filepath })
+      expect(first.output).toContain("😀")
+      const next = Number(first.output.match(/charOffset=(\d+)/)?.[1])
+      expect(next).toBeGreaterThan(1)
+
+      const second = yield* exec(dir, { filePath: filepath, offset: 1, limit: 1, charOffset: next })
+      expect(second.output).toContain("😀")
+      const advanced = Number(second.output.match(/charOffset=(\d+)/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+      expect(advanced).toBeGreaterThan(next)
     }),
   )
 

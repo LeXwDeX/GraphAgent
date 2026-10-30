@@ -111,7 +111,8 @@ export const GrepTool = Tool.define(
               match.text.length > MATCH_TEXT_LIMIT
                 ? `${match.text.slice(0, MATCH_TEXT_LIMIT)}... (line truncated to ${MATCH_TEXT_LIMIT} of ${match.text.length} chars; ` +
                   `continue with read filePath="${match.path}" offset=${match.line} limit=1 ` +
-                  `maxLineLength=${Math.min(match.text.length, Truncate.MAX_LINE_FETCH)})`
+                  `charOffset=${MATCH_TEXT_LIMIT + 1} ` +
+                  `maxLineLength=${Math.min(match.text.length - MATCH_TEXT_LIMIT, Truncate.MAX_LINE_FETCH)})`
                 : match.text
             const lines = current === match.path ? [] : [...(current === "" ? [] : [""]), `${match.path}:`]
             lines.push(`  Line ${match.line}: ${text}`)

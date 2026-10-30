@@ -80,7 +80,11 @@ export const GlobTool = Tool.define(
             output.push(...files.map((file) => path.resolve(search, file.path)))
             if (more || files.length < matches.length) {
               const total = more ? `at least ${scan}` : `${matches.length}`
-              const next = more ? "" : `, or glob limit=${Math.min(matches.length, MAX_LIMIT)} to show the rest`
+              const next = more
+                ? limit < MAX_LIMIT
+                  ? `, or glob limit=${MAX_LIMIT} to show up to ${MAX_LIMIT} paths`
+                  : ""
+                : `, or glob limit=${Math.min(matches.length, MAX_LIMIT)} to show the rest`
               output.push("")
               output.push(
                 `[truncated: showing the first ${files.length} of ${total} paths. ` +

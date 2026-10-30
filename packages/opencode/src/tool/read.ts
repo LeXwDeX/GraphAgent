@@ -35,18 +35,39 @@ export const Parameters = Schema.Struct({
   maxLineLength: Schema.optional(PositiveInt).annotate({
     description: `Maximum characters to show from each line (defaults to ${MAX_LINE_LENGTH}, capped at ${MAX_LINE_FETCH}); use it to continue a truncated long line`,
   }),
+  charOffset: Schema.optional(PositiveInt).annotate({
+    description:
+      "Character offset within each displayed line (1-indexed); combine it with maxLineLength to continue a long line past the character cap",
+  }),
 })
+
+const LINE_NOTICE_BUDGET = 512
+
+/** Largest code-point prefix that fits the byte budget, always at least one character. */
+function fitLine(chars: readonly string[], start: number, end: number) {
+  const budget = MAX_BYTES - LINE_NOTICE_BUDGET
+  const bytes = (to: number) => Buffer.byteLength(chars.slice(start, to).join(""), "utf8")
+  if (bytes(end) <= budget) return end
+  let low = start + 1
+  let high = end
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2)
+    if (bytes(mid) <= budget) low = mid
+    else high = mid - 1
+  }
+  return low
+}
 
 /**
  * A line longer than the per-line budget states exactly how to fetch the rest
- * with the same tool. Lines beyond MAX_LINE_FETCH need the shell instead.
+ * with the same tool: charOffset advances past the shown characters, so even a
+ * line far beyond MAX_LINE_FETCH is reachable in bounded chunks.
  */
-function lineSuffix(filepath: string, line: number, shown: number, total: number) {
-  const next = Math.min(total, MAX_LINE_FETCH)
-  const rest = total > MAX_LINE_FETCH ? " or use the shell tool for the rest" : ""
+function lineSuffix(filepath: string, line: number, start: number, shown: number, total: number, chunk: number) {
+  const next = start + shown + 1
   return (
     `... (line truncated to ${shown} of ${total} chars; ` +
-    `continue with read filePath="${filepath}" offset=${line} limit=1 maxLineLength=${next}${rest})`
+    `continue with read filePath="${filepath}" offset=${line} limit=1 charOffset=${next} maxLineLength=${chunk})`
   )
 }
 
@@ -151,7 +172,7 @@ export const ReadTool = Tool.define<
 
     const lines = Effect.fn("ReadTool.lines")(function* (
       filepath: string,
-      opts: { limit: number; offset: number; maxLineLength: number },
+      opts: { limit: number; offset: number; maxLineLength: number; charOffset?: number },
     ) {
       const start = opts.offset - 1
       const raw: string[] = []
@@ -177,10 +198,25 @@ export const ReadTool = Tool.define<
               return
             }
 
-            const line =
-              text.length > opts.maxLineLength
-                ? text.substring(0, opts.maxLineLength) + lineSuffix(filepath, flags.count, opts.maxLineLength, text.length)
-                : text
+            let line = text
+            if (opts.charOffset !== undefined || text.length > opts.maxLineLength) {
+              const chars = Array.from(text)
+              const from = Math.min(Math.max((opts.charOffset ?? 1) - 1, 0), chars.length)
+              const to = fitLine(chars, from, Math.min(chars.length, from + opts.maxLineLength))
+              const shown = chars.slice(from, to).join("")
+              line =
+                to < chars.length
+                  ? shown +
+                    lineSuffix(
+                      filepath,
+                      flags.count,
+                      from,
+                      to - from,
+                      chars.length,
+                      Math.min(opts.maxLineLength, chars.length - to),
+                    )
+                  : shown
+            }
             const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
             if (flags.bytes + size <= MAX_BYTES) {
               raw.push(line)
@@ -353,6 +389,7 @@ export const ReadTool = Tool.define<
         limit: params.limit ?? DEFAULT_READ_LIMIT,
         offset: params.offset ?? 1,
         maxLineLength: Math.min(params.maxLineLength ?? MAX_LINE_LENGTH, MAX_LINE_FETCH),
+        charOffset: params.charOffset,
       })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(

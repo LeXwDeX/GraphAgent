@@ -404,6 +404,28 @@ describe("tool.glob", () => {
     }),
   )
 
+  it.instance("offers a usable limit continuation when the scan cap stops the listing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(async () => {
+        for (let index = 0; index < 1001; index++) {
+          await Bun.write(path.join(test.directory, `cap-${index}.txt`), "x")
+        }
+      })
+      const result = yield* globExecute({ pattern: "*.txt", path: test.directory })
+      expect(result.metadata.count).toBe(100)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("[truncated: showing the first 100 of at least 1000 paths.")
+      expect(result.output).toContain("glob limit=1000 to show up to 1000 paths")
+
+      const wide = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 1000 })
+      expect(wide.metadata.count).toBe(1000)
+      expect(wide.metadata.truncated).toBe(true)
+      expect(wide.output).toContain("[truncated: showing the first 1000 of at least 1000 paths.")
+      expect(wide.output).toContain("Continue: narrow path/pattern.")
+    }),
+  )
+
   it.instance("supports relative directories and normal no-match results", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
