@@ -68,6 +68,12 @@ function prepareEditArguments(value: unknown): unknown {
   const edits = editEntries(value.edits ?? value.edit)
   if (hasEdits && !edits) return value
   if (edits && edits.length > 1) return value
+  const topLevelReplacement =
+    firstString(value.oldString, value.old_string, value.oldText, value.old_text) !== undefined ||
+    firstString(value.newString, value.new_string, value.newText, value.new_text) !== undefined
+  // Top-level strings plus an edits entry describe two replacements; neither
+  // may win silently, so let strict decoding reject the excess key.
+  if (edits && topLevelReplacement) return value
   const edit = edits?.[0] ?? {}
 
   const filePath = firstString(

@@ -731,6 +731,25 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("rejects top-level strings combined with a single edits entry", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        const original = "alpha beta"
+        yield* put(filepath, original)
+
+        const error = yield* failRaw({
+          filePath: filepath,
+          oldString: "alpha",
+          newString: "gamma",
+          edits: [{ oldString: "beta", newString: "delta" }],
+        })
+
+        expect(error.message).toContain("split multiple edits")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
     it.instance("accepts snake_case keys", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
