@@ -265,6 +265,7 @@ describe("DAG schema prompt contract (issue #386)", () => {
     const description = await Bun.file(
       path.join(import.meta.dir, "../../src/tool/submit_result.txt"),
     ).text()
+    expect(description).toContain("The payload is the authoritative report")
     expect(description).toContain("do not duplicate it in your message")
     expect(description).toContain("end the turn after success")
   })

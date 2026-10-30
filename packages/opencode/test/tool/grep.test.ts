@@ -140,6 +140,28 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("returns the requested context around each match", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "context.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 20 }, (_, index) => `line${index + 1}`).join("\n")),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "line10", path: file, context: 2 }, ctx)
+
+      expect(result.output).toStartWith("Found 1 matches\n")
+      expect(result.output).toContain("Line 10: line10")
+      expect(result.output).toContain("Line 8- line8")
+      expect(result.output).toContain("Line 9- line9")
+      expect(result.output).toContain("Line 11- line11")
+      expect(result.output).toContain("Line 12- line12")
+      expect(result.output).not.toContain("line7")
+      expect(result.output).not.toContain("line13")
+    }),
+  )
+
   it.instance("exactly 100 matches are complete", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -156,8 +178,7 @@ describe("tool.grep", () => {
       expect(result.metadata.matches).toBe(100)
       expect(result.metadata.truncated).toBe(false)
       expect(result.output).toStartWith("Found 100 matches\n")
-      expect(result.output).not.toContain("Results truncated")
-      expect(result.output).not.toContain("more matches available")
+      expect(result.output).not.toContain("[truncated:")
     }),
   )
 
@@ -178,12 +199,14 @@ describe("tool.grep", () => {
       expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(Truncate.MAX_BYTES + 1_024)
       expect(result.metadata.truncated).toBe(true)
       expect(result.metadata.matches).toBeLessThan(60)
-      expect(result.output).toContain("more matches available")
-      expect(result.output).toContain("(Results truncated. Consider using a more specific path or pattern.)")
+      expect(result.output).toContain(`[truncated: showing ${result.metadata.matches} of 60 matches.`)
+      expect(result.output).toContain("the byte budget stopped the preview")
+      expect(result.output).toContain("Full output: ")
+      expect(result.output).toContain("Continue: read filePath=")
     }),
   )
 
-  it.instance("does not report an unknown total when results are truncated", () =>
+  it.instance("reports the total and the saved listing when results are truncated", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() =>
@@ -197,8 +220,59 @@ describe("tool.grep", () => {
       const grep = yield* info.init()
       const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt" }, ctx)
 
-      expect(result.output).toContain("(Results truncated. Consider using a more specific path or pattern.)")
-      expect(result.output).not.toMatch(/showing \d+ of \d+ matches/)
+      expect(result.output).toContain("[truncated: showing 100 of 101 matches. 1 match omitted.")
+      expect(result.output).toContain("Full output: ")
+      expect(result.output).toContain("raise grep limit to 200 to show more")
+      expect(result.metadata.matches).toBe(100)
+      expect(result.metadata.truncated).toBe(true)
+    }),
+  )
+
+  it.instance("points the saved-listing continuation at an existing line when the match cap is hit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "many.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 1001 }, (_, index) => `needle ${index}`).join("\n") + "\n"),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute(
+        { pattern: "needle", path: test.directory, include: "*.txt", limit: 1000 },
+        ctx,
+      )
+
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("The scan stopped at the match cap.")
+      const full = /Full output: (.+)\]/m.exec(result.output)?.[1]
+      const next = /offset=(\d+)/.exec(result.output)?.[1]
+      expect(full).toBeTruthy()
+      expect(next).toBeTruthy()
+      const lines = (yield* Effect.promise(() => fs.readFile(full!, "utf8"))).split("\n")
+      // Every scanned match is already in the preview; the continuation lands
+      // just past the end of the saved listing, not inside it.
+      expect(Number(next)).toBe(lines.length + 1)
+    }),
+  )
+
+  it.instance("points the saved-listing continuation at the first omitted match", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "many.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 101 }, (_, index) => `needle ${index}`).join("\n") + "\n"),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt", limit: 100 }, ctx)
+
+      expect(result.metadata.truncated).toBe(true)
+      const full = /Full output: (.+)\]/m.exec(result.output)?.[1]
+      const next = /offset=(\d+)/.exec(result.output)?.[1]
+      expect(full).toBeTruthy()
+      expect(next).toBeTruthy()
+      const lines = (yield* Effect.promise(() => fs.readFile(full!, "utf8"))).split("\n")
+      expect(lines[Number(next) - 1]).toContain("needle 100")
     }),
   )
 

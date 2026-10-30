@@ -4,6 +4,7 @@ import * as fs from "fs/promises"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { LSP } from "@/lsp/lsp"
+import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Format } from "../../src/format"
 import { Agent } from "../../src/agent/agent"
@@ -16,6 +17,21 @@ import { testEffect } from "../lib/effect"
 const it = testEffect(
   Layer.mergeAll(
     LSP.defaultLayer,
+    FSUtil.defaultLayer,
+    Format.defaultLayer,
+    EventV2Bridge.defaultLayer,
+    Truncate.defaultLayer,
+    Agent.defaultLayer,
+  ),
+)
+
+let mockedDiagnostics: Record<string, Diagnostic[]> = {}
+const itWithDiagnostics = testEffect(
+  Layer.mergeAll(
+    Layer.mock(LSP.Service, {
+      touchFile: () => Effect.void,
+      diagnostics: () => Effect.succeed(mockedDiagnostics),
+    }),
     FSUtil.defaultLayer,
     Format.defaultLayer,
     EventV2Bridge.defaultLayer,
@@ -227,6 +243,48 @@ describe("tool.apply_patch freeform", () => {
       expect(content.charCodeAt(0)).toBe(0xfeff)
       expect(content.slice(1)).toBe("using System;\n\nclass Test {}\nclass Next {}\n")
     }),
+  )
+
+  itWithDiagnostics.instance(
+    "keeps diagnostics on lines the formatter moved",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx } = makeCtx()
+        const target = path.join(test.directory, "expanded.txt")
+        yield* writeText(target, "alpha\n")
+        mockedDiagnostics = {
+          [FSUtil.normalizePath(target)]: [
+            {
+              severity: 1,
+              message: "formatted line error",
+              range: { start: { line: 19, character: 0 }, end: { line: 19, character: 1 } },
+            },
+          ],
+        }
+        const patchText = "*** Begin Patch\n*** Update File: expanded.txt\n@@\n-alpha\n+beta\n*** End Patch"
+
+        const result = yield* execute({ patchText }, ctx)
+
+        const content = yield* readText(target)
+        expect(content.split("\n").length).toBeGreaterThan(20)
+        expect(result.output).toContain("ERROR [20:1] formatted line error")
+      }),
+    {
+      config: {
+        formatter: {
+          expand: {
+            extensions: [".txt"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(30), 'utf8')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
   )
 
   it.instance("inserts lines with insert-only hunk", () =>

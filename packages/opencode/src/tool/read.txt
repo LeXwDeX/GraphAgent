@@ -1,6 +1,7 @@
 Read a file or directory. Use this before editing a file or when you need exact contents; use grep to locate matching content and glob to find paths.
 
 - filePath may be absolute or relative to the project directory. Text reads return up to 2000 lines and 50 KB; use offset (1-indexed) and limit to continue. For directories both count entries.
-- Output lines are prefixed with `<line>: `. Omit that prefix when copying text into edit oldString or newString. Lines longer than 2000 characters are truncated.
+- page reads one window without counting from the start: page 1 is the first 200 lines, page -1 is the last page, page -2 the page before. Set limit to change the page size; page cannot be combined with offset. Use it to page a saved shell output from its footer.
+- Output lines are prefixed with `<line>: `. Omit that prefix when copying text into edit oldString or newString. A line longer than 2000 characters is truncated with a notice naming the offset and maxLineLength that continue it.
 - Read larger windows instead of many tiny slices; independent reads may run in parallel.
 - Images and PDFs are returned as attachments.

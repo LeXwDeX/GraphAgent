@@ -36,7 +36,7 @@ describe("Truncate", () => {
         const result = yield* svc.output(content)
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("truncated...")
+        expect(result.content).toContain("[truncated:")
         if (result.truncated) expect(result.outputPath).toBeDefined()
       }),
     )
@@ -59,7 +59,8 @@ describe("Truncate", () => {
         const result = yield* svc.output(lines, { maxLines: 10 })
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("...90 lines truncated...")
+        expect(result.content).toContain("showing lines 1-10 of 100.")
+        expect(result.content).toContain("90 lines omitted after this range.")
       }),
     )
 
@@ -70,7 +71,7 @@ describe("Truncate", () => {
         const result = yield* svc.output(content, { maxBytes: 100 })
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("truncated...")
+        expect(result.content).toContain("showing the first 100 B of line 1 (1000 B total)")
       }),
     )
 
@@ -99,6 +100,9 @@ describe("Truncate", () => {
         expect(result.content).toContain("line8")
         expect(result.content).toContain("line9")
         expect(result.content).not.toContain("line0")
+        expect(result.content).toContain("7 lines omitted before this range.")
+        expect(result.content).toContain("Continue: read filePath=")
+        expect(result.content).toContain("offset=1")
       }),
     )
 
@@ -134,7 +138,7 @@ describe("Truncate", () => {
           const content = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
           const result = yield* (yield* Truncate.Service).output(content)
           expect(result.truncated).toBe(true)
-          expect(result.content).toContain("...90 lines truncated...")
+          expect(result.content).toContain("90 lines omitted after this range.")
         }),
       )
 
@@ -145,7 +149,7 @@ describe("Truncate", () => {
           const content = "a".repeat(1000)
           const result = yield* (yield* Truncate.Service).output(content)
           expect(result.truncated).toBe(true)
-          expect(result.content).toContain("bytes truncated...")
+          expect(result.content).toContain("showing the first 100 B of line 1")
         }),
       )
 
@@ -162,7 +166,7 @@ describe("Truncate", () => {
       )
     })
 
-    it.live("large single-line file truncates with byte message", () =>
+    it.live("large json file reports the byte-limited line range", () =>
       Effect.gen(function* () {
         const svc = yield* Truncate.Service
         const fsys = yield* FSUtil.Service
@@ -170,7 +174,8 @@ describe("Truncate", () => {
         const result = yield* svc.output(content)
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("bytes truncated...")
+        expect(result.content).toContain("[truncated: showing lines 1-")
+        expect(result.content).toContain("(50.0 KB limit)")
         expect(Buffer.byteLength(content, "utf-8")).toBeGreaterThan(Truncate.MAX_BYTES)
       }),
     )
@@ -182,9 +187,12 @@ describe("Truncate", () => {
         const result = yield* svc.output(lines, { maxLines: 10 })
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("The tool call succeeded but the output was truncated")
-        expect(result.content).toContain("Grep")
+        expect(result.content).not.toContain("The tool call succeeded")
         if (!result.truncated) throw new Error("expected truncated")
+        expect(result.content).toContain(
+          `[truncated: showing lines 1-10 of 100. 90 lines omitted after this range. Full output: ${result.outputPath}]`,
+        )
+        expect(result.content).toContain(`Continue: read filePath="${result.outputPath}" offset=11`)
         expect(result.outputPath).toBeDefined()
         expect(result.outputPath).toContain("tool_")
 
@@ -194,7 +202,7 @@ describe("Truncate", () => {
       }),
     )
 
-    it.live("omits Task tool hint when agent lacks task permission", () =>
+    it.live("does not add delegation hints to the truncation notice", () =>
       Effect.gen(function* () {
         const svc = yield* Truncate.Service
         const lines = Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n")
@@ -207,12 +215,12 @@ describe("Truncate", () => {
         const result = yield* svc.output(lines, { maxLines: 10 }, agent)
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("Grep")
+        expect(result.content).toContain(`Continue: read filePath=`)
         expect(result.content).not.toContain("Task tool")
       }),
     )
 
-    it.live("keeps file retrieval available when the agent can delegate", () =>
+    it.live("points at the saved file with the read parameters that continue it", () =>
       Effect.gen(function* () {
         const svc = yield* Truncate.Service
         const content = "first\nsecond\nthird"
@@ -225,8 +233,7 @@ describe("Truncate", () => {
         const result = yield* svc.output(content, { maxLines: 1 }, agent)
 
         if (!result.truncated) throw new Error("expected truncated")
-        expect(result.content).toContain("Grep")
-        expect(result.content).toContain("Read with offset/limit")
+        expect(result.content).toContain(`Continue: read filePath="${result.outputPath}" offset=2`)
         expect(result.content).not.toContain("Task tool")
         expect(result.content).not.toContain("Do NOT read")
         expect(yield* (yield* FSUtil.Service).readFileString(result.outputPath)).toBe(content)

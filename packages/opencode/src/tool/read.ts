@@ -9,10 +9,10 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
-const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
@@ -32,7 +32,47 @@ export const Parameters = Schema.Struct({
   limit: Schema.optional(PositiveInt).annotate({
     description: "The maximum number of lines or directory entries to read (positive integer, defaults to 2000)",
   }),
+  page: Schema.optional(Schema.Int).annotate({
+    description: `Read one page of the file (${PAGE_LINES} lines, or limit when set): page 1 is the start, -1 is the last page, -2 the page before. Cannot be combined with offset`,
+  }),
+  maxLineLength: Schema.optional(PositiveInt).annotate({
+    description: `Maximum characters to show from each line (defaults to ${MAX_LINE_LENGTH}, capped at ${MAX_LINE_FETCH}); use it to continue a truncated long line`,
+  }),
+  charOffset: Schema.optional(PositiveInt).annotate({
+    description:
+      "Character offset within each displayed line (1-indexed); combine it with maxLineLength to continue a long line past the character cap",
+  }),
 })
+
+const LINE_NOTICE_BUDGET = 512
+
+/** Largest code-point prefix that fits the byte budget, always at least one character. */
+function fitLine(chars: readonly string[], start: number, end: number) {
+  const budget = MAX_BYTES - LINE_NOTICE_BUDGET
+  const bytes = (to: number) => Buffer.byteLength(chars.slice(start, to).join(""), "utf8")
+  if (bytes(end) <= budget) return end
+  let low = start + 1
+  let high = end
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2)
+    if (bytes(mid) <= budget) low = mid
+    else high = mid - 1
+  }
+  return low
+}
+
+/**
+ * A line longer than the per-line budget states exactly how to fetch the rest
+ * with the same tool: charOffset advances past the shown characters, so even a
+ * line far beyond MAX_LINE_FETCH is reachable in bounded chunks.
+ */
+function lineSuffix(filepath: string, line: number, start: number, shown: number, total: number, chunk: number) {
+  const next = start + shown + 1
+  return (
+    `... (line truncated to ${shown} of ${total} chars; ` +
+    `continue with read filePath="${filepath}" offset=${line} limit=1 charOffset=${next} maxLineLength=${chunk})`
+  )
+}
 
 type Display =
   | {
@@ -133,10 +173,13 @@ export const ReadTool = Tool.define<
       )
     })
 
-    const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
+    const lines = Effect.fn("ReadTool.lines")(function* (
+      filepath: string,
+      opts: { limit: number; offset: number; maxLineLength: number; charOffset?: number },
+    ) {
       const start = opts.offset - 1
       const raw: string[] = []
-      const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
+      const flags = { bytes: 0, before: 0, count: 0, cut: false, more: false, done: false }
 
       // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
       // ends without flushing, decodeText drops the final unterminated line. We also
@@ -151,14 +194,35 @@ export const ReadTool = Tool.define<
           Effect.gen(function* () {
             if (flags.done) return yield* new ReadStop()
             flags.count += 1
-            if (flags.count <= start) return
+            if (flags.count <= start) {
+              flags.before += Buffer.byteLength(text, "utf-8") + 1
+              return
+            }
 
             if (raw.length >= opts.limit) {
               flags.more = true
               return
             }
 
-            const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
+            let line = text
+            if (opts.charOffset !== undefined || text.length > opts.maxLineLength) {
+              const chars = Array.from(text)
+              const from = Math.min(Math.max((opts.charOffset ?? 1) - 1, 0), chars.length)
+              const to = fitLine(chars, from, Math.min(chars.length, from + opts.maxLineLength))
+              const shown = chars.slice(from, to).join("")
+              line =
+                to < chars.length
+                  ? shown +
+                    lineSuffix(
+                      filepath,
+                      flags.count,
+                      from,
+                      to - from,
+                      chars.length,
+                      Math.min(opts.maxLineLength, chars.length - to),
+                    )
+                  : shown
+            }
             const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
             if (flags.bytes + size <= MAX_BYTES) {
               raw.push(line)
@@ -175,7 +239,55 @@ export const ReadTool = Tool.define<
         Effect.catchTag("ReadStop", () => Effect.void),
       )
 
-      return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
+      return {
+        raw,
+        count: flags.count,
+        bytes: flags.bytes,
+        before: flags.before,
+        cut: flags.cut,
+        more: flags.more,
+        offset: opts.offset,
+      }
+    })
+
+    /** Total lines for a negative page; the read itself stays streaming. */
+    const countFileLines = Effect.fn("ReadTool.countFileLines")(function* (filepath: string) {
+      const decoder = new TextDecoder("utf-8")
+      let count = 0
+      yield* fs.stream(filepath).pipe(
+        Stream.map((bytes) => decoder.decode(bytes, { stream: true })),
+        Stream.splitLines,
+        Stream.runForEach(() =>
+          Effect.sync(() => {
+            count += 1
+          }),
+        ),
+      )
+      return count
+    })
+
+    /** Maps a page number onto offset/limit; negative pages count from the end. */
+    const resolvePage = Effect.fn("ReadTool.resolvePage")(function* (
+      params: Schema.Schema.Type<typeof Parameters>,
+      total?: number,
+    ) {
+      if (params.page === undefined) {
+        return { offset: params.offset ?? 1, limit: params.limit ?? DEFAULT_READ_LIMIT }
+      }
+      if (params.offset !== undefined) {
+        return yield* Effect.fail(new Error("Use page or offset, not both."))
+      }
+      if (params.page === 0) {
+        return yield* Effect.fail(new Error("page must not be 0; use 1 for the first page or -1 for the last."))
+      }
+      const pageSize = params.limit ?? PAGE_LINES
+      if (params.page > 0) {
+        return { offset: (params.page - 1) * pageSize + 1, limit: pageSize }
+      }
+      if (total === undefined) {
+        return yield* Effect.fail(new Error("A negative page needs the total line count."))
+      }
+      return { offset: Math.max(1, total + params.page * pageSize + 1), limit: pageSize }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
@@ -262,8 +374,7 @@ export const ReadTool = Tool.define<
 
       if (stat.type === "Directory") {
         const items = yield* list(filepath)
-        const limit = params.limit ?? DEFAULT_READ_LIMIT
-        const offset = params.offset ?? 1
+        const { offset, limit } = yield* resolvePage(params, items.length)
         const start = offset - 1
         const sliced = items.slice(start, start + limit)
         const truncated = start + sliced.length < items.length
@@ -276,7 +387,7 @@ export const ReadTool = Tool.define<
             `<entries>`,
             sliced.join("\n"),
             truncated
-              ? `\n(Showing ${sliced.length} of ${items.length} entries. Use 'offset' parameter to read beyond entry ${offset + sliced.length})`
+              ? `\n(Showing ${sliced.length} of ${items.length} entries. Continue: read filePath="${filepath}" offset=${offset + sliced.length}.)`
               : `\n(${items.length} entries)`,
             `</entries>`,
           ].join("\n"),
@@ -327,7 +438,14 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
-      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset ?? 1 })
+      const total = params.page !== undefined && params.page < 0 ? yield* countFileLines(filepath) : undefined
+      const { offset, limit } = yield* resolvePage(params, total)
+      const file = yield* lines(filepath, {
+        limit,
+        offset,
+        maxLineLength: Math.min(params.maxLineLength ?? MAX_LINE_LENGTH, MAX_LINE_FETCH),
+        charOffset: params.charOffset,
+      })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),
@@ -341,9 +459,19 @@ export const ReadTool = Tool.define<
       const next = last + 1
       const truncated = file.more || file.cut
       if (file.cut) {
-        output += `\n\n(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${file.offset}-${last}. Use offset=${next} to continue.)`
+        const total = Number(stat.size)
+        // Everything before `offset` is neither shown nor omitted *after* this
+        // range; subtracting it keeps the notice honest for late reads.
+        const omitted = Math.max(0, total - file.before - file.bytes)
+        output +=
+          `\n\n[truncated: showing lines ${file.offset}-${last} of a ${formatSize(total)} file ` +
+          `(${MAX_BYTES_LABEL} limit); about ${formatSize(omitted)} omitted after this range. ` +
+          `Continue: read filePath="${filepath}" offset=${next}.]`
       } else if (file.more) {
-        output += `\n\n(Showing lines ${file.offset}-${last} of ${file.count}. Use offset=${next} to continue.)`
+        output +=
+          `\n\n[truncated: showing lines ${file.offset}-${last} of ${file.count}. ` +
+          `${file.count - last} lines omitted after this range. ` +
+          `Continue: read filePath="${filepath}" offset=${next}.]`
       } else {
         output += `\n\n(End of file - total ${file.count} lines)`
       }
