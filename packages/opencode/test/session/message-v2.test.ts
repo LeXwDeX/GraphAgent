@@ -10,7 +10,18 @@ import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { InvalidRequestReason, LLMError, LLMEvent } from "@opencode-ai/llm"
+import {
+  AuthenticationReason,
+  HttpContext,
+  HttpRequestDetails,
+  HttpResponseDetails,
+  InvalidRequestReason,
+  LLMError,
+  LLMEvent,
+  ProviderInternalReason,
+  TransportReason,
+} from "@opencode-ai/llm"
+import { SessionRetry } from "../../src/session/retry"
 
 const sessionID = SessionID.make("session")
 const providerID = ProviderV2.ID.make("test")
@@ -1450,6 +1461,71 @@ describe("session.message-v2.fromError", () => {
       name: "APIError",
       data: { message: "provider busy", isRetryable: true },
     })
+  })
+
+  test("preserves native LLMError status and retry hints for the shared dispatch table", () => {
+    const error = new LLMError({
+      module: "RequestExecutor",
+      method: "execute",
+      reason: new ProviderInternalReason({
+        message: "upstream exploded",
+        status: 503,
+        retryAfterMs: 1500,
+        http: new HttpContext({
+          request: new HttpRequestDetails({ method: "POST", url: "https://example.com", headers: {} }),
+          response: new HttpResponseDetails({ status: 503, headers: { "x-request-id": "req_1" } }),
+          body: "upstream exploded",
+        }),
+      }),
+    })
+
+    const result = MessageV2.fromError(error, { providerID })
+
+    expect(result).toStrictEqual({
+      name: "APIError",
+      data: {
+        message: "RequestExecutor.execute: upstream exploded",
+        statusCode: 503,
+        isRetryable: true,
+        responseHeaders: { "x-request-id": "req_1", "retry-after-ms": "1500" },
+        responseBody: "upstream exploded",
+        metadata: { code: "ProviderInternal" },
+      },
+    })
+    expect(SessionRetry.retryable(result, "test")).toMatchObject({ message: expect.any(String) })
+  })
+
+  test("maps native authentication failures to the terminal auth error", () => {
+    const result = MessageV2.fromError(
+      new LLMError({
+        module: "RequestExecutor",
+        method: "execute",
+        reason: new AuthenticationReason({ message: "invalid api key", kind: "invalid" }),
+      }),
+      { providerID },
+    )
+
+    expect(result).toStrictEqual({
+      name: "ProviderAuthError",
+      data: { providerID, message: "RequestExecutor.execute: invalid api key" },
+    })
+  })
+
+  test("keeps native transport timeouts retryable", () => {
+    const result = MessageV2.fromError(
+      new LLMError({
+        module: "RequestExecutor",
+        method: "execute",
+        reason: new TransportReason({ message: "request timed out", kind: "Timeout" }),
+      }),
+      { providerID },
+    )
+
+    expect(result.name).toBe("APIError")
+    if (result.name !== "APIError") throw new Error("expected APIError")
+    expect(result.data.isRetryable).toBe(true)
+    expect(result.data.metadata).toStrictEqual({ code: "Transport", kind: "Timeout" })
+    expect(SessionRetry.retryable(result, "test")).toMatchObject({ message: expect.any(String) })
   })
 
   test("serializes context_length_exceeded as ContextOverflowError", () => {

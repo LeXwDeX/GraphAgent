@@ -2,7 +2,7 @@ import { ThinkingReplay } from "./thinking-replay"
 import { SessionID, MessageID } from "./schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { isContextOverflowFailure, ProviderErrorEvent, ReasoningCarrier } from "@opencode-ai/llm"
+import { isContextOverflowFailure, LLMError, ProviderErrorEvent, ReasoningCarrier } from "@opencode-ai/llm"
 import {
   APIError,
   AbortedError,
@@ -795,6 +795,43 @@ export function fromError(
       ).toObject()
     case isContextOverflowFailure(e):
       return new ContextOverflowError({ message: errorMessage(e) }).toObject()
+    // Native runtime failures must keep their status and retryability: flattening
+    // them to Unknown would bypass the shared retry dispatch table.
+    case e instanceof LLMError: {
+      const reason = e.reason
+      if (reason._tag === "Authentication") {
+        return new AuthError(
+          {
+            providerID: ctx.providerID,
+            message: e.message,
+          },
+          { cause: e },
+        ).toObject()
+      }
+      const http = "http" in reason ? reason.http : undefined
+      const statusCode =
+        "status" in reason && typeof reason.status === "number" ? reason.status : http?.response?.status
+      const retryAfterMs = "retryAfterMs" in reason ? reason.retryAfterMs : undefined
+      let headers = http?.response?.headers ? { ...http.response.headers } : undefined
+      if (retryAfterMs !== undefined) {
+        headers ??= {}
+        headers["retry-after-ms"] ??= String(retryAfterMs)
+      }
+      return new APIError(
+        {
+          message: e.message,
+          statusCode,
+          isRetryable: e.retryable || e.isTimeout,
+          responseHeaders: headers,
+          responseBody: http?.body,
+          metadata: {
+            code: reason._tag,
+            ...("kind" in reason && typeof reason.kind === "string" ? { kind: reason.kind } : {}),
+          },
+        },
+        { cause: e },
+      ).toObject()
+    }
     case ProviderError.isReasoningStateFailure(e): {
       const diagnostics = ProviderError.reasoningStateDiagnostics(e)
       return new APIError(
