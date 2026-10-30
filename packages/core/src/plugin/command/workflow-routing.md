@@ -33,7 +33,9 @@ configured model constraints, scope limits, and prohibited actions in child prom
 ## How to start
 
 Start from the smallest justified graph. Prefer `workflow(action="draft")` with
-a structured `config`; validate the returned `spec_path`, then start it.
+a structured `config`; validate the returned `spec_path`, then start it. Draft
+carries only `title` and `config`; hand-write the start YAML when it needs
+`admission` or custom bindings.
 After choosing a DAG, use `workflow(action="list")` to find a saved reference;
 never guess a route name. A task-local graph needs no library search.
 

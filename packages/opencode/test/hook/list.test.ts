@@ -105,11 +105,15 @@ describe("summarizeChain — descriptor derivation by type", () => {
         PostToolUse: [
           { hooks: [{ type: "command", command: "bun", args: ["run", "/repo/scripts/pr-watch.ts"] }] },
           { hooks: [{ type: "command", command: "bun", args: ["-e", "console.log(1)"] }] },
+          { hooks: [{ type: "command", command: "bash", args: ["-c", "cat setup.sh"] }] },
+          { hooks: [{ type: "command", command: "node", args: ["--import", "./register.ts", "watch.js"] }] },
         ],
       })
       const summaries = summarizeChain(projectDir, "", projectDir)
       expect(summaries[0].descriptor).toBe("bun pr-watch.ts")
       expect(summaries[1].descriptor).toBe("bun")
+      expect(summaries[2].descriptor).toBe("bash")
+      expect(summaries[3].descriptor).toBe("node watch.js")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
     }

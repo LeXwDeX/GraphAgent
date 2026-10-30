@@ -796,10 +796,9 @@ describe("workflow tool execution", () => {
       const index = yield* workflow.execute({ params: { action: "guide" }}, toolContext())
       const blocks = yield* workflow.execute({ params: { action: "guide", topic: "blocks" }}, toolContext())
 
-      // The budget admits the routing guide's inline start-spec example
-      // (one-hop field reference for hand-written YAML) while still keeping
-      // per-action manuals out of the always-on description.
-      expect(workflow.description.length).toBeLessThan(6_500)
+      // The description is the routing guide alone. Keep a tight entry-form
+      // budget so removed manuals and inline examples cannot creep back in.
+      expect(workflow.description.length).toBeLessThan(2_700)
       expect(index.output).toContain("blocks: compose")
       expect(index.output).not.toContain("# Composable Workflow Blocks")
       expect(blocks.output).toContain("# Composable Workflow Blocks")

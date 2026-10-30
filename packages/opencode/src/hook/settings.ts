@@ -1007,11 +1007,28 @@ const SCRIPT_EXTENSIONS = new Set([
   ".lua",
 ])
 
+// Values of these flags are inline code, never a script path worth naming.
+const INLINE_ARG_FLAGS = new Set(["-c", "-e", "--eval", "-r", "--require", "--import", "--loader"])
+
 function scriptName(entry: HookCommand): string | undefined {
-  return (entry.args ?? [])
-    .filter((arg) => !arg.startsWith("-"))
-    .map((arg) => path.basename(arg))
-    .find((name) => SCRIPT_EXTENSIONS.has(path.extname(name).toLowerCase()))
+  const args = entry.args ?? []
+  const candidates = args.flatMap((arg, index) => {
+    // Inline shell code can end in a script-like token (`cat setup.sh`) without being a path.
+    if (arg.startsWith("-") || /\s/.test(arg)) return []
+    const name = path.basename(arg)
+    if (!SCRIPT_EXTENSIONS.has(path.extname(name).toLowerCase())) return []
+    const previous = args[index - 1]
+    return [
+      {
+        name,
+        optionValue: previous !== undefined && previous.startsWith("-"),
+        inline: previous !== undefined && INLINE_ARG_FLAGS.has(previous),
+      },
+    ]
+  })
+  // An option value (`--import ./register.ts`) precedes the script that actually runs.
+  return (candidates.find((candidate) => !candidate.optionValue) ?? candidates.find((candidate) => !candidate.inline))
+    ?.name
 }
 
 function descriptorFor(entry: HookCommand): string {

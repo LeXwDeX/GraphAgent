@@ -73,7 +73,7 @@ justifies a topology or lifecycle change, the parent must use the authorized
 `workflow` action explicitly. Messages do not change timeout escalation or
 `on_orchestrator_lost` policy.
 
-## Deep Admission QA
+## Decisions and Confirmation
 
 Use available evidence to distinguish technical uncertainties from decisions
 only the user can make. For an unresolved product or architecture decision that
@@ -82,6 +82,8 @@ recommendation and alternatives can support one combined confirmation. Already
 confirmed requirements do not need another approval ceremony. Children report
 scope questions to the parent, never expanding scope alone.
 
+## Deep Admission QA
+
 `standard` remains the compatibility default and may start without admission.
 Consider `deep` when its explicit admission and review contracts help manage
 the task's uncertainty or consequences. There is no complexity-signal quota.
@@ -89,7 +91,9 @@ Explicit `deep` intent still requires admission; it selects the mode, not a
 bypass. These admission fields are specific to deep workflows, not a mandatory
 planning ritual for direct work or standard DAGs.
 
-Run admission before constructing or starting the graph. Questions belong to
+Run admission before constructing or starting the graph. The start document must
+carry `admission`; `workflow(action="draft")` renders only `title` and `config`,
+so write that start YAML by hand. Questions belong to
 the existing parent-session question interaction because the answers define the
 graph. You MUST NOT create an admission child node, QA workflow, separate
 persona, or privileged command. `GRILL-ME` selects `GRILL`; equivalent explicit

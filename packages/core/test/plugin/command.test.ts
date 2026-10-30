@@ -169,8 +169,9 @@ describe("CommandPlugin.Plugin", () => {
   it.effect("keeps always-on guidance small and loads detailed topics progressively", () =>
     Effect.sync(() => {
       // Entry form only: routing keeps when to promote and how to start. YAML,
-      // references and risk tiers live in the on-demand guides.
-      expect(Buffer.byteLength(CommandPlugin.WorkflowContent)).toBeLessThan(3_500)
+      // references and risk tiers live in the on-demand guides. The tight budget
+      // keeps removed detail from creeping back into the always-on text.
+      expect(Buffer.byteLength(CommandPlugin.WorkflowContent)).toBeLessThan(2_700)
       expect(CommandPlugin.WorkflowContent).toContain("including project source and tests")
       expect(CommandPlugin.WorkflowFactsContent).toContain("A small\ntask-local graph")
       expect(CommandPlugin.WorkflowContent).toContain("# Orchestration Router")
