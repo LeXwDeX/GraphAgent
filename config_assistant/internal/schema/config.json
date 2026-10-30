@@ -1293,11 +1293,11 @@
             },
             "dynamic": {
               "type": "boolean",
-              "description": "Fold strictly duplicate older tool outputs only in prepared model requests (default: true). Stored history is unchanged; this is independent from automatic or manual full compaction."
+              "description": "@deprecated Legacy context folding, off by default. When explicitly enabled, folds strictly duplicate older tool outputs only in prepared model requests. Stored history is unchanged; this is independent from automatic or manual full compaction."
             },
             "prune": {
               "type": "boolean",
-              "description": "@deprecated Compatibility alias for 'dynamic'. Used only when 'dynamic' is omitted; it no longer marks or clears stored tool output."
+              "description": "@deprecated Ignored. Context folding is off by default; set 'dynamic' to true to enable the legacy behavior."
             },
             "tail_turns": {
               "minimum": 0,

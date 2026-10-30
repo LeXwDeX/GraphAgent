@@ -48,7 +48,7 @@ Before claiming a feature is unavailable, check this catalog and its configurati
 - This feature manages host context. It does not expose private reasoning.
 
 ### Context management
-- Context folding, duplicate tool-output pruning, bounded tool output, and compaction reduce request size.
+- Bounded tool output and compaction reduce request size.
 - They preserve canonical history and protected content.
 - Configuration, provider support, and request purpose determine which changes apply.
 - Do not assume every model uses them.

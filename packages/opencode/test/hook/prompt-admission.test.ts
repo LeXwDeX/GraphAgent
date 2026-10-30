@@ -18,6 +18,7 @@ import { TestLLMServer } from "../lib/llm-server"
 
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
+import { SessionRetry } from "@/session/retry"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Plugin } from "@/plugin"
@@ -930,7 +931,12 @@ it.live("StopFailure asyncRewake records the failure but does not start a new mo
           },
         ],
       })
-      yield* llm.error(400, { error: { message: "provider failure" } })
+      // Every 4xx/5xx is resent by the shared retry layer, so the turn ends in
+      // error only after the attempt cap. retry-after-ms: 0 keeps the backoff
+      // out of the test's wall clock.
+      for (let attempt = 0; attempt <= SessionRetry.RETRY_MAX_RETRIES; attempt++) {
+        yield* llm.error(503, { error: { message: "provider failure" } }, { "retry-after-ms": "0" })
+      }
       yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "start" }] })
       yield* pollWithTimeout(
         Effect.promise(() =>
@@ -946,6 +952,10 @@ it.live("StopFailure asyncRewake records the failure but does not start a new mo
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 200)))
       const messages = JSON.stringify(yield* sessions.messages({ sessionID: session.id }))
       expect(messages).not.toContain("ignored failure")
+      // Every queued failure was consumed by the retry cap; the turn did not
+      // stop early and no reply was left unconsumed.
+      expect(yield* llm.calls).toBe(SessionRetry.RETRY_MAX_RETRIES + 1)
+      expect(yield* llm.pending).toBe(0)
       yield* hooks.clear(session.id)
     }),
     { git: true, config: providerCfg },
