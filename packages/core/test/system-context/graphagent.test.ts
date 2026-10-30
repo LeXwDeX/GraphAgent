@@ -15,6 +15,10 @@ describe("GraphAgentPrompt", () => {
     expect(GraphAgentPrompt.render(["apply_patch"])).toContain("Use apply_patch for manual file edits.")
     expect(GraphAgentPrompt.render(["edit", "write"])).toContain("Use edit and write for manual file edits.")
     expect(GraphAgentPrompt.render(["write"])).toContain("Use write for manual file edits.")
+    // V2 exposes both families to every model; edit/write are self-describing.
+    expect(GraphAgentPrompt.render(["apply_patch", "edit", "write"])).toContain(
+      "Use edit and write for manual file edits.",
+    )
     expect(GraphAgentPrompt.render([])).toContain("No file-editing tool is available in this request")
   })
 

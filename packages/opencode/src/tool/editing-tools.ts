@@ -2,7 +2,3 @@
 export function usesApplyPatch(modelID: string) {
   return modelID.includes("gpt-") && !modelID.includes("oss") && !modelID.includes("gpt-4")
 }
-
-export function editingTools(modelID: string) {
-  return usesApplyPatch(modelID) ? ["apply_patch"] : ["edit", "write"]
-}
