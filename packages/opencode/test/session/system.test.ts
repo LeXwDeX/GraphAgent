@@ -17,8 +17,7 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { testEffect } from "../lib/effect"
-import GRAPHAGENT from "@/session/prompt/graphagent.txt"
-import { editingInstruction } from "@/tool/editing-tools"
+import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 
 for (const id of [
   "Claude-Sonnet-4",
@@ -31,9 +30,7 @@ for (const id of [
   "deepseek-chat",
 ])
   test(`every model receives the unified prompt for ${id}`, () => {
-    expect(SystemPrompt.provider()).toEqual([
-      GRAPHAGENT.replace("${editingInstruction}", () => editingInstruction(["edit", "write"])),
-    ])
+    expect(SystemPrompt.provider()).toEqual([GraphAgentPrompt.render(["edit", "write"])])
   })
 
 test("the editing instruction follows the exposed tools", () => {

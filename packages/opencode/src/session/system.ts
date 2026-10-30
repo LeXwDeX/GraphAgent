@@ -3,7 +3,6 @@ import { Context, Effect, Layer, Option } from "effect"
 
 import { InstanceState } from "@/effect/instance-state"
 
-import PROMPT_GRAPHAGENT from "./prompt/graphagent.txt"
 import PROMPT_GOAL from "./prompt/goal.txt"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
@@ -21,14 +20,14 @@ import { GoalPrompts } from "@/goal/prompts"
 import { SettingsHook } from "@/hook/settings"
 import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
-import { editingInstruction } from "@/tool/editing-tools"
+import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 
 /**
  * Every model receives the same prompt. The only substitution is the editing
  * instruction, which names the editing tools actually exposed for this request.
  */
 export function provider(tools: readonly string[] = ["edit", "write"]) {
-  return [PROMPT_GRAPHAGENT.replace("${editingInstruction}", () => editingInstruction(tools))]
+  return [GraphAgentPrompt.render(tools)]
 }
 
 export interface Interface {

@@ -50,6 +50,7 @@ import {
 } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SystemContext } from "@opencode-ai/core/system-context"
+import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
@@ -62,6 +63,8 @@ import { testEffect } from "./lib/effect"
 
 const questions = QuestionV2.layer.pipe(Layer.provide(EventV2.defaultLayer))
 const requests: LLMRequest[] = []
+// The harness exposes only echo/defect, so the unified prompt names no editing tool.
+const graphagent = GraphAgentPrompt.render([])
 let maxToolCalls: number | undefined
 let reasoningConfig: ConfigReasoningDistillation.Info | undefined
 let modelReasoningConfig: Config.Info["providers"]
@@ -801,8 +804,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Initial context"],
       ])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[1]?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Changed context" }])
@@ -839,6 +842,22 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+    }),
+  )
+
+  it.effect("gives a default agent without a system the unified GraphAgent prompt", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "First" }), resume: false })
+
+      requests.length = 0
+      response = fragmentFixture("text", "text-default", ["Done"]).completeEvents
+      yield* session.resume(sessionID)
+
+      const system = requests.at(-1)?.system.map((part) => part.text) ?? []
+      expect(system).toEqual([graphagent, "Initial context"])
+      expect(system[0]).toContain("You are graphagent")
     }),
   )
 
@@ -920,8 +939,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context\n\nBuild skills"],
-        ["Initial context\n\nBuild skills"],
+        [graphagent, "Initial context\n\nBuild skills"],
+        [graphagent, "Initial context\n\nBuild skills"],
       ])
       expect(systemTexts(requests[1])).toContainEqual(expect.stringContaining("Reviewer skills"))
     }),
@@ -954,7 +973,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context\n\nBuild skills"],
+        [graphagent, "Initial context\n\nBuild skills"],
       ])
     }),
   )
@@ -983,7 +1002,7 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
       expect(requests.map((request) => request.model)).toEqual([model])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([["Initial context"]])
+      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([[graphagent, "Initial context"]])
     }),
   )
 
@@ -1032,9 +1051,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Initial context"],
       ])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[2]?.messages.filter((message) => message.role === "system")).toHaveLength(2)
@@ -1078,9 +1097,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Initial context"],
       ])
     }),
   )
@@ -1115,8 +1134,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Replacement context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Replacement context"],
       ])
       yield* replaySessionProjection(sessionID)
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
@@ -1345,7 +1364,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([graphagent, "Initial context"])
       expect(systemTexts(requests.at(-1)!)).toContain("Changed context")
     }),
   )
@@ -1544,8 +1563,8 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests.map((request) => request.model)).toEqual([model, replacementModel])
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
+        [graphagent, "Initial context"],
+        [graphagent, "Initial context"],
       ])
       expect(systemTexts(requests[1])).toContain("Replacement context")
     }),

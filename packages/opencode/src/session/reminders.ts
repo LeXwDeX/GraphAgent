@@ -10,13 +10,13 @@ import { Session } from "./session"
 import PROMPT_PLAN from "./prompt/plan.txt"
 import BUILD_SWITCH from "./prompt/build-switch.txt"
 import PLAN_MODE from "./prompt/plan-mode.txt"
-import { editingInstruction } from "@/tool/editing-tools"
+import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 
 export function planModePrompt(input: { plan: string; exists: boolean; tools: readonly string[] }) {
   return PLAN_MODE.replace(
     "${planInfo}",
     () =>
-      `${input.exists ? "A plan file already exists" : "No plan file exists yet"} at ${input.plan}. ${editingInstruction(input.tools)}`,
+      `${input.exists ? "A plan file already exists" : "No plan file exists yet"} at ${input.plan}. ${GraphAgentPrompt.editingInstruction(input.tools)}`,
   ).replace("${planExit}", () =>
     input.tools.includes("plan_exit")
       ? "Call plan_exit when the plan is ready for user approval."
