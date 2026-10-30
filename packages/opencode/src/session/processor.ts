@@ -1262,7 +1262,7 @@ export const layer = Layer.effect(
         )
           yield* discardFailedReasoning()
         yield* flushV2Fragments()
-        if (SessionV1.ContextOverflowError.isInstance(error)) {
+        if (SessionRetry.isCompactionFailure(error)) {
           if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
             ctx.assistantMessage.error = error
             ctx.assistantMessage.finish = "error"

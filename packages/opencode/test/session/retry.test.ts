@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Clock, Effect, Exit, Fiber, Schedule, Schema } from "effect"
+import { Clock, Effect, Exit, Fiber, Logger, Schedule, Schema } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -19,11 +19,23 @@ const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
 const it = testEffect(LayerNode.buildLayer(LayerNode.group([SessionStatus.node, CrossSpawnSpawner.node])))
 
-function apiError(headers?: Record<string, string>): SessionV1.APIError {
+function apiError(headers?: Record<string, string>, statusCode?: number): SessionV1.APIError {
   return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
     new SessionV1.APIError({
       message: "boom",
       isRetryable: true,
+      statusCode,
+      responseHeaders: headers,
+    }).toObject(),
+  )
+}
+
+function statusError(statusCode: number, headers?: Record<string, string>): SessionV1.APIError {
+  return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+    new SessionV1.APIError({
+      message: `status ${statusCode}`,
+      isRetryable: false,
+      statusCode,
       responseHeaders: headers,
     }).toObject(),
   )
@@ -31,6 +43,11 @@ function apiError(headers?: Record<string, string>): SessionV1.APIError {
 
 function wrap(message: unknown): ReturnType<NamedError["toObject"]> {
   return { name: "", data: { message } }
+}
+
+function retryStopped(logs: unknown[]) {
+  const entry = logs.find((message) => Array.isArray(message) && message[0] === "retry stopped")
+  return Array.isArray(entry) ? (entry[1] as Record<string, unknown>) : undefined
 }
 
 describe("session.retry.delay", () => {
@@ -98,7 +115,7 @@ describe("session.retry.delay", () => {
   it.instance("policy updates retry status and increments attempts", () =>
     Effect.gen(function* () {
       const sessionID = SessionID.make("session-retry-test")
-      const error = apiError({ "retry-after-ms": "0" })
+      const error = apiError({ "retry-after-ms": "0" }, 429)
       const status = yield* SessionStatus.Service
 
       const step = yield* Schedule.toStepWithMetadata(
@@ -125,14 +142,19 @@ describe("session.retry.delay", () => {
     }),
   )
 
-  it.instance("policy stops after five retries", () =>
+  it.instance("policy stops after five retries and logs the dispatch", () =>
     Effect.gen(function* () {
       const attempts: number[] = []
-      const error = apiError({ "retry-after-ms": "0" })
+      const logs: unknown[] = []
+      const collector = Logger.make((opts) => {
+        logs.push(opts.message)
+      })
+      const error = statusError(503, { "retry-after-ms": "0" })
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
           provider: "test",
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          gates: () => ({ aborted: false, pendingToolExecutions: 0 }),
           set: (info) =>
             Effect.sync(() => {
               attempts.push(info.attempt)
@@ -142,22 +164,69 @@ describe("session.retry.delay", () => {
 
       yield* Effect.forEach(Array.from({ length: SessionRetry.RETRY_MAX_RETRIES + 1 }), () =>
         Effect.ignore(step(error)),
-      )
+      ).pipe(Effect.withLogger(collector))
 
       expect(attempts).toStrictEqual([1, 2, 3, 4, 5])
+      expect(retryStopped(logs)).toMatchObject({
+        reason: "exhausted",
+        branch: "rate_limit",
+        status: 503,
+        attempt: SessionRetry.RETRY_MAX_RETRIES + 1,
+        maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+        provider: "test",
+        aborted: false,
+        pendingToolExecutions: 0,
+      })
     }),
   )
 
-  test("policy backs a 4xx off exactly like a 5xx", () =>
+  it.instance("policy logs a gated stop with its dispatch branch", () =>
     Effect.gen(function* () {
-      const waitsFor = (statusCode: number) =>
+      const logs: unknown[] = []
+      const collector = Logger.make((opts) => {
+        logs.push(opts.message)
+      })
+      const error = statusError(503, { "retry-after-ms": "0" })
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          shouldRetry: () => false,
+          gates: () => ({ aborted: true, pendingToolExecutions: 1 }),
+          set: () => Effect.void,
+        }),
+      )
+
+      yield* Effect.ignore(step(error)).pipe(Effect.withLogger(collector))
+
+      expect(retryStopped(logs)).toMatchObject({
+        reason: "gated",
+        branch: "rate_limit",
+        status: 503,
+        attempt: 1,
+        maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+        provider: "test",
+        aborted: true,
+        pendingToolExecutions: 1,
+      })
+    }),
+  )
+
+  test("policy backs a 4xx off exactly like a 5xx and honors rate-limit headers only", () =>
+    Effect.gen(function* () {
+      const waitsFor = (statusCode: number, headers?: Record<string, string>) =>
         Effect.gen(function* () {
           const waits: number[] = []
           let calls = 0
           const fiber = yield* Effect.suspend(() => {
             calls++
             return Effect.fail(
-              new SessionV1.APIError({ message: `status ${statusCode}`, isRetryable: false, statusCode }).toObject(),
+              new SessionV1.APIError({
+                message: `status ${statusCode}`,
+                isRetryable: false,
+                statusCode,
+                responseHeaders: headers,
+              }).toObject(),
             )
           }).pipe(
             Effect.retry(
@@ -188,6 +257,92 @@ describe("session.retry.delay", () => {
             Math.min(Math.ceil(base * (1 + SessionRetry.RETRY_JITTER_FACTOR)), SessionRetry.RETRY_MAX_DELAY_NO_HEADERS),
           )
         })
+      }
+
+      for (const statusCode of [429, 503]) {
+        const { waits } = yield* waitsFor(statusCode, { "retry-after-ms": "1500" })
+        expect(waits[0]).toBe(1500)
+      }
+      for (const statusCode of [400, 502]) {
+        const { waits } = yield* waitsFor(statusCode, { "retry-after-ms": "1500" })
+        expect(waits[0]).toBeGreaterThanOrEqual(SessionRetry.RETRY_INITIAL_DELAY)
+        expect(waits[0]).toBeLessThanOrEqual(
+          Math.ceil(SessionRetry.RETRY_INITIAL_DELAY * (1 + SessionRetry.RETRY_JITTER_FACTOR)),
+        )
+      }
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
+  )
+
+  test("policy retries a 401 once through the auth branch and then stops", () =>
+    Effect.gen(function* () {
+      let calls = 0
+      const logs: unknown[] = []
+      const collector = Logger.make((opts) => {
+        logs.push(opts.message)
+      })
+      const error = statusError(401)
+      const fiber = yield* Effect.suspend(() => {
+        calls++
+        return Effect.fail(error)
+      }).pipe(
+        Effect.retry(
+          SessionRetry.policy({
+            provider: "test",
+            parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+            gates: () => ({ aborted: false }),
+            set: () => Effect.void,
+          }),
+        ),
+        Effect.exit,
+        Effect.withLogger(collector),
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust("10 seconds")
+      yield* Fiber.join(fiber)
+
+      expect(calls).toBe(2)
+      expect(retryStopped(logs)).toMatchObject({
+        reason: "exhausted",
+        branch: "auth",
+        status: 401,
+        attempt: 2,
+        maxRetries: 1,
+        aborted: false,
+      })
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
+  )
+
+  test("policy hands a 413 and a context overflow to compaction without resending", () =>
+    Effect.gen(function* () {
+      for (const error of [
+        statusError(413),
+        new SessionV1.ContextOverflowError({ message: "Input exceeds context window of this model" }).toObject(),
+      ]) {
+        let calls = 0
+        const waits: number[] = []
+        const fiber = yield* Effect.suspend(() => {
+          calls++
+          return Effect.fail(error)
+        }).pipe(
+          Effect.retry(
+            SessionRetry.policy({
+              provider: "test",
+              parse: (input) => input as ReturnType<NamedError["toObject"]>,
+              set: (info) =>
+                Effect.sync(() => {
+                  waits.push(info.next)
+                }),
+            }),
+          ),
+          Effect.exit,
+          Effect.forkChild,
+        )
+        yield* TestClock.adjust("1 minute")
+        yield* Fiber.join(fiber)
+
+        expect(calls).toBe(1)
+        expect(waits).toStrictEqual([])
+        expect(SessionRetry.classify(error, "test")).toMatchObject({ branch: "compaction", maxRetries: 0 })
       }
     }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
   )
@@ -229,6 +384,9 @@ describe("session.retry.delay", () => {
       new SessionV1.AuthError({ providerID: "test", message: "bad key" }).toObject(),
       new SessionV1.ContentFilterError({ message: "filtered" }).toObject(),
       new SessionV1.APIError({ message: ProviderError.REASONING_STATE_MESSAGE, isRetryable: false }).toObject(),
+      statusError(401),
+      statusError(403),
+      statusError(413),
     ]
     expect(terminal.map(SessionRetry.fallback)).toStrictEqual(terminal.map(() => undefined))
     expect(SessionRetry.fallback(wrap("socket went sideways"))).toEqual({ message: "socket went sideways" })
@@ -447,12 +605,26 @@ describe("session.retry.retryable", () => {
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Service unavailable" })
   })
 
-  test("retries every 4xx and 5xx status through the shared backoff", () => {
+  test("dispatches every 4xx and 5xx status through one table", () => {
     for (const statusCode of [400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503, 504, 599]) {
-      const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
-        new SessionV1.APIError({ message: `status ${statusCode}`, isRetryable: false, statusCode }).toObject(),
-      )
-      expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: `status ${statusCode}` })
+      const error = statusError(statusCode)
+      const decision = SessionRetry.classify(error, retryProvider)
+
+      expect(decision.status).toBe(statusCode)
+      expect(decision.message).toBe(`status ${statusCode}`)
+      if (statusCode === 401 || statusCode === 403) {
+        expect(decision).toMatchObject({ branch: "auth", maxRetries: 1 })
+        expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+      } else if (statusCode === 413) {
+        expect(decision).toMatchObject({ branch: "compaction", maxRetries: 0 })
+        expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+      } else {
+        expect(decision).toMatchObject({
+          branch: statusCode === 429 || statusCode === 503 ? "rate_limit" : "http",
+          maxRetries: SessionRetry.RETRY_MAX_RETRIES,
+        })
+        expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: `status ${statusCode}` })
+      }
     }
   })
 
