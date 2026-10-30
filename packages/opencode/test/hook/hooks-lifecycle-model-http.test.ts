@@ -3,6 +3,7 @@ import { expect } from "bun:test"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
+import { SessionRetry } from "@/session/retry"
 import { cliIt, type RunOpts } from "../lib/cli-process"
 
 cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons", ({ home, opencode }) =>
@@ -227,15 +228,20 @@ cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, 
         return response.json()
       })
     const session = yield* request("/session", { title: "Displayed error" })
-    yield* llm.error(400, { error: { message: "VISIBLE_INVALID_REQUEST" } })
+    // Every 4xx/5xx is resent by the shared retry layer, so the turn ends in
+    // error only after the attempt cap. retry-after-ms: 0 keeps the backoff
+    // out of the test's wall clock.
+    for (let attempt = 0; attempt <= SessionRetry.RETRY_MAX_RETRIES; attempt++) {
+      yield* llm.error(503, { error: { message: "VISIBLE_PROVIDER_FAILURE" } }, { "retry-after-ms": "0" })
+    }
     const result = yield* request(`/session/${session.id}/message`, { parts: [{ type: "text", text: "fail once" }] })
     const envelope = JSON.parse(yield* Effect.promise(() => fs.readFile(audit, "utf8")))
-    expect(result.info.error.data.message).toContain("VISIBLE_INVALID_REQUEST")
+    expect(result.info.error.data.message).toContain("VISIBLE_PROVIDER_FAILURE")
     expect(envelope).toMatchObject({
-      error: "invalid_request",
+      error: "server_error",
       error_details: result.info.error.data.message,
       last_assistant_message: result.info.error.data.message,
     })
-    expect(yield* llm.calls).toBe(1)
+    expect(yield* llm.calls).toBe(SessionRetry.RETRY_MAX_RETRIES + 1)
   }),
 )

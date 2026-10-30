@@ -19,6 +19,7 @@ import { TestLLMServer } from "../lib/llm-server"
 
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
+import { SessionRetry } from "@/session/retry"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
@@ -277,7 +278,12 @@ it.live("failed foreground subagent still fires StopFailure", () =>
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
       yield* llm.tool("task", { description: "sub task", prompt: "say something", subagent_type: "general" })
-      yield* llm.error(400, { error: { message: "subagent request rejected" } })
+      // Every 4xx/5xx is resent by the shared retry layer, so the child ends in
+      // error only after the attempt cap. retry-after-ms: 0 keeps the backoff
+      // out of the test's wall clock.
+      for (let attempt = 0; attempt <= SessionRetry.RETRY_MAX_RETRIES; attempt++) {
+        yield* llm.error(503, { error: { message: "subagent request rejected" } }, { "retry-after-ms": "0" })
+      }
       yield* llm.text("parent done")
       yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "delegate" }] })
       const events = (yield* Effect.promise(() => fs.readFile(capture, "utf8").catch(() => "")))
