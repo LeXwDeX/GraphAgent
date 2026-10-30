@@ -98,6 +98,37 @@ describe("summarizeChain — descriptor derivation by type", () => {
     }
   })
 
+  test("command descriptor adds the script file name from args", async () => {
+    const projectDir = await mktmp("desc-args")
+    try {
+      await writeHooksJson(projectDir, {
+        PostToolUse: [
+          { hooks: [{ type: "command", command: "bun", args: ["run", "/repo/scripts/pr-watch.ts"] }] },
+          { hooks: [{ type: "command", command: "bun", args: ["-e", "console.log(1)"] }] },
+        ],
+      })
+      const summaries = summarizeChain(projectDir, "", projectDir)
+      expect(summaries[0].descriptor).toBe("bun pr-watch.ts")
+      expect(summaries[1].descriptor).toBe("bun")
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  test("command descriptor bounds the script name to the 60-char cap", async () => {
+    const projectDir = await mktmp("desc-args-long")
+    try {
+      await writeHooksJson(projectDir, {
+        PostToolUse: [{ hooks: [{ type: "command", command: "bun", args: [`${"x".repeat(80)}.ts`] }] }],
+      })
+      const [summary] = summarizeChain(projectDir, "", projectDir)
+      expect(summary.descriptor.length).toBe(60)
+      expect(summary.descriptor.startsWith("bun ")).toBe(true)
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  })
+
   test("command descriptor truncates to 60 chars", async () => {
     const longCommand = "x".repeat(100)
     const projectDir = await mktmp("desc-long")
@@ -215,6 +246,28 @@ describe("summarizeChain — matcher handling", () => {
       })
       const [summary] = summarizeChain(projectDir, "", projectDir)
       expect(summary.matcher).toBeUndefined()
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  })
+
+  test("asyncRewake command hooks are flagged; others carry no flag", async () => {
+    const projectDir = await mktmp("rewake")
+    try {
+      await writeHooksJson(projectDir, {
+        PostToolUse: [
+          {
+            matcher: "Bash",
+            hooks: [
+              { type: "command", command: "watch.sh", asyncRewake: true, timeout: 600 },
+              { type: "command", command: "plain.sh", async: true },
+            ],
+          },
+        ],
+      })
+      const [watcher, plain] = summarizeChain(projectDir, "", projectDir)
+      expect(watcher.asyncRewake).toBe(true)
+      expect(plain.asyncRewake).toBeUndefined()
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
     }

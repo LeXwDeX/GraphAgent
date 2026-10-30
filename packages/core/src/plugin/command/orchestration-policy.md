@@ -75,6 +75,13 @@ justifies a topology or lifecycle change, the parent must use the authorized
 
 ## Deep Admission QA
 
+Use available evidence to distinguish technical uncertainties from decisions
+only the user can make. For an unresolved product or architecture decision that
+changes authorized scope or acceptance, a concise **Workflow Brief** with a
+recommendation and alternatives can support one combined confirmation. Already
+confirmed requirements do not need another approval ceremony. Children report
+scope questions to the parent, never expanding scope alone.
+
 `standard` remains the compatibility default and may start without admission.
 Consider `deep` when its explicit admission and review contracts help manage
 the task's uncertainty or consequences. There is no complexity-signal quota.
@@ -314,6 +321,16 @@ Normal leaf workers use `report_to_parent: false`. Gates, arbiters, and final au
 The child reports evidence and required actions only. The parent interprets
 the verdict and chooses any workflow control action under the Verdict Disposal
 Contract.
+
+A `report_to_parent` node with dependents is a reporting checkpoint: gate its
+dependents on the reported output via `condition`, keep it a leaf, or drop the
+flag. Checkpoint wakes let the parent act without polling merely to wait.
+
+When later work depends on the items a node produces — for example one
+verifier per finding — make that node an actionable checkpoint, then
+deduplicate and rank its `findings` and add the item nodes with a bounded
+`extend`. `fan_out` only expands writers from a plan's `packages`; it is not a
+general per-item expansion. Expand only the items that need separate work.
 
 Do not poll `status` merely to wait. Wakes report checkpoints and terminal
 outcomes. Use `status` when fresh durable state is needed for diagnosis, a

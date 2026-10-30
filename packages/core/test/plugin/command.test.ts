@@ -27,6 +27,18 @@ describe("CommandPlugin.Plugin", () => {
       expect(content).toContain("coordination cost")
       expect(content).toContain("Explicit user instructions take precedence")
       expect(content).toContain("No routing checklist is needed for routine direct work")
+      expect(content).toContain("Promote to a DAG on your own judgment; the user need not ask.")
+    }),
+  )
+
+  it.effect("teaches declared structure up front and checkpoint-driven per-item expansion", () =>
+    Effect.sync(() => {
+      const blocks = CommandPlugin.WorkflowBlocksContent.replace(/\s+/g, " ")
+      expect(blocks).toContain("Every live `extend` or `control(replan)` costs a parent turn")
+      expect(blocks).toContain("mutate at runtime only for structure that depends on results")
+      const policy = CommandPlugin.OrchestrationPolicyContent.replace(/\s+/g, " ")
+      expect(policy).toContain("add the item nodes with a bounded `extend`")
+      expect(policy).toContain("`fan_out` only expands writers from a plan's `packages`")
     }),
   )
 
@@ -143,7 +155,7 @@ describe("CommandPlugin.Plugin", () => {
       expect(CommandPlugin.WorkflowContent).toContain("## Execution mode")
       expect(CommandPlugin.WorkflowContent).toContain("Direct execution:")
       expect(CommandPlugin.WorkflowContent).toContain("One `task` child")
-      expect(CommandPlugin.WorkflowContent).toContain("Related work can usually")
+      expect(CommandPlugin.WorkflowFactsContent).toContain("Related work can usually")
       expect(CommandPlugin.WorkflowContent).toContain("including project source and tests")
       expect(CommandPlugin.WorkflowContent).toContain("not a task-category rule")
       expect(CommandPlugin.WorkflowFactsContent).toContain("resident\nOrchestration Router owns execution-mode")
@@ -156,22 +168,25 @@ describe("CommandPlugin.Plugin", () => {
 
   it.effect("keeps always-on guidance small and loads detailed topics progressively", () =>
     Effect.sync(() => {
-      // Budget admits the inline start-spec example (one-hop field reference
-      // for hand-written YAML) while keeping per-action manuals progressive.
-      expect(Buffer.byteLength(CommandPlugin.WorkflowContent)).toBeLessThan(6_500)
+      // Entry form only: routing keeps when to promote and how to start. YAML,
+      // references and risk tiers live in the on-demand guides.
+      expect(Buffer.byteLength(CommandPlugin.WorkflowContent)).toBeLessThan(3_500)
       expect(CommandPlugin.WorkflowContent).toContain("including project source and tests")
-      expect(CommandPlugin.WorkflowContent).toContain("A small\ntask-local graph")
+      expect(CommandPlugin.WorkflowFactsContent).toContain("A small\ntask-local graph")
       expect(CommandPlugin.WorkflowContent).toContain("# Orchestration Router")
-      expect(CommandPlugin.WorkflowContent).toContain("Workflow Brief")
+      expect(CommandPlugin.OrchestrationPolicyContent).toContain("Workflow Brief")
       expect(CommandPlugin.WorkflowContent).toContain("smallest justified graph")
       expect(CommandPlugin.WorkflowContent).not.toMatch(/load (?:the )?[`"']?orchestration-router/i)
       expect(CommandPlugin.WorkflowContent).not.toContain("Do not discover, load, or apply an external Skill")
       expect(CommandPlugin.WorkflowContent).toContain('guide(topic="blocks")')
       expect(CommandPlugin.WorkflowContent).not.toContain("# Orchestration Domains")
+      expect(CommandPlugin.WorkflowContent).not.toContain("```yaml")
+      expect(CommandPlugin.WorkflowContent).not.toContain("Verdict Disposal Contract")
+      expect(CommandPlugin.WorkflowContent).not.toContain("`lite` and `full`")
       expect(CommandPlugin.WorkflowBlocksContent).toContain("# Composable Workflow Blocks")
-      expect(CommandPlugin.WorkflowContent).toContain("combined confirmation")
+      expect(CommandPlugin.OrchestrationPolicyContent).toContain("combined confirmation")
       expect(CommandPlugin.WorkflowBlocksContent).not.toContain("combined confirmation")
-      expect(CommandPlugin.WorkflowContent).toContain("product or architecture decision")
+      expect(CommandPlugin.OrchestrationPolicyContent).toContain("product or architecture decision")
       expect(CommandPlugin.WorkflowBlocksContent).not.toContain("product or architecture decision")
       expect(CommandPlugin.WorkflowFactsContent.length).toBeGreaterThan(CommandPlugin.WorkflowContent.length)
     }),
@@ -180,9 +195,9 @@ describe("CommandPlugin.Plugin", () => {
   it.effect("offers references after DAG selection without mandatory risk tiers", () =>
     Effect.sync(() => {
       expect(CommandPlugin.WorkflowContent).toContain("After choosing a DAG")
-      expect(CommandPlugin.WorkflowContent).toContain('call `workflow(action="list")`')
-      expect(CommandPlugin.WorkflowContent).toMatch(/never\s+guess a route name/)
-      expect(CommandPlugin.WorkflowContent).toContain("without searching the library")
+      expect(CommandPlugin.WorkflowContent).toContain('`workflow(action="list")`')
+      expect(CommandPlugin.WorkflowContent).toContain("never guess a route name")
+      expect(CommandPlugin.WorkflowContent).toContain("needs no library search")
       ;[
         "product planning",
         "technical design",
@@ -191,14 +206,16 @@ describe("CommandPlugin.Plugin", () => {
         "code review",
         "security audit",
         "performance audit",
-      ].forEach((domain) => expect(CommandPlugin.WorkflowContent).toContain(domain))
-      expect(CommandPlugin.WorkflowContent).toContain("`lite` and `full` are reference shapes, not mandatory tiers")
-      expect(CommandPlugin.WorkflowContent).toContain("upstream executable dependencies")
-      expect(CommandPlugin.WorkflowContent).toMatch(/Retarget a\s+matching custom workflow to the task/)
-      expect(CommandPlugin.WorkflowContent).toContain("rather than concatenating whole workflows")
-      expect(CommandPlugin.WorkflowContent).toMatch(/never\s+requires a full graph or a fixed reviewer count/)
-      expect(CommandPlugin.WorkflowContent).toContain("Verdict Disposal Contract")
-      expect(CommandPlugin.WorkflowContent).toContain("Do not pause or replan a completed workflow")
+      ].forEach((domain) => expect(CommandPlugin.OrchestrationDomainsContent).toContain(domain))
+      expect(CommandPlugin.WorkflowFactsContent).toContain(
+        "`lite` and `full` are reference shapes, not mandatory tiers",
+      )
+      expect(CommandPlugin.WorkflowFactsContent).toContain("upstream executable dependencies")
+      expect(CommandPlugin.WorkflowFactsContent).toMatch(/Retarget a\s+matching custom workflow to the task/)
+      expect(CommandPlugin.WorkflowFactsContent).toContain("rather than concatenating whole workflows")
+      expect(CommandPlugin.WorkflowFactsContent).toMatch(/never\s+requires a full graph or a fixed reviewer count/)
+      expect(CommandPlugin.WorkflowFactsContent).toContain("Verdict Disposal Contract")
+      expect(CommandPlugin.OrchestrationPolicyContent).toMatch(/cannot be paused or replanned/)
     }),
   )
 

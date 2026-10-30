@@ -8,6 +8,11 @@ Use blocks when a DAG serves the task. The examples are optional compositions,
 not a checklist or a minimum number of stages. Selecting a block does opt into
 its actual compiler and output contracts described below.
 
+Every live `extend` or `control(replan)` costs a parent turn, so declare
+structure that is already known — parallel branches, dependencies, `condition`
+branches, `fan_out` writers — in the start graph, and mutate at runtime only
+for structure that depends on results.
+
 ## Authoring contract
 
 Never infer or invent a YAML field. Copy the envelope for the intended action
@@ -18,9 +23,10 @@ it is explicitly listed below.
 ### Start file
 
 The author-written top-level fields are optional `title`, optional `mode`,
-optional `admission`, and required `config`. For the block route, `config`
-contains required `name`, `objective`, and `blocks`; its only optional fields
-are `node_defaults`, `max_concurrency`, `max_node_replan_attempts`, and
+optional `admission`, and required `config`. `objective` lives INSIDE `config`;
+the top level carries no graph fields. For the block route, `config` contains
+required `name`, `objective`, and `blocks`; its only optional fields are
+`node_defaults`, `max_concurrency`, `max_node_replan_attempts`, and
 `max_total_nodes`.
 
 ```yaml

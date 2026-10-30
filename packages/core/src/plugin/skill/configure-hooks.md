@@ -127,6 +127,17 @@ For synchronous hooks, supported `systemMessage` output is a user-facing warning
 
 Callbacks belong to the originating session and instance. New user input, cancellation, session end, and disposal invalidate relevant stale continuations. A process crash loses in-memory background work. Stop scripts should honor `stop_hook_active` and be idempotent. Polling inside a script does not cause repeated model requests while it waits.
 
+## Background watcher recipe
+
+Use this when an agent would otherwise sleep or poll in the foreground for CI, reviews, deploys or long builds. The Active Hooks block marks such hooks `background` and tells the agent to keep working until the callback arrives.
+
+- Trigger: a `PostToolUse` handler on the tool that starts the work (for example matcher `Bash`). Exit 0 immediately when the input is not the expected start command, and add a small explicit helper command for starting a watch by hand. Recognize targets only from the tool's successful output, never by evaluating or replaying its command text.
+- Handler: `"type": "command"`, `"asyncRewake": true`, the exec form (`command` plus `args`, no shell), and a finite `timeout`. Keep the script's own deadline and per-query timeouts below that `timeout` so it can finish and report.
+- Result: on a conclusion (success, failure, merged or closed, timeout, unavailable), write a bounded stderr summary and exit 2. Include status, counts, the target URL and the commands to inspect details. Do not copy logs, review text or other untrusted content into the summary.
+- State: put locks and delivery receipts under the session's `scratchpad_dir`, keyed by target and revision. That deduplicates repeated requests in the session and stops a superseded revision from reporting as current.
+- Cleanup: record the parent PID at start, check that it is still alive about every second, and exit, releasing the lock, if the host goes away. Never use `nohup`, a detaching shell or a daemon launcher.
+- Pair it with an optional `SessionStart` handler whose `additionalContext` tells the agent how to start the watcher.
+
 ## Scoped registration and verification
 
 The session hook API is `POST /session/{sessionID}/hook`, `GET` on the same path, and `DELETE /session/{sessionID}/hook/{hookID}`. Registrations are in memory and disappear on session cleanup, instance disposal, or restart. They join the same matching and result pipeline as file hooks.

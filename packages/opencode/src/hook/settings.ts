@@ -269,6 +269,8 @@ export interface HookSummary {
   type: HookCommand["type"]
   descriptor: string
   matcher?: string
+  /** Background watcher whose exit-2 result wakes the originating session. */
+  asyncRewake?: boolean
 }
 
 export interface HookJSONOutput {
@@ -979,10 +981,46 @@ function mcpInput(entry: HookCommand, envelope: HookEnvelope): Record<string, un
  * All types are uniformly truncated to 60 chars: command → command text,
  * http → URL, mcp → tool name, prompt/agent → first line of the prompt/goal.
  */
+// Only recognisable script arguments supply the display name; code passed to
+// `-e` or a version string must not be mistaken for a file.
+const SCRIPT_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".ps1",
+  ".bat",
+  ".cmd",
+  ".rb",
+  ".go",
+  ".rs",
+  ".php",
+  ".pl",
+  ".lua",
+])
+
+function scriptName(entry: HookCommand): string | undefined {
+  return (entry.args ?? [])
+    .filter((arg) => !arg.startsWith("-"))
+    .map((arg) => path.basename(arg))
+    .find((name) => SCRIPT_EXTENSIONS.has(path.extname(name).toLowerCase()))
+}
+
 function descriptorFor(entry: HookCommand): string {
   switch (entry.type) {
-    case "command":
-      return commandText(entry).slice(0, 60)
+    case "command": {
+      // `bun /path/watch.ts` should not read as just `bun` in Active Hooks.
+      const name = scriptName(entry)
+      return `${commandText(entry)}${name ? ` ${name}` : ""}`.slice(0, 60)
+    }
     case "http":
       return httpUrl(entry).slice(0, 60)
     case "mcp":
@@ -1207,6 +1245,7 @@ function readChain(
               ? `${descriptorFor(h)} [${inactiveEventWarning(event)}]`
               : descriptorFor(h),
             ...(m.matcher && m.matcher !== "*" ? { matcher: m.matcher } : {}),
+            ...(h.type === "command" && h.asyncRewake === true ? { asyncRewake: true } : {}),
           })
         }
       }
