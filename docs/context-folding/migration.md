@@ -1,5 +1,9 @@
 # Dynamic context folding migration
 
+> **Status (v1.0.93):** context folding is retired by default. `compaction.dynamic` and
+> `compaction.prune` are deprecated and remain accepted, but folding runs only when a
+> configuration sets `compaction.dynamic: true` explicitly. New setups should leave it off.
+
 ## What changed
 
 Dynamic context folding removes only strictly duplicate, older `read`, `grep`, and `glob` output from the prepared
@@ -11,14 +15,15 @@ placeholder and are never restored, used as duplicate witnesses, or rewritten by
 
 ## Configuration
 
-| Input                         | Result                                                                  |
-| ----------------------------- | ----------------------------------------------------------------------- |
-| `compaction.dynamic` omitted  | Dynamic folding is enabled by default.                                  |
-| `compaction.dynamic: false`   | Dynamic folding is disabled; manual full compaction remains available.  |
-| `compaction.prune` only       | Deprecated compatibility alias for `dynamic`; no persistent prune runs. |
-| both fields                   | `dynamic` wins.                                                         |
-| `compaction.auto: false`      | Automatic full compaction is disabled; dynamic folding is unchanged.    |
-| `OPENCODE_DISABLE_PRUNE=true` | Emergency kill switch for dynamic folding; it has highest priority.     |
+| Input                         | Result                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| `compaction.dynamic` omitted  | Dynamic folding is disabled (default since v1.0.93).                       |
+| `compaction.dynamic: true`    | Opt in to dynamic folding explicitly.                                      |
+| `compaction.dynamic: false`   | Dynamic folding is disabled; manual full compaction remains available.     |
+| `compaction.prune` only       | Deprecated compatibility alias for `dynamic`; it does not enable folding by itself. |
+| both fields                   | `dynamic` wins.                                                            |
+| `compaction.auto: false`      | Automatic full compaction is disabled; dynamic folding is unchanged.       |
+| `OPENCODE_DISABLE_PRUNE=true` | Emergency kill switch for dynamic folding; it has highest priority.        |
 
 `OPENCODE_DISABLE_AUTOCOMPACT` remains independent and controls only automatic full compaction. No settings page was
 added because this repository has no existing context-folding settings surface.

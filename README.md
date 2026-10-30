@@ -37,7 +37,7 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 | [Project Memory](#project-memory) | Keeps confirmed preferences, decisions and terminology per project | `/memory on` |
 | [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally | `/goal`, `/subgoal` |
 | [Hooks](#hooks) | Claude Code–compatible lifecycle hooks | `hooks.json`, `/create-hook`, `/import-claude-hooks` |
-| [Context management](#context-management) | Folds duplicate tool output, bounds tool use, compacts long sessions | `compaction`, `maxToolCalls` |
+| [Context management](#context-management) | Bounds tool output, limits tool calls, compacts long sessions | `tool_output`, `compaction`, `maxToolCalls` |
 
 ---
 
@@ -136,15 +136,30 @@ Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreT
   naming compatibility, not full behavioral parity.
 - Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude-hooks` migrates them, and
   `/create-hook` walks through authoring a new hook.
+- Background waits: an `asyncRewake` command hook can watch CI, reviews or deploys while the agent keeps working; a
+  conclusion exits with code 2 and wakes the session with a bounded summary. The Active Hooks block marks such hooks
+  `background`. See the [background watcher recipe](./packages/core/src/plugin/skill/configure-hooks.md#background-watcher-recipe).
 - Reference: [hooks guide](./packages/core/src/plugin/skill/configure-hooks.md).
+
+---
+
+## Provider retries
+
+Every provider failure goes through one dispatch table before any backoff is scheduled. Any HTTP 4xx/5xx status and
+every recognised network failure retries with the same exponential backoff (2 s initial delay, doubling, 25% jitter,
+30 s cap, five retries); `429`/`503` honor `retry-after`, `401`/`403` get one credential-refresh retry, `413` and
+context overflow hand off to compaction instead of resending, and aborts, missing credentials, output-length and
+structured-output limits, content filters and rejected reasoning state stay terminal. When the processor gate or the
+attempt cap stops a retry, the session logs `retry stopped` with the branch, status, attempt, cap and gate state. See
+[compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
 
 ---
 
 ## Context management
 
-- **Context folding**: repeated tool outputs are folded in the outbound request while the stored history stays
-  canonical (`compaction.dynamic`, `compaction.prune`; `OPENCODE_DISABLE_PRUNE=1` disables pruning).
-- **Bounded tool use**: tool output is size-bounded, and `maxToolCalls` caps tool calls per user input.
+- **Bounded tool use**: tool output is size-bounded (`tool_output.max_lines`, `tool_output.max_bytes`) and `maxToolCalls`
+  caps tool calls per user input. Every truncated result states exactly how to get the rest — the saved file and the
+  offset that continues it, a larger `limit`, or the narrower query — so the model can continue without guessing.
 - **Compaction**: automatic summarization of long sessions at the model's usable context limit (`compaction.auto`,
   `compaction.keep.tokens`, `compaction.buffer`).
 
@@ -171,6 +186,7 @@ Three terms worth knowing:
 - Composable blocks (`explore`, `plan`, `prototype`, `debug`, `coding`, `verify`, `review`, `synthesize`) compile into the node graph; low-level node fields remain available for anything blocks cannot express.
 - `workflow(action="draft")` renders a structured graph through the tool schema into a validated YAML spec — field-name mistakes are rejected by the provider, not discovered at validation time.
 - Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command routes a requirement to a curated reference topology and retargets it to the task at hand.
+- The agent promotes to a workflow on its own judgment — the user need not ask — and declares the graph structure up front, mutating it at runtime only for structure that depends on results. When later work depends on items a node produces (for example one verifier per finding), the parent turns that node into a checkpoint, deduplicates and ranks the reported items, and adds only the needed item nodes with a bounded `extend`; `fan_out` is for writers from a plan's `packages`, not general per-item expansion.
 - Model tiers in `dag.jsonc` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
 
 **Reliability**
@@ -388,7 +404,8 @@ Curated reference topologies — design decision deep-dive, parallel project del
 ## Other changes in this fork
 
 - **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
-- **Tool robustness**: JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, expanded tool docs, child-process pipe fixes.
+- **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
+- **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~20 KB to ~9 KB), strict `edit` matching that lists ambiguous candidate lines and the closest line instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
 - **CJK & IME fixes**: corrections for Chinese/Japanese/Korean input in the terminal UI (IME composition flushing, full-width text handling), plus a Korean IME fix script under [`patches/`](./patches).
 - **Worktree isolation**: per-workflow `git worktree` isolation, with experimental sandbox-worktree HTTP endpoints.
 - **Configuration assistant**: a standalone Go TUI under [`config_assistant`](./config_assistant) for locating, validating, and editing opencode configuration (`cd config_assistant && go run ./cmd/ocfg`).
