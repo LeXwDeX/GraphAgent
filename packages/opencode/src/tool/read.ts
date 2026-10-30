@@ -176,7 +176,7 @@ export const ReadTool = Tool.define<
     ) {
       const start = opts.offset - 1
       const raw: string[] = []
-      const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
+      const flags = { bytes: 0, before: 0, count: 0, cut: false, more: false, done: false }
 
       // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
       // ends without flushing, decodeText drops the final unterminated line. We also
@@ -191,7 +191,10 @@ export const ReadTool = Tool.define<
           Effect.gen(function* () {
             if (flags.done) return yield* new ReadStop()
             flags.count += 1
-            if (flags.count <= start) return
+            if (flags.count <= start) {
+              flags.before += Buffer.byteLength(text, "utf-8") + 1
+              return
+            }
 
             if (raw.length >= opts.limit) {
               flags.more = true
@@ -233,7 +236,15 @@ export const ReadTool = Tool.define<
         Effect.catchTag("ReadStop", () => Effect.void),
       )
 
-      return { raw, count: flags.count, bytes: flags.bytes, cut: flags.cut, more: flags.more, offset: opts.offset }
+      return {
+        raw,
+        count: flags.count,
+        bytes: flags.bytes,
+        before: flags.before,
+        cut: flags.cut,
+        more: flags.more,
+        offset: opts.offset,
+      }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
@@ -405,7 +416,9 @@ export const ReadTool = Tool.define<
       const truncated = file.more || file.cut
       if (file.cut) {
         const total = Number(stat.size)
-        const omitted = Math.max(0, total - file.bytes)
+        // Everything before `offset` is neither shown nor omitted *after* this
+        // range; subtracting it keeps the notice honest for late reads.
+        const omitted = Math.max(0, total - file.before - file.bytes)
         output +=
           `\n\n[truncated: showing lines ${file.offset}-${last} of a ${formatSize(total)} file ` +
           `(${MAX_BYTES_LABEL} limit); about ${formatSize(omitted)} omitted after this range. ` +

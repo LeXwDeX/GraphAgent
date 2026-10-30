@@ -149,7 +149,10 @@ export const GrepTool = Tool.define(
           }
 
           const full = yield* trunc.write([header, ...entries.flat()].join("\n"))
-          const next = output.length + 1
+          // Match text may carry its trailing newline, so an entry can render as
+          // more than one line. Count rendered lines, not array entries, or the
+          // continuation points back into the preview.
+          const next = output.join("\n").split("\n").length + 1
           const omitted = rows.length - shown
           output.push("")
           output.push(

@@ -376,6 +376,26 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.instance("does not count lines before offset as omitted after the cut", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "late.txt")
+      const content = Array.from({ length: 300 }, () => "x".repeat(1024)).join("\n")
+      yield* put(filepath, content)
+
+      const result = yield* run({ filePath: filepath, offset: 201 })
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("[truncated: showing lines 201-")
+      // The 200 skipped lines (~200 KB) are before the shown range. Only the
+      // ~52 KB after the cut is omitted; the full-file subtraction would report
+      // ~251 KB.
+      const omitted = /about ([\d.]+) KB omitted/.exec(result.output)?.[1]
+      expect(omitted).toBeTruthy()
+      expect(Number(omitted)).toBeGreaterThan(40)
+      expect(Number(omitted)).toBeLessThan(60)
+    }),
+  )
+
   it.instance("does not truncate small file", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
