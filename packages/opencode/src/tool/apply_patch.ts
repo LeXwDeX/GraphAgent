@@ -255,7 +255,9 @@ export const ApplyPatchTool = Tool.define(
 
         if (edited) {
           if (yield* format.file(edited)) {
-            yield* Bom.syncFile(afs, edited, change.bom)
+            // afterEdit runs against diagnostics in post-format disk coordinates,
+            // so retain the formatter's output rather than the patch snapshot.
+            change.newContent = yield* Bom.syncFile(afs, edited, change.bom)
           }
           yield* events.publish(FileSystem.Event.Edited, { file: edited })
         }

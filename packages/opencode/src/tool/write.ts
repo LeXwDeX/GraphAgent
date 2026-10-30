@@ -46,7 +46,7 @@ export const WriteTool = Tool.define(
           const next = Bom.split(params.content)
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
-          const contentNew = next.text
+          let contentNew = next.text
 
           const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
           yield* ctx.ask({
@@ -61,7 +61,9 @@ export const WriteTool = Tool.define(
 
           yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
           if (yield* format.file(filepath)) {
-            yield* Bom.syncFile(fs, filepath, desiredBom)
+            // Keep the post-format text: diagnostics and afterEdit use disk line
+            // coordinates, so the pre-format snapshot would hide moved errors.
+            contentNew = yield* Bom.syncFile(fs, filepath, desiredBom)
           }
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })
           yield* events.publish(Watcher.Event.Updated, {
