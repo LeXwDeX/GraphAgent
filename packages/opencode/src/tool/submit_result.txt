@@ -1,9 +1,5 @@
-Submit structured output for a DAG workflow node.
+Submit structured output for a DAG workflow node. Use this only in a child session whose node declares an `output_schema`, and submit a payload that matches it.
 
-Use this tool only in a DAG workflow child session whose node declares an `output_schema`. Submit a JSON value that matches that schema.
+The payload is the authoritative report: put the full result and summary there, do not duplicate it in your message, and end the turn after success. If validation fails, correct the payload and call again in the same session.
 
-Call this tool with an object containing a `payload` field. The payload may be any JSON value that matches the declared schema. If validation fails, correct it and call again in the same session. The result is final only after this tool succeeds.
-
-The payload is the authoritative report. Put the full result and summary in it. Do not duplicate the payload in your message. After success, end your turn without restating the result.
-
-If you are not in a DAG workflow child session, this tool has no effect.
+Outside such a node this tool has no effect.

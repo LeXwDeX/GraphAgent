@@ -1,10 +1,6 @@
-Replaces text in files. Provide exact oldString content; compatibility matching may tolerate whitespace or nearby context differences.
+Edit a file by replacing oldString with newString. Use this for targeted changes to existing files; use write for a new file or an intentional full-file rewrite.
 
-Usage:
-- Read the existing file with the `read` tool before editing. This is an operating requirement; the tool does not enforce a prior-read check.
-- When editing text from Read output, preserve the exact indentation after the line-number prefix. The prefix is a line number, colon, and space (for example, `1: `). Match only the file content after that prefix. Do not include the prefix in `oldString` or `newString`.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit fails if no acceptable match is found: "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings."
-- The edit fails when it cannot identify a unique match: "Found multiple matches for oldString. Provide more surrounding context to make the match unique." Add context or use `replaceAll` to change every match.
-- Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
+- Read the file first. oldString must match the file exactly, including whitespace and line endings. When copying from read output, omit the `N: ` line-number prefix.
+- Include enough surrounding context to make oldString unique. Whitespace-only differences may still match, but the tool never picks one of several fuzzy candidates: it fails and reports the candidate line numbers. Add context or set replaceAll to replace every exact occurrence.
+- If nothing matches, the error includes the closest snippet. Re-read that area and retry with the exact text.
+- Use replaceAll for a deliberate rename or a repeated exact string.

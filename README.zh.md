@@ -318,7 +318,7 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 ## 本 fork 的其他改动
 
 - **委派智能体**：`task` 把工作委派给子智能体，并可用 `task_id` 继续；带完成通知的后台子智能体需开启 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`。
-- **工具健壮性**：修复 LLM 输出里损坏的多字节 Unicode 转义（JSON 修复），校验错误带字段级提示，工具文档扩充，子进程管道修复。
+- **工具健壮性**：工具自描述（系统提示不再重复每种工具的用法，传给模型的工具描述从约 20 KB 降到约 9 KB）；`edit` 严格匹配，多个候选时列出行号、找不到时给出最近片段而不是猜测，并兼容多种 Provider 参数形状；修复 LLM 输出里损坏的多字节 Unicode 转义（JSON 修复），校验错误带字段级提示，子进程管道修复。
 - **CJK 与 IME 修复**：终端 UI 里中日韩文输入的修正（IME 组字刷新、全角文本处理），另有 [`patches/`](./patches) 下的韩文 IME 修复脚本。
 - **Worktree 隔离**：按工作流的 `git worktree` 隔离，附实验性的 sandbox-worktree HTTP 端点。
 - **配置助手**：[`config_assistant`](./config_assistant) 下提供独立 Go TUI，用于定位、校验和编辑 opencode 配置（`cd config_assistant && go run ./cmd/ocfg`）。

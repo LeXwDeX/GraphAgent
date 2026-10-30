@@ -63,6 +63,22 @@ const fail = Effect.fn("EditToolTest.fail")(function* (args: Tool.InferParameter
   throw new Error("expected edit to fail")
 })
 
+const runRaw = Effect.fn("EditToolTest.runRaw")(function* (args: unknown, next: Tool.Context = ctx) {
+  const tool = yield* init()
+  // oxlint-disable-next-line typescript-eslint(no-unsafe-type-assertion) -- test shim: invoke the wrapped execute with unrepaired raw args
+  const execute = tool.execute as unknown as (args: unknown, ctx: Tool.Context) => ReturnType<typeof tool.execute>
+  return yield* execute(args, next)
+})
+
+const failRaw = Effect.fn("EditToolTest.failRaw")(function* (args: unknown) {
+  const exit = yield* runRaw(args).pipe(Effect.exit)
+  if (Exit.isFailure(exit)) {
+    const err = Cause.squash(exit.cause)
+    return err instanceof Error ? err : new Error(String(err))
+  }
+  throw new Error("expected edit to fail")
+})
+
 const put = Effect.fn("EditToolTest.put")(function* (p: string, content: string) {
   const fs = yield* FSUtil.Service
   yield* fs.writeWithDirs(p, content)
@@ -599,6 +615,162 @@ describe("tool.edit", () => {
         ])
 
         expect(yield* load(filepath)).toBe("top = 1\nmiddle = keep\nbottom = 2\n")
+      }),
+    )
+  })
+
+  describe("ambiguous matches", () => {
+    it.instance("reports every exact match with its line number", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = "const value = 1\nconst value = 2\n"
+        yield* put(filepath, original)
+
+        const error = yield* fail({ filePath: filepath, oldString: "const value", newString: "const next" })
+
+        expect(error.message).toContain("Found 2 matches for oldString")
+        expect(error.message).toContain("- line 1: const value")
+        expect(error.message).toContain("- line 2: const value")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("reports every fuzzy match instead of choosing one", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = ["if (a) {", "  doThing()", "}", "if (a) {", "    doThing()", "}", ""].join("\n")
+        yield* put(filepath, original)
+
+        const error = yield* fail({
+          filePath: filepath,
+          oldString: ["if (a) {", "doThing()", "}"].join("\n"),
+          newString: ["if (a) {", "  doOther()", "}"].join("\n"),
+        })
+
+        expect(error.message).toContain("Found 2 matches for oldString")
+        expect(error.message).toContain("line 1")
+        expect(error.message).toContain("line 4")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("suggests the closest line when oldString is not found", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = "const total = compute(items)\n"
+        yield* put(filepath, original)
+
+        const error = yield* fail({
+          filePath: filepath,
+          oldString: "const totl = compute(items)",
+          newString: "const total = compute(other)",
+        })
+
+        expect(error.message).toContain("Could not find oldString")
+        expect(error.message).toContain("Closest match at line 1")
+        expect(error.message).toContain("const total = compute(items)")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+  })
+
+  describe("argument repair", () => {
+    it.instance("accepts legacy oldText/newText keys", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "old content here")
+
+        yield* runRaw({ filePath: filepath, oldText: "old content", newText: "new content" })
+
+        expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("accepts snake_case keys", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "old content here")
+
+        yield* runRaw({ file_path: filepath, old_string: "old content", new_string: "new content" })
+
+        expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("accepts a single edit object under edits", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "old content here")
+
+        yield* runRaw({ filePath: filepath, edits: { oldText: "old content", newText: "new content" } })
+
+        expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("accepts the file path inside a single edit entry", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "old content here")
+
+        yield* runRaw({
+          edits: [{ filePath: filepath, oldText: "old content", newText: "new content" }],
+        })
+
+        expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("accepts a JSON-encoded edits array", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "old content here")
+
+        yield* runRaw({
+          filePath: filepath,
+          edits: JSON.stringify([{ oldText: "old content", newText: "new content" }]),
+        })
+
+        expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("accepts a string replaceAll flag", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "foo bar foo")
+
+        yield* runRaw({ filePath: filepath, oldString: "foo", newString: "qux", replaceAll: "true" })
+
+        expect(yield* load(filepath)).toBe("qux bar qux")
+      }),
+    )
+
+    it.instance("rejects multiple edits instead of choosing one", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "alpha beta")
+
+        const error = yield* failRaw({
+          filePath: filepath,
+          edits: [
+            { oldText: "alpha", newText: "ALPHA" },
+            { oldText: "beta", newText: "BETA" },
+          ],
+        })
+
+        expect(error.message).toContain("one replacement per call")
+        expect(yield* load(filepath)).toBe("alpha beta")
       }),
     )
   })

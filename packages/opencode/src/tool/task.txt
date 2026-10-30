@@ -1,32 +1,7 @@
-Launch a new agent to handle complex, multistep tasks autonomously. Use only agent types exposed to the current session and respect inherited permissions. Each subagent uses the same `maxToolCalls` setting with its own per-input budget.
+Delegate a self-contained task to a subagent. Use this for broad, open-ended exploration or work that needs several rounds of searching; use read, glob, or grep directly for a specific file, symbol, or small set of files.
 
-When using the task tool, you must specify a subagent_type parameter to select which agent type to use.
-
-When NOT to use the task tool:
-- If you want to read a specific file path, use the read or glob tool instead of the task tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use the grep tool instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use the read tool instead of the task tool, to find the match more quickly
-- If no available agent is a good fit for the task, use other tools directly
-
-
-Usage notes:
-1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
-2. After delegation, do not repeat the agent's work. Continue with an independent task or wait. When experimental background execution is enabled, background tasks notify you when they finish.
-3. The agent returns one message. The user cannot see it. Send the user a concise summary. The result includes a `task_id` for continuing that session.
-4. Each new agent starts with fresh context. Pass `task_id` to resume a session with its history. For a fresh session, give a detailed task and specify what its final message must contain.
-5. Check the agent's key claims, such as changed files or test results, before you rely on them or report them
-6. State whether the agent should write code or research. It does not know the user's intent. Give verification steps, such as test commands, when possible.
-7. If the agent description says to use it proactively, do so without waiting for the user to ask. Use your judgment.
-
-## Parameters
-
-- `description` (REQUIRED): Short (3-5 words) description of the task.
-- `subagent_type` (REQUIRED): The type of specialized agent to use.
-- `prompt` (REQUIRED): Detailed task for the agent to perform autonomously.
-- `task_id` (optional): Resume a previous task session by its ID.
-- `command`: The command that triggered this task.
-- `background` (optional boolean): Available only when experimental background execution is enabled. Run as background task.
-
-## Returns
-
-A single message from the agent with the complete result. The task_id is included for future resume.
+- Specify subagent_type from the available agent types. Respect inherited permissions and the shared `maxToolCalls` budget.
+- Give each agent all needed context: a new agent starts fresh and does not see this conversation. State whether it should write code or research, and include verification steps.
+- Launch independent agents concurrently in one message. Do not repeat a delegated task; wait or continue other work. Background execution, when enabled, notifies you on completion.
+- The agent returns one message that the user cannot see; summarize it. Check key claims, such as changed files or test results, before relying on or reporting them.
+- Pass task_id to resume a previous session with its history.

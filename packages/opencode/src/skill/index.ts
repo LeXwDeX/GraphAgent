@@ -51,6 +51,12 @@ const CREATE_DAG_WORKFLOW_SKILL_NAME = "create-dag-workflow"
 const CREATE_DAG_WORKFLOW_SKILL_DESCRIPTION = SkillPlugin.CreateDagWorkflowDescription
 const CREATE_DAG_WORKFLOW_SKILL_BODY = SkillPlugin.CreateDagWorkflowContent
 
+// Built-in skill. The shell tool's Git rules moved out of its description;
+// this skill carries the commit/PR workflow and is loaded on demand.
+const GIT_WORKFLOW_SKILL_NAME = "git-workflow"
+const GIT_WORKFLOW_SKILL_DESCRIPTION = SkillPlugin.GitWorkflowDescription
+const GIT_WORKFLOW_SKILL_BODY = SkillPlugin.GitWorkflowContent
+
 export const Info = Schema.Struct({
   name: Schema.String,
   description: Schema.optional(Schema.String),
@@ -345,6 +351,12 @@ export const layer = Layer.effect(
           description: CREATE_DAG_WORKFLOW_SKILL_DESCRIPTION,
           location: "<built-in>",
           content: CREATE_DAG_WORKFLOW_SKILL_BODY,
+        }
+        s.skills[GIT_WORKFLOW_SKILL_NAME] = {
+          name: GIT_WORKFLOW_SKILL_NAME,
+          description: GIT_WORKFLOW_SKILL_DESCRIPTION,
+          location: "<built-in>",
+          content: GIT_WORKFLOW_SKILL_BODY,
         }
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
         return s

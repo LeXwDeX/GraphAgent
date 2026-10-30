@@ -388,7 +388,7 @@ Curated reference topologies — design decision deep-dive, parallel project del
 ## Other changes in this fork
 
 - **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
-- **Tool robustness**: JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, expanded tool docs, child-process pipe fixes.
+- **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~20 KB to ~9 KB), strict `edit` matching that lists ambiguous candidate lines and the closest line instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
 - **CJK & IME fixes**: corrections for Chinese/Japanese/Korean input in the terminal UI (IME composition flushing, full-width text handling), plus a Korean IME fix script under [`patches/`](./patches).
 - **Worktree isolation**: per-workflow `git worktree` isolation, with experimental sandbox-worktree HTTP endpoints.
 - **Configuration assistant**: a standalone Go TUI under [`config_assistant`](./config_assistant) for locating, validating, and editing opencode configuration (`cd config_assistant && go run ./cmd/ocfg`).

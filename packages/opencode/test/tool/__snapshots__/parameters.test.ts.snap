@@ -243,7 +243,7 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "filePath": {
-      "description": "The absolute path to the file to modify",
+      "description": "Path to the file to edit; relative paths resolve from the project directory",
       "type": "string",
     },
     "newString": {
@@ -251,11 +251,11 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
       "type": "string",
     },
     "oldString": {
-      "description": "The text to replace",
+      "description": "Exact text to replace. Include enough surrounding context to make it unique",
       "type": "string",
     },
     "replaceAll": {
-      "description": "Replace all occurrences of oldString (default false)",
+      "description": "Replace every exact occurrence of oldString (default false)",
       "type": "boolean",
     },
   },

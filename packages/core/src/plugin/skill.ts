@@ -9,10 +9,12 @@ import { SkillV2 } from "../skill"
 import customizeOpencodeContent from "./skill/customize-opencode.md" with { type: "text" }
 import configureHooksContent from "./skill/configure-hooks.md" with { type: "text" }
 import createDagWorkflowContent from "./skill/create-dag-workflow.md" with { type: "text" }
+import gitWorkflowContent from "./skill/git-workflow.md" with { type: "text" }
 
 export const CustomizeOpencodeContent = customizeOpencodeContent
 export const ConfigureHooksContent = configureHooksContent
 export const CreateDagWorkflowContent = createDagWorkflowContent
+export const GitWorkflowContent = gitWorkflowContent
 
 export const CustomizeOpencodeDescription =
   "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, commands, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself."
@@ -22,6 +24,9 @@ export const ConfigureHooksDescription =
 
 export const CreateDagWorkflowDescription =
   "Use when the user wants to create, save, or edit a reusable DAG workflow — a named multi-agent graph they can start again later — or asks where workflow specs live, how to make a workflow available in every project, or why a saved workflow name does not resolve. Covers project/global scopes, composable blocks, low-level nodes, and verification. Do not use to run an existing workflow or to design a one-off graph for the current task; the workflow tool handles those."
+
+export const GitWorkflowDescription =
+  "Use when committing, pushing, creating a branch, or opening or updating a pull request. Covers inspecting changes, staging only intended files, commit message style, non-destructive git rules, and the gh PR workflow."
 
 export const Plugin = define({
   id: "skill",
@@ -57,6 +62,17 @@ export const Plugin = define({
             description: CreateDagWorkflowDescription,
             location: AbsolutePath.make("/builtin/create-dag-workflow.md"),
             content: CreateDagWorkflowContent,
+          }),
+        }),
+      )
+      draft.source(
+        SkillV2.EmbeddedSource.make({
+          type: "embedded",
+          skill: SkillV2.Info.make({
+            name: "git-workflow",
+            description: GitWorkflowDescription,
+            location: AbsolutePath.make("/builtin/git-workflow.md"),
+            content: GitWorkflowContent,
           }),
         }),
       )

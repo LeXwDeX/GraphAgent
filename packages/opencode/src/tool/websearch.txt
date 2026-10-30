@@ -1,26 +1,5 @@
-- Search the web using the session's web search provider - performs web searches from a query. To retrieve a known URL directly, use webfetch
-- Provides up-to-date information for current events and recent data
-- With Exa, supports configurable result counts and returns the content from the most relevant websites
-- Use this tool for accessing information beyond knowledge cutoff
-- Searches are performed automatically within a single API call
+Search the web. Use this for current information beyond your knowledge or to discover sources; use webfetch to read a known URL.
 
-Usage notes:
-  - With Exa, supports live crawling modes: 'fallback' (backup if cached unavailable) or 'preferred' (prioritize live crawling)
-  - With Exa, search types: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
-  - With Exa, configurable returned context length
-  - There is no dedicated domain-filter parameter. Parallel uses the query and ignores the optional controls below.
-
-The current year is {{year}}. You MUST use this year when searching for recent information or current events
-- Example: If the current year is 2026 and the user asks for "latest AI news", search for "AI news 2026", NOT "AI news 2025"
-
-## Parameters
-
-- `query` (REQUIRED): Search query string.
-- `numResults` (optional): Exa only: number of results to return (default: 8). Ignored by Parallel.
-- `livecrawl` (optional): Exa only: "fallback" (default) or "preferred". Ignored by Parallel.
-- `type` (optional): Exa only: "auto" (default), "fast", or "deep". Ignored by Parallel.
-- `contextMaxCharacters` (optional): Exa only: context-string character limit, not a local per-snippet cap. Ignored by Parallel.
-
-## Returns
-
-Search results with titles, URLs, and content snippets.
+- The current year is {{year}}. Include it in queries about recent events.
+- Exa only: numResults (default 8), livecrawl ("fallback" or "preferred"), type ("auto", "fast", "deep"), and contextMaxCharacters. Parallel uses the query and ignores these controls.
+- There is no dedicated domain-filter parameter.

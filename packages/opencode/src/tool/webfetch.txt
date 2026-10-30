@@ -1,25 +1,6 @@
-- Fetches content from a specified URL
-- Takes a URL and optional format as input
-- Converts text/html to markdown (default) or plain text when requested; other text content types are returned as decoded source
-- The html format returns the decoded source without conversion; supported raster images return file attachments
-- Use this tool when you need to retrieve and analyze web content
+Fetch a URL and return its content. Use this for a known URL; use websearch to discover sources.
 
-Usage notes:
-  - If another available tool fetches web content better, targets the task more closely, or has fewer restrictions, use it instead.
-  - The URL must be a fully-formed valid URL
-  - Both HTTP and HTTPS URLs are accepted; HTTP is not automatically upgraded
-  - Format options: "markdown" (default), "text", or "html"
-  - This tool is read-only and does not modify any files
-  - Downloads are limited to 5 MB, including streamed bodies; larger responses fail rather than being summarized
-  - The timeout covers the request and body download: 30 seconds by default, capped at 120 seconds
-  - Text uses the declared Content-Type charset when supported, or UTF-8 when no charset is declared; unsupported charsets fail explicitly
-
-## Parameters
-
-- `url` (REQUIRED): The fully-formed URL to fetch. Both HTTP and HTTPS are accepted.
-- `format` (optional): "markdown" (default), "text", or "html".
-- `timeout` (optional): Positive finite timeout in seconds (default 30, max 120; fractional seconds are accepted).
-
-## Returns
-
-The decoded content, with text/html conversion as described above, or an image attachment.
+- format: "markdown" (default) converts HTML, "text" returns plain text, and "html" returns decoded source. Supported raster images return attachments.
+- The URL must be fully formed; HTTP and HTTPS are accepted and HTTP is not upgraded automatically. If the response redirects to another host, fetch the reported URL.
+- Read-only. Downloads are capped at 5 MB; the timeout covers the body, defaults to 30 seconds, and caps at 120.
+- Text uses the declared charset, or UTF-8; unsupported charsets fail explicitly.
