@@ -15,8 +15,6 @@ import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 
-const MAX_PROJECT_DIAGNOSTICS_FILES = 5
-
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
   filePath: Schema.String.annotate({
@@ -75,19 +73,15 @@ export const WriteTool = Tool.define(
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
-          let projectDiagnosticsCount = 0
-          for (const [file, issues] of Object.entries(diagnostics)) {
-            const current = file === normalizedFilepath
-            if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
-            const block = LSP.Diagnostic.report(current ? filepath : file, issues)
-            if (!block) continue
-            if (current) {
-              output += `\n\nLSP errors detected in this file, please fix:\n${block}`
-              continue
-            }
-            projectDiagnosticsCount++
-            output += `\n\nLSP errors detected in other files:\n${block}`
-          }
+          // Writing one file cannot fix or break errors in other files; repeat
+          // only the errors the written lines are responsible for.
+          const block = LSP.Diagnostic.afterEdit(
+            filepath,
+            diagnostics[normalizedFilepath] ?? [],
+            contentOld,
+            contentNew,
+          )
+          if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {
             title: path.relative(instance.worktree, filepath),

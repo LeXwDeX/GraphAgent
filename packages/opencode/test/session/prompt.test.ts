@@ -4100,7 +4100,7 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
       expect(part).toBeDefined()
       if (!part) throw new Error(`missing stored read result ${callID}`)
       expect(part.state.output.length).toBeGreaterThan(20_000)
-      expect(part.state.output).not.toContain("(line truncated to 2000 chars)")
+      expect(part.state.output).not.toContain("(line truncated to 2000 of")
       expect(part.state.metadata.truncated).toBe(false)
     }
     const persisted = beforeTools.map((part) => ({
@@ -4588,7 +4588,7 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
     expect(part).toBeDefined()
     if (!part) throw new Error(`missing stored lifecycle read result ${callID}`)
     expect(part.output.length).toBeGreaterThan(20_000)
-    expect(part.output).not.toContain("(line truncated to 2000 chars)")
+    expect(part.output).not.toContain("(line truncated to 2000 of")
     expect(part.metadata.truncated).toBe(false)
   }
   const sideEffects = yield* lifecycleLedger(ledger)
@@ -6571,8 +6571,8 @@ unix(
 
       expect(tool.state.metadata.truncated, JSON.stringify(tool.state.metadata)).toBe(true)
       expect(typeof tool.state.metadata.outputPath).toBe("string")
-      expect(tool.state.output).toMatch(/\.\.\.output truncated\.\.\./)
-      expect(tool.state.output).toMatch(/Full output saved to:\s+\S+/)
+      expect(tool.state.output).toMatch(/\[truncated: showing (lines \d+-\d+ of \d+|the last .+ of line \d+)/)
+      expect(tool.state.output).toContain("Full output: ")
       expect(tool.state.output).not.toContain("Tool execution aborted")
     }),
   { git: true },

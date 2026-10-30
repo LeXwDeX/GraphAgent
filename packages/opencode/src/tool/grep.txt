@@ -2,5 +2,6 @@ Search file contents with a regular expression. Use this to locate code by patte
 
 - Patterns use full regex syntax, for example "log.*Error" or "function\s+\w+".
 - include filters paths, for example "*.js" or "*.{ts,tsx}".
-- Returns file paths, line numbers, and matching lines, at most 100; a truncation notice appears when more exist. An empty search returns "No files found".
+- Returns file paths, line numbers, and matching lines. limit sets how many matches to show (default 100, capped at 1000). An empty search returns "No files found".
+- When output is truncated the notice gives the number omitted and either the saved full listing to read with offset or the larger limit that shows more. Long matching lines name the read offset and maxLineLength that continue them.
 - For match counts, run `rg --count` with the shell tool. For open-ended searches that need several rounds, delegate with task instead.

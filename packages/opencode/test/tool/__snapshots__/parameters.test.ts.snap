@@ -272,6 +272,13 @@ exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "limit": {
+      "description": "Maximum paths to show (defaults to 100, capped at 1000)",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
     "path": {
       "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
       "type": "string",
@@ -295,6 +302,13 @@ exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
     "include": {
       "description": "File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")",
       "type": "string",
+    },
+    "limit": {
+      "description": "Maximum matches to show (defaults to 100, capped at 1000)",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
     },
     "path": {
       "description": "The file or directory to search in. Defaults to the current working directory.",
@@ -458,6 +472,13 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
     },
     "limit": {
       "description": "The maximum number of lines or directory entries to read (positive integer, defaults to 2000)",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
+    "maxLineLength": {
+      "description": "Maximum characters to show from each line (defaults to 2000, capped at 50000); use it to continue a truncated long line",
       "exclusiveMinimum": 0,
       "maximum": 9007199254740991,
       "minimum": -9007199254740991,

@@ -1298,8 +1298,10 @@ describe("tool.shell truncation", () => {
           command: fill("lines", lineCount),
         })
         mustTruncate(result)
-        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
-        expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+        expect(result.output).toMatch(/\[truncated: showing lines \d+-\d+ of 2500\./)
+        expect(result.output).toContain("lines omitted before this range.")
+        expect(result.output).toContain("Full output: ")
+        expect(result.output).toContain("Continue: read filePath=")
       }),
     ),
   )
@@ -1313,8 +1315,9 @@ describe("tool.shell truncation", () => {
           command: fill("bytes", byteCount),
         })
         mustTruncate(result)
-        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
-        expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+        expect(result.output).toMatch(/\[truncated: showing the last .+ of line 1/)
+        expect(result.output).toContain("Full output: ")
+        expect(result.output).toContain("Continue: read filePath=")
       }),
     ),
   )

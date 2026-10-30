@@ -290,7 +290,12 @@ export const EditTool = Tool.define(
           yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
-          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
+          const block = LSP.Diagnostic.afterEdit(
+            filePath,
+            diagnostics[normalizedFilePath] ?? [],
+            contentOld,
+            contentNew,
+          )
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {

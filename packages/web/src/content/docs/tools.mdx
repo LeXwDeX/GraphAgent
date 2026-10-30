@@ -151,6 +151,31 @@ Search for files using glob patterns like `**/*.js` or `src/**/*.ts`. Returns ma
 
 ---
 
+## Truncated output
+
+Tool output is capped so a single call cannot flood the context. The defaults are 2000 lines or 50 KB, configurable per project:
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "tool_output": {
+    "max_lines": 2000,
+    "max_bytes": 51200
+  }
+}
+```
+
+Every truncation uses the same notice: it states how many lines or bytes were omitted, where the complete output was saved, and the exact parameters that continue it.
+
+- `read` streams the file and points at the next `offset`. A single line longer than `maxLineLength` (2000 characters by default) says which `offset`, `limit` and `maxLineLength` fetch the rest, up to 50,000 characters; use the shell beyond that.
+- `shell` keeps the tail of the output, where errors usually are, and states a non-zero exit code explicitly. The complete output is saved and can be read with `offset`.
+- `grep` and `glob` accept `limit` (default 100, capped at 1000). A truncated `grep` saves the complete listing and names the line offset that continues it; a truncated `glob` states the exact total and the larger limit or narrower pattern that shows the rest.
+- `edit`, `write` and `apply_patch` attach only the LSP errors that overlap the lines the edit changed. Errors elsewhere in the file predate the edit and are not repeated.
+
+Saved output lives in the tool-output directory and is removed after 7 days.
+
+---
+
 ### lsp (experimental)
 
 Interact with your configured LSP servers to get code intelligence features like definitions, references, hover info, and call hierarchy.

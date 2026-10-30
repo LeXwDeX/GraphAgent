@@ -292,7 +292,12 @@ export const ApplyPatchTool = Tool.define(
       for (const change of fileChanges) {
         if (change.type === "delete") continue
         const target = change.movePath ?? change.filePath
-        const block = LSP.Diagnostic.report(target, diagnostics[FSUtil.normalizePath(target)] ?? [])
+        const block = LSP.Diagnostic.afterEdit(
+          target,
+          diagnostics[FSUtil.normalizePath(target)] ?? [],
+          change.oldContent,
+          change.newContent,
+        )
         if (!block) continue
         const rel = path.relative(instance.worktree, target).replaceAll("\\", "/")
         output += `\n\nLSP errors detected in ${rel}, please fix:\n${block}`

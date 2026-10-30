@@ -156,8 +156,7 @@ describe("tool.grep", () => {
       expect(result.metadata.matches).toBe(100)
       expect(result.metadata.truncated).toBe(false)
       expect(result.output).toStartWith("Found 100 matches\n")
-      expect(result.output).not.toContain("Results truncated")
-      expect(result.output).not.toContain("more matches available")
+      expect(result.output).not.toContain("[truncated:")
     }),
   )
 
@@ -178,12 +177,14 @@ describe("tool.grep", () => {
       expect(Buffer.byteLength(result.output, "utf8")).toBeLessThan(Truncate.MAX_BYTES + 1_024)
       expect(result.metadata.truncated).toBe(true)
       expect(result.metadata.matches).toBeLessThan(60)
-      expect(result.output).toContain("more matches available")
-      expect(result.output).toContain("(Results truncated. Consider using a more specific path or pattern.)")
+      expect(result.output).toContain(`[truncated: showing ${result.metadata.matches} of 60 matches.`)
+      expect(result.output).toContain("the byte budget stopped the preview")
+      expect(result.output).toContain("Full output: ")
+      expect(result.output).toContain("Continue: read filePath=")
     }),
   )
 
-  it.instance("does not report an unknown total when results are truncated", () =>
+  it.instance("reports the total and the saved listing when results are truncated", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() =>
@@ -197,8 +198,11 @@ describe("tool.grep", () => {
       const grep = yield* info.init()
       const result = yield* grep.execute({ pattern: "needle", path: test.directory, include: "*.txt" }, ctx)
 
-      expect(result.output).toContain("(Results truncated. Consider using a more specific path or pattern.)")
-      expect(result.output).not.toMatch(/showing \d+ of \d+ matches/)
+      expect(result.output).toContain("[truncated: showing 100 of 101 matches. 1 match omitted.")
+      expect(result.output).toContain("Full output: ")
+      expect(result.output).toContain("raise grep limit to 200 to show more")
+      expect(result.metadata.matches).toBe(100)
+      expect(result.metadata.truncated).toBe(true)
     }),
   )
 

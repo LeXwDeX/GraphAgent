@@ -233,35 +233,19 @@ function preview(text: string) {
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
 }
 
-function tail(text: string, maxLines: number, maxBytes: number) {
-  const lines = text.split("\n")
-  if (lines.length <= maxLines && Buffer.byteLength(text, "utf-8") <= maxBytes) {
-    return {
-      text,
-      cut: false,
-    }
-  }
-
-  const out: string[] = []
-  let bytes = 0
-  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
-    const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
-    if (bytes + size > maxBytes) {
-      if (out.length === 0) {
-        const buf = Buffer.from(lines[i], "utf-8")
-        let start = buf.length - maxBytes
-        if (start < 0) start = 0
-        while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++
-        out.unshift(buf.subarray(start).toString("utf-8"))
-      }
-      break
-    }
-    out.unshift(lines[i])
-    bytes += size
-  }
+/** Details for output that lost earlier chunks before the tail preview window. */
+function droppedDetails(text: string, totalLines: number, totalBytes: number, maxBytes: number) {
+  const previewLines = text.split("\n").length
   return {
-    text: out.join("\n"),
-    cut: true,
+    direction: "tail" as const,
+    truncatedBy: "bytes" as const,
+    totalLines,
+    totalBytes,
+    startLine: Math.max(1, totalLines - previewLines + 1),
+    endLine: totalLines,
+    outputBytes: Buffer.byteLength(text, "utf-8"),
+    maxBytes,
+    partialLine: false,
   }
 }
 
@@ -473,6 +457,10 @@ export const ShellTool = Tool.define(
       let lastActivity = Date.now()
       let silenceWarned = false
       let silenceWarnings = 0
+      // Exact counters for the complete stream: the preview buffer may drop
+      // earlier chunks, but the saved file always holds the whole output.
+      let streamBytes = 0
+      let streamNewlines = 0
 
       const closeSink = Effect.fnUntraced(function* () {
         const stream = sink
@@ -540,6 +528,8 @@ export const ShellTool = Tool.define(
               lastActivity = Date.now()
               silenceWarned = false
               const size = Buffer.byteLength(chunk, "utf-8")
+              streamBytes += size
+              for (let i = 0; i < chunk.length; i++) if (chunk.charCodeAt(i) === 10) streamNewlines++
               list.push({ text: chunk, size })
               used += size
               while (used > keep && list.length > 1) {
@@ -641,8 +631,10 @@ export const ShellTool = Tool.define(
       }
       if (aborted) meta.push(SHELL_ABORT_NOTE)
       for (let i = 0; i < silenceWarnings; i++) meta.push(shellSilenceNote(silenceWarnMs))
+      if (code !== null && code !== 0) meta.push(`Command exited with code ${code}`)
       const raw = list.map((item) => item.text).join("")
-      const end = tail(raw, limits.maxLines, limits.maxBytes)
+      const totalLines = streamNewlines + (raw.length > 0 && !raw.endsWith("\n") ? 1 : 0)
+      const end = Truncate.tailPreview(raw, limits.maxLines, limits.maxBytes)
       if (end.cut) cut = true
       if (!file && end.cut) {
         file = yield* trunc.write(raw)
@@ -652,7 +644,18 @@ export const ShellTool = Tool.define(
       if (!output) output = "(no output)"
 
       if (cut && file) {
-        output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output
+        const details = end.details
+          ? {
+              ...end.details,
+              totalLines,
+              totalBytes: streamBytes,
+              startLine: end.details.partialLine
+                ? totalLines
+                : Math.max(1, totalLines - Truncate.countLines(end.text) + 1),
+              endLine: totalLines,
+            }
+          : droppedDetails(end.text, totalLines, streamBytes, limits.maxBytes)
+        output = `${Truncate.notice(file, details)}\n\n${output}`
       }
 
       if (meta.length > 0) {

@@ -320,8 +320,9 @@ describe("tool.read truncation", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "large.json") })
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Output capped at")
-      expect(result.output).toContain("Use offset=")
+      expect(result.output).toContain("[truncated: showing lines 1-")
+      expect(result.output).toContain("(50 KB limit)")
+      expect(result.output).toContain("Continue: read filePath=")
     }),
   )
 
@@ -352,7 +353,7 @@ describe("tool.read truncation", () => {
       )
 
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Output capped at")
+      expect(result.output).toContain("[truncated: showing lines 1-")
       expect(counter.bytes).toBeLessThan(Buffer.byteLength(content, "utf-8") / 2)
     }),
   )
@@ -365,8 +366,10 @@ describe("tool.read truncation", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "many-lines.txt"), limit: 10 })
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Showing lines 1-10 of 100")
-      expect(result.output).toContain("Use offset=11")
+      expect(result.output).toContain("[truncated: showing lines 1-10 of 100.")
+      expect(result.output).toContain("90 lines omitted after this range.")
+      expect(result.output).toContain("Continue: read filePath=")
+      expect(result.output).toContain("offset=11")
       expect(result.output).toContain("line0")
       expect(result.output).toContain("line9")
       expect(result.output).not.toContain("line10")
@@ -474,8 +477,23 @@ describe("tool.read truncation", () => {
       yield* put(path.join(dir, "long-line.txt"), "x".repeat(3000))
 
       const result = yield* exec(dir, { filePath: path.join(dir, "long-line.txt") })
-      expect(result.output).toContain("(line truncated to 2000 chars)")
+      expect(result.output).toContain("(line truncated to 2000 of 3000 chars;")
+      expect(result.output).toContain("offset=1 limit=1 maxLineLength=3000")
       expect(result.output.length).toBeLessThan(3000)
+    }),
+  )
+
+  it.live("shows the full long line when maxLineLength asks for it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "long-line.txt"), "x".repeat(3000))
+
+      const result = yield* exec(dir, {
+        filePath: path.join(dir, "long-line.txt"),
+        maxLineLength: 3000,
+      })
+      expect(result.output).toContain("x".repeat(3000))
+      expect(result.output).not.toContain("(line truncated")
     }),
   )
 
