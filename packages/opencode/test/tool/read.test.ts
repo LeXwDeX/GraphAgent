@@ -434,6 +434,47 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("reads pages from the end without an offset", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const lines = Array.from({ length: 1000 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(dir, "pages.txt"), lines)
+
+      const end = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: -1 })
+      expect(end.output).toContain("801: line801")
+      expect(end.output).toContain("1000: line1000")
+      expect(end.output).not.toMatch(/^800: line800$/m)
+
+      const back = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: -2 })
+      expect(back.output).toContain("601: line601")
+      expect(back.output).toContain("800: line800")
+      expect(back.output).not.toMatch(/^801: line801$/m)
+
+      const first = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: 1 })
+      expect(first.output).toContain("1: line1")
+      expect(first.output).toContain("200: line200")
+      expect(first.output).not.toMatch(/^201: line201$/m)
+    }),
+  )
+
+  it.live("page size follows limit and rejects conflicting offsets", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(dir, "pages.txt"), lines)
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: -1, limit: 10 })
+      expect(result.output).toContain("91: line91")
+      expect(result.output).toContain("100: line100")
+      expect(result.output).not.toMatch(/^90: line90$/m)
+
+      const conflict = yield* fail(dir, { filePath: path.join(dir, "pages.txt"), page: 1, offset: 1 })
+      expect(conflict.message).toContain("Use page or offset, not both.")
+      const zero = yield* fail(dir, { filePath: path.join(dir, "pages.txt"), page: 0 })
+      expect(zero.message).toContain("page must not be 0")
+    }),
+  )
+
   it.live("throws when offset is beyond end of file", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
@@ -512,7 +553,13 @@ describe("tool.read truncation", () => {
       const first = yield* exec(dir, { filePath: filepath })
       expect(first.output).toContain("charOffset=2001 maxLineLength=2000")
 
-      const second = yield* exec(dir, { filePath: filepath, offset: 1, limit: 1, charOffset: 2001, maxLineLength: 50_000 })
+      const second = yield* exec(dir, {
+        filePath: filepath,
+        offset: 1,
+        limit: 1,
+        charOffset: 2001,
+        maxLineLength: 50_000,
+      })
       expect(second.output).toContain("x".repeat(50_000))
       expect(second.output).toContain("charOffset=52001 maxLineLength=8000")
 

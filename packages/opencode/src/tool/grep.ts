@@ -1,6 +1,6 @@
 import path from "path"
 import { Effect, Schema } from "effect"
-import { PositiveInt } from "@opencode-ai/core/schema"
+import { NonNegativeInt, PositiveInt } from "@opencode-ai/core/schema"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -16,6 +16,7 @@ const MAX_LIMIT = 1000
 // read back with exact line offsets.
 const SCAN_LIMIT = 1000
 const MATCH_TEXT_LIMIT = 2000
+const MAX_CONTEXT = 20
 
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The regex pattern to search for in file contents" }),
@@ -27,6 +28,9 @@ export const Parameters = Schema.Struct({
   }),
   limit: Schema.optional(PositiveInt).annotate({
     description: `Maximum matches to show (defaults to ${DEFAULT_LIMIT}, capped at ${MAX_LIMIT})`,
+  }),
+  context: Schema.optional(NonNegativeInt).annotate({
+    description: `Lines of context before and after each match (defaults to 0, capped at ${MAX_CONTEXT}); use it to read a saved shell output in one search`,
   }),
 })
 
@@ -42,7 +46,10 @@ export const GrepTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: { pattern: string; path?: string; include?: string; limit?: number }, ctx: Tool.Context) =>
+      execute: (
+        params: { pattern: string; path?: string; include?: string; limit?: number; context?: number },
+        ctx: Tool.Context,
+      ) =>
         Effect.gen(function* () {
           const empty = {
             title: params.pattern,
@@ -85,60 +92,111 @@ export const GrepTool = Tool.define(
           const info = yield* fs.stat(search).pipe(Effect.catch((error) => searchPathFailure(search, error, requested)))
           const cwd = info.type === "Directory" ? search : path.dirname(search)
           const previewLimit = Math.min(params.limit ?? DEFAULT_LIMIT, MAX_LIMIT)
+          const context = Math.min(params.context ?? 0, MAX_CONTEXT)
           const scan = Math.max(previewLimit, SCAN_LIMIT)
-          const result = yield* ripgrep.grep({
-            cwd,
-            pattern: params.pattern,
-            file: info.type === "File" ? path.basename(search) : undefined,
-            include: params.include,
-            limit: scan + 1,
-          })
-          if (result.length === 0) return empty
+          // Context rows consume the process row budget; matches still cap at
+          // `scan`.
+          const rowBudget = context > 0 ? scan * (2 * context + 1) : scan
+          const found =
+            context > 0
+              ? yield* ripgrep.grepContext({
+                  cwd,
+                  pattern: params.pattern,
+                  file: info.type === "File" ? path.basename(search) : undefined,
+                  include: params.include,
+                  limit: rowBudget + 1,
+                  context,
+                })
+              : (yield* ripgrep.grep({
+                  cwd,
+                  pattern: params.pattern,
+                  file: info.type === "File" ? path.basename(search) : undefined,
+                  include: params.include,
+                  limit: rowBudget + 1,
+                })).map((match) => ({ kind: "match" as const, match }))
+          if (found.length === 0) return empty
 
-          const more = result.length > scan
-          const rows = result.slice(0, scan).map((item) => ({
-            path: path.resolve(cwd, item.entry.path),
-            line: item.line,
-            text: item.text,
+          const matches = found.filter((row) => row.kind === "match")
+          const more = found.length > rowBudget || matches.length > scan
+          // The extra match that proves the scan cap was reached only signals
+          // "more"; the saved listing stays within the cap the caller can ask
+          // for, keeping its continuation past the end of the saved lines.
+          let probe = -1
+          let seen = 0
+          for (let i = 0; i < found.length && probe < 0; i++) {
+            if (found[i]!.kind !== "match") continue
+            if (seen++ === scan) probe = i
+          }
+          const kept = probe >= 0 ? found.slice(0, probe) : found
+          const rows = kept.map((row) => ({
+            kind: row.kind,
+            path: path.resolve(cwd, row.match.entry.path),
+            line: row.match.line,
+            text: row.match.text,
           }))
+
+          // Every match keeps its context window in the saved listing; the
+          // preview stops at previewLimit matches and the shared byte budget.
+          const include = new Set<number>()
+          rows.forEach((row, index) => {
+            if (row.kind !== "match") return
+            for (let i = Math.max(0, index - context); i <= Math.min(rows.length - 1, index + context); i++) {
+              include.add(i)
+            }
+          })
 
           // Setting metadata.truncated opts out of the shared output cap, so the
           // listing enforces the same byte budget itself.
-          const entries: string[][] = []
+          const entries: { lines: string[]; match: boolean; matchIndex: number }[] = []
           let current = ""
-          for (const match of rows) {
+          let previousLine = -1
+          let matchIndex = -1
+          for (let i = 0; i < rows.length; i++) {
+            if (!include.has(i)) continue
+            const row = rows[i]!
+            if (row.kind === "match") matchIndex++
+            const owner = matchIndex >= 0 ? matchIndex : 0
             const text =
-              match.text.length > MATCH_TEXT_LIMIT
-                ? `${match.text.slice(0, MATCH_TEXT_LIMIT)}... (line truncated to ${MATCH_TEXT_LIMIT} of ${match.text.length} chars; ` +
-                  `continue with read filePath="${match.path}" offset=${match.line} limit=1 ` +
+              row.text.length > MATCH_TEXT_LIMIT
+                ? `${row.text.slice(0, MATCH_TEXT_LIMIT)}... (line truncated to ${MATCH_TEXT_LIMIT} of ${row.text.length} chars; ` +
+                  `continue with read filePath="${row.path}" offset=${row.line} limit=1 ` +
                   `charOffset=${MATCH_TEXT_LIMIT + 1} ` +
-                  `maxLineLength=${Math.min(match.text.length - MATCH_TEXT_LIMIT, Truncate.MAX_LINE_FETCH)})`
-                : match.text
-            const lines = current === match.path ? [] : [...(current === "" ? [] : [""]), `${match.path}:`]
-            lines.push(`  Line ${match.line}: ${text}`)
-            entries.push(lines)
-            current = match.path
+                  `maxLineLength=${Math.min(row.text.length - MATCH_TEXT_LIMIT, Truncate.MAX_LINE_FETCH)})`
+                : row.text
+            const lines: string[] = []
+            if (current !== row.path) {
+              if (current !== "") lines.push("")
+              lines.push(`${row.path}:`)
+              current = row.path
+              previousLine = -1
+            } else if (previousLine >= 0 && row.line > previousLine + 1) {
+              lines.push("  ...")
+            }
+            lines.push(row.kind === "match" ? `  Line ${row.line}: ${text}` : `  Line ${row.line}- ${text}`)
+            entries.push({ lines, match: row.kind === "match", matchIndex: owner })
+            previousLine = row.line
           }
 
-          const total = more ? `at least ${rows.length}` : `${rows.length}`
+          const total = more ? `at least ${matches.length}` : `${matches.length}`
           const header = `Found ${total} matches`
           const body: string[] = []
           let bytes = 0
           let shown = 0
           let byBytes = false
-          for (const lines of entries) {
-            if (shown >= previewLimit) break
-            const size = Buffer.byteLength(lines.join("\n"), "utf8") + 1
-            if (shown > 0 && bytes + size > Truncate.MAX_BYTES) {
+          for (const entry of entries) {
+            if (entry.matchIndex >= previewLimit) break
+            if (entry.match && shown >= previewLimit) break
+            const size = Buffer.byteLength(entry.lines.join("\n"), "utf8") + 1
+            if (body.length > 0 && bytes + size > Truncate.MAX_BYTES) {
               byBytes = true
               break
             }
-            body.push(...lines)
+            body.push(...entry.lines)
             bytes += size
-            shown++
+            if (entry.match) shown++
           }
 
-          const truncated = more || shown < rows.length
+          const truncated = more || matches.length > previewLimit || shown < Math.min(matches.length, previewLimit)
           const output = [header, ...body]
           if (!truncated) {
             return {
@@ -148,12 +206,15 @@ export const GrepTool = Tool.define(
             }
           }
 
-          const full = yield* trunc.write([header, ...entries.flat()].join("\n"))
+          const saved = [header, ...entries.flatMap((entry) => entry.lines)].join("\n")
+          const full = yield* trunc.write(saved)
           // Match text may carry its trailing newline, so an entry can render as
           // more than one line. Count rendered lines, not array entries, or the
-          // continuation points back into the preview.
-          const next = output.join("\n").split("\n").length + 1
-          const omitted = rows.length - shown
+          // continuation points back into the preview. When the scan itself was
+          // capped there is nothing left to page through in the saved listing,
+          // so continue past its last line.
+          const next = (more ? saved : output.join("\n")).split("\n").length + 1
+          const omitted = matches.length - shown
           output.push("")
           output.push(
             `[truncated: showing ${shown} of ${total} matches. ` +

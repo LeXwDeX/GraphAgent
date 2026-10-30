@@ -7,6 +7,9 @@ import { ShellID } from "./id"
 const PS = new Set(["powershell", "pwsh"])
 const CMD = new Set(["cmd"])
 
+/** Inline lines kept from the end of a long command; the rest lives in the output file. */
+export const SHELL_TAIL_LINES = 20
+
 export type Limits = {
   maxLines: number
   maxBytes: number
@@ -100,7 +103,7 @@ Usage notes:
   - The command argument is required.
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
+  - If the output exceeds ${SHELL_TAIL_LINES} lines, the result keeps the last ${SHELL_TAIL_LINES} lines (and at most ${limits.maxBytes} bytes) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page, page=-2 the page before) or search it with grep context=10. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
 
   - Avoid using Bash with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT find or ls)
@@ -153,7 +156,7 @@ Usage notes:
   - The command argument is required.
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
+  - If the output exceeds ${SHELL_TAIL_LINES} lines, the result keeps the last ${SHELL_TAIL_LINES} lines (and at most ${limits.maxBytes} bytes) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page, page=-2 the page before) or search it with grep context=10. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
 
   - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT Get-ChildItem)
@@ -203,7 +206,7 @@ Usage notes:
   - The command argument is required.
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
-  - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`more\` or other pagination commands to limit output; the full output will already be captured to a file for more precise searching.
+  - If the output exceeds ${SHELL_TAIL_LINES} lines, the result keeps the last ${SHELL_TAIL_LINES} lines (and at most ${limits.maxBytes} bytes) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page, page=-2 the page before) or search it with grep context=10. Do NOT use \`more\` or other pagination commands to limit output; the full output is already captured for precise paging and searching.
 
   - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT dir /s)
@@ -226,7 +229,13 @@ Usage notes:
     </bad-example>`
 }
 
-function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number, silenceWarnMs: number) {
+function profile(
+  name: string,
+  platform: NodeJS.Platform,
+  limits: Limits,
+  defaultTimeoutMs: number,
+  silenceWarnMs: number,
+) {
   const isPowerShell = PS.has(name)
   const chain = chainGuidance(name)
   if (CMD.has(name)) {
@@ -279,13 +288,20 @@ function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaul
   }
 }
 
-export function render(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number, silenceWarnMs: number) {
+export function render(
+  name: string,
+  platform: NodeJS.Platform,
+  limits: Limits,
+  defaultTimeoutMs: number,
+  silenceWarnMs: number,
+) {
   const selected = profile(name, platform, limits, defaultTimeoutMs, silenceWarnMs)
   return {
     description: renderPrompt(DESCRIPTION, {
       intro: selected.intro,
       os: platform,
       shell: name,
+      SHELL_TAIL_LINES: String(SHELL_TAIL_LINES),
       tmp: Global.Path.tmp,
       workdirSection: selected.workdirSection,
       commandSection: selected.commandSection,

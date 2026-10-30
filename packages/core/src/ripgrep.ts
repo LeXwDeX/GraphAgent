@@ -25,26 +25,42 @@ const RawData = Schema.Union([Schema.Struct({ text: Schema.String }), Schema.Str
 const rawText = (data: typeof RawData.Type) =>
   "text" in data ? data.text : Buffer.from(data.bytes, "base64").toString("utf8")
 
-const RawMatch = Schema.Struct({
-  type: Schema.Literal("match"),
-  data: Schema.Struct({
-    path: RawData,
-    lines: RawData,
-    line_number: PositiveInt,
-    absolute_offset: NonNegativeInt,
-    submatches: Schema.Array(
-      Schema.Struct({
-        match: Schema.Struct({ text: Schema.String }),
-        start: NonNegativeInt,
-        end: NonNegativeInt,
-      }),
-    ),
+const RawSubmatches = Schema.Array(
+  Schema.Struct({
+    match: Schema.Struct({ text: Schema.String }),
+    start: NonNegativeInt,
+    end: NonNegativeInt,
   }),
+)
+
+const RawEventPayload = Schema.Struct({
+  path: RawData,
+  lines: RawData,
+  line_number: PositiveInt,
+  absolute_offset: NonNegativeInt,
+  submatches: RawSubmatches,
 })
 
-type RawMatchData = Omit<(typeof RawMatch.Type)["data"], "path" | "lines"> & {
+const RawMatch = Schema.Struct({
+  type: Schema.Literal("match"),
+  data: RawEventPayload,
+})
+
+/**
+ * `--context=N` makes ripgrep interleave `context` rows with `match` rows.
+ * Both carry the same line payload; only the event type distinguishes them.
+ */
+const RawContext = Schema.Struct({
+  type: Schema.Literal("context"),
+  data: RawEventPayload,
+})
+
+const RawEvent = Schema.Union([RawMatch, RawContext])
+
+type RawRow = Omit<(typeof RawEventPayload)["Type"], "path" | "lines"> & {
   path: { text: string }
   lines: { text: string }
+  kind: "match" | "context"
 }
 
 export class Error extends Schema.TaggedErrorClass<Error>()("Ripgrep.Error", {
@@ -82,13 +98,31 @@ export interface GrepInput {
   readonly file?: string
   readonly include?: string
   readonly limit: number
+  /** Lines of context to interleave around each match. */
+  readonly context?: number
   readonly signal?: AbortSignal
+}
+
+export interface GrepContextInput extends GrepInput {
+  readonly context: number
+}
+
+/** A match or one of its context lines, in ripgrep's output order. */
+export interface GrepRow {
+  readonly kind: "match" | "context"
+  readonly match: Match
 }
 
 export interface Interface {
   readonly find: (input: FindInput) => Effect.Effect<readonly Entry[], Error>
   readonly glob: (input: GlobInput) => Effect.Effect<readonly Entry[], Error>
   readonly grep: (input: GrepInput) => Effect.Effect<readonly Match[], Error | InvalidPatternError>
+  /**
+   * Runs ripgrep with context lines and returns matches and context in file
+   * order. `limit` counts rows, not matches, so callers with a large context
+   * window must raise it to avoid cutting a match's trailing context.
+   */
+  readonly grepContext: (input: GrepContextInput) => Effect.Effect<readonly GrepRow[], Error | InvalidPatternError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Ripgrep") {}
@@ -181,6 +215,91 @@ export const layer = Layer.effect(
       )
     }
 
+    const grepRows = (input: GrepInput) =>
+      run<RawRow>({
+        ...input,
+        args: [
+          "--no-config",
+          "--json",
+          "--hidden",
+          ...(input.include ? [`--glob=${input.include}`] : []),
+          ...(input.context && input.context > 0 ? [`--context=${input.context}`] : []),
+          "--glob=!**/.git/**",
+          "--",
+          input.pattern,
+          input.file ?? ".",
+        ],
+        parse: (line) =>
+          // One oversized record (a match inside a minified bundle) is skipped
+          // rather than failing every other match in the search.
+          (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES
+            ? Effect.succeed(undefined)
+            : Effect.try({
+                try: () => JSON.parse(line) as unknown,
+                catch: (cause) => failure("Invalid ripgrep JSON output", cause),
+              })
+          ).pipe(
+            Effect.flatMap((json) => {
+              if (
+                !json ||
+                typeof json !== "object" ||
+                !("type" in json) ||
+                (json.type !== "match" && json.type !== "context")
+              )
+                return Effect.succeed(undefined)
+              return Schema.decodeUnknownEffect(RawEvent)(json).pipe(
+                Effect.map((event) => ({
+                  ...event.data,
+                  kind: event.type,
+                  path: { text: rawText(event.data.path).replace(/^\.[\\/]/, "") },
+                  lines: { text: rawText(event.data.lines) },
+                  submatches: event.data.submatches.slice(0, MAX_SUBMATCHES),
+                })),
+                Effect.mapError((cause) => failure("Invalid ripgrep match output", cause)),
+              )
+            }),
+          ),
+      }).pipe(
+        Effect.flatMap((result) => {
+          // Exit code 2 means ripgrep hit traversal/read errors (for example
+          // unreadable files). Those failures must stay visible instead of
+          // becoming a misleading successful or no-match result, even when
+          // some matches were already found. Limit truncation above is an
+          // intentional partial result and is unaffected.
+          if (result.partial) {
+            return Effect.fail(failure(result.stderr.trim() || "ripgrep reported traversal errors"))
+          }
+          return Effect.succeed(
+            result.items.map((row) => {
+              const relative = row.path.text
+                .replace(/^(?:\.[\\/])+/u, "")
+                .replace(/^[\\/]+/u, "")
+                .replaceAll("\\", "/")
+              return {
+                kind: row.kind,
+                match: Match.make({
+                  entry: Entry.make({
+                    path: RelativePath.make(relative),
+                    type: "file",
+                  }),
+                  line: row.line_number,
+                  offset: row.absolute_offset,
+                  text:
+                    row.lines.text.length > 2_000
+                      ? row.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
+                      : row.lines.text,
+                  submatches: row.submatches.map((submatch) => ({
+                    text: submatch.match.text,
+                    start: submatch.start,
+                    end: submatch.end,
+                  })),
+                }),
+              } satisfies GrepRow
+            }),
+          )
+        }),
+      )
+
     return Service.of({
       glob: (input) =>
         run<string>({
@@ -256,79 +375,8 @@ export const layer = Layer.effect(
           Effect.catchTag("Ripgrep.InvalidPatternError", (cause) => Effect.fail(failure(cause.message, cause))),
         ),
       grep: (input) =>
-        run<RawMatchData>({
-          ...input,
-          args: [
-            "--no-config",
-            "--json",
-            "--hidden",
-            ...(input.include ? [`--glob=${input.include}`] : []),
-            "--glob=!**/.git/**",
-            "--",
-            input.pattern,
-            input.file ?? ".",
-          ],
-          parse: (line) =>
-            // One oversized record (a match inside a minified bundle) is skipped
-            // rather than failing every other match in the search.
-            (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES
-              ? Effect.succeed(undefined)
-              : Effect.try({
-                  try: () => JSON.parse(line) as unknown,
-                  catch: (cause) => failure("Invalid ripgrep JSON output", cause),
-                })
-            ).pipe(
-              Effect.flatMap((json) => {
-                if (!json || typeof json !== "object" || !("type" in json) || json.type !== "match")
-                  return Effect.succeed(undefined)
-                return Schema.decodeUnknownEffect(RawMatch)(json).pipe(
-                  Effect.map((match) => ({
-                    ...match.data,
-                    path: { text: rawText(match.data.path).replace(/^\.[\\/]/, "") },
-                    lines: { text: rawText(match.data.lines) },
-                    submatches: match.data.submatches.slice(0, MAX_SUBMATCHES),
-                  })),
-                  Effect.mapError((cause) => failure("Invalid ripgrep match output", cause)),
-                )
-              }),
-            ),
-        }).pipe(
-          Effect.flatMap((result) => {
-            // Exit code 2 means ripgrep hit traversal/read errors (for example
-            // unreadable files). Those failures must stay visible instead of
-            // becoming a misleading successful or no-match result, even when
-            // some matches were already found. Limit truncation above is an
-            // intentional partial result and is unaffected.
-            if (result.partial) {
-              return Effect.fail(failure(result.stderr.trim() || "ripgrep reported traversal errors"))
-            }
-            return Effect.succeed(
-              result.items.map((match) => {
-                const relative = match.path.text
-                  .replace(/^(?:\.[\\/])+/u, "")
-                  .replace(/^[\\/]+/u, "")
-                  .replaceAll("\\", "/")
-                return Match.make({
-                  entry: Entry.make({
-                    path: RelativePath.make(relative),
-                    type: "file",
-                  }),
-                  line: match.line_number,
-                  offset: match.absolute_offset,
-                  text:
-                    match.lines.text.length > 2_000
-                      ? match.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
-                      : match.lines.text,
-                  submatches: match.submatches.map((submatch) => ({
-                    text: submatch.match.text,
-                    start: submatch.start,
-                    end: submatch.end,
-                  })),
-                })
-              }),
-            )
-          }),
-        ),
+        grepRows({ ...input, context: undefined }).pipe(Effect.map((rows) => rows.map((row) => row.match))),
+      grepContext: (input) => grepRows(input),
     })
   }),
 )

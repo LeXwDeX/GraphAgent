@@ -140,6 +140,28 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("returns the requested context around each match", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "context.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 20 }, (_, index) => `line${index + 1}`).join("\n")),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "line10", path: file, context: 2 }, ctx)
+
+      expect(result.output).toStartWith("Found 1 matches\n")
+      expect(result.output).toContain("Line 10: line10")
+      expect(result.output).toContain("Line 8- line8")
+      expect(result.output).toContain("Line 9- line9")
+      expect(result.output).toContain("Line 11- line11")
+      expect(result.output).toContain("Line 12- line12")
+      expect(result.output).not.toContain("line7")
+      expect(result.output).not.toContain("line13")
+    }),
+  )
+
   it.instance("exactly 100 matches are complete", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

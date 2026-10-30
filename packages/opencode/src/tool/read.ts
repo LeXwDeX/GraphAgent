@@ -9,7 +9,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { formatSize, MAX_LINE_FETCH } from "./truncate"
+import { formatSize, MAX_LINE_FETCH, PAGE_LINES } from "./truncate"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -31,6 +31,9 @@ export const Parameters = Schema.Struct({
   }),
   limit: Schema.optional(PositiveInt).annotate({
     description: "The maximum number of lines or directory entries to read (positive integer, defaults to 2000)",
+  }),
+  page: Schema.optional(Schema.Int).annotate({
+    description: `Read one page of the file (${PAGE_LINES} lines, or limit when set): page 1 is the start, -1 is the last page, -2 the page before. Cannot be combined with offset`,
   }),
   maxLineLength: Schema.optional(PositiveInt).annotate({
     description: `Maximum characters to show from each line (defaults to ${MAX_LINE_LENGTH}, capped at ${MAX_LINE_FETCH}); use it to continue a truncated long line`,
@@ -247,6 +250,46 @@ export const ReadTool = Tool.define<
       }
     })
 
+    /** Total lines for a negative page; the read itself stays streaming. */
+    const countFileLines = Effect.fn("ReadTool.countFileLines")(function* (filepath: string) {
+      const decoder = new TextDecoder("utf-8")
+      let count = 0
+      yield* fs.stream(filepath).pipe(
+        Stream.map((bytes) => decoder.decode(bytes, { stream: true })),
+        Stream.splitLines,
+        Stream.runForEach(() =>
+          Effect.sync(() => {
+            count += 1
+          }),
+        ),
+      )
+      return count
+    })
+
+    /** Maps a page number onto offset/limit; negative pages count from the end. */
+    const resolvePage = Effect.fn("ReadTool.resolvePage")(function* (
+      params: Schema.Schema.Type<typeof Parameters>,
+      total?: number,
+    ) {
+      if (params.page === undefined) {
+        return { offset: params.offset ?? 1, limit: params.limit ?? DEFAULT_READ_LIMIT }
+      }
+      if (params.offset !== undefined) {
+        return yield* Effect.fail(new Error("Use page or offset, not both."))
+      }
+      if (params.page === 0) {
+        return yield* Effect.fail(new Error("page must not be 0; use 1 for the first page or -1 for the last."))
+      }
+      const pageSize = params.limit ?? PAGE_LINES
+      if (params.page > 0) {
+        return { offset: (params.page - 1) * pageSize + 1, limit: pageSize }
+      }
+      if (total === undefined) {
+        return yield* Effect.fail(new Error("A negative page needs the total line count."))
+      }
+      return { offset: Math.max(1, total + params.page * pageSize + 1), limit: pageSize }
+    })
+
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
       const ext = path.extname(filepath).toLowerCase()
       switch (ext) {
@@ -331,8 +374,7 @@ export const ReadTool = Tool.define<
 
       if (stat.type === "Directory") {
         const items = yield* list(filepath)
-        const limit = params.limit ?? DEFAULT_READ_LIMIT
-        const offset = params.offset ?? 1
+        const { offset, limit } = yield* resolvePage(params, items.length)
         const start = offset - 1
         const sliced = items.slice(start, start + limit)
         const truncated = start + sliced.length < items.length
@@ -396,9 +438,11 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
+      const total = params.page !== undefined && params.page < 0 ? yield* countFileLines(filepath) : undefined
+      const { offset, limit } = yield* resolvePage(params, total)
       const file = yield* lines(filepath, {
-        limit: params.limit ?? DEFAULT_READ_LIMIT,
-        offset: params.offset ?? 1,
+        limit,
+        offset,
         maxLineLength: Math.min(params.maxLineLength ?? MAX_LINE_LENGTH, MAX_LINE_FETCH),
         charOffset: params.charOffset,
       })

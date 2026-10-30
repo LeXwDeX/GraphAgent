@@ -299,6 +299,12 @@ exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "context": {
+      "description": "Lines of context before and after each match (defaults to 0, capped at 20); use it to read a saved shell output in one search",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer",
+    },
     "include": {
       "description": "File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")",
       "type": "string",
@@ -494,6 +500,12 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
     "offset": {
       "description": "The line number or directory entry to start reading from (1-indexed positive integer)",
       "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
+    "page": {
+      "description": "Read one page of the file (200 lines, or limit when set): page 1 is the start, -1 is the last page, -2 the page before. Cannot be combined with offset",
       "maximum": 9007199254740991,
       "minimum": -9007199254740991,
       "type": "integer",

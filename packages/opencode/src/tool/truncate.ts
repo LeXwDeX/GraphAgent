@@ -12,6 +12,8 @@ const RETENTION = Duration.days(7)
 
 export const MAX_LINES = 2000
 export const MAX_BYTES = 50 * 1024
+/** Lines in one `read` page when the caller does not pass a limit. */
+export const PAGE_LINES = 200
 /** Largest per-line fetch the read tool accepts; longer lines need the shell. */
 export const MAX_LINE_FETCH = 50_000
 export const DIR = TRUNCATION_DIR
@@ -43,8 +45,7 @@ export interface Preview {
 }
 
 export type Result =
-  | { content: string; truncated: false }
-  | { content: string; truncated: true; outputPath: string; details: Details }
+  { content: string; truncated: false } | { content: string; truncated: true; outputPath: string; details: Details }
 
 export interface Options {
   maxLines?: number
@@ -264,16 +265,14 @@ export const layer = Layer.effect(
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
       const direction = options.direction ?? "head"
-      const preview = direction === "head" ? headPreview(text, maxLines, maxBytes) : tailPreview(text, maxLines, maxBytes)
+      const preview =
+        direction === "head" ? headPreview(text, maxLines, maxBytes) : tailPreview(text, maxLines, maxBytes)
       if (!preview.cut || !preview.details) return { content: text, truncated: false } as const
 
       const file = yield* write(text)
       const hint = notice(file, preview.details)
       return {
-        content:
-          direction === "head"
-            ? `${preview.text}\n\n${hint}`
-            : `${hint}\n\n${preview.text}`,
+        content: direction === "head" ? `${preview.text}\n\n${hint}` : `${hint}\n\n${preview.text}`,
         truncated: true,
         outputPath: file,
         details: preview.details,
