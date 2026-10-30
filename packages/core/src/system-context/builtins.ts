@@ -5,7 +5,6 @@ import { Location } from "../location"
 import { SystemContext } from "./index"
 import { InstructionContext } from "../instruction-context"
 import { SystemContextRegistry } from "./registry"
-import { RUNTIME_CAPABILITIES } from "./capabilities"
 import { DEFAULT_WRITING_STYLE } from "./writing-style"
 
 const builtIns = Layer.effectDiscard(
@@ -27,13 +26,6 @@ const builtIns = Layer.effectDiscard(
         load: Effect.succeed(DEFAULT_WRITING_STYLE),
         baseline: (style) => style,
         update: (_previous, style) => style,
-      }),
-      SystemContext.make({
-        key: SystemContext.Key.make("core/capabilities"),
-        codec: Schema.toCodecJson(Schema.String),
-        load: Effect.succeed(RUNTIME_CAPABILITIES),
-        baseline: (capabilities) => capabilities,
-        update: (_previous, capabilities) => capabilities,
       }),
       SystemContext.make({
         key: SystemContext.Key.make("core/environment"),

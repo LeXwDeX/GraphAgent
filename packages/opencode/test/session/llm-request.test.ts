@@ -3,7 +3,6 @@ import { Effect, Layer } from "effect"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { RUNTIME_CAPABILITIES } from "@opencode-ai/core/system-context/capabilities"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
 import { SessionID } from "../../src/session/schema"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
@@ -14,6 +13,9 @@ import { RuntimeContext } from "../../src/session/runtime-context"
 import { testEffect } from "../lib/effect"
 import { jsonSchema, tool } from "ai"
 import { Permission } from "@/permission"
+
+const PROMPT_IDENTITY = "You are graphagent, a coding agent working in the user's workspace."
+const REMOVED_CATALOG = "## GraphAgent / OpenCode capabilities"
 
 const it = testEffect(
   Layer.mergeAll(
@@ -125,10 +127,11 @@ describe("runtime capabilities in model requests", () => {
     ["zhipuai", "glm-4.7", "@ai-sdk/openai-compatible"],
     ["alibaba", "qwen3-coder", "@ai-sdk/alibaba"],
   ]) {
-    it.instance(`${provider} receives product knowledge with no configured hooks or tools`, () =>
+    it.instance(`${provider} receives the unified prompt with no configured hooks or tools`, () =>
       Effect.gen(function* () {
         const prepared = yield* prepare(yield* request(provider, model, npm))
-        expect(prepared.system.join("\n")).toContain(RUNTIME_CAPABILITIES)
+        expect(prepared.system.join("\n")).toContain(PROMPT_IDENTITY)
+        expect(prepared.system.join("\n")).not.toContain(REMOVED_CATALOG)
         expect(prepared.system.join("\n").split(DEFAULT_WRITING_STYLE)).toHaveLength(2)
         expect(prepared.messages[0]).toEqual({ role: "system", content: prepared.system[0] })
         expect(prepared.tools).toEqual({})
@@ -136,7 +139,7 @@ describe("runtime capabilities in model requests", () => {
     )
   }
 
-  it.instance("custom agent prompts keep capability knowledge and dynamic session context", () =>
+  it.instance("custom agent prompts keep the writing style and dynamic session context", () =>
     Effect.gen(function* () {
       const input = yield* request()
       const prepared = yield* prepare({
@@ -147,32 +150,33 @@ describe("runtime capabilities in model requests", () => {
       })
       const system = prepared.system.join("\n")
       expect(system).toStartWith("Custom agent instructions.")
-      expect(system).toContain(RUNTIME_CAPABILITIES)
+      expect(system).not.toContain(REMOVED_CATALOG)
       expect(system.split(DEFAULT_WRITING_STYLE)).toHaveLength(2)
       expect(system).toContain("## Active Hooks")
       expect(system).toContain("User instructions.")
       expect(system.indexOf(DEFAULT_WRITING_STYLE)).toBeLessThan(system.indexOf("User instructions."))
-      expect(system.split("## GraphAgent / OpenCode capabilities")).toHaveLength(2)
     }),
   )
 
-  it.instance("child sessions keep the writing style but omit product knowledge", () =>
+  it.instance("child sessions keep the shared prompt and writing style without the removed catalog", () =>
     Effect.gen(function* () {
       const prepared = yield* prepare({ ...(yield* request()), parentSessionID: "ses_parent" })
       const system = prepared.system.join("\n")
-      expect(system).not.toContain("## GraphAgent / OpenCode capabilities")
+      expect(system).toContain(PROMPT_IDENTITY)
+      expect(system).not.toContain(REMOVED_CATALOG)
       expect(system.split(DEFAULT_WRITING_STYLE)).toHaveLength(2)
     }),
   )
 
-  it.instance("OpenAI OAuth carries capabilities through instructions", () =>
+  it.instance("OpenAI OAuth carries the unified prompt through instructions", () =>
     Effect.gen(function* () {
       const input = yield* request("openai", "gpt-5", "@ai-sdk/openai")
       const prepared = yield* prepare({
         ...input,
         auth: { type: "oauth", access: "synthetic", refresh: "synthetic", expires: 0 },
       })
-      expect(prepared.params.options.instructions).toContain(RUNTIME_CAPABILITIES)
+      expect(prepared.params.options.instructions).toContain(PROMPT_IDENTITY)
+      expect(prepared.params.options.instructions).not.toContain(REMOVED_CATALOG)
       expect(prepared.params.options.instructions).toContain(DEFAULT_WRITING_STYLE)
       expect(prepared.messages).toEqual(input.messages)
     }),
@@ -193,11 +197,12 @@ describe("runtime capabilities in model requests", () => {
     }),
   )
 
-  it.instance("workflow requests retain capabilities in their separate system field", () =>
+  it.instance("workflow requests keep the unified prompt in their separate system field", () =>
     Effect.gen(function* () {
       const input = yield* request()
       const prepared = yield* prepare({ ...input, isWorkflow: true })
-      expect(prepared.system.join("\n")).toContain(RUNTIME_CAPABILITIES)
+      expect(prepared.system.join("\n")).toContain(PROMPT_IDENTITY)
+      expect(prepared.system.join("\n")).not.toContain(REMOVED_CATALOG)
       expect(prepared.system.join("\n")).toContain(DEFAULT_WRITING_STYLE)
       expect(prepared.messages).toEqual(input.messages)
     }),
@@ -228,10 +233,10 @@ describe("runtime capabilities in model requests", () => {
     }),
   )
 
-  it.instance("small helper requests omit the product catalog", () =>
+  it.instance("small helper requests omit the removed product catalog", () =>
     Effect.gen(function* () {
       const prepared = yield* prepare({ ...(yield* request()), small: true })
-      expect(prepared.system.join("\n")).not.toContain(RUNTIME_CAPABILITIES)
+      expect(prepared.system.join("\n")).not.toContain(REMOVED_CATALOG)
       expect(prepared.system.join("\n")).toContain(DEFAULT_WRITING_STYLE)
     }),
   )

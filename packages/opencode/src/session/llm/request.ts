@@ -11,7 +11,6 @@ import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
 import { RuntimeContext } from "../runtime-context"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { RUNTIME_CAPABILITIES } from "@opencode-ai/core/system-context/capabilities"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
@@ -69,10 +68,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     : []
   const system = [
     [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model, Object.keys(tools))),
-      // Product knowledge answers the user's questions in the main conversation. Subagents and DAG workers do
-      // not need it.
-      ...(input.small || input.parentSessionID ? [] : [RUNTIME_CAPABILITIES]),
+      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(Object.keys(tools))),
       DEFAULT_WRITING_STYLE,
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),

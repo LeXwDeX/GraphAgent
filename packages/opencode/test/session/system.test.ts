@@ -17,25 +17,32 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { testEffect } from "../lib/effect"
-import { ProviderTest } from "../fake/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import ANTHROPIC from "@/session/prompt/anthropic.txt"
-import GEMINI from "@/session/prompt/gemini.txt"
-import BEAST from "@/session/prompt/beast.txt"
-import DEFAULT from "@/session/prompt/default.txt"
+import GRAPHAGENT from "@/session/prompt/graphagent.txt"
+import { editingInstruction } from "@/tool/editing-tools"
 
-for (const [id, prompt] of [
-  ["Claude-Sonnet-4", ANTHROPIC],
-  ["GEMINI-2.5-Pro", GEMINI],
-  ["GPT-4.1", BEAST],
-  ["o1", BEAST],
-  ["openai/O3-mini", BEAST],
-  ["studio1", DEFAULT],
-  ["foo3-bar", DEFAULT],
-] as const)
-  test(`provider prompt selection for ${id}`, () => {
-    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelV2.ID.make(id) }))).toEqual([prompt])
+for (const id of [
+  "Claude-Sonnet-4",
+  "GEMINI-2.5-Pro",
+  "GPT-4.1",
+  "o1",
+  "openai/O3-mini",
+  "studio1",
+  "foo3-bar",
+  "deepseek-chat",
+])
+  test(`every model receives the unified prompt for ${id}`, () => {
+    expect(SystemPrompt.provider()).toEqual([
+      GRAPHAGENT.replace("${editingInstruction}", () => editingInstruction(["edit", "write"])),
+    ])
   })
+
+test("the editing instruction follows the exposed tools", () => {
+  expect(SystemPrompt.provider(["apply_patch"]).join("\n")).toContain("Use apply_patch for manual file edits.")
+  expect(SystemPrompt.provider(["edit"]).join("\n")).toContain("Use edit for manual file edits.")
+  expect(SystemPrompt.provider(["write"]).join("\n")).toContain("Use write for manual file edits.")
+  expect(SystemPrompt.provider([]).join("\n")).toContain("No file-editing tool is available")
+  expect(SystemPrompt.provider().join("\n")).not.toContain("${")
+})
 
 const skills: Skill.Info[] = [
   {
