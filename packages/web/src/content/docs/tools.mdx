@@ -75,7 +75,7 @@ Modify existing files using exact string replacements.
 }
 ```
 
-This tool performs precise edits to files by replacing exact text matches. It's the primary way the LLM modifies code. When `oldString` matches several locations, the call fails and lists each candidate line instead of guessing; when nothing matches, it reports the closest line. Set `replaceAll` to replace every occurrence deliberately.
+This tool performs precise edits to files by replacing exact text matches. It's the primary way the LLM modifies code. When `oldString` matches several locations, the call fails and lists up to five candidate lines plus the count of the rest instead of guessing; when nothing matches, it reports the closest line. Set `replaceAll` to replace every occurrence deliberately.
 
 ---
 
@@ -165,11 +165,11 @@ Tool output is capped so a single call cannot flood the context. `tool_output.ma
 }
 ```
 
-Every truncation notice states what was omitted and the exact parameters that continue it; when no file holds the complete output, it also names where the complete output was saved.
+Every truncation notice states what was omitted and the exact parameters that continue it, and names the saved file when the returned preview is not the whole result.
 
 - `read` streams the file and points at the next `offset`. A single line longer than `maxLineLength` (2000 characters by default) says which `charOffset` and `maxLineLength` fetch the rest; repeating that call reaches any character position in the line.
 - `shell` keeps the tail of the output, where errors usually are, and states a non-zero exit code explicitly. The complete output is saved and can be read with `offset`.
-- `grep` and `glob` accept `limit` (default 100, capped at 1000). A truncated `grep` saves the complete listing and names the line offset that continues it; a truncated `glob` states whether the preview limit or the scan cap cut the list (the cap reports `at least` that many paths) and the larger limit or narrower pattern that shows the rest.
+- `grep` and `glob` accept `limit` (default 100, capped at 1000). A truncated `grep` saves the scanned listing (up to the 1000-match scan cap), says when matches remain beyond it, and names the line offset that continues it; a truncated `glob` states whether the preview limit or the scan cap cut the list (the cap reports `at least` that many paths) and the larger limit or narrower pattern that shows the rest.
 - `edit`, `write` and `apply_patch` attach only the LSP errors that overlap the lines the edit changed. Errors elsewhere in the file predate the edit and are not repeated.
 
 Saved output lives in the tool-output directory and is removed after 7 days.
