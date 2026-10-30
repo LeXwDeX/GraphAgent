@@ -92,8 +92,9 @@ bypass. These admission fields are specific to deep workflows, not a mandatory
 planning ritual for direct work or standard DAGs.
 
 Run admission before constructing or starting the graph. The start document must
-carry `admission`; `workflow(action="draft")` renders only `title` and `config`,
-so write that start YAML by hand. Questions belong to
+carry top-level `mode: deep` and `admission`; `workflow(action="draft")` renders
+only `title` and `config` and start defaults to `standard`, so write that start
+YAML by hand. Questions belong to
 the existing parent-session question interaction because the answers define the
 graph. You MUST NOT create an admission child node, QA workflow, separate
 persona, or privileged command. `GRILL-ME` selects `GRILL`; equivalent explicit

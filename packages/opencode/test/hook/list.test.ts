@@ -277,6 +277,24 @@ describe("summarizeChain — matcher handling", () => {
     }
   })
 
+  test("asyncRewake on events that never rewake carries no background flag", async () => {
+    const projectDir = await mktmp("no-rewake")
+    try {
+      await writeHooksJson(projectDir, {
+        SessionEnd: [{ hooks: [{ type: "command", command: "end.sh", asyncRewake: true }] }],
+        StopFailure: [{ hooks: [{ type: "command", command: "fail.sh", asyncRewake: true }] }],
+        PostToolUse: [{ hooks: [{ type: "command", command: "watch.sh", asyncRewake: true }] }],
+      })
+      const summaries = summarizeChain(projectDir, "", projectDir)
+      const byCommand = (command: string) => summaries.find((summary) => summary.descriptor === command)
+      expect(byCommand("end.sh")?.asyncRewake).toBeUndefined()
+      expect(byCommand("fail.sh")?.asyncRewake).toBeUndefined()
+      expect(byCommand("watch.sh")?.asyncRewake).toBe(true)
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  })
+
   test("absent matcher is omitted", async () => {
     const projectDir = await mktmp("match-absent")
     try {

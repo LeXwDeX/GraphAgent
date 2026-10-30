@@ -589,9 +589,10 @@ workflow is created. The draft is a start document only: it is not a valid
 extend or replan file, because those actions decode their own envelopes.
 Preferred over hand-writing YAML: the parameter schema
 rejects unknown fields, eliminating serialization drift. Hand-write YAML only
-for features `draft` does not carry, such as admission or custom bindings. When
-validation fails the file is still on disk — fix it by calling draft again with
-corrected fields, then start the returned `spec_path`.
+for top-level fields `draft` does not carry, such as `mode: deep` with its
+`admission`; `config` already covers blocks/nodes bindings. Draft refuses an
+existing filename: when validation fails the file is still on disk — edit that
+file to fix the errors and start that path, or draft again under a new name.
 
 **guide** — Load on-demand authoring guidance. `topic` is one of `blocks`
 (composable block schema), `interface` (low-level node fields), `policy`

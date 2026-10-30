@@ -1262,7 +1262,7 @@ function readChain(
               ? `${descriptorFor(h)} [${inactiveEventWarning(event)}]`
               : descriptorFor(h),
             ...(m.matcher && m.matcher !== "*" ? { matcher: m.matcher } : {}),
-            ...(h.type === "command" && h.asyncRewake === true ? { asyncRewake: true } : {}),
+            ...(h.type === "command" && h.asyncRewake === true && canRewake(event) ? { asyncRewake: true } : {}),
           })
         }
       }
@@ -1431,6 +1431,18 @@ const INACTIVE_EVENTS = new Set<HookEvent>(["PermissionDenied", "TeammateIdle"])
 
 function inactiveEventWarning(event: HookEvent): string | undefined {
   return INACTIVE_EVENTS.has(event) ? "inactive: this build has no event trigger" : undefined
+}
+
+/**
+ * Events whose async completion never reaches a rewake. SessionEnd has no later
+ * turn, StopFailure discards its output and exit code, and the inactive events
+ * have no producer. Marking these `background` would tell the agent to wait for
+ * a callback the code guarantees will never arrive.
+ */
+const NO_REWAKE_EVENTS = new Set<HookEvent>(["SessionEnd", "StopFailure"])
+
+function canRewake(event: HookEvent): boolean {
+  return !NO_REWAKE_EVENTS.has(event) && !INACTIVE_EVENTS.has(event)
 }
 
 export function warnUnsupportedFields(hooks: Settings["hooks"], sourceDir: string): void {
