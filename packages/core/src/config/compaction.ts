@@ -53,7 +53,7 @@ export function resolveDynamic(input: DynamicInput): DynamicResolution {
     source = "prune"
     deprecatedPrune = true
   } else {
-    configured = true
+    configured = false
     source = "default"
   }
 
