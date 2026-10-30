@@ -1,3 +1,3 @@
 Find files by glob pattern, for example "**/*.js" or "src/**/*.ts". Use this when you know part of a filename or path; use grep to search file contents.
 
-Returns matching paths. limit sets how many to show (default 100, capped at 1000). When truncated, the notice states the exact total and the limit or narrower path/pattern that continues. For open-ended searches that need several rounds of globbing and grepping, delegate with task instead.
+Returns matching paths. limit sets how many to show (default 100, capped at 1000). When truncated, the notice states whether the limit or the scan cap cut the list, the total when known, and the limit or narrower path/pattern that continues. For open-ended searches that need several rounds of globbing and grepping, delegate with task instead.
