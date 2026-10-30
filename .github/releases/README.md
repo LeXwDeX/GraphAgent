@@ -56,7 +56,7 @@ residual `{` or `}` in the rendered notes.
 - `### 🧪 Test Summary` and `### 🔍 Verification` are mandatory in every
   release; the Test Summary body needs at least one fenced code block.
 - The final line is the full-changelog compare link with the repository slug
-  written out literally (`https://github.com/LeXwDeX/OpenCode-GraphAgent/compare/{previous_tag}...{current_tag}`).
+  written out literally (`https://github.com/LeXwDeX/GraphAgent/compare/{previous_tag}...{current_tag}`).
   A repository rename fails validation on purpose — update the series file.
 
 The grammar is implemented in `packages/opencode/script/release-notes.ts`

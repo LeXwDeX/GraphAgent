@@ -157,9 +157,11 @@ attempt cap stops a retry, the session logs `retry stopped` with the branch, sta
 
 ## Context management
 
-- **Bounded tool use**: tool output is size-bounded (`tool_output.max_lines`, `tool_output.max_bytes`) and `maxToolCalls`
-  caps tool calls per user input. Every truncated result states exactly how to get the rest — the saved file and the
-  offset that continues it, a larger `limit`, or the narrower query — so the model can continue without guessing.
+- **Bounded tool use**: generic tool output is bounded by `tool_output.max_lines`/`tool_output.max_bytes`, while
+  `read`, `grep`, `glob` and `shell` enforce their own per-tool budgets (`maxLineLength`, `limit`, tail capture);
+  `maxToolCalls` caps tool calls per user input. Truncated results state what was omitted and the exact continuation —
+  a saved file with its offset, a character offset, a larger `limit`, or a narrower query — so the model can continue
+  without guessing.
 - **Compaction**: automatic summarization of long sessions at the model's usable context limit (`compaction.auto`,
   `compaction.keep.tokens`, `compaction.buffer`).
 

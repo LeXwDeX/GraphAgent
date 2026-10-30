@@ -111,7 +111,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 ## 上下文管理
 
-- **有界的工具使用**：工具输出有大小上限（`tool_output.max_lines`、`tool_output.max_bytes`），`maxToolCalls` 限制每次用户输入的工具调用次数。每次截断都会说明怎么续读——完整输出保存到哪个文件、从哪个偏移继续、用更大的 `limit` 还是更窄的查询——模型不需要猜。
+- **有界的工具使用**：通用工具输出受 `tool_output.max_lines`、`tool_output.max_bytes` 限制，而 `read`、`grep`、`glob` 和 `shell` 使用各自的固定预算（`maxLineLength`、`limit`、尾部截取）；`maxToolCalls` 限制每次用户输入的工具调用次数。截断结果会说明省略了什么以及确切的续读方式——保存的完整输出及其偏移、字符偏移、更大的 `limit` 或更窄的查询——模型不需要猜。
 - **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.keep.tokens`、`compaction.buffer`）。
 
 具体哪些生效取决于配置、服务商支持和请求用途。
