@@ -6571,8 +6571,9 @@ unix(
 
       expect(tool.state.metadata.truncated, JSON.stringify(tool.state.metadata)).toBe(true)
       expect(typeof tool.state.metadata.outputPath).toBe("string")
-      expect(tool.state.output).toMatch(/\[truncated: showing (lines \d+-\d+ of \d+|the last .+ of line \d+)/)
-      expect(tool.state.output).toContain("Full output: ")
+      expect(tool.state.output).toMatch(/\[truncated: showing the last \d+ of \d+ lines/)
+      expect(tool.state.output).toContain("--------- full output ---------")
+      expect(tool.state.output).toMatch(/^path: \S+$/m)
       expect(tool.state.output).not.toContain("Tool execution aborted")
     }),
   { git: true },
