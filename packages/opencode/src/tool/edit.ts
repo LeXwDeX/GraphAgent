@@ -153,6 +153,10 @@ export const EditTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      // Reject edits/edit keys instead of stripping them: a call that carries
+      // both top-level strings and an edits array must fail closed rather than
+      // silently dropping every edit except the top-level one.
+      parseOptions: { onExcessProperty: "error" },
       repairArguments: prepareEditArguments,
       formatValidationError: (error) =>
         [
@@ -882,10 +886,13 @@ export function replace(content: string, oldString: string, newString: string, r
       }
     }
 
+    // A fuzzy match that lands in several places is always ambiguous, even
+    // with replaceAll: the candidates differ from oldString, so replacing only
+    // the first candidate's text would silently leave the others untouched.
+    if (matches.length > 1) throw ambiguousMatches(content, matches)
     if (replaceAll) {
       return content.replaceAll(matches[0].value, () => newString)
     }
-    if (matches.length > 1) throw ambiguousMatches(content, matches)
 
     const match = matches[0]
     return content.substring(0, match.start) + newString + content.substring(match.end)

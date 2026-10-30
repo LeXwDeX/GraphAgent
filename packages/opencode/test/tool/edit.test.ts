@@ -656,6 +656,25 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("rejects replaceAll when the fuzzy match is ambiguous", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = ["if (a) {", "  doThing()", "}", "if (a) {", "    doThing()", "}", ""].join("\n")
+        yield* put(filepath, original)
+
+        const error = yield* fail({
+          filePath: filepath,
+          oldString: ["if (a) {", "doThing()", "}"].join("\n"),
+          newString: ["if (a) {", "  doOther()", "}"].join("\n"),
+          replaceAll: true,
+        })
+
+        expect(error.message).toContain("Found 2 matches for oldString")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
     it.instance("suggests the closest line when oldString is not found", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -687,6 +706,28 @@ describe("tool.edit", () => {
         yield* runRaw({ filePath: filepath, oldText: "old content", newText: "new content" })
 
         expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("rejects top-level strings combined with multiple edits", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        const original = "alpha beta"
+        yield* put(filepath, original)
+
+        const error = yield* failRaw({
+          filePath: filepath,
+          oldString: "alpha",
+          newString: "gamma",
+          edits: [
+            { oldString: "alpha", newString: "gamma" },
+            { oldString: "beta", newString: "delta" },
+          ],
+        })
+
+        expect(error.message).toContain("split multiple edits")
+        expect(yield* load(filepath)).toBe(original)
       }),
     )
 
