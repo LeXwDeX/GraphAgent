@@ -1,7 +1,26 @@
 import { describe, expect, test } from "bun:test"
+import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { contextFoldingDiagnostic, type FoldPlan } from "../../src/session/context-folding"
 
 describe("context folding diagnostics", () => {
+  test("reports disabled without configuration so the request log says why nothing folded", () => {
+    const diagnostic = contextFoldingDiagnostic({
+      runtime: "core-runner",
+      requestPurpose: "conversation",
+      resolution: ConfigCompaction.resolveDynamic({
+        disabledByEnvironment: false,
+        knownExternalDcp: "unknown",
+      }),
+    })
+
+    expect(diagnostic).toMatchObject({
+      configured: false,
+      enabled: false,
+      enabledSource: "default",
+      skipReason: "disabled",
+    })
+  })
+
   test("emits only allow-listed aggregate fields and preserves unknown estimates", () => {
     const duplicatePlan: FoldPlan = {
       replacements: [

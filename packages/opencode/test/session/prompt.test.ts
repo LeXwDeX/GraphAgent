@@ -570,7 +570,7 @@ function foldingProviderCfg(url: string) {
   const base = providerCfg(url)
   return {
     ...base,
-    compaction: { auto: false },
+    compaction: { auto: false, dynamic: true },
     provider: {
       ...base.provider,
       test: {

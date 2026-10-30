@@ -166,11 +166,11 @@ export const Info = Schema.Struct({
       }),
       dynamic: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Fold strictly duplicate older tool outputs only in prepared model requests (default: true). Stored history is unchanged; this is independent from automatic or manual full compaction.",
+          "@deprecated Legacy context folding, off by default. When explicitly enabled, folds strictly duplicate older tool outputs only in prepared model requests. Stored history is unchanged; this is independent from automatic or manual full compaction.",
       }),
       prune: Schema.optional(Schema.Boolean).annotate({
         description:
-          "@deprecated Compatibility alias for 'dynamic'. Used only when 'dynamic' is omitted; it no longer marks or clears stored tool output.",
+          "@deprecated Ignored. Context folding is off by default; set 'dynamic' to true to enable the legacy behavior.",
       }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:
