@@ -125,9 +125,10 @@ its multi-session counterpart.
 
 ## Hooks
 
-Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreToolUse`, `PostToolUse`,
+Lifecycle hooks compatible with the Claude Code hooks protocol: 33 recognised events (`PreToolUse`, `PostToolUse`,
 `SessionStart`, `PermissionRequest`, `WorktreeCreate`, …) × 5 execution types (`command`, `mcp`, `http`, `prompt`,
-`agent`).
+`agent`). `PermissionDenied` and `TeammateIdle` are accepted for configuration compatibility but have no runtime
+producer in this build.
 
 - `hooks.json` is read from the global opencode config directory and from project/worktree `.opencode` directories,
   merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Hooks do not require a
@@ -145,12 +146,14 @@ Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreT
 
 ## Provider retries
 
-Every provider failure goes through one dispatch table before any backoff is scheduled. Any HTTP 4xx/5xx status and
-every recognised network failure retries with the same exponential backoff (2 s initial delay, doubling, 25% jitter,
-30 s cap, five retries); `429`/`503` honor `retry-after`, `401`/`403` get one credential-refresh retry, `413` and
-context overflow hand off to compaction instead of resending, and aborts, missing credentials, output-length and
-structured-output limits, content filters and rejected reasoning state stay terminal. When the processor gate or the
-attempt cap stops a retry, the session logs `retry stopped` with the branch, status, attempt, cap and gate state. See
+Every provider failure on the default AI SDK request path goes through one dispatch table before any backoff is
+scheduled. Any HTTP 4xx/5xx status and every recognised network failure retries with the same exponential backoff
+(2 s initial delay, doubling, 25% jitter, 30 s cap, five retries); `429`/`503` honor `retry-after`, `401`/`403` get one
+credential-refresh retry, `413` and context overflow hand off to compaction instead of resending, and aborts, missing
+credentials, output-length and structured-output limits, content filters and rejected reasoning state stay terminal.
+When the processor gate or the attempt cap stops a retry, the session logs `retry stopped` with the branch, status,
+attempt, cap and gate state. The opt-in experimental native runtime (`OPENCODE_EXPERIMENTAL_NATIVE_LLM`, off by default)
+keeps its own bounded `RequestExecutor` retry instead of this table. See
 [compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
 
 ---
@@ -163,7 +166,7 @@ attempt cap stops a retry, the session logs `retry stopped` with the branch, sta
   a saved file with its offset, a character offset, a larger `limit`, or a narrower query — so the model can continue
   without guessing.
 - **Compaction**: automatic summarization of long sessions at the model's usable context limit (`compaction.auto`,
-  `compaction.keep.tokens`, `compaction.buffer`).
+  `compaction.tail_turns`, `compaction.preserve_recent_tokens`, `compaction.reserved`).
 
 Which of these apply depends on configuration, provider support and request purpose.
 

@@ -93,7 +93,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 ## Hooks
 
-兼容 Claude Code hooks 协议的生命周期 hooks：26 个事件（`PreToolUse`、`PostToolUse`、`SessionStart`、`PermissionRequest`、`WorktreeCreate` 等）× 5 种执行类型（`command`、`mcp`、`http`、`prompt`、`agent`）。
+兼容 Claude Code hooks 协议的生命周期 hooks：33 个已识别事件（`PreToolUse`、`PostToolUse`、`SessionStart`、`PermissionRequest`、`WorktreeCreate` 等）× 5 种执行类型（`command`、`mcp`、`http`、`prompt`、`agent`）。其中 `PermissionDenied` 和 `TeammateIdle` 为兼容配置而接受，但本构建没有对应的运行时生产者。
 
 - `hooks.json` 从全局 opencode 配置目录和项目/worktree 的 `.opencode` 目录读取，按追加方式合并并热加载；也可以经 HTTP 按会话注册，无需工作区信任列表。
 - 各执行类型的 hook 都可以声明 `inputFormat: "claude-code"`，以 Claude Code 的工具名和参数键接收输入。这提供的是命名兼容，不是完整的行为等价。
@@ -105,14 +105,14 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 ## 请求重试
 
-所有 Provider 失败先经过同一张分发表再安排退避。任何 HTTP 4xx/5xx 和已识别的网络失败共用同一套指数退避（初始 2 秒、逐次翻倍、25% 抖动、上限 30 秒、最多 5 次重试）；`429`/`503` 优先遵守 `retry-after`，`401`/`403` 做一次凭据刷新重试，`413` 和上下文溢出交给压缩而不是原样重发；用户取消、缺少凭据、输出长度与结构化输出限制、内容过滤和被拒绝的推理状态属于终止失败。处理器闸门或尝试上限挡住重试时，会话记录 `retry stopped`，带上分支、状态码、尝试次数、上限和闸门状态。详见[压缩与重试](./docs/compaction-retry.md#provider-retry-dispatch)。
+默认 AI SDK 请求路径上的所有 Provider 失败先经过同一张分发表再安排退避。任何 HTTP 4xx/5xx 和已识别的网络失败共用同一套指数退避（初始 2 秒、逐次翻倍、25% 抖动、上限 30 秒、最多 5 次重试）；`429`/`503` 优先遵守 `retry-after`，`401`/`403` 做一次凭据刷新重试，`413` 和上下文溢出交给压缩而不是原样重发；用户取消、缺少凭据、输出长度与结构化输出限制、内容过滤和被拒绝的推理状态属于终止失败。处理器闸门或尝试上限挡住重试时，会话记录 `retry stopped`，带上分支、状态码、尝试次数、上限和闸门状态。可选择启用的实验性原生运行时（`OPENCODE_EXPERIMENTAL_NATIVE_LLM`，默认关闭）使用自己的有界 `RequestExecutor` 重试，不经过这张表。详见[压缩与重试](./docs/compaction-retry.md#provider-retry-dispatch)。
 
 ---
 
 ## 上下文管理
 
 - **有界的工具使用**：通用工具输出受 `tool_output.max_lines`、`tool_output.max_bytes` 限制，而 `read`、`grep`、`glob` 和 `shell` 使用各自的固定预算（`maxLineLength`、`limit`、尾部截取）；`maxToolCalls` 限制每次用户输入的工具调用次数。截断结果会说明省略了什么以及确切的续读方式——保存的完整输出及其偏移、字符偏移、更大的 `limit` 或更窄的查询——模型不需要猜。
-- **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.keep.tokens`、`compaction.buffer`）。
+- **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.tail_turns`、`compaction.preserve_recent_tokens`、`compaction.reserved`）。
 
 具体哪些生效取决于配置、服务商支持和请求用途。
 

@@ -774,8 +774,13 @@ You can control context compaction behavior through the `compaction` option.
 ```
 
 - `auto` - Automatically compact the session when context is full (default: `true`).
-- `prune` - Deprecated. Accepted for compatibility, but it no longer removes tool output or enables context folding.
+- `tail_turns` - Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: `2`).
+- `preserve_recent_tokens` - Maximum number of tokens from recent turns to preserve verbatim after compaction.
 - `reserved` - Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
+- `dynamic` - Deprecated legacy context folding. Off by default; set to `true` only to restore the old duplicate-output folding behavior.
+- `prune` - Deprecated alias for `dynamic`. Accepted for compatibility, but it never enables context folding.
+
+If you previously enabled context folding, follow the [migration guide](https://github.com/LeXwDeX/GraphAgent/blob/main/docs/context-folding/migration.md) for the opt-in and rollback paths.
 
 ---
 
