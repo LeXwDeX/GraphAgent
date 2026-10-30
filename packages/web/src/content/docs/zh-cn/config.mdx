@@ -487,15 +487,19 @@ OpenCode 启动时会自动下载新版本。您可以使用 `autoupdate` 选项
   "$schema": "https://opencode.ai/config.json",
   "compaction": {
     "auto": true,
-    "prune": false,
     "reserved": 10000
   }
 }
 ```
 
 - `auto` - 当上下文已满时自动压缩会话（默认值：`true`）。
-- `prune` - 删除旧的工具输出以节省 Token（默认值：`false`）。
+- `tail_turns` - 压缩时原样保留的最近用户轮次数，包括其后的助手/工具响应（默认值：`2`）。
+- `preserve_recent_tokens` - 压缩后原样保留的最近轮次 Token 上限。
 - `reserved` - 压缩时的 Token 缓冲区。保留足够的窗口以避免压缩过程中溢出。
+- `dynamic` - 已弃用的旧版上下文折叠。默认关闭；仅在需要恢复旧的重复输出折叠行为时设为 `true`。
+- `prune` - `dynamic` 的已弃用别名。为兼容旧配置而接受，但它不会启用上下文折叠。
+
+如果之前启用了上下文折叠，请按[迁移指南](https://github.com/LeXwDeX/GraphAgent/blob/main/docs/context-folding/migration.md)配置启用或回滚路径。
 
 ---
 

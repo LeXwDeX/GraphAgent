@@ -96,21 +96,21 @@ export const layer = Layer.effect(
       }
       commands[Default.GOAL] = {
         name: Default.GOAL,
-        description: "设定持久目标 [--max-turns N] <目标>；控制 [status|pause|resume [--max-turns N]|done|clear|stop]",
+        description: "set a persistent goal [--max-turns N] <goal>; control [status|pause|resume [--max-turns N]|done|clear|stop]",
         source: "command",
         template: "",
         hints: ["$ARGUMENTS"],
       }
       commands[Default.SUBGOAL] = {
         name: Default.SUBGOAL,
-        description: "管理子目标 [list|<text>|remove <n>|clear]",
+        description: "manage subgoals [list|<text>|remove <n>|clear]",
         source: "command",
         template: "",
         hints: ["$ARGUMENTS"],
       }
       commands[Default.MEMORY] = {
         name: Default.MEMORY,
-        description: "启用或关闭项目 MEMORY [on|off]",
+        description: "enable or disable project MEMORY [on|off]",
         source: "command",
         template: "",
         hints: ["$ARGUMENTS"],

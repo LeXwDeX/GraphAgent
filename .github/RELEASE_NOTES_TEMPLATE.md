@@ -57,4 +57,4 @@ typecheck:   N/N packages green
 
 ---
 
-**Full changelog:** [`{previous_tag}`...`{current_tag}`](https://github.com/LeXwDeX/OpenCode-GraphAgent/compare/{previous_tag}...{current_tag})
+**Full changelog:** [`{previous_tag}`...`{current_tag}`](https://github.com/LeXwDeX/GraphAgent/compare/{previous_tag}...{current_tag})

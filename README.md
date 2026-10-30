@@ -37,7 +37,7 @@ opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as ups
 | [Project Memory](#project-memory) | Keeps confirmed preferences, decisions and terminology per project | `/memory on` |
 | [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally | `/goal`, `/subgoal` |
 | [Hooks](#hooks) | Claude Code–compatible lifecycle hooks | `hooks.json`, `/create-hook`, `/import-claude-hooks` |
-| [Context management](#context-management) | Folds duplicate tool output, bounds tool use, compacts long sessions | `compaction`, `maxToolCalls` |
+| [Context management](#context-management) | Bounds tool output, limits tool calls, compacts long sessions | `tool_output`, `compaction`, `maxToolCalls` |
 
 ---
 
@@ -125,9 +125,10 @@ its multi-session counterpart.
 
 ## Hooks
 
-Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreToolUse`, `PostToolUse`,
+Lifecycle hooks compatible with the Claude Code hooks protocol: 33 recognised events (`PreToolUse`, `PostToolUse`,
 `SessionStart`, `PermissionRequest`, `WorktreeCreate`, …) × 5 execution types (`command`, `mcp`, `http`, `prompt`,
-`agent`).
+`agent`). `PermissionDenied` and `TeammateIdle` are accepted for configuration compatibility but have no runtime
+producer in this build.
 
 - `hooks.json` is read from the global opencode config directory and from project/worktree `.opencode` directories,
   merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Hooks do not require a
@@ -136,15 +137,36 @@ Lifecycle hooks compatible with the Claude Code hooks protocol: 26 events (`PreT
   naming compatibility, not full behavioral parity.
 - Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude-hooks` migrates them, and
   `/create-hook` walks through authoring a new hook.
+- Background waits: an `asyncRewake` command hook can watch CI, reviews or deploys while the agent keeps working; a
+  conclusion exits with code 2 and wakes the session with a bounded summary. The Active Hooks block marks such hooks
+  `background`. See the [background watcher recipe](./packages/core/src/plugin/skill/configure-hooks.md#background-watcher-recipe).
 - Reference: [hooks guide](./packages/core/src/plugin/skill/configure-hooks.md).
+
+---
+
+## Provider retries
+
+Every provider failure on the default AI SDK request path goes through one dispatch table before any backoff is
+scheduled. Any HTTP 4xx/5xx status and every recognised network failure retries with the same exponential backoff
+(2 s initial delay, doubling, 25% jitter, 30 s cap, five retries); `429`/`503` honor `retry-after`, `401`/`403` get one
+credential-refresh retry, `413` and context overflow hand off to compaction instead of resending, and aborts, missing
+credentials, output-length and structured-output limits, content filters and rejected reasoning state stay terminal.
+When the processor gate or the attempt cap stops a retry, the session logs `retry stopped` with the branch, status,
+attempt, cap and gate state. The opt-in experimental native runtime (`OPENCODE_EXPERIMENTAL_NATIVE_LLM`, off by default)
+keeps its own bounded `RequestExecutor` retry instead of this table. See
+[compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
 
 ---
 
 ## Context management
 
-- **Bounded tool use**: tool output is size-bounded, and `maxToolCalls` caps tool calls per user input.
+- **Bounded tool use**: generic tool output is bounded by `tool_output.max_lines`/`tool_output.max_bytes`, while
+  `read`, `grep`, `glob` and `shell` enforce their own per-tool budgets (`maxLineLength`, `limit`, tail capture);
+  `maxToolCalls` caps tool calls per user input. Truncated results state what was omitted and the exact continuation —
+  a saved file with its offset, a character offset, a larger `limit`, or a narrower query — so the model can continue
+  without guessing.
 - **Compaction**: automatic summarization of long sessions at the model's usable context limit (`compaction.auto`,
-  `compaction.keep.tokens`, `compaction.buffer`).
+  `compaction.tail_turns`, `compaction.preserve_recent_tokens`, `compaction.reserved`).
 
 Which of these apply depends on configuration, provider support and request purpose.
 
@@ -169,6 +191,7 @@ Three terms worth knowing:
 - Composable blocks (`explore`, `plan`, `prototype`, `debug`, `coding`, `verify`, `review`, `synthesize`) compile into the node graph; low-level node fields remain available for anything blocks cannot express.
 - `workflow(action="draft")` renders a structured graph through the tool schema into a validated YAML spec — field-name mistakes are rejected by the provider, not discovered at validation time.
 - Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command routes a requirement to a curated reference topology and retargets it to the task at hand.
+- The agent promotes to a workflow on its own judgment — the user need not ask — and declares the graph structure up front, mutating it at runtime only for structure that depends on results. When later work depends on items a node produces (for example one verifier per finding), the parent turns that node into a checkpoint, deduplicates and ranks the reported items, and adds only the needed item nodes with a bounded `extend`; `fan_out` is for writers from a plan's `packages`, not general per-item expansion.
 - Model tiers in `dag.jsonc` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
 
 **Reliability**
@@ -386,6 +409,7 @@ Curated reference topologies — design decision deep-dive, parallel project del
 ## Other changes in this fork
 
 - **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
+- **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
 - **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~20 KB to ~9 KB), strict `edit` matching that lists ambiguous candidate lines and the closest line instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
 - **CJK & IME fixes**: corrections for Chinese/Japanese/Korean input in the terminal UI (IME composition flushing, full-width text handling), plus a Korean IME fix script under [`patches/`](./patches).
 - **Worktree isolation**: per-workflow `git worktree` isolation, with experimental sandbox-worktree HTTP endpoints.

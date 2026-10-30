@@ -30,7 +30,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 | [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语                                 | `/memory on`                                         |
 | [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标                             | `/goal`、`/subgoal`                                  |
 | [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                                      | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
-| [上下文管理](#上下文管理)             | 折叠重复工具输出、限制工具调用、压缩长会话                             | `compaction`、`maxToolCalls`                         |
+| [上下文管理](#上下文管理)             | 限制工具输出、限制工具调用、压缩长会话                                 | `tool_output`、`compaction`、`maxToolCalls`          |
 
 ---
 
@@ -93,19 +93,26 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 ## Hooks
 
-兼容 Claude Code hooks 协议的生命周期 hooks：26 个事件（`PreToolUse`、`PostToolUse`、`SessionStart`、`PermissionRequest`、`WorktreeCreate` 等）× 5 种执行类型（`command`、`mcp`、`http`、`prompt`、`agent`）。
+兼容 Claude Code hooks 协议的生命周期 hooks：33 个已识别事件（`PreToolUse`、`PostToolUse`、`SessionStart`、`PermissionRequest`、`WorktreeCreate` 等）× 5 种执行类型（`command`、`mcp`、`http`、`prompt`、`agent`）。其中 `PermissionDenied` 和 `TeammateIdle` 为兼容配置而接受，但本构建没有对应的运行时生产者。
 
 - `hooks.json` 从全局 opencode 配置目录和项目/worktree 的 `.opencode` 目录读取，按追加方式合并并热加载；也可以经 HTTP 按会话注册，无需工作区信任列表。
 - 各执行类型的 hook 都可以声明 `inputFormat: "claude-code"`，以 Claude Code 的工具名和参数键接收输入。这提供的是命名兼容，不是完整的行为等价。
 - Claude 的 `.claude/settings*.json` 不会自动加载：用 `/import-claude-hooks` 迁移，用 `/create-hook` 引导编写新 hook。
+- 后台等待：`asyncRewake` 命令 hook 可以盯着 CI、审查或部署，智能体继续干别的；有结论时脚本以退出码 2 结束并用一段有界摘要唤醒会话。Active Hooks 块会把这类 hook 标成 `background`。参见[后台监听配方](./packages/core/src/plugin/skill/configure-hooks.md#background-watcher-recipe)。
 - 参考：[hooks 指南](./packages/core/src/plugin/skill/configure-hooks.md)。
+
+---
+
+## 请求重试
+
+默认 AI SDK 请求路径上的所有 Provider 失败先经过同一张分发表再安排退避。任何 HTTP 4xx/5xx 和已识别的网络失败共用同一套指数退避（初始 2 秒、逐次翻倍、25% 抖动、上限 30 秒、最多 5 次重试）；`429`/`503` 优先遵守 `retry-after`，`401`/`403` 做一次凭据刷新重试，`413` 和上下文溢出交给压缩而不是原样重发；用户取消、缺少凭据、输出长度与结构化输出限制、内容过滤和被拒绝的推理状态属于终止失败。处理器闸门或尝试上限挡住重试时，会话记录 `retry stopped`，带上分支、状态码、尝试次数、上限和闸门状态。可选择启用的实验性原生运行时（`OPENCODE_EXPERIMENTAL_NATIVE_LLM`，默认关闭）使用自己的有界 `RequestExecutor` 重试，不经过这张表。详见[压缩与重试](./docs/compaction-retry.md#provider-retry-dispatch)。
 
 ---
 
 ## 上下文管理
 
-- **有界的工具使用**：工具输出有大小上限，`maxToolCalls` 限制每次用户输入的工具调用次数。
-- **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.keep.tokens`、`compaction.buffer`）。
+- **有界的工具使用**：通用工具输出受 `tool_output.max_lines`、`tool_output.max_bytes` 限制，而 `read`、`grep`、`glob` 和 `shell` 使用各自的固定预算（`maxLineLength`、`limit`、尾部截取）；`maxToolCalls` 限制每次用户输入的工具调用次数。截断结果会说明省略了什么以及确切的续读方式——保存的完整输出及其偏移、字符偏移、更大的 `limit` 或更窄的查询——模型不需要猜。
+- **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.tail_turns`、`compaction.preserve_recent_tokens`、`compaction.reserved`）。
 
 具体哪些生效取决于配置、服务商支持和请求用途。
 
@@ -130,6 +137,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 - 可组合块（`explore`、`plan`、`prototype`、`debug`、`coding`、`verify`、`review`、`synthesize`）编译成节点图；块表达不了的还有低级节点字段兜底。
 - `workflow(action="draft")` 通过工具参数传结构化图，harness 渲染并校验出 YAML spec——字段写错在 provider 侧就被拒，不用等到校验才发现。
 - 三级作用域的工作流库（项目 / 全局 / 内嵌），按名字启动；`/dag-auto` 命令把需求路由到合适的参考拓扑并注入当前任务。
+- 智能体按自己的判断升级为工作流，不需要用户先开口；图结构一次声明清楚，运行期只为依赖结果的增补而改动。后续工作依赖某个节点产出的条目时（例如每条发现配一个验证节点），父智能体把该节点变成检查点，对汇报的条目去重排序，再用有界的 `extend` 只补需要的条目节点；`fan_out` 只用于从 plan 的 `packages` 展开写入者，不是通用的逐条扩展。
 - `dag.jsonc` 的模型分层把决策和跑量分开：关键节点用 `advanced` 模型，扇出跑量用 `standard`。
 
 **可靠性**
@@ -317,6 +325,7 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 ## 本 fork 的其他改动
 
 - **委派智能体**：`task` 把工作委派给子智能体，并可用 `task_id` 继续；带完成通知的后台子智能体需开启 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`。
+- **统一系统提示词**：所有模型收到同一份系统提示词——身份、hooks 与 DAG 入口、工作规则和安全约束——不再按 Provider 选择提示词。每种工具的用法写在工具自描述里，提示词不再重复；常驻的 DAG 与 hooks 指导只保留入口，详细主题按需加载。
 - **工具健壮性**：工具自描述（系统提示不再重复每种工具的用法，传给模型的工具描述从约 20 KB 降到约 9 KB）；`edit` 严格匹配，多个候选时列出行号、找不到时给出最近片段而不是猜测，并兼容多种 Provider 参数形状；修复 LLM 输出里损坏的多字节 Unicode 转义（JSON 修复），校验错误带字段级提示，子进程管道修复。
 - **CJK 与 IME 修复**：终端 UI 里中日韩文输入的修正（IME 组字刷新、全角文本处理），另有 [`patches/`](./patches) 下的韩文 IME 修复脚本。
 - **Worktree 隔离**：按工作流的 `git worktree` 隔离，附实验性的 sandbox-worktree HTTP 端点。
