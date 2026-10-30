@@ -4,6 +4,7 @@ import path from "path"
 import fs from "fs/promises"
 import { WriteTool } from "../../src/tool/write"
 import { LSP } from "@/lsp/lsp"
+import type { Diagnostic } from "@/lsp/client"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Format } from "../../src/format"
@@ -33,6 +34,22 @@ afterEach(async () => {
 const it = testEffect(
   Layer.mergeAll(
     LSP.defaultLayer,
+    FSUtil.defaultLayer,
+    EventV2Bridge.defaultLayer,
+    Format.defaultLayer,
+    CrossSpawnSpawner.defaultLayer,
+    Truncate.defaultLayer,
+    Agent.defaultLayer,
+  ),
+)
+
+let mockedDiagnostics: Record<string, Diagnostic[]> = {}
+const itWithDiagnostics = testEffect(
+  Layer.mergeAll(
+    Layer.mock(LSP.Service, {
+      touchFile: () => Effect.void,
+      diagnostics: () => Effect.succeed(mockedDiagnostics),
+    }),
     FSUtil.defaultLayer,
     EventV2Bridge.defaultLayer,
     Format.defaultLayer,
@@ -148,6 +165,45 @@ describe("tool.write", () => {
                 "node",
                 "-e",
                 "const fs = require('fs'); const file = process.argv[1]; let text = fs.readFileSync(file, 'utf8'); if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); fs.writeFileSync(file, text, 'utf8')",
+                "$FILE",
+              ],
+            },
+          },
+        },
+      },
+    )
+
+    itWithDiagnostics.instance(
+      "keeps diagnostics on lines the formatter moved",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const filepath = path.join(test.directory, "expanded.ts")
+          mockedDiagnostics = {
+            [FSUtil.normalizePath(filepath)]: [
+              {
+                severity: 1,
+                message: "formatted line error",
+                range: { start: { line: 19, character: 0 }, end: { line: 19, character: 1 } },
+              },
+            ],
+          }
+
+          const result = yield* run({ filePath: filepath, content: "const x = 1\n" })
+
+          const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
+          expect(content.split("\n").length).toBeGreaterThan(20)
+          expect(result.output).toContain("ERROR [20:1] formatted line error")
+        }),
+      {
+        config: {
+          formatter: {
+            expand: {
+              extensions: [".ts"],
+              command: [
+                "node",
+                "-e",
+                "const fs = require('fs'); const file = process.argv[1]; const text = fs.readFileSync(file, 'utf8'); fs.writeFileSync(file, text + '// formatted line\\n'.repeat(30), 'utf8')",
                 "$FILE",
               ],
             },

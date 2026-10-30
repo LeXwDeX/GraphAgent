@@ -12,10 +12,40 @@ const RETENTION = Duration.days(7)
 
 export const MAX_LINES = 2000
 export const MAX_BYTES = 50 * 1024
+/** Lines in one `read` page when the caller does not pass a limit. */
+export const PAGE_LINES = 200
+/** Largest per-line fetch the read tool accepts; longer lines need the shell. */
+export const MAX_LINE_FETCH = 50_000
 export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
-export type Result = { content: string; truncated: false } | { content: string; truncated: true; outputPath: string }
+export interface Details {
+  direction: "head" | "tail"
+  truncatedBy: "lines" | "bytes"
+  /** Lines in the complete output. */
+  totalLines: number
+  /** Bytes in the complete output. */
+  totalBytes: number
+  /** First line (1-based) present in the preview. */
+  startLine: number
+  /** Last line (1-based) present in the preview. */
+  endLine: number
+  /** Bytes in the preview. */
+  outputBytes: number
+  /** Byte budget that stopped the preview. */
+  maxBytes: number
+  /** The preview is a byte slice of one line instead of whole lines. */
+  partialLine: boolean
+}
+
+export interface Preview {
+  text: string
+  cut: boolean
+  details?: Details
+}
+
+export type Result =
+  { content: string; truncated: false } | { content: string; truncated: true; outputPath: string; details: Details }
 
 export interface Options {
   maxLines?: number
@@ -28,7 +58,7 @@ export interface Interface {
   readonly write: (text: string) => Effect.Effect<string>
   /**
    * Returns output unchanged when it fits within the limits, otherwise writes the full text
-   * to the truncation directory and returns a preview plus a hint to inspect the saved file.
+   * to the truncation directory and returns a preview plus the continuation notice.
    */
   readonly output: (text: string, options?: Options, agent?: Agent.Info) => Effect.Effect<Result>
   /**
@@ -38,6 +68,159 @@ export interface Interface {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Truncate") {}
+
+export function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Cut UTF-8 text at a byte budget without splitting a code point. */
+function headBytes(text: string, maxBytes: number) {
+  const buf = Buffer.from(text, "utf-8")
+  if (buf.length <= maxBytes) return text
+  let end = maxBytes
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--
+  return buf.subarray(0, end).toString("utf-8")
+}
+
+function tailBytes(text: string, maxBytes: number) {
+  const buf = Buffer.from(text, "utf-8")
+  if (buf.length <= maxBytes) return text
+  let start = buf.length - maxBytes
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++
+  return buf.subarray(start).toString("utf-8")
+}
+
+function splitLines(text: string) {
+  const lines = text.split("\n")
+  // A trailing newline terminates the last line; it does not start an empty one.
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
+  return lines
+}
+
+/** Lines in `text`, counting neither a trailing newline nor an empty string as a line. */
+export function countLines(text: string) {
+  return splitLines(text).length
+}
+
+/**
+ * Keep the first whole lines that fit both limits. A first line larger than the
+ * byte budget is cut at a code-point boundary and flagged partial so the notice
+ * can point at the read parameters that continue it.
+ */
+export function headPreview(text: string, maxLines: number, maxBytes: number): Preview {
+  const lines = splitLines(text)
+  const totalBytes = Buffer.byteLength(text, "utf-8")
+  if (lines.length <= maxLines && totalBytes <= maxBytes) return { text, cut: false }
+
+  const out: string[] = []
+  let bytes = 0
+  let hitBytes = false
+  let partialLine = false
+  for (let i = 0; i < lines.length && i < maxLines; i++) {
+    const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
+    if (bytes + size > maxBytes) {
+      hitBytes = true
+      if (out.length === 0) {
+        const cut = headBytes(lines[i], maxBytes)
+        out.push(cut)
+        bytes = Buffer.byteLength(cut, "utf-8")
+        partialLine = true
+      }
+      break
+    }
+    out.push(lines[i])
+    bytes += size
+  }
+
+  return {
+    text: out.join("\n"),
+    cut: true,
+    details: {
+      direction: "head",
+      truncatedBy: hitBytes ? "bytes" : "lines",
+      totalLines: lines.length,
+      totalBytes,
+      startLine: 1,
+      endLine: Math.max(1, out.length),
+      outputBytes: bytes,
+      maxBytes,
+      partialLine,
+    },
+  }
+}
+
+/** Keep the last whole lines that fit both limits, cutting one oversized line. */
+export function tailPreview(text: string, maxLines: number, maxBytes: number): Preview {
+  const lines = splitLines(text)
+  const totalBytes = Buffer.byteLength(text, "utf-8")
+  if (lines.length <= maxLines && totalBytes <= maxBytes) return { text, cut: false }
+
+  const out: string[] = []
+  let bytes = 0
+  let hitBytes = false
+  let partialLine = false
+  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
+    const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
+    if (bytes + size > maxBytes) {
+      hitBytes = true
+      if (out.length === 0) {
+        const cut = tailBytes(lines[i], maxBytes)
+        out.unshift(cut)
+        bytes = Buffer.byteLength(cut, "utf-8")
+        partialLine = true
+      }
+      break
+    }
+    out.unshift(lines[i])
+    bytes += size
+  }
+
+  return {
+    text: out.join("\n"),
+    cut: true,
+    details: {
+      direction: "tail",
+      truncatedBy: hitBytes ? "bytes" : "lines",
+      totalLines: lines.length,
+      totalBytes,
+      startLine: Math.max(1, lines.length - out.length + 1),
+      endLine: lines.length,
+      outputBytes: bytes,
+      maxBytes,
+      partialLine,
+    },
+  }
+}
+
+/**
+ * The one truncation notice every tool uses: what was omitted, where the full
+ * output is, and the exact parameters that continue reading it.
+ */
+export function notice(file: string, details: Details): string {
+  if (details.partialLine) {
+    const edge = details.direction === "head" ? "first" : "last"
+    return [
+      `[truncated: showing the ${edge} ${formatSize(details.outputBytes)} of line ${details.startLine} ` +
+        `(${formatSize(details.totalBytes)} total). Full output: ${file}]`,
+      `Continue: read filePath="${file}" offset=${details.startLine} limit=1 maxLineLength=${MAX_LINE_FETCH}; ` +
+        `use the shell tool for characters beyond that.`,
+    ].join("\n")
+  }
+
+  const limit = details.truncatedBy === "bytes" ? ` (${formatSize(details.maxBytes)} limit)` : ""
+  const omitted =
+    details.direction === "head"
+      ? `${details.totalLines - details.endLine} lines omitted after this range.`
+      : `${details.startLine - 1} lines omitted before this range.`
+  const next = details.direction === "head" ? details.endLine + 1 : 1
+  return [
+    `[truncated: showing lines ${details.startLine}-${details.endLine} of ${details.totalLines}${limit}. ` +
+      `${omitted} Full output: ${file}]`,
+    `Continue: read filePath="${file}" offset=${next}`,
+  ].join("\n")
+}
 
 export const layer = Layer.effect(
   Service,
@@ -82,54 +265,17 @@ export const layer = Layer.effect(
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
       const direction = options.direction ?? "head"
-      const lines = text.split("\n")
-      const totalBytes = Buffer.byteLength(text, "utf-8")
+      const preview =
+        direction === "head" ? headPreview(text, maxLines, maxBytes) : tailPreview(text, maxLines, maxBytes)
+      if (!preview.cut || !preview.details) return { content: text, truncated: false } as const
 
-      if (lines.length <= maxLines && totalBytes <= maxBytes) {
-        return { content: text, truncated: false } as const
-      }
-
-      const out: string[] = []
-      let i = 0
-      let bytes = 0
-      let hitBytes = false
-
-      if (direction === "head") {
-        for (i = 0; i < lines.length && i < maxLines; i++) {
-          const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
-          if (bytes + size > maxBytes) {
-            hitBytes = true
-            break
-          }
-          out.push(lines[i])
-          bytes += size
-        }
-      } else {
-        for (i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
-          const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
-          if (bytes + size > maxBytes) {
-            hitBytes = true
-            break
-          }
-          out.unshift(lines[i])
-          bytes += size
-        }
-      }
-
-      const removed = hitBytes ? totalBytes - bytes : lines.length - out.length
-      const unit = hitBytes ? "bytes" : "lines"
-      const preview = out.join("\n")
       const file = yield* write(text)
-
-      const hint = `The tool call succeeded but the output was truncated. Full output saved to: ${file}\nUse Grep to search the full content or Read with offset/limit to view specific sections.`
-
+      const hint = notice(file, preview.details)
       return {
-        content:
-          direction === "head"
-            ? `${preview}\n\n...${removed} ${unit} truncated...\n\n${hint}`
-            : `...${removed} ${unit} truncated...\n\n${hint}\n\n${preview}`,
+        content: direction === "head" ? `${preview.text}\n\n${hint}` : `${hint}\n\n${preview.text}`,
         truncated: true,
         outputPath: file,
+        details: preview.details,
       } as const
     })
 

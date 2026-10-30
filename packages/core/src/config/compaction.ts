@@ -49,11 +49,12 @@ export function resolveDynamic(input: DynamicInput): DynamicResolution {
     configured = input.dynamic
     source = "dynamic"
   } else if (input.prune !== undefined) {
-    configured = input.prune
+    // Deprecated alias: recorded for diagnostics but retired as an enabler in v1.0.93.
+    configured = false
     source = "prune"
     deprecatedPrune = true
   } else {
-    configured = true
+    configured = false
     source = "default"
   }
 

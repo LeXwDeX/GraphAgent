@@ -21,7 +21,7 @@ import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
-import { ShellPrompt, type Parameters } from "./shell/prompt"
+import { ShellPrompt, SHELL_TAIL_LINES, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 
 export { Parameters } from "./shell/prompt"
@@ -233,36 +233,31 @@ function preview(text: string) {
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
 }
 
-function tail(text: string, maxLines: number, maxBytes: number) {
-  const lines = text.split("\n")
-  if (lines.length <= maxLines && Buffer.byteLength(text, "utf-8") <= maxBytes) {
-    return {
-      text,
-      cut: false,
-    }
-  }
-
-  const out: string[] = []
-  let bytes = 0
-  for (let i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
-    const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
-    if (bytes + size > maxBytes) {
-      if (out.length === 0) {
-        const buf = Buffer.from(lines[i], "utf-8")
-        let start = buf.length - maxBytes
-        if (start < 0) start = 0
-        while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++
-        out.unshift(buf.subarray(start).toString("utf-8"))
-      }
-      break
-    }
-    out.unshift(lines[i])
-    bytes += size
-  }
-  return {
-    text: out.join("\n"),
-    cut: true,
-  }
+/**
+ * The complete stream lives in the tool-output file even when the inline
+ * preview keeps only its tail. The footer names the file, its size, and the
+ * exact read/grep calls that continue from either edge, so the model never
+ * reruns the command to see an earlier chunk.
+ */
+function outputFooter(file: string, totalLines: number, totalBytes: number, shownLines: number, partialBytes?: number) {
+  const pages = Math.max(1, Math.ceil(totalLines / Truncate.PAGE_LINES))
+  const summary =
+    partialBytes !== undefined
+      ? `[truncated: showing the last ${Truncate.formatSize(partialBytes)} of line ${totalLines} ` +
+        `(${Truncate.formatSize(totalBytes)} total). Full output saved.]`
+      : `[truncated: showing the last ${shownLines} of ${totalLines} lines ` +
+        `(${Truncate.formatSize(totalBytes)} total). Full output saved.]`
+  return [
+    summary,
+    "",
+    "--------- full output ---------",
+    `path: ${file}`,
+    `size: ${Truncate.formatSize(totalBytes)} (${totalBytes} bytes), ${totalLines} lines, ${pages} pages of ${Truncate.PAGE_LINES} lines`,
+    `start:  read filePath="${file}"`,
+    `end:    read filePath="${file}" page=-1`,
+    `back:   read filePath="${file}" page=-2   (page=-3, -4, ... further back)`,
+    `search: grep pattern="<regex>" path="${file}" context=10`,
+  ].join("\n")
 }
 
 const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
@@ -473,6 +468,10 @@ export const ShellTool = Tool.define(
       let lastActivity = Date.now()
       let silenceWarned = false
       let silenceWarnings = 0
+      // Exact counters for the complete stream: the preview buffer may drop
+      // earlier chunks, but the saved file always holds the whole output.
+      let streamBytes = 0
+      let streamNewlines = 0
 
       const closeSink = Effect.fnUntraced(function* () {
         const stream = sink
@@ -540,6 +539,8 @@ export const ShellTool = Tool.define(
               lastActivity = Date.now()
               silenceWarned = false
               const size = Buffer.byteLength(chunk, "utf-8")
+              streamBytes += size
+              for (let i = 0; i < chunk.length; i++) if (chunk.charCodeAt(i) === 10) streamNewlines++
               list.push({ text: chunk, size })
               used += size
               while (used > keep && list.length > 1) {
@@ -641,8 +642,10 @@ export const ShellTool = Tool.define(
       }
       if (aborted) meta.push(SHELL_ABORT_NOTE)
       for (let i = 0; i < silenceWarnings; i++) meta.push(shellSilenceNote(silenceWarnMs))
+      if (code !== null && code !== 0) meta.push(`Command exited with code ${code}`)
       const raw = list.map((item) => item.text).join("")
-      const end = tail(raw, limits.maxLines, limits.maxBytes)
+      const totalLines = streamNewlines + (raw.length > 0 && !raw.endsWith("\n") ? 1 : 0)
+      const end = Truncate.tailPreview(raw, SHELL_TAIL_LINES, limits.maxBytes)
       if (end.cut) cut = true
       if (!file && end.cut) {
         file = yield* trunc.write(raw)
@@ -652,7 +655,16 @@ export const ShellTool = Tool.define(
       if (!output) output = "(no output)"
 
       if (cut && file) {
-        output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output
+        const shownLines = Truncate.countLines(end.text)
+        output =
+          `${output}\n\n` +
+          outputFooter(
+            file,
+            totalLines,
+            streamBytes,
+            shownLines,
+            end.details?.partialLine ? end.details.outputBytes : undefined,
+          )
       }
 
       if (meta.length > 0) {

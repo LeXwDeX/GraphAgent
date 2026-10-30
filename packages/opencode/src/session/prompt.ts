@@ -117,7 +117,6 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { Todo } from "./todo"
-import { TodoReminders } from "./todo-reminders"
 import { SessionTools } from "./tools"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { LLMEvent } from "@opencode-ai/llm"
@@ -313,7 +312,6 @@ export const layer = Layer.effect(
     const toolSources =
       Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service)) ?? ToolSourceLedger.unavailable
     const image = yield* Image.Service
-    const todoSvc = yield* Todo.Service
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const scope = yield* Scope.Scope
     const instruction = yield* Instruction.Service
@@ -2981,12 +2979,6 @@ export const layer = Layer.effect(
           const isLastStep = step >= maxSteps
           const toolLimitReached = budget.exhausted
           const toolsDisabled = isLastStep || toolLimitReached
-          // Issue #389: re-surface uncompleted todos once per model step
-          // (in-memory synthetic part, skipped when all settled or when the
-          // turn just updated the list via todowrite).
-          msgs = yield* TodoReminders.apply({ messages: msgs, sessionID }).pipe(
-            Effect.provideService(Todo.Service, todoSvc),
-          )
 
           const msg: SessionV1.Assistant = {
             id: modelMessageID,

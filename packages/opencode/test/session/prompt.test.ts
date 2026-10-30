@@ -570,7 +570,7 @@ function foldingProviderCfg(url: string) {
   const base = providerCfg(url)
   return {
     ...base,
-    compaction: { auto: false },
+    compaction: { auto: false, dynamic: true },
     provider: {
       ...base.provider,
       test: {
@@ -3106,6 +3106,36 @@ it.instance("loop continues when finish is tool-calls", () =>
   }),
 )
 
+it.instance("loop retries a gateway 502 on the step after a tool call", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Retry after tool",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.tool("first", { value: "first" })
+    yield* llm.error(502, "Bad Gateway\n")
+    yield* llm.text("second")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(3)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.error).toBeUndefined()
+      expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
+    }
+  }),
+  30_000,
+)
+
 for (const [runtime, runner] of [
   ["ai-sdk", it],
   ["native", nativeIt],
@@ -4100,7 +4130,7 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
       expect(part).toBeDefined()
       if (!part) throw new Error(`missing stored read result ${callID}`)
       expect(part.state.output.length).toBeGreaterThan(20_000)
-      expect(part.state.output).not.toContain("(line truncated to 2000 chars)")
+      expect(part.state.output).not.toContain("(line truncated to 2000 of")
       expect(part.state.metadata.truncated).toBe(false)
     }
     const persisted = beforeTools.map((part) => ({
@@ -4588,7 +4618,7 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
     expect(part).toBeDefined()
     if (!part) throw new Error(`missing stored lifecycle read result ${callID}`)
     expect(part.output.length).toBeGreaterThan(20_000)
-    expect(part.output).not.toContain("(line truncated to 2000 chars)")
+    expect(part.output).not.toContain("(line truncated to 2000 of")
     expect(part.metadata.truncated).toBe(false)
   }
   const sideEffects = yield* lifecycleLedger(ledger)
@@ -6571,8 +6601,9 @@ unix(
 
       expect(tool.state.metadata.truncated, JSON.stringify(tool.state.metadata)).toBe(true)
       expect(typeof tool.state.metadata.outputPath).toBe("string")
-      expect(tool.state.output).toMatch(/\.\.\.output truncated\.\.\./)
-      expect(tool.state.output).toMatch(/Full output saved to:\s+\S+/)
+      expect(tool.state.output).toMatch(/\[truncated: showing the last \d+ of \d+ lines/)
+      expect(tool.state.output).toContain("--------- full output ---------")
+      expect(tool.state.output).toMatch(/^path: \S+$/m)
       expect(tool.state.output).not.toContain("Tool execution aborted")
     }),
   { git: true },

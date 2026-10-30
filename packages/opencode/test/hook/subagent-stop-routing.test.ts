@@ -19,6 +19,7 @@ import { TestLLMServer } from "../lib/llm-server"
 
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
+import { SessionRetry } from "@/session/retry"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
@@ -277,7 +278,12 @@ it.live("failed foreground subagent still fires StopFailure", () =>
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
       yield* llm.tool("task", { description: "sub task", prompt: "say something", subagent_type: "general" })
-      yield* llm.error(400, { error: { message: "subagent request rejected" } })
+      // Every 4xx/5xx is resent by the shared retry layer, so the child ends in
+      // error only after the attempt cap. retry-after-ms: 0 keeps the backoff
+      // out of the test's wall clock.
+      for (let attempt = 0; attempt <= SessionRetry.RETRY_MAX_RETRIES; attempt++) {
+        yield* llm.error(503, { error: { message: "subagent request rejected" } }, { "retry-after-ms": "0" })
+      }
       yield* llm.text("parent done")
       yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "delegate" }] })
       const events = (yield* Effect.promise(() => fs.readFile(capture, "utf8").catch(() => "")))
@@ -286,6 +292,15 @@ it.live("failed foreground subagent still fires StopFailure", () =>
         .map((line): { session_id: string; hook_event_name: string } => JSON.parse(line))
       const child = events.filter((event) => event.session_id !== session.id)
       expect(child.map((event) => event.hook_event_name)).toEqual(["StopFailure"])
+      // The parent made its tool-call request, the child consumed every queued
+      // rejection through the retry cap, and the parent consumed its final
+      // reply: 1 + (cap + 1) + 1 requests. Title generation has its own
+      // automatic reply and is excluded. Nothing is left outstanding.
+      const conversation = (yield* llm.hits).filter(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+      )
+      expect(conversation).toHaveLength(SessionRetry.RETRY_MAX_RETRIES + 3)
+      expect(yield* llm.pending).toBe(0)
     }),
     { git: true, config: providerCfg },
   ),

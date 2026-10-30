@@ -68,6 +68,12 @@ function prepareEditArguments(value: unknown): unknown {
   const edits = editEntries(value.edits ?? value.edit)
   if (hasEdits && !edits) return value
   if (edits && edits.length > 1) return value
+  const topLevelReplacement =
+    firstString(value.oldString, value.old_string, value.oldText, value.old_text) !== undefined ||
+    firstString(value.newString, value.new_string, value.newText, value.new_text) !== undefined
+  // Top-level strings plus an edits entry describe two replacements; neither
+  // may win silently, so let strict decoding reject the excess key.
+  if (edits && topLevelReplacement) return value
   const edit = edits?.[0] ?? {}
 
   const filePath = firstString(
@@ -153,6 +159,10 @@ export const EditTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      // Reject edits/edit keys instead of stripping them: a call that carries
+      // both top-level strings and an edits array must fail closed rather than
+      // silently dropping every edit except the top-level one.
+      parseOptions: { onExcessProperty: "error" },
       repairArguments: prepareEditArguments,
       formatValidationError: (error) =>
         [
@@ -290,7 +300,12 @@ export const EditTool = Tool.define(
           yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
-          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
+          const block = LSP.Diagnostic.afterEdit(
+            filePath,
+            diagnostics[normalizedFilePath] ?? [],
+            contentOld,
+            contentNew,
+          )
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {
@@ -882,10 +897,13 @@ export function replace(content: string, oldString: string, newString: string, r
       }
     }
 
+    // A fuzzy match that lands in several places is always ambiguous, even
+    // with replaceAll: the candidates differ from oldString, so replacing only
+    // the first candidate's text would silently leave the others untouched.
+    if (matches.length > 1) throw ambiguousMatches(content, matches)
     if (replaceAll) {
       return content.replaceAll(matches[0].value, () => newString)
     }
-    if (matches.length > 1) throw ambiguousMatches(content, matches)
 
     const match = matches[0]
     return content.substring(0, match.start) + newString + content.substring(match.end)

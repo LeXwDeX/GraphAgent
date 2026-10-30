@@ -4,9 +4,15 @@ import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 describe("ConfigCompaction.resolveDynamic", () => {
   test.each([
     {
-      name: "defaults on when both fields are missing",
+      name: "defaults off when both fields are missing",
       input: {},
-      expected: { configured: true, enabled: true, source: "default", deprecatedPrune: false },
+      expected: {
+        configured: false,
+        enabled: false,
+        source: "default",
+        deprecatedPrune: false,
+        skipped: "disabled",
+      },
     },
     {
       name: "uses explicit dynamic true",
@@ -19,12 +25,12 @@ describe("ConfigCompaction.resolveDynamic", () => {
       expected: { configured: false, enabled: false, source: "dynamic", deprecatedPrune: false, skipped: "disabled" },
     },
     {
-      name: "falls back to deprecated prune true",
+      name: "ignores deprecated prune true",
       input: { prune: true },
-      expected: { configured: true, enabled: true, source: "prune", deprecatedPrune: true },
+      expected: { configured: false, enabled: false, source: "prune", deprecatedPrune: true, skipped: "disabled" },
     },
     {
-      name: "falls back to deprecated prune false",
+      name: "ignores deprecated prune false",
       input: { prune: false },
       expected: { configured: false, enabled: false, source: "prune", deprecatedPrune: true, skipped: "disabled" },
     },
@@ -41,7 +47,13 @@ describe("ConfigCompaction.resolveDynamic", () => {
     {
       name: "treats explicit undefined as missing intent",
       input: { dynamic: undefined, prune: undefined },
-      expected: { configured: true, enabled: true, source: "default", deprecatedPrune: false },
+      expected: {
+        configured: false,
+        enabled: false,
+        source: "default",
+        deprecatedPrune: false,
+        skipped: "disabled",
+      },
     },
   ])("$name", ({ input, expected }) => {
     expect(
@@ -95,12 +107,12 @@ describe("ConfigCompaction.resolveDynamic", () => {
         knownExternalDcp: "unknown",
       }),
     ).toEqual({
-      configured: true,
-      enabled: true,
+      configured: false,
+      enabled: false,
       source: "default",
       deprecatedPrune: false,
       externalDcp: "unknown",
-      skipped: undefined,
+      skipped: "disabled",
     })
   })
 })

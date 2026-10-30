@@ -157,4 +157,42 @@ describe("LSP.Diagnostic", () => {
     } as any)
     expect(result).toBe("ERROR [1:1] Something wrong")
   })
+
+  test("changedRanges() reports the edited line with no surrounding context", () => {
+    const ranges = LSP.Diagnostic.changedRanges("a\nb\nc\nd\ne\n", "a\nb\nc\nX\ne\n")
+    expect(ranges).toEqual([{ start: 4, end: 4 }])
+  })
+
+  test("changedRanges() anchors a pure deletion at the following line", () => {
+    const ranges = LSP.Diagnostic.changedRanges("a\nb\nc\n", "a\nc\n")
+    expect(ranges).toEqual([{ start: 2, end: 2 }])
+  })
+
+  test("afterEdit() keeps errors in and around the change and drops pre-existing ones", () => {
+    const issues = (line: number, message: string) =>
+      ({
+        range: { start: { line: line - 1, character: 0 }, end: { line: line - 1, character: 1 } },
+        message,
+        severity: 1,
+      }) as any
+    const block = LSP.Diagnostic.afterEdit(
+      "file.ts",
+      [issues(4, "changed"), issues(6, "nearby"), issues(9, "pre-existing")],
+      "a\nb\nc\nd\ne\nf\ng\nh\ni\n",
+      "a\nb\nc\nX\ne\nf\ng\nh\ni\n",
+    )
+    expect(block).toContain("changed")
+    expect(block).toContain("nearby")
+    expect(block).not.toContain("pre-existing")
+  })
+
+  test("afterEdit() reports a whole new file and nothing when unchanged", () => {
+    const issue = {
+      range: { start: { line: 2, character: 0 }, end: { line: 2, character: 1 } },
+      message: "new error",
+      severity: 1,
+    } as any
+    expect(LSP.Diagnostic.afterEdit("new.ts", [issue], "", "a\nb\nc\n")).toContain("new error")
+    expect(LSP.Diagnostic.afterEdit("same.ts", [issue], "a\nb\nc\n", "a\nb\nc\n")).toBe("")
+  })
 })

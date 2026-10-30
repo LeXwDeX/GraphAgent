@@ -1204,7 +1204,6 @@ export function options(input: {
   }
 
   if (input.model.providerID === "meta" && input.model.api.npm === "@ai-sdk/openai") {
-    result["reasoningEffort"] = "xhigh"
     result["reasoningSummary"] = "auto"
     result["include"] = INCLUDE_ENCRYPTED_REASONING
   }
@@ -1271,20 +1270,13 @@ export function options(input: {
     result["gateway"] = { caching: "auto" }
   }
 
-  // Any gpt version above 5.4 in combination with azure does not support reasoningEffort
-  // so we should return early here.
-  const [, gptMajorVersion, gptMinorVersion] = input.model.api.id.match(/gpt-(\d+)\.(\d+)/) ?? []
-  const isGpt55OrNewer = Number(gptMajorVersion) > 5 || (Number(gptMajorVersion) === 5 && Number(gptMinorVersion) >= 5)
+  // Azure completion URLs ignore the chat-only knobs below, so return early.
   if (input.model.api.npm === "@ai-sdk/azure" && input.providerOptions?.useCompletionUrls) {
-    if (!isGpt55OrNewer) {
-      result["reasoningEffort"] = "medium"
-    }
     return result
   }
 
   if (input.model.api.id.includes("gpt-5") && !input.model.api.id.includes("gpt-5-chat")) {
     if (!input.model.api.id.includes("gpt-5-pro")) {
-      result["reasoningEffort"] = "medium"
       if (
         input.model.api.npm === "@ai-sdk/openai" ||
         input.model.api.npm === "@ai-sdk/azure" ||
@@ -1296,17 +1288,6 @@ export function options(input: {
       if (input.model.api.npm === "@ai-sdk/openai" || input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle") {
         result["include"] = INCLUDE_ENCRYPTED_REASONING
       }
-    }
-
-    // Generic OpenAI-compatible APIs do not necessarily support OpenAI's verbosity parameter.
-    // Only enable the default for integrations known to implement it.
-    if (
-      input.model.api.id.includes("gpt-5.") &&
-      !input.model.api.id.includes("codex") &&
-      !input.model.api.id.includes("-chat") &&
-      (input.model.api.npm === "@ai-sdk/openai" || input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle")
-    ) {
-      result["textVerbosity"] = "low"
     }
 
     if (input.model.providerID.startsWith("opencode") && input.providerOptions?.setCacheKey !== false) {

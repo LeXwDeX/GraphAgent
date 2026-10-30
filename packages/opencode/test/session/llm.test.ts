@@ -1070,6 +1070,8 @@ const foldingConfig = (): Partial<ConfigV1.Info> => ({
       options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
     },
   },
+  // Dynamic folding is opt-in since v1.0.93; these tests measure the folded wire request.
+  compaction: { dynamic: true },
 })
 
 // The aux prompt embeds this reasoning body; the CJK-aware reserve estimator counts CJK at ~1 token per
@@ -1184,7 +1186,7 @@ const loadedDcpCases = [
 function loadedDcpConfig(testCase: (typeof loadedDcpCases)[number]): Partial<ConfigV1.Info> {
   return {
     ...foldingConfig(),
-    compaction: { auto: false },
+    compaction: { auto: false, dynamic: true },
     plugin: [["./dcp-plugin.js", testCase.options]],
   }
 }
@@ -2148,7 +2150,7 @@ describe("session.llm.stream", () => {
         expect(wire).toContain(foldingBody)
         expect(JSON.stringify(messages)).toBe(before)
       }),
-    { config: () => ({ ...foldingConfig(), compaction: { auto: false } }) },
+    { config: () => ({ ...foldingConfig(), compaction: { auto: false, dynamic: true } }) },
   )
 
   it.instance(

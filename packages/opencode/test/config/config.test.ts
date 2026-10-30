@@ -1033,12 +1033,17 @@ describe("dynamic compaction configuration", () => {
       knownExternalDcp: "unknown",
     })
 
-  it.instance("defaults on after loading without manufacturing explicit config", () =>
+  it.instance("defaults off after loading without manufacturing explicit config", () =>
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(config.compaction?.dynamic).toBeUndefined()
       expect(config.compaction?.prune).toBeUndefined()
-      expect(resolve(config)).toMatchObject({ enabled: true, source: "default", deprecatedPrune: false })
+      expect(resolve(config)).toMatchObject({
+        enabled: false,
+        source: "default",
+        deprecatedPrune: false,
+        skipped: "disabled",
+      })
     }),
   )
 
@@ -1107,7 +1112,7 @@ describe("dynamic compaction configuration", () => {
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(config.compaction?.auto).toBe(false)
-      expect(resolve(config)).toMatchObject({ enabled: true, source: "default" })
+      expect(resolve(config)).toMatchObject({ enabled: false, source: "default", skipped: "disabled" })
     }),
     { config: { compaction: { auto: false } } },
   )

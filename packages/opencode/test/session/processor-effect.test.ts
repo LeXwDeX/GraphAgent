@@ -554,13 +554,14 @@ it.live("session.processor effect tests reset reasoning state across retries", (
   ),
 )
 
-it.live("session.processor effect tests do not retry unknown json errors", () =>
+it.live("session.processor effect tests retry a 400 with an unknown json body through the shared backoff", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
 
         yield* llm.error(400, { error: { message: "no_kv_space" } })
+        yield* llm.text("recovered")
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "json")
@@ -589,9 +590,9 @@ it.live("session.processor effect tests do not retry unknown json errors", () =>
           tools: {},
         })
 
-        expect(value).toBe("stop")
-        expect(yield* llm.calls).toBe(1)
-        expect(handle.message.error?.name).toBe("APIError")
+        expect(value).toBe("continue")
+        expect(yield* llm.calls).toBe(2)
+        expect(handle.message.error).toBeUndefined()
       }),
     { config: (url) => providerCfg(url) },
   ),
@@ -753,6 +754,56 @@ it.live("session.processor effect tests publish retry status updates", () =>
       }),
     { config: (url) => providerCfg(url) },
   ),
+)
+
+it.live("session.processor effect tests retry a gateway 502 and a 400 on the OpenAI responses route", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.error(502, "Bad Gateway\n")
+        yield* llm.error(400, { error: { message: "upstream rejected the request" } })
+        yield* llm.text("recovered")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "retry")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "retry" }],
+          tools: {},
+        })
+
+        expect(value).toBe("continue")
+        expect(yield* llm.calls).toBe(3)
+      }),
+    {
+      config: (url) => {
+        const config = providerCfg(url)
+        return { ...config, provider: { test: { ...config.provider.test, npm: "@ai-sdk/openai" } } }
+      },
+    },
+  ),
+  30_000,
 )
 
 it.live("session.processor effect tests compact on structured context overflow", () =>
