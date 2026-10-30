@@ -63,6 +63,17 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
 
+// Entry-form practice for asyncRewake hooks, rendered inside Active Hooks so it
+// costs nothing when no hooks are configured. The full recipe lives in the
+// configure-hooks skill; platform-neutral on purpose.
+const BACKGROUND_WAITS = [
+  "### Background waits",
+  "For long waits on external results, listen in the background with an asyncRewake hook instead of sleeping in the foreground; see the configure-hooks skill.",
+].join("\n")
+
+const BACKGROUND_WAITS_HINT =
+  "Long external waits (CI, reviews, deploys, long builds) can run in an asyncRewake hook instead of sleep-polling; with the user's agreement, set one up through the configure-hooks skill."
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -175,9 +186,13 @@ export const layer = Layer.effect(
         const lines = [
           "## Active Hooks",
           "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
-          ...shown.map((h) => `- ${h.event} [${h.scope}/${h.type}] ${h.descriptor}`),
+          ...shown.map(
+            (h) => `- ${h.event} [${h.scope}/${h.type}${h.asyncRewake ? ", background" : ""}] ${h.descriptor}`,
+          ),
         ]
         if (hooks.length > MAX) lines.push(`… and ${hooks.length - MAX} more (see hooks.json)`)
+        // Only promise a callback when a hook can deliver one; otherwise just point at the pattern.
+        lines.push(hooks.some((h) => h.asyncRewake) ? BACKGROUND_WAITS : BACKGROUND_WAITS_HINT)
         return [lines.join("\n")]
       }),
 

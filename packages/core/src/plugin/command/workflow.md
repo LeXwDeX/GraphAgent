@@ -94,6 +94,19 @@ objective and block instructions in the parent, then write the edited value to
 a task-local YAML file. `read` never starts a workflow. A name that resolves
 nowhere fails with the searched locations.
 
+After choosing a DAG, saved workflows can be useful starting points. A small
+task-local graph can also be authored without searching the library. A primary
+reference often keeps the objective clear; borrow secondary checks where they
+add evidence rather than concatenating whole workflows.
+`lite` and `full` are reference shapes, not mandatory tiers. Uncertainty,
+irreversibility, public contracts, concurrency, persistence, authorization, or
+upstream executable dependencies can warrant more evidence; choose the checks
+that address the actual risk. A risk label or non-`ACCEPT` verdict alone never
+requires a full graph or a fixed reviewer count.
+Retarget a matching custom workflow to the task. Related work can usually reuse
+the existing workflow and valid results; the Verdict Disposal Contract
+describes follow-up options.
+
 ## Orchestration Lifecycle
 
 When a DAG is useful, these are possible phases to adapt to the remaining
@@ -575,9 +588,11 @@ file's `config`) into a validated YAML START spec and return its `spec_path`; no
 workflow is created. The draft is a start document only: it is not a valid
 extend or replan file, because those actions decode their own envelopes.
 Preferred over hand-writing YAML: the parameter schema
-rejects unknown fields, eliminating serialization drift. When validation fails
-the file is still on disk — fix it by calling draft again with corrected
-fields, then start the returned `spec_path`.
+rejects unknown fields, eliminating serialization drift. Hand-write YAML only
+for top-level fields `draft` does not carry, such as `mode: deep` with its
+`admission`; `config` already covers blocks/nodes bindings. Draft refuses an
+existing filename: when validation fails the file is still on disk — edit that
+file to fix the errors and start that path, or draft again under a new name.
 
 **guide** — Load on-demand authoring guidance. `topic` is one of `blocks`
 (composable block schema), `interface` (low-level node fields), `policy`

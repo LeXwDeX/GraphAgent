@@ -15,7 +15,7 @@ seem useful after choosing a DAG. Domain overlap does not itself require one.
 - The requested deliverable is a defect repair: keep debug and repair as the
   backbone; the repair, regression proof, and review stay in that graph.
 - The requested deliverable is a verdict: use code review for a pinned
-  implementation change, security or performance audit for those evidence
+  implementation change, security audit or performance audit for those evidence
   domains, and technical design when the object is a proposed system or
   migration.
 

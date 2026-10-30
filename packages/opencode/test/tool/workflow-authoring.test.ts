@@ -260,20 +260,20 @@ describe("workflow tool authoring guidance (#775)", () => {
     expect(decode({ params: { action: "draft", objective: "top level" } })).toBe(false)
   })
 
-  test("tool description and guides state the start-only draft contract and the exact action envelopes", () => {
+  test("the entry description points at guides that state the start-only draft contract and exact envelopes", () => {
     const routing = CommandPlugin.WorkflowContent
-    expect(routing).toContain("start document only")
-    expect(routing).toContain("{ objective, blocks }")
-    expect(routing).toContain("`fragment`")
-    // The extended start-envelope statement stays intact for the drift hints.
-    expect(routing).toContain("`objective` lives INSIDE `config`")
+    expect(routing).toContain('workflow(action="draft")')
+    expect(routing).toContain('guide(topic="blocks")')
 
     const interfaceGuide = CommandPlugin.WorkflowFactsContent
     expect(interfaceGuide).toContain("The draft is a start document only")
     expect(interfaceGuide).toContain("either `{ objective, blocks: [...] }` (block route)")
     expect(interfaceGuide).toContain("or `{ nodes: [...] }` (low-level route)")
+    expect(interfaceGuide).toContain("`fragment`")
 
     const blocksGuide = CommandPlugin.WorkflowBlocksContent
+    // The extended start-envelope statement stays intact for the drift hints.
+    expect(blocksGuide).toContain("`objective` lives INSIDE `config`")
     expect(blocksGuide).toContain("or `nodes` for the low-level route")
     expect(blocksGuide).toContain("graph budgets")
     expect(blocksGuide).toContain("never both")
