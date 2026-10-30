@@ -491,7 +491,7 @@ describe("ProviderTransform.options - google thinkingConfig gating", () => {
   })
 })
 
-describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
+describe("ProviderTransform.options - gpt-5 leaves verbosity to the vendor", () => {
   const sessionID = "test-session-123"
 
   const createGpt5Model = (apiId: string) =>
@@ -520,10 +520,10 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
       headers: {},
     }) as any
 
-  test("gpt-5.2 should have textVerbosity set to low", () => {
+  test("gpt-5.2 does not set textVerbosity", () => {
     const model = createGpt5Model("gpt-5.2")
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.textVerbosity).toBe("low")
+    expect(result.textVerbosity).toBeUndefined()
     expect(result.include).toEqual(["reasoning.encrypted_content"])
   })
 
@@ -540,10 +540,10 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     }
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
     expect(result.store).toBe(false)
-    expect(result.reasoningEffort).toBe("medium")
+    expect(result.reasoningEffort).toBeUndefined()
     expect(result.reasoningSummary).toBe("auto")
     expect(result.include).toEqual(["reasoning.encrypted_content"])
-    expect(result.textVerbosity).toBe("low")
+    expect(result.textVerbosity).toBeUndefined()
   })
 
   test("openai-compatible gpt-5 models omit Responses-only reasoningSummary", () => {
@@ -558,7 +558,7 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
       },
     }
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.reasoningEffort).toBe("medium")
+    expect(result.reasoningEffort).toBeUndefined()
     expect(result.reasoningSummary).toBeUndefined()
     expect(result.include).toBeUndefined()
     expect(result.textVerbosity).toBeUndefined()
@@ -625,38 +625,14 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     expect(result.tools.lookup.strict).toBe(false)
   })
 
-  test("gpt-5.1 should have textVerbosity set to low", () => {
+  test("gpt-5.1 does not set textVerbosity", () => {
     const model = createGpt5Model("gpt-5.1")
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.textVerbosity).toBe("low")
+    expect(result.textVerbosity).toBeUndefined()
   })
 
-  test("gpt-5.2-chat-latest should NOT have textVerbosity set (only supports medium)", () => {
+  test("gpt-5.2-chat-latest leaves textVerbosity to the vendor", () => {
     const model = createGpt5Model("gpt-5.2-chat-latest")
-    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.textVerbosity).toBeUndefined()
-  })
-
-  test("gpt-5.1-chat-latest should NOT have textVerbosity set (only supports medium)", () => {
-    const model = createGpt5Model("gpt-5.1-chat-latest")
-    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.textVerbosity).toBeUndefined()
-  })
-
-  test("gpt-5.2-chat should NOT have textVerbosity set", () => {
-    const model = createGpt5Model("gpt-5.2-chat")
-    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.textVerbosity).toBeUndefined()
-  })
-
-  test("gpt-5-chat should NOT have textVerbosity set", () => {
-    const model = createGpt5Model("gpt-5-chat")
-    const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
-    expect(result.textVerbosity).toBeUndefined()
-  })
-
-  test("gpt-5.2-codex should NOT have textVerbosity set (codex models excluded)", () => {
-    const model = createGpt5Model("gpt-5.2-codex")
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
     expect(result.textVerbosity).toBeUndefined()
   })
@@ -740,14 +716,14 @@ describe("ProviderTransform.options - gpt-5 reasoningEffort", () => {
     expect(result.reasoningEffort).toBeUndefined()
   })
 
-  test("gpt-5.6 should set reasoningEffort for the responses API", () => {
+  test("gpt-5.6 leaves reasoningEffort to the vendor for the responses API", () => {
     const result = ProviderTransform.options({
       model: createModel("gpt-5.6"),
       sessionID,
       providerOptions: {},
     })
 
-    expect(result.reasoningEffort).toBe("medium")
+    expect(result.reasoningEffort).toBeUndefined()
   })
 })
 
