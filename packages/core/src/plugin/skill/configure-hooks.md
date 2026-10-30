@@ -129,7 +129,7 @@ Callbacks belong to the originating session and instance. New user input, cancel
 
 ## Background watcher recipe
 
-Use this when an agent would otherwise sleep or poll in the foreground for CI, reviews, deploys or long builds. The Active Hooks block marks such hooks `background` and tells the agent to keep working until the callback arrives.
+Use this when an agent would otherwise sleep or poll in the foreground for CI, reviews, deploys or long builds. The Active Hooks block marks such hooks `background` and tells the agent to listen in the background instead of sleeping in the foreground; this skill holds the watcher setup and wake semantics.
 
 - Trigger: a `PostToolUse` handler on the tool that starts the work (for example matcher `Bash`). Exit 0 immediately when the input is not the expected start command, and add a small explicit helper command for starting a watch by hand. Recognize targets only from the tool's successful output, never by evaluating or replaying its command text.
 - Handler: `"type": "command"`, `"asyncRewake": true`, the exec form (`command` plus `args`, no shell), and a finite `timeout`. Keep the script's own deadline and per-query timeouts below that `timeout` so it can finish and report.

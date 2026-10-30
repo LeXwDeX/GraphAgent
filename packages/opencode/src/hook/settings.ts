@@ -2372,7 +2372,8 @@ export interface Interface {
    * Read-only view of the currently-effective hooks (merged global + project +
    * worktree chain), one entry per hook command tagged with its source layer.
    * Backed by the same hot-reloaded state `trigger` consults — never re-reads
-   * files. Empty when no hooks.json layer defines any hook.
+   * files. Empty when no hooks.json layer defines any hook or when
+   * disableAllHooks is on, because no trigger can run them.
    */
   readonly list: () => Effect.Effect<ReadonlyArray<HookSummary>>
   /**
@@ -4191,7 +4192,9 @@ export const layer = Layer.effect(
 
     const list = Effect.fn("SettingsHook.list")(function* () {
       const s = yield* InstanceState.get(state)
-      return s.hooksList
+      // The kill switch disables every trigger; reporting the configured
+      // entries would advertise hooks and background wakes that never run.
+      return s.settings.disableAllHooks === true ? [] : s.hooksList
     })
 
     const hasEvent = Effect.fn("SettingsHook.hasEvent")(function* (event: HookEvent, sessionID?: SessionID | string) {
