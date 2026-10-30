@@ -3,15 +3,6 @@ import { Context, Effect, Layer, Option } from "effect"
 
 import { InstanceState } from "@/effect/instance-state"
 
-import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
-import PROMPT_DEFAULT from "./prompt/default.txt"
-import PROMPT_BEAST from "./prompt/beast.txt"
-import PROMPT_GEMINI from "./prompt/gemini.txt"
-import PROMPT_GPT from "./prompt/gpt.txt"
-import PROMPT_KIMI from "./prompt/kimi.txt"
-
-import PROMPT_CODEX from "./prompt/codex.txt"
-import PROMPT_TRINITY from "./prompt/trinity.txt"
 import PROMPT_GOAL from "./prompt/goal.txt"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
@@ -29,22 +20,14 @@ import { GoalPrompts } from "@/goal/prompts"
 import { SettingsHook } from "@/hook/settings"
 import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
-import { editingInstruction, editingTools } from "@/tool/editing-tools"
+import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 
-export function provider(model: Provider.Model, tools: readonly string[] = editingTools(model.api.id)) {
-  const id = model.api.id.toLowerCase()
-  if (id.includes("gpt-4") || /(^|\/)o[13](?:$|[-.])/.test(id)) return [PROMPT_BEAST]
-  if (id.includes("gpt")) {
-    if (id.includes("codex")) {
-      return [PROMPT_CODEX.replace("${editingInstruction}", () => editingInstruction(tools))]
-    }
-    return [PROMPT_GPT.replace("${editingInstruction}", () => editingInstruction(tools))]
-  }
-  if (id.includes("gemini-")) return [PROMPT_GEMINI]
-  if (id.includes("claude")) return [PROMPT_ANTHROPIC]
-  if (id.includes("trinity")) return [PROMPT_TRINITY]
-  if (id.includes("kimi")) return [PROMPT_KIMI]
-  return [PROMPT_DEFAULT]
+/**
+ * Every model receives the same prompt. The only substitution is the editing
+ * instruction, which names the editing tools actually exposed for this request.
+ */
+export function provider(tools: readonly string[] = ["edit", "write"]) {
+  return [GraphAgentPrompt.render(tools)]
 }
 
 export interface Interface {
@@ -62,6 +45,17 @@ export interface Interface {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
+
+// Entry-form practice for asyncRewake hooks, rendered inside Active Hooks so it
+// costs nothing when no hooks are configured. The full recipe lives in the
+// configure-hooks skill; platform-neutral on purpose.
+const BACKGROUND_WAITS = [
+  "### Background waits",
+  "For long waits on external results, listen in the background with an asyncRewake hook instead of sleeping in the foreground; see the configure-hooks skill.",
+].join("\n")
+
+const BACKGROUND_WAITS_HINT =
+  "Long external waits (CI, reviews, deploys, long builds) can run in an asyncRewake hook instead of sleep-polling; with the user's agreement, set one up through the configure-hooks skill."
 
 export const layer = Layer.effect(
   Service,
@@ -122,9 +116,8 @@ export const layer = Layer.effect(
 
         return [
           "Skills provide specialized instructions and workflows for specific tasks.",
-          "Use the skill tool to load a skill when a task matches its description.",
-          // the agents seem to ingest the information about skills a bit better if we present a more verbose
-          // version of them here and a less verbose version in tool description, rather than vice versa.
+          // The skill tool description owns how to load a skill; this block
+          // only advertises what is available.
           Skill.fmt(list, { verbose: true }),
         ].join("\n")
       }),
@@ -176,9 +169,13 @@ export const layer = Layer.effect(
         const lines = [
           "## Active Hooks",
           "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
-          ...shown.map((h) => `- ${h.event} [${h.scope}/${h.type}] ${h.descriptor}`),
+          ...shown.map(
+            (h) => `- ${h.event} [${h.scope}/${h.type}${h.asyncRewake ? ", background" : ""}] ${h.descriptor}`,
+          ),
         ]
         if (hooks.length > MAX) lines.push(`… and ${hooks.length - MAX} more (see hooks.json)`)
+        // Only promise a callback when a hook can deliver one; otherwise just point at the pattern.
+        lines.push(hooks.some((h) => h.asyncRewake) ? BACKGROUND_WAITS : BACKGROUND_WAITS_HINT)
         return [lines.join("\n")]
       }),
 

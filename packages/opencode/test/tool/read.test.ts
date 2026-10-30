@@ -320,8 +320,9 @@ describe("tool.read truncation", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "large.json") })
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Output capped at")
-      expect(result.output).toContain("Use offset=")
+      expect(result.output).toContain("[truncated: showing lines 1-")
+      expect(result.output).toContain("(50 KB limit)")
+      expect(result.output).toContain("Continue: read filePath=")
     }),
   )
 
@@ -352,7 +353,7 @@ describe("tool.read truncation", () => {
       )
 
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Output capped at")
+      expect(result.output).toContain("[truncated: showing lines 1-")
       expect(counter.bytes).toBeLessThan(Buffer.byteLength(content, "utf-8") / 2)
     }),
   )
@@ -365,11 +366,33 @@ describe("tool.read truncation", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "many-lines.txt"), limit: 10 })
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Showing lines 1-10 of 100")
-      expect(result.output).toContain("Use offset=11")
+      expect(result.output).toContain("[truncated: showing lines 1-10 of 100.")
+      expect(result.output).toContain("90 lines omitted after this range.")
+      expect(result.output).toContain("Continue: read filePath=")
+      expect(result.output).toContain("offset=11")
       expect(result.output).toContain("line0")
       expect(result.output).toContain("line9")
       expect(result.output).not.toContain("line10")
+    }),
+  )
+
+  it.instance("does not count lines before offset as omitted after the cut", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "late.txt")
+      const content = Array.from({ length: 300 }, () => "x".repeat(1024)).join("\n")
+      yield* put(filepath, content)
+
+      const result = yield* run({ filePath: filepath, offset: 201 })
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("[truncated: showing lines 201-")
+      // The 200 skipped lines (~200 KB) are before the shown range. Only the
+      // ~52 KB after the cut is omitted; the full-file subtraction would report
+      // ~251 KB.
+      const omitted = /about ([\d.]+) KB omitted/.exec(result.output)?.[1]
+      expect(omitted).toBeTruthy()
+      expect(Number(omitted)).toBeGreaterThan(40)
+      expect(Number(omitted)).toBeLessThan(60)
     }),
   )
 
@@ -408,6 +431,47 @@ describe("tool.read truncation", () => {
       expect(result.output).toContain("line14")
       expect(result.output).not.toContain("line0")
       expect(result.output).not.toContain("line15")
+    }),
+  )
+
+  it.live("reads pages from the end without an offset", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const lines = Array.from({ length: 1000 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(dir, "pages.txt"), lines)
+
+      const end = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: -1 })
+      expect(end.output).toContain("801: line801")
+      expect(end.output).toContain("1000: line1000")
+      expect(end.output).not.toMatch(/^800: line800$/m)
+
+      const back = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: -2 })
+      expect(back.output).toContain("601: line601")
+      expect(back.output).toContain("800: line800")
+      expect(back.output).not.toMatch(/^801: line801$/m)
+
+      const first = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: 1 })
+      expect(first.output).toContain("1: line1")
+      expect(first.output).toContain("200: line200")
+      expect(first.output).not.toMatch(/^201: line201$/m)
+    }),
+  )
+
+  it.live("page size follows limit and rejects conflicting offsets", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(dir, "pages.txt"), lines)
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "pages.txt"), page: -1, limit: 10 })
+      expect(result.output).toContain("91: line91")
+      expect(result.output).toContain("100: line100")
+      expect(result.output).not.toMatch(/^90: line90$/m)
+
+      const conflict = yield* fail(dir, { filePath: path.join(dir, "pages.txt"), page: 1, offset: 1 })
+      expect(conflict.message).toContain("Use page or offset, not both.")
+      const zero = yield* fail(dir, { filePath: path.join(dir, "pages.txt"), page: 0 })
+      expect(zero.message).toContain("page must not be 0")
     }),
   )
 
@@ -474,8 +538,72 @@ describe("tool.read truncation", () => {
       yield* put(path.join(dir, "long-line.txt"), "x".repeat(3000))
 
       const result = yield* exec(dir, { filePath: path.join(dir, "long-line.txt") })
-      expect(result.output).toContain("(line truncated to 2000 chars)")
+      expect(result.output).toContain("(line truncated to 2000 of 3000 chars;")
+      expect(result.output).toContain("offset=1 limit=1 charOffset=2001 maxLineLength=1000")
       expect(result.output.length).toBeLessThan(3000)
+    }),
+  )
+
+  it.live("continues a line beyond the per-line fetch cap with charOffset", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "very-long-line.txt")
+      yield* put(filepath, "x".repeat(60_000))
+
+      const first = yield* exec(dir, { filePath: filepath })
+      expect(first.output).toContain("charOffset=2001 maxLineLength=2000")
+
+      const second = yield* exec(dir, {
+        filePath: filepath,
+        offset: 1,
+        limit: 1,
+        charOffset: 2001,
+        maxLineLength: 50_000,
+      })
+      expect(second.output).toContain("x".repeat(50_000))
+      expect(second.output).toContain("charOffset=52001 maxLineLength=8000")
+
+      const third = yield* exec(dir, {
+        filePath: filepath,
+        offset: 1,
+        limit: 1,
+        charOffset: 52_001,
+        maxLineLength: 8000,
+      })
+      expect(third.output).toContain("x".repeat(8000))
+      expect(third.output).not.toContain("line truncated")
+    }),
+  )
+
+  it.live("continues a multibyte line whose bytes exceed the output cap", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "multibyte-line.txt")
+      yield* put(filepath, "😀".repeat(20_000))
+
+      const first = yield* exec(dir, { filePath: filepath })
+      expect(first.output).toContain("😀")
+      const next = Number(first.output.match(/charOffset=(\d+)/)?.[1])
+      expect(next).toBeGreaterThan(1)
+
+      const second = yield* exec(dir, { filePath: filepath, offset: 1, limit: 1, charOffset: next })
+      expect(second.output).toContain("😀")
+      const advanced = Number(second.output.match(/charOffset=(\d+)/)?.[1] ?? Number.MAX_SAFE_INTEGER)
+      expect(advanced).toBeGreaterThan(next)
+    }),
+  )
+
+  it.live("shows the full long line when maxLineLength asks for it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "long-line.txt"), "x".repeat(3000))
+
+      const result = yield* exec(dir, {
+        filePath: path.join(dir, "long-line.txt"),
+        maxLineLength: 3000,
+      })
+      expect(result.output).toContain("x".repeat(3000))
+      expect(result.output).not.toContain("(line truncated")
     }),
   )
 

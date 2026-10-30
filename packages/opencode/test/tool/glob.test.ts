@@ -150,7 +150,7 @@ const itFaulted = testEffect(
   ),
 )
 
-const globExecute = (params: { pattern: string; path?: string }, next?: Partial<typeof ctx>) =>
+const globExecute = (params: { pattern: string; path?: string; limit?: number }, next?: Partial<typeof ctx>) =>
   Effect.gen(function* () {
     const info = yield* GlobTool
     const glob = yield* info.init()
@@ -378,11 +378,11 @@ describe("tool.glob", () => {
       const result = yield* globExecute({ pattern: "*.txt", path: test.directory })
       expect(result.metadata.count).toBe(100)
       expect(result.metadata.truncated).toBe(false)
-      expect(result.output).not.toContain("Results are truncated")
+      expect(result.output).not.toContain("[truncated:")
     }),
   )
 
-  it.instance("does not treat the intentional result limit as a failure", () =>
+  it.instance("reports the exact omitted count and how to continue past the limit", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* Effect.promise(() =>
@@ -393,7 +393,36 @@ describe("tool.glob", () => {
       const result = yield* globExecute({ pattern: "*.txt", path: test.directory })
       expect(result.metadata.count).toBe(100)
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("(Results are truncated")
+      expect(result.output).toContain("[truncated: showing the first 100 of 101 paths. 1 paths omitted.")
+      expect(result.output).toContain("glob limit=101")
+
+      const limited = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 5 })
+      expect(limited.metadata.count).toBe(5)
+      expect(limited.metadata.truncated).toBe(true)
+      expect(limited.output).toContain("[truncated: showing the first 5 of 101 paths.")
+      expect(limited.output).toContain("Continue: narrow path/pattern, or glob limit=101")
+    }),
+  )
+
+  it.instance("offers a usable limit continuation when the scan cap stops the listing", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(async () => {
+        for (let index = 0; index < 1001; index++) {
+          await Bun.write(path.join(test.directory, `cap-${index}.txt`), "x")
+        }
+      })
+      const result = yield* globExecute({ pattern: "*.txt", path: test.directory })
+      expect(result.metadata.count).toBe(100)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("[truncated: showing the first 100 of at least 1000 paths.")
+      expect(result.output).toContain("glob limit=1000 to show up to 1000 paths")
+
+      const wide = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 1000 })
+      expect(wide.metadata.count).toBe(1000)
+      expect(wide.metadata.truncated).toBe(true)
+      expect(wide.output).toContain("[truncated: showing the first 1000 of at least 1000 paths.")
+      expect(wide.output).toContain("Continue: narrow path/pattern.")
     }),
   )
 

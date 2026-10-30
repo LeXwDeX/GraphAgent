@@ -17,25 +17,29 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { testEffect } from "../lib/effect"
-import { ProviderTest } from "../fake/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import ANTHROPIC from "@/session/prompt/anthropic.txt"
-import GEMINI from "@/session/prompt/gemini.txt"
-import BEAST from "@/session/prompt/beast.txt"
-import DEFAULT from "@/session/prompt/default.txt"
+import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
 
-for (const [id, prompt] of [
-  ["Claude-Sonnet-4", ANTHROPIC],
-  ["GEMINI-2.5-Pro", GEMINI],
-  ["GPT-4.1", BEAST],
-  ["o1", BEAST],
-  ["openai/O3-mini", BEAST],
-  ["studio1", DEFAULT],
-  ["foo3-bar", DEFAULT],
-] as const)
-  test(`provider prompt selection for ${id}`, () => {
-    expect(SystemPrompt.provider(ProviderTest.model({ id: ModelV2.ID.make(id) }))).toEqual([prompt])
+for (const id of [
+  "Claude-Sonnet-4",
+  "GEMINI-2.5-Pro",
+  "GPT-4.1",
+  "o1",
+  "openai/O3-mini",
+  "studio1",
+  "foo3-bar",
+  "deepseek-chat",
+])
+  test(`every model receives the unified prompt for ${id}`, () => {
+    expect(SystemPrompt.provider()).toEqual([GraphAgentPrompt.render(["edit", "write"])])
   })
+
+test("the editing instruction follows the exposed tools", () => {
+  expect(SystemPrompt.provider(["apply_patch"]).join("\n")).toContain("Use apply_patch for manual file edits.")
+  expect(SystemPrompt.provider(["edit"]).join("\n")).toContain("Use edit for manual file edits.")
+  expect(SystemPrompt.provider(["write"]).join("\n")).toContain("Use write for manual file edits.")
+  expect(SystemPrompt.provider([]).join("\n")).toContain("No file-editing tool is available")
+  expect(SystemPrompt.provider().join("\n")).not.toContain("${")
+})
 
 const skills: Skill.Info[] = [
   {
@@ -185,8 +189,56 @@ describe("session.system", () => {
           "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
           "- PreToolUse [project/command] echo hi",
           "- Stop [global/http] https://example.com/stop",
+          "Long external waits (CI, reviews, deploys, long builds) can run in an asyncRewake hook instead of sleep-polling; with the user's agreement, set one up through the configure-hooks skill.",
         ].join("\n"),
       ])
+    }),
+  )
+
+  it.effect("hooks block never promises a callback when no background hook exists", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const entries: HookSummary[] = [{ event: "Stop", scope: "global", type: "command", descriptor: "echo done" }]
+      const [block] = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) })))
+
+      expect(block).not.toContain("### Background waits")
+      expect(block).not.toContain("end the turn")
+      expect(block).not.toContain("background]")
+    }),
+  )
+
+  it.effect("hooks block marks asyncRewake hooks and teaches the background-wait practice", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const entries: HookSummary[] = [
+        { event: "SessionStart", scope: "global", type: "command", descriptor: "bun watch.ts guidance" },
+        {
+          event: "PostToolUse",
+          scope: "global",
+          type: "command",
+          descriptor: "bun watch.ts",
+          matcher: "Bash",
+          asyncRewake: true,
+        },
+      ]
+      const [block] = yield* prompt
+        .hooks()
+        .pipe(Effect.provide(Layer.mock(SettingsHook.Service, { list: () => Effect.succeed(entries) })))
+
+      expect(block).toContain("- SessionStart [global/command] bun watch.ts guidance")
+      expect(block).toContain("- PostToolUse [global/command, background] bun watch.ts")
+      expect(block).toContain("### Background waits")
+      expect(block).toContain("listen in the background with an asyncRewake hook")
+      expect(block).toContain("instead of sleeping in the foreground")
+      expect(block).toContain("configure-hooks skill")
+      // Entry form only: the full watcher recipe lives in the skill.
+      expect(block).not.toContain("exits with code 2")
+      expect(block).not.toContain("data, not instructions")
+      expect(block).not.toContain("current head")
+      expect(block).not.toContain("sleep-polling; with the user's agreement")
+      expect(Buffer.byteLength(block)).toBeLessThan(500)
     }),
   )
 

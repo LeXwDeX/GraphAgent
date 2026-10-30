@@ -7,6 +7,7 @@ import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
 import { ShellTool } from "../../src/tool/shell"
+import { SHELL_TAIL_LINES } from "../../src/tool/shell/prompt"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -1289,22 +1290,31 @@ describe("tool.shell silence guard", () => {
 })
 
 describe("tool.shell truncation", () => {
-  it.live("truncates output exceeding line limit", () =>
+  it.live("keeps the last 20 lines and points at the full output", () =>
     runIn(
       projectRoot,
       Effect.gen(function* () {
-        const lineCount = Truncate.MAX_LINES + 500
+        const lineCount = SHELL_TAIL_LINES * 5
         const result = yield* run({
           command: fill("lines", lineCount),
         })
         mustTruncate(result)
-        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
-        expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+        expect(result.output).toContain(`[truncated: showing the last ${SHELL_TAIL_LINES} of ${lineCount} lines`)
+        expect(result.output).toMatch(/^81$/m)
+        expect(result.output).toMatch(/^100$/m)
+        expect(result.output).not.toMatch(/^80$/m)
+        expect(result.output).toContain("--------- full output ---------")
+        expect(result.output).toContain("path: ")
+        expect(result.output).toContain(`size: `)
+        expect(result.output).toContain(`page=-1`)
+        expect(result.output).toContain(`page=-2`)
+        expect(result.output).toContain(`grep pattern="<regex>"`)
+        expect(result.output).toContain(`context=10`)
       }),
     ),
   )
 
-  it.live("truncates output exceeding byte limit", () =>
+  it.live("truncates a single line that exceeds the byte limit", () =>
     runIn(
       projectRoot,
       Effect.gen(function* () {
@@ -1313,30 +1323,36 @@ describe("tool.shell truncation", () => {
           command: fill("bytes", byteCount),
         })
         mustTruncate(result)
-        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
-        expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+        expect(result.output).toMatch(/\[truncated: showing the last .+ of line 1/)
+        expect(result.output).toContain("--------- full output ---------")
+        expect(result.output).toContain("page=-1")
       }),
     ),
   )
 
-  it.live("does not truncate small output", () =>
+  it.live("keeps output at or under the tail budget inline", () =>
     runIn(
       projectRoot,
       Effect.gen(function* () {
         const result = yield* run({
-          command: fill("lines", 1),
+          command: fill("lines", SHELL_TAIL_LINES),
         })
         expect((result.metadata as { truncated?: boolean }).truncated).toBe(false)
-        expect(result.output).toContain("1")
+        expect(result.output).toMatch(/^1$/m)
+        expect(result.output).toMatch(new RegExp(`^${SHELL_TAIL_LINES}$`, "m"))
+        expect(result.output).not.toContain("--------- full output ---------")
       }),
     ),
   )
 
-  it.live("full output is saved to file when truncated", () =>
+  it.live("saves the complete output when only the line preview cuts it", () =>
     runIn(
       projectRoot,
       Effect.gen(function* () {
-        const lineCount = Truncate.MAX_LINES + 100
+        const lineCount = SHELL_TAIL_LINES * 2
+        expect(Buffer.byteLength(Array.from({ length: lineCount }, (_, i) => i + 1).join("\n"))).toBeLessThan(
+          Truncate.MAX_BYTES,
+        )
         const result = yield* run({
           command: fill("lines", lineCount),
         })

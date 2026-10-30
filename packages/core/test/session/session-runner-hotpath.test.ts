@@ -32,6 +32,7 @@ import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigAgent } from "@opencode-ai/core/config/agent"
+import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { ReadTool } from "@opencode-ai/core/tool/read"
 import { ReadToolFileSystem } from "@opencode-ai/core/tool/read-filesystem"
@@ -542,6 +543,13 @@ const selectStoredFoldingTools = (messages: readonly SessionMessage.Message[]) =
   )
 
 const seedFoldedCoreHistory = Effect.fn("test.seedFoldedCoreHistory")(function* (session: SessionV2.Interface) {
+  // Duplicate-output folding is opt-in since v1.0.93; this helper measures it.
+  configEntries = [
+    new Config.Document({
+      type: "document",
+      info: new Config.Info({ compaction: new ConfigCompaction.Info({ dynamic: true }) }),
+    }),
+  ]
   yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Record one side effect" }), resume: false })
   responses = [toolTurn, textTurn("side-effect-done", "recorded")]
   yield* session.resume(sessionID)

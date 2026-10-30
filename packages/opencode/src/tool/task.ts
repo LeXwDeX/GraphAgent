@@ -69,6 +69,11 @@ function settle(result: SessionV1.WithParts, prior = ""): { text: string; error?
   const text = finalText(result)
   const partial = mergePartial(prior, text)
   const info = result.info.role === "assistant" ? result.info : undefined
+  // Keep the child session reachable: the parent can resume it by passing this
+  // id back as task_id instead of redoing the whole task from scratch.
+  const resume = info
+    ? `. Continue: task task_id="${info.sessionID}" prompt="Continue the task and write the final answer now."`
+    : ""
   if (info?.finish === "length") {
     const { output, reasoning } = info.tokens
     const detail = `${output + reasoning}; reasoning ${reasoning}, text ${output}`
@@ -76,14 +81,17 @@ function settle(result: SessionV1.WithParts, prior = ""): { text: string; error?
       text,
       error: new Error(
         `Subagent output truncated at the output token cap (${detail})` +
-          (partial ? `. Partial output:\n${partial}` : ""),
+          (partial ? `. Partial output:\n${partial}` : "") +
+          resume,
       ),
     }
   }
   if (!text.trim())
     return {
       text,
-      error: new Error("Subagent returned an empty final answer" + (partial ? `. Partial output:\n${partial}` : "")),
+      error: new Error(
+        "Subagent returned an empty final answer" + (partial ? `. Partial output:\n${partial}` : "") + resume,
+      ),
     }
   return { text }
 }

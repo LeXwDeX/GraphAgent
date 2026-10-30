@@ -40,6 +40,7 @@ import { ModelV2 } from "../../model"
 import { ProviderV2 } from "../../provider"
 import { QuestionV2 } from "../../question"
 import { SystemContext } from "../../system-context/index"
+import { GraphAgentPrompt } from "../../system-context/graphagent"
 import { SystemContextRegistry } from "../../system-context/registry"
 import { SkillGuidance } from "../../skill/guidance"
 import { ReferenceGuidance } from "../../reference/guidance"
@@ -600,6 +601,14 @@ export const layer = Layer.effect(
       const budgetExhausted = runBudget.budget.exhausted
       const toolsDisabled = isLastStep || budgetExhausted
       const toolMaterialization = toolsDisabled ? undefined : yield* tools.materialize(agent.info?.permissions)
+      // Mirror V1: a configured agent system replaces the shared prompt; every
+      // other agent gets the one GraphAgent prompt, with the editing line
+      // naming the tools this request actually exposed.
+      const configuredSystem = agent.info?.system
+      const systemPrompt =
+        configuredSystem && configuredSystem.length > 0
+          ? configuredSystem
+          : GraphAgentPrompt.render((toolMaterialization?.definitions ?? []).map((definition) => definition.name))
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const reasoningEnabled = yield* reasoningRewriteEnabled(model)
       const conversion = toLLMMessagesWithBindings(context, model, { reasoningDistillationEnabled: reasoningEnabled })
@@ -617,7 +626,7 @@ export const layer = Layer.effect(
         model,
         providerOptions: { openai: { promptCacheKey } },
         http: { timeout: turnTimeout },
-        system: [agent.info?.system, system.baseline, ...(pendingRequestContext.get(session.id) ?? [])]
+        system: [systemPrompt, system.baseline, ...(pendingRequestContext.get(session.id) ?? [])]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
         messages: expectedMessages,

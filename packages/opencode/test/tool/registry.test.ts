@@ -87,7 +87,7 @@ describe("tool.registry", () => {
         )
         for (const exists of [false, true]) {
           const text = [
-            ...SystemPrompt.provider(model, tools),
+            ...SystemPrompt.provider(tools),
             SessionReminders.planModePrompt({ plan: "/plans/test.md", exists, tools }),
           ].join("\n")
           const references = [...text.matchAll(/Use (apply_patch|edit(?: and write)?|write) for manual file edits\./g)]
@@ -98,7 +98,7 @@ describe("tool.registry", () => {
             if (!tools.includes(name)) expect(text).not.toContain(`using the ${name} tool`)
           expect(text).not.toContain("${")
         }
-        const disabled = SystemPrompt.provider(model, []).join("\n")
+        const disabled = SystemPrompt.provider([]).join("\n")
         expect(disabled).not.toContain("apply_patch")
         const reminder = SessionReminders.planModePrompt({ plan: "/plans/test.md", exists: false, tools: [] })
         expect(reminder).not.toContain("plan_exit")

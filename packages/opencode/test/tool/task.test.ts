@@ -659,12 +659,14 @@ describe("tool.task", () => {
       const tool = yield* TaskTool
       const def = yield* tool.init()
       let prompts = 0
+      let childSession = ""
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) =>
           Effect.sync(() => {
             prompts += 1
+            childSession ||= input.sessionID
             return assistantReply(input, TRUNCATED)
           }),
       }
@@ -696,6 +698,8 @@ describe("tool.task", () => {
         expect(message).toContain("output token cap")
         expect(message).toContain("reasoning 32000")
         expect(message).toContain("text 0")
+        expect(message).toContain(`task_id="${childSession}"`)
+        expect(message).toContain('prompt="Continue the task and write the final answer now."')
       }
     }),
   )
@@ -706,12 +710,14 @@ describe("tool.task", () => {
       const tool = yield* TaskTool
       const def = yield* tool.init()
       let prompts = 0
+      let childSession = ""
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) =>
           Effect.sync(() => {
             prompts += 1
+            childSession ||= input.sessionID
             return prompts === 1 ? assistantReply(input, TRUNCATED) : assistantReply(input, { text: "" })
           }),
       }
@@ -741,6 +747,7 @@ describe("tool.task", () => {
       if (Exit.isFailure(exit)) {
         const message = Cause.pretty(exit.cause)
         expect(message).toContain("empty final answer")
+        expect(message).toContain(`task_id="${childSession}"`)
       }
     }),
   )

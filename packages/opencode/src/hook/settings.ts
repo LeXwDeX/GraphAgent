@@ -269,6 +269,8 @@ export interface HookSummary {
   type: HookCommand["type"]
   descriptor: string
   matcher?: string
+  /** Background watcher whose exit-2 result wakes the originating session. */
+  asyncRewake?: boolean
 }
 
 export interface HookJSONOutput {
@@ -979,10 +981,63 @@ function mcpInput(entry: HookCommand, envelope: HookEnvelope): Record<string, un
  * All types are uniformly truncated to 60 chars: command → command text,
  * http → URL, mcp → tool name, prompt/agent → first line of the prompt/goal.
  */
+// Only recognisable script arguments supply the display name; code passed to
+// `-e` or a version string must not be mistaken for a file.
+const SCRIPT_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".ps1",
+  ".bat",
+  ".cmd",
+  ".rb",
+  ".go",
+  ".rs",
+  ".php",
+  ".pl",
+  ".lua",
+])
+
+// Values of these flags are inline code, never a script path worth naming.
+const INLINE_ARG_FLAGS = new Set(["-c", "-e", "--eval", "-r", "--require", "--import", "--loader"])
+
+function scriptName(entry: HookCommand): string | undefined {
+  const args = entry.args ?? []
+  const candidates = args.flatMap((arg, index) => {
+    // Inline shell code can end in a script-like token (`cat setup.sh`) without being a path.
+    if (arg.startsWith("-") || /\s/.test(arg)) return []
+    const name = path.basename(arg)
+    if (!SCRIPT_EXTENSIONS.has(path.extname(name).toLowerCase())) return []
+    const previous = args[index - 1]
+    return [
+      {
+        name,
+        optionValue: previous !== undefined && previous.startsWith("-"),
+        inline: previous !== undefined && INLINE_ARG_FLAGS.has(previous),
+      },
+    ]
+  })
+  // An option value (`--import ./register.ts`) precedes the script that actually runs.
+  return (candidates.find((candidate) => !candidate.optionValue) ?? candidates.find((candidate) => !candidate.inline))
+    ?.name
+}
+
 function descriptorFor(entry: HookCommand): string {
   switch (entry.type) {
-    case "command":
-      return commandText(entry).slice(0, 60)
+    case "command": {
+      // `bun /path/watch.ts` should not read as just `bun` in Active Hooks.
+      const name = scriptName(entry)
+      return `${commandText(entry)}${name ? ` ${name}` : ""}`.slice(0, 60)
+    }
     case "http":
       return httpUrl(entry).slice(0, 60)
     case "mcp":
@@ -1207,6 +1262,7 @@ function readChain(
               ? `${descriptorFor(h)} [${inactiveEventWarning(event)}]`
               : descriptorFor(h),
             ...(m.matcher && m.matcher !== "*" ? { matcher: m.matcher } : {}),
+            ...(h.type === "command" && h.asyncRewake === true && canRewake(event) ? { asyncRewake: true } : {}),
           })
         }
       }
@@ -1375,6 +1431,18 @@ const INACTIVE_EVENTS = new Set<HookEvent>(["PermissionDenied", "TeammateIdle"])
 
 function inactiveEventWarning(event: HookEvent): string | undefined {
   return INACTIVE_EVENTS.has(event) ? "inactive: this build has no event trigger" : undefined
+}
+
+/**
+ * Events whose async completion never reaches a rewake. SessionEnd has no later
+ * turn, StopFailure discards its output and exit code, and the inactive events
+ * have no producer. Marking these `background` would tell the agent to wait for
+ * a callback the code guarantees will never arrive.
+ */
+const NO_REWAKE_EVENTS = new Set<HookEvent>(["SessionEnd", "StopFailure"])
+
+function canRewake(event: HookEvent): boolean {
+  return !NO_REWAKE_EVENTS.has(event) && !INACTIVE_EVENTS.has(event)
 }
 
 export function warnUnsupportedFields(hooks: Settings["hooks"], sourceDir: string): void {
@@ -2333,7 +2401,8 @@ export interface Interface {
    * Read-only view of the currently-effective hooks (merged global + project +
    * worktree chain), one entry per hook command tagged with its source layer.
    * Backed by the same hot-reloaded state `trigger` consults — never re-reads
-   * files. Empty when no hooks.json layer defines any hook.
+   * files. Empty when no hooks.json layer defines any hook or when
+   * disableAllHooks is on, because no trigger can run them.
    */
   readonly list: () => Effect.Effect<ReadonlyArray<HookSummary>>
   /**
@@ -4152,7 +4221,9 @@ export const layer = Layer.effect(
 
     const list = Effect.fn("SettingsHook.list")(function* () {
       const s = yield* InstanceState.get(state)
-      return s.hooksList
+      // The kill switch disables every trigger; reporting the configured
+      // entries would advertise hooks and background wakes that never run.
+      return s.settings.disableAllHooks === true ? [] : s.hooksList
     })
 
     const hasEvent = Effect.fn("SettingsHook.hasEvent")(function* (event: HookEvent, sessionID?: SessionID | string) {

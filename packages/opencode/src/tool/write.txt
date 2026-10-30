@@ -1,8 +1,4 @@
-Writes a file to the local filesystem.
+Create or overwrite a file. Use this for a new file or an intentional full-file rewrite; use edit for targeted changes.
 
-Usage:
-- This tool will overwrite the existing file if there is one at the provided path.
-- If this is an existing file, you MUST use the read tool first to read the file's contents. This is an operating requirement; the tool does not enforce a prior-read check.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
+- Read an existing file before overwriting it.
+- Do not create documentation files unless the user requests them.

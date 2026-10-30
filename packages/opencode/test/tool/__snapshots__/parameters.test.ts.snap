@@ -243,7 +243,7 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "filePath": {
-      "description": "The absolute path to the file to modify",
+      "description": "Path to the file to edit; relative paths resolve from the project directory",
       "type": "string",
     },
     "newString": {
@@ -251,11 +251,11 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
       "type": "string",
     },
     "oldString": {
-      "description": "The text to replace",
+      "description": "Exact text to replace. Include enough surrounding context to make it unique",
       "type": "string",
     },
     "replaceAll": {
-      "description": "Replace all occurrences of oldString (default false)",
+      "description": "Replace every exact occurrence of oldString (default false)",
       "type": "boolean",
     },
   },
@@ -272,6 +272,13 @@ exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "limit": {
+      "description": "Maximum paths to show (defaults to 100, capped at 1000)",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
     "path": {
       "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
       "type": "string",
@@ -292,9 +299,22 @@ exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "context": {
+      "description": "Lines of context before and after each match (defaults to 0, capped at 20); use it to read a saved shell output in one search",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer",
+    },
     "include": {
       "description": "File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")",
       "type": "string",
+    },
+    "limit": {
+      "description": "Maximum matches to show (defaults to 100, capped at 1000)",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
     },
     "path": {
       "description": "The file or directory to search in. Defaults to the current working directory.",
@@ -452,6 +472,13 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "charOffset": {
+      "description": "Character offset within each displayed line (1-indexed); combine it with maxLineLength to continue a long line past the character cap",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
     "filePath": {
       "description": "The absolute path to the file or directory to read",
       "type": "string",
@@ -463,9 +490,22 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
       "minimum": -9007199254740991,
       "type": "integer",
     },
+    "maxLineLength": {
+      "description": "Maximum characters to show from each line (defaults to 2000, capped at 50000); use it to continue a truncated long line",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
     "offset": {
       "description": "The line number or directory entry to start reading from (1-indexed positive integer)",
       "exclusiveMinimum": 0,
+      "maximum": 9007199254740991,
+      "minimum": -9007199254740991,
+      "type": "integer",
+    },
+    "page": {
+      "description": "Read one page of the file (200 lines, or limit when set): page 1 is the start, -1 is the last page, -2 the page before. Cannot be combined with offset",
       "maximum": 9007199254740991,
       "minimum": -9007199254740991,
       "type": "integer",

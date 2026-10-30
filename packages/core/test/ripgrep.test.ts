@@ -150,6 +150,31 @@ describe("Ripgrep", () => {
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),
   )
+  it.live("returns context rows in file order", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(tmp.path, "context.txt"),
+              Array.from({ length: 5 }, (_, index) => `line${index + 1}`).join("\n"),
+            ),
+          )
+
+          const rows = yield* (yield* Ripgrep.Service).grepContext({
+            cwd: tmp.path,
+            pattern: "line3",
+            limit: 20,
+            context: 1,
+          })
+
+          expect(rows.map((row) => `${row.kind}:${row.match.line}`)).toEqual(["context:2", "match:3", "context:4"])
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("does not split surrogate pairs in oversized line previews", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

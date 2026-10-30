@@ -32,6 +32,95 @@ function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
   return text.replaceAll("\n", "\r\n")
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function firstString(...values: unknown[]) {
+  return values.find((value): value is string => typeof value === "string")
+}
+
+function editEntries(value: unknown): Record<string, unknown>[] | undefined {
+  let parsed = value
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return undefined
+    }
+  }
+  const list = Array.isArray(parsed) ? parsed : [parsed]
+  if (list.length === 0 || !list.every(isRecord)) return undefined
+  return list
+}
+
+/**
+ * Provider compatibility for edit argument shapes. Strict decoding runs first;
+ * this only rewrites the call when the model used a recognized alternative
+ * shape, and returns the original value (failing closed) otherwise. Multiple
+ * edits are intentionally unsupported: split them into separate calls so each
+ * permission request and diff describes exactly one replacement.
+ */
+function prepareEditArguments(value: unknown): unknown {
+  if (!isRecord(value)) return value
+
+  const hasEdits = value.edits !== undefined || value.edit !== undefined
+  const edits = editEntries(value.edits ?? value.edit)
+  if (hasEdits && !edits) return value
+  if (edits && edits.length > 1) return value
+  const topLevelReplacement =
+    firstString(value.oldString, value.old_string, value.oldText, value.old_text) !== undefined ||
+    firstString(value.newString, value.new_string, value.newText, value.new_text) !== undefined
+  // Top-level strings plus an edits entry describe two replacements; neither
+  // may win silently, so let strict decoding reject the excess key.
+  if (edits && topLevelReplacement) return value
+  const edit = edits?.[0] ?? {}
+
+  const filePath = firstString(
+    value.filePath,
+    value.file_path,
+    value.path,
+    edit.filePath,
+    edit.file_path,
+    edit.path,
+  )
+  const oldString = firstString(
+    value.oldString,
+    value.old_string,
+    value.oldText,
+    value.old_text,
+    edit.oldString,
+    edit.old_string,
+    edit.oldText,
+    edit.old_text,
+  )
+  const newString = firstString(
+    value.newString,
+    value.new_string,
+    value.newText,
+    value.new_text,
+    edit.newString,
+    edit.new_string,
+    edit.newText,
+    edit.new_text,
+  )
+  if (filePath === undefined || oldString === undefined || newString === undefined) return value
+
+  const replaceAll = value.replaceAll ?? value.replace_all ?? edit.replaceAll ?? edit.replace_all
+  return {
+    filePath,
+    oldString,
+    newString,
+    ...(typeof replaceAll === "boolean"
+      ? { replaceAll }
+      : replaceAll === "true"
+        ? { replaceAll: true }
+        : replaceAll === "false"
+          ? { replaceAll: false }
+          : {}),
+  }
+}
+
 const locks = new Map<string, Semaphore.Semaphore>()
 
 function lock(filePath: string) {
@@ -45,13 +134,17 @@ function lock(filePath: string) {
 }
 
 export const Parameters = Schema.Struct({
-  filePath: Schema.String.annotate({ description: "The absolute path to the file to modify" }),
-  oldString: Schema.String.annotate({ description: "The text to replace" }),
+  filePath: Schema.String.annotate({
+    description: "Path to the file to edit; relative paths resolve from the project directory",
+  }),
+  oldString: Schema.String.annotate({
+    description: "Exact text to replace. Include enough surrounding context to make it unique",
+  }),
   newString: Schema.String.annotate({
     description: "The text to replace it with (must be different from oldString)",
   }),
   replaceAll: Schema.optional(Schema.Boolean).annotate({
-    description: "Replace all occurrences of oldString (default false)",
+    description: "Replace every exact occurrence of oldString (default false)",
   }),
 })
 
@@ -66,6 +159,16 @@ export const EditTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      // Reject edits/edit keys instead of stripping them: a call that carries
+      // both top-level strings and an edits array must fail closed rather than
+      // silently dropping every edit except the top-level one.
+      parseOptions: { onExcessProperty: "error" },
+      repairArguments: prepareEditArguments,
+      formatValidationError: (error) =>
+        [
+          `The edit call was rejected: ${error instanceof Error ? error.message : String(error)}`,
+          "Provide one replacement per call: { filePath, oldString, newString, replaceAll? }. Legacy oldText/newText keys and a single entry under `edits` are also accepted; split multiple edits into separate calls.",
+        ].join("\n"),
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           if (!params.filePath) {
@@ -197,7 +300,12 @@ export const EditTool = Tool.define(
           yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
-          const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
+          const block = LSP.Diagnostic.afterEdit(
+            filePath,
+            diagnostics[normalizedFilePath] ?? [],
+            contentOld,
+            contentNew,
+          )
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
           return {
@@ -239,6 +347,21 @@ function levenshtein(a: string, b: string): number {
     }
   }
   return matrix[a.length][b.length]
+}
+
+function blockAt(lines: string[], startLine: number, endLine: number): string {
+  let matchStartIndex = 0
+  for (let k = 0; k < startLine; k++) {
+    matchStartIndex += lines[k].length + 1
+  }
+  let matchEndIndex = matchStartIndex
+  for (let k = startLine; k <= endLine; k++) {
+    matchEndIndex += lines[k].length
+    if (k < endLine) {
+      matchEndIndex += 1
+    }
+  }
+  return lines.join("\n").substring(matchStartIndex, matchEndIndex)
 }
 
 export const SimpleReplacer: Replacer = function* (_content, find) {
@@ -356,26 +479,14 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
     }
 
     if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
-      let matchStartIndex = 0
-      for (let k = 0; k < startLine; k++) {
-        matchStartIndex += originalLines[k].length + 1
-      }
-      let matchEndIndex = matchStartIndex
-      for (let k = startLine; k <= endLine; k++) {
-        matchEndIndex += originalLines[k].length
-        if (k < endLine) {
-          matchEndIndex += 1 // Add newline character except for the last line
-        }
-      }
-      yield content.substring(matchStartIndex, matchEndIndex)
+      yield blockAt(originalLines, startLine, endLine)
     }
     return
   }
 
-  // Calculate similarity for multiple candidates
-  let bestMatch: { startLine: number; endLine: number } | null = null
-  let maxSimilarity = -1
-
+  // Every candidate above the threshold is ambiguous. Yield all of them so the
+  // caller can fail with the candidate locations instead of silently choosing
+  // the highest score.
   for (const candidate of candidates) {
     const { startLine, endLine } = candidate
     const actualBlockSize = endLine - startLine + 1
@@ -400,27 +511,9 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
       similarity = 1.0
     }
 
-    if (similarity > maxSimilarity) {
-      maxSimilarity = similarity
-      bestMatch = candidate
+    if (similarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD) {
+      yield blockAt(originalLines, startLine, endLine)
     }
-  }
-
-  // Threshold judgment
-  if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
-    const { startLine, endLine } = bestMatch
-    let matchStartIndex = 0
-    for (let k = 0; k < startLine; k++) {
-      matchStartIndex += originalLines[k].length + 1
-    }
-    let matchEndIndex = matchStartIndex
-    for (let k = startLine; k <= endLine; k++) {
-      matchEndIndex += originalLines[k].length
-      if (k < endLine) {
-        matchEndIndex += 1
-      }
-    }
-    yield content.substring(matchStartIndex, matchEndIndex)
   }
 }
 
@@ -634,7 +727,6 @@ export const ContextAwareReplacer: Replacer = function* (content, find) {
 
           if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
             yield block
-            break // Only match the first occurrence
           }
         }
         break
@@ -679,6 +771,92 @@ export function trimDiff(diff: string): string {
   return trimmedLines.join("\n")
 }
 
+type ReplacementMatch = { start: number; end: number; value: string }
+
+function allOccurrences(content: string, value: string): ReplacementMatch[] {
+  if (value === "") return []
+  const matches: ReplacementMatch[] = []
+  let offset = 0
+  while (true) {
+    const start = content.indexOf(value, offset)
+    if (start === -1) break
+    matches.push({ start, end: start + value.length, value })
+    offset = start + Math.max(1, value.length)
+  }
+  return matches
+}
+
+function collectMatches(content: string, values: Iterable<string>): ReplacementMatch[] {
+  const unique = new Map<string, ReplacementMatch>()
+  for (const value of values) {
+    for (const match of allOccurrences(content, value)) {
+      unique.set(`${match.start}:${match.end}`, match)
+    }
+  }
+  return [...unique.values()].sort((a, b) => a.start - b.start)
+}
+
+function lineNumber(content: string, index: number): number {
+  let line = 1
+  for (let i = 0; i < index; i++) {
+    if (content.charCodeAt(i) === 10) line++
+  }
+  return line
+}
+
+function previewLine(value: string): string {
+  const line = value
+    .split("\n")
+    .map((item) => item.trim())
+    .find((item) => item.length > 0)
+  if (!line) return ""
+  return line.length > 120 ? `${line.slice(0, 120)}…` : line
+}
+
+function ambiguousMatches(content: string, matches: ReplacementMatch[]): Error {
+  const shown = matches.slice(0, 5)
+  const details = shown.map((match) => {
+    const preview = previewLine(match.value)
+    return `- line ${lineNumber(content, match.start)}${preview ? `: ${preview}` : ""}`
+  })
+  if (matches.length > shown.length) details.push(`- and ${matches.length - shown.length} more`)
+  return new Error(
+    `Found ${matches.length} matches for oldString. Add surrounding context to make the match unique, or set replaceAll to replace every match.\n${details.join("\n")}`,
+  )
+}
+
+const CLOSEST_LINE_LIMIT = 2_000
+const CLOSEST_LINE_CHARS = 120
+
+function closestMatch(content: string, oldString: string): string | undefined {
+  const lines = content.split("\n")
+  const search = oldString
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+  if (!search) return undefined
+
+  const target = search.slice(0, CLOSEST_LINE_CHARS)
+  let best = { line: 0, score: -1 }
+  for (let i = 0; i < Math.min(lines.length, CLOSEST_LINE_LIMIT); i++) {
+    const candidate = lines[i].trim().slice(0, CLOSEST_LINE_CHARS)
+    if (!candidate) continue
+    const longest = Math.max(target.length, candidate.length)
+    const score = longest === 0 ? 1 : 1 - levenshtein(target, candidate) / longest
+    if (score > best.score) best = { line: i, score }
+  }
+  if (best.score < 0.2) return undefined
+
+  const height = Math.max(1, oldString.split("\n").length)
+  const start = Math.max(0, best.line - 1)
+  const end = Math.min(lines.length, start + Math.min(height + 1, 6))
+  const snippet = lines
+    .slice(start, end)
+    .map((line) => (line.length > 160 ? `${line.slice(0, 160)}…` : line))
+    .join("\n")
+  return `Closest match at line ${best.line + 1}:\n${snippet}`
+}
+
 export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
   if (oldString === newString) {
     throw new Error("No changes to apply: oldString and newString are identical.")
@@ -689,10 +867,17 @@ export function replace(content: string, oldString: string, newString: string, r
     )
   }
 
-  let notFound = true
+  // Exact matches always win. A repeated exact match is ambiguous unless the
+  // caller asked to replace every occurrence; never let a fuzzy replacer pick
+  // one of them.
+  const exact = allOccurrences(content, oldString)
+  if (exact.length > 0) {
+    if (replaceAll) return content.replaceAll(oldString, () => newString)
+    if (exact.length > 1) throw ambiguousMatches(content, exact)
+    return content.substring(0, exact[0].start) + newString + content.substring(exact[0].end)
+  }
 
   for (const replacer of [
-    SimpleReplacer,
     LineTrimmedReplacer,
     BlockAnchorReplacer,
     WhitespaceNormalizedReplacer,
@@ -700,33 +885,34 @@ export function replace(content: string, oldString: string, newString: string, r
     EscapeNormalizedReplacer,
     TrimmedBoundaryReplacer,
     ContextAwareReplacer,
-    MultiOccurrenceReplacer,
   ]) {
-    for (const search of replacer(content, oldString)) {
-      const index = content.indexOf(search)
-      if (index === -1) continue
-      notFound = false
-      if (isDisproportionateMatch(search, oldString)) {
+    const matches = collectMatches(content, replacer(content, oldString))
+    if (matches.length === 0) continue
+
+    for (const match of matches) {
+      if (isDisproportionateMatch(match.value, oldString)) {
         throw new Error(
           "Refusing replacement because the matched span is much larger than oldString. Re-read the file and provide the full exact oldString for the intended replacement.",
         )
       }
-      if (replaceAll) {
-        // A function replacement keeps `$&`, `$$` and `$'` in newString literal.
-        return content.replaceAll(search, () => newString)
-      }
-      const lastIndex = content.lastIndexOf(search)
-      if (index !== lastIndex) continue
-      return content.substring(0, index) + newString + content.substring(index + search.length)
     }
+
+    // A fuzzy match that lands in several places is always ambiguous, even
+    // with replaceAll: the candidates differ from oldString, so replacing only
+    // the first candidate's text would silently leave the others untouched.
+    if (matches.length > 1) throw ambiguousMatches(content, matches)
+    if (replaceAll) {
+      return content.replaceAll(matches[0].value, () => newString)
+    }
+
+    const match = matches[0]
+    return content.substring(0, match.start) + newString + content.substring(match.end)
   }
 
-  if (notFound) {
-    throw new Error(
-      "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
-    )
-  }
-  throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.")
+  const closest = closestMatch(content, oldString)
+  throw new Error(
+    `Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.${closest ? `\n${closest}` : ""}`,
+  )
 }
 
 function isDisproportionateMatch(search: string, oldString: string) {
