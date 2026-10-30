@@ -181,16 +181,32 @@ describe("Ripgrep", () => {
       (tmp) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
-            fs.writeFile(path.join(tmp.path, "unicode.txt"), `needle${"x".repeat(1_993)}😀\n`),
+            Promise.all([
+              // Exactly 2000 code points: fits the preview limit as-is.
+              fs.writeFile(path.join(tmp.path, "unicode-exact.txt"), `needle${"x".repeat(1_993)}😀\n`),
+              // 2001 code points: the preview stops at 2000 without splitting 😀.
+              fs.writeFile(path.join(tmp.path, "unicode-over.txt"), `needle${"x".repeat(1_994)}😀\n`),
+            ]),
           )
 
-          const matches = yield* (yield* Ripgrep.Service).grep({
+          const exact = yield* (yield* Ripgrep.Service).grep({
             cwd: tmp.path,
             pattern: "needle",
+            file: "unicode-exact.txt",
             limit: 10,
           })
+          // An untruncated match keeps ripgrep's line terminator.
+          expect(exact[0]?.text).toBe(`needle${"x".repeat(1_993)}😀\n`)
+          expect(exact[0]?.textLength).toBeUndefined()
 
-          expect(matches[0]?.text).toBe(`needle${"x".repeat(1_993)}...`)
+          const over = yield* (yield* Ripgrep.Service).grep({
+            cwd: tmp.path,
+            pattern: "needle",
+            file: "unicode-over.txt",
+            limit: 10,
+          })
+          expect(over[0]?.text).toBe(`needle${"x".repeat(1_994)}`)
+          expect(over[0]?.textLength).toBe(2_001)
         }),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),

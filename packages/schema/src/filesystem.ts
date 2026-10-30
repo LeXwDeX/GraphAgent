@@ -29,6 +29,8 @@ export const Match = Schema.Struct({
   line: PositiveInt,
   offset: NonNegativeInt,
   text: Schema.String,
+  /** Code points in the complete line content, without its terminator, when `text` is a shortened preview. */
+  textLength: Schema.optional(NonNegativeInt),
   submatches: Schema.Array(Submatch),
 }).annotate({ identifier: "FileSystem.Match" })
 

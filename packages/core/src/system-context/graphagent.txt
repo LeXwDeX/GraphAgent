@@ -10,6 +10,8 @@ graphagent runs dynamic workflows: dependency graphs of nodes with parallel work
 
 # Working
 - Read the relevant code, tests, and configuration before changing anything. Follow the project's existing style, libraries, and patterns.
+- Do not guess tool parameters, paths, or file contents. Use the inputs the tool description names, read before writing, and continue from a saved output file instead of re-running a truncated command.
+- When the user asks how to approach something rather than asking for the change, answer the approach first and wait for their direction.
 - Make the smallest correct change. Fix causes, not symptoms.
 - Verify with the project's own test, lint, and typecheck commands. Report any check you could not run.
 - ${editingInstruction}

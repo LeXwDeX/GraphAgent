@@ -171,6 +171,10 @@ export const fffLayer = Layer.effect(
           if (!found.ok) throw found.error
           return found.value.items.map((match) => {
             const bytes = Buffer.from(match.lineContent)
+            // Match the ripgrep backend's contract: the preview is cut by code
+            // point and the consumer gets the true length instead of a marker.
+            const chars = Array.from(match.lineContent)
+            const truncated = chars.length > 2_000
             return FileSystem.Match.make({
               entry: FileSystem.Entry.make({
                 path: RelativePath.make(match.relativePath.replaceAll("\\", "/")),
@@ -178,7 +182,8 @@ export const fffLayer = Layer.effect(
               }),
               line: match.lineNumber,
               offset: match.byteOffset,
-              text: match.lineContent.length > 2_000 ? match.lineContent.slice(0, 2_000) + "..." : match.lineContent,
+              text: truncated ? chars.slice(0, 2_000).join("") : match.lineContent,
+              ...(truncated ? { textLength: chars.length } : {}),
               submatches: match.matchRanges.map(([start, end]) => ({
                 text: bytes.subarray(start, end).toString("utf8"),
                 start,

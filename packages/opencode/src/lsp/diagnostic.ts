@@ -36,10 +36,13 @@ export function pretty(diagnostic: LSPClient.Diagnostic) {
 export function changedRanges(oldText: string, newText: string, file = "file"): LineRange[] {
   if (oldText === newText) return []
   const total = newText.split("\n").length
-  return structuredPatch(file, file, oldText, newText, "", "", { context: 0 }).hunks.map((hunk) =>
-    hunk.newLines === 0
-      ? { start: Math.min(Math.max(1, hunk.newStart), total), end: Math.min(Math.max(1, hunk.newStart), total) }
-      : { start: hunk.newStart, end: hunk.newStart + hunk.newLines - 1 },
+  // Compare logical lines: a CRLF/LF difference alone must not mark every line
+  // as changed and pull unrelated diagnostics into the edit report.
+  return structuredPatch(file, file, oldText, newText, "", "", { context: 0, stripTrailingCr: true }).hunks.map(
+    (hunk) =>
+      hunk.newLines === 0
+        ? { start: Math.min(Math.max(1, hunk.newStart), total), end: Math.min(Math.max(1, hunk.newStart), total) }
+        : { start: hunk.newStart, end: hunk.newStart + hunk.newLines - 1 },
   )
 }
 

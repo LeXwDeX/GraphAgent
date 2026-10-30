@@ -507,6 +507,41 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("reads the last page of an empty file", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "empty.txt"), "")
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "empty.txt"), page: -1 })
+      expect(result.metadata.truncated).toBe(false)
+      expect(result.output).toContain("End of file - total 0 lines")
+    }),
+  )
+
+  it.live("reads the last page of an empty directory", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const fs = yield* FSUtil.Service
+      yield* fs.ensureDir(path.join(dir, "empty"))
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "empty"), page: -1 })
+      expect(result.metadata.truncated).toBe(false)
+      expect(result.output).toContain("(0 entries)")
+    }),
+  )
+
+  it.live("rejects an earlier page of an empty file with singular wording", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "empty.txt"), "")
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "empty.txt"), page: -2 })
+      expect(err.message).toContain(
+        `page -2 is before the first page; 0 lines make 1 page of ${Truncate.PAGE_LINES} lines.`,
+      )
+    }),
+  )
+
   it.live("does not mark final directory page as truncated", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
@@ -590,6 +625,91 @@ describe("tool.read truncation", () => {
       expect(second.output).toContain("😀")
       const advanced = Number(second.output.match(/charOffset=(\d+)/)?.[1] ?? Number.MAX_SAFE_INTEGER)
       expect(advanced).toBeGreaterThan(next)
+    }),
+  )
+
+  it.live("keeps a wide multibyte line inside the byte cap when maxLineLength is large", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "wide-cjk.txt")
+      yield* put(filepath, "漢".repeat(20_000))
+
+      const first = yield* exec(dir, { filePath: filepath, maxLineLength: 50_000 })
+      expect(Buffer.byteLength(first.output, "utf8")).toBeLessThan(Truncate.MAX_BYTES + 4_096)
+      expect(first.output).toContain("of 20000 chars")
+      expect(first.output).not.toContain("�")
+      const next = Number(first.output.match(/charOffset=(\d+)/)?.[1])
+      expect(next).toBeGreaterThan(1)
+
+      const second = yield* exec(dir, {
+        filePath: filepath,
+        offset: 1,
+        limit: 1,
+        charOffset: next,
+        maxLineLength: 50_000,
+      })
+      expect(second.output).toContain("漢")
+      expect(second.output).not.toContain("�")
+    }),
+  )
+
+  it.live("counts charOffset in code points for astral characters", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "astral-line.txt")
+      const line = "😀".repeat(3_000)
+      yield* put(filepath, line)
+
+      const first = yield* exec(dir, { filePath: filepath })
+      expect(first.output).toContain("(line truncated to 2000 of 3000 chars;")
+      expect(first.output).toContain("charOffset=2001 maxLineLength=1000")
+      expect(first.output).not.toContain("�")
+
+      const second = yield* exec(dir, {
+        filePath: filepath,
+        offset: 1,
+        limit: 1,
+        charOffset: 2001,
+        maxLineLength: 2_000,
+      })
+      expect(second.output).toContain("😀".repeat(1_000))
+      expect(second.output).not.toContain("line truncated")
+      expect(second.output).not.toContain("�")
+    }),
+  )
+
+  it.live("keeps negative pages disjoint when the file does not divide evenly", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "pages-250.txt")
+      const lines = Array.from({ length: 250 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(filepath, lines)
+
+      const last = yield* exec(dir, { filePath: filepath, page: -1 })
+      expect(last.output).toContain("51: line51")
+      expect(last.output).toContain("250: line250")
+      expect(last.output).not.toMatch(/^50: line50$/m)
+
+      const before = yield* exec(dir, { filePath: filepath, page: -2 })
+      expect(before.output).toContain("1: line1")
+      expect(before.output).toContain("50: line50")
+      expect(before.output).not.toMatch(/^51: line51$/m)
+
+      const past = yield* fail(dir, { filePath: filepath, page: -3 })
+      expect(past.message).toContain("page -3 is before the first page; 250 lines make 2 pages of 200 lines.")
+    }),
+  )
+
+  it.live("leaves a single line on the page before a partial final page", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "pages-401.txt")
+      const lines = Array.from({ length: 401 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(filepath, lines)
+
+      const before = yield* exec(dir, { filePath: filepath, page: -3 })
+      expect(before.output).toContain("1: line1")
+      expect(before.output).not.toMatch(/^2: line2$/m)
     }),
   )
 

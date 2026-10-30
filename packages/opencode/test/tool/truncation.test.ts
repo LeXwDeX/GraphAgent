@@ -71,7 +71,7 @@ describe("Truncate", () => {
         const result = yield* svc.output(content, { maxBytes: 100 })
 
         expect(result.truncated).toBe(true)
-        expect(result.content).toContain("showing the first 100 B of line 1 (1000 B total)")
+        expect(result.content).toContain("showing the first 100 B of line 1 (line is 1000 B; 1000 B total output)")
       }),
     )
 

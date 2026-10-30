@@ -671,6 +671,26 @@ describe("tool.edit", () => {
         })
 
         expect(error.message).toContain("Found 2 matches for oldString")
+        expect(error.message).not.toContain("replaceAll")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("omits the closest snippet when similarity is below the cutoff", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = "const total = compute(items)\n"
+        yield* put(filepath, original)
+
+        const error = yield* fail({
+          filePath: filepath,
+          oldString: "zzzzzzzzzzzzzzzzzzzzzzzz",
+          newString: "const total = compute(other)",
+        })
+
+        expect(error.message).toContain("Could not find oldString")
+        expect(error.message).not.toContain("Closest match")
         expect(yield* load(filepath)).toBe(original)
       }),
     )
@@ -746,6 +766,24 @@ describe("tool.edit", () => {
         })
 
         expect(error.message).toContain("split multiple edits")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("rejects edits and edit supplied together", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        const original = "alpha beta"
+        yield* put(filepath, original)
+
+        const error = yield* failRaw({
+          filePath: filepath,
+          edits: { oldString: "alpha", newString: "gamma" },
+          edit: { oldString: "beta", newString: "delta" },
+        })
+
+        expect(error.message).toContain("edit call was rejected")
         expect(yield* load(filepath)).toBe(original)
       }),
     )

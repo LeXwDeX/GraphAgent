@@ -480,7 +480,7 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
       "type": "integer",
     },
     "filePath": {
-      "description": "The absolute path to the file or directory to read",
+      "description": "Path to the file or directory to read; relative paths resolve from the project directory",
       "type": "string",
     },
     "limit": {

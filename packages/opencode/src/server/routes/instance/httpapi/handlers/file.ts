@@ -29,7 +29,9 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
         .grep({ cwd: (yield* InstanceState.context).directory, pattern: ctx.query.pattern, limit: 10 })
         .pipe(Effect.orDie)).map((match) => ({
         path: { text: match.entry.path },
-        lines: { text: match.text },
+        // LegacyMatch has no textLength field; keep truncation visible to SDK
+        // clients that only read lines.text, as the pre-preview behavior did.
+        lines: { text: match.textLength === undefined ? match.text : `${match.text}...` },
         line_number: match.line,
         absolute_offset: match.offset,
         submatches: match.submatches.map((submatch) => ({

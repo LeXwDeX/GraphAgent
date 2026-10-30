@@ -423,6 +423,12 @@ describe("tool.glob", () => {
       expect(wide.metadata.truncated).toBe(true)
       expect(wide.output).toContain("[truncated: showing the first 1000 of at least 1000 paths.")
       expect(wide.output).toContain("Continue: narrow path/pattern.")
+
+      const capped = yield* globExecute({ pattern: "*.txt", path: test.directory, limit: 5000 })
+      expect(capped.metadata.count).toBe(1000)
+      expect(capped.metadata.truncated).toBe(true)
+      expect(capped.output).toContain("[truncated: showing the first 1000 of at least 1000 paths.")
+      expect(capped.output).toContain("Continue: narrow path/pattern.")
     }),
   )
 

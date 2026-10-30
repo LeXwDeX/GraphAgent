@@ -34,7 +34,11 @@ function withTmp<T, A, E, R>(
   })
 }
 
-function load(dir: string, flags?: Parameters<typeof RuntimeFlags.layer>[0]) {
+function load(
+  dir: string,
+  flags?: Parameters<typeof RuntimeFlags.layer>[0],
+  compaction: { dynamic?: boolean; prune?: boolean } = { dynamic: true },
+) {
   const source = path.join(dir, "opencode.json")
   return Effect.gen(function* () {
     const config = yield* Effect.promise(
@@ -57,6 +61,7 @@ function load(dir: string, flags?: Parameters<typeof RuntimeFlags.layer>[0]) {
               get: () =>
                 Effect.succeed({
                   plugin: plugins,
+                  compaction,
                   plugin_origins: plugins.map((plugin) => ({ spec: plugin, source, scope: "local" as const })),
                 }),
               directories: () => Effect.succeed([dir]),
@@ -108,6 +113,45 @@ describe("plugin.loader.shared", () => {
               second: { knownExternalDcp: "loaded", migrationNotice: "already-notified" },
             })
             expect(JSON.stringify(yield* logLines).match(/registered active context-folding hooks/g)).toHaveLength(2)
+          } finally {
+            install.mockRestore()
+          }
+        }),
+    ),
+  )
+
+  it.live("stays silent when built-in dynamic folding is not opted in", () =>
+    withTmp(
+      async (dir) => {
+        const mod = path.join(dir, "mods", "dcp")
+        await fs.mkdir(mod, { recursive: true })
+        await Bun.write(
+          path.join(mod, "package.json"),
+          JSON.stringify({
+            name: "@lexwdex-org/opencode-dcp",
+            type: "module",
+            exports: { "./server": "./server.js" },
+          }),
+        )
+        await Bun.write(
+          path.join(mod, "server.js"),
+          'export default async () => ({ "experimental.chat.messages.transform": async () => {} })\n',
+        )
+        await Bun.write(
+          path.join(dir, "opencode.json"),
+          JSON.stringify({ plugin: ["@lexwdex-org/opencode-dcp@6.0.3"] }),
+        )
+        return { mod }
+      },
+      (tmp) =>
+        Effect.gen(function* () {
+          const install = spyOn(Npm, "add").mockResolvedValue({ directory: tmp.extra.mod, entrypoint: undefined })
+          try {
+            expect(yield* load(tmp.path, undefined, {})).toEqual({
+              first: { knownExternalDcp: "loaded", migrationNotice: "not-applicable" },
+              second: { knownExternalDcp: "loaded", migrationNotice: "not-applicable" },
+            })
+            expect(JSON.stringify(yield* logLines)).not.toContain("registered active context-folding hooks")
           } finally {
             install.mockRestore()
           }

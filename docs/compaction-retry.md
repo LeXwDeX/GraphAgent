@@ -49,3 +49,9 @@ When a retryable failure stops, the session logs a `retry stopped` warning with
 `maxRetries`, `provider`, the error message, and the processor gate state
 (`aborted`, `blocked`, `needsCompaction`, `anyToolCalled`,
 `pendingToolExecutions`, `suppressedActivity`).
+
+The opt-in experimental native runtime (`OPENCODE_EXPERIMENTAL_NATIVE_LLM`, off
+by default) disables `RequestExecutor` retries when the session processor drives
+the request, so this dispatch table owns retry timing and the total attempt
+count. Direct native-runtime calls that bypass the processor keep the executor's
+own bounded budget of two retries after the first attempt.

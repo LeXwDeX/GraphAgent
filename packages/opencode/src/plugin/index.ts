@@ -30,6 +30,7 @@ import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } fro
 import { registerAdapter } from "@/control-plane/adapters"
 import type { WorkspaceAdapter } from "@/control-plane/types"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstallationChannel } from "@opencode-ai/core/installation/version"
 
@@ -375,11 +376,21 @@ export const layer = Layer.effect(
           migrationNotice: "already-notified",
         } as const
       }
+      // The notice asks the user to remove the plugin so built-in folding can
+      // run. When folding is not opted in, the external plugin conflicts with
+      // nothing, so staying silent is the useful default.
+      const cfg = yield* config.get().pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (Flag.OPENCODE_DISABLE_PRUNE || cfg?.compaction?.dynamic !== true) {
+        return {
+          knownExternalDcp: "loaded",
+          migrationNotice: "not-applicable",
+        } as const
+      }
 
       // Set the lifecycle guard before yielding so concurrent first requests cannot emit duplicate notices.
       s.externalDcpMigrationNotified = true
       yield* Effect.logWarning(
-        `Known external context-pruning plugin ${s.knownExternalDcp.packageName} registered active context-folding hooks; built-in dynamic context folding is disabled. Remove or disable the external plugin and restart this instance to use the built-in capability.`,
+        `Known external context-pruning plugin ${s.knownExternalDcp.packageName} registered active context-folding hooks; built-in dynamic context folding is disabled. Remove or disable the external plugin, keep compaction.dynamic set to true, and restart this instance to use the built-in capability.`,
         {
           compatibility: "external-dcp-active",
           source: s.knownExternalDcp.source,

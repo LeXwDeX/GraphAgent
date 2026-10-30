@@ -75,7 +75,7 @@ Modify existing files using exact string replacements.
 }
 ```
 
-This tool performs precise edits to files by replacing exact text matches. It's the primary way the LLM modifies code. When `oldString` matches several locations, the call fails and lists up to five candidate lines plus the count of the rest instead of guessing; when nothing matches, it reports the closest line. Set `replaceAll` to replace every occurrence deliberately.
+This tool performs precise edits to files by replacing exact text matches. It's the primary way the LLM modifies code. When `oldString` matches several exact locations, the call fails and lists up to five candidate lines plus the count of the rest instead of guessing; set `replaceAll` to replace every exact occurrence deliberately. A fuzzy match that hits several places is rejected with a request for more surrounding context. When nothing matches, the error includes the closest line when one is at least 20 percent similar; otherwise it asks the model to re-read that area.
 
 ---
 
@@ -153,7 +153,7 @@ Search for files using glob patterns like `**/*.js` or `src/**/*.ts`. Returns ma
 
 ## Truncated output
 
-Tool output is capped so a single call cannot flood the context. `tool_output.max_lines` and `tool_output.max_bytes` (defaults 2000 lines and 50 KB) bound generic tool output; `read`, `grep`, `glob` and `shell` apply their own per-tool budgets instead:
+Tool output is capped so a single call cannot flood the context. `tool_output.max_lines` and `tool_output.max_bytes` (defaults 2000 lines and 50 KB) bound generic tool output and also set `shell`'s inline byte cap and saved-file threshold; `read`, `grep` and `glob` apply their own fixed budgets instead:
 
 ```json title="opencode.json"
 {
@@ -167,8 +167,8 @@ Tool output is capped so a single call cannot flood the context. `tool_output.ma
 
 Every truncation notice states what was omitted and the exact parameters that continue it, and names the saved file when the returned preview is not the whole result.
 
-- `read` streams the file and points at the next `offset`. A single line longer than `maxLineLength` (2000 characters by default) says which `charOffset` and `maxLineLength` fetch the rest; repeating that call reaches any character position in the line. `page` reads a window from either edge without a starting offset: `page=1` is the first 200 lines, `page=-1` the last page and `page=-2` the page before; `limit` changes the page size.
-- `shell` keeps the last 20 lines, where errors usually are, and states a non-zero exit code explicitly. When the output is longer than that, the complete output is saved to a file and the footer names that file and its size, counts its pages, and gives the exact `read` calls to start (`filePath`), read the end (`page=-1`) or page back (`page=-2`), plus a `grep` call with `context=10` that searches the whole output in one step.
+- `read` streams the file and points at the next `offset`. A single line longer than `maxLineLength` (2000 characters by default) or wider than the 50 KB output budget says which `charOffset` and `maxLineLength` fetch the rest; repeating that call reaches any character position in the line. `page` reads a window from either edge without a starting offset: `page=1` is the first 200 lines, `page=-1` the last 200-line window and `page=-2` the window before; `limit` changes the window size. When the last window is denser than the 50 KB byte cap, that window's own notice names the `offset` that continues to the true end.
+- `shell` keeps the last 20 lines, where errors usually are, and states a non-zero exit code explicitly. When the output is longer than 20 lines or larger than `tool_output.max_bytes` (50 KB by default), the complete output is saved to a file and the footer names that file and its size, counts its pages, and gives the exact `read` calls to start (`filePath`), read the last 200-line window (`page=-1`; when that window exceeds read's 50 KB cap, its notice names the offset that continues to the end) or page back (`page=-2`, when a page precedes it), plus a `grep` call with `context=10` that searches the whole output in one step.
 - `grep` and `glob` accept `limit` (default 100, capped at 1000); `grep` also accepts `context` (default 0, capped at 20) to show that many lines around each match. A truncated `grep` saves the scanned listing (up to the 1000-match scan cap), says when matches remain beyond it, and names the line offset that continues it; a truncated `glob` states whether the preview limit or the scan cap cut the list (the cap reports `at least` that many paths) and the larger limit or narrower pattern that shows the rest.
 - `edit`, `write` and `apply_patch` attach only the LSP errors within two lines of the lines the edit changed. Errors elsewhere in the file predate the edit and are not repeated.
 

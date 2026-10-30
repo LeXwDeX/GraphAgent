@@ -239,12 +239,30 @@ function preview(text: string) {
  * exact read/grep calls that continue from either edge, so the model never
  * reruns the command to see an earlier chunk.
  */
-function outputFooter(file: string, totalLines: number, totalBytes: number, shownLines: number, partialBytes?: number) {
+export function outputFooter(
+  file: string,
+  totalLines: number,
+  totalBytes: number,
+  shownLines: number,
+  partialBytes?: number,
+  partialLineBytes?: number,
+) {
   const pages = Math.max(1, Math.ceil(totalLines / Truncate.PAGE_LINES))
+  // Advertise only pages that exist: read rejects a negative page before the
+  // first page, so a hint such as page=-4 on a three-page output is a dead end.
+  const further =
+    pages === 3
+      ? "   (page=-3)"
+      : pages === 4
+        ? "   (page=-3, -4)"
+        : pages > 4
+          ? `   (page=-3, -4, ... back to -${pages})`
+          : ""
   const summary =
     partialBytes !== undefined
       ? `[truncated: showing the last ${Truncate.formatSize(partialBytes)} of line ${totalLines} ` +
-        `(${Truncate.formatSize(totalBytes)} total). Full output saved.]`
+        `(line is ${Truncate.formatSize(partialLineBytes ?? totalBytes)}; ` +
+        `${Truncate.formatSize(totalBytes)} total output). Full output saved.]`
       : `[truncated: showing the last ${shownLines} of ${totalLines} lines ` +
         `(${Truncate.formatSize(totalBytes)} total). Full output saved.]`
   return [
@@ -254,10 +272,23 @@ function outputFooter(file: string, totalLines: number, totalBytes: number, show
     `path: ${file}`,
     `size: ${Truncate.formatSize(totalBytes)} (${totalBytes} bytes), ${totalLines} lines, ${pages} pages of ${Truncate.PAGE_LINES} lines`,
     `start:  read filePath="${file}"`,
-    `end:    read filePath="${file}" page=-1`,
-    `back:   read filePath="${file}" page=-2   (page=-3, -4, ... further back)`,
+    `last:   read filePath="${file}" page=-1   (last page; follow its notice if the read byte cap stops early)`,
+    ...(pages > 1 ? [`back:   read filePath="${file}" page=-2${further}`] : []),
     `search: grep pattern="<regex>" path="${file}" context=10`,
   ].join("\n")
+}
+
+/**
+ * Drops the fragment before the first newline when dropped chunks left a
+ * partial line. If that newline is the last character, the retained prefix is
+ * all that remains of one line: keep it as a partial line instead of trimming
+ * to nothing, so a single huge line still shows its tail.
+ */
+export function trimPartialHead(raw: string): { text: string; partialHead: boolean } {
+  const boundary = raw.indexOf("\n")
+  if (boundary < 0) return { text: raw, partialHead: true }
+  if (boundary === raw.length - 1) return { text: raw.slice(0, boundary), partialHead: true }
+  return { text: raw.slice(boundary + 1), partialHead: false }
 }
 
 const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
@@ -463,6 +494,12 @@ export const ShellTool = Tool.define(
       let file = ""
       let sink: ReturnType<typeof createWriteStream> | undefined
       let cut = false
+      let headPartial = false
+      // Bytes in the most recently completed line and in the trailing line
+      // that has no terminator yet. The last one is the true size of the final
+      // line even when a huge line ends with a newline.
+      let completedLineBytes = 0
+      let currentLineBytes = 0
       let expired = false
       let aborted = false
       let lastActivity = Date.now()
@@ -541,6 +578,19 @@ export const ShellTool = Tool.define(
               const size = Buffer.byteLength(chunk, "utf-8")
               streamBytes += size
               for (let i = 0; i < chunk.length; i++) if (chunk.charCodeAt(i) === 10) streamNewlines++
+              // Track the full length of the final line. A chunk with newlines
+              // completes every part before the last one (the first part also
+              // carries the previous chunk's unterminated prefix); the last
+              // part becomes the new trailing line.
+              const parts = chunk.split("\n")
+              if (parts.length === 1) currentLineBytes += size
+              else {
+                for (let i = 0; i < parts.length - 1; i++) {
+                  completedLineBytes = (i === 0 ? currentLineBytes : 0) + Buffer.byteLength(parts[i]!, "utf-8")
+                  currentLineBytes = 0
+                }
+                currentLineBytes = Buffer.byteLength(parts[parts.length - 1]!, "utf-8")
+              }
               list.push({ text: chunk, size })
               used += size
               while (used > keep && list.length > 1) {
@@ -548,6 +598,7 @@ export const ShellTool = Tool.define(
                 if (!item) break
                 used -= item.size
                 cut = true
+                headPartial = !item.text.endsWith("\n")
               }
 
               last = preview(last + chunk)
@@ -643,8 +694,21 @@ export const ShellTool = Tool.define(
       if (aborted) meta.push(SHELL_ABORT_NOTE)
       for (let i = 0; i < silenceWarnings; i++) meta.push(shellSilenceNote(silenceWarnMs))
       if (code !== null && code !== 0) meta.push(`Command exited with code ${code}`)
-      const raw = list.map((item) => item.text).join("")
-      const totalLines = streamNewlines + (raw.length > 0 && !raw.endsWith("\n") ? 1 : 0)
+      let raw = list.map((item) => item.text).join("")
+      // The retained tail inherits the stream's ending even after the partial
+      // head is trimmed, so capture it before the trim changes raw.
+      const endsWithNewline = raw.endsWith("\n")
+      // Dropping whole chunks can leave a partial first line. Show only whole
+      // lines so the footer's line count does not present a fragment as a line;
+      // a retained suffix with no whole line is reported as a partial line.
+      let partialHead = false
+      if (headPartial) {
+        const trimmed = trimPartialHead(raw)
+        raw = trimmed.text
+        partialHead = trimmed.partialHead
+      }
+      const totalLines = streamNewlines + (streamBytes > 0 && !endsWithNewline ? 1 : 0)
+      const lastLineBytes = endsWithNewline ? completedLineBytes : currentLineBytes
       const end = Truncate.tailPreview(raw, SHELL_TAIL_LINES, limits.maxBytes)
       if (end.cut) cut = true
       if (!file && end.cut) {
@@ -656,15 +720,19 @@ export const ShellTool = Tool.define(
 
       if (cut && file) {
         const shownLines = Truncate.countLines(end.text)
+        const partialBytes = end.details?.partialLine
+          ? end.details.outputBytes
+          : partialHead
+            ? Buffer.byteLength(raw, "utf-8")
+            : undefined
+        const partialLineBytes = partialHead
+          ? lastLineBytes
+          : end.details?.partialLine
+            ? end.details.lineBytes
+            : undefined
         output =
           `${output}\n\n` +
-          outputFooter(
-            file,
-            totalLines,
-            streamBytes,
-            shownLines,
-            end.details?.partialLine ? end.details.outputBytes : undefined,
-          )
+          outputFooter(file, totalLines, streamBytes, shownLines, partialBytes, partialLineBytes)
       }
 
       if (meta.length > 0) {

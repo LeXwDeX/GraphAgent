@@ -105,13 +105,13 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 ## 请求重试
 
-默认 AI SDK 请求路径上的所有 Provider 失败先经过同一张分发表再安排退避。任何 HTTP 4xx/5xx 和已识别的网络失败共用同一套指数退避（初始 2 秒、逐次翻倍、25% 抖动、上限 30 秒、最多 5 次重试）；`429`/`503` 优先遵守 `retry-after`，`401`/`403` 做一次凭据刷新重试，`413` 和上下文溢出交给压缩而不是原样重发；用户取消、缺少凭据、输出长度与结构化输出限制、内容过滤和被拒绝的推理状态属于终止失败。处理器闸门或尝试上限挡住重试时，会话记录 `retry stopped`，带上分支、状态码、尝试次数、上限和闸门状态。可选择启用的实验性原生运行时（`OPENCODE_EXPERIMENTAL_NATIVE_LLM`，默认关闭）使用自己的有界 `RequestExecutor` 重试，不经过这张表。详见[压缩与重试](./docs/compaction-retry.md#provider-retry-dispatch)。
+默认 AI SDK 请求路径上的所有 Provider 失败先经过同一张分发表再安排退避。任何 HTTP 4xx/5xx 和已识别的网络失败共用同一套指数退避（初始 2 秒、逐次翻倍、25% 抖动、上限 30 秒、最多 5 次重试）；`429`/`503` 优先遵守 `retry-after`，`401`/`403` 做一次凭据刷新重试，`413` 和上下文溢出交给压缩而不是原样重发；用户取消、缺少凭据、输出长度与结构化输出限制、内容过滤和被拒绝的推理状态属于终止失败。处理器闸门或尝试上限挡住重试时，会话记录 `retry stopped`，带上分支、状态码、尝试次数、上限和闸门状态。可选择启用的实验性原生运行时（`OPENCODE_EXPERIMENTAL_NATIVE_LLM`，默认关闭）在会话处理器驱动请求时会关闭自身的 `RequestExecutor` 重试，由这张分发表统一负责重试时机和尝试次数；绕过处理器直接调用原生运行时的情况仍保留执行器自身的有界重试预算。详见[压缩与重试](./docs/compaction-retry.md#provider-retry-dispatch)。
 
 ---
 
 ## 上下文管理
 
-- **有界的工具使用**：通用工具输出受 `tool_output.max_lines`、`tool_output.max_bytes` 限制，而 `read`、`grep`、`glob` 和 `shell` 使用各自的固定预算（`maxLineLength`、`limit`、尾部截取）；`maxToolCalls` 限制每次用户输入的工具调用次数。截断结果会说明省略了什么以及确切的续读方式——保存的完整输出及其偏移、字符偏移、更大的 `limit` 或更窄的查询——模型不需要猜。
+- **有界的工具使用**：通用工具输出受 `tool_output.max_lines`、`tool_output.max_bytes` 限制，而 `read`、`grep`、`glob` 使用各自的固定预算（`maxLineLength`、`limit`），`shell` 保留自己的 20 行尾部，同时把 `tool_output.max_bytes` 作为内联字节上限和落盘阈值；`maxToolCalls` 限制每次用户输入的工具调用次数。截断结果会说明省略了什么以及确切的续读方式——保存的完整输出及其偏移、字符偏移、更大的 `limit` 或更窄的查询——模型不需要猜。
 - **压缩**：长会话在模型可用的上下文上限处自动摘要（`compaction.auto`、`compaction.tail_turns`、`compaction.preserve_recent_tokens`、`compaction.reserved`）。
 
 具体哪些生效取决于配置、服务商支持和请求用途。
@@ -326,7 +326,7 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 
 - **委派智能体**：`task` 把工作委派给子智能体，并可用 `task_id` 继续；带完成通知的后台子智能体需开启 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`。
 - **统一系统提示词**：所有模型收到同一份系统提示词——身份、hooks 与 DAG 入口、工作规则和安全约束——不再按 Provider 选择提示词。每种工具的用法写在工具自描述里，提示词不再重复；常驻的 DAG 与 hooks 指导只保留入口，详细主题按需加载。
-- **工具健壮性**：工具自描述（系统提示不再重复每种工具的用法，传给模型的工具描述从约 20 KB 降到约 9 KB）；`edit` 严格匹配，多个候选时列出行号、找不到时给出最近片段而不是猜测，并兼容多种 Provider 参数形状；修复 LLM 输出里损坏的多字节 Unicode 转义（JSON 修复），校验错误带字段级提示，子进程管道修复。
+- **工具健壮性**：工具自描述（系统提示不再重复每种工具的用法，传给模型的工具描述从约 31 KB 降到约 20 KB，约 37%）；`edit` 严格匹配，多个候选时列出行号，找不到时在足够接近（至少 20% 相似）时给出最近片段而不是猜测，并兼容多种 Provider 参数形状；修复 LLM 输出里损坏的多字节 Unicode 转义（JSON 修复），校验错误带字段级提示，子进程管道修复。
 - **CJK 与 IME 修复**：终端 UI 里中日韩文输入的修正（IME 组字刷新、全角文本处理），另有 [`patches/`](./patches) 下的韩文 IME 修复脚本。
 - **Worktree 隔离**：按工作流的 `git worktree` 隔离，附实验性的 sandbox-worktree HTTP 端点。
 - **配置助手**：[`config_assistant`](./config_assistant) 下提供独立 Go TUI，用于定位、校验和编辑 opencode 配置（`cd config_assistant && go run ./cmd/ocfg`）。

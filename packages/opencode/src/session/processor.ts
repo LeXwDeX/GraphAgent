@@ -1348,6 +1348,7 @@ export const layer = Layer.effect(
             const generation = ++attemptGeneration
             const source = llm.stream({
               ...streamInput,
+              sessionRetry: true,
               onThinkingInvalidated: (blocks) =>
                 Effect.gen(function* () {
                   const invalidated = new Set(blocks)

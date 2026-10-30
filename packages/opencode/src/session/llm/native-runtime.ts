@@ -60,6 +60,8 @@ type StreamInput = {
   readonly providerOptions?: Record<string, any>
   readonly headers: Record<string, string>
   readonly abort: AbortSignal
+  /** The caller wraps the stream in the shared session retry policy; do not retry twice. */
+  readonly sessionRetry?: boolean
   readonly onThinkingInvalidated?: (blocks: readonly string[]) => Effect.Effect<void>
   readonly contextFolding?: {
     readonly enabled: boolean
@@ -205,7 +207,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
       projectionSeq: 1,
       ...thinking.diagnostic,
     })
-    const stream = Stream.scoped(
+    const providerStream = Stream.scoped(
       Stream.unwrap(
         Effect.gen(function* () {
           const settlements = yield* FiberSet.make<void>()
@@ -262,6 +264,12 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
         }),
       ),
     ).pipe(Stream.provideService(RequestExecutor.RetryTimeouts, input.contextFolding?.purpose !== "compaction"))
+    // The session processor retries with the shared policy (including 429/503
+    // retry-after and credential refresh), so the native executor must not
+    // spend its own retry budget first.
+    const stream = input.sessionRetry
+      ? providerStream.pipe(Stream.provideService(RequestExecutor.MaxRetries, 0))
+      : providerStream
 
     return {
       ...current,

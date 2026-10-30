@@ -64,6 +64,9 @@ function editEntries(value: unknown): Record<string, unknown>[] | undefined {
 function prepareEditArguments(value: unknown): unknown {
   if (!isRecord(value)) return value
 
+  // `edits` and `edit` describe the same slot: accepting both would silently
+  // discard one replacement, so fail closed and let strict decoding reject it.
+  if (value.edits !== undefined && value.edit !== undefined) return value
   const hasEdits = value.edits !== undefined || value.edit !== undefined
   const edits = editEntries(value.edits ?? value.edit)
   if (hasEdits && !edits) return value
@@ -813,7 +816,7 @@ function previewLine(value: string): string {
   return line.length > 120 ? `${line.slice(0, 120)}…` : line
 }
 
-function ambiguousMatches(content: string, matches: ReplacementMatch[]): Error {
+function ambiguousMatches(content: string, matches: ReplacementMatch[], allowReplaceAll = true): Error {
   const shown = matches.slice(0, 5)
   const details = shown.map((match) => {
     const preview = previewLine(match.value)
@@ -821,7 +824,11 @@ function ambiguousMatches(content: string, matches: ReplacementMatch[]): Error {
   })
   if (matches.length > shown.length) details.push(`- and ${matches.length - shown.length} more`)
   return new Error(
-    `Found ${matches.length} matches for oldString. Add surrounding context to make the match unique, or set replaceAll to replace every match.\n${details.join("\n")}`,
+    `Found ${matches.length} matches for oldString. ` +
+      (allowReplaceAll
+        ? "Add surrounding context to make the match unique, or set replaceAll to replace every match.\n"
+        : "Add surrounding context to make the match unique, or re-read the file and copy the exact text.\n") +
+      details.join("\n"),
   )
 }
 
@@ -900,7 +907,7 @@ export function replace(content: string, oldString: string, newString: string, r
     // A fuzzy match that lands in several places is always ambiguous, even
     // with replaceAll: the candidates differ from oldString, so replacing only
     // the first candidate's text would silently leave the others untouched.
-    if (matches.length > 1) throw ambiguousMatches(content, matches)
+    if (matches.length > 1) throw ambiguousMatches(content, matches, false)
     if (replaceAll) {
       return content.replaceAll(matches[0].value, () => newString)
     }

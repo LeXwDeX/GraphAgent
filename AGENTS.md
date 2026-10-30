@@ -58,6 +58,7 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 ## CI gates (.azure-pipelines)
 
 - Development CI runs on Azure Pipelines (Azure DevOps org `yc-github`, reported to GitHub by the Azure Pipelines app). GitHub Actions keeps only `release-fork.yml`. Shared toolchain setup lives in `.azure-pipelines/templates/toolchain.yml`.
+- The repository-root `azure-pipelines.yml` is a manual, credential-free capacity probe (no checkout, no secrets, 10-minute jobs). It is not the CI of record; `script/ci-azure.test.mjs` guards its locked-down shape.
 - CI push and PR targets are `main`. Development branches use `{type}/short-name`.
 - `ci.yml` job `Typecheck`: toolchain and pipeline-definition tests → lint → typecheck → DAG-core gate → `oc` installer boundary test.
 - `ci.yml` unit jobs: workspace tests, Go tests, both client generation checks, 4 opencode shards (shard 1 also runs focused lifecycle checks) and the HttpAPI exerciser, aggregated by `Unit Tests (linux)`. Playwright E2E runs on Linux and Windows.

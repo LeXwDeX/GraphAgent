@@ -428,6 +428,43 @@ describe("session.llm-native.request", () => {
     )
   }
 
+  it.effect("native conversation defers retries to the session processor when sessionRetry is set", () =>
+    Effect.gen(function* () {
+      const llmClient = yield* LLMClient.Service
+      let attempts = 0
+      const native = yield* LLMNativeRuntime.stream({
+        model: baseModel,
+        provider: providerInfo,
+        auth: undefined,
+        llmClient,
+        messages: [{ role: "user", content: "hello" }],
+        tools: {},
+        headers: {},
+        abort: new AbortController().signal,
+        sessionRetry: true,
+        contextFolding: { enabled: false, purpose: "conversation", system: { kind: "messages" } },
+      })
+      if (native.type !== "supported") throw new Error(native.reason)
+      const error = yield* native.stream.pipe(
+        Stream.runDrain,
+        Effect.flip,
+        Effect.provideService(
+          FetchHttpClient.Fetch,
+          Object.assign(
+            async () => {
+              attempts++
+              return new Response(null, { status: 504, headers: { "retry-after-ms": "0" } })
+            },
+            { preconnect: globalThis.fetch.preconnect },
+          ),
+        ),
+      )
+      expect(error).toBeInstanceOf(LLMError)
+      // The processor's SessionRetry policy is the only retry layer.
+      expect(attempts).toBe(1)
+    }),
+  )
+
   test("maps normalized stream inputs to a native LLM request", () => {
     const messages: ModelMessage[] = [
       {

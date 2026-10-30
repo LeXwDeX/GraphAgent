@@ -228,7 +228,7 @@ describe("tool.grep", () => {
     }),
   )
 
-  it.instance("points the saved-listing continuation at an existing line when the match cap is hit", () =>
+  it.instance("does not point past the saved listing when the match cap is hit", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const file = path.join(test.directory, "many.txt")
@@ -243,15 +243,19 @@ describe("tool.grep", () => {
       )
 
       expect(result.metadata.truncated).toBe(true)
+      expect(result.metadata.matches).toBe(1_000)
       expect(result.output).toContain("The scan stopped at the match cap.")
       const full = /Full output: (.+)\]/m.exec(result.output)?.[1]
-      const next = /offset=(\d+)/.exec(result.output)?.[1]
       expect(full).toBeTruthy()
-      expect(next).toBeTruthy()
-      const lines = (yield* Effect.promise(() => fs.readFile(full!, "utf8"))).split("\n")
-      // Every scanned match is already in the preview; the continuation lands
-      // just past the end of the saved listing, not inside it.
-      expect(Number(next)).toBe(lines.length + 1)
+      // The probe that proved the cap was hit is not saved, and the preview
+      // already covers every saved match. An offset would land past the end of
+      // the listing, so the continuation must ask the agent to narrow instead.
+      expect(result.output).not.toContain("offset=")
+      expect(result.output).toContain("Continue: narrow path/include or use a more specific pattern")
+      const saved = yield* Effect.promise(() => fs.readFile(full!, "utf8"))
+      const lines = saved.trimEnd().split("\n")
+      expect(lines.at(-1)).toContain("needle 999")
+      expect(lines.join("\n")).not.toContain("needle 1000")
     }),
   )
 
@@ -273,6 +277,88 @@ describe("tool.grep", () => {
       expect(next).toBeTruthy()
       const lines = (yield* Effect.promise(() => fs.readFile(full!, "utf8"))).split("\n")
       expect(lines[Number(next) - 1]).toContain("needle 100")
+    }),
+  )
+
+  it.instance("reports context lines dropped by the byte budget instead of silently trimming", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "context-budget.txt")
+      const matches = Array.from({ length: 5 }, (_, index) => `needle ${index}`)
+      // Context rows are capped at 2000 code points, so ASCII padding would fit
+      // the byte budget. Astral characters make each kept context row ~8 KB and
+      // force the budget to stop the preview with matches still fully shown.
+      const context = Array.from({ length: 20 }, (_, index) => `after-${index} ${"😀".repeat(2_000)}`)
+      yield* Effect.promise(() => Bun.write(file, [...matches, ...context].join("\n")))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: file, context: 20 }, ctx)
+
+      // Every match fits before the byte budget stops the preview, so the only
+      // omitted rows are context; the notice must say so and point at the
+      // complete saved listing.
+      expect(result.metadata.matches).toBe(5)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("[truncated: showing 5 of 5 matches.")
+      expect(result.output).toContain("Context lines were omitted by the output byte budget.")
+      expect(result.output).toContain("the byte budget stopped the preview, so read the saved listing")
+      const full = /Full output: (.+)\]/m.exec(result.output)?.[1]
+      expect(full).toBeTruthy()
+      const saved = yield* Effect.promise(() => fs.readFile(full!, "utf8"))
+      expect(saved).toContain("after-19")
+    }),
+  )
+
+  it.instance("truncates match text by code points and continues on a character boundary", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "astral.txt")
+      const line = "😀".repeat(2_500) + "needle"
+      yield* Effect.promise(() => Bun.write(file, line))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: file }, ctx)
+
+      expect(result.output).toContain("line truncated to 2000 of 2506 chars")
+      expect(result.output).toContain("charOffset=2001 maxLineLength=506")
+      // Cutting UTF-16 units would leave a lone surrogate, rendered as U+FFFD.
+      expect(result.output).not.toContain("�")
+    }),
+  )
+
+  it.instance("caps an oversized limit at the scan cap and says the scan stopped", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "oversized-limit.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 1_200 }, (_, index) => `needle ${index}`).join("\n") + "\n"),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "needle", path: file, limit: 5_000 }, ctx)
+
+      expect(result.metadata.matches).toBe(1_000)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("[truncated: showing 1000 of at least 1001 matches.")
+      expect(result.output).toContain("The scan stopped at the match cap.")
+    }),
+  )
+
+  it.instance("caps context at 20 lines on each side", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "context-cap.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, Array.from({ length: 60 }, (_, index) => `line${index + 1}`).join("\n")),
+      )
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute({ pattern: "line30", path: file, context: 25 }, ctx)
+
+      expect(result.output).toContain("Line 10- line10")
+      expect(result.output).toContain("Line 50- line50")
+      expect(result.output).not.toContain("Line 9- line9")
+      expect(result.output).not.toContain("Line 51- line51")
     }),
   )
 

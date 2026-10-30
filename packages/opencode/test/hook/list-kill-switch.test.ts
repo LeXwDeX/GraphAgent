@@ -35,6 +35,8 @@ describe("SettingsHook.list respects disableAllHooks", () => {
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
         expect(yield* hook.list()).toHaveLength(1)
+        expect(typeof hook.hasEvent).toBe("function")
+        expect(yield* hook.hasEvent!("PostToolUse")).toBe(true)
       }),
     { init: writeHooks(watchHook) },
   )
@@ -45,7 +47,10 @@ describe("SettingsHook.list respects disableAllHooks", () => {
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
         expect(yield* hook.list()).toEqual([])
-        expect(hook.hasEvent ? yield* hook.hasEvent("PostToolUse") : false).toBe(false)
+        // hasEvent must be present and false, not absent: callers treat an
+        // absent predicate as "no filtering" and would run the hook.
+        expect(typeof hook.hasEvent).toBe("function")
+        expect(yield* hook.hasEvent!("PostToolUse")).toBe(false)
       }),
     { init: writeHooks({ ...watchHook, disableAllHooks: true }) },
   )

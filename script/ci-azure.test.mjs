@@ -83,3 +83,17 @@ await test("every job runs on the per-minute GitHub-hosted Agents pool", () => {
       assert.match(pool, /name: GitHub-hosted Agents$|vmImage: (windows-latest|\$\{\{ target\.image \}\})$/, `${file}: ${pool.trim()}`)
   }
 })
+
+await test("the root Azure pipeline stays a bounded, credential-free runner probe", () => {
+  const smoke = read("azure-pipelines.yml")
+  assert.match(smoke, /\ntrigger: none\npr: none\n/)
+  assert.match(smoke, /Manual capacity probe only; development CI is\n#\s+\.azure-pipelines\/ci\.yml/)
+  assert.equal((smoke.match(/- job: smoke_/g) ?? []).length, 3, "linux, windows and macOS probes")
+  assert.equal((smoke.match(/timeoutInMinutes: 10/g) ?? []).length, 3, "every probe is bounded")
+  assert.equal((smoke.match(/- checkout: none/g) ?? []).length, 3, "no probe checks out repository code")
+  assert.doesNotMatch(smoke, /azureSubscription:|serviceConnection:|secrets\.|- task:|checkout: self/)
+  for (const pool of smoke.match(/vmImage: [^\n]+/g) ?? [])
+    assert.match(pool, /vmImage: (ubuntu-latest|windows-latest|macOS-latest)$/, pool)
+  for (const name of smoke.match(/^ {8}name: [^\n]+$/gm) ?? [])
+    assert.equal(name.trim(), "name: yc-ci-linux", "named pools stay on the managed CI pool")
+})
