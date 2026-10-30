@@ -75,7 +75,7 @@ Modify existing files using exact string replacements.
 }
 ```
 
-This tool performs precise edits to files by replacing exact text matches. It's the primary way the LLM modifies code.
+This tool performs precise edits to files by replacing exact text matches. It's the primary way the LLM modifies code. When `oldString` matches several locations, the call fails and lists each candidate line instead of guessing; when nothing matches, it reports the closest line. Set `replaceAll` to replace every occurrence deliberately.
 
 ---
 

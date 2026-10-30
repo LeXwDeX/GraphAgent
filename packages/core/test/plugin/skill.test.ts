@@ -60,6 +60,21 @@ describe("SkillPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("registers the built-in git-workflow skill", () =>
+    Effect.gen(function* () {
+      const skill = yield* SkillV2.Service
+      yield* SkillPlugin.Plugin.effect(host({ skill: { ...skill, reload: skill.reload } }))
+
+      expect(yield* skill.list()).toContainEqual(
+        expect.objectContaining({
+          name: "git-workflow",
+          description: expect.stringContaining("pull request"),
+          content: expect.stringContaining("gh pr"),
+        }),
+      )
+    }),
+  )
+
   it.effect("keeps workflow orchestration out of the Skill catalog", () =>
     Effect.gen(function* () {
       const skill = yield* SkillV2.Service

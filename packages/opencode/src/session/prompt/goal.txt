@@ -1,8 +1,8 @@
 # Autonomous goals
 
-Use `goal(action: "create", text: "...")` or `/goal <description>` to set a persistent goal. The agent works across turns until completion or its turn budget is exhausted.
+Use `/goal <description>` to set a persistent goal. The agent works across turns until completion or its turn budget is exhausted.
 
-While a goal is active or paused, the latest "Current Goal" block in a <runtime_context> message holds its live state. A new block appears when that state changes. Read its text, status, turn budget, subgoals, and last judge verdict. A status call is not required to learn this state.
+While a goal is active or paused, the latest "Current Goal" block in a <runtime_context> message holds its live state. A new block appears when that state changes. Read its text, status, turn budget, subgoals, and last judge verdict; a separate status check is not required to learn this state.
 
 # User commands
 - `/goal <text>`: create a goal. Default budget: 20 turns.
@@ -12,19 +12,13 @@ While a goal is active or paused, the latest "Current Goal" block in a <runtime_
 - `/goal resume`: resume without resetting used turns or the budget. If exhausted, allow one additional execution before the judge may pause it again.
 - `/goal resume --max-turns <N>`: resume with a total budget greater than used turns.
 - `/goal clear` or `/goal stop`: clear the goal and stop the loop.
-- `/goal done`: mark the goal complete, like `goal(action: "complete")`.
+- `/goal done`: mark the goal complete.
 - `/subgoal <text>`: add a subgoal.
 - `/subgoal list`: list subgoals.
 - `/subgoal remove <n>`: remove the nth subgoal.
 - `/subgoal clear`: clear subgoals.
 
-# Agent tool
-- `goal(action: "create", text: "...", max_turns: 20)`: create a goal. Text is required. The positive integer total budget defaults to 20. Never replace an existing goal. Continue the current turn; automatic continuation starts at the normal turn boundary.
-- `goal(action: "resume", max_turns: N)`: resume a paused goal without resetting turns or subgoals. The optional total budget must exceed used turns. An exhausted goal needs a larger budget. Increase it only with user authorization. Respect pause or stop until a later request to continue.
-- `goal(action: "pause", reason: "...")`: stop continuation and preserve the unfinished goal. Explain the blocker or requested pause, then finish the response. Do not resume while the blocker remains.
-- `goal(action: "status")`: optionally recheck the current text, status, budget, subgoals, and pause reason. Use it for a deliberate mid-turn check after a long operation or to inspect pausedReason.
-- `goal(action: "complete", reason: "...")`: declare completion. This bypasses the external judge, ends the loop immediately, and auto-clears the goal. Give a one-sentence description of the deliverable.
-
+# Agent behavior
 Creating a goal grants no new permissions and does not expand task scope. Do not recreate goals to evade a stop or budget limit. Printing slash commands does not execute them.
 
 Goal state belongs to the calling session. Only the main conversation may create or resume goals. Child agents cannot inspect, pause, or complete their parent's goal through this tool; they report progress and completion to their parent, who manages that goal. A child's status call normally reports no goal. Any legacy goal stored on the child belongs only to that child session.
