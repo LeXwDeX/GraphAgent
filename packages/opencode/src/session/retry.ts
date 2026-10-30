@@ -131,7 +131,9 @@ export function delay(attempt: number, error?: SessionV1.APIError, random = Math
         }
       }
 
-      return cap(exponential(attempt, random))
+      // Headers without a usable retry hint still fall back to the base
+      // backoff, so the no-header ceiling applies here too.
+      return cap(Math.min(exponential(attempt, random), RETRY_MAX_DELAY_NO_HEADERS))
     }
   }
 
@@ -281,14 +283,30 @@ export function classify(error: Err, provider: string): RetryDecision {
 }
 
 /**
- * Compatibility classifier for callers that need to know whether a failure is
- * one of the base-layer retries. Auth recovery, the compaction handoff and the
- * fallback reconnect are policy concerns and are not reported here.
+ * Compatibility classifier for callers that decide whether a failed turn is
+ * worth continuing (goal recovery, StopFailure routing). Auth recovery, the
+ * compaction handoff and the fallback reconnect are policy concerns and are
+ * not reported here.
+ *
+ * The HTTP policy retries every 4xx/5xx on the wire, but a deterministic 4xx
+ * answer cannot succeed on resend. Report it as unrecoverable so the caller
+ * pauses visibly instead of spending a recovery turn on the same rejection.
+ * The exceptions keep the pre-existing transient signals: a flagged
+ * `isRetryable`, or a message/body that names a rate limit, timeout, gateway
+ * circuit breaker, and so on. 5xx answers stay recoverable regardless.
  */
 export function retryable(error: Err, provider: string) {
   const decision = classify(error, provider)
   if (decision.maxRetries === 0) return undefined
   if (decision.branch === "auth" || decision.branch === "fallback") return undefined
+  if (decision.branch === "http" && decision.status !== undefined && decision.status < 500) {
+    const transient =
+      SessionV1.APIError.isInstance(error) &&
+      (error.data.isRetryable ||
+        matchesRetryableMessage(error.data.message) ||
+        matchesRetryableMessage(error.data.responseBody))
+    if (!transient) return undefined
+  }
   return { message: decision.message, ...(decision.action ? { action: decision.action } : {}) }
 }
 

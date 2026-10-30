@@ -57,6 +57,12 @@ describe("session.retry.delay", () => {
     expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
   })
 
+  test("caps exponential fallback at 30 seconds when headers carry no retry hint", () => {
+    const error = apiError({ "x-request-id": "req-1" })
+    const delays = Array.from({ length: 10 }, (_, index) => SessionRetry.delay(index + 1, error, 0))
+    expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
+  })
+
   test("adds jitter to exponential delays", () => {
     const error = apiError()
     expect(SessionRetry.delay(1, error, 0)).toBe(2000)
@@ -606,7 +612,7 @@ describe("session.retry.retryable", () => {
   })
 
   test("dispatches every 4xx and 5xx status through one table", () => {
-    for (const statusCode of [400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503, 504, 599]) {
+    for (let statusCode = 400; statusCode <= 599; statusCode++) {
       const error = statusError(statusCode)
       const decision = SessionRetry.classify(error, retryProvider)
 
@@ -623,9 +629,28 @@ describe("session.retry.retryable", () => {
           branch: statusCode === 429 || statusCode === 503 ? "rate_limit" : "http",
           maxRetries: SessionRetry.RETRY_MAX_RETRIES,
         })
-        expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: `status ${statusCode}` })
+        // The wire policy resends every status, but goal recovery only
+        // resumes when the failure is transient. A plain 4xx is final; 429 is
+        // a rate limit that clears on its own.
+        if (statusCode >= 500 || statusCode === 429) {
+          expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: `status ${statusCode}` })
+        } else {
+          expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+        }
       }
     }
+  })
+
+  test("keeps a flagged 4xx recoverable for goal continuation", () => {
+    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
+      new SessionV1.APIError({
+        message: "request timed out",
+        isRetryable: true,
+        statusCode: 408,
+      }).toObject(),
+    )
+
+    expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "request timed out" })
   })
 
   test("keeps rejected reasoning state terminal whatever its status", () => {

@@ -29,14 +29,16 @@ Every provider failure goes through one dispatch table before any backoff is
 scheduled. The base layer covers every HTTP `APIError` with a 4xx or 5xx status
 and every recognised network failure with the same exponential backoff: 2s
 initial delay, doubling per attempt, 25% jitter, capped at 30s, with five
-retries after the first attempt.
+retries after the first attempt. A `rate_limit` answer with a usable
+`retry-after` or `retry-after-ms` header waits for the value the provider asked
+for instead; that value is capped only at the 32-bit timer limit.
 
 | Branch | Failures | Behaviour |
 | --- | --- | --- |
 | `rate_limit` | HTTP 429 and 503, rate-limit usage errors | Retries with the base backoff, honoring `retry-after` and `retry-after-ms` when present. |
-| `auth` | HTTP 401 and 403 | One bounded retry, giving the provider's in-request auth loader a chance to refresh credentials. A second auth failure stops. |
+| `auth` | HTTP 401 and 403 | One bounded retry, giving the provider's in-request auth loader a chance to refresh credentials. A second auth failure stops. A missing-API-key `AuthError` enters the table as a terminal `auth` decision instead. |
 | `compaction` | HTTP 413 and parsed context overflow | Never resent unchanged. The processor hands the turn to compaction. |
-| `http` | Remaining HTTP 400–599 | Retries with the base backoff. `retry-after` headers are not honored outside `rate_limit`. |
+| `http` | Remaining HTTP 400–599 | The wire policy retries with the base backoff; `retry-after` headers are not honored outside `rate_limit`. Goal recovery treats a deterministic 4xx as final and pauses visibly, while a flagged `isRetryable` or a recognised transient message/body stays recoverable. |
 | `network` | Fetch, DNS, socket, timeout and recognised provider-network errors | Retries with the base backoff. |
 | `protocol` | Incomplete, empty and reasoning-only truncated responses | Retries with the base backoff while the processor's admission gates allow it. |
 | `fallback` | Unrecognised failures | Reconnects 3s, 6s, 6s, then surfaces the error. |

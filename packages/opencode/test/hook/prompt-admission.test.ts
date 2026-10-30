@@ -952,6 +952,10 @@ it.live("StopFailure asyncRewake records the failure but does not start a new mo
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 200)))
       const messages = JSON.stringify(yield* sessions.messages({ sessionID: session.id }))
       expect(messages).not.toContain("ignored failure")
+      // Every queued failure was consumed by the retry cap; the turn did not
+      // stop early and no reply was left unconsumed.
+      expect(yield* llm.calls).toBe(SessionRetry.RETRY_MAX_RETRIES + 1)
+      expect(yield* llm.pending).toBe(0)
       yield* hooks.clear(session.id)
     }),
     { git: true, config: providerCfg },

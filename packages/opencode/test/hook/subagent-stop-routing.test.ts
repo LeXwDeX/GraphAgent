@@ -292,6 +292,15 @@ it.live("failed foreground subagent still fires StopFailure", () =>
         .map((line): { session_id: string; hook_event_name: string } => JSON.parse(line))
       const child = events.filter((event) => event.session_id !== session.id)
       expect(child.map((event) => event.hook_event_name)).toEqual(["StopFailure"])
+      // The parent made its tool-call request, the child consumed every queued
+      // rejection through the retry cap, and the parent consumed its final
+      // reply: 1 + (cap + 1) + 1 requests. Title generation has its own
+      // automatic reply and is excluded. Nothing is left outstanding.
+      const conversation = (yield* llm.hits).filter(
+        (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
+      )
+      expect(conversation).toHaveLength(SessionRetry.RETRY_MAX_RETRIES + 3)
+      expect(yield* llm.pending).toBe(0)
     }),
     { git: true, config: providerCfg },
   ),
