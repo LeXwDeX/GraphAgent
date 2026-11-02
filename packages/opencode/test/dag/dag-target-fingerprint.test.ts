@@ -16,7 +16,9 @@ import { Session } from "@opencode-ai/schema/session"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { Dag, type WorkflowConfig } from "@/dag/dag"
+import { DagBlocks } from "@/dag/blocks"
 import { DagLocation } from "@/dag/location"
+import { targetSensitiveNode } from "@/dag/review-lifecycle"
 import { resultTargetFields } from "@/tool/workflow"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { tmpdir } from "../fixture/fixture"
@@ -155,6 +157,15 @@ describe("fingerprintTarget", () => {
 })
 
 describe("Dag target fingerprint lifecycle", () => {
+  it("classifies compiled, review, and custom nodes without relying on names", () => {
+    expect(targetSensitiveNode({ target_sensitive: true }, "general")).toBe(true)
+    expect(targetSensitiveNode({ review: { phase: "design" } }, "general")).toBe(true)
+    expect(targetSensitiveNode(undefined, "review")).toBe(true)
+    expect(targetSensitiveNode(undefined, "review-standards")).toBe(true)
+    expect(targetSensitiveNode(undefined, "general")).toBe(false)
+    expect(targetSensitiveNode({}, "build")).toBe(false)
+  })
+
   it("passes completion and stores the fingerprint when the target is unchanged", async () => {
     await using tmp = await tmpdir({ git: true })
     await Effect.runPromise(
@@ -216,6 +227,210 @@ describe("Dag target fingerprint lifecycle", () => {
       stale_target: true,
     })
     expect(resultTargetFields({})).toEqual({})
+  })
+
+  it("rejects a stale built-in review lane even though it is not required", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "tracked.txt"), "one")
+        await $`git add tracked.txt`.cwd(dir).quiet()
+        await $`git commit -m tracked`.cwd(dir).quiet()
+      },
+    })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed(tmp.path)
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const dagID = yield* dag.create({
+          projectID,
+          sessionID,
+          title: "review lanes",
+          config: {
+            name: "review lanes",
+            nodes: DagBlocks.compileWorkflowBlocks({
+              objective: "Judge the working tree",
+              blocks: [{ id: "gate", kind: "review" }],
+            }),
+          },
+        })
+        const started = (nodeID: string) =>
+          dag.nodeStarted(
+            dagID,
+            nodeID,
+            childSessionID,
+            undefined,
+            true,
+            undefined,
+            tmp.path,
+            DagLocation.gitHead(tmp.path),
+            DagLocation.fingerprintTarget(tmp.path),
+          )
+        const lane = { verdict: "ACCEPT", summary: "ok", findings: [], required_actions: [] }
+
+        yield* started("gate--standards")
+        writeFileSync(path.join(tmp.path, "tracked.txt"), "two")
+        yield* dag.nodeCompleted(dagID, "gate--standards", lane)
+        expect((yield* store.getNode(dagID, "gate--standards"))?.staleTarget).toBe(true)
+
+        // Start the remaining nodes after the edit so only the lane is stale.
+        for (const id of ["gate--intent", "gate"]) {
+          yield* started(id)
+          yield* dag.nodeCompleted(dagID, id, lane)
+        }
+
+        const error = yield* dag.complete(dagID).pipe(Effect.flip)
+        expect(error).toBeInstanceOf(Dag.CompletionGateError)
+        if (!(error instanceof Dag.CompletionGateError)) throw error
+        expect(error.gaps).toEqual(["gate--standards (stale target)"])
+      }).pipe(Effect.provide(targetLayer()), Effect.scoped),
+    )
+  })
+
+  it("rejects a stale verify block gate", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "tracked.txt"), "one")
+        await $`git add tracked.txt`.cwd(dir).quiet()
+        await $`git commit -m tracked`.cwd(dir).quiet()
+      },
+    })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed(tmp.path)
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const dagID = yield* dag.create({
+          projectID,
+          sessionID,
+          title: "verify gate",
+          config: {
+            name: "verify gate",
+            nodes: DagBlocks.compileWorkflowBlocks({
+              objective: "Verify the working tree",
+              blocks: [{ id: "check", kind: "verify" }],
+            }),
+          },
+        })
+        yield* dag.nodeStarted(
+          dagID,
+          "check",
+          childSessionID,
+          undefined,
+          true,
+          undefined,
+          tmp.path,
+          DagLocation.gitHead(tmp.path),
+          DagLocation.fingerprintTarget(tmp.path),
+        )
+        writeFileSync(path.join(tmp.path, "tracked.txt"), "two")
+        yield* dag.nodeCompleted(dagID, "check", { verdict: "PASS" })
+        expect((yield* store.getNode(dagID, "check"))?.staleTarget).toBe(true)
+
+        const error = yield* dag.complete(dagID).pipe(Effect.flip)
+        expect(error).toBeInstanceOf(Dag.CompletionGateError)
+        if (!(error instanceof Dag.CompletionGateError)) throw error
+        expect(error.gaps).toEqual(["check (stale target)"])
+      }).pipe(Effect.provide(targetLayer()), Effect.scoped),
+    )
+  })
+
+  it("rejects a stale synthesize final gate", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(path.join(dir, "tracked.txt"), "one")
+        await $`git add tracked.txt`.cwd(dir).quiet()
+        await $`git commit -m tracked`.cwd(dir).quiet()
+      },
+    })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed(tmp.path)
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const dagID = yield* dag.create({
+          projectID,
+          sessionID,
+          title: "synthesize gate",
+          config: {
+            name: "synthesize gate",
+            nodes: DagBlocks.compileWorkflowBlocks({
+              objective: "Synthesize the working tree",
+              blocks: [{ id: "final", kind: "synthesize" }],
+            }),
+          },
+        })
+        yield* dag.nodeStarted(
+          dagID,
+          "final",
+          childSessionID,
+          undefined,
+          true,
+          undefined,
+          tmp.path,
+          DagLocation.gitHead(tmp.path),
+          DagLocation.fingerprintTarget(tmp.path),
+        )
+        writeFileSync(path.join(tmp.path, "tracked.txt"), "two")
+        yield* dag.nodeCompleted(dagID, "final", { summary: "done" })
+        expect((yield* store.getNode(dagID, "final"))?.staleTarget).toBe(true)
+
+        const error = yield* dag.complete(dagID).pipe(Effect.flip)
+        expect(error).toBeInstanceOf(Dag.CompletionGateError)
+        if (!(error instanceof Dag.CompletionGateError)) throw error
+        expect(error.gaps).toEqual(["final (stale target)"])
+      }).pipe(Effect.provide(targetLayer()), Effect.scoped),
+    )
+  })
+
+  it("passes all three block gates when the target is unchanged", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed(tmp.path)
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const lane = { verdict: "ACCEPT", summary: "ok", findings: [], required_actions: [] }
+        const routes = [
+          { blocks: [{ id: "gate", kind: "review" as const }], outputs: { "gate--standards": lane, "gate--intent": lane, gate: lane } },
+          { blocks: [{ id: "check", kind: "verify" as const }], outputs: { check: { verdict: "PASS" } } },
+          { blocks: [{ id: "final", kind: "synthesize" as const }], outputs: { final: { summary: "done" } } },
+        ]
+
+        for (const route of routes) {
+          const nodes = DagBlocks.compileWorkflowBlocks({
+            objective: "Judge the working tree",
+            blocks: route.blocks,
+          })
+          const dagID = yield* dag.create({
+            projectID,
+            sessionID,
+            title: "unchanged target",
+            config: { name: "unchanged target", nodes },
+          })
+          const outputs: Record<string, unknown> = route.outputs
+          for (const node of nodes) {
+            yield* dag.nodeStarted(
+              dagID,
+              node.id,
+              childSessionID,
+              undefined,
+              true,
+              undefined,
+              tmp.path,
+              DagLocation.gitHead(tmp.path),
+              DagLocation.fingerprintTarget(tmp.path),
+            )
+            yield* dag.nodeCompleted(dagID, node.id, outputs[node.id])
+          }
+          yield* dag.complete(dagID)
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("completed")
+        }
+      }).pipe(Effect.provide(targetLayer()), Effect.scoped),
+    )
   })
 })
 

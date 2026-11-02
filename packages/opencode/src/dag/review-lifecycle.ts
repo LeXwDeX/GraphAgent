@@ -427,3 +427,16 @@ function dependsTransitively(config: WorkflowConfig, startID: string, targetID: 
 export function isReviewWorker(workerType: string) {
   return workerType === "review" || workerType.startsWith("review-")
 }
+
+/**
+ * #944: a node judges the working tree when block compilation marks it
+ * target-sensitive (review lanes, verify, synthesize) or when it follows the
+ * legacy review conventions. Custom nodes without the marker keep their
+ * historical behavior.
+ */
+export function targetSensitiveNode(
+  node: Pick<NodeConfig, "target_sensitive" | "review"> | undefined,
+  workerType: string,
+) {
+  return node?.target_sensitive === true || isReviewWorker(workerType) || node?.review !== undefined
+}

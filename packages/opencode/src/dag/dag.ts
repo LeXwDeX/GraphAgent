@@ -140,6 +140,10 @@ export interface NodeConfig {
   fan_out?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
+  /** #944: block compilation marks nodes that judge the current working tree
+   * (review lanes, verify, synthesize). Their attempts record a target
+   * fingerprint and a stale result cannot settle completion. */
+  target_sensitive?: boolean
 }
 
 export interface NodeDefaults {
@@ -255,8 +259,13 @@ export function requiredCompletionGaps(
 ): string[] {
   const definitions = new Map(config?.nodes.map((node) => [node.id, node]))
   return nodes.flatMap((node) => {
-    if (!node.required) return []
     const definition = definitions.get(node.id)
+    // #944: a target-sensitive node judges the working tree. A stale result
+    // never counts as an accepted result — including a non-required review
+    // lane, whose verdict can still open the review decision.
+    if (definition?.target_sensitive === true && node.status === "completed" && node.staleTarget === true)
+      return [`${node.id} (stale target)`]
+    if (!node.required) return []
     if (node.status !== "completed") {
       if (node.status !== "skipped" && node.status !== "aborted")
         return [`${node.id} (${node.status || "unfinished"})`]

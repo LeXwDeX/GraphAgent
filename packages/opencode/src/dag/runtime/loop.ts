@@ -46,7 +46,7 @@ import {
   reviewContractForNode,
   validateReviewExecutionInput,
   reviewEvidenceKeys,
-  isReviewWorker,
+  targetSensitiveNode,
 } from "../review-lifecycle"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -767,9 +767,10 @@ const serviceLayer = Layer.effect(
               reviewImplementationFingerprint: nodeConfig
                 ? reviewImplementationFingerprint(nodeConfig, resolvedMapping)
                 : undefined,
-              // #944: review workers and nodes declaring a review block judge
-              // the working tree, so their attempts record a target fingerprint.
-              targetSensitive: isReviewWorker(node.workerType) || nodeConfig?.review !== undefined,
+              // #944: nodes that judge the working tree (block-compiled review
+              // lanes, verify, synthesize, or legacy review conventions) record
+              // a target fingerprint so a mid-run change marks them stale.
+              targetSensitive: targetSensitiveNode(nodeConfig, node.workerType),
               verdictEvidence: nodesSnapshot
                 .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
                 .map((source) => ({ nodeID: source.id, output: source.output })),

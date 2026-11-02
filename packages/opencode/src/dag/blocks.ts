@@ -310,6 +310,7 @@ function compileBlock(
         condition: reviewCondition,
         inputMapping: reviewEvidence,
         outputSchema: LANE_REVIEW_SCHEMA,
+        targetSensitive: true,
       }),
       node({
         id: `${block.id}--intent`,
@@ -325,6 +326,7 @@ function compileBlock(
         condition: reviewCondition,
         inputMapping: reviewEvidence,
         outputSchema: LANE_REVIEW_SCHEMA,
+        targetSensitive: true,
       }),
       node({
         id: block.id,
@@ -360,6 +362,7 @@ function compileBlock(
             }
           : undefined,
         outputSchema: route ? DIFF_REVIEW_SCHEMA : GENERAL_VERDICT_SCHEMA,
+        targetSensitive: true,
       }),
     ]
     if (!aggregation) return lanes
@@ -440,6 +443,7 @@ function compileBlock(
             ? WORK_PACKAGES_SCHEMA
             : undefined,
       fanOut: block.fan_out,
+      targetSensitive: block.kind === "verify" || block.kind === "synthesize",
     }),
   ]
 }
@@ -465,6 +469,8 @@ function node(input: {
   /** Overrides the reporting-checkpoint adjudication clause (default: reportToParent). */
   adversarial?: boolean
   fanOut?: string
+  /** #944: the node judges the current working tree. */
+  targetSensitive?: boolean
 }): NodeConfig {
   // issue #387: an instruction equal to the objective (after trim and
   // line-ending normalization) would render the same content twice in the
@@ -512,6 +518,7 @@ function node(input: {
     ...(input.review ? { review: input.review } : {}),
     ...(input.outputSchema ? { output_schema: input.outputSchema } : {}),
     ...(input.fanOut ? { fan_out: input.fanOut } : {}),
+    ...(input.targetSensitive ? { target_sensitive: true } : {}),
   }
 }
 
