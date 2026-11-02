@@ -74,6 +74,15 @@ export interface NodeRow {
   /** #944: start/completion target fingerprint and the mismatch verdict. */
   targetFingerprint?: DagEvent.TargetFingerprint | null
   staleTarget?: boolean | null
+  /** #946: isolated worktree evidence and the paths this node changed. */
+  worktreeDirectory?: string | null
+  worktreeBranch?: string | null
+  worktreeCommit?: string | null
+  worktreePatchPath?: string | null
+  worktreePatchSha256?: string | null
+  worktreeState?: string | null
+  worktreeConflictsWith?: string[] | null
+  touchedPaths?: string[] | null
   /** Projection timestamps. Optional so hand-built rows in tests keep a
    * minimal shape; the database read always projects them. */
   timeCreated?: number
@@ -150,6 +159,14 @@ const mapNode = (r: typeof WorkflowNodeTable.$inferSelect): NodeRow => ({
   baseHead: r.base_head,
   targetFingerprint: r.target_fingerprint,
   staleTarget: r.stale_target,
+  worktreeDirectory: r.worktree_directory,
+  worktreeBranch: r.worktree_branch,
+  worktreeCommit: r.worktree_commit,
+  worktreePatchPath: r.worktree_patch_path,
+  worktreePatchSha256: r.worktree_patch_sha256,
+  worktreeState: r.worktree_state,
+  worktreeConflictsWith: r.worktree_conflicts_with,
+  touchedPaths: r.touched_paths,
   output: r.output,
   capturedOutput: r.captured_output,
   capturedOutputPresent: r.captured_output_present,

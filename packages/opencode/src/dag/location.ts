@@ -66,6 +66,14 @@ export function nodeLocationView(node: {
   baseHead?: string | null
   targetFingerprint?: DagEvent.TargetFingerprint | null
   staleTarget?: boolean | null
+  worktreeDirectory?: string | null
+  worktreeBranch?: string | null
+  worktreeCommit?: string | null
+  worktreePatchPath?: string | null
+  worktreePatchSha256?: string | null
+  worktreeState?: string | null
+  worktreeConflictsWith?: string[] | null
+  touchedPaths?: string[] | null
   timeUpdated?: number
   startedAt?: number | null
   completedAt?: number | null
@@ -76,6 +84,22 @@ export function nodeLocationView(node: {
     ...(node.baseHead ? { head: node.baseHead.slice(0, 12) } : {}),
     ...(node.targetFingerprint ? { target_fingerprint: node.targetFingerprint } : {}),
     ...(node.staleTarget ? { stale_target: true } : {}),
+    ...(node.worktreeDirectory
+      ? {
+          worktree: {
+            directory: node.worktreeDirectory,
+            ...(node.worktreeBranch ? { branch: node.worktreeBranch } : {}),
+            ...(node.worktreeCommit ? { commit: node.worktreeCommit } : {}),
+            ...(node.worktreePatchPath ? { patch_path: node.worktreePatchPath } : {}),
+            ...(node.worktreePatchSha256 ? { patch_sha256: node.worktreePatchSha256 } : {}),
+            ...(node.worktreeState ? { state: node.worktreeState } : {}),
+            ...(node.touchedPaths?.length ? { touched_paths: node.touchedPaths } : {}),
+            ...(node.worktreeConflictsWith?.length ? { conflicts_with: node.worktreeConflictsWith } : {}),
+          },
+        }
+      : node.touchedPaths?.length
+        ? { touched_paths: node.touchedPaths }
+        : {}),
     ...(activity !== undefined && activity !== null ? { last_activity_at: new Date(activity).toISOString() } : {}),
   }
 }
@@ -195,6 +219,20 @@ export const sameFingerprint = (
   if (a.kind === "none" && b.kind === "none") return true
   if (a.kind === "none" || b.kind === "none") return false
   return a.value === b.value
+}
+
+/**
+ * #946: worktree isolation needs a git target with no uncommitted state. A
+ * dirty target would leak unrelated edits into every isolated node's commit,
+ * so validation fails before spawn.
+ */
+export const isGitWorktree = (directory: string): boolean =>
+  gitOutput(directory, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true"
+
+export const isCleanWorktree = (directory: string): boolean => {
+  if (!isGitWorktree(directory)) return false
+  const status = gitOutput(directory, ["status", "--porcelain"])
+  return status !== undefined && status.trim() === ""
 }
 
 /**

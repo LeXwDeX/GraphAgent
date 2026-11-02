@@ -6,6 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { DagValidation } from "../../src/dag/validation"
+import type { NodeConfig } from "../../src/dag/dag"
 import { WorkflowAuthoring } from "../../src/dag/authoring"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -712,4 +713,48 @@ describe("workflow spec validator", () => {
       }),
     )
   })
+})
+
+describe("isolation rules", () => {
+  const node = (overrides: Partial<NodeConfig> = {}): NodeConfig => ({
+    id: "writer",
+    name: "Writer",
+    worker_type: "build",
+    depends_on: [],
+    prompt_template: { inline: "do work" },
+    isolation: "worktree",
+    ...overrides,
+  })
+
+  const errors = (nodes: NodeConfig[]) =>
+    DagValidation.isolationDiagnostics({
+      nodes,
+      profile: "portable",
+      ownerDirectory: "/repo",
+    })
+
+  it.effect("accepts a writer in the portable profile", () =>
+    Effect.sync(() => {
+      expect(errors([node()])).toEqual([])
+    }),
+  )
+
+  it.effect("rejects a node that also declares workspace", () =>
+    Effect.sync(() => {
+      expect(errors([node({ workspace: "/repo/wt" })])).toEqual([
+        expect.objectContaining({
+          code: DagValidation.DIAGNOSTIC_CODES.isolationInvalid,
+          path: "nodes[writer].isolation",
+          message: expect.stringContaining("mutually exclusive"),
+        }),
+      ])
+    }),
+  )
+
+  it.effect("rejects review and read-only workers", () =>
+    Effect.sync(() => {
+      expect(errors([node({ id: "review", review: { phase: "diff" } })])[0]?.message).toContain("review node")
+      expect(errors([node({ id: "explore", worker_type: "explore" })])[0]?.message).toContain("not write-capable")
+    }),
+  )
 })

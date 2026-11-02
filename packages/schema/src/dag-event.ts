@@ -109,6 +109,25 @@ export const NodeStatus = Schema.Literals([
 ])
 export type NodeStatus = typeof NodeStatus.Type
 
+/** #946: the worktree an isolated node ran in. `started` carries only the
+ * creation identity; completion/failure add the commit and patch evidence.
+ * Every field is optional except state so legacy durable events decode. */
+export const WorktreeState = Schema.Literals(["active", "removed", "kept"])
+export type WorktreeState = typeof WorktreeState.Type
+
+export const NodeWorktree = Schema.Struct({
+  directory: Schema.String,
+  branch: Schema.optional(Schema.String),
+  commit: Schema.optional(Schema.String),
+  baseHead: Schema.optional(Schema.String),
+  patchPath: Schema.optional(Schema.String),
+  patchSha256: Schema.optional(Schema.String),
+  touchedPaths: Schema.Array(Schema.String),
+  state: WorktreeState,
+  conflictsWith: Schema.Array(NodeID),
+})
+export type NodeWorktree = typeof NodeWorktree.Type
+
 // ============================================================================
 // Workflow lifecycle events
 // ============================================================================
@@ -297,6 +316,9 @@ export const NodeStarted = Event.define({
     /** #944: target fingerprint captured before this attempt started, for
      * nodes that judge the working tree. Optional so legacy events decode. */
     targetFingerprint: Schema.optional(TargetFingerprint),
+    /** #946: the per-node worktree this attempt runs in. Optional so legacy
+     * events decode; `state: "active"` marks a live worktree. */
+    worktree: Schema.optional(NodeWorktree),
   },
 })
 export type NodeStarted = typeof NodeStarted.Type
@@ -316,6 +338,11 @@ export const NodeCompleted = Event.define({
     /** #944: true when the recomputed fingerprint differs from the start one.
      * When absent (legacy), consumers treat the result as not stale. */
     staleTarget: Schema.optional(Schema.Boolean),
+    /** #946: paths this attempt changed. Optional so legacy events decode;
+     * isolated nodes also carry the same list inside `worktree`. */
+    touchedPaths: Schema.optional(Schema.Array(Schema.String)),
+    /** #946: commit, patch and conflict evidence for an isolated node. */
+    worktree: Schema.optional(NodeWorktree),
   },
 })
 export type NodeCompleted = typeof NodeCompleted.Type
@@ -332,6 +359,8 @@ export const NodeFailed = Event.define({
      * response. Optional keeps the durable event readable across versions:
      * older readers ignore it and fall back to trigger. */
     errorClass: Schema.optional(Schema.String),
+    /** #946: an isolated attempt keeps its worktree for inspection. */
+    worktree: Schema.optional(NodeWorktree),
   },
 })
 export type NodeFailed = typeof NodeFailed.Type

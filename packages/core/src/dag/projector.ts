@@ -336,11 +336,20 @@ export const layer = Layer.effectDiscard(
       // `directory:` key inside `.set(...)`: the DAG-LOC-01 write-once static
       // contract reserves that spelling for the workflow stamp.
       const executionLocation = {
-        directory: event.data.directory ?? null,
+        directory: event.data.worktree?.directory ?? event.data.directory ?? null,
         base_head: event.data.baseHead ?? null,
         // #944: a fresh attempt clears the previous completion verdict.
         target_fingerprint: event.data.targetFingerprint ?? null,
         stale_target: false,
+        // #946: a started isolated attempt replaces any prior worktree row.
+        worktree_directory: event.data.worktree?.directory ?? null,
+        worktree_branch: event.data.worktree?.branch ?? null,
+        worktree_commit: null,
+        worktree_patch_path: null,
+        worktree_patch_sha256: null,
+        worktree_state: event.data.worktree ? "active" : null,
+        worktree_conflicts_with: event.data.worktree ? [] : null,
+        touched_paths: null,
       }
       return db
         .update(WorkflowNodeTable)
@@ -389,6 +398,20 @@ export const layer = Layer.effectDiscard(
           ...(event.data.targetFingerprint !== undefined ? { target_fingerprint: event.data.targetFingerprint } : {}),
           // #944: legacy events omit the flag; completed rows read as not stale.
           stale_target: event.data.staleTarget ?? false,
+          ...(event.data.worktree !== undefined
+            ? {
+                worktree_directory: event.data.worktree.directory,
+                worktree_branch: event.data.worktree.branch ?? null,
+                worktree_commit: event.data.worktree.commit ?? null,
+                worktree_patch_path: event.data.worktree.patchPath ?? null,
+                worktree_patch_sha256: event.data.worktree.patchSha256 ?? null,
+                worktree_state: event.data.worktree.state,
+                worktree_conflicts_with: [...event.data.worktree.conflictsWith],
+              }
+            : {}),
+          ...(event.data.touchedPaths !== undefined || event.data.worktree !== undefined
+            ? { touched_paths: [...(event.data.touchedPaths ?? event.data.worktree?.touchedPaths ?? [])] }
+            : {}),
           completed_at: toMillis(event.data.timestamp),
           // Q1: a terminal node is no longer awaiting adjudication — clear the
           // escalation flag. Its result is delivered via the wake_reported
@@ -423,6 +446,18 @@ export const layer = Layer.effectDiscard(
           status: "failed",
           error_reason: event.data.reason,
           error_class: event.data.errorClass ?? event.data.trigger,
+          ...(event.data.worktree !== undefined
+            ? {
+                worktree_directory: event.data.worktree.directory,
+                worktree_branch: event.data.worktree.branch ?? null,
+                worktree_commit: event.data.worktree.commit ?? null,
+                worktree_patch_path: event.data.worktree.patchPath ?? null,
+                worktree_patch_sha256: event.data.worktree.patchSha256 ?? null,
+                worktree_state: event.data.worktree.state,
+                worktree_conflicts_with: [...event.data.worktree.conflictsWith],
+                touched_paths: [...event.data.worktree.touchedPaths],
+              }
+            : {}),
           completed_at: toMillis(event.data.timestamp),
           // Q1: a terminal node is no longer awaiting adjudication — clear the
           // escalation flag.
@@ -524,6 +559,16 @@ export const layer = Layer.effectDiscard(
           // per-attempt, not lifetime.
           timeout_extensions: 0,
           escalation_pending: false,
+          // #946: the replacement attempt starts without the previous
+          // worktree evidence; NodeStarted records the new worktree, if any.
+          worktree_directory: null,
+          worktree_branch: null,
+          worktree_commit: null,
+          worktree_patch_path: null,
+          worktree_patch_sha256: null,
+          worktree_state: null,
+          worktree_conflicts_with: null,
+          touched_paths: null,
           seq: event.durable!.seq,
           time_updated: toMillis(event.data.timestamp),
         })

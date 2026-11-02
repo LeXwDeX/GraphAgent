@@ -760,6 +760,7 @@ const serviceLayer = Layer.effect(
               parentSessionID: entry.parentSessionID,
               directory: ctx.directory,
               executionDirectory: nodeDirectory,
+              ...(nodeConfig?.isolation ? { isolation: nodeConfig.isolation } : {}),
               inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
               promptParts,
               outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,

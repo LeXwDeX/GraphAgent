@@ -140,6 +140,12 @@ const mockNodes = (id: string) =>
           directory: "/repo/.worktrees/status",
           baseHead: "0123456789abcdef",
           targetFingerprint,
+          worktreeDirectory: "/repo/.worktrees/status-node-running",
+          worktreeBranch: "opencode/dag-status-node-running",
+          worktreeCommit: "fedcba9876543210",
+          worktreeState: "removed",
+          worktreeConflictsWith: ["node_failed"],
+          touchedPaths: ["src/shared.ts"],
           output: null,
           capturedOutput: null,
           errorReason: null,
@@ -168,6 +174,14 @@ const mockNodes = (id: string) =>
           modelId: null,
           modelProviderId: null,
           childSessionId: "ses_failed_child",
+          worktreeDirectory: "/repo/.worktrees/status-node-failed",
+          worktreeBranch: "opencode/dag-status-node-failed",
+          worktreeCommit: "0123456789abcdef",
+          worktreePatchPath: "/repo/.opencode/workflow-reports/dag_status/node_failed.patch",
+          worktreePatchSha256: "a".repeat(64),
+          worktreeState: "kept",
+          worktreeConflictsWith: ["node_running"],
+          touchedPaths: ["src/shared.ts"],
           output: null,
           capturedOutput: null,
           errorReason: "node exceeded timeout of 600000ms",
@@ -1229,6 +1243,12 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"reason": "tree moved"')
       expect(result.output).toContain('"id": "node_failed"')
       expect(result.output).toContain('"error_class": "timeout"')
+      // #946: worktree evidence and conflict views are part of the status.
+      expect(result.output).toContain('"worktrees"')
+      expect(result.output).toContain('"state": "kept"')
+      expect(result.output).toContain('"branch": "opencode/dag-status-node-failed"')
+      expect(result.output).toContain('"conflicts"')
+      expect(result.output).toContain('"src/shared.ts"')
     }),
   )
 
