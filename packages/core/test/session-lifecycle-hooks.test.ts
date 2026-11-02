@@ -153,3 +153,42 @@ it.live("a late uninterruptible hook cannot commit after its admission owner was
     expect(committed).toEqual(["new"])
   }),
 )
+
+it.live("overlapping cancellations run only the owning callback", () =>
+  Effect.gen(function* () {
+    const admissions = SessionAdmission.make()
+    const started = yield* Deferred.make<void>()
+    const owner = yield* admissions
+      .run("session", () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)))
+      .pipe(Effect.result, Effect.forkChild)
+    yield* Deferred.await(started)
+
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const order: string[] = []
+    const first = yield* admissions
+      .cancel(
+        "session",
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(Effect.sync(() => order.push("deadline"))),
+        ),
+      )
+      .pipe(Effect.forkChild)
+    yield* Deferred.await(entered)
+    const second = yield* admissions
+      .cancel(
+        "session",
+        Effect.sync(() => order.push("cleanup")),
+      )
+      .pipe(Effect.forkChild)
+    yield* Effect.yieldNow
+    expect(order).toEqual([])
+
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(first)
+    yield* Fiber.join(second)
+    expect(order).toEqual(["deadline"])
+    expect((yield* Fiber.join(owner))._tag).toBe("Failure")
+  }),
+)

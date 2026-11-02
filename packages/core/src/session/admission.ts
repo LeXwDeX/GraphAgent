@@ -67,5 +67,7 @@ export const make = () => {
         )
       }),
     )
-  return { run, cancel }
+  /** Read-only diagnostic: owners still registered for `id`. */
+  const ownerCount = (id: string) => Effect.sync(() => owners.get(id)?.size ?? 0)
+  return { run, cancel, ownerCount }
 }
