@@ -79,6 +79,24 @@ export const WorkflowStatus = Schema.Literals([
 ])
 export type WorkflowStatus = typeof WorkflowStatus.Type
 
+/**
+ * #944: the identity of the tree a node result is bound to. `git` carries the
+ * HEAD, a hash of the tracked diff, a hash of the untracked-file metadata, and
+ * the combined value; `none` is the explicit marker for a non-git directory
+ * (or an unborn HEAD), which is stable and never stale.
+ */
+export const TargetFingerprint = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("none") }),
+  Schema.Struct({
+    kind: Schema.Literal("git"),
+    head: Schema.String,
+    diff: Schema.String,
+    untracked: Schema.String,
+    value: Schema.String,
+  }),
+])
+export type TargetFingerprint = typeof TargetFingerprint.Type
+
 export const NodeStatus = Schema.Literals([
   "pending",
   "queued",
@@ -115,6 +133,10 @@ export const WorkflowCreated = Event.define({
      * `directory`. Kept separate from `directory`, which stays the ownership
      * key used by adoption, recovery and wake. */
     executionDirectory: Schema.optional(Schema.String),
+    /** #944: the target fingerprint captured when the workflow started.
+     * Optional so legacy durable events still decode; absent means the field
+     * predates target fingerprinting. */
+    targetFingerprint: Schema.optional(TargetFingerprint),
   },
 })
 export type WorkflowCreated = typeof WorkflowCreated.Type
@@ -262,6 +284,9 @@ export const NodeStarted = Event.define({
     /** Repo HEAD when the attempt started. Optional for the same reason as
      * `directory`; absent while the directory is not a git repository. */
     baseHead: Schema.optional(Schema.String),
+    /** #944: target fingerprint captured before this attempt started, for
+     * nodes that judge the working tree. Optional so legacy events decode. */
+    targetFingerprint: Schema.optional(TargetFingerprint),
   },
 })
 export type NodeStarted = typeof NodeStarted.Type
@@ -275,6 +300,12 @@ export const NodeCompleted = Event.define({
     output: Schema.Unknown,
     capturedOutput: Schema.optional(Schema.Unknown),
     durationMs: NonNegativeInt,
+    /** #944: target fingerprint recomputed at completion, for nodes that
+     * recorded a start fingerprint. Optional so legacy events decode. */
+    targetFingerprint: Schema.optional(TargetFingerprint),
+    /** #944: true when the recomputed fingerprint differs from the start one.
+     * When absent (legacy), consumers treat the result as not stale. */
+    staleTarget: Schema.optional(Schema.Boolean),
   },
 })
 export type NodeCompleted = typeof NodeCompleted.Type

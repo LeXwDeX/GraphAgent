@@ -18,6 +18,7 @@ import { SessionID } from "@/session/schema"
 import { createAdmissionRecord } from "@/dag/admission"
 import { isOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
+import type { DagEvent } from "@opencode-ai/schema/dag-event"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -570,6 +571,7 @@ export const WorkflowTool = Tool.define<
                     title: workflow.title,
                     status: workflow.status,
                     ...(failureReason ? { failure_reason: failureReason } : {}),
+                    ...(workflow.targetFingerprint ? { target_fingerprint: workflow.targetFingerprint } : {}),
                     graph_rev: workflow.graphRev,
                     session_id: workflow.sessionId,
                     mode: config?.mode ?? "standard",
@@ -632,6 +634,7 @@ export const WorkflowTool = Tool.define<
                       workflow_id: params.workflow_id,
                       node_id: params.node_id,
                       status: node.status,
+                      ...resultTargetFields(node),
                       ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                       content_ref: node.capturedOutput.content_ref,
                       path: node.capturedOutput.path,
@@ -709,6 +712,7 @@ export const WorkflowTool = Tool.define<
                     workflow_id: params.workflow_id,
                     node_id: params.node_id,
                     status: node.status,
+                    ...resultTargetFields(node),
                     ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                     content: content.slice(cursor.value.offset, pageEnd),
                     truncated,
@@ -998,6 +1002,18 @@ export const WorkflowTool = Tool.define<
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/** #944: the target identity a result is bound to, shared by both result
+ * branches. Absent for legacy nodes and non-target-sensitive results. */
+export function resultTargetFields(node: {
+  readonly targetFingerprint?: DagEvent.TargetFingerprint | null
+  readonly staleTarget?: boolean | null
+}) {
+  return {
+    ...(node.targetFingerprint ? { target_fingerprint: node.targetFingerprint } : {}),
+    ...(node.staleTarget ? { stale_target: true } : {}),
+  }
+}
 
 function resultPageEnd(content: string, offset: number, limit: number) {
   const end = Math.min(content.length, offset + limit)

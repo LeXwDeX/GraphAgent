@@ -209,6 +209,8 @@ interface CompletionNode {
   readonly required: boolean
   readonly output: unknown
   readonly errorReason: string | null
+  /** #944: a completed node whose target changed under it cannot gate completion. */
+  readonly staleTarget?: boolean | null
 }
 
 function declaresVerdictContract(schema: Record<string, unknown> | undefined): boolean {
@@ -262,6 +264,9 @@ export function requiredCompletionGaps(
       if (definition?.skip_ok === undefined && mode === "natural") return []
       return [`${node.id} (${node.status}: ${node.errorReason ?? "unfinished"})`]
     }
+    // #944: a result judged against a tree that changed mid-run is not an
+    // accepted result, even when its verdict says PASS/ACCEPT.
+    if (node.staleTarget === true) return [`${node.id} (stale target)`]
     if (definition?.review?.phase === "diff") {
       const outcome = verdictField(node.output)
       // Only the legacy diff-review outcomes that gate reopen behavior are
@@ -599,6 +604,8 @@ export interface Interface {
     directory?: string,
     /** #949: repo HEAD when the attempt started. */
     baseHead?: string,
+    /** #944: target fingerprint captured before a target-sensitive node starts. */
+    targetFingerprint?: DagEvent.TargetFingerprint,
   ) => Effect.Effect<void, Error>
   readonly nodeCompleted: (
     dagID: string,
@@ -804,6 +811,10 @@ export const layer = Layer.effect(
         try: () => bindWorkspace(config, ownerDirectory),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
+      // #944: the target identity is captured from the bound execution
+      // directory (the owner directory when no workspace is bound). Non-git
+      // directories get the stable `none` marker.
+      const targetFingerprint = DagLocation.fingerprintTarget(bound.workspace ?? ownerDirectory)
       const durableConfig =
         bound.config.mode === "deep" && bound.config.admission
           ? {
@@ -834,6 +845,7 @@ export const layer = Layer.effect(
         // session FK anyway).
         directory: ownerDirectory,
         ...(bound.workspace !== undefined ? { executionDirectory: bound.workspace } : {}),
+        targetFingerprint,
       })
       for (const node of durableConfig.nodes) {
         yield* events.publish(DagEvent.NodeRegistered, {
@@ -1691,6 +1703,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       attempt?: NodeExecutionAttempt,
       directory?: string,
       baseHead?: string,
+      targetFingerprint?: DagEvent.TargetFingerprint,
     ) {
       yield* guardNode(dagID, nodeID, NodeStatus.RUNNING, attempt)
       yield* events.publish(DagEvent.NodeStarted, {
@@ -1701,6 +1714,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
         wakeEligible,
         ...(directory !== undefined ? { directory } : {}),
         ...(baseHead !== undefined ? { baseHead } : {}),
+        ...(targetFingerprint !== undefined ? { targetFingerprint } : {}),
         timestamp: yield* DateTime.now,
       })
     })
@@ -1714,6 +1728,16 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
     ) {
       const node = yield* guardNode(dagID, nodeID, NodeStatus.COMPLETED, attempt)
       const workflow = yield* store.getWorkflow(dagID)
+      // #944: recompute the target identity for a node that recorded a start
+      // fingerprint. Legacy and target-insensitive nodes carry none and are
+      // never stale. The computation is synchronous inside the workflow lock;
+      // it is the bounded git fingerprint from DagLocation.
+      const startFingerprint = node.targetFingerprint ?? undefined
+      const executionDirectory =
+        node.directory || workflow?.executionDirectory || workflow?.directory || undefined
+      const completionFingerprint =
+        startFingerprint && executionDirectory ? DagLocation.fingerprintTarget(executionDirectory) : undefined
+      const staleTarget = startFingerprint ? !DagLocation.sameFingerprint(startFingerprint, completionFingerprint) : false
       const messages = mailboxService
       const commit = Effect.gen(function* () {
         yield* guardNode(dagID, nodeID, NodeStatus.COMPLETED, attempt)
@@ -1724,6 +1748,8 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
             nodeID,
             output,
             ...(capturedOutput !== undefined ? { capturedOutput } : {}),
+            ...(completionFingerprint !== undefined ? { targetFingerprint: completionFingerprint } : {}),
+            ...(staleTarget ? { staleTarget: true } : {}),
             durationMs: 0,
             timestamp: yield* Clock.currentTimeMillis,
           }),
@@ -2045,9 +2071,20 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       recover,
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
         withWorkflowLock(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
-      nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead) =>
+      nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead, targetFingerprint) =>
         withWorkflowLock(dagID)((lock) =>
-          nodeStarted(lock, dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead),
+          nodeStarted(
+            lock,
+            dagID,
+            nodeID,
+            childSessionID,
+            deadlineMs,
+            wakeEligible,
+            attempt,
+            directory,
+            baseHead,
+            targetFingerprint,
+          ),
         ),
       nodeCompleted: (dagID, nodeID, output, attempt, capturedOutput) =>
         withWorkflowLock(dagID)((lock) => nodeCompleted(lock, dagID, nodeID, output, attempt, capturedOutput)),

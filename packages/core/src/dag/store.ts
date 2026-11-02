@@ -24,6 +24,8 @@ export interface WorkflowRow {
   directory: string | null
   /** #943: bound workspace where children run; NULL/absent means the owner directory. */
   executionDirectory?: string | null
+  /** #944: working-tree identity captured at workflow start. */
+  targetFingerprint?: DagEvent.TargetFingerprint | null
   title: string
   status: string
   config: string
@@ -69,6 +71,9 @@ export interface NodeRow {
   /** #949: execution directory and HEAD snapshotted by NodeStarted. */
   directory?: string | null
   baseHead?: string | null
+  /** #944: start/completion target fingerprint and the mismatch verdict. */
+  targetFingerprint?: DagEvent.TargetFingerprint | null
+  staleTarget?: boolean | null
   /** Projection timestamps. Optional so hand-built rows in tests keep a
    * minimal shape; the database read always projects them. */
   timeCreated?: number
@@ -109,6 +114,7 @@ const mapWorkflow = (r: typeof WorkflowTable.$inferSelect): WorkflowRow => ({
   sessionId: r.session_id,
   directory: r.directory,
   executionDirectory: r.execution_directory,
+  targetFingerprint: r.target_fingerprint,
   title: r.title,
   status: r.status,
   config: r.config,
@@ -134,6 +140,8 @@ const mapNode = (r: typeof WorkflowNodeTable.$inferSelect): NodeRow => ({
   childSessionId: r.child_session_id,
   directory: r.directory,
   baseHead: r.base_head,
+  targetFingerprint: r.target_fingerprint,
+  staleTarget: r.stale_target,
   output: r.output,
   capturedOutput: r.captured_output,
   capturedOutputPresent: r.captured_output_present,

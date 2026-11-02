@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { ProjectTable } from "../project/sql"
 import { SessionTable } from "../session/sql"
 import { Timestamps } from "../database/schema.sql"
@@ -43,6 +44,10 @@ export const WorkflowTable = sqliteTable(
     // keeps deciding ownership, adoption, recovery and wake. NULL means "run in
     // the owner directory" — the pre-#943 behavior for every legacy row.
     execution_directory: text(),
+    // Target fingerprint (#944): the working-tree identity captured when the
+    // workflow started. NULL for legacy rows; `{ kind: "none" }` is the explicit
+    // marker for a non-git directory.
+    target_fingerprint: text({ mode: "json" }).$type<DagEvent.TargetFingerprint>(),
     title: text().notNull(),
     status: text().notNull(),
     config: text().notNull(), // YAML string
@@ -86,6 +91,13 @@ export const WorkflowNodeTable = sqliteTable(
     // moves. Nullable: legacy rows and non-git directories have no HEAD.
     directory: text(),
     base_head: text(),
+    // Target fingerprint (#944): the start fingerprint for target-sensitive
+    // nodes, replaced by the completion fingerprint on NodeCompleted. NULL for
+    // legacy rows and for nodes that do not judge the working tree.
+    target_fingerprint: text({ mode: "json" }).$type<DagEvent.TargetFingerprint>(),
+    // True when a completed target-sensitive node saw a different tree than it
+    // started with. NULL until evaluated; legacy rows keep NULL and read false.
+    stale_target: integer({ mode: "boolean" }),
     output: text({ mode: "json" }).$type<unknown>(),
     error_reason: text(),
     error_class: text(), // dag.node.failed trigger (timeout/exec_failed/verdict_fail/push_exhausted) for failure triage

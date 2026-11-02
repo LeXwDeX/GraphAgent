@@ -21,6 +21,7 @@ import dagWorkflowNodeIdentityMigration from "@opencode-ai/core/database/migrati
 import dropSessionSummaryDiffsMigration from "@opencode-ai/core/database/migration/20260903044702_drop_session_summary_diffs"
 import workflowExecutionDirectoryMigration from "@opencode-ai/core/database/migration/20261101044937_perfect_shaman"
 import workflowNodeExecutionLocationMigration from "@opencode-ai/core/database/migration/20261101033752_workflow_node_execution_location"
+import dagTargetFingerprintMigration from "@opencode-ai/core/database/migration/20261102204403_absent_caretaker"
 import { EventV2 } from "@opencode-ai/core/event"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -893,6 +894,55 @@ describe("DatabaseMigration", () => {
             sql`SELECT id, title, execution_directory AS executionDirectory FROM workflow WHERE id = 'legacy'`,
           ),
         ).toEqual({ id: "legacy", title: "Legacy workflow", executionDirectory: null })
+      }),
+    )
+  })
+
+  test("adds workflow target fingerprint columns on a new database", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM pragma_table_info('workflow') WHERE name = 'target_fingerprint'`,
+          ),
+        ).toEqual([{ name: "target_fingerprint" }])
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('target_fingerprint', 'stale_target') ORDER BY name`,
+          ),
+        ).toEqual([{ name: "stale_target" }, { name: "target_fingerprint" }])
+      }),
+    )
+  })
+
+  test("upgrades legacy workflow and node rows with target fingerprint columns", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE workflow (id text PRIMARY KEY, title text)`)
+        yield* db.run(sql`INSERT INTO workflow (id, title) VALUES ('legacy', 'Legacy workflow')`)
+        yield* db.run(
+          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'legacy', 'Legacy node', 'running')`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [dagTargetFingerprintMigration])
+
+        expect(
+          yield* db.get(
+            sql`SELECT id, title, target_fingerprint AS targetFingerprint FROM workflow WHERE id = 'legacy'`,
+          ),
+        ).toEqual({ id: "legacy", title: "Legacy workflow", targetFingerprint: null })
+        expect(
+          yield* db.get(
+            sql`SELECT id, target_fingerprint AS targetFingerprint, stale_target AS staleTarget FROM workflow_node WHERE workflow_id = 'legacy' AND id = 'legacy-node'`,
+          ),
+        ).toEqual({ id: "legacy-node", targetFingerprint: null, staleTarget: null })
       }),
     )
   })

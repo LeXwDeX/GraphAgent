@@ -208,7 +208,7 @@ function structuredRecord(value: unknown): Record<string, unknown> | undefined {
 
 export function unresolvedReviewOutcomes(
   config: WorkflowConfig,
-  nodes: ReadonlyArray<{ id: string; status: string; output: unknown }>,
+  nodes: ReadonlyArray<{ id: string; status: string; output: unknown; staleTarget?: boolean | null }>,
 ) {
   const rows = new Map(nodes.map((node) => [node.id, node]))
   const reviews = config.nodes.filter((node) => node.review?.phase === "diff")
@@ -334,11 +334,14 @@ function finalReviewGates(config: WorkflowConfig, reviewID: string) {
 
 function reviewAccepted(
   config: WorkflowConfig,
-  rows: ReadonlyMap<string, { status: string; output: unknown }>,
+  rows: ReadonlyMap<string, { status: string; output: unknown; staleTarget?: boolean | null }>,
   review: NodeConfig,
 ) {
   const row = rows.get(review.id)
   return row?.status === "completed"
+    // #944: a review judged against a tree that changed mid-run never counts
+    // as ACCEPT, even if the model returned one.
+    && row.staleTarget !== true
     && reviewVerdict(row.output) === "ACCEPT"
     && finalReviewGates(config, review.id).some((gate) => rows.get(gate.id)?.status === "completed")
 }

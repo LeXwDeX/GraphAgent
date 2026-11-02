@@ -96,6 +96,13 @@ function admissionInputFor(verdict: "READY" | "NOT_READY" | "WAIVED") {
 
 const published: Array<{ type: string; data: unknown }> = []
 const resultOutput = `${"a".repeat(1_500)}RESULT_SENTINEL${"b".repeat(200)}`
+const targetFingerprint = {
+  kind: "git" as const,
+  head: "0123456789abcdef",
+  diff: "diff-hash",
+  untracked: "clean",
+  value: "target-value",
+}
 const resultNodes = [
   makeNodeRow({
     id: "node_result",
@@ -103,6 +110,8 @@ const resultNodes = [
     name: "Long result",
     status: "completed",
     output: resultOutput,
+    targetFingerprint,
+    staleTarget: true,
   }),
   makeNodeRow({
     id: "node_other",
@@ -130,6 +139,7 @@ const mockNodes = (id: string) =>
           childSessionId: "ses_child",
           directory: "/repo/.worktrees/status",
           baseHead: "0123456789abcdef",
+          targetFingerprint,
           output: null,
           capturedOutput: null,
           errorReason: null,
@@ -254,6 +264,7 @@ const store = Layer.mock(DagStore.Service, {
             directory: null,
             status: "running",
             config: mockWorkflowConfig(id),
+            targetFingerprint,
             seq: 1,
             wakeReported: false,
             graphRev: 1,
@@ -1176,6 +1187,8 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"child_session_id": "ses_child"')
       expect(result.output).toContain('"directory": "/repo/.worktrees/status"')
       expect(result.output).toContain('"head": "0123456789ab"')
+      expect(result.output).toContain('"target_fingerprint"')
+      expect(result.output).toContain('"value": "target-value"')
       expect(result.output).toContain('"last_activity_at": "1970-01-01T00:00:00.002Z"')
       expect(result.output).toContain('"mode": "standard"')
       expect(result.output).toContain('"id": "node_failed"')
@@ -1250,6 +1263,8 @@ describe("workflow tool execution", () => {
           workflow_id: "dag_result",
           node_id: "node_result",
           status: "completed",
+          target_fingerprint: targetFingerprint,
+          stale_target: true,
           truncated: true,
         }),
       )
