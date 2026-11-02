@@ -18,6 +18,7 @@ import { Truncate } from "@/tool/truncate"
 import { testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
 import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagMessages } from "@opencode-ai/core/dag/messages"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
@@ -151,6 +152,39 @@ describe("workflow child boundary", () => {
             })),
           ),
       })
+      // The owner endpoint is a main mailbox; children report the node mailbox
+      // of their own session, matching DagMessages.revisions.
+      const messages = Layer.mock(DagMessages.Service, {
+        resolve: (caller, workflowID) =>
+          Effect.succeed(
+            workflowID === workflow.id && caller.directory === workflow.directory && caller.sessionID === owner
+              ? { ok: true, value: { id: `main:${owner}`, kind: "main", sessionID: owner } }
+              : { ok: false, reason: "unauthorized" },
+          ),
+        revisions: (caller) =>
+          Effect.succeed(
+            caller.directory === workflow.directory
+              ? {
+                  ok: true,
+                  value: {
+                    endpoint: {
+                      id: caller.sessionID,
+                      kind: "node",
+                      sessionID: caller.sessionID,
+                      workflowID: workflow.id,
+                      nodeID: caller.sessionID,
+                      attemptID: DagMessages.nodeAttemptID(caller.sessionID, 0),
+                    },
+                    accepted: 0,
+                    snapshot: 0,
+                    queued: 0,
+                    delivered: 0,
+                    undeliverable: 0,
+                  },
+                }
+              : { ok: false, reason: "unauthorized" },
+          ),
+      })
       yield* Effect.acquireRelease(
         Effect.sync(() => {
           registerCaptureSlot(legacy, { type: "object" })
@@ -174,7 +208,7 @@ describe("workflow child boundary", () => {
         [session(replaced, owner), []],
         [{ ...session(owner), directory: "/tmp/other-worktree" }, []],
       ] as const) {
-        const ids = yield* resolvedToolIDs(build, info).pipe(Effect.provide(store))
+        const ids = yield* resolvedToolIDs(build, info).pipe(Effect.provide(Layer.merge(store, messages)))
         expect(ids.filter((id) => id === "agent" || id === "submit_result")).toEqual([...expected])
       }
     }),

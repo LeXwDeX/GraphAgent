@@ -5,6 +5,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { SessionID, MessageID } from "../session/schema"
 import * as Truncate from "./truncate"
 import { ToolJsonSchema } from "./json-schema"
+import { formatSchemaFailures } from "./schema-error"
 import { Agent } from "@/agent/agent"
 
 interface Metadata {
@@ -28,7 +29,7 @@ export class InvalidArgumentsError extends Schema.TaggedErrorClass<InvalidArgume
   },
 ) {
   override get message() {
-    return `The ${this.tool} tool was called with invalid arguments: ${this.detail}.\nPlease rewrite the input so it satisfies the expected schema.`
+    return `The ${this.tool} tool was called with invalid arguments: ${this.detail} Please rewrite the input so it satisfies the expected schema.`
   }
 }
 
@@ -76,16 +77,23 @@ export interface Def<
     propertyOrder?: "none" | "original"
   }
   /**
+   * Top-level fields whose stringified JSON container should be repaired before
+   * strict decoding. Tools with scalar fields that may legitimately contain JSON
+   * text (message content, cursors, keys) declare only their container fields;
+   * leave this unset to keep the shared recursive repair for older tools.
+   */
+  repairContainerFields?: readonly string[]
+  /**
    * Tool-scoped compatibility repair for provider-emitted argument shapes.
-   * Runs only when strict schema decoding fails: first the shared
-   * stringified-container repair is applied, then this hook, then the decoded
-   * value is strictly validated once. Implementations must remain
-   * schema-specific and fail closed (return the input unchanged when the
-   * shape is not recognized).
+   * Runs only when strict schema decoding fails: container fields are repaired,
+   * then this hook, then the decoded value is strictly validated once.
+   * Implementations must remain schema-specific and fail closed (return the
+   * input unchanged when the shape is not recognized).
    */
   repairArguments?: (value: unknown) => unknown
   execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
-  formatValidationError?(error: unknown): string
+  /** `input` is the repaired input that failed the final strict decode. */
+  formatValidationError?(error: unknown, input?: unknown): string
 }
 export type DefWithoutID<
   Parameters extends Schema.Decoder<unknown> = Schema.Decoder<unknown>,
@@ -101,8 +109,7 @@ export interface Info<
 }
 
 type Init<Parameters extends Schema.Decoder<unknown>, M extends Metadata> =
-  | DefWithoutID<Parameters, M>
-  | (() => Effect.Effect<DefWithoutID<Parameters, M>>)
+  DefWithoutID<Parameters, M> | (() => Effect.Effect<DefWithoutID<Parameters, M>>)
 
 export type InferParameters<T> =
   T extends Info<infer P, any>
@@ -131,14 +138,18 @@ export type InferDef<T> =
  * Violations fail at construction time here instead of degrading at provider
  * runtime.
  */
-function assertObjectRootedParameters(id: string, toolInfo: DefWithoutID<never, never> | { parameters: unknown; jsonSchema?: unknown }) {
+function assertObjectRootedParameters(
+  id: string,
+  toolInfo: DefWithoutID<never, never> | { parameters: unknown; jsonSchema?: unknown },
+): JSONSchema7 {
   const root = toolInfo.jsonSchema ?? ToolJsonSchema.fromSchema(toolInfo.parameters as Schema.Top)
-  if (!isPlainObjectRoot(root as JSONSchema7)) {
+  if (!isPlainObjectRoot(root)) {
     return yieldOrDieRootCombinator(id, root)
   }
+  return root
 }
 
-function isPlainObjectRoot(root: JSONSchema7): boolean {
+function isPlainObjectRoot(root: unknown): root is JSONSchema7 {
   return (
     typeof root === "object" &&
     root !== null &&
@@ -151,9 +162,7 @@ function isPlainObjectRoot(root: JSONSchema7): boolean {
 }
 
 function yieldOrDieRootCombinator(id: string, root: unknown): never {
-  const combinator = ["anyOf", "oneOf", "allOf"].find(
-    (key) => Array.isArray((root as Record<string, unknown>)?.[key]),
-  )
+  const combinator = ["anyOf", "oneOf", "allOf"].find((key) => Array.isArray((root as Record<string, unknown>)?.[key]))
   throw new Error(
     `Tool "${id}" parameters must serialize to a plain object root (type: "object" with properties); found a root-level ${combinator ?? "non-object"} combinator. Nest the union under a property, e.g. Schema.Struct({ params: <union> }). Root-level combinators violate the OpenAI tools contract: DeepSeek rejects them and GLM answers with empty tool arguments.`,
   )
@@ -168,7 +177,8 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
   return () =>
     Effect.gen(function* () {
       const toolInfo = typeof init === "function" ? { ...(yield* init()) } : { ...init }
-      assertObjectRootedParameters(id, toolInfo as { parameters: unknown; jsonSchema?: unknown })
+      const root = assertObjectRootedParameters(id, toolInfo as { parameters: unknown; jsonSchema?: unknown })
+      const diagnosticKeys = new Set(Object.keys(root.properties ?? {}))
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
@@ -181,11 +191,15 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           "message.id": ctx.messageID,
           ...(ctx.callID ? { "tool.call_id": ctx.callID } : {}),
         }
-        const invalidArguments = (error: unknown) =>
-          new InvalidArgumentsError({
+        const invalidArguments = (error: unknown, input: unknown) => {
+          const fallback = formatSchemaFailures(error)
+          return new InvalidArgumentsError({
             tool: id,
-            detail: toolInfo.formatValidationError ? toolInfo.formatValidationError(error) : String(error),
+            detail: toolInfo.formatValidationError
+              ? toolInfo.formatValidationError(error, input)
+              : fallback || "the input does not match the tool schema",
           })
+        }
         return Effect.gen(function* () {
           // Strict decode first; the lenient retry only runs once strict
           // decoding already failed, so legitimate string arguments that look
@@ -195,17 +209,17 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           if (Option.isSome(strict)) {
             decoded = strict.value
           } else {
-            const repaired = toolInfo.repairArguments
-              ? toolInfo.repairArguments(repairStringifiedContainers(args))
+            const base = toolInfo.repairContainerFields
+              ? repairDeclaredContainers(args, toolInfo.repairContainerFields)
               : repairStringifiedContainers(args)
-            // Privacy-safe repair diagnostics (#647): emit key names with type
-            // transitions only — never argument values.
+            const repaired = toolInfo.repairArguments ? toolInfo.repairArguments(base) : base
+            // Only schema-owned key names are safe to include in diagnostics.
             if (toolInfo.repairArguments) {
-              const changes = repairTypeChanges(args, repaired)
+              const changes = repairTypeChanges(args, repaired, diagnosticKeys)
               if (changes.length > 0)
                 yield* Effect.logInfo("tool arguments repaired", { "tool.name": id, "repair.changes": changes })
             }
-            decoded = yield* decode(repaired).pipe(Effect.mapError(invalidArguments))
+            decoded = yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
           }
           const result = yield* execute(decoded as Schema.Schema.Type<Parameters>, ctx)
           if (result.metadata.truncated !== undefined) {
@@ -234,9 +248,8 @@ function valueTypeName(value: unknown): string {
   return typeof value
 }
 
-/** Top-level key names whose value type changed between the raw arguments and
- * the repaired arguments. Names only — values never enter the log. */
-function repairTypeChanges(before: unknown, after: unknown): string[] {
+/** Report type changes, using a fixed placeholder for keys outside the schema. */
+function repairTypeChanges(before: unknown, after: unknown, allowed: ReadonlySet<string>): string[] {
   if (typeof before !== "object" || before === null || typeof after !== "object" || after === null) return []
   const leftEntries = new Map(Object.entries(before))
   const rightEntries = new Map(Object.entries(after))
@@ -244,7 +257,7 @@ function repairTypeChanges(before: unknown, after: unknown): string[] {
   for (const key of new Set([...leftEntries.keys(), ...rightEntries.keys()])) {
     const left = valueTypeName(leftEntries.get(key))
     const right = valueTypeName(rightEntries.get(key))
-    if (left !== right) changes.push(`${key}:${left}->${right}`)
+    if (left !== right) changes.push(`${allowed.has(key) ? key : "<unknown>"}:${left}->${right}`)
   }
   return changes
 }
@@ -255,23 +268,43 @@ function repairTypeChanges(before: unknown, after: unknown): string[] {
 // sit where a container is expected and let the strict decode judge the
 // result. Runs only after the strict decode failed, so plain string
 // parameters are never touched.
+function parseStringifiedContainer(value: string): unknown {
+  const trimmed = value.trim()
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    return typeof parsed === "object" && parsed !== null ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Repair only the top-level container fields a tool declares. Scalar fields
+ * such as message content, cursors and idempotency keys may legitimately hold
+ * JSON-looking text and must reach the schema unchanged. */
+function repairDeclaredContainers(value: unknown, fields: readonly string[]): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value
+  let repaired: Record<PropertyKey, unknown> | undefined
+  for (const field of fields) {
+    if (!Object.hasOwn(value, field)) continue
+    const current = Reflect.get(value, field)
+    if (typeof current !== "string") continue
+    const parsed = parseStringifiedContainer(current)
+    if (parsed === undefined) continue
+    repaired ??= { ...value }
+    Reflect.set(repaired, field, parsed)
+  }
+  return repaired ?? value
+}
+
 function repairStringifiedContainers(value: unknown): unknown {
   if (typeof value === "string") {
-    const trimmed = value.trim()
-    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value
-    try {
-      const parsed: unknown = JSON.parse(trimmed)
-      if (typeof parsed === "object" && parsed !== null) return repairStringifiedContainers(parsed)
-    } catch {
-      return value
-    }
-    return value
+    const parsed = parseStringifiedContainer(value)
+    return parsed === undefined ? value : repairStringifiedContainers(parsed)
   }
   if (Array.isArray(value)) return value.map(repairStringifiedContainers)
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, repairStringifiedContainers(item)]),
-    )
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, repairStringifiedContainers(item)]))
   }
   return value
 }

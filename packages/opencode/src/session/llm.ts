@@ -152,6 +152,8 @@ export type StreamInput = {
   model: Provider.Model
   agent: Agent.Info
   permission?: PermissionV1.Ruleset
+  /** Native role rules; Permission.ask evaluates these before configured rules. */
+  nativePermission?: PermissionV1.Ruleset
   system: string[]
   messages: ModelMessage[]
   small?: boolean

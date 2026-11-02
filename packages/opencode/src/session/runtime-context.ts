@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import type { ModelMessage } from "ai"
+import { isRecord } from "@/util/record"
 
 // Per-request state (goal progress, memory data, one-shot hook context) changes between requests. Sending it in
 // the system message would change the cached prefix and force every provider to re-read the whole history. It
@@ -39,9 +40,17 @@ export type State = { readonly key: string; readonly parts: readonly string[]; r
 
 const sent = new WeakSet<ModelMessage>()
 
+// A durable marker survives providers or adapters that clone messages. The
+// WeakSet stays as the fast path for the original array.
+const marked = (message: ModelMessage) => {
+  const options = isRecord(message.providerOptions) ? message.providerOptions : undefined
+  const opencode = isRecord(options?.opencode) ? options.opencode : undefined
+  return opencode?.context === true
+}
+
 /** Whether a message is a runtime-context block that `place` inserted. */
 export function isMessage(message: ModelMessage) {
-  return sent.has(message)
+  return sent.has(message) || marked(message)
 }
 
 function anchor(messages: readonly ModelMessage[], index: number) {
@@ -106,7 +115,11 @@ export function place(input: {
 function insert(input: readonly ModelMessage[], ledger: readonly Entry[]) {
   const messages: ModelMessage[] = [...input]
   for (const entry of ledger.toReversed()) {
-    const message: ModelMessage = { role: "user", content: entry.content }
+    const message: ModelMessage = {
+      role: "user",
+      content: entry.content,
+      providerOptions: { opencode: { context: true, cache: "none" } },
+    }
     sent.add(message)
     messages.splice(entry.index, 0, message)
   }

@@ -422,8 +422,8 @@ appIt.effect(
 )
 // A blocked UserPromptExpansion returns before the normal path lands its
 // notices, so a `systemMessage` on the same hook silently disappeared.
-appIt.effect(
-  "blocked UserPromptExpansion still lands its systemMessage as a notice",
+for (const variant of ["xhigh", "default"] as const) appIt.effect(
+  `blocked UserPromptExpansion still lands its systemMessage as a notice and preserves ${variant}`,
   provideTmpdirInstance(
     (_directory) =>
       Effect.gen(function* () {
@@ -433,6 +433,15 @@ appIt.effect(
         const hooks = yield* SessionHooks.Service
         const model = { providerID: ProviderV2.ID.make("notification-fixture"), modelID: ModelV2.ID.make("fixture") }
         const session = yield* sessions.create({ model: { providerID: model.providerID, id: model.modelID } })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          model,
+          variant,
+          noReply: true,
+          parts: [{ type: "text", text: "select variant" }],
+        })
+        expect((yield* sessions.get(session.id)).model?.variant).toBe(variant)
         yield* hooks.add(session.id, {
           event: "UserPromptExpansion",
           hooks: [
@@ -464,16 +473,20 @@ appIt.effect(
         })
         expect(JSON.stringify(result)).toContain("blocked-by-test")
         expect(notices).toContain("EXPANSION_WARNING")
+        expect((yield* sessions.get(session.id)).model?.variant).toBe(variant)
+        expect(result.info.role).toBe("user")
+        if (result.info.role === "user") expect(result.info.model.variant).toBe(variant)
       }),
     {
       config: {
         command: { notificationfixture: { template: "Synthetic command input" } },
+        agent: { build: { model: "notification-fixture/fixture", variant: "high" } },
         provider: {
           "notification-fixture": {
             name: "Fixture",
             npm: "@ai-sdk/openai-compatible",
             options: { baseURL: "http://127.0.0.1:1/v1", apiKey: "synthetic" },
-            models: { fixture: { name: "Fixture", limit: { context: 4096, output: 64 } } },
+            models: { fixture: { name: "Fixture", limit: { context: 4096, output: 64 }, variants: { xhigh: {}, high: {} } } },
           },
         },
       },

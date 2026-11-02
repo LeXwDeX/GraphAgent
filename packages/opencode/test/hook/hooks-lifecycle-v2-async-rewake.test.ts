@@ -27,6 +27,7 @@ cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user
                 "test-model": {
                   name: "Test Model",
                   capabilities: { tools: true, input: ["text"], output: ["text"] },
+                  variants: [{ id: "xhigh" }, { id: "high" }],
                   limit: { context: 100_000, output: 10_000 },
                   cost: { input: 0, output: 0 },
                 },
@@ -54,7 +55,7 @@ cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user
       fetch(server.url + "/api/session", {
         method: "POST",
         headers,
-        body: JSON.stringify({ location: { directory: home }, model: { providerID: "test", id: "test-model" } }),
+        body: JSON.stringify({ location: { directory: home }, model: { providerID: "test", id: "test-model", variant: "xhigh" } }),
       }),
     )
     expect(created.status).toBe(200)
@@ -84,6 +85,11 @@ cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user
     expect(messages).toContainEqual(
       expect.objectContaining({ type: "synthetic", text: expect.stringContaining("ASYNC_REWAKE_CONTEXT") }),
     )
+    const assistants = messages.filter((message) => message.type === "assistant")
+    expect(assistants).toHaveLength(2)
+    expect(assistants[1]).toMatchObject({ model: { providerID: "test", id: "test-model", variant: "xhigh" } })
+    const persisted = yield* Effect.promise(() => fetch(server.url + `/api/session/${id}`, { headers }).then((r) => r.json()))
+    expect(persisted).toMatchObject({ data: { model: { providerID: "test", id: "test-model", variant: "xhigh" } } })
     const inputs = (yield* llm.inputs).filter((input) => !JSON.stringify(input).includes("Generate a title"))
     expect(inputs).toHaveLength(2)
     expect(JSON.stringify(inputs[1])).toContain("ASYNC_REWAKE_CONTEXT")

@@ -50,6 +50,12 @@ export interface AskOptions {
   readonly resolveRuleset?: (
     mode?: "plan",
   ) => Effect.Effect<{ native: PermissionV1.Ruleset; rules: PermissionV1.Ruleset }>
+  /** Agent role receiving this call, used to name role-based denials. */
+  readonly role?: string
+  /** Internal: role-default rules inside the child session permission. */
+  readonly roleDefaultIndices?: readonly number[]
+  /** Internal: session rules appended after the resolved agent rules. */
+  readonly sessionRuleCount?: number
 }
 
 export type AskResult = void | { updatedInput: Record<string, unknown> }
@@ -92,6 +98,42 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
       pattern: "*",
     }
   )
+}
+
+function matchingRuleIndex(permission: string, pattern: string, ruleset: PermissionV1.Ruleset) {
+  for (let index = ruleset.length - 1; index >= 0; index--) {
+    const rule = ruleset[index]
+    if (rule && Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern)) return index
+  }
+  return -1
+}
+
+function roleDenialReason(input: {
+  role?: string
+  permission: string
+  patterns: readonly string[]
+  native: PermissionV1.Ruleset
+  ruleset: PermissionV1.Ruleset
+  resolvedRuleCount: number
+  roleDefaultIndices: readonly number[]
+  sessionRuleCount: number
+}) {
+  if (!input.role) return undefined
+  if (input.patterns.some((pattern) => evaluate(input.permission, pattern, input.native).action === "deny"))
+    return `This tool is not available to the ${input.role} agent.`
+
+  // Session defaults are not marked on the public rule. Only a winning rule
+  // inside the located default indices is a role default; an inherited parent
+  // or hook rule that wins keeps user wording.
+  const roleStart = Math.max(0, input.resolvedRuleCount - input.sessionRuleCount)
+  if (
+    input.patterns.some((pattern) => {
+      const index = matchingRuleIndex(input.permission, pattern, input.ruleset)
+      return input.roleDefaultIndices.includes(index - roleStart)
+    })
+  )
+    return `This tool is not available to the ${input.role} agent.`
+  return undefined
 }
 
 /**
@@ -239,8 +281,19 @@ export const layer = Layer.effect(
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           // PermissionDenied belongs exclusively to an auto-mode classifier; rule denies are not that event.
+          const reason = roleDenialReason({
+            role: options?.role,
+            permission: request.permission,
+            patterns: [pattern],
+            native: resolved.native,
+            ruleset,
+            resolvedRuleCount: resolved.rules.length,
+            roleDefaultIndices: options?.roleDefaultIndices ?? [],
+            sessionRuleCount: options?.sessionRuleCount ?? 0,
+          })
           return yield* new PermissionV1.DeniedError({
             ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
+            ...(reason ? { reason } : {}),
           })
         }
         if (rule.action === "allow") continue
@@ -356,8 +409,22 @@ export const layer = Layer.effect(
                 evaluate(request.permission, pattern, refreshed.native).action === "deny" ||
                 evaluate(request.permission, pattern, freshRules).action === "deny",
             )
-          )
-            return yield* new PermissionV1.DeniedError({ ruleset: freshRules })
+          ) {
+            const reason = roleDenialReason({
+              role: options?.role,
+              permission: request.permission,
+              patterns: request.patterns,
+              native: refreshed.native,
+              ruleset: freshRules,
+              resolvedRuleCount: refreshed.rules.length,
+              roleDefaultIndices: options?.roleDefaultIndices ?? [],
+              sessionRuleCount: options?.sessionRuleCount ?? 0,
+            })
+            return yield* new PermissionV1.DeniedError({
+              ruleset: freshRules,
+              ...(reason ? { reason } : {}),
+            })
+          }
           refreshedBypass =
             !force && refreshedPolicy.mode === "bypassPermissions" && (yield* capabilities.has(request.sessionID))
         }
@@ -516,16 +583,160 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
   return rulesets.flat()
 }
 
-export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<string> {
-  const edits = ["edit", "write", "apply_patch"]
-  const reads = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
+const EDIT_TOOLS = ["edit", "write", "apply_patch"]
+const READ_TOOLS = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
+
+function permissionName(tool: string) {
+  return EDIT_TOOLS.includes(tool) ? "edit" : READ_TOOLS.includes(tool) ? "read" : tool
+}
+
+type GlobToken = "star" | "any" | "optional" | { readonly literal: string }
+
+function globTokens(pattern: string): GlobToken[] {
+  const normalized = pattern.replaceAll("\\", "/")
+  // Wildcard.match turns a trailing " *" into "( .*)?", so it also matches
+  // the string without that suffix. Model the same optional tail here.
+  const optionalTail = normalized.endsWith(" *")
+  const source = optionalTail ? normalized.slice(0, -2) : normalized
+  const tokens: GlobToken[] = []
+  // Wildcard.match has no `u` flag: `?` matches one UTF-16 code unit, and an
+  // astral code point is two units. Indexing keeps the same tokenization.
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index]
+    tokens.push(char === "*" ? "star" : char === "?" ? "any" : { literal: char })
+  }
+  return optionalTail ? [...tokens, "optional"] : tokens
+}
+
+export interface GlobCoversOptions {
+  /** Match Wildcard.match on Windows (`i`) or POSIX (no `i`). */
+  readonly caseInsensitive?: boolean
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Proves that every path matching `allow` also matches `deny`. The check is
+ * intentionally one-sided: unknown or overlapping glob shapes return false so
+ * advertisement never hides a tool that may still have an allowed path.
+ *
+ * Case-insensitive literal comparisons use the JS regex `i` flag directly.
+ * The cache is scoped to this call so user-controlled patterns never grow
+ * module-global state.
+ */
+export function globCovers(deny: string, allow: string, options: GlobCoversOptions = {}) {
+  const caseInsensitive = options.caseInsensitive ?? process.platform === "win32"
+  const literalCache = new Map<string, boolean>()
+  const literalEqual = (left: string, right: string) => {
+    if (!caseInsensitive) return left === right
+    if (left === right) return true
+    const key = `${left}\0${right}`
+    const cached = literalCache.get(key)
+    if (cached !== undefined) return cached
+    const result =
+      new RegExp(`^(?:${escapeRegExp(left)})$`, "i").test(right) &&
+      new RegExp(`^(?:${escapeRegExp(right)})$`, "i").test(left)
+    literalCache.set(key, result)
+    return result
+  }
+  const d = globTokens(deny)
+  const a = globTokens(allow)
+  const memo = new Map<string, boolean>()
+  const visit = (di: number, ai: number): boolean => {
+    const key = `${di}:${ai}`
+    const cached = memo.get(key)
+    if (cached !== undefined) return cached
+    let result: boolean
+    if (di === d.length) {
+      result = ai === a.length
+    } else {
+      const token = d[di]
+      if (token === "star") {
+        // `*` is any string, including the empty string.
+        result = visit(di + 1, ai) || (ai < a.length && visit(di, ai + 1))
+      } else if (token === "optional") {
+        // The optional tail matches empty, or a space followed by anything.
+        // An allow with the same optional tail is covered as well.
+        result =
+          visit(di + 1, ai) ||
+          (ai < a.length && (a[ai] === "optional" || (typeof a[ai] === "object" && literalEqual(a[ai].literal, " "))))
+      } else if (ai === a.length) {
+        result = false
+      } else {
+        const other = a[ai]
+        if (token === "any") result = other !== "star" && other !== "optional" && visit(di + 1, ai + 1)
+        else result = typeof other === "object" && literalEqual(other.literal, token.literal) && visit(di + 1, ai + 1)
+      }
+    }
+    memo.set(key, result)
+    return result
+  }
+  return visit(0, 0)
+}
+
+/**
+ * A later allow can still match some call pattern unless every matching deny
+ * after it covers the whole allow pattern. Denies that cannot be proven to
+ * cover the allow pattern stay cautious.
+ */
+function hasPotentialAllow(
+  permission: string,
+  ruleset: PermissionV1.Ruleset,
+  denyIndex: number,
+  caseInsensitive: boolean,
+) {
+  return ruleset.some((rule, index) => {
+    if (index <= denyIndex || rule.action !== "allow") return false
+    if (!Wildcard.match(permission, rule.permission)) return false
+    return !ruleset.some((later, laterIndex) => {
+      if (laterIndex <= index || later.action !== "deny") return false
+      if (!Wildcard.match(permission, later.permission)) return false
+      return globCovers(later.pattern, rule.pattern, { caseInsensitive })
+    })
+  })
+}
+
+/**
+ * True only when a wildcard deny stays final for this permission. Pattern
+ * scoped denies keep the tool advertised because another call pattern may pass.
+ */
+function universallyDenied(permission: string, ruleset: PermissionV1.Ruleset, caseInsensitive: boolean) {
+  const denyIndex = ruleset.findLastIndex(
+    (rule) => rule.action === "deny" && rule.pattern === "*" && Wildcard.match(permission, rule.permission),
+  )
+  if (denyIndex === -1) return false
+  return !hasPotentialAllow(permission, ruleset, denyIndex, caseInsensitive)
+}
+
+function deniedTools(tools: string[], rulesets: PermissionV1.Ruleset[], options: GlobCoversOptions = {}) {
+  const caseInsensitive = options.caseInsensitive ?? process.platform === "win32"
   return new Set(
     tools.filter((tool) => {
-      const permission = edits.includes(tool) ? "edit" : reads.includes(tool) ? "read" : tool
-      const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
-      return rule?.pattern === "*" && rule.action === "deny"
+      const permission = permissionName(tool)
+      return rulesets.some((ruleset) => universallyDenied(permission, ruleset, caseInsensitive))
     }),
   )
+}
+
+/**
+ * Native rules are checked before configured rules by `Permission.ask`, so a
+ * native deny cannot be overridden by a later user allow. Advertisement must
+ * apply the same split; flattening both rulesets would expose tools that the
+ * execution path always denies.
+ */
+export function disabledByPolicy(
+  tools: string[],
+  native: PermissionV1.Ruleset,
+  configured: PermissionV1.Ruleset,
+  options?: GlobCoversOptions,
+): Set<string> {
+  return deniedTools(tools, [native, configured], options)
+}
+
+export function disabled(tools: string[], ruleset: PermissionV1.Ruleset, options?: GlobCoversOptions): Set<string> {
+  return deniedTools(tools, [ruleset], options)
 }
 
 export const defaultLayer = layer.pipe(

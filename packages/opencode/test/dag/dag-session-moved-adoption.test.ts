@@ -6,7 +6,7 @@
 // the dead attempt with attempt identity and park the workflow for the parent —
 // instead of leaving the durable row running with a dead node and a pending
 // dependent that nothing ever schedules again.
-import { describe, expect, it } from "bun:test"
+import { afterAll, describe, expect, it } from "bun:test"
 import { DateTime, Deferred, Effect, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -27,10 +27,18 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 
 const PROJECT_ID = "project-1"
-const DIR_A = "/wtA"
-const DIR_B = "/wtB"
+// #948: adoption now requires the stamped execution directory to exist.
+const movedRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-session-moved-")))
+const DIR_A = path.join(movedRoot, "wtA")
+const DIR_B = path.join(movedRoot, "wtB")
+mkdirSync(DIR_A, { recursive: true })
+mkdirSync(DIR_B, { recursive: true })
+afterAll(() => rmSync(movedRoot, { recursive: true, force: true }))
 const SES = "sesA"
 
 function node(id: string, dependsOn: string[] = []): NodeConfig {

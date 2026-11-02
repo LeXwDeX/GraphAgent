@@ -19,6 +19,8 @@ import { Config } from "@/config/config"
 import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-distillation"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { Hash } from "@opencode-ai/core/util/hash"
+import { DagStore } from "@opencode-ai/core/dag/store"
 
 import { Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
@@ -34,10 +36,11 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { buildPrompt } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
-import { SettingsHook, type TriggerResult } from "@/hook/settings"
+import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult } from "@/hook/settings"
 import { HookStartContext } from "@/hook/start-context"
 import { Memory } from "@/memory/memory"
 import { SessionStatus } from "./status"
+import { Todo } from "./todo"
 
 export const Event = SessionCompactionEvent
 
@@ -70,6 +73,103 @@ function summaryText(message: SessionV1.WithParts) {
     .join("\n\n")
     .trim()
   return text || undefined
+}
+
+// Reads the compacted summary's pending-work sections. Only bullets under the exact
+// headings count; a heading or a "(none)" placeholder ends the section.
+function summaryItems(summary: string | undefined, heading: string) {
+  if (!summary) return []
+  const lines = summary.split("\n")
+  const start = lines.findIndex((line) => line.trim() === heading)
+  if (start < 0) return []
+  const items: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    const text = line.trim()
+    if (!text) continue
+    if (text.startsWith("#")) break
+    if (!text.startsWith("- ")) continue
+    const item = text.slice(2).trim()
+    if (!item || item === "(none)") continue
+    items.push(item)
+  }
+  return items
+}
+
+const ACTIVE_WORKFLOW_STATUSES = new Set(["pending", "running", "paused", "stepping"])
+// The latest request is quoted verbatim and labeled authoritative. Above this explicit
+// budget the continuation is omitted instead of quoting a prefix as if it were the request.
+const AUTHORITATIVE_REQUEST_MAX_CHARS = 2_000
+
+// Returns the newest real user turn's request, null when that turn cannot be
+// represented as text (attachments, mixed or non-text parts), or undefined when no
+// real user turn exists. Internal rewake prompts are not user turns.
+function latestUserRequest(messages: readonly SessionV1.WithParts[]) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.info.role !== "user") continue
+    if (message.parts.some((part) => part.type === "compaction" || part.type === "subtask")) continue
+
+    const textParts = message.parts.flatMap((part) =>
+      part.type === "text" && !part.synthetic && !part.ignored ? [part] : [],
+    )
+    // Attachments, tool output and mixed parts are a real turn we cannot represent;
+    // never inspect their data for the rewake sentinel.
+    if (message.parts.some((part) => part.type !== "text")) return null
+    // Synthetic-only or ignored-only turns are internal (auto-continue, injected
+    // context), not user requests.
+    if (!textParts.length) continue
+    // The internal rewake convention prefixes the assembled original text.
+    if (
+      textParts
+        .map((part) => part.text)
+        .join("\n")
+        .startsWith(HOOK_REWAKE_SENTINEL)
+    )
+      continue
+    const text = textParts
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .join("\n")
+    return text || null
+  }
+  return undefined
+}
+
+function pendingContinuation(input: {
+  summary: string | undefined
+  request: string | null | undefined
+  todos: readonly Pick<Todo.Info, "content" | "status">[]
+  workflows: readonly Pick<DagStore.WorkflowRow, "id" | "title" | "status">[]
+}) {
+  // The newest user turn could not be represented safely (attachments or mixed parts).
+  if (input.request === null) return undefined
+  // A prefix of the request can drop later restrictions. Do not reconstruct it.
+  if (input.request && input.request.length > AUTHORITATIVE_REQUEST_MAX_CHARS) return undefined
+
+  const openTodos = input.todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled")
+  const workflows = input.workflows.filter((workflow) => ACTIVE_WORKFLOW_STATUSES.has(workflow.status))
+  const goal = summaryItems(input.summary, "## Goal")[0]
+  const progress = summaryItems(input.summary, "### In Progress")
+  const next = summaryItems(input.summary, "## Next Steps")
+  if (!openTodos.length && !workflows.length && !progress.length && !next.length) return undefined
+
+  const lines = [
+    "Continue the pending work only if the latest user request still calls for it.",
+    "The latest user request takes precedence over the summary and task state below; do not resume work that it stopped or replaced.",
+  ]
+  if (input.request) lines.push("Latest user request:", input.request)
+  const context: string[] = []
+  if (openTodos.length) context.push("Open todos:", ...openTodos.map((todo) => `- ${todo.status}: ${todo.content}`))
+  if (workflows.length)
+    context.push(
+      "Active workflows:",
+      ...workflows.map((workflow) => `- ${workflow.status}: ${workflow.id} (${workflow.title})`),
+    )
+  if (goal) context.push(`Summary goal: ${goal}`)
+  if (progress.length) context.push("Summary in progress (may be stale):", ...progress.map((item) => `- ${item}`))
+  if (next.length) context.push("Summary next steps (may be stale):", ...next.map((item) => `- ${item}`))
+  if (context.length) lines.push("Context:", ...context)
+  return lines.join("\n")
 }
 
 function completedCompactions(messages: SessionV1.WithParts[]) {
@@ -542,6 +642,19 @@ export const layer = Layer.effect(
         })
       }
 
+      const stored = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+      const summary = summaryText(
+        stored.find((item) => item.info.id === msg.id) ?? {
+          info: msg,
+          parts: [],
+        },
+      )
+      const request = latestUserRequest(stored)
+      const todo = Option.getOrUndefined(yield* Effect.serviceOption(Todo.Service))
+      const todos = todo ? yield* todo.get(input.sessionID) : []
+      const dag = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
+      const workflows = dag ? yield* dag.listBySession(input.sessionID) : []
+
       // Auto-compaction may append a follow-up user message (overflow replay or the
       // synthetic "continue" prompt). SessionStart(compact) contexts attach to it so
       // they sit after the summary in model input; without one they are queued.
@@ -611,7 +724,13 @@ export const layer = Layer.effect(
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+              (pendingContinuation({
+                summary,
+                request,
+                todos,
+                workflows,
+              }) ??
+                "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,
@@ -634,14 +753,6 @@ export const layer = Layer.effect(
 
       if (processor.message.error) return "stop"
       if (result === "continue") {
-        const summary = summaryText(
-          (yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)).find(
-            (item) => item.info.id === msg.id,
-          ) ?? {
-            info: msg,
-            parts: [],
-          },
-        )
         if (flags.experimentalEventSystem) {
           if (summary)
             yield* events.publish(SessionEvent.Compaction.Ended, {
@@ -721,8 +832,19 @@ export const layer = Layer.effect(
               result: ssResult,
               reloadSkills: skills?.reload(),
             })
+            const seen = new Set<string>()
+            for (const message of MessageV2.filterCompacted([...postMessages].reverse()))
+              for (const part of message.parts)
+                if (part.type === "text" && part.synthetic) seen.add(Hash.sha256(part.text.trim()))
+            const compacted = summary?.trim()
             for (const ctx of ssResult.additionalContexts ?? []) {
-              if (!ctx) continue
+              const text = ctx.trim()
+              if (!text) continue
+              const key = Hash.sha256(text)
+              if (seen.has(key)) continue
+              // A long context copied verbatim into the summary is already model-visible.
+              if (compacted && text.length >= 80 && compacted.includes(text)) continue
+              seen.add(key)
               if (followUpID) {
                 yield* session.updatePart({
                   id: PartID.ascending(),
@@ -730,11 +852,11 @@ export const layer = Layer.effect(
                   sessionID: input.sessionID,
                   type: "text",
                   synthetic: true,
-                  text: ctx,
+                  text,
                   time: { start: Date.now(), end: Date.now() },
                 })
               } else if (startContext) {
-                yield* startContext.append(input.sessionID, ctx)
+                yield* startContext.append(input.sessionID, text)
               }
             }
           }

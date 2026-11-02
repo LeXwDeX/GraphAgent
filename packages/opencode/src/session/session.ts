@@ -459,6 +459,8 @@ export interface Interface {
     metadata?: typeof Metadata.Type
     permission?: PermissionV1.Ruleset
     workspaceID?: WorkspaceV2.ID
+    /** #943: explicit execution directory; defaults to the ambient instance. */
+    directory?: string
   }) => Effect.Effect<Info>
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
@@ -469,7 +471,7 @@ export interface Interface {
     source?: "custom" | "generated"
   }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
-  readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
+  readonly setMetadata: (input: typeof SetMetadataInput.Type, guard?: (current: Info) => boolean) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
   readonly setRevert: (input: {
     sessionID: SessionID
@@ -901,13 +903,15 @@ export const layer: Layer.Layer<
       metadata?: typeof Metadata.Type
       permission?: PermissionV1.Ruleset
       workspaceID?: WorkspaceV2.ID
+      directory?: string
     }) {
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
+      const directory = input?.directory ?? ctx.directory
       return yield* createNext({
         parentID: input?.parentID,
-        directory: ctx.directory,
-        path: sessionPath(ctx.worktree, ctx.directory),
+        directory,
+        path: sessionPath(ctx.worktree, directory),
         title: input?.title,
         agent: input?.agent,
         model: input?.model,
@@ -1058,7 +1062,14 @@ export const layer: Layer.Layer<
       yield* patch(input.sessionID, { time: { archived: input.time } }).pipe(Effect.orDie)
     })
 
-    const setMetadata = Effect.fn("Session.setMetadata")(function* (input: typeof SetMetadataInput.Type) {
+    const setMetadata = Effect.fn("Session.setMetadata")(function* (
+      input: typeof SetMetadataInput.Type,
+      guard?: (current: Info) => boolean,
+    ) {
+      // An optional guard runs after any caller-side barrier and immediately
+      // before the write, so a stale commit cannot overwrite a newer metadata
+      // state it did not observe.
+      if (guard && !guard(yield* get(input.sessionID).pipe(Effect.orDie))) return
       yield* patch(input.sessionID, { metadata: input.metadata, time: { updated: Date.now() } }).pipe(Effect.orDie)
     })
 

@@ -193,11 +193,15 @@ describe("session.retry.delay", () => {
         logs.push(opts.message)
       })
       const error = statusError(503, { "retry-after-ms": "0" })
+      let gated = 0
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
           provider: "test",
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
           shouldRetry: () => false,
+          onGated: () => {
+            gated += 1
+          },
           gates: () => ({ aborted: true, pendingToolExecutions: 1 }),
           set: () => Effect.void,
         }),
@@ -205,6 +209,7 @@ describe("session.retry.delay", () => {
 
       yield* Effect.ignore(step(error)).pipe(Effect.withLogger(collector))
 
+      expect(gated).toBe(1)
       expect(retryStopped(logs)).toMatchObject({
         reason: "gated",
         branch: "rate_limit",
@@ -215,6 +220,28 @@ describe("session.retry.delay", () => {
         aborted: true,
         pendingToolExecutions: 1,
       })
+    }),
+  )
+
+  it.instance("policy keeps the gate callback idle when a retry continues", () =>
+    Effect.gen(function* () {
+      let gated = 0
+      const error = statusError(503, { "retry-after-ms": "0" })
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          shouldRetry: () => true,
+          onGated: () => {
+            gated += 1
+          },
+          set: () => Effect.void,
+        }),
+      )
+
+      yield* Effect.ignore(step(error))
+
+      expect(gated).toBe(0)
     }),
   )
 

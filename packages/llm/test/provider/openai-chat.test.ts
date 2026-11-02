@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Schema, Stream } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
-import { LLM, LLMError, LLMEvent, Message, Model, ToolCallPart, Usage } from "../../src"
+import { LLM, LLMError, LLMEvent, Message, Model, ToolCallPart, ToolResultPart, Usage } from "../../src"
 import * as Azure from "../../src/providers/azure"
 import * as OpenAI from "../../src/providers/openai"
 import * as OpenAIChat from "../../src/protocols/openai-chat"
@@ -221,6 +221,345 @@ describe("OpenAI Chat route", () => {
         stream: true,
         stream_options: { include_usage: true },
       })
+    }),
+  )
+
+  it.effect("preserves provider-executed tool calls and results as assistant text", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.user("Search the web for agents."),
+            Message.assistant([
+              ToolCallPart.make({
+                id: "hosted_1",
+                name: "web_search",
+                input: { query: "agents" },
+                providerExecuted: true,
+              }),
+              ToolResultPart.make({
+                id: "hosted_1",
+                name: "web_search",
+                result: "search summary",
+                resultType: "text",
+                providerExecuted: true,
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      const assistant = prepared.body.messages.at(-1)!
+      if (assistant.role !== "assistant") throw new Error("expected an assistant message")
+      expect(assistant.tool_calls).toBeUndefined()
+      expect(String(assistant.content)).toContain("web_search")
+      expect(String(assistant.content)).toContain("search summary")
+    }),
+  )
+
+  it.effect("summarizes provider-executed tool result media without inlining data", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({
+                id: "hosted_media",
+                name: "web_fetch",
+                input: { url: "https://example.com" },
+                providerExecuted: true,
+              }),
+              ToolResultPart.make({
+                id: "hosted_media",
+                name: "web_fetch",
+                result: {
+                  type: "content",
+                  value: [
+                    { type: "text", text: "page text" },
+                    {
+                      type: "file",
+                      uri: "data:application/pdf;base64,QUJD",
+                      mime: "application/pdf",
+                      name: "page.pdf",
+                    },
+                  ],
+                },
+                providerExecuted: true,
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      const assistant = prepared.body.messages.at(-1)!
+      if (assistant.role !== "assistant") throw new Error("expected an assistant message")
+      expect(assistant.tool_calls).toBeUndefined()
+      expect(String(assistant.content)).toContain("page text")
+      expect(String(assistant.content)).toContain("application/pdf attachment: page.pdf")
+      expect(String(assistant.content)).not.toContain("QUJD")
+    }),
+  )
+
+  it.effect("preserves text file data and usable URLs in provider-executed tool results", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({
+                id: "hosted_mixed",
+                name: "web_fetch",
+                input: { url: "https://example.com" },
+                providerExecuted: true,
+              }),
+              ToolResultPart.make({
+                id: "hosted_mixed",
+                name: "web_fetch",
+                result: {
+                  type: "content",
+                  value: [
+                    { type: "text", text: "summary" },
+                    {
+                      type: "file",
+                      uri: `data:text/plain;base64,${Buffer.from("héllo").toString("base64")}`,
+                      mime: "text/plain",
+                      name: "note.txt",
+                    },
+                    { type: "file", uri: "data:text/markdown,hello%20world", mime: "text/markdown" },
+                    {
+                      type: "file",
+                      uri: `data:text/plain;base64,${Buffer.from("a".repeat(4_990) + "SUFFIX-END").toString("base64")}`,
+                      mime: "text/plain",
+                      name: "long.txt",
+                    },
+                    {
+                      type: "file",
+                      uri: `data:application/json;base64,${Buffer.from('{"ok":true}').toString("base64")}`,
+                      mime: "application/json; charset=utf-8",
+                      name: "data.json",
+                    },
+                    {
+                      type: "file",
+                      uri: 'data:application/ld+json,{"ok":true}',
+                      mime: "application/ld+json; charset=utf-8",
+                    },
+                    {
+                      type: "file",
+                      uri: `data:application/json;base64,${Buffer.from("not json").toString("base64")}`,
+                      mime: "application/json; charset=utf-8",
+                      name: "broken.json",
+                    },
+                    {
+                      type: "file",
+                      uri: "https://user:pass@example.com/doc.md?token=secret&sig=abc#frag",
+                      mime: "text/markdown",
+                    },
+                    {
+                      type: "file",
+                      uri: "https://example.com/page.png?X-Amz-Signature=deadbeef#section",
+                      mime: "image/png",
+                    },
+                    { type: "file", uri: "data:image/png;base64,QUJD", mime: "image/png", name: "page.png" },
+                  ],
+                },
+                providerExecuted: true,
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      const assistant = prepared.body.messages.at(-1)!
+      if (assistant.role !== "assistant") throw new Error("expected an assistant message")
+      const content = String(assistant.content)
+      expect(assistant.tool_calls).toBeUndefined()
+      expect(content).toContain("summary")
+      expect(content).toContain("héllo")
+      expect(content).toContain("hello world")
+      expect(content).toContain("a".repeat(4_990) + "SUFFIX-END")
+      expect(content).toContain('{"ok":true}')
+      expect(content).toContain("application/json attachment: data.json")
+      expect(content).toContain("application/ld+json attachment")
+      expect(content).toContain("application/json attachment: broken.json")
+      expect(content).toContain("https://example.com/doc.md [redacted]")
+      expect(content).toContain("https://example.com/page.png [redacted]")
+      expect(content).toContain("image/png attachment: page.png")
+      expect(content).toContain("not json")
+      expect(content).not.toContain("user:pass@")
+      expect(content).not.toContain("token=secret")
+      expect(content).not.toContain("sig=abc")
+      expect(content).not.toContain("X-Amz-Signature")
+      expect(content).not.toContain("deadbeef")
+      expect(content).not.toContain("[truncated]")
+      expect(content).not.toContain("QUJD")
+    }),
+  )
+
+  it.effect("does not inline malformed text data in provider-executed tool results", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({
+                id: "hosted_bad",
+                name: "web_fetch",
+                input: { url: "https://example.com" },
+                providerExecuted: true,
+              }),
+              ToolResultPart.make({
+                id: "hosted_bad",
+                name: "web_fetch",
+                result: {
+                  type: "content",
+                  value: [
+                    { type: "file", uri: "data:text/plain;base64,%%%not-base64", mime: "text/plain", name: "bad.txt" },
+                    { type: "file", uri: "data:text/plain,%E0%A4%A", mime: "text/plain", name: "encoded.txt" },
+                  ],
+                },
+                providerExecuted: true,
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      const assistant = prepared.body.messages.at(-1)!
+      if (assistant.role !== "assistant") throw new Error("expected an assistant message")
+      const content = String(assistant.content)
+      expect(content).toContain("[text/plain attachment: bad.txt]")
+      expect(content).toContain("[text/plain attachment: encoded.txt]")
+      expect(content).not.toContain("%%%not-base64")
+      expect(content).not.toContain("%E0%A4%A")
+    }),
+  )
+
+  it.effect("keeps a complete local round trip when hosted and local calls share an ID", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({
+                id: "dup_1",
+                name: "web_search",
+                input: { query: "agents" },
+                providerExecuted: true,
+              }),
+            ]),
+            Message.assistant([ToolCallPart.make({ id: "dup_1", name: "read", input: { path: "a.txt" } })]),
+            Message.tool({ id: "dup_1", name: "read", result: "ok", resultType: "text" }),
+            Message.assistant([
+              ToolResultPart.make({
+                id: "dup_1",
+                name: "web_search",
+                result: "conflict content",
+                resultType: "text",
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      const [hostedCall, localCall, localResult, hostedResult] = prepared.body.messages
+      if (localCall.role !== "assistant" || hostedResult.role !== "assistant")
+        throw new Error("expected assistant messages")
+      expect(localCall.tool_calls?.[0]).toMatchObject({ id: "dup_1", function: { name: "read" } })
+      expect(localResult).toEqual({ role: "tool", tool_call_id: "dup_1", content: "ok" })
+      expect(hostedResult.tool_calls).toBeUndefined()
+      expect(String(hostedResult.content)).toContain("[Tool result: web_search] conflict content")
+      expect(hostedCall).toMatchObject({
+        role: "assistant",
+        content: expect.stringContaining("Provider-executed tool call"),
+      })
+    }),
+  )
+
+  it.effect("keeps delayed and orphan assistant results content-preserving", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({
+                id: "hosted_delayed",
+                name: "web_search",
+                input: { query: "agents" },
+                providerExecuted: true,
+              }),
+            ]),
+            Message.assistant([
+              ToolResultPart.make({
+                id: "hosted_delayed",
+                name: "web_search",
+                result: "delayed summary",
+                resultType: "text",
+                providerExecuted: true,
+              }),
+            ]),
+            Message.assistant([
+              ToolResultPart.make({
+                id: "orphan_result",
+                name: "read",
+                result: "orphan content",
+                resultType: "text",
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      expect(prepared.body.messages).toMatchObject([
+        { role: "assistant", content: expect.stringContaining("web_search") },
+        { role: "assistant", content: expect.stringContaining("delayed summary") },
+        { role: "assistant", content: expect.stringContaining("[Tool result: read] orphan content") },
+      ])
+      expect(JSON.stringify(prepared.body.messages)).not.toContain('"tool_calls"')
+      expect(JSON.stringify(prepared.body.messages)).not.toContain('"tool-result"')
+    }),
+  )
+
+  it.effect("keeps incomplete provider-executed history explicit without local tool calls", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant([
+              ToolCallPart.make({
+                id: "hosted_call",
+                name: "web_search",
+                input: { query: "agents" },
+                providerExecuted: true,
+              }),
+            ]),
+            Message.assistant([
+              ToolResultPart.make({
+                id: "hosted_result",
+                name: "web_fetch",
+                result: "fetched page",
+                resultType: "text",
+                providerExecuted: true,
+              }),
+            ]),
+          ],
+        }),
+      )
+
+      const [callMessage, resultMessage] = prepared.body.messages
+      if (callMessage.role !== "assistant" || resultMessage.role !== "assistant")
+        throw new Error("expected assistant messages")
+      expect(callMessage.tool_calls).toBeUndefined()
+      expect(resultMessage.tool_calls).toBeUndefined()
+      expect(String(callMessage.content)).toContain("web_search")
+      expect(String(callMessage.content)).toContain('"query":"agents"')
+      expect(String(resultMessage.content)).toContain("fetched page")
     }),
   )
 

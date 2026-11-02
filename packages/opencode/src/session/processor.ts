@@ -152,6 +152,8 @@ interface ProcessorContext extends Input {
   attemptSuppressedActivity: boolean
   /** Suppressed abort/approval/denial or unknown activity forbids replay. */
   attemptRetryBlockingSuppressedActivity: boolean
+  /** Why the retry gate stopped this attempt, when tool work made replay unsafe. */
+  retryBlockedBy?: "pending-tools" | "tool-executed"
 }
 
 type StreamEvent = LLMEvent
@@ -1231,7 +1233,7 @@ export const layer = Layer.effect(
           error: errorMessage(e),
           stack: e instanceof Error ? e.stack : undefined,
         })
-        const error = IncompleteResponseError.isInstance(e)
+        let error = IncompleteResponseError.isInstance(e)
           ? // Persist the meaningful terminal failure in the existing error
             // shape; a custom name cannot satisfy the assistant error union.
             new SessionV1.APIError({
@@ -1252,6 +1254,15 @@ export const layer = Layer.effect(
                   metadata: { code: "incomplete_reasoning_response" },
                 }).toObject()
               : parse(e)
+        // The safety gate overrides only retryability and records why. The
+        // provider status, message, headers, and body stay untouched.
+        if (ctx.retryBlockedBy && SessionV1.APIError.isInstance(error)) {
+          error = new SessionV1.APIError({
+            ...error.data,
+            isRetryable: false,
+            metadata: { ...error.data.metadata, retryBlockedBy: ctx.retryBlockedBy },
+          }).toObject()
+        }
         if (
           !aborted &&
           !ctx.attemptToolActivity &&
@@ -1344,6 +1355,7 @@ export const layer = Layer.effect(
             ctx.attemptToolActivity = false
             ctx.attemptSuppressedActivity = false
             ctx.attemptRetryBlockingSuppressedActivity = false
+            ctx.retryBlockedBy = undefined
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
             const source = llm.stream({
@@ -1477,6 +1489,10 @@ export const layer = Layer.effect(
                   !ctx.anyToolCalled &&
                   ctx.pendingToolExecutions.size === 0 &&
                   !ctx.attemptRetryBlockingSuppressedActivity,
+                onGated: () => {
+                  if (ctx.pendingToolExecutions.size > 0) ctx.retryBlockedBy = "pending-tools"
+                  else if (ctx.anyToolCalled) ctx.retryBlockedBy = "tool-executed"
+                },
                 gates: () => ({
                   aborted,
                   blocked: ctx.blocked,

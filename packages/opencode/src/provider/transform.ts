@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer"
 import type { ModelMessage, ToolResultPart } from "ai"
 import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
@@ -5,6 +6,7 @@ import type * as Provider from "./provider"
 import type * as ModelsDev from "@opencode-ai/core/models-dev"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { iife } from "@/util/iife"
+import { isRecord } from "@/util/record"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -384,15 +386,65 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     },
   }
 
-  for (const msg of unique([...system, ...final])) {
+  // A request-only part (for example the todo reminder) opts out of cache
+  // coverage with `providerOptions.opencode.cache = "none"`. Put the breakpoint
+  // on the last persisted part instead; a message-level marker would otherwise
+  // land on the ephemeral tail after the SDK projects it.
+  const ephemeral = (part: unknown) => {
+    if (typeof part !== "object" || part === null || !("providerOptions" in part)) return false
+    const options = part.providerOptions
+    return (
+      typeof options === "object" &&
+      options !== null &&
+      "opencode" in options &&
+      typeof options.opencode === "object" &&
+      options.opencode !== null &&
+      "cache" in options.opencode &&
+      options.opencode.cache === "none"
+    )
+  }
+
+  // An ephemeral part can live outside the last two messages (for example the
+  // user turn of a tool-call continuation). That message still needs an
+  // explicit breakpoint on its persisted part, because a later breakpoint
+  // would cache the ephemeral tail too. Providers cap breakpoints at four.
+  const syntheticAttachment = (msg: ModelMessage) => {
+    if (!Array.isArray(msg.content)) return false
+    return msg.content.some((part) => {
+      const options = "providerOptions" in part && isRecord(part.providerOptions) ? part.providerOptions : undefined
+      const opencode = isRecord(options?.opencode) ? options.opencode : undefined
+      return opencode?.synthetic === "attachment"
+    })
+  }
+  const uncachedMessage = (msg: ModelMessage) => {
+    const options = isRecord(msg.providerOptions) ? msg.providerOptions : undefined
+    const opencode = isRecord(options?.opencode) ? options.opencode : undefined
+    return opencode?.cache === "none"
+  }
+  const ephemeralMessages = msgs.filter((msg) => Array.isArray(msg.content) && msg.content.some(ephemeral))
+  // A tool result directly before a synthetic attachment is merged into that
+  // user message by Anthropic/Bedrock. A breakpoint there would land on the
+  // attachment, so leave the boundary on the preceding persisted user instead.
+  const mergedIntoSynthetic = (msg: ModelMessage) => {
+    if (msg.role !== "tool") return false
+    const index = msgs.indexOf(msg)
+    const next = msgs[index + 1]
+    return index >= 0 && next !== undefined && syntheticAttachment(next)
+  }
+  const targets = unique([...system, ...final, ...ephemeralMessages]).filter(
+    (msg) => !uncachedMessage(msg) && !syntheticAttachment(msg) && !mergedIntoSynthetic(msg),
+  )
+  for (const msg of targets.length > 4 ? targets.slice(-4) : targets) {
     const useMessageLevelOptions =
       model.providerID === "anthropic" ||
       model.providerID.includes("bedrock") ||
       model.api.npm === "@ai-sdk/amazon-bedrock"
-    const shouldUseContentOptions = !useMessageLevelOptions && Array.isArray(msg.content) && msg.content.length > 0
+    const content = Array.isArray(msg.content) ? msg.content : undefined
+    const lastStable = content ? content.findLastIndex((part) => !ephemeral(part)) : -1
+    const hasEphemeral = content ? content.some(ephemeral) : false
 
-    if (shouldUseContentOptions) {
-      const lastContent = msg.content[msg.content.length - 1]
+    if (content && lastStable >= 0 && (hasEphemeral || !useMessageLevelOptions)) {
+      const lastContent = content[lastStable]
       if (
         lastContent &&
         typeof lastContent === "object" &&
@@ -404,10 +456,181 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
       }
     }
 
+    if (hasEphemeral) continue
     msg.providerOptions = mergeDeep(msg.providerOptions ?? {}, providerOptions)
   }
 
   return msgs
+}
+
+const textValue = (value: unknown) => {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+const mimeEssence = (mediaType: string) => (mediaType.split(";")[0] ?? "").trim().toLowerCase()
+
+const isTextualMediaType = (mediaType: string | undefined) => {
+  if (mediaType === undefined) return false
+  const type = mimeEssence(mediaType)
+  return type.startsWith("text/") || type === "application/json" || type.endsWith("+json")
+}
+
+const decodeUTF8 = (bytes: Uint8Array) => {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    return undefined
+  }
+}
+
+const decodeBase64Text = (data: string) => {
+  if (data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return undefined
+  return decodeUTF8(Buffer.from(data, "base64"))
+}
+
+const decodePercentText = (data: string) => {
+  try {
+    return decodeURIComponent(data)
+  } catch {
+    return undefined
+  }
+}
+
+type DataURL = { mimeType: string; base64: boolean; payload: string }
+
+const parseDataURL = (url: string): DataURL | undefined => {
+  if (!url.startsWith("data:")) return undefined
+  const match = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(url)
+  if (!match) return undefined
+  return {
+    mimeType: (match[1] ?? "").split(";")[0].toLowerCase(),
+    base64: match[2] === ";base64",
+    payload: match[3] ?? "",
+  }
+}
+
+const decodeDataURLText = (url: string) => {
+  const parsed = parseDataURL(url)
+  if (!parsed) return undefined
+  return parsed.base64 ? decodeBase64Text(parsed.payload) : decodePercentText(parsed.payload)
+}
+
+type SafeURL = { url: string; redacted: boolean }
+
+// Keep only the scheme, host, and path. Credentials, query strings (signed
+// tokens), and fragments never become model-visible text.
+const safeURL = (value: string | undefined): SafeURL | undefined => {
+  if (!value) return undefined
+  try {
+    const url = new URL(value)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined
+    return {
+      url: `${url.protocol}//${url.host}${url.pathname}`,
+      redacted: url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "",
+    }
+  } catch {
+    return undefined
+  }
+}
+
+const urlText = (url: SafeURL) => (url.redacted ? `${url.url} [redacted]` : url.url)
+
+const attachmentText = (input: { mediaType?: string; filename?: string; data?: string; url?: string }) => {
+  const dataURL = input.url ? parseDataURL(input.url) : undefined
+  const mediaType = input.mediaType ? mimeEssence(input.mediaType) : dataURL?.mimeType
+  const label = `[${mediaType || "attachment"} attachment${input.filename ? `: ${input.filename}` : ""}]`
+  if (isTextualMediaType(mediaType)) {
+    const text =
+      input.data !== undefined
+        ? decodeBase64Text(input.data)
+        : input.url !== undefined
+          ? decodeDataURLText(input.url)
+          : undefined
+    if (text !== undefined) return `${label}\n${text}`
+  }
+  const url = safeURL(input.url)
+  return url ? `${label} ${urlText(url)}` : label
+}
+
+type ToolResultContent = Extract<ToolResultPart["output"], { type: "content" }>["value"][number]
+
+const toolResultContentText = (item: ToolResultContent): string => {
+  switch (item.type) {
+    case "text":
+      return item.text
+    case "media":
+    case "file-data":
+    case "image-data":
+      return attachmentText(item)
+    case "file-url":
+      return attachmentText({ mediaType: item.mediaType, url: item.url })
+    case "image-url":
+      return attachmentText({ mediaType: "image", url: item.url })
+    case "file-id":
+      return "[file attachment]"
+    case "image-file-id":
+      return "[image attachment]"
+    default:
+      return "[attachment]"
+  }
+}
+
+const toolResultText = (output: ToolResultPart["output"]) => {
+  switch (output.type) {
+    case "text":
+    case "error-text":
+      return output.value
+    case "execution-denied":
+      return output.reason ?? "Tool execution was denied."
+    case "content":
+      return Array.isArray(output.value) ? output.value.map(toolResultContentText).join("\n") : textValue(output.value)
+    default:
+      return textValue(output.value)
+  }
+}
+
+// OpenAI-compatible Chat can only replay local function calls. Keep hosted
+// history as assistant text across the whole request so delayed results,
+// orphan results, and local tool round trips are not dropped or turned into
+// new local calls. Results whose IDs are ambiguous stay content-preserving.
+export function hostedToolHistory(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
+  if (model.api.npm !== "@ai-sdk/openai-compatible") return msgs
+  const hostedCallIDs = new Set<string>()
+  const localCallIDs = new Set<string>()
+  for (const msg of msgs) {
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue
+    for (const part of msg.content) {
+      if (part.type !== "tool-call") continue
+      if (part.providerExecuted === true) hostedCallIDs.add(part.toolCallId)
+      else localCallIDs.add(part.toolCallId)
+    }
+  }
+  return msgs.map((msg) => {
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
+    let changed = false
+    const content = msg.content.flatMap((part) => {
+      if (part.type === "tool-call" && part.providerExecuted === true) {
+        changed = true
+        return [
+          { type: "text" as const, text: `[Provider-executed tool call: ${part.toolName}] ${textValue(part.input)}` },
+        ]
+      }
+      if (part.type === "tool-result") {
+        changed = true
+        const label =
+          hostedCallIDs.has(part.toolCallId) && !localCallIDs.has(part.toolCallId)
+            ? "Provider-executed tool result"
+            : "Tool result"
+        return [{ type: "text" as const, text: `[${label}: ${part.toolName}] ${toolResultText(part.output)}` }]
+      }
+      return [part]
+    })
+    return changed ? { ...msg, content } : msg
+  })
 }
 
 function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
@@ -472,6 +695,7 @@ function mapProviderOptions(
 
 export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
   msgs = unsupportedParts(msgs, model)
+  msgs = hostedToolHistory(msgs, model)
   msgs = normalizeMessages(msgs, model, options)
   const usesAnthropicAutomaticCaching =
     options.cacheControl !== undefined &&

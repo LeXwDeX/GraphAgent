@@ -674,10 +674,12 @@ export const ShellTool = Tool.define(
           }
 
           if (exit.kind !== "exit") {
-            yield* Fiber.join(readerFiber).pipe(
-              Effect.timeout("2 seconds"),
-              Effect.catch(() => Effect.void),
-            )
+            // A killed shell can leave a child holding stdout open (for example a
+            // sleeping pipeline), so joining the reader may outlive session
+            // cleanup and turn this result into a forced abort. Stop the reader
+            // and finalize the output already collected; the truncation footer is
+            // built from that retained list below.
+            yield* Fiber.interrupt(readerFiber)
           }
 
           return exit.kind === "exit" ? exit.code : null
@@ -731,8 +733,7 @@ export const ShellTool = Tool.define(
             ? end.details.lineBytes
             : undefined
         output =
-          `${output}\n\n` +
-          outputFooter(file, totalLines, streamBytes, shownLines, partialBytes, partialLineBytes)
+          `${output}\n\n` + outputFooter(file, totalLines, streamBytes, shownLines, partialBytes, partialLineBytes)
       }
 
       if (meta.length > 0) {

@@ -47,11 +47,25 @@ const providerMetadata = (value: unknown): ProviderMetadata | undefined => {
 const partProviderMetadata = (part: Record<string, unknown>) =>
   providerMetadata(part.providerMetadata) ?? providerMetadata(part.providerOptions)
 
-const textPart = (part: Record<string, unknown>) => ({
-  type: "text" as const,
-  text: typeof part.text === "string" ? part.text : "",
-  providerMetadata: partProviderMetadata(part),
-})
+const ephemeralPart = (part: Record<string, unknown>) => {
+  const options = part.providerOptions
+  if (!isRecord(options) || !isRecord(options.opencode)) return false
+  return options.opencode.cache === "none"
+}
+
+const textPart = (part: Record<string, unknown>) => {
+  const providerMetadata = partProviderMetadata(part)
+  const filtered =
+    providerMetadata && "opencode" in providerMetadata
+      ? Object.fromEntries(Object.entries(providerMetadata).filter(([key]) => key !== "opencode"))
+      : providerMetadata
+  return {
+    type: "text" as const,
+    text: typeof part.text === "string" ? part.text : "",
+    providerMetadata: filtered && Object.keys(filtered).length > 0 ? filtered : undefined,
+    metadata: ephemeralPart(part) ? { cache: "none" } : undefined,
+  }
+}
 
 const mediaPart = (part: Record<string, unknown>) => {
   if (typeof part.data !== "string" && !(part.data instanceof Uint8Array))
@@ -106,11 +120,26 @@ export const convertMessages = (input: readonly ModelMessage[]) => {
   const system = input.flatMap((message) => (message.role === "system" ? [SystemPart.make(message.content)] : []))
   const messages = input.flatMap((message) => {
     if (message.role === "system") return []
+    const options = isRecord(message.providerOptions) ? message.providerOptions : undefined
+    const uncached = isRecord(options?.opencode) && options.opencode.cache === "none"
+    const synthetic =
+      Array.isArray(message.content) &&
+      message.content.some((part) => {
+        const raw = isRecord(part) && "providerOptions" in part ? part.providerOptions : undefined
+        const partOptions = isRecord(raw) ? raw : undefined
+        return (
+          isRecord(partOptions?.opencode) && partOptions.opencode.synthetic === "attachment"
+        )
+      })
+    const native = options
+      ? Object.fromEntries(Object.entries(options).filter(([key]) => key !== "opencode"))
+      : undefined
     return [
       Message.make({
         role: message.role,
         content: content(message.content),
-        native: isRecord(message.providerOptions) ? message.providerOptions : undefined,
+        native: native && Object.keys(native).length > 0 ? native : undefined,
+        metadata: uncached || synthetic ? { cache: "none" } : undefined,
       }),
     ]
   })

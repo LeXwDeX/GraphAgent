@@ -1,4 +1,5 @@
 import { Agent } from "@/agent/agent"
+import { subagentRoleDefaultRuleIndices } from "@/agent/subagent-permissions"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -11,7 +12,7 @@ import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { hasCaptureSlot, isFinalResponseSession } from "@/dag/runtime/capture"
 import { DagStore } from "@opencode-ai/core/dag/store"
-import path from "node:path"
+import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { MemorySearch } from "@/tool/memory-search"
 import { Truncate } from "@/tool/truncate"
 
@@ -37,7 +38,6 @@ import * as Option from "effect/Option"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
-import { TodoReminders } from "./todo-reminders"
 import { EffectBridge } from "@/effect/bridge"
 import { SessionContext } from "@/effect/session-context"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -84,17 +84,27 @@ const ROOT_ONLY_TOOLS = new Set([MemorySearch.MemorySearchTool.id, TaskTool.id, 
 
 const canUseAgentMessages = Effect.fn("SessionTools.canUseAgentMessages")(function* (session: Session.Info) {
   const store = yield* Effect.serviceOption(DagStore.Service)
-  if (Option.isNone(store)) return false
-  const workflows = (yield* store.value.listBySession(session.parentID ?? session.id)).filter(
-    (workflow) =>
-      workflow.projectId === session.projectID &&
-      workflow.directory !== null &&
-      path.resolve(workflow.directory) === path.resolve(session.directory),
-  )
-  if (!session.parentID) return workflows.length > 0
+  const messages = yield* Effect.serviceOption(DagMessages.Service)
+  if (Option.isNone(store) || Option.isNone(messages)) return false
+  const workflows = yield* store.value.listBySession(session.parentID ?? session.id)
+  const caller = { projectID: session.projectID, directory: session.directory, sessionID: session.id }
+  if (!session.parentID) {
+    for (const workflow of workflows) {
+      const endpoint = yield* messages.value.resolve(caller, workflow.id)
+      if (endpoint.ok && endpoint.value.kind === "main") return true
+    }
+    return false
+  }
+  const endpoint = yield* messages.value.revisions(caller)
+  if (!endpoint.ok || endpoint.value.endpoint.kind !== "node") return false
   for (const workflow of workflows) {
+    if (endpoint.value.endpoint.workflowID !== workflow.id) continue
     const nodes = yield* store.value.getNodes(workflow.id)
-    if (nodes.some((node) => !node.superseded && node.childSessionId === session.id)) return true
+    if (nodes.some((node) =>
+      node.status === "running" && !node.superseded && node.childSessionId === session.id &&
+      node.id === endpoint.value.endpoint.nodeID &&
+      DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts) === endpoint.value.endpoint.attemptID
+    )) return true
   }
   return false
 })
@@ -358,6 +368,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                     ),
                 }
               : {}),
+            ...(input.session.parentID
+              ? {
+                  role: input.agent.name,
+                  roleDefaultIndices: subagentRoleDefaultRuleIndices(input.session.permission ?? [], input.agent),
+                  sessionRuleCount: input.session.permission?.length ?? 0,
+                }
+              : {}),
             ...(confirmed ? { confirmed: true } : {}),
           },
         )
@@ -375,17 +392,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
     return { ...value, ask: (request) => value.ask(request).pipe(Effect.orDie) }
   }
 
+  const configuredPermission = Permission.merge(input.agent.permission, input.session.permission ?? [])
   for (const registration of registryItems) {
     const item = registration.definition
     if (input.session.parentID && ROOT_ONLY_TOOLS.has(item.id)) continue
-    if (
-      item.id === MemorySearch.MemorySearchTool.id &&
-      Permission.disabled(
-        [MemorySearch.MemorySearchTool.id],
-        Permission.merge(input.agent.permission, input.session.permission ?? []),
-      ).has(MemorySearch.MemorySearchTool.id)
-    )
-      continue
+    if (item.id === MemorySearch.MemorySearchTool.id) {
+      const nativePermission = agentService ? (yield* agentService.permissionPolicy(input.agent.name)).native : []
+      if (Permission.disabledByPolicy([item.id], nativePermission, configuredPermission).has(item.id)) continue
+    }
     const toolSchema = item.jsonSchema ?? ToolJsonSchema.fromSchema(item.parameters as Schema.Top)
     const schema = transformSchema(toolSchema)
     const validateInput = toolInputValidator(toolSchema)
@@ -413,13 +427,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               )
               // SettingsHook PreToolUse
               let dynamicInstructions = false
-              // Native todo surfacing (#429): once per assistant turn, before
-              // any non-todowrite tool result, re-show the uncompleted list.
-              const todoReminder = yield* TodoReminders.preToolCall({
-                sessionID: ctx.sessionID,
-                messageID: input.processor.message.id,
-                tool: item.id,
-              })
               if (settingsHook) {
                 let preResult = yield* settingsHook
                   .trigger(
@@ -583,7 +590,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               }
               // PreToolUse feedback is attached after PostToolUse has seen and possibly replaced the
               // native result, so Post hooks never receive earlier hook text and a replacement keeps it.
-              const preLines = [todoReminder, ...preContexts].filter((line): line is string => Boolean(line))
+              const preLines = preContexts.filter((line): line is string => Boolean(line))
               const beforePlugin = outputFingerprint(output)
               yield* plugin.trigger(
                 "tool.execute.after",
@@ -1199,12 +1206,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
             { args },
           )
           // SettingsHook PreToolUse
-          // Native todo surfacing (#429): same per-turn contract as native tools.
-          const mcpTodoReminder = yield* TodoReminders.preToolCall({
-            sessionID: ctx.sessionID,
-            messageID: input.processor.message.id,
-            tool: key,
-          })
           if (settingsHook) {
             let preResult = yield* settingsHook
               .trigger(
@@ -1432,7 +1433,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           }
           // PreToolUse additionalContexts: prepend so the model sees any hook-injected
           // gate/reminder before the tool result (mirrors PostToolUse surfacing below).
-          const preLines = [mcpTodoReminder, ...preContexts].filter((line): line is string => Boolean(line))
+          const preLines = preContexts.filter((line): line is string => Boolean(line))
           if (preLines.length) {
             output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
           }

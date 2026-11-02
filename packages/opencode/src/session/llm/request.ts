@@ -27,6 +27,8 @@ type PrepareInput = {
   readonly model: Provider.Model
   readonly agent: Agent.Info
   readonly permission?: PermissionV1.Ruleset
+  /** Role-owned rules evaluated before configured rules by Permission.ask. */
+  readonly nativePermission?: PermissionV1.Ruleset
   readonly system: string[]
   readonly messages: ModelMessage[]
   readonly small?: boolean
@@ -203,7 +205,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
 
   return {
     system,
-    messages,
+    // Hosted history must become text before the SDK converts prompts and
+    // downloads file URLs; model middleware runs after that processing.
+    messages: ProviderTransform.hostedToolHistory(messages, input.model),
     tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
     params,
     messageTransformOptions: options,
@@ -228,9 +232,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
 })
 
-function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
-  const disabled = Permission.disabled(
+export function resolveTools(
+  input: Pick<PrepareInput, "tools" | "agent" | "permission" | "nativePermission" | "user">,
+) {
+  const disabled = Permission.disabledByPolicy(
     Object.keys(input.tools),
+    input.nativePermission ?? [],
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))

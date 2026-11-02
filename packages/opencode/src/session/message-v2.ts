@@ -1,5 +1,6 @@
 import { ThinkingReplay } from "./thinking-replay"
 import { SessionID, MessageID } from "./schema"
+import { SessionAbortReason } from "./abort-reason"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { isContextOverflowFailure, LLMError, ProviderErrorEvent, ReasoningCarrier } from "@opencode-ai/llm"
@@ -39,6 +40,7 @@ import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { ContextFolding } from "./context-folding"
 import { isReplayableAssistantMessage } from "./message-replay"
+import { isRecord } from "@/util/record"
 
 export const node = LayerNode.group([Database.node])
 export { isReplayableAssistantMessage }
@@ -452,6 +454,11 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               {
                 type: "text" as const,
                 text: SYNTHETIC_ATTACHMENT_PROMPT,
+                // providerMetadata is a known UIMessage field and
+                // convertToModelMessages carries it as providerOptions. This is
+                // explicit provenance across the conversion boundary, not a
+                // positional guess.
+                providerMetadata: { opencode: { synthetic: "attachment", cache: "none" } },
               },
               ...media.map((attachment) => ({
                 type: "file" as const,
@@ -468,7 +475,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 
   const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
 
-  return yield* Effect.promise(() =>
+  const messages = yield* Effect.promise(() =>
     convertToModelMessages(
       result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")),
       {
@@ -477,6 +484,31 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       },
     ),
   )
+  // `convertToModelMessages` drops message-level metadata for user messages, so
+  // promote the synthetic attachment marker after conversion. Native cache
+  // policy and provider transforms read the message marker; the part marker
+  // stays for target selection.
+  return messages.map((message) => {
+    if (message.role !== "user" || !Array.isArray(message.content)) return message
+    const marked = message.content.some((part) => {
+      if (typeof part !== "object" || part === null) return false
+      if (!("providerOptions" in part)) return false
+      const options = part.providerOptions
+      if (!isRecord(options)) return false
+      const opencode = options.opencode
+      return isRecord(opencode) && opencode.synthetic === "attachment"
+    })
+    if (!marked) return message
+    const options = isRecord(message.providerOptions) ? message.providerOptions : {}
+    const opencode = isRecord(options.opencode) ? options.opencode : {}
+    return {
+      ...message,
+      providerOptions: {
+        ...options,
+        opencode: { ...opencode, synthetic: "attachment", cache: "none" },
+      },
+    }
+  })
 })
 
 export const contextFoldingHistory = ContextFolding.history
@@ -698,7 +730,9 @@ export function fromError(
   switch (true) {
     case e instanceof DOMException && e.name === "AbortError":
       return new AbortedError(
-        { message: e.message },
+        {
+          message: ctx.aborted ? e.message : SessionAbortReason.provider(e.message),
+        },
         {
           cause: e,
         },

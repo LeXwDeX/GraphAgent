@@ -33,6 +33,7 @@ import { Discovery } from "@/skill/discovery"
 import { Question } from "@/question"
 import { Permission } from "@/permission"
 import { Todo } from "@/session/todo"
+import { TodoReminders } from "@/session/todo-reminders"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionRunState } from "@/session/run-state"
@@ -101,6 +102,7 @@ const BaseAppLayer = Layer.mergeAll(
     Question.defaultLayer,
     Permission.defaultLayer,
     Todo.defaultLayer,
+    TodoReminders.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
     Goal.defaultLayer,
     Memory.defaultLayer,
     ToolSourceLedger.defaultLayer,

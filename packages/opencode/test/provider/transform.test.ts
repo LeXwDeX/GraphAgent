@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { ProviderTransform } from "@/provider/transform"
 import { LLMRequestPrep } from "@/session/llm/request"
+import { TodoReminders } from "@/session/todo-reminders"
+import { RuntimeContext } from "@/session/runtime-context"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import type { Provider } from "@/provider/provider"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -9,6 +11,143 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { generateText, jsonSchema, type ModelMessage } from "ai"
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { isRecord } from "@/util/record"
+
+describe("ProviderTransform.message - todo reminder cache boundary", () => {
+  const model: Provider.Model = {
+    id: ModelV2.ID.make("claude-3-5-sonnet-20241022"),
+    providerID: ProviderV2.ID.make("anthropic"),
+    api: {
+      id: "claude-3-5-sonnet-20241022",
+      url: "https://api.anthropic.com",
+      npm: "@ai-sdk/anthropic",
+    },
+    name: "Claude 3.5 Sonnet",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, audio: false, image: true, video: false, pdf: true },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 200000, output: 8192 },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "",
+  }
+
+  const providerOptions = (value: unknown) =>
+    isRecord(value) && isRecord(value.providerOptions) ? value.providerOptions : undefined
+  const anthropicOptions = (value: unknown) => {
+    const options = providerOptions(value)
+    return isRecord(options?.anthropic) ? options.anthropic : undefined
+  }
+  const contentParts = (message: ModelMessage | undefined) => {
+    if (!message || !Array.isArray(message.content)) throw new Error("Expected a message with content parts")
+    return message.content
+  }
+
+  test("keeps the positional cache breakpoint before the request-only reminder part", () => {
+    const withReminder = TodoReminders.append(
+      [{ role: "user", content: [{ type: "text", text: "persisted user" }] }],
+      "[todo reminder] ephemeral",
+    )
+    const transformed = ProviderTransform.message(withReminder, model, {})
+
+    expect(transformed).toHaveLength(1)
+    const content = contentParts(transformed[0])
+    expect(anthropicOptions(content[0])?.cacheControl).toEqual({ type: "ephemeral" })
+    expect(providerOptions(content[1])?.opencode).toMatchObject({ cache: "none" })
+    expect(anthropicOptions(content[1])?.cacheControl).toBeUndefined()
+    expect(providerOptions(transformed[0])).toBeUndefined()
+  })
+
+  test("keeps the cache boundary on the persisted user, not synthetic attachment or runtime context", () => {
+    const placed = RuntimeContext.place({
+      ledger: [],
+      messages: [{ role: "user", content: [{ type: "text", text: "persisted user" }] }],
+      state: [{ key: "goal", parts: ["epoch 1"], cleared: "cleared" }],
+      events: [],
+    })
+    const withReminder = TodoReminders.append(
+      [
+        ...placed.messages,
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: {} }] },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: "call_1", toolName: "read", output: { type: "text", value: "ok" } },
+          ],
+        },
+        {
+          role: "user",
+          providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+          content: [
+            {
+              type: "text",
+              text: "Attached media from tool result:",
+              providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+            },
+            { type: "file", mediaType: "image/png", data: "AA==", filename: "attachment.png" },
+          ],
+        },
+      ],
+      "[todo reminder] ephemeral",
+    )
+    const transformed = ProviderTransform.message(withReminder, model, {})
+    expect(transformed.map((message) => message.role)).toEqual(["user", "user", "assistant", "tool", "user"])
+    const persisted = contentParts(transformed[0])
+    expect(anthropicOptions(persisted[0])?.cacheControl).toEqual({ type: "ephemeral" })
+    expect(anthropicOptions(persisted[1])).toBeUndefined()
+    expect(anthropicOptions(transformed[1])).toBeUndefined()
+    expect(providerOptions(transformed[4])).toMatchObject({
+      opencode: { synthetic: "attachment", cache: "none" },
+    })
+    expect(anthropicOptions(transformed[4])).toBeUndefined()
+    const attachment = contentParts(transformed[4])
+    expect(anthropicOptions(attachment[0])).toBeUndefined()
+    expect(anthropicOptions(attachment[1])).toBeUndefined()
+  })
+
+  test("keeps tool-call/result order and attaches the reminder to the persisted user content", () => {
+    const placed = RuntimeContext.place({
+      ledger: [],
+      messages: [{ role: "user", content: [{ type: "text", text: "persisted user" }] }],
+      state: [{ key: "goal", parts: ["epoch 1"], cleared: "cleared" }],
+      events: [],
+    })
+    const withReminder = TodoReminders.append(
+      [
+        ...placed.messages,
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: {} }] },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: "call_1", toolName: "read", output: { type: "text", value: "ok" } },
+          ],
+        },
+      ],
+      "[todo reminder] ephemeral",
+    )
+    const transformed = ProviderTransform.message(withReminder, model, {})
+    expect(transformed.map((message) => message.role)).toEqual(["user", "user", "assistant", "tool"])
+    const content = contentParts(transformed[0])
+    expect(content).toHaveLength(2)
+    expect(content[0]).toMatchObject({
+      type: "text",
+      text: "persisted user",
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    })
+    expect(content[1]).toMatchObject({ type: "text", text: "[todo reminder] ephemeral" })
+    expect(anthropicOptions(content[1])).toBeUndefined()
+    expect(anthropicOptions(transformed[1])).toBeUndefined()
+  })
+})
 
 describe("ProviderTransform.sortVariants", () => {
   test("orders known reasoning efforts independently of insertion order", () => {
@@ -1988,7 +2127,7 @@ describe("ProviderTransform.message - surrogate sanitization", () => {
     api: {
       id: "test-model",
       url: "https://api.test.com",
-      npm: "@ai-sdk/openai-compatible",
+      npm: "@ai-sdk/anthropic",
     },
     name: "Test Model",
     capabilities: {
@@ -5317,5 +5456,638 @@ describe("ProviderTransform.maxOutputTokens", () => {
         model(384_000),
       ),
     ).toBeUndefined()
+  })
+})
+
+describe("ProviderTransform.message - provider-executed tool history", () => {
+  const chatModel = {
+    id: ModelV2.ID.make("qwen3"),
+    providerID: ProviderV2.ID.make("local"),
+    api: { id: "qwen3", url: "http://127.0.0.1:1/v1", npm: "@ai-sdk/openai-compatible" },
+    name: "Qwen3",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 128_000, output: 32_000 },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "2026-01-01",
+  } satisfies Provider.Model
+
+  const hostedHistory: ModelMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Search the web for agents." }] },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "hosted_1",
+          toolName: "web_search",
+          input: { query: "agents" },
+          providerExecuted: true,
+        },
+        {
+          type: "tool-result",
+          toolCallId: "hosted_1",
+          toolName: "web_search",
+          output: { type: "text", value: "search summary" },
+        },
+        { type: "text", text: "The search found agents." },
+      ],
+    },
+  ]
+
+  test("converts provider-executed tool history to assistant text for OpenAI-compatible chat", () => {
+    const transformed = ProviderTransform.message(hostedHistory, chatModel, {})
+
+    const assistant = transformed[1]
+    expect(assistant.role).toBe("assistant")
+    const serialized = JSON.stringify(assistant)
+    expect(serialized).not.toContain('"type":"tool-call"')
+    expect(serialized).not.toContain('"type":"tool-result"')
+    expect(serialized).toContain("web_search")
+    expect(serialized).toContain("search summary")
+    expect(serialized).toContain("The search found agents.")
+  })
+
+  test("keeps ordinary local tool calls and tool results unchanged", () => {
+    const localHistory: ModelMessage[] = [
+      { role: "user", content: [{ type: "text", text: "Read the file." }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: { path: "a.txt" } }],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "call_1", toolName: "read", output: { type: "text", value: "ok" } },
+        ],
+      },
+    ]
+
+    expect(ProviderTransform.message(localHistory, chatModel, {})).toEqual(localHistory)
+  })
+
+  test("keeps orphan assistant results content-preserving without local tool calls", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-result", toolCallId: "orphan_1", toolName: "read", output: { type: "text", value: "kept" } },
+        ],
+      },
+    ]
+
+    const transformed = ProviderTransform.message(history, chatModel, {})
+    const serialized = JSON.stringify(transformed)
+    expect(serialized).not.toContain('"type":"tool-result"')
+    expect(serialized).not.toContain('"tool_calls"')
+    expect(serialized).toContain("[Tool result: read] kept")
+  })
+
+  test("preserves delayed provider-executed results separated by a local tool round trip", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_1",
+            toolName: "web_search",
+            input: { query: "agents" },
+            providerExecuted: true,
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "local_1", toolName: "read", input: { path: "a.txt" } }],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "local_1", toolName: "read", output: { type: "text", value: "ok" } },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "hosted_1",
+            toolName: "web_search",
+            output: { type: "text", value: "delayed summary" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "local_2", toolName: "read", input: { path: "b.txt" } }],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "local_2", toolName: "read", output: { type: "text", value: "ok2" } },
+        ],
+      },
+    ]
+
+    const transformed = ProviderTransform.message(history, chatModel, {})
+    const serialized = JSON.stringify(transformed)
+    expect(serialized).toContain("[Provider-executed tool result: web_search] delayed summary")
+    expect(transformed[1]).toEqual(history[1])
+    expect(transformed[2]).toEqual(history[2])
+    expect(transformed[4]).toEqual(history[4])
+    expect(transformed[5]).toEqual(history[5])
+  })
+
+  test("uses neutral result text when hosted and local calls share an ID", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "dup_1",
+            toolName: "web_search",
+            input: { query: "agents" },
+            providerExecuted: true,
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "dup_1", toolName: "read", input: { path: "a.txt" } }],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "dup_1", toolName: "read", output: { type: "text", value: "ok" } },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "dup_1",
+            toolName: "web_search",
+            output: { type: "text", value: "conflict content" },
+          },
+        ],
+      },
+    ]
+
+    const transformed = ProviderTransform.message(history, chatModel, {})
+    expect(JSON.stringify(transformed)).toContain("[Tool result: web_search] conflict content")
+    expect(JSON.stringify(transformed)).not.toContain("Provider-executed tool result")
+    expect(transformed[1]).toEqual(history[1])
+    expect(transformed[2]).toEqual(history[2])
+  })
+
+  test("preserves text file data and usable URLs in hosted results", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_mixed",
+            toolName: "web_fetch",
+            input: { url: "https://example.com" },
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "hosted_mixed",
+            toolName: "web_fetch",
+            output: {
+              type: "content",
+              value: [
+                { type: "text", text: "summary" },
+                {
+                  type: "file-data",
+                  mediaType: "text/plain",
+                  data: Buffer.from("héllo").toString("base64"),
+                  filename: "note.txt",
+                },
+                { type: "media", mediaType: "text/csv", data: Buffer.from("a,b").toString("base64") },
+                {
+                  type: "file-data",
+                  mediaType: "text/plain",
+                  data: Buffer.from("a".repeat(4_990) + "SUFFIX-END").toString("base64"),
+                  filename: "long.txt",
+                },
+                {
+                  type: "file-data",
+                  mediaType: "application/json; charset=utf-8",
+                  data: Buffer.from('{"ok":true}').toString("base64"),
+                  filename: "data.json",
+                },
+                {
+                  type: "file-data",
+                  mediaType: "application/ld+json; charset=utf-8",
+                  data: Buffer.from('{"ok":true}').toString("base64"),
+                  filename: "linked.json",
+                },
+                {
+                  type: "file-data",
+                  mediaType: "application/json; charset=utf-8",
+                  data: Buffer.from("not json").toString("base64"),
+                  filename: "broken.json",
+                },
+                { type: "file-data", mediaType: "image/png", data: "QUJD", filename: "page.png" },
+              ],
+            },
+          },
+        ],
+      },
+    ]
+
+    const serialized = JSON.stringify(ProviderTransform.message(history, chatModel, {}))
+    expect(serialized).toContain("summary")
+    expect(serialized).toContain("héllo")
+    expect(serialized).toContain("a,b")
+    expect(serialized).toContain("a".repeat(4_990) + "SUFFIX-END")
+    expect(serialized).toContain(JSON.stringify('{"ok":true}').slice(1, -1))
+    expect(serialized).toContain("application/json attachment: data.json")
+    expect(serialized).toContain("application/ld+json attachment: linked.json")
+    expect(serialized).toContain("json attachment: broken.json")
+    expect(serialized).toContain("not json")
+    expect(serialized).not.toContain("[truncated]")
+    expect(serialized).not.toContain("QUJD")
+  })
+
+  test("redacts credentials, signed query strings, and fragments from attachment URLs", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_urls",
+            toolName: "web_fetch",
+            input: { url: "https://example.com" },
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "hosted_urls",
+            toolName: "web_fetch",
+            output: {
+              type: "content",
+              value: [
+                {
+                  type: "file-url",
+                  mediaType: "text/markdown",
+                  url: "https://user:pass@example.com/doc.md?token=secret&sig=abc#frag",
+                },
+                { type: "image-url", url: "https://example.com/img.png?X-Amz-Signature=deadbeef#section" },
+              ],
+            },
+          },
+        ],
+      },
+    ]
+
+    const serialized = JSON.stringify(ProviderTransform.message(history, chatModel, {}))
+    expect(serialized).toContain("https://example.com/doc.md [redacted]")
+    expect(serialized).toContain("https://example.com/img.png [redacted]")
+    expect(serialized).not.toContain("user:pass@")
+    expect(serialized).not.toContain("token=secret")
+    expect(serialized).not.toContain("sig=abc")
+    expect(serialized).not.toContain("X-Amz-Signature")
+    expect(serialized).not.toContain("deadbeef")
+    expect(serialized).not.toContain("#frag")
+    expect(serialized).not.toContain("#section")
+  })
+
+  test("decodes textual data URLs from file URLs", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_data_urls",
+            toolName: "web_fetch",
+            input: { url: "https://example.com" },
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "hosted_data_urls",
+            toolName: "web_fetch",
+            output: {
+              type: "content",
+              value: [
+                {
+                  type: "file-url",
+                  url: `data:text/plain;base64,${Buffer.from("data url text").toString("base64")}`,
+                },
+                { type: "file-url", url: "data:text/plain,percent%20encoded%20text" },
+                {
+                  type: "file-url",
+                  mediaType: "application/json; charset=utf-8",
+                  url: `data:application/json;base64,${Buffer.from('{"ok":true}').toString("base64")}`,
+                },
+                {
+                  type: "file-url",
+                  mediaType: "application/ld+json; charset=utf-8",
+                  url: 'data:application/ld+json,{"ok":true}',
+                },
+                {
+                  type: "file-url",
+                  mediaType: "application/json; charset=utf-8",
+                  url: `data:application/json;base64,${Buffer.from("not json").toString("base64")}`,
+                },
+                { type: "file-url", url: `data:image/png;base64,${Buffer.from("QUJD").toString("base64")}` },
+              ],
+            },
+          },
+        ],
+      },
+    ]
+
+    const serialized = JSON.stringify(ProviderTransform.message(history, chatModel, {}))
+    const encodedJson = JSON.stringify('{"ok":true}').slice(1, -1)
+    expect(serialized).toContain("data url text")
+    expect(serialized).toContain("percent encoded text")
+    expect(serialized).toContain(encodedJson)
+    expect(serialized).toContain("json attachment")
+    expect(serialized).toContain("not json")
+    expect(serialized).not.toContain("QUJD")
+  })
+
+  test("does not inline malformed or non-http attachment data", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_bad",
+            toolName: "web_fetch",
+            input: { url: "https://example.com" },
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "hosted_bad",
+            toolName: "web_fetch",
+            output: {
+              type: "content",
+              value: [
+                { type: "file-data", mediaType: "text/plain", data: "%%%not-base64", filename: "bad.txt" },
+                { type: "file-url", mediaType: "text/plain", url: "javascript:alert(1)" },
+              ],
+            },
+          },
+        ],
+      },
+    ]
+
+    const serialized = JSON.stringify(ProviderTransform.message(history, chatModel, {}))
+    expect(serialized).toContain("[text/plain attachment: bad.txt]")
+    expect(serialized).not.toContain("%%%not-base64")
+    expect(serialized).not.toContain("javascript:")
+  })
+
+  test("sends provider-executed history as text through the OpenAI-compatible SDK", async () => {
+    const bodies: string[] = []
+    const provider = createOpenAICompatible({
+      name: "local",
+      baseURL: "http://127.0.0.1:1/v1",
+      apiKey: "test-key",
+      fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = input instanceof Request ? input.url : String(input)
+          if (url.endsWith("/chat/completions") && typeof init?.body === "string") bodies.push(init.body)
+          return Response.json({
+            id: "chatcmpl-1",
+            object: "chat.completion",
+            created: 0,
+            model: "qwen3",
+            choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          })
+        },
+        { preconnect: () => undefined },
+      ),
+    })
+
+    const result = await generateText({
+      model: provider("qwen3"),
+      messages: ProviderTransform.message(hostedHistory, chatModel, {}),
+      maxRetries: 0,
+    })
+
+    expect(result.text).toBe("ok")
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).not.toContain('"tool_calls"')
+    expect(bodies[0]).toContain("web_search")
+    expect(bodies[0]).toContain("search summary")
+    expect(bodies[0]).toContain('"role":"assistant"')
+  })
+
+  test("sanitizes text converted from hosted results", () => {
+    const history: ModelMessage[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_surrogate",
+            toolName: "web_search",
+            input: { query: "agents" },
+            providerExecuted: true,
+          },
+          {
+            type: "tool-result",
+            toolCallId: "hosted_surrogate",
+            toolName: "web_search",
+            output: { type: "text", value: "lone \uD83D surrogate" },
+          },
+        ],
+      },
+    ]
+
+    expect(JSON.stringify(ProviderTransform.message(history, chatModel, {}))).toContain(
+      '"text":"[Provider-executed tool result: web_search] lone � surrogate"',
+    )
+  })
+
+  test("sends delayed and mixed provider-executed history as text through the SDK", async () => {
+    const bodies: string[] = []
+    const provider = createOpenAICompatible({
+      name: "local",
+      baseURL: "http://127.0.0.1:1/v1",
+      apiKey: "test-key",
+      fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = input instanceof Request ? input.url : String(input)
+          if (url.endsWith("/chat/completions") && typeof init?.body === "string") bodies.push(init.body)
+          return Response.json({
+            id: "chatcmpl-1",
+            object: "chat.completion",
+            created: 0,
+            model: "qwen3",
+            choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          })
+        },
+        { preconnect: () => undefined },
+      ),
+    })
+    const history: ModelMessage[] = [
+      { role: "user", content: [{ type: "text", text: "Research and read." }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "hosted_delayed",
+            toolName: "web_search",
+            input: { query: "agents" },
+            providerExecuted: true,
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "local_1", toolName: "read", input: { path: "a.txt" } }],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "local_1", toolName: "read", output: { type: "text", value: "ok" } },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "hosted_delayed",
+            toolName: "web_search",
+            output: {
+              type: "content",
+              value: [
+                { type: "text", text: "delayed summary" },
+                {
+                  type: "file-data",
+                  mediaType: "text/plain",
+                  data: Buffer.from("héllo").toString("base64"),
+                  filename: "note.txt",
+                },
+                {
+                  type: "file-data",
+                  mediaType: "text/plain",
+                  data: Buffer.from("a".repeat(4_990) + "SUFFIX-END").toString("base64"),
+                  filename: "long.txt",
+                },
+                {
+                  type: "file-url",
+                  mediaType: "text/markdown",
+                  url: "https://user:pass@example.com/doc.md?token=secret&sig=abc#frag",
+                },
+                {
+                  type: "file-url",
+                  mediaType: "application/json",
+                  url: `data:application/json;base64,${Buffer.from('{"ok":true}').toString("base64")}`,
+                },
+                { type: "file-url", url: `data:text/plain;base64,${Buffer.from("data url text").toString("base64")}` },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "dup_1",
+            toolName: "web_search",
+            input: { query: "conflict" },
+            providerExecuted: true,
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "dup_1", toolName: "read", input: { path: "b.txt" } }],
+      },
+      {
+        role: "tool",
+        content: [
+          { type: "tool-result", toolCallId: "dup_1", toolName: "read", output: { type: "text", value: "ok2" } },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "dup_1",
+            toolName: "web_search",
+            output: { type: "text", value: "conflict content" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-result", toolCallId: "orphan_1", toolName: "read", output: { type: "text", value: "orphan" } },
+        ],
+      },
+    ]
+
+    const result = await generateText({
+      model: provider("qwen3"),
+      messages: ProviderTransform.message(history, chatModel, {}),
+      maxRetries: 0,
+    })
+
+    expect(result.text).toBe("ok")
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).toContain('"id":"local_1"')
+    expect(bodies[0]).not.toContain('"name":"web_search"')
+    expect(bodies[0]).toContain("delayed summary")
+    expect(bodies[0]).toContain("héllo")
+    expect(bodies[0]).toContain("a".repeat(4_990) + "SUFFIX-END")
+    expect(bodies[0]).toContain("https://example.com/doc.md [redacted]")
+    expect(bodies[0]).toContain(JSON.stringify('{"ok":true}').slice(1, -1))
+    expect(bodies[0]).toContain("data url text")
+    expect(bodies[0]).not.toContain("user:pass@")
+    expect(bodies[0]).not.toContain("token=secret")
+    expect(bodies[0]).not.toContain("sig=abc")
+    expect(bodies[0]).not.toContain("#frag")
+    expect(bodies[0]).toContain("[Tool result: read] orphan")
+    expect(bodies[0]).toContain("[Tool result: web_search] conflict content")
+    expect(bodies[0]).toContain('"id":"dup_1"')
+    expect(bodies[0]).toContain('"name":"read"')
+    expect(bodies[0]).toContain('"ok2"')
+  })
+
+  test("keeps provider-executed history for providers that support it", () => {
+    const anthropicModel = {
+      ...chatModel,
+      id: ModelV2.ID.make("claude-sonnet-4-6"),
+      providerID: ProviderV2.ID.make("anthropic"),
+      api: { id: "claude-sonnet-4-6", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+    } satisfies Provider.Model
+
+    expect(JSON.stringify(ProviderTransform.message(hostedHistory, anthropicModel, {}))).toContain(
+      '"providerExecuted":true',
+    )
   })
 })

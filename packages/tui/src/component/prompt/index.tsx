@@ -185,6 +185,13 @@ export function Prompt(props: PromptProps) {
       setStopping(undefined)
     }
   })
+  createEffect(() => {
+    const sessionID = props.sessionID
+    if (!sessionID || status().type !== "idle") return
+    // An ordinary prompt interrupted after send must not leave a permanent
+    // stopping banner. Command uncertainty is explicitly preserved here.
+    local.model.acknowledgePromptInterrupt(sessionID)
+  })
   const preparation = createMemo(() => {
     const current = status()
     return current.type === "busy" && current.preparation?.stage !== "memory" ? current.preparation : undefined
@@ -332,6 +339,9 @@ export function Prompt(props: PromptProps) {
       () => props.sessionID,
       () => {
         setStore("placeholder", randomIndex(list().length))
+        setStore("interrupt", 0)
+        if (interruptTimer) clearTimeout(interruptTimer)
+        interruptTimer = undefined
       },
       { defer: true },
     ),
@@ -348,24 +358,24 @@ export function Prompt(props: PromptProps) {
     const msg = lastUserMessage()
 
     if (sessionID !== syncedSessionID) {
-      if (!sessionID || !msg) return
-
-      syncedSessionID = sessionID
+      if (!sessionID) {
+        syncedSessionID = undefined
+        return
+      }
+      const saved = sync.session.get(sessionID)?.model
+      if (!msg && !sync.data.message[sessionID]) return
+      if (!saved && !msg) return
 
       // Only set agent if it's a primary agent (not a subagent)
-      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
-      if (msg.agent && isPrimaryAgent) {
+      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg?.agent)
+      if (msg?.agent && isPrimaryAgent) {
         // Keep command line --agent if specified.
         if (!args.agent) local.agent.set(msg.agent)
         // The session's persisted model is authoritative; the last user message is only a fallback.
         // Restoring is local-only so it neither runs model-switch hooks nor overwrites the saved model.
-        const saved = sync.session.get(sessionID)?.model
-        const restored = saved ? { providerID: saved.providerID, modelID: saved.id, variant: saved.variant } : msg.model
-        if (restored) {
-          local.model.restore(restored)
-          local.model.variant.set(restored.variant)
-        }
       }
+      const restored = saved ? { providerID: saved.providerID, modelID: saved.id, variant: saved.variant } : msg?.model
+      if (restored && local.model.restore(restored)) syncedSessionID = sessionID
     }
   })
 
@@ -449,7 +459,7 @@ export function Prompt(props: PromptProps) {
         name: "session.interrupt",
         category: "Session",
         hidden: true,
-        enabled: status().type !== "idle",
+        enabled: status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID)),
         run: (ctx: CommandContext<Renderable, KeyEvent>) => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -476,12 +486,19 @@ export function Prompt(props: PromptProps) {
             interruptTimer = undefined
             if (stopping()?.sessionID === props.sessionID) return
             const sessionID = props.sessionID
+            if (status().type === "idle") {
+              local.model.interruptQueued(sessionID)
+              setStore("interrupt", 0)
+              dialog.clear()
+              return
+            }
             const token = ++cancelAttempt
             setStopping({
               sessionID,
               token,
               messageID: sync.data.message[sessionID]?.findLast((message) => message.role === "user")?.id,
             })
+            local.model.interrupt(sessionID)
             void sdk.client.session.abort({ sessionID }, { throwOnError: true }).catch((error) => {
               if (disposed || token !== cancelAttempt || props.sessionID !== sessionID) return
               setStopping(undefined)
@@ -1039,6 +1056,10 @@ export function Prompt(props: PromptProps) {
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
+    if (store.mode === "shell" && props.sessionID && local.model.commandActive(props.sessionID)) {
+      toast.show({ message: "命令提交结果未确认，本会话 shell 暂缓", variant: "warning", duration: 5000 })
+      return false
+    }
     const agent = local.agent.current()
     if (!agent) return false
     const trimmed = store.prompt.input.trim()
@@ -1126,6 +1147,17 @@ export function Prompt(props: PromptProps) {
         sync.set("pending_submission", sessionID, undefined)
       if (attempt === submissionAttempt) setSending(false)
     }
+    const restoreDraft = () => {
+      if (!store.prompt.input && store.prompt.parts.length === 0 && props.sessionID === originalSessionID) {
+        input.setText(submitted.input)
+        setStore("prompt", structuredClone(submitted))
+        restoreExtmarksFromParts(submitted.parts)
+        setStore("mode", currentMode)
+        setFailedSubmission(undefined)
+        return true
+      }
+      return false
+    }
     const failed = (error: unknown) => {
       const acknowledged =
         accepted ||
@@ -1148,16 +1180,21 @@ export function Prompt(props: PromptProps) {
       }
       setSending(false)
       setFailedSubmission({ ...submitted, mode: currentMode })
-      if (!store.prompt.input && store.prompt.parts.length === 0 && props.sessionID === originalSessionID) {
-        input.setText(submitted.input)
-        setStore("prompt", structuredClone(submitted))
-        restoreExtmarksFromParts(submitted.parts)
-        setStore("mode", currentMode)
-        setFailedSubmission(undefined)
-      }
+      restoreDraft()
       toast.show({ title: "Failed to send prompt", message: errorMessage(error), variant: "error" })
     }
-    const variant = local.model.variant.current()
+    // An interrupted request stays unconfirmed: restore the draft for a retry
+    // without claiming the request failed or was accepted.
+    const interrupted = () => {
+      if (attempt !== submissionAttempt || disposed) {
+        stash.push(submitted)
+        return
+      }
+      clearPending()
+      setSending(false)
+      restoreDraft()
+    }
+    const variant = props.sessionID && local.model.variant.selected() === "default" ? "default" : local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
     if (sessionID == null) {
@@ -1232,10 +1269,18 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      void sdk.client.session
-        .command(
+      sync.set("submission_attempt", sessionID, messageID)
+      sync.set("pending_submission", sessionID, messageID)
+      local.model.submit({
+        sessionID,
+        model: selectedModel,
+        variant,
+        messageID,
+        command: true,
+        send: () => sdk.client.session.command(
           {
             sessionID,
+            messageID,
             hookMode: "interactive",
             command: command.slice(1),
             arguments: args,
@@ -1245,22 +1290,25 @@ export function Prompt(props: PromptProps) {
             parts: nonTextParts.filter((x) => x.type === "file"),
           },
           { throwOnError: true },
-        )
-        .then(() => {
-          if (attempt === submissionAttempt) setSending(false)
-        })
-        .catch(failed)
+        ),
+        accepted: () => {
+          accepted = true
+          clearPending()
+        },
+        failed,
+        interrupted,
+      })
     } else {
       move.startSubmit()
-      const releaseAcknowledgement = sync.submission.onAccepted(messageID, () => {
-        accepted = true
-        markEditorAccepted()
-        clearPending()
-      })
       sync.set("submission_attempt", sessionID, messageID)
       sync.set("pending_submission", sessionID, messageID)
-      sdk.client.session
-        .prompt(
+      local.model.submit({
+        sessionID,
+        model: selectedModel,
+        variant,
+        messageID,
+        command: false,
+        send: () => sdk.client.session.prompt(
           {
             sessionID,
             hookMode: "interactive",
@@ -1279,14 +1327,15 @@ export function Prompt(props: PromptProps) {
             ],
           },
           { throwOnError: true },
-        )
-        .then(() => {
+        ),
+        accepted: () => {
           accepted = true
           markEditorAccepted()
           clearPending()
-        })
-        .catch(failed)
-        .finally(releaseAcknowledgement)
+        },
+        failed,
+        interrupted,
+      })
     }
     if (disposed || props.sessionID !== originalSessionID) return true
     history.append({
@@ -1678,6 +1727,18 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Switch>
+            <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "stopping"}>
+              <box flexDirection="column">
+                <text paddingLeft={1} fg={theme.warning}>已请求停止，提交结果未确认</text>
+                <text paddingLeft={1} fg={theme.warning}>本会话提交/模型保存暂缓；重启后不保留此保护</text>
+              </box>
+            </Match>
+            <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "unknown"}>
+              <box flexDirection="column">
+                <text paddingLeft={1} fg={theme.warning}>提交结果未确认，本会话提交/模型保存暂缓</text>
+                <text paddingLeft={1} fg={theme.warning}>重启后不保留此保护</text>
+              </box>
+            </Match>
             <Match when={stopping()}>
               <text paddingLeft={1} fg={theme.textMuted}>
                 Stopping…

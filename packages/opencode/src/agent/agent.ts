@@ -214,6 +214,9 @@ export const layer = Layer.effect(
                 webfetch: "allow",
                 websearch: "allow",
                 read: "allow",
+                // Read-only workers still need the session bootstrap path.
+                skill: "allow",
+                "*_initial_instructions": "allow",
                 external_directory: readonlyExternalDirectory,
               }),
               user,

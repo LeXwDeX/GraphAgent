@@ -5,7 +5,10 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Database } from "@opencode-ai/core/database/database"
-import { Permission } from "../../src/permission"
+import { Permission, globCovers } from "../../src/permission"
+import { Wildcard } from "../../src/util/wildcard"
+import type { Agent } from "../../src/agent/agent"
+import { deriveSubagentSessionPermission, subagentRoleDefaultRuleIndices } from "../../src/agent/subagent-permissions"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
@@ -87,10 +90,15 @@ const fail = <A, E, R>(self: Effect.Effect<A, E, R>) =>
     throw new Error("expected permission effect to fail")
   })
 
-const ask = (input: Parameters<Permission.Interface["ask"]>[0]) =>
+const denied = (error: unknown) => {
+  if (!(error instanceof PermissionV1.DeniedError)) throw new Error("expected DeniedError")
+  return error
+}
+
+const ask = (input: Parameters<Permission.Interface["ask"]>[0], options?: Parameters<Permission.Interface["ask"]>[1]) =>
   Effect.gen(function* () {
     const permission = yield* Permission.Service
-    return yield* permission.ask(input)
+    return yield* permission.ask(input, options)
   })
 
 const reply = (input: Parameters<Permission.Interface["reply"]>[0]) =>
@@ -584,6 +592,240 @@ test("disabled - specific allow overrides wildcard deny", () => {
   expect(result.has("read")).toBe(true)
 })
 
+test("disabled - universal deny followed only by narrower denies stays denied", () => {
+  const result = Permission.disabled(
+    ["edit", "write", "apply_patch"],
+    Permission.fromConfig({
+      edit: { "*": "deny", "*.md": "deny" },
+    }),
+  )
+  expect(result.has("edit")).toBe(true)
+  expect(result.has("write")).toBe(true)
+  expect(result.has("apply_patch")).toBe(true)
+})
+
+test("disabled - universal deny followed by a narrower allow stays advertised", () => {
+  const result = Permission.disabled(["edit"], Permission.fromConfig({ edit: { "*": "deny", "*.md": "allow" } }))
+  expect(result.has("edit")).toBe(false)
+})
+
+test("disabled - wildcard precedence keeps only tools with a potential allow", () => {
+  const result = Permission.disabled(["edit", "read"], Permission.fromConfig({ "*": "deny", edit: "allow" }))
+  expect(result.has("edit")).toBe(false)
+  expect(result.has("read")).toBe(true)
+})
+
+test("disabled - trailing optional wildcard covers a literal allow", () => {
+  const result = Permission.disabled(
+    ["bash"],
+    Permission.fromConfig({
+      bash: { "*": "deny", git: "allow", "git *": "deny" },
+    }),
+  )
+  expect(result.has("bash")).toBe(true)
+})
+
+test("disabled - trailing optional wildcard does not cover a broader allow", () => {
+  const result = Permission.disabled(
+    ["bash"],
+    Permission.fromConfig({
+      bash: { "*": "deny", "git *": "allow", git: "deny" },
+    }),
+  )
+  expect(result.has("bash")).toBe(false)
+})
+
+test("disabledByPolicy - native allow coverage must include a later inherited deny", () => {
+  const native = Permission.fromConfig({
+    bash: { "*": "deny", git: "allow" },
+  })
+  const inherited = Permission.fromConfig({ bash: { "git *": "deny" } })
+  const configured = Permission.merge(native, inherited)
+  expect(Permission.disabledByPolicy(["bash"], native, configured).has("bash")).toBe(true)
+  expect(Permission.disabledByPolicy(["bash"], native, native).has("bash")).toBe(false)
+})
+
+test("disabled - an astral allow is not covered by a UTF-16 question mark", () => {
+  const result = Permission.disabled(
+    ["edit"],
+    Permission.fromConfig({
+      edit: { "*": "deny", "😀": "allow", "?": "deny" },
+    }),
+  )
+  expect(result.has("edit")).toBe(false)
+  expect(Wildcard.match("😀", "😀")).toBe(true)
+  expect(Wildcard.match("😀", "?")).toBe(false)
+})
+
+test("globCovers - uses UTF-16 code units like Wildcard.match", () => {
+  expect(globCovers("?", "😀")).toBe(false)
+  expect(globCovers("😀", "😀")).toBe(true)
+  expect(globCovers("*", "😀")).toBe(true)
+  expect(globCovers("😀 *", "😀")).toBe(true)
+  expect(globCovers("😀 *", "😀?")).toBe(false)
+  expect(globCovers("😀 *", "😀 😀")).toBe(true)
+})
+
+test("globCovers - proven coverage never contradicts Wildcard.match on a representative corpus", () => {
+  const atoms = ["a", "b", "?", "*", " ", "😀", " *"]
+  const patterns = [""]
+  for (const a of atoms) {
+    patterns.push(a)
+    for (const b of atoms) {
+      patterns.push(a + b)
+      for (const c of atoms) patterns.push(a + b + c)
+    }
+  }
+  const corpus = ["", "a", "b", " ", "😀", "😀a", "a😀", "😀 ", " 😀", "😀 😀", "?", "??", "😀?", "?😀"]
+  for (const deny of patterns) {
+    for (const allow of patterns) {
+      if (!globCovers(deny, allow)) continue
+      for (const path of corpus) {
+        if (Wildcard.match(path, allow) && !Wildcard.match(path, deny)) {
+          throw new Error(
+            `globCovers(${JSON.stringify(deny)}, ${JSON.stringify(allow)}) contradicted by ${JSON.stringify(path)}`,
+          )
+        }
+      }
+    }
+  }
+})
+
+test("disabled - Windows case folding hides a fully denied tool", () => {
+  const rules = [
+    { permission: "edit", pattern: "*", action: "deny" as const },
+    { permission: "edit", pattern: "FOO", action: "allow" as const },
+    { permission: "edit", pattern: "foo", action: "deny" as const },
+  ]
+  expect(Permission.disabled(["edit"], rules, { caseInsensitive: true }).has("edit")).toBe(true)
+  expect(Permission.disabled(["edit"], rules, { caseInsensitive: false }).has("edit")).toBe(false)
+})
+
+test("globCovers - Windows case folding matches the regex i flag", () => {
+  expect(globCovers("foo", "FOO", { caseInsensitive: true })).toBe(true)
+  expect(globCovers("FOO", "foo", { caseInsensitive: true })).toBe(true)
+  expect(globCovers("foo", "FOO", { caseInsensitive: false })).toBe(false)
+})
+
+test("globCovers - repeated case-insensitive calls keep pattern state local", () => {
+  for (let index = 0; index < 1000; index++) {
+    const suffix = String(index)
+    expect(globCovers("foo" + suffix, "FOO" + suffix, { caseInsensitive: true })).toBe(true)
+  }
+})
+
+test("globCovers - Windows-generated coverage never contradicts the si matcher", () => {
+  const makeMatcher = (flags: string) => {
+    const cache = new Map<string, RegExp>()
+    return (input: string, pattern: string) => {
+      let regex = cache.get(pattern)
+      if (!regex) {
+        let escaped = pattern
+          .replaceAll("\\", "/")
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, ".")
+        if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+        regex = new RegExp("^" + escaped + "$", flags)
+        cache.set(pattern, regex)
+      }
+      return regex.test(input.replaceAll("\\", "/"))
+    }
+  }
+  const unmatched = makeMatcher("si")
+  const atoms = ["A", "a", "F", "f", "s", "ſ", "Σ", "σ", "ς", "İ", "i", "?", "*", " "]
+  const patterns = ["", ...atoms, ...atoms.flatMap((a) => atoms.map((b) => a + b))]
+  patterns.push("a *", "A *", "s *", "ſ *", "😀 *", "? *")
+  const corpus = ["", "a", "A", "f", "F", "s", "ſ", "Σ", "σ", "ς", "İ", "i", "😀", "😀A", "a ", " "]
+  for (const deny of patterns) {
+    for (const allow of patterns) {
+      if (!globCovers(deny, allow, { caseInsensitive: true })) continue
+      for (const path of corpus) {
+        if (unmatched(path, allow) && !unmatched(path, deny)) {
+          throw new Error(
+            `globCovers(${JSON.stringify(deny)}, ${JSON.stringify(allow)}, Windows) contradicted by ${JSON.stringify(path)}`,
+          )
+        }
+      }
+    }
+  }
+})
+
+test("globCovers - POSIX-generated coverage never contradicts the s matcher", () => {
+  const makeMatcher = (flags: string) => {
+    const cache = new Map<string, RegExp>()
+    return (input: string, pattern: string) => {
+      let regex = cache.get(pattern)
+      if (!regex) {
+        let escaped = pattern
+          .replaceAll("\\", "/")
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, ".")
+        if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
+        regex = new RegExp("^" + escaped + "$", flags)
+        cache.set(pattern, regex)
+      }
+      return regex.test(input.replaceAll("\\", "/"))
+    }
+  }
+  const unmatched = makeMatcher("s")
+  const atoms = ["A", "a", "F", "f", "s", "ſ", "Σ", "σ", "ς", "İ", "i", "?", "*", " "]
+  const patterns = ["", ...atoms, ...atoms.flatMap((a) => atoms.map((b) => a + b))]
+  patterns.push("a *", "A *", "s *", "ſ *", "😀 *", "? *")
+  const corpus = ["", "a", "A", "f", "F", "s", "ſ", "Σ", "σ", "ς", "İ", "i", "😀", "😀A", "a ", " "]
+  for (const deny of patterns) {
+    for (const allow of patterns) {
+      if (!globCovers(deny, allow, { caseInsensitive: false })) continue
+      for (const path of corpus) {
+        if (unmatched(path, allow) && !unmatched(path, deny)) {
+          throw new Error(
+            `globCovers(${JSON.stringify(deny)}, ${JSON.stringify(allow)}, POSIX) contradicted by ${JSON.stringify(path)}`,
+          )
+        }
+      }
+    }
+  }
+})
+
+test("disabledByPolicy - a covering glob deny removes a plan edit allow", () => {
+  const native = Permission.fromConfig({
+    edit: { "*": "deny", ".opencode/plans/*.md": "allow" },
+  })
+  const configured = Permission.merge(native, Permission.fromConfig({ edit: { ".opencode/plans/*": "deny" } }))
+  const result = Permission.disabledByPolicy(["edit"], native, configured)
+  expect(result.has("edit")).toBe(true)
+})
+
+test("disabledByPolicy - a noncovering glob deny keeps a plan edit allow", () => {
+  const native = Permission.fromConfig({
+    edit: { "*": "deny", ".opencode/plans/*.md": "allow" },
+  })
+  const configured = Permission.merge(native, Permission.fromConfig({ edit: { ".opencode/plans/private/*": "deny" } }))
+  const result = Permission.disabledByPolicy(["edit"], native, configured)
+  expect(result.has("edit")).toBe(false)
+})
+
+test("disabledByPolicy - native deny wins over a later configured allow", () => {
+  const result = Permission.disabledByPolicy(
+    ["edit", "read"],
+    Permission.fromConfig({ "*": "deny" }),
+    Permission.fromConfig({ "*": "allow", edit: "allow" }),
+  )
+  expect(result.has("edit")).toBe(true)
+  expect(result.has("read")).toBe(true)
+})
+
+test("disabledByPolicy - configured deny removes a tool that native allows", () => {
+  const result = Permission.disabledByPolicy(
+    ["edit", "read"],
+    Permission.fromConfig({ "*": "allow" }),
+    Permission.fromConfig({ "*": "deny", edit: "allow" }),
+  )
+  expect(result.has("edit")).toBe(false)
+  expect(result.has("read")).toBe(true)
+})
+
 // ask tests
 
 it.instance(
@@ -618,6 +860,258 @@ it.instance(
         }),
       )
       expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).message).toContain("The user has specified a rule")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - names the role for a native role deny",
+  () =>
+    Effect.gen(function* () {
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "edit",
+            patterns: ["README.md"],
+            metadata: {},
+            always: [],
+            ruleset: [],
+          },
+          {
+            role: "explore",
+            resolveRuleset: () =>
+              Effect.succeed({
+                native: [{ permission: "*", pattern: "*", action: "deny" }],
+                rules: [{ permission: "*", pattern: "*", action: "deny" }],
+              }),
+          },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBe("This tool is not available to the explore agent.")
+      expect(denied(err).message).not.toContain("The user has specified a rule")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - native role deny wins over a later user allow",
+  () =>
+    Effect.gen(function* () {
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "edit",
+            patterns: ["README.md"],
+            metadata: {},
+            always: [],
+            ruleset: [
+              { permission: "*", pattern: "*", action: "deny" },
+              { permission: "edit", pattern: "*", action: "allow" },
+            ],
+          },
+          {
+            role: "explore",
+            resolveRuleset: () =>
+              Effect.succeed({
+                native: [{ permission: "*", pattern: "*", action: "deny" }],
+                rules: [
+                  { permission: "*", pattern: "*", action: "deny" },
+                  { permission: "edit", pattern: "*", action: "allow" },
+                ],
+              }),
+          },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBe("This tool is not available to the explore agent.")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - names the role for a derived child-session deny",
+  () =>
+    Effect.gen(function* () {
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "todowrite",
+            patterns: ["*"],
+            metadata: {},
+            always: [],
+            ruleset: [{ permission: "todowrite", pattern: "*", action: "deny" }],
+          },
+          { role: "build", roleDefaultIndices: [0], sessionRuleCount: 1 },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBe("This tool is not available to the build agent.")
+      expect(denied(err).message).not.toContain("The user has specified a rule")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - keeps user wording when a later user rule wins over a role default",
+  () =>
+    Effect.gen(function* () {
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "todowrite",
+            patterns: ["*"],
+            metadata: {},
+            always: [],
+            ruleset: [
+              { permission: "todowrite", pattern: "*", action: "deny" },
+              { permission: "todowrite", pattern: "*", action: "deny" },
+            ],
+          },
+          { role: "build", roleDefaultIndices: [0], sessionRuleCount: 2 },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBeUndefined()
+      expect(denied(err).message).toContain("The user has specified a rule")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - legacy trailing role defaults still use role wording",
+  () =>
+    Effect.gen(function* () {
+      const legacy = [
+        { permission: "bash", pattern: "*", action: "deny" as const },
+        { permission: "todowrite", pattern: "*", action: "deny" as const },
+        { permission: "task", pattern: "*", action: "deny" as const },
+      ]
+      const subagent: Agent.Info = {
+        name: "build",
+        mode: "subagent",
+        options: {},
+        permission: Permission.fromConfig({ "*": "allow" }),
+      }
+      const indices = subagentRoleDefaultRuleIndices(legacy, subagent)
+      expect(indices).toEqual([1, 2])
+
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "todowrite",
+            patterns: ["*"],
+            metadata: {},
+            always: [],
+            ruleset: legacy,
+          },
+          { role: subagent.name, roleDefaultIndices: indices, sessionRuleCount: legacy.length },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBe("This tool is not available to the build agent.")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - ambiguous inherited deny stays on user wording",
+  () =>
+    Effect.gen(function* () {
+      const ambiguous = [
+        { permission: "todowrite", pattern: "*", action: "deny" as const },
+        { permission: "task", pattern: "*", action: "deny" as const },
+        { permission: "todowrite", pattern: "*", action: "deny" as const },
+      ]
+      const subagent: Agent.Info = {
+        name: "build",
+        mode: "subagent",
+        options: {},
+        permission: Permission.fromConfig({ "*": "allow" }),
+      }
+      expect(subagentRoleDefaultRuleIndices(ambiguous, subagent)).toEqual([])
+
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "todowrite",
+            patterns: ["*"],
+            metadata: {},
+            always: [],
+            ruleset: ambiguous,
+          },
+          { role: subagent.name, roleDefaultIndices: [], sessionRuleCount: ambiguous.length },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBeUndefined()
+      expect(denied(err).message).toContain("The user has specified a rule")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - an inherited matching deny keeps user wording over role defaults",
+  () =>
+    Effect.gen(function* () {
+      const subagent: Agent.Info = {
+        name: "build",
+        mode: "subagent",
+        options: {},
+        permission: Permission.fromConfig({ "*": "allow" }),
+      }
+      const derived = deriveSubagentSessionPermission({
+        parentSessionPermission: Permission.fromConfig({ todowrite: "deny" }),
+        subagent,
+      })
+      const err = yield* fail(
+        ask(
+          {
+            sessionID: SessionID.make("session_test"),
+            permission: "todowrite",
+            patterns: ["*"],
+            metadata: {},
+            always: [],
+            ruleset: derived,
+          },
+          {
+            role: subagent.name,
+            roleDefaultIndices: subagentRoleDefaultRuleIndices(derived, subagent),
+            sessionRuleCount: derived.length,
+          },
+        ),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBeUndefined()
+      expect(denied(err).message).toContain("The user has specified a rule")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - keeps user-rule wording for a user-configured deny",
+  () =>
+    Effect.gen(function* () {
+      const err = yield* fail(
+        ask({
+          sessionID: SessionID.make("session_test"),
+          permission: "todowrite",
+          patterns: ["*"],
+          metadata: {},
+          always: [],
+          ruleset: [{ permission: "todowrite", pattern: "*", action: "deny" }],
+        }),
+      )
+      expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      expect(denied(err).reason).toBeUndefined()
+      expect(denied(err).message).toContain("The user has specified a rule")
     }),
   { git: true },
 )
