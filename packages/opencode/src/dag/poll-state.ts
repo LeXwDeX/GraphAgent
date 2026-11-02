@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { Clock, Effect, Semaphore } from "effect"
 
 export interface PollEntry {
