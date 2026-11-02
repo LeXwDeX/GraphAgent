@@ -25,7 +25,11 @@ export interface Interface {
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeDirectory: (directory: string) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
-  readonly provide: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+  readonly provide: <A, E, R>(
+    input: LoadInput,
+    effect: Effect.Effect<A, E, R>,
+    options?: { detach?: boolean },
+  ) => Effect.Effect<A, E, R>
   readonly provideIfLoaded?: <A, E, R>(
     input: LoadInput,
     effect: Effect.Effect<A, E, R>,
@@ -261,8 +265,26 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             entry.selfClose
               ? disposeContext(ctx)
               : Effect.gen(function* () {
-                  yield* closeEntryScope(entry)
+                  if (options?.waitIdle) {
+                    // Reload waits for admitted work to leave before disposers
+                    // announce that the instance was replaced.
+                    const settled = yield* waitIdle(entry).pipe(Effect.timeoutOption("1 second"))
+                    if (Option.isNone(settled)) {
+                      yield* Effect.logWarning("instance reload gave up waiting for an in-flight cancellation", {
+                        directory,
+                      })
+                    }
+                  }
                   yield* disposeContext(ctx)
+                  // Directory disposers reject pending question/permission
+                  // requests with typed errors. Closing the entry scope before
+                  // that rejection reaches the waiter would interrupt it, so
+                  // give the rejected work a bounded chance to stop first.
+                  const rejected = yield* waitIdle(entry).pipe(Effect.timeoutOption("1 second"))
+                  if (Option.isNone(rejected)) {
+                    yield* Effect.logWarning("instance dispose interrupted pending work", { directory })
+                  }
+                  yield* closeEntryScope(entry)
                 }),
           ),
         )
@@ -275,14 +297,6 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             yield* Effect.logWarning("instance dispose waited for an in-flight provideIfLoaded handoff", {
               directory,
             })
-          }
-          if (options?.waitIdle) {
-            const idle = yield* waitIdle(entry).pipe(Effect.timeoutOption("1 second"))
-            if (Option.isNone(idle)) {
-              yield* Effect.logWarning("instance reload gave up waiting for an in-flight cancellation", {
-                directory,
-              })
-            }
           }
           return yield* cleanup
         }).pipe(
@@ -320,6 +334,9 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         if (cache.get(directory) !== entry) return false
         entry.disposing = true
         entry.selfClose ??= (yield* entryRef) === entry
+        // The caller that disposed its own entry may keep using the directory
+        // after cleanup (a remount). Other provides stay fenced.
+        if (entry.selfClose) yield* InstanceState.adoptGeneration(undefined)
         entry.closing ??= InstanceState.markClosing(directory, entry.generation)
         const cleanup = yield* Effect.uninterruptible(startCleanup(directory, entry, ctx, options))
         const exit = yield* Deferred.await(cleanup).pipe(Effect.onInterrupt(() => failDisposeWaiters(directory, entry)))
@@ -471,7 +488,11 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
                   return entry
                 }),
               )
-              return yield* restore(Deferred.await(entry.deferred))
+              const ctx = yield* restore(Deferred.await(entry.deferred))
+              // The caller that performed the reload continues against the new
+              // entry. Other provides keep their generation and stay fenced.
+              yield* InstanceState.adoptGeneration(entry.generation)
+              return ctx
             }),
           ),
         ),
@@ -547,19 +568,32 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       return yield* cachedDisposeAll
     })
 
-    const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+    const provide = <A, E, R>(
+      input: LoadInput,
+      effect: Effect.Effect<A, E, R>,
+      options?: { detach?: boolean },
+    ): Effect.Effect<A, E, R> => {
       const directory = FSUtil.resolve(input.directory)
       return Effect.gen(function* () {
         const ctx = yield* load(input)
         const entry = cache.get(directory)
-        if (!entry) return yield* provide(input, effect)
+        if (!entry) return yield* provide(input, effect, options)
         const loaded = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
         // Disposal may start while this caller waits for the load. Never fork
         // work into a closing generation; reload must pick the new entry.
         if (Exit.isFailure(loaded) || loaded.value !== ctx || entry.disposing || cache.get(directory) !== entry) {
-          return yield* provide(input, effect)
+          return yield* provide(input, effect, options)
         }
         beginUse(entry)
+        if (options?.detach) {
+          // Harness code (the tests' instance scope) must outlive a directory
+          // reload instead of being interrupted with the replaced entry scope.
+          return yield* InstanceState.withGeneration(entry.generation, effect).pipe(
+            Effect.provideService(InstanceRef, ctx),
+            Effect.provideService(entryRef, entry),
+            Effect.onExit(() => onUseExit(entry)),
+          )
+        }
         const forked = InstanceState.withGeneration(entry.generation, effect).pipe(
           Scope.provide(entry.scope),
           Effect.provideService(InstanceRef, ctx),

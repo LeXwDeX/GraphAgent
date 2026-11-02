@@ -22,12 +22,36 @@ const generationRef = Context.Reference<object | undefined>("~opencode/InstanceS
   defaultValue: () => undefined,
 })
 
+// One provide block owns one mutable cell. A reload retargets the cell of the
+// caller that performed it (the request or test that continues afterwards),
+// while every other provide keeps the generation it was admitted with.
+export interface GenerationCell {
+  current: object | undefined
+}
+
+const generationCellRef = Context.Reference<GenerationCell | undefined>("~opencode/InstanceStateGenerationCell", {
+  defaultValue: () => undefined,
+})
+
 /** Run effects belonging to one instance generation, so a replacement
  * generation can initialize while the old one is still draining. */
-export const withGeneration = <A, E, R>(
-  generation: object,
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> => Effect.provideService(effect, generationRef, generation)
+export const withGeneration = <A, E, R>(generation: object, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  Effect.provideService(Effect.provideService(effect, generationRef, generation), generationCellRef, {
+    current: generation,
+  })
+
+/** Retarget the calling provide block after a completed reload, or clear it
+ * after the caller disposed the directory itself. */
+export const adoptGeneration = (generation: object | undefined) =>
+  Effect.gen(function* () {
+    const cell = yield* generationCellRef
+    if (cell) cell.current = generation
+  })
+
+const currentGeneration = Effect.gen(function* () {
+  const cell = yield* generationCellRef
+  return cell ? cell.current : yield* generationRef
+})
 
 // Per-directory lifecycle fence. A directory that is being disposed must not
 // lazily re-create status, runners, or other instance state from a late cancel.
@@ -119,7 +143,7 @@ export const make = <A, E = never, R = never>(
       lookup: () =>
         Effect.gen(function* () {
           const ctx = yield* context
-          const generation = yield* generationRef
+          const generation = yield* currentGeneration
           if (isFenced(ctx.directory, generation)) {
             return yield* Effect.die(new Closing(ctx.directory))
           }
@@ -139,7 +163,7 @@ export const make = <A, E = never, R = never>(
 export const get = <A, E, R>(self: InstanceState<A, E, R>) =>
   Effect.gen(function* () {
     const stateDirectory = yield* directory
-    const generation = yield* generationRef
+    const generation = yield* currentGeneration
     if (isFenced(stateDirectory, generation)) {
       // Instance teardown itself must still finish its status/reason writes,
       // but it may only observe state that already exists. A late cancel has

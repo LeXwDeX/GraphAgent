@@ -164,14 +164,12 @@ export function tmpdirScoped<E = never, R = never>(options?: {
 export const provideInstance =
   (input: string | InstanceStore.LoadInput) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | InstanceStore.Service> =>
-    InstanceStore.Service.use((store) =>
-      store.provide(typeof input === "string" ? { directory: input } : input, self),
-    )
+    InstanceStore.Service.use((store) => store.provide(typeof input === "string" ? { directory: input } : input, self))
 
 export const provideInstanceEffect =
   (directory: string) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | InstanceStore.Service> =>
-    InstanceStore.Service.use((store) => store.provide({ directory }, self))
+    InstanceStore.Service.use((store) => store.provide({ directory }, self, { detach: true }))
 
 export const reloadInstance = (input: InstanceStore.LoadInput) =>
   InstanceStore.Service.use((store) => store.reload(input))
@@ -205,7 +203,10 @@ export const withTmpdirInstance =
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped(options)
-      return yield* self.pipe(Effect.provideService(TestInstance, { directory }), provideInstanceEffect(directory))
+      return yield* Effect.scoped(self).pipe(
+        Effect.provideService(TestInstance, { directory }),
+        provideInstanceEffect(directory),
+      )
     }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer))
 
 export function provideTmpdirServer<A, E, R>(

@@ -173,7 +173,7 @@ export async function ensureRunning(redirectUri?: string): Promise<void> {
 
 export function waitForCallback(oauthState: string, mcpName?: string): Promise<string> {
   if (mcpName) mcpNameToState.set(mcpName, oauthState)
-  return new Promise((resolve, reject) => {
+  const promise = new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
       if (pendingAuths.has(oauthState)) {
         pendingAuths.delete(oauthState)
@@ -185,6 +185,10 @@ export function waitForCallback(oauthState: string, mcpName?: string): Promise<s
 
     pendingAuths.set(oauthState, { resolve, reject, timeout })
   })
+  // stop() may reject after the waiting fiber was interrupted. Mark the
+  // rejection as handled here; the caller still observes it while waiting.
+  promise.catch(() => {})
+  return promise
 }
 
 export function cancelPending(mcpName: string): void {
