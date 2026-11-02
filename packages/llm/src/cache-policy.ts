@@ -58,8 +58,14 @@ const markLastSystem = (system: LLMRequest["system"], hint: CacheHint): LLMReque
   return system.map((part, i) => (i === last ? { ...part, cache: hint } : part))
 }
 
+// A message can opt out of automatic cache boundaries with
+// `metadata: { cache: "none" }`. Ephemeral request-only blocks use this so the
+// positional breakpoint stays on the stable content before them.
+const uncached = (message: Message) => message.metadata?.cache === "none"
+const uncachedPart = (part: { metadata?: Record<string, unknown> }) => part.metadata?.cache === "none"
+
 const lastIndexOfRole = (messages: ReadonlyArray<Message>, role: Message["role"]): number =>
-  messages.findLastIndex((m) => m.role === role)
+  messages.findLastIndex((m) => m.role === role && !uncached(m))
 
 // Mark the last text part of `messages[index]`. If no text part exists, mark
 // the last content part regardless of type — that's the breakpoint position
@@ -67,9 +73,12 @@ const lastIndexOfRole = (messages: ReadonlyArray<Message>, role: Message["role"]
 const markMessageAt = (messages: ReadonlyArray<Message>, index: number, hint: CacheHint): ReadonlyArray<Message> => {
   if (index < 0 || index >= messages.length) return messages
   const target = messages[index]!
-  if (target.content.length === 0) return messages
-  const lastTextIndex = target.content.findLastIndex((part) => part.type === "text")
-  const markAt = lastTextIndex >= 0 ? lastTextIndex : target.content.length - 1
+  if (target.content.length === 0 || uncached(target)) return messages
+  // Request-only parts (such as the todo reminder) opt out with
+  // `metadata.cache = "none"`; keep the breakpoint on the persisted part.
+  const lastTextIndex = target.content.findLastIndex((part) => part.type === "text" && !uncachedPart(part))
+  const markAt = lastTextIndex >= 0 ? lastTextIndex : target.content.findLastIndex((part) => !uncachedPart(part))
+  if (markAt < 0) return messages
   const existing = target.content[markAt]!
   if ("cache" in existing && existing.cache) return messages
   const nextContent = target.content.map((part, i) => (i === markAt ? ({ ...part, cache: hint } as ContentPart) : part))

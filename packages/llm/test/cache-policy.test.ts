@@ -1,13 +1,19 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { CacheHint, LLM, Message } from "../src"
+import { CacheHint, LLM, Message, ToolCallPart, ToolResultPart } from "../src"
 import { Auth, LLMClient } from "../src/route"
 import { AmazonBedrock } from "../src/providers"
 import * as AnthropicMessages from "../src/protocols/anthropic-messages"
+import * as BedrockConverse from "../src/protocols/bedrock-converse"
 import * as Gemini from "../src/protocols/gemini"
 import * as OpenAIChat from "../src/protocols/openai-chat"
 import { applyCachePolicy } from "../src/cache-policy"
 import { it } from "./lib/effect"
+
+type OpenAIOrGeminiBody = {
+  messages?: Array<{ role: string; tool_calls?: Array<{ id: string }> }>
+  contents?: Array<{ role: string }>
+}
 
 const anthropicModel = AnthropicMessages.route
   .with({ endpoint: { baseURL: "https://api.anthropic.test/v1/" }, auth: Auth.header("x-api-key", "test") })
@@ -248,6 +254,177 @@ describe("applyCachePolicy", () => {
       expect(body.messages[0]?.content[0]?.cache_control).toBeUndefined()
       expect(body.messages[1]?.content[0]?.cache_control).toEqual({ type: "ephemeral" })
       expect(body.messages[2]?.content[0]?.cache_control).toBeUndefined()
+    }),
+  )
+
+  it.effect("'auto' skips an ephemeral message and keeps the boundary on stable content", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model: anthropicModel,
+          messages: [
+            Message.user("persisted user"),
+            Message.make({
+              role: "user",
+              content: [Message.text("[todo reminder] ephemeral")],
+              metadata: { cache: "none" },
+            }),
+          ],
+          cache: "auto",
+        }),
+      )
+
+      expect(prepared.body).toMatchObject({
+        messages: [
+          { role: "user", content: [{ type: "text", text: "persisted user", cache_control: { type: "ephemeral" } }] },
+          { role: "user", content: [{ type: "text", text: "[todo reminder] ephemeral" }] },
+        ],
+      })
+    }),
+  )
+
+  it.effect("Bedrock keeps the cachePoint before an ephemeral message", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model: bedrockModel,
+          messages: [
+            Message.user("persisted user"),
+            Message.make({
+              role: "user",
+              content: [Message.text("[todo reminder] ephemeral")],
+              metadata: { cache: "none" },
+            }),
+          ],
+          cache: "auto",
+        }),
+      )
+
+      expect(prepared.body).toMatchObject({
+        messages: [
+          { role: "user", content: [{ text: "persisted user" }, { cachePoint: { type: "default" } }] },
+          { role: "user", content: [{ text: "[todo reminder] ephemeral" }] },
+        ],
+      })
+    }),
+  )
+
+  it.effect("keeps the cache breakpoint on the persisted part in a tool-call continuation", () =>
+    Effect.gen(function* () {
+      const continuation = (reminder: boolean) =>
+        LLM.request({
+          model: anthropicModel,
+          cache: "auto",
+          messages: [
+            Message.make({
+              role: "user",
+              content: [
+                Message.text("persisted user"),
+                ...(reminder
+                  ? [{ type: "text" as const, text: "[todo reminder] ephemeral", metadata: { cache: "none" } }]
+                  : []),
+              ],
+            }),
+            Message.assistant([ToolCallPart.make({ id: "call_1", name: "t1", input: { query: "x" } })]),
+            Message.tool(ToolResultPart.make({ id: "call_1", name: "t1", result: { ok: true } })),
+          ],
+        })
+
+      const withReminder = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(continuation(true))
+      const withoutReminder = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(continuation(false))
+      const withBody = withReminder.body
+      const withoutBody = withoutReminder.body
+
+      expect(withBody.messages[0]?.content[0]).toEqual({
+        type: "text",
+        text: "persisted user",
+        cache_control: { type: "ephemeral" },
+      })
+      expect(withBody.messages[0]?.content[1]).toMatchObject({ type: "text", text: "[todo reminder] ephemeral" })
+      expect(withBody.messages[0]?.content[1]?.cache_control).toBeUndefined()
+      expect(withBody.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"])
+      // Compare the actual wire prefix up to the positional cache breakpoint,
+      // not a filtered app-level message list.
+      expect([withBody.system, withBody.messages[0]?.content[0]]).toEqual([
+        withoutBody.system,
+        withoutBody.messages[0]?.content[0],
+      ])
+    }),
+  )
+
+  it.effect("keeps the Bedrock cachePoint before the ephemeral part in a tool-call continuation", () =>
+    Effect.gen(function* () {
+      const continuation = (reminder: boolean) =>
+        LLM.request({
+          model: bedrockModel,
+          cache: "auto",
+          messages: [
+            Message.make({
+              role: "user",
+              content: [
+                Message.text("persisted user"),
+                ...(reminder
+                  ? [{ type: "text" as const, text: "[todo reminder] ephemeral", metadata: { cache: "none" } }]
+                  : []),
+              ],
+            }),
+            Message.assistant([ToolCallPart.make({ id: "call_1", name: "t1", input: { query: "x" } })]),
+            Message.tool(ToolResultPart.make({ id: "call_1", name: "t1", result: { ok: true } })),
+          ],
+        })
+
+      const withReminder = yield* LLMClient.prepare<BedrockConverse.BedrockConverseBody>(continuation(true))
+      const withoutReminder = yield* LLMClient.prepare<BedrockConverse.BedrockConverseBody>(continuation(false))
+      const withBody = withReminder.body
+      const withoutBody = withoutReminder.body
+
+      expect(withBody.messages[0]?.content).toMatchObject([
+        { text: "persisted user" },
+        { cachePoint: { type: "default" } },
+        { text: "[todo reminder] ephemeral" },
+      ])
+      expect(withBody.messages.map((message) => message.role)).toEqual(["user", "assistant", "user"])
+      expect([withBody.system, withBody.messages[0]?.content.slice(0, 2)]).toEqual([
+        withoutBody.system,
+        withoutBody.messages[0]?.content.slice(0, 2),
+      ])
+    }),
+  )
+
+  it.effect("preserves tool-call order with an ephemeral part on OpenAI and Gemini", () =>
+    Effect.gen(function* () {
+      for (const model of [openaiModel, geminiModel]) {
+        const prepared = yield* LLMClient.prepare<OpenAIOrGeminiBody>(
+          LLM.request({
+            model,
+            cache: "auto",
+            messages: [
+              Message.make({
+                role: "user",
+                content: [
+                  Message.text("persisted user"),
+                  { type: "text", text: "[todo reminder] ephemeral", metadata: { cache: "none" } },
+                ],
+              }),
+              Message.assistant([ToolCallPart.make({ id: "call_1", name: "t1", input: { query: "x" } })]),
+              Message.tool(ToolResultPart.make({ id: "call_1", name: "t1", result: { ok: true } })),
+            ],
+          }),
+        )
+        const body = prepared.body
+        const flat = JSON.stringify(body)
+        expect(flat).toContain("persisted user")
+        expect(flat).toContain("[todo reminder] ephemeral")
+        expect(flat).not.toContain("cache_control")
+        if (model === openaiModel) {
+          expect(body.messages?.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+          expect(body.messages?.[1]?.tool_calls?.[0]?.id).toBe("call_1")
+        } else {
+          expect(body.contents?.map((message) => message.role)).toEqual(["user", "model", "user"])
+          expect(flat).toContain("functionCall")
+          expect(flat).toContain("functionResponse")
+        }
+      }
     }),
   )
 

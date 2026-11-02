@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer"
 import { Effect, Schema } from "effect"
 import { Route } from "../route/client"
 import { Auth } from "../route/auth"
@@ -16,6 +17,8 @@ import {
   type ToolCallPart,
   type ToolDefinition,
   type ToolContent,
+  type ToolFileContent,
+  type ToolResultPart,
 } from "../schema"
 import { isRecord, JsonObject, optionalArray, optionalNull, ProviderShared } from "./shared"
 import { OpenAIOptions } from "./utils/openai-options"
@@ -210,6 +213,101 @@ const lowerMedia = Effect.fn("OpenAIChat.lowerMedia")(function* (part: MediaPart
 const openAICompatibleReasoningContent = (native: unknown) =>
   isRecord(native) && typeof native.reasoning_content === "string" ? native.reasoning_content : undefined
 
+const jsonText = (value: unknown) => {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+const mimeEssence = (mediaType: string) => (mediaType.split(";")[0] ?? "").trim().toLowerCase()
+
+const isTextualMediaType = (mediaType: string) => {
+  const type = mimeEssence(mediaType)
+  return type.startsWith("text/") || type === "application/json" || type.endsWith("+json")
+}
+
+const decodeUTF8 = (bytes: Uint8Array) => {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } catch {
+    return undefined
+  }
+}
+
+const decodeBase64Text = (data: string) => {
+  if (data.length === 0 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return undefined
+  return decodeUTF8(Buffer.from(data, "base64"))
+}
+
+const decodePercentText = (data: string) => {
+  try {
+    return decodeURIComponent(data)
+  } catch {
+    return undefined
+  }
+}
+
+const dataURLText = (uri: string) => {
+  if (!uri.startsWith("data:")) return undefined
+  const match = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(uri)
+  if (!match) return undefined
+  return match[2] === ";base64" ? decodeBase64Text(match[3] ?? "") : decodePercentText(match[3] ?? "")
+}
+
+type SafeURL = { url: string; redacted: boolean }
+
+// Keep only the scheme, host, and path. Credentials, query strings (signed
+// tokens), and fragments never become model-visible text.
+const safeURL = (value: string): SafeURL | undefined => {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined
+    return {
+      url: `${url.protocol}//${url.host}${url.pathname}`,
+      redacted: url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "",
+    }
+  } catch {
+    return undefined
+  }
+}
+
+const urlText = (url: SafeURL) => (url.redacted ? `${url.url} [redacted]` : url.url)
+
+const hostedFileText = (item: ToolFileContent) => {
+  const mediaType = mimeEssence(item.mime)
+  const label = `[${mediaType} attachment${item.name ? `: ${item.name}` : ""}]`
+  if (isTextualMediaType(mediaType)) {
+    const data = dataURLText(item.uri)
+    if (data !== undefined) return `${label}\n${data}`
+  }
+  const url = safeURL(item.uri)
+  return url ? `${label} ${urlText(url)}` : label
+}
+
+const hostedToolResultText = (part: ToolResultPart) => {
+  if (part.result.type === "json") return jsonText(part.result.value)
+  if (part.result.type !== "content") return ProviderShared.toolResultText(part)
+  // Preserve the narrowed array element type when compiled through a consumer package.
+  const content: ReadonlyArray<ToolContent> = part.result.value
+  return content.map((item) => (item.type === "text" ? item.text : hostedFileText(item))).join("\n")
+}
+
+// OpenAI Chat can only replay local function calls. Historical
+// provider-executed calls stay as assistant text instead of becoming new local
+// calls. Assistant tool results cannot be represented either, so they keep
+// their content as neutral text to preserve delayed and orphan history.
+const lowerHostedToolCall = (part: ToolCallPart): TextPart => ({
+  type: "text",
+  text: `[Provider-executed tool call: ${part.name}] ${jsonText(part.input)}`,
+})
+
+const lowerAssistantToolResult = (part: ToolResultPart): TextPart => ({
+  type: "text",
+  text: `[${part.providerExecuted === true ? "Provider-executed tool result" : "Tool result"}: ${part.name}] ${hostedToolResultText(part)}`,
+})
+
 const lowerUserMessage = Effect.fn("OpenAIChat.lowerUserMessage")(function* (message: OpenAIChatRequestMessage) {
   const content: Array<Schema.Schema.Type<typeof OpenAIChatUserContent>> = []
   for (const part of message.content) {
@@ -235,8 +333,6 @@ const lowerAssistantMessage = Effect.fn("OpenAIChat.lowerAssistantMessage")(func
   const reasoning: ReasoningPart[] = []
   const toolCalls: OpenAIChatAssistantToolCall[] = []
   for (const part of message.content) {
-    if (!ProviderShared.supportsContent(part, ["text", "reasoning", "tool-call"]))
-      return yield* ProviderShared.unsupportedContent("OpenAI Chat", "assistant", ["text", "reasoning", "tool-call"])
     if (part.type === "text") {
       content.push(part)
       continue
@@ -246,9 +342,20 @@ const lowerAssistantMessage = Effect.fn("OpenAIChat.lowerAssistantMessage")(func
       continue
     }
     if (part.type === "tool-call") {
-      toolCalls.push(lowerToolCall(part))
+      if (part.providerExecuted === true) content.push(lowerHostedToolCall(part))
+      else toolCalls.push(lowerToolCall(part))
       continue
     }
+    if (part.type === "tool-result") {
+      content.push(lowerAssistantToolResult(part))
+      continue
+    }
+    return yield* ProviderShared.unsupportedContent("OpenAI Chat", "assistant", [
+      "text",
+      "reasoning",
+      "tool-call",
+      "tool-result",
+    ])
   }
   return {
     role: "assistant" as const,
