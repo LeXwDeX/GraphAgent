@@ -8,6 +8,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { Effect, Fiber, Layer } from "effect"
 import { Global } from "@opencode-ai/core/global"
+import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Project } from "@opencode-ai/core/project"
 import { Agent } from "@/agent/agent"
@@ -16,7 +17,8 @@ import { Permission } from "@/permission"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
-import { artifactReadPermissions, makeArtifactSourceAuthorizer } from "@/dag/runtime/artifact-permissions"
+import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "@/dag/runtime/artifact-permissions"
+import type { ManagedOutputFileRef } from "@/dag/runtime/output-ref"
 import { it, pollWithTimeout } from "../lib/effect"
 
 const provenance = {
@@ -25,6 +27,204 @@ const provenance = {
   child_session_id: "ses_producer",
   replan_attempt: 0,
 }
+
+test("moves the artifact worktree and boundary to the bound execution directory", () => {
+  expect(artifactPermissionBase("/owner", "/owner", "/worktree-b")).toEqual({
+    worktree: "/worktree-b",
+    boundary: "/worktree-b",
+  })
+  expect(artifactPermissionBase("/owner", "/owner", "/owner")).toEqual({
+    worktree: "/owner",
+    boundary: "/owner",
+  })
+})
+
+test("non-git artifact authorization uses the instance boundary without changing read rule paths", async () => {
+  const directory = path.join(os.tmpdir(), "dag-non-git-instance")
+  const inside = path.join(directory, "inside.txt")
+  const outside = path.join(path.dirname(directory), "dag-outside.txt")
+  const secret = path.join(directory, "secret.txt")
+  const rules = Permission.fromConfig({
+    read: { "*": "allow", [path.relative("/", secret)]: "deny" },
+    external_directory: { "*": "deny" },
+  })
+  const authorize = makeArtifactSourceAuthorizer(
+    { get: () => Effect.succeed({ agent: "build", permission: rules } as never) } as never,
+    { get: () => Effect.succeed({ permission: [] } as never) } as never,
+    "/",
+    undefined,
+    directory,
+  )
+  await Effect.runPromise(authorize("ses_producer", inside))
+  await expect(Effect.runPromise(authorize("ses_producer", outside))).rejects.toThrow("external_directory denied")
+  await expect(Effect.runPromise(authorize("ses_producer", secret))).rejects.toThrow("read denied")
+})
+
+test("non-git continuation authorization keeps the instance boundary for outside sources", async () => {
+  const directory = path.join(os.tmpdir(), "dag-continuation-non-git")
+  const inside = path.join(directory, "inside.txt")
+  const outside = path.join(path.dirname(directory), "dag-continuation-outside.txt")
+  const sessions = {
+    get: () => Effect.succeed({ agent: "build", permission: [] } as never),
+  } as never
+  const agents = { get: () => Effect.succeed({ permission: [] } as never) } as never
+  // Mirror loop.ts for a non-git owner: worktree "/" must not widen the boundary.
+  const base = artifactPermissionBase(directory, "/", directory)
+  expect(base).toEqual({ worktree: "/", boundary: directory })
+
+  const denyOutside = Permission.fromConfig({
+    read: { "*": "allow" },
+    external_directory: { "*": "deny" },
+  })
+  const denyAuthorize = makeArtifactSourceAuthorizer(
+    { get: () => Effect.succeed({ agent: "build", permission: denyOutside } as never) } as never,
+    agents,
+    base.worktree,
+    undefined,
+    base.boundary,
+  )
+  await Effect.runPromise(denyAuthorize("ses_producer", inside))
+  const denial = await Effect.runPromise(denyAuthorize("ses_producer", outside).pipe(Effect.flip))
+  expect(denial.message).toContain("external_directory denied")
+
+  const asked: string[] = []
+  const askAuthorize = makeArtifactSourceAuthorizer(
+    sessions,
+    { get: () => Effect.succeed({ permission: Permission.fromConfig({ read: { "*": "allow" } }) } as never) } as never,
+    base.worktree,
+    {
+      ask: (request: { permission: string }) =>
+        Effect.sync(() => {
+          asked.push(request.permission)
+        }),
+    } as never,
+    base.boundary,
+  )
+  await Effect.runPromise(askAuthorize("ses_producer", inside))
+  await Effect.runPromise(askAuthorize("ses_producer", outside))
+  expect(asked).toEqual(["external_directory"])
+})
+
+test.skipIf(process.platform === "win32")(
+  "literal wildcard artifact directories fail closed and never override a sibling deny",
+  async () => {
+    const root = path.join(os.tmpdir(), "dag-artifact-??")
+    const sibling = path.join(os.tmpdir(), "dag-artifact-ab", "content.txt")
+    const ref = {
+      kind: "file_ref",
+      content_ref: "managed-v1:test",
+      path: path.join(root, "content.txt"),
+      size: 0,
+      sha256: "0".repeat(64),
+      summary: "",
+      storage: "managed-v1",
+      source_path: path.join(root, "source.txt"),
+      provenance,
+    } satisfies ManagedOutputFileRef
+    const deny = {
+      permission: "external_directory",
+      pattern: path.join(path.dirname(sibling), "**").replaceAll("\\", "/"),
+      action: "deny",
+    } as const
+    const grants = artifactReadPermissions([ref], os.tmpdir(), [deny])
+
+    expect(Permission.evaluate("external_directory", sibling, [deny], grants).action).toBe("deny")
+    expect(grants.filter((rule) => rule.permission === "external_directory" && rule.action === "allow")).toEqual([])
+
+    const authorize = makeArtifactSourceAuthorizer(
+      { get: () => Effect.succeed({ agent: "build", permission: [] } as never) } as never,
+      { get: () => Effect.succeed({ permission: [] } as never) } as never,
+      os.tmpdir(),
+    )
+    const failure = await Effect.runPromise(
+      authorize("ses_producer", path.join(root, "source.txt")).pipe(Effect.flip),
+    )
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure.message).toContain("non-literal directory")
+
+    const basenameFailure = await Effect.runPromise(
+      authorize("ses_producer", path.join(os.tmpdir(), "dag-artifact-source-??.txt")).pipe(Effect.flip),
+    )
+    expect(basenameFailure).toBeInstanceOf(Error)
+    expect(basenameFailure.message).toContain("non-literal directory")
+  },
+)
+
+test.skipIf(process.platform === "win32")(
+  "specific file external denies fail closed",
+  () => {
+    const root = path.join(os.tmpdir(), "dag-artifact-specific-deny")
+    const target = path.join(root, "content.txt")
+    const source = path.join(root, "source.txt")
+    const ref = {
+      kind: "file_ref",
+      content_ref: "managed-v1:test",
+      path: target,
+      size: 0,
+      sha256: "0".repeat(64),
+      summary: "",
+      storage: "managed-v1",
+      source_path: source,
+      provenance,
+    } satisfies ManagedOutputFileRef
+
+    for (const deniedPath of [target, source]) {
+      const deny = {
+        permission: "external_directory",
+        pattern: deniedPath,
+        action: "deny",
+      } as const
+      const grants = artifactReadPermissions([ref], os.tmpdir(), [deny])
+      expect(Permission.evaluate("external_directory", deniedPath, [deny], grants).action).toBe("deny")
+      expect(grants.filter((rule) => rule.permission === "external_directory" && rule.action === "allow")).toEqual([])
+    }
+  },
+)
+
+test.skipIf(process.platform === "win32")(
+  "literal wildcard target basenames fail closed",
+  async () => {
+    const directory = path.join(os.tmpdir(), "dag-artifact-basename")
+    const target = path.join(directory, "artifact-??.txt")
+    const ref = {
+      kind: "file_ref",
+      content_ref: "managed-v1:test",
+      path: target,
+      size: 0,
+      sha256: "0".repeat(64),
+      summary: "",
+      storage: "managed-v1",
+      source_path: path.join(directory, "source.txt"),
+      provenance,
+    } satisfies ManagedOutputFileRef
+    const grants = artifactReadPermissions([ref], os.tmpdir())
+    const sibling = path.join(directory, "artifact-ab.txt")
+
+    expect(Permission.evaluate("read", path.relative(os.tmpdir(), sibling), grants).action).toBe("deny")
+    expect(grants.filter((rule) => rule.permission === "read" && rule.action === "allow")).toEqual([])
+
+    let approvals = 0
+    const authorize = makeArtifactSourceAuthorizer(
+      { get: () => Effect.succeed({ agent: "build", permission: [] } as never) } as never,
+      { get: () => Effect.succeed({ permission: [] } as never) } as never,
+      os.tmpdir(),
+      {
+        ask: () =>
+          Effect.sync(() => {
+            approvals++
+          }),
+      } as never,
+    )
+    for (const name of ["artifact-??.txt", "artifact-*.txt"]) {
+      const failure = await Effect.runPromise(
+        authorize("ses_producer", path.join(directory, name)).pipe(Effect.flip),
+      )
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure.message).toContain("non-literal directory")
+    }
+    expect(approvals).toBe(0)
+  },
+)
 
 test.skipIf(process.platform !== "win32")(
   "keeps canonical source deny and managed edit deny after the entire aliased worktree is deleted",
@@ -109,10 +309,13 @@ for (const permission of ["read", "external_directory"] as const) {
           Effect.promise(() => fs.rm(path.dirname(target), { recursive: true, force: true })),
         )
         yield* Effect.promise(() => fs.writeFile(source, body))
+        // The external pattern uses the canonical directory (capture resolves
+        // symlinks before authorizing); the read rule keeps the submitted path.
+        const canonicalSource = yield* Effect.promise(() => fs.realpath(source).then(FSUtil.normalizePath))
         const pattern =
           permission === "read"
             ? path.relative(process.cwd(), FSUtil.normalizePath(source))
-            : FSUtil.normalizePathPattern(path.join(directory, "*"))
+            : FSUtil.normalizePathPattern(path.join(path.dirname(canonicalSource), "*"))
         const sessionRules = [{ permission, pattern, action: decision === "deny" ? "deny" : "ask" }] as const
         const program = Effect.gen(function* () {
           const sessions = yield* Session.Service
@@ -194,3 +397,148 @@ for (const permission of ["read", "external_directory"] as const) {
     )
   }
 }
+
+test.skipIf(process.platform === "win32")(
+  "artifact capture refuses a parent directory swapped for a symlink after authorization",
+  async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "dag-artifact-parent-swap-"))
+    const boundary = path.join(root, "boundary")
+    const parent = path.join(boundary, "reports")
+    const outsideParent = path.join(root, "outside")
+    const source = path.join(parent, "report.txt")
+    const outside = path.join(outsideParent, "report.txt")
+    const insideBody = `inside body ${root}`
+    const outsideBody = `outside body ${root}`
+    const objectPath = (body: string) => {
+      const digest = createHash("sha256").update(body).digest("hex")
+      return path.join(Global.Path.data, "workflow-artifacts", "objects", digest.slice(0, 2), digest, "content.txt")
+    }
+    const objectDirectories: string[] = []
+    try {
+      await fs.mkdir(parent, { recursive: true })
+      await fs.mkdir(outsideParent, { recursive: true })
+      await fs.writeFile(source, insideBody)
+      await fs.writeFile(outside, outsideBody)
+
+      // The legitimate path still captures the authorized bytes.
+      const committed = await Effect.runPromise(commitOutputFileRef(source, provenance))
+      expect(committed).toBeDefined()
+      if (!committed) throw new Error("missing committed report")
+      objectDirectories.push(path.dirname(committed.path))
+      expect(await fs.readFile(committed.path, "utf8")).toBe(insideBody)
+      await fs.rm(path.dirname(committed.path), { recursive: true, force: true })
+
+      // Replace an intermediate parent directory after authorization: open
+      // would follow the new symlink and read the outside file.
+      const failure = await Effect.runPromise(
+        commitOutputFileRef(source, provenance, () =>
+          Effect.promise(async () => {
+            await fs.rm(parent, { recursive: true, force: true })
+            await fs.symlink(outsideParent, parent, "dir")
+          }),
+        ).pipe(Effect.flip),
+      )
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure.message).toContain("source changed during capture")
+      for (const body of [insideBody, outsideBody])
+        expect(
+          await fs.stat(objectPath(body)).then(
+            () => true,
+            () => false,
+          ),
+        ).toBe(false)
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+      for (const directory of objectDirectories) await fs.rm(directory, { recursive: true, force: true })
+    }
+  },
+)
+
+test.skipIf(process.platform === "win32")("artifact capture follows symlinks only through the external policy", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dag-artifact-symlink-"))
+  const boundary = path.join(root, "boundary")
+  const outsideDirectory = path.join(root, "outside")
+  const outside = path.join(outsideDirectory, "secret.txt")
+  const inside = path.join(boundary, "inside.txt")
+  const linkOut = path.join(boundary, "link-out.txt")
+  const linkIn = path.join(boundary, "link-in.txt")
+  const alias = path.join(root, "alias")
+  const objectDirectories: string[] = []
+  try {
+    await fs.mkdir(boundary, { recursive: true })
+    await fs.mkdir(outsideDirectory, { recursive: true })
+    await fs.writeFile(outside, "outside bytes")
+    await fs.writeFile(inside, "inside bytes")
+    await fs.symlink(outside, linkOut)
+    await fs.symlink(inside, linkIn)
+    await fs.symlink(boundary, alias, "dir")
+
+    const sessions = {
+      get: () => Effect.succeed({ agent: "build", permission: [] } as never),
+    } as never
+    const authorizeWith = (permission: PermissionV1.Ruleset, asked: string[]) =>
+      makeArtifactSourceAuthorizer(
+        sessions,
+        { get: () => Effect.succeed({ permission } as never) } as never,
+        boundary,
+        {
+          ask: (request: { permission: string }) =>
+            Effect.sync(() => {
+              asked.push(request.permission)
+            }),
+        } as never,
+      )
+    const commit = (source: string, authorize: ReturnType<typeof makeArtifactSourceAuthorizer>) =>
+      Effect.runPromise(
+        commitOutputFileRef(source, provenance, (sourcePath, symlink, canonical) =>
+          authorize("ses_producer", sourcePath, undefined, symlink, canonical),
+        ),
+      )
+
+    // A symlink inside the boundary that points outside must be authorized as
+    // external, never silently committed.
+    const deniedAsked: string[] = []
+    const denyExternal = authorizeWith(
+      [
+        { permission: "read", pattern: "*", action: "allow" },
+        { permission: "external_directory", pattern: "*", action: "deny" },
+      ],
+      deniedAsked,
+    )
+    const denial = await Effect.runPromise(
+      commitOutputFileRef(linkOut, provenance, (sourcePath, symlink, canonical) =>
+        denyExternal("ses_producer", sourcePath, undefined, symlink, canonical),
+      ).pipe(Effect.flip),
+    )
+    expect(denial.message).toContain("external_directory denied")
+
+    // A symlink inside the boundary that points inside still needs external
+    // approval (the path itself is a link), and may commit when allowed.
+    const asked: string[] = []
+    const askExternal = authorizeWith([{ permission: "read", pattern: "*", action: "allow" }], asked)
+    const linked = await commit(linkIn, askExternal)
+    expect(asked).toEqual(["external_directory"])
+    expect(linked).toBeDefined()
+    if (linked) objectDirectories.push(path.dirname(linked.path))
+    expect(linked?.source_path).toBe(linkIn)
+    expect(linked && (await fs.readFile(linked.path, "utf8"))).toBe("inside bytes")
+
+    // Lexically outside the boundary but resolving inside is not external.
+    const aliasAsked: string[] = []
+    const aliasAuthorize = authorizeWith(
+      [
+        { permission: "read", pattern: "*", action: "allow" },
+        { permission: "external_directory", pattern: "*", action: "deny" },
+      ],
+      aliasAsked,
+    )
+    const aliased = await commit(path.join(alias, "inside.txt"), aliasAuthorize)
+    expect(aliasAsked).toEqual([])
+    expect(aliased).toBeDefined()
+    if (aliased) objectDirectories.push(path.dirname(aliased.path))
+    expect(aliased?.source_path).toBe(path.join(alias, "inside.txt"))
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+    for (const directory of objectDirectories) await fs.rm(directory, { recursive: true, force: true })
+  }
+})

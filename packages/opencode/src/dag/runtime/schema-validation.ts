@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Worker } from "node:worker_threads"
+import type { SchemaValidationFix } from "./schema-validator"
 
 declare const OPENCODE_SCHEMA_VALIDATION_WORKER_PATH: string | URL
 declare const OPENCODE_SCHEMA_VALIDATION_WORKER_RELATIVE: boolean
@@ -10,7 +11,7 @@ declare const OPENCODE_SCHEMA_VALIDATION_WORKER_RELATIVE: boolean
 // This is independent of the workflow's model deadline.
 export const SCHEMA_VALIDATION_BUDGET_MS = 250
 
-export type Validation = { ok: true; payload: unknown } | { ok: false; error: string }
+export type Validation = { ok: true; payload: unknown } | { ok: false; error: string; fix?: SchemaValidationFix }
 
 export function validateInWorker(
   schema: Record<string, unknown>,

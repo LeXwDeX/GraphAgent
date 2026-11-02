@@ -373,7 +373,8 @@ describe("B5: spawn pre-admission failures", () => {
     })
     const sessionLayer = Layer.mock(Session.Service, {
       get: () => Effect.succeed({ id: "ses_parent" as never, permission: [], agent: "build" } as never),
-      create: () => Effect.succeed({ id: "ses_child" as never } as never),
+      create: (input?: { directory?: string }) =>
+    Effect.succeed({ id: "ses_child" as never, directory: input?.directory ?? process.cwd() } as never),
     })
     const promptLayer = Layer.mock(SessionPrompt.Service, {})
     return { events, dagLayer, sessionLayer, promptLayer }

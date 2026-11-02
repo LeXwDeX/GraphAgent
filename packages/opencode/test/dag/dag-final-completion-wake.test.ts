@@ -484,17 +484,18 @@ it("wakes the parent when a gate skips the delivery node and only a result index
           result_protocol: "final_response",
           delivery_node: "summary",
           nodes: [
-            { ...node("verify"), report_to_parent: false, output_schema: verdictSchema },
+            { ...node("gate"), report_to_parent: false },
             {
-              ...node("summary", ["verify"]),
+              ...node("summary", ["gate"]),
               report_to_parent: false,
-              condition: 'verify.output.verdict == "PASS"',
+              condition: 'gate.output == "GO"',
+              skip_ok: true,
             },
           ],
         },
       })
-      const verify = yield* childGate(childPrompts, "verify")
-      yield* Deferred.succeed(verify.release, '{"verdict":"FAIL"}')
+      const gate = yield* childGate(childPrompts, "gate")
+      yield* Deferred.succeed(gate.release, "NO")
       yield* waitForCompletion(store, dagID)
       expect((yield* store.getNode(dagID, "summary"))?.status).toBe("skipped")
 

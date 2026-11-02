@@ -6,6 +6,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { InvalidRequestError, ConflictError, notFound } from "../errors"
 import { Dag } from "@/dag/dag"
+import { DagLocation } from "@/dag/location"
 import { DagValidation } from "@/dag/validation"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagEnvironmentCatalogs } from "@/dag/environment-catalogs"
@@ -76,6 +77,9 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       ...(r.modelId !== null ? { model_id: r.modelId } : {}),
       ...(r.modelProviderId !== null ? { model_provider_id: r.modelProviderId } : {}),
       ...(r.childSessionId !== null ? { child_session_id: r.childSessionId } : {}),
+      // #949: per-attempt execution location. Optional so legacy rows and
+      // pre-#949 clients decode exactly as before.
+      ...DagLocation.nodeLocationView(r),
       ...(r.output !== null || r.status === "completed" ? { output: r.output } : {}),
       ...(r.errorReason !== null ? { error_reason: r.errorReason } : {}),
       ...(r.errorClass !== null ? { error_class: r.errorClass } : {}),
@@ -271,6 +275,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
           directory: owner?.directory ?? (yield* InstanceState.context).directory,
           parent: owner?.model ?? undefined,
         },
+        executionWorkspace: config?.workspace,
         known_dependencies: knownDependencies,
         node_defaults: config?.node_defaults,
       })

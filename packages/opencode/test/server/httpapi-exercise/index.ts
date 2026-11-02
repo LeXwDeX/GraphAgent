@@ -2225,6 +2225,11 @@ const scenarios: Scenario[] = [
         object(pristine)
         check(!("error_class" in pristine), "error_class should be absent on non-failed nodes")
         check(typeof pristine.attempt_id === "string", "running node should expose exact attempt identity")
+        check(typeof pristine.last_activity_at === "string", "node should expose its last activity timestamp")
+        check(
+          !("head" in pristine) || (typeof pristine.head === "string" && /^[0-9a-f]{7,12}$/.test(pristine.head)),
+          "head must be a short sha when present",
+        )
         check(pristine.accepted_input_revision === 1, "acceptance should advance input revision")
         check(pristine.snapshot_revision === 0, "queued message must not advance model snapshot")
         object(pristine.agent_messages)

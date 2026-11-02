@@ -110,6 +110,11 @@ export const WorkflowCreated = Event.define({
     // publishers still decode; absent directories project to NULL and match
     // no instance (a foreign row, never adopted).
     directory: Schema.optional(Schema.String),
+    /** #943: the bound workspace (absolute realpath) where child sessions run.
+     * Optional so legacy durable events still decode; absent means the owner
+     * `directory`. Kept separate from `directory`, which stays the ownership
+     * key used by adoption, recovery and wake. */
+    executionDirectory: Schema.optional(Schema.String),
   },
 })
 export type WorkflowCreated = typeof WorkflowCreated.Type
@@ -251,6 +256,12 @@ export const NodeStarted = Event.define({
     childSessionID: SessionID,
     deadlineMs: Schema.optional(Schema.Number),
     wakeEligible: Schema.optional(Schema.Boolean),
+    /** Execution directory for this attempt. Optional so legacy durable
+     * events still decode; absent projects to NULL and reports no path. */
+    directory: Schema.optional(Schema.String),
+    /** Repo HEAD when the attempt started. Optional for the same reason as
+     * `directory`; absent while the directory is not a git repository. */
+    baseHead: Schema.optional(Schema.String),
   },
 })
 export type NodeStarted = typeof NodeStarted.Type
@@ -276,6 +287,10 @@ export const NodeFailed = Event.define({
     nodeID: NodeID,
     reason: Schema.String,
     trigger: Schema.Literals(["exec_failed", "push_exhausted", "verdict_fail", "timeout"]),
+    /** Optional triage detail, e.g. schema_invalid for a malformed final
+     * response. Optional keeps the durable event readable across versions:
+     * older readers ignore it and fall back to trigger. */
+    errorClass: Schema.optional(Schema.String),
   },
 })
 export type NodeFailed = typeof NodeFailed.Type

@@ -20,7 +20,9 @@ import {
   getValidNextWorkflowStatuses,
   getValidNextNodeStatuses,
   isWorkflowTerminalStatus,
+  isTerminalWorkflowStatusValue,
   isNodeTerminalStatus,
+  isTransitionRejection,
   InvalidTransitionError,
   StaleNodeAttemptError,
   TerminalViolationError,
@@ -36,6 +38,7 @@ import { SessionLocation } from "@/session/location"
 import { SessionID } from "@/session/schema"
 import { planRecovery, type RecoveryPlan } from "./recovery-plan"
 import { verifyOutputFileRef } from "./runtime/output-ref"
+import { failingGateVerdict, verdictField } from "./runtime/verdict"
 
 export { StructuralValidationError } from "./validation"
 
@@ -44,6 +47,11 @@ export const ID = DagEvent.DagID
 export type ID = typeof ID.Type
 export const NodeID = DagEvent.NodeID
 export type NodeID = typeof NodeID.Type
+
+export interface WorkflowOwner {
+  readonly projectID: string
+  readonly directory: string
+}
 
 export interface NodeExecutionAttempt {
   readonly replanAttempts: number
@@ -107,6 +115,10 @@ export interface NodeConfig {
   worker_type: string
   depends_on: string[]
   required?: boolean
+  /** A required node may be skipped without failing the workflow. New required
+   * nodes default to false; undefined on historical rows keeps their
+   * accepted-skip semantics. */
+  skip_ok?: boolean
   prompt_template: { id?: string; inline?: string; input?: Record<string, unknown> }
   worker_config?: { timeout_ms?: number }
   input_mapping?: Record<string, string>
@@ -126,6 +138,8 @@ export interface NodeConfig {
   /** Direct dependency whose `packages` output fans this writer out at
    * admission; cleared by the expansion that replaces this node. */
   fan_out?: string
+  /** #943: absolute path to a linked worktree where this node runs. */
+  workspace?: string
 }
 
 export interface NodeDefaults {
@@ -156,6 +170,8 @@ export interface WorkflowConfig {
   max_node_replan_attempts?: number
   max_total_nodes?: number
   max_timeout_extensions?: number
+  /** #943: absolute path to a linked worktree where child sessions run. */
+  workspace?: string
   node_defaults?: NodeDefaults
   nodes: NodeConfig[]
 }
@@ -170,6 +186,94 @@ export class ReviewGateError extends Error {
     this.dagID = dagID
     this.reviewIDs = reviewIDs
   }
+}
+
+/** Required work that ended without a usable result: a deliberate bad verdict
+ * or an unaccepted skip. Kept separate from the review gate so explicit
+ * completion reports both causes precisely. */
+export class CompletionGateError extends Error {
+  readonly dagID: string
+  readonly gaps: string[]
+
+  constructor(dagID: string, gaps: string[]) {
+    super(`Cannot complete workflow ${dagID}: required node(s) did not complete: ${gaps.join(", ")}`)
+    this.name = "CompletionGateError"
+    this.dagID = dagID
+    this.gaps = gaps
+  }
+}
+
+interface CompletionNode {
+  readonly id: string
+  readonly status: string
+  readonly required: boolean
+  readonly output: unknown
+  readonly errorReason: string | null
+}
+
+function declaresVerdictContract(schema: Record<string, unknown> | undefined): boolean {
+  if (!schema) return false
+  const properties = schema.properties
+  const required = schema.required
+  return (
+    (typeof properties === "object" && properties !== null && "verdict" in properties)
+    || (Array.isArray(required) && required.includes("verdict"))
+  )
+}
+
+/** A schema whose accepted values include a string must keep string output as data. */
+function schemaAllowsString(schema: Record<string, unknown> | undefined): boolean {
+  if (!schema) return false
+  const type = schema.type
+  if (type === "string") return true
+  if (Array.isArray(type) && type.includes("string")) return true
+  for (const key of ["anyOf", "oneOf"]) {
+    const variants = schema[key]
+    if (Array.isArray(variants) && variants.some((variant) => isRecord(variant) && schemaAllowsString(variant)))
+      return true
+  }
+  return false
+}
+
+/**
+ * Required current-revision nodes that did not produce an accepted result.
+ * Natural completion (`mode: "natural"`) keeps the historical accepted-skip
+ * behavior for definitions without `skip_ok`. Explicit completion uses
+ * `mode: "strict"`: every required node must be completed with a passing
+ * verdict or explicitly opted into the skip, so forced completion cannot
+ * bypass the invariant. A completed non-review gate whose verdict says
+ * FAIL/BLOCKING/BLOCKED/INCOMPLETE always counts as unfinished. Only a legacy
+ * diff review is exempt: its REJECT outcome stays reopenable, while design
+ * review verdicts are real gate failures.
+ */
+export function requiredCompletionGaps(
+  config: WorkflowConfig | undefined,
+  nodes: readonly CompletionNode[],
+  mode: "natural" | "strict" = "natural",
+): string[] {
+  const definitions = new Map(config?.nodes.map((node) => [node.id, node]))
+  return nodes.flatMap((node) => {
+    if (!node.required) return []
+    const definition = definitions.get(node.id)
+    if (node.status !== "completed") {
+      if (node.status !== "skipped" && node.status !== "aborted")
+        return [`${node.id} (${node.status || "unfinished"})`]
+      if (definition?.skip_ok === true) return []
+      if (definition?.skip_ok === undefined && mode === "natural") return []
+      return [`${node.id} (${node.status}: ${node.errorReason ?? "unfinished"})`]
+    }
+    if (definition?.review?.phase === "diff") {
+      const outcome = verdictField(node.output)
+      // Only the legacy diff-review outcomes that gate reopen behavior are
+      // exempt. A malformed FAIL/BLOCKED diff review is still a failed gate.
+      if (outcome === "ACCEPT" || outcome === "REJECT") return []
+    }
+    const verdict = failingGateVerdict(node.output, {
+      allowScalar: declaresVerdictContract(definition?.output_schema),
+      parseString: !schemaAllowsString(definition?.output_schema),
+    })
+    return verdict ? [`${node.id} (verdict ${verdict})`] : []
+  })
 }
 
 export function normalizeModel(model: NodeConfig["model"]) {
@@ -205,9 +309,10 @@ function normalizeNodeDefaults(defaults: NodeDefaults | undefined): NodeDefaults
 
 function normalizeNodeConfig(node: NodeConfig, defaults: NodeDefaults): NormalizedNodeConfig {
   const model = normalizeModel(node.model ?? defaults.model)
+  const required = node.required ?? defaults.required ?? DEFAULT_WORKFLOW_CONFIG.nodeRequired
   return {
     ...node,
-    required: node.required ?? defaults.required ?? DEFAULT_WORKFLOW_CONFIG.nodeRequired,
+    required,
     worker_config: {
       ...defaults.worker_config,
       ...node.worker_config,
@@ -217,6 +322,10 @@ function normalizeNodeConfig(node: NodeConfig, defaults: NodeDefaults): Normaliz
       ),
     },
     report_to_parent: node.report_to_parent ?? defaults.report_to_parent ?? DEFAULT_WORKFLOW_CONFIG.reportToParent,
+    // New required work is strict by default. Only historical persisted
+    // definitions (which bypass normalization) keep the accepted-skip legacy
+    // path; blocks mark their intentional conditional branches explicitly.
+    ...(required && node.skip_ok === undefined ? { skip_ok: false } : {}),
     ...(model ? { model } : {}),
   }
 }
@@ -226,15 +335,33 @@ function normalizeNodeConfig(node: NodeConfig, defaults: NodeDefaults): Normaliz
 // back to 10min — implicit budget shortening). The replace bucket (definition
 // replaced, execution kept) preserves the existing node's timeout for the
 // merged config and the deadline recompute.
+function withoutSkipOk<T extends NodeConfig>(candidate: T): Omit<T, "skip_ok"> {
+  const { skip_ok: _skipOk, ...rest } = candidate
+  return rest
+}
+
 function normalizeFragmentNode(
   node: NodeConfig,
-  existingTimeoutMs: number | undefined,
+  existing: NodeConfig | undefined,
   defaults: NodeDefaults,
 ): NormalizedNodeConfig {
-  const timeoutMs = node.worker_config?.timeout_ms ?? existingTimeoutMs
+  const timeoutMs = node.worker_config?.timeout_ms ?? existing?.worker_config?.timeout_ms
   const withTimeout =
     timeoutMs == null ? node : { ...node, worker_config: { ...node.worker_config, timeout_ms: timeoutMs } }
-  return normalizeNodeConfig(withTimeout, defaults)
+  const normalized = normalizeNodeConfig(withTimeout, defaults)
+  if (!existing || node.skip_ok !== undefined) return normalized
+  // An unchanged persisted definition keeps its historical skip semantics.
+  // Only genuinely new or authored changes receive the strict default.
+  const current = normalizeNodeConfig(existing, defaults)
+  const changed = ReplanDefinition.changedAdmittedNodeFields(
+    withoutSkipOk(current),
+    withoutSkipOk(normalized),
+    { allowTimeoutUpdate: false },
+  )
+  if (changed.length > 0) return normalized
+  return existing.skip_ok === undefined
+    ? withoutSkipOk(normalized)
+    : { ...normalized, skip_ok: existing.skip_ok }
 }
 
 /** Merged-graph nodes whose gate fields (condition, review wiring) are the
@@ -269,6 +396,52 @@ function normalizeWorkflowConfig(config: WorkflowConfig): WorkflowConfig & { nod
     max_timeout_extensions: config.max_timeout_extensions ?? DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
     node_defaults: defaults,
     nodes: config.nodes.map((node) => normalizeNodeConfig(node, defaults)),
+  }
+}
+
+/**
+ * #943: resolve config/node workspaces to canonical realpaths before they are
+ * persisted. The validation boundary reports the same failures as diagnostics;
+ * this is the fail-closed guard for direct Dag.create callers.
+ */
+function pinNodeWorkspaces(
+  nodes: readonly NodeConfig[],
+  ownerDirectory: string,
+  resolutions = new Map<string, string>(),
+): NodeConfig[] {
+  const pin = (workspace: string, path: string) => {
+    const cached = resolutions.get(workspace)
+    if (cached !== undefined) return cached
+    const resolved = DagLocation.resolveWorkspace(workspace, ownerDirectory)
+    if (resolved._tag === "invalid") throw new Error(`Invalid ${path}: ${resolved.reason}`)
+    resolutions.set(workspace, resolved.directory)
+    return resolved.directory
+  }
+  return nodes.map((node): NodeConfig => {
+    if (node.workspace === undefined) return node
+    const pinned = pin(node.workspace, `nodes[${node.id}].workspace`)
+    return pinned === node.workspace ? node : { ...node, workspace: pinned }
+  })
+}
+
+function bindWorkspace(
+  config: WorkflowConfig,
+  ownerDirectory: string,
+): { config: WorkflowConfig; workspace?: string } {
+  const resolutions = new Map<string, string>()
+  const pin = (workspace: string, path: string) => {
+    const cached = resolutions.get(workspace)
+    if (cached !== undefined) return cached
+    const resolved = DagLocation.resolveWorkspace(workspace, ownerDirectory)
+    if (resolved._tag === "invalid") throw new Error(`Invalid ${path}: ${resolved.reason}`)
+    resolutions.set(workspace, resolved.directory)
+    return resolved.directory
+  }
+  const workspace = config.workspace === undefined ? undefined : pin(config.workspace, "config.workspace")
+  const nodes = pinNodeWorkspaces(config.nodes, ownerDirectory, resolutions)
+  return {
+    config: { ...config, ...(workspace !== undefined ? { workspace } : {}), nodes },
+    ...(workspace !== undefined ? { workspace } : {}),
   }
 }
 
@@ -365,8 +538,31 @@ export interface Interface {
     dagID: string,
   ) => Effect.Effect<{ status: "stepping"; nodeID?: string } | { status: "no_ready_nodes" }, Error>
   readonly cancel: (dagID: string) => Effect.Effect<void, Error>
-  readonly complete: (dagID: string, options?: { readonly skipReviewGate?: boolean }) => Effect.Effect<void, Error>
+  readonly complete: (
+    dagID: string,
+    options?: { readonly skipReviewGate?: boolean; readonly allowAcceptedSkips?: boolean },
+  ) => Effect.Effect<void, Error>
   readonly fail: (dagID: string, reason: string) => Effect.Effect<void, Error>
+  /**
+   * Fail a workflow whose execution location is unusable outside the normal
+   * control flow (its directory disappeared or was never stamped). Unlike
+   * `fail`, this also legalizes the pending→running and paused→running legs
+   * first, so a row abandoned in any non-terminal status can reach `failed`
+   * and open one terminal wake episode. Revalidates the durable execution
+   * location inside the workflow lock: a concurrent move to a valid directory
+   * wins and returns `ignored`. Idempotent: an already-terminal row also
+   * returns `ignored`.
+   */
+  readonly failUnrecoverable: (dagID: string, reason: string) => Effect.Effect<"failed" | "ignored", Error>
+  readonly settleCompletion: (
+    dagID: string,
+    options?: {
+      readonly expectedGraphRev?: number
+      readonly allowAcceptedSkips?: boolean
+      readonly skipReviewGate?: boolean
+      readonly owner?: WorkflowOwner
+    },
+  ) => Effect.Effect<{ readonly status: "completed" | "failed" | "stale" | "ignored" }, Error>
   readonly replan: (
     dagID: string,
     fragment: { nodes: NodeConfig[] },
@@ -399,6 +595,10 @@ export interface Interface {
     deadlineMs?: number,
     wakeEligible?: boolean,
     attempt?: NodeExecutionAttempt,
+    /** #949: execution directory for this attempt, snapshotted for status. */
+    directory?: string,
+    /** #949: repo HEAD when the attempt started. */
+    baseHead?: string,
   ) => Effect.Effect<void, Error>
   readonly nodeCompleted: (
     dagID: string,
@@ -413,6 +613,8 @@ export interface Interface {
     reason: string,
     trigger: string,
     attempt?: NodeExecutionAttempt,
+    /** More specific triage class than trigger (e.g. schema_invalid). */
+    errorClass?: string,
   ) => Effect.Effect<void, Error>
   readonly nodeSkipped: (
     dagID: string,
@@ -462,8 +664,11 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const store = yield* DagStore.Service
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
-    const withMailbox = <A, E, R>(dagID: string, reason: string | undefined, commit: Effect.Effect<A, E, R>) =>
-      Option.isSome(mailboxService) ? mailboxService.value.fenceWorkflow(dagID, reason, commit) : commit
+    const withMailbox = <A, E, R>(
+      dagID: string,
+      reason: string | undefined | ((result: A) => string | undefined),
+      commit: Effect.Effect<A, E, R>,
+    ) => (Option.isSome(mailboxService) ? mailboxService.value.fenceWorkflow(dagID, reason, commit) : commit)
     const workflowLocks = KeyedMutex.makeUnsafe<string>()
     const lockWitness = {} as WorkflowLock
     const withWorkflowLock =
@@ -584,16 +789,31 @@ export const layer = Layer.effect(
           )
         }
       }
+      // #943: ownerDirectory keeps the DAG-LOC-01 ownership key; the workspace
+      // is a separate execution binding resolved once and persisted on the
+      // workflow row. The authoring boundary already checked it; this repeats
+      // the resolution for direct Dag.create callers and stores realpaths.
+      const ownerDirectory = yield* Effect.flatMap(
+        SessionLocation.sessionDirectory(SessionID.make(input.sessionID)),
+        (durable) =>
+          durable._tag === "Some"
+            ? Effect.succeed(DagLocation.canonicalDirectory(durable.value))
+            : DagLocation.stampDirectory(),
+      )
+      const bound = yield* Effect.try({
+        try: () => bindWorkspace(config, ownerDirectory),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
       const durableConfig =
-        config.mode === "deep" && config.admission
+        bound.config.mode === "deep" && bound.config.admission
           ? {
-              ...config,
+              ...bound.config,
               admission: {
-                ...config.admission,
-                state: transitionAdmission(config.admission.state, "CONSUMED"),
+                ...bound.config.admission,
+                state: transitionAdmission(bound.config.admission.state, "CONSUMED"),
               },
             }
-          : config
+          : bound.config
 
       const dagID = DagEvent.DagID.create()
       const ts = yield* DateTime.now
@@ -612,13 +832,8 @@ export const layer = Layer.effect(
         // it from B's loops. Fall back to the ambient instance only when the
         // session has no durable row (the workflow insert would fail its
         // session FK anyway).
-        directory: yield* Effect.flatMap(
-          SessionLocation.sessionDirectory(SessionID.make(input.sessionID)),
-          (durable) =>
-            durable._tag === "Some"
-              ? Effect.succeed(DagLocation.canonicalDirectory(durable.value))
-              : DagLocation.stampDirectory(),
-        ),
+        directory: ownerDirectory,
+        ...(bound.workspace !== undefined ? { executionDirectory: bound.workspace } : {}),
       })
       for (const node of durableConfig.nodes) {
         yield* events.publish(DagEvent.NodeRegistered, {
@@ -627,7 +842,7 @@ export const layer = Layer.effect(
           name: node.name,
           workerType: node.worker_type,
           dependsOn: node.depends_on.map((d) => d as never),
-          required: node.required,
+          required: node.required ?? false,
           model: node.model as never,
           timestamp: ts,
         })
@@ -755,18 +970,32 @@ export const layer = Layer.effect(
     const complete = Effect.fn("Dag.complete")(function* (
       lock: WorkflowLock,
       dagID: string,
-      options?: { readonly skipReviewGate?: boolean },
+      options?: { readonly skipReviewGate?: boolean; readonly allowAcceptedSkips?: boolean },
     ) {
       yield* guardWorkflow(dagID, WorkflowStatus.COMPLETED)
       const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
       const config = workflow ? parseWorkflowConfig(workflow.config) : undefined
+      const nodes = yield* store.getNodes(dagID)
       // The review gate guards EXPLICIT completion (tool/HTTP shortcuts). A
       // natural completion at a REJECT checkpoint must stay reachable so the
       // parent can dispose of the verdict via reopen-extend (issue #294); the
       // scheduling loop passes skipReviewGate for that path.
       const unresolvedReviews =
-        !options?.skipReviewGate && config ? unresolvedReviewOutcomes(config, yield* store.getNodes(dagID)) : []
+        !options?.skipReviewGate && config ? unresolvedReviewOutcomes(config, nodes) : []
       if (unresolvedReviews.length > 0) yield* Effect.fail(new ReviewGateError(dagID, unresolvedReviews))
+      // Required verdict/skip gaps gate every completion, including the
+      // natural path: a verify FAIL or an unaccepted required skip must never
+      // be announced as success (issue #950). Explicit completion is strict
+      // even for nodes that have not started: forced completion cannot bypass
+      // the invariant. The loop opts into historical accepted skips only on
+      // its natural completion path, where the runtime has already proved the
+      // graph terminal. Superseded revisions cannot block the current graph.
+      const completionGaps = requiredCompletionGaps(
+        config,
+        yield* store.getCurrentNodes(dagID),
+        options?.allowAcceptedSkips ? "natural" : "strict",
+      )
+      if (completionGaps.length > 0) yield* Effect.fail(new CompletionGateError(dagID, completionGaps))
       yield* terminateNonTerminalNodes(lock, dagID, "agent_complete", "", false)
       yield* events.publish(DagEvent.WorkflowCompleted, {
         dagID: dagID as ID,
@@ -784,6 +1013,120 @@ export const layer = Layer.effect(
         timestamp: yield* DateTime.now,
       })
       yield* terminateNonTerminalNodes(lock, dagID, "workflow_failed", reason, true)
+    })
+
+    /**
+     * Terminalize a workflow that can never progress. The projector accepts
+     * WorkflowFailed only from running/stepping, so a pending row takes the
+     * legal pending→running leg and a paused row the paused→running leg
+     * before failing. The whole sequence runs under the workflow lock; a
+     * concurrent terminal transition makes one leg a no-op and the attempt
+     * collapses to `ignored`.
+     */
+    const failUnrecoverable = Effect.fn("Dag.failUnrecoverable")(function* (
+      lock: WorkflowLock,
+      dagID: string,
+      reason: string,
+    ) {
+      return yield* Effect.gen(function* () {
+        const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+        if (!workflow || isTerminalWorkflowStatusValue(workflow.status)) return "ignored" as const
+        // Revalidate inside the lock: a SessionEvent.Moved may have re-stamped
+        // the row to a valid directory after the caller observed it missing.
+        // The moved workflow must continue, not be failed with a stale verdict.
+        if (DagLocation.resolveExecution(workflow)._tag === "ok") return "ignored" as const
+        if (workflow.status === "pending") {
+          yield* events.publish(DagEvent.WorkflowStarted, { dagID: ID.make(dagID), timestamp: yield* DateTime.now })
+        } else if (workflow.status === "paused") {
+          yield* resume(lock, dagID)
+        }
+        yield* fail(lock, dagID, reason)
+        return "failed" as const
+      }).pipe(Effect.catchIf(isTransitionRejection, () => Effect.succeed("ignored" as const)))
+    })
+
+const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipped"])
+
+/**
+ * Natural terminalization shared by the owning DagLoop and the host-level
+     * supervision sweep. The decision and the transition run under the same
+     * workflow lock, and an optional expectedGraphRev fences a stale runtime
+     * snapshot: a recover/replan that bumped the revision wins instead of
+     * being failed with the old graph's evidence.
+     */
+    const settleCompletion = Effect.fn("Dag.settleCompletion")(function* (
+      lock: WorkflowLock,
+      dagID: string,
+      options?: {
+        readonly expectedGraphRev?: number
+        readonly allowAcceptedSkips?: boolean
+        readonly skipReviewGate?: boolean
+        readonly owner?: WorkflowOwner
+      },
+    ) {
+      // The authoritative reads, outcome, and terminal event (plus its
+      // read-model projection) must share one durable SQLite immediate
+      // transaction. fenceWorkflow owns that transaction; a nested
+      // events.publish uses a savepoint on the same connection, so a recover
+      // in another process cannot advance the graph between the reads and the
+      // terminal write. Without a mailbox service (unit harnesses), the same
+      // decision runs unfenced.
+      const terminalize = Effect.gen(function* () {
+        const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+        if (!workflow || isTerminalWorkflowStatusValue(workflow.status))
+          return { status: "ignored" as const }
+        if (options?.expectedGraphRev !== undefined && workflow.graphRev !== options.expectedGraphRev)
+          return { status: "stale" as const }
+        if (workflow.status === "paused") return { status: "ignored" as const }
+        if (options?.owner) {
+          const owner = options.owner
+          const owned =
+            workflow.projectId === owner.projectID &&
+            workflow.directory !== null &&
+            DagLocation.canonicalDirectory(workflow.directory) === DagLocation.canonicalDirectory(owner.directory)
+          // Re-check inside the fence: a SessionEvent.Moved may have re-stamped
+          // the row after the caller's precheck, and the old instance must not
+          // publish a terminal outcome for the new owner's workflow.
+          if (!owned) return { status: "ignored" as const }
+        }
+        const nodes = yield* store.getCurrentNodes(dagID)
+        const config = parseWorkflowConfig(workflow.config)
+        // A required failure terminalizes now, even when its dependents are
+        // still mounted as pending rows: the failure cascade makes them
+        // non-executable and `fail` terminalizes them durably.
+        const failed = nodes.filter((node) => node.required && node.status === "failed").map((node) => node.id)
+        if (failed.length > 0) {
+          yield* fail(lock, dagID, `required node(s) failed: ${failed.join(", ")}`)
+          return { status: "failed" as const }
+        }
+        if (nodes.length === 0 || nodes.some((node) => !TERMINAL_NODE_STATUSES.has(node.status)))
+          return { status: "ignored" as const }
+        const gaps = requiredCompletionGaps(
+          config,
+          nodes,
+          options?.allowAcceptedSkips === false ? "strict" : "natural",
+        )
+        if (gaps.length > 0) {
+          yield* fail(lock, dagID, `required node(s) did not complete: ${gaps.join(", ")}`)
+          return { status: "failed" as const }
+        }
+        yield* complete(lock, dagID, {
+          skipReviewGate: options?.skipReviewGate ?? true,
+          allowAcceptedSkips: options?.allowAcceptedSkips ?? true,
+        })
+        return { status: "completed" as const }
+      })
+      const fenced = Option.isSome(mailboxService)
+        ? mailboxService.value.fenceWorkflow(
+            dagID,
+            (result) =>
+              result.status === "completed" || result.status === "failed" ? result.status : undefined,
+            terminalize,
+          )
+        : terminalize
+      return yield* fenced.pipe(
+        Effect.catchIf(isTransitionRejection, () => Effect.succeed({ status: "ignored" as const })),
+      )
     })
 
     const _replan = Effect.fn("Dag._replan")(function* (
@@ -807,9 +1150,16 @@ export const layer = Layer.effect(
       }
       const defaults = normalizeNodeDefaults(wfConfig.node_defaults)
       const cfgById = new Map(wfConfig.nodes.map((n) => [n.id, n]))
+      // #943: direct Dag service callers bypass the authoring boundary. Pin
+      // node workspaces to canonical realpaths before the definition reaches
+      // the merged config; invalid values are an ordinary Effect failure.
+      const fragmentNodes = yield* Effect.try({
+        try: () => pinNodeWorkspaces(fragment.nodes, workflow.directory ?? ""),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      })
       const normalizedFragment = {
-        nodes: fragment.nodes.map((node) =>
-          normalizeFragmentNode(node, cfgById.get(node.id)?.worker_config?.timeout_ms, defaults),
+        nodes: fragmentNodes.map((node) =>
+          normalizeFragmentNode(node, cfgById.get(node.id), defaults),
         ),
       }
       const nodes = yield* store.getNodes(dagID)
@@ -846,9 +1196,11 @@ export const layer = Layer.effect(
           )
           continue
         }
-        const fields = ReplanDefinition.changedAdmittedNodeFields(normalizeNodeConfig(current, defaults), next, {
-          allowTimeoutUpdate: status === NodeStatus.RUNNING,
-        })
+        const fields = ReplanDefinition.changedAdmittedNodeFields(
+          withoutSkipOk(normalizeNodeConfig(current, defaults)),
+          withoutSkipOk(next),
+          { allowTimeoutUpdate: status === NodeStatus.RUNNING },
+        )
         if (fields.length === 0) continue
         definitionErrors.push(
           status === NodeStatus.RUNNING
@@ -1337,6 +1689,8 @@ export const layer = Layer.effect(
       deadlineMs?: number,
       wakeEligible?: boolean,
       attempt?: NodeExecutionAttempt,
+      directory?: string,
+      baseHead?: string,
     ) {
       yield* guardNode(dagID, nodeID, NodeStatus.RUNNING, attempt)
       yield* events.publish(DagEvent.NodeStarted, {
@@ -1345,6 +1699,8 @@ export const layer = Layer.effect(
         childSessionID: childSessionID as never,
         deadlineMs,
         wakeEligible,
+        ...(directory !== undefined ? { directory } : {}),
+        ...(baseHead !== undefined ? { baseHead } : {}),
         timestamp: yield* DateTime.now,
       })
     })
@@ -1409,6 +1765,7 @@ export const layer = Layer.effect(
       reason: string,
       trigger: string,
       attempt?: NodeExecutionAttempt,
+      errorClass?: string,
     ) {
       const node = yield* guardNode(dagID, nodeID, NodeStatus.FAILED, attempt)
       const workflow = yield* store.getWorkflow(dagID)
@@ -1422,6 +1779,7 @@ export const layer = Layer.effect(
             nodeID,
             reason,
             trigger,
+            ...(errorClass ? { errorClass } : {}),
             timestamp: yield* Clock.currentTimeMillis,
           }),
         )
@@ -1668,6 +2026,18 @@ export const layer = Layer.effect(
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
       fail: (dagID, reason) =>
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
+      failUnrecoverable: (dagID, reason) =>
+        withWorkflowLock(dagID)((lock) =>
+          // An `ignored` outcome means the workflow moved or terminalized
+          // concurrently: the transaction must not close a live mailbox.
+          withMailbox(
+            dagID,
+            (outcome) => (outcome === "failed" ? "failed" : undefined),
+            failUnrecoverable(lock, dagID, reason),
+          ),
+        ),
+      settleCompletion: (dagID, options) =>
+        withWorkflowLock(dagID)((lock) => settleCompletion(lock, dagID, options)),
       replan: (dagID, fragment) =>
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
       extend: (dagID, nodes, fence) =>
@@ -1675,14 +2045,14 @@ export const layer = Layer.effect(
       recover,
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
         withWorkflowLock(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
-      nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt) =>
+      nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead) =>
         withWorkflowLock(dagID)((lock) =>
-          nodeStarted(lock, dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt),
+          nodeStarted(lock, dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead),
         ),
       nodeCompleted: (dagID, nodeID, output, attempt, capturedOutput) =>
         withWorkflowLock(dagID)((lock) => nodeCompleted(lock, dagID, nodeID, output, attempt, capturedOutput)),
-      nodeFailed: (dagID, nodeID, reason, trigger, attempt) =>
-        withWorkflowLock(dagID)((lock) => nodeFailed(lock, dagID, nodeID, reason, trigger, attempt)),
+      nodeFailed: (dagID, nodeID, reason, trigger, attempt, errorClass) =>
+        withWorkflowLock(dagID)((lock) => nodeFailed(lock, dagID, nodeID, reason, trigger, attempt, errorClass)),
       nodeSkipped: (dagID, nodeID, reason, attempt) =>
         withWorkflowLock(dagID)((lock) =>
           withMailbox(dagID, undefined, nodeSkipped(lock, dagID, nodeID, reason, attempt)),

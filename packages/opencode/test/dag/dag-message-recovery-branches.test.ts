@@ -1,8 +1,13 @@
 import { HookLifecycle } from "@/hook/lifecycle"
 import path from "node:path"
+import fs from "node:fs/promises"
+import os from "node:os"
+import { $ } from "bun"
+import { InstanceRef } from "@/effect/instance-ref"
+import { InstanceStore } from "@/project/instance-store"
 import { tmpdir } from "../fixture/fixture"
 import { describe, expect, test } from "bun:test"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Option } from "effect"
 import { Dag, StaleMessageInputError, type NodeExecutionAttempt } from "@/dag/dag"
 import { StaleNodeAttemptError, TerminalViolationError } from "@opencode-ai/core/dag/core/types"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
@@ -13,7 +18,9 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { Project } from "@opencode-ai/core/project"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { InstanceContext } from "@/project/instance-context"
 
 type Config = Parameters<typeof continueRecoveredMessageNode>[2]
 function reply(id: string, text = "updated result"): SessionV1.WithParts {
@@ -145,8 +152,14 @@ function harness(
       return commit.pipe(Effect.map((value) => ({ ok: true as const, value })))
     },
     snapshotByID: () => Effect.succeed({ ok: true, value: { ...snapshot, stopReason: input.latestStop } }),
-    latestSnapshot: () =>
-      Effect.succeed({ ok: true, value: input.latestStop ? { ...snapshot, stopReason: input.latestStop } : undefined }),
+    latestSnapshot: (caller) =>
+      Effect.sync(() => {
+        h.callers.push(caller.directory)
+        return {
+          ok: true,
+          value: input.latestStop ? { ...snapshot, stopReason: input.latestStop } : undefined,
+        }
+      }),
     claimResultNudge: (_caller, revision) =>
       Effect.sync(() => {
         input.beforeClaim?.(h)
@@ -160,7 +173,9 @@ function harness(
   })
   const prompt = Layer.mock(SessionPrompt.Service, {
     loop: () =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        const instance = Option.getOrUndefined(yield* Effect.serviceOption(InstanceRef))
+        if (instance) h.promptDirectories.push(instance.directory)
         h.loops++
         input.afterLoop?.(h)
         const r = reply(`msg_result_${h.loops}`, input.text)
@@ -208,15 +223,53 @@ function harness(
         h.delegatedStops.push(sessionID)
       }),
   })
+  const instanceStore = Layer.mock(InstanceStore.Service, {
+    provide: (load, effect) =>
+      effect.pipe(
+        Effect.provideService(InstanceRef, {
+          directory: load.directory,
+          worktree: load.directory,
+          project: {
+            id: Project.ID.make("p"),
+            worktree: load.directory,
+            time: { created: 0, updated: 0 },
+            sandboxes: [],
+          },
+        } satisfies InstanceContext),
+      ),
+  })
   const execution = (
     config?: Config,
     directory?: string,
     authorizeSource?: Parameters<typeof continueRecoveredMessageNode>[4],
-  ) =>
-    continueRecoveredMessageNode("dag_recovery", "n", config, directory, authorizeSource).pipe(
-      Effect.provide(Layer.mergeAll(dag, prompt, lifecycle, ...(input.noMessages ? [] : [messages]))),
-      Effect.scoped,
-    )
+    executionDirectory?: Parameters<typeof continueRecoveredMessageNode>[5],
+  ) => {
+    const layers = Layer.mergeAll(dag, prompt, lifecycle, ...(input.noMessages ? [] : [messages]), instanceStore)
+    const effect = continueRecoveredMessageNode(
+      "dag_recovery",
+      "n",
+      config,
+      directory,
+      authorizeSource,
+      executionDirectory,
+    ).pipe(Effect.provide(layers))
+    return (
+      directory
+        ? effect.pipe(
+            Effect.provideService(InstanceRef, {
+              directory,
+              worktree: directory,
+              project: {
+                id: Project.ID.make("p"),
+                worktree: directory,
+                time: { created: 0, updated: 0 },
+                sandboxes: [],
+              },
+            } satisfies InstanceContext),
+          )
+        : effect
+    ).pipe(Effect.scoped)
+  }
   return {
     h,
     run: (...args: Parameters<typeof execution>) => Effect.runPromise(execution(...args)),
@@ -284,6 +337,8 @@ function state(input: {
         } satisfies DagStore.WorkflowRow),
     loops: 0,
     prompts: 0,
+    promptDirectories: [] as string[],
+    callers: [] as string[],
     completionAttempts: 0,
     guardCalls: 0,
     receipts: [] as unknown[],
@@ -610,13 +665,18 @@ describe("message recovery continuation admission and settlement branches", () =
   })
   for (const staleReceipt of [false, true])
     test(`persists a managed recovery receipt atomically before completion${staleReceipt ? " after rejecting a stale first receipt" : ""}`, async () => {
-      await using dir = await tmpdir()
+      await using dir = await tmpdir({ git: true })
       const reports = path.join(dir.path, ".opencode", "workflow-reports")
       const filename = path.join(reports, "result.txt")
       await Bun.write(filename, "immutable recovery evidence")
-      const { h, run } = harness({ text: filename, guardStale: staleReceipt, queued: staleReceipt ? 1 : 0 })
+      const { h, run } = harness({
+        text: filename,
+        guardStale: staleReceipt,
+        queued: staleReceipt ? 1 : 0,
+        workflow: { directory: dir.path },
+      })
       const authorized: string[] = []
-      await run(undefined, dir.path, (_child, source) =>
+      await run(undefined, undefined, (_child, source) =>
         Effect.sync(() => {
           authorized.push(source)
         }),
@@ -627,6 +687,59 @@ describe("message recovery continuation admission and settlement branches", () =
       expect(h.loops).toBe(staleReceipt ? 2 : 1)
       expect(h.completed).toHaveLength(1)
       expect(authorized).toEqual(staleReceipt ? [filename, filename] : [filename])
-      expect(await Bun.file(path.join(dir.path, ".gitignore")).text()).toContain(".opencode/workflow-reports/")
+      expect(await Bun.file(path.join(dir.path, ".git", "info", "exclude")).text()).toContain(
+        ".opencode/workflow-reports/",
+      )
+      expect(await Bun.file(path.join(dir.path, ".gitignore")).exists()).toBe(false)
     })
+  test("runs a recovered continuation with the bound workspace mailbox identity", async () => {
+    await using owner = await tmpdir({ git: true })
+    const linkedPath = path.join(os.tmpdir(), `opencode-recovery-ws-${Math.random().toString(36).slice(2)}`)
+    await $`git worktree add --detach ${linkedPath} HEAD`.cwd(owner.path).quiet()
+    const workspace = await fs.realpath(linkedPath)
+    try {
+      const { h, run } = harness({
+        // Workflow-level binding and the node override both point at worktrees;
+        // the node override must decide where the recovered prompt runs.
+        workflow: { directory: owner.path, executionDirectory: owner.path },
+      })
+      await run({ nodes: [{ id: "n", workspace }] }, owner.path)
+      expect(h.promptDirectories).toEqual([workspace])
+      expect(h.callers[0]).toBe(workspace)
+      expect(h.completed).toHaveLength(1)
+    } finally {
+      await $`git worktree remove --force ${workspace}`.quiet().catch(() => undefined)
+    }
+  })
+  test("non-git continuation output authorizes outside paths against the instance boundary", async () => {
+    await using owner = await tmpdir()
+    const inside = path.join(owner.path, "inside.txt")
+    const outside = path.join(os.tmpdir(), `opencode-dag-outside-${Math.random().toString(36).slice(2)}.txt`)
+    await Bun.write(inside, "inside evidence")
+    await Bun.write(outside, "outside evidence")
+    try {
+      // The authorizer boundary itself is covered in dag-artifact-permissions;
+      // this test proves the continuation passes capture paths through it.
+      const calls: string[] = []
+      const authorizeSource = (_child: string, source: string) =>
+        Effect.gen(function* () {
+          calls.push(source)
+          if (source === outside)
+            yield* Effect.fail(new Error(`DAG artifact source external_directory denied: ${source}`))
+        })
+
+      const allowed = harness({ text: inside, workflow: { directory: owner.path } })
+      await allowed.run(undefined, owner.path, authorizeSource)
+      expect(allowed.h.completed).toHaveLength(1)
+
+      const denied = harness({ text: outside, workflow: { directory: owner.path } })
+      await denied.run(undefined, owner.path, authorizeSource)
+      expect(denied.h.completed).toHaveLength(0)
+      expect(denied.h.failed[0]?.errorClass).toBe("exec_failed")
+      expect(denied.h.failed[0]?.reason).toContain("external_directory denied")
+      expect(calls).toEqual([inside, outside])
+    } finally {
+      await fs.rm(outside, { force: true })
+    }
+  })
 })

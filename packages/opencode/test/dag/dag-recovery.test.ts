@@ -2,15 +2,17 @@
 // layers and row fixtures use `as unknown as DagStore.Interface` shims that
 // implement only the interface slice each scenario exercises.
 import { describe, expect, it, afterAll } from "bun:test"
+import { $ } from "bun"
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { reconcileWorkflow, makeLastAssistantTextReader } from "@/dag/runtime/recovery"
 import { Dag } from "@/dag/dag"
+import { DagMessages } from "@opencode-ai/core/dag/messages"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 import { WorkflowRuntime, toSchedulingNodes } from "@opencode-ai/core/dag/core/scheduling"
 import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
@@ -19,6 +21,17 @@ import { testEffect } from "../lib/effect"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
 
 const tmpRoots: string[] = []
+const STANDARD_TEMPLATE_EXCLUDE = "# task-owned standard template\n# preserved fixture comment\n"
+
+async function initGitFixture(dir: string, templateKind: "standard" | "empty" = "standard") {
+  const templateDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-template-"))
+  tmpRoots.push(templateDir)
+  if (templateKind === "standard") {
+    await fs.mkdir(path.join(templateDir, "info"), { recursive: true })
+    await fs.writeFile(path.join(templateDir, "info", "exclude"), STANDARD_TEMPLATE_EXCLUDE)
+  }
+  await $`git init -q --template=${templateDir} ${dir}`.quiet()
+}
 
 afterAll(async () => {
   for (const dir of tmpRoots) await fs.rm(dir, { recursive: true, force: true })
@@ -39,12 +52,19 @@ function makeDagLayer(
   trackedEvents: TrackedEvent[],
   actions?: string[],
   capturedWrites?: { sid: string; payload: unknown }[],
-  opts?: { capturedFail?: boolean },
+  opts?: { capturedFail?: boolean; workflowFail?: boolean; workflowInterrupt?: boolean },
+  workflow?: DagStore.WorkflowRow,
 ) {
   return Layer.mock(Dag.Service, {
     store: {
       getNodes: () => Effect.succeed(nodes),
       getNode: (id: string) => Effect.succeed(nodes.find((n) => n.id === id)),
+      getWorkflow: () =>
+        opts?.workflowInterrupt
+          ? Effect.interrupt
+          : opts?.workflowFail
+            ? Effect.fail(new Error("workflow lookup boom"))
+            : Effect.succeed(workflow),
       setCapturedOutput: (sid: string, payload: unknown) =>
         opts?.capturedFail
           ? Effect.fail(new Error("captured output persistence boom"))
@@ -645,7 +665,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       const checked: string[] = []
       await Effect.runPromise(reconcileWorkflow(
         "wf-1", () => Effect.succeed("completed" as const), undefined, { nodes: [{ id: "n1" }] },
-        () => Effect.succeed(source), dir, (_sid, value) => Effect.suspend(() => {
+        () => Effect.succeed(source), dir, () => (_sid, value) => Effect.suspend(() => {
           checked.push(value)
           return Effect.fail(new Error("source read denied"))
         }),
@@ -726,6 +746,225 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
         summary: content,
       }),
     }])
+  })
+
+  it("ignores a recovered report area through info/exclude without touching .gitignore", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-exclude-"))
+    tmpRoots.push(dir)
+    await initGitFixture(dir)
+    const reports = path.join(dir, ".opencode", "workflow-reports")
+    await fs.mkdir(reports, { recursive: true })
+    const reportPath = path.join(reports, "report.md")
+    await Bun.write(reportPath, "recovered report body")
+    const events: TrackedEvent[] = []
+    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1" })]
+    await Effect.runPromise(
+      reconcileWorkflow(
+        "wf-1",
+        () => Effect.succeed("completed" as const),
+        undefined,
+        { nodes: [{ id: "n1" }] },
+        () => Effect.succeed(reportPath),
+        dir,
+      ).pipe(Effect.provide(makeDagLayer(nodes, events))),
+    )
+    expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
+    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
+      ".opencode/workflow-reports/",
+    )
+    expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
+  })
+
+  it("authorizes artifacts and repairs the report area in the bound execution workspace (#947)", async () => {
+    const owner = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-owner-"))
+    tmpRoots.push(owner)
+    await initGitFixture(owner)
+    await $`git -C ${owner} -c user.email=test@example.com -c user.name=Test commit --allow-empty -q -m root`.quiet()
+    const linked = path.join(os.tmpdir(), `dag-recovery-linked-${Math.random().toString(36).slice(2)}`)
+    tmpRoots.push(linked)
+    await $`git -C ${owner} worktree add --detach ${linked} HEAD`.quiet()
+    const execution = await fs.realpath(linked)
+    const reports = path.join(execution, ".opencode", "workflow-reports")
+    await fs.mkdir(reports, { recursive: true })
+    const reportPath = path.join(reports, "report.md")
+    await Bun.write(reportPath, "bound workspace report")
+    const events: TrackedEvent[] = []
+    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", directory: execution })]
+    const authorized: string[] = []
+    await Effect.runPromise(
+      reconcileWorkflow(
+        "wf-1",
+        () => Effect.succeed("completed" as const),
+        undefined,
+        { nodes: [{ id: "n1", workspace: execution }] },
+        () => Effect.succeed(reportPath),
+        execution,
+        (directory) => {
+          authorized.push(directory)
+          return () => Effect.void
+        },
+      ).pipe(Effect.provide(makeDagLayer(nodes, events))),
+    )
+    expect(authorized).toEqual([execution])
+    expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
+    expect(await fs.readFile(path.join(owner, ".git", "info", "exclude"), "utf8")).toContain(
+      ".opencode/workflow-reports/",
+    )
+  })
+
+  it("uses the persisted workflow directory when recovery has no explicit directory", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-root-"))
+    tmpRoots.push(dir)
+    await initGitFixture(dir)
+    const reports = path.join(dir, ".opencode", "workflow-reports")
+    await fs.mkdir(reports, { recursive: true })
+    const report = path.join(reports, "report.md")
+    await Bun.write(report, "recovered report")
+    const events: TrackedEvent[] = []
+    const captured: { sid: string; payload: unknown }[] = []
+    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1" })]
+    const workflow = { id: "wf-1", projectId: "p", directory: dir } as unknown as DagStore.WorkflowRow
+    const dagLayer = makeDagLayer(nodes, events, undefined, captured, undefined, workflow)
+    const messages = Layer.mock(DagMessages.Service, {
+      revisions: () => Effect.succeed({ ok: false as const, reason: "unauthorized" as const }),
+    })
+    await Effect.runPromise(
+      reconcileWorkflow(
+        "wf-1",
+        () => Effect.succeed("completed" as const),
+        undefined,
+        { nodes: [{ id: "n1" }] },
+        () => Effect.succeed(report),
+      ).pipe(Effect.provide(Layer.merge(dagLayer, messages))),
+    )
+    expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
+    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
+      ".opencode/workflow-reports/",
+    )
+    expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
+  })
+
+  it("repairs the exclude from a verified receipt after a crash before the live update", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-crash-"))
+    tmpRoots.push(dir)
+    await initGitFixture(dir)
+    const reports = path.join(dir, ".opencode", "workflow-reports")
+    await fs.mkdir(reports, { recursive: true })
+    const source = path.join(reports, "report.md")
+    await Bun.write(source, "crash window report")
+    const ref = await Effect.runPromise(
+      commitOutputFileRef(source, {
+        workflow_id: "wf-1",
+        node_id: "n1",
+        child_session_id: "ses_1",
+        replan_attempt: 0,
+      }),
+    )
+    expect(ref).toBeDefined()
+    tmpRoots.push(path.dirname(ref!.path))
+    await fs.unlink(source)
+    const events: TrackedEvent[] = []
+    const captured: { sid: string; payload: unknown }[] = []
+    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", capturedOutput: ref })]
+    const workflow = { id: "wf-1", projectId: "p", directory: dir } as unknown as DagStore.WorkflowRow
+    const dagLayer = makeDagLayer(nodes, events, undefined, captured, undefined, workflow)
+    await Effect.runPromise(
+      reconcileWorkflow(
+        "wf-1",
+        () => Effect.succeed("completed" as const),
+        undefined,
+        { nodes: [{ id: "n1" }] },
+        () => Effect.succeed(source),
+      ).pipe(Effect.provide(dagLayer)),
+    )
+    expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
+    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
+      ".opencode/workflow-reports/",
+    )
+    expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
+  })
+
+  it("keeps a verified receipt when the workflow lookup fails during exclude repair", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-lookup-fail-"))
+    tmpRoots.push(dir)
+    await initGitFixture(dir)
+    const exclude = path.join(dir, ".git", "info", "exclude")
+    const beforeExcludeExists = await Bun.file(exclude).exists()
+    const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
+    expect(beforeExclude?.toString()).toBe(STANDARD_TEMPLATE_EXCLUDE)
+    const reports = path.join(dir, ".opencode", "workflow-reports")
+    await fs.mkdir(reports, { recursive: true })
+    const source = path.join(reports, "report.md")
+    await Bun.write(source, "lookup failure report")
+    const ref = await Effect.runPromise(
+      commitOutputFileRef(source, {
+        workflow_id: "wf-1",
+        node_id: "n1",
+        child_session_id: "ses_1",
+        replan_attempt: 0,
+      }),
+    )
+    expect(ref).toBeDefined()
+    tmpRoots.push(path.dirname(ref!.path))
+    await fs.unlink(source)
+    const events: TrackedEvent[] = []
+    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", capturedOutput: ref })]
+    await Effect.runPromise(
+      reconcileWorkflow(
+        "wf-1",
+        () => Effect.succeed("completed" as const),
+        undefined,
+        { nodes: [{ id: "n1" }] },
+        () => Effect.succeed(source),
+      ).pipe(Effect.provide(makeDagLayer(nodes, events, undefined, undefined, { workflowFail: true }))),
+    )
+    expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
+    expect(events.some((event) => event.type === "nodeFailed")).toBe(false)
+    expect(await Bun.file(exclude).exists()).toBe(beforeExcludeExists)
+    if (beforeExclude !== undefined) expect(await fs.readFile(exclude)).toEqual(beforeExclude)
+  })
+
+  it("propagates interruption from the workflow lookup during exclude repair", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-lookup-interrupt-"))
+    tmpRoots.push(dir)
+    await initGitFixture(dir)
+    const exclude = path.join(dir, ".git", "info", "exclude")
+    const beforeExcludeExists = await Bun.file(exclude).exists()
+    const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
+    expect(beforeExclude?.toString()).toBe(STANDARD_TEMPLATE_EXCLUDE)
+    const reports = path.join(dir, ".opencode", "workflow-reports")
+    await fs.mkdir(reports, { recursive: true })
+    const source = path.join(reports, "report.md")
+    await Bun.write(source, "lookup interruption report")
+    const ref = await Effect.runPromise(
+      commitOutputFileRef(source, {
+        workflow_id: "wf-1",
+        node_id: "n1",
+        child_session_id: "ses_1",
+        replan_attempt: 0,
+      }),
+    )
+    expect(ref).toBeDefined()
+    tmpRoots.push(path.dirname(ref!.path))
+    await fs.unlink(source)
+    const events: TrackedEvent[] = []
+    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", capturedOutput: ref })]
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        reconcileWorkflow(
+          "wf-1",
+          () => Effect.succeed("completed" as const),
+          undefined,
+          { nodes: [{ id: "n1" }] },
+          () => Effect.succeed(source),
+        ).pipe(Effect.provide(makeDagLayer(nodes, events, undefined, undefined, { workflowInterrupt: true }))),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
+    expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
+    expect(await Bun.file(exclude).exists()).toBe(beforeExcludeExists)
+    if (beforeExclude !== undefined) expect(await fs.readFile(exclude)).toEqual(beforeExclude)
   })
 
   it("keeps the inline settlement and captures nothing when the reply is not an existing path", async () => {

@@ -111,7 +111,7 @@ describe("spawn final-response protocol", () => {
           capturedOutput: receipt?.value,
           capturedOutputPresent: receipt?.present,
         }),
-      getWorkflow: () => Effect.succeed({ status: "running" }),
+      getWorkflow: () => Effect.succeed({ status: "running", directory: process.cwd() }),
       setCapturedOutput: (_sessionID: string, value: unknown) =>
         Effect.sync(() => {
           receipt = { present: true, value }
@@ -205,6 +205,33 @@ describe("spawn final-response protocol", () => {
     })
   }
 
+  it("decodes a JSON string value under a string schema", async () => {
+    const result = await run(assistant([{ text: JSON.stringify("done") }]), { type: "string" })
+    expect(result.events).toEqual([{ type: "completed", output: "done" }])
+    expect(result.receipt).toEqual({ present: true, value: "done" })
+  })
+
+  it("captures a JSON-shaped string as string data under a string schema", async () => {
+    const output = '{"verdict":"FAIL"}'
+    const result = await run(assistant([{ text: JSON.stringify(output) }]), { type: "string" })
+    expect(result.events).toEqual([{ type: "completed", output }])
+    expect(result.receipt).toEqual({ present: true, value: output })
+  })
+
+  it("captures a JSON string under a nullable string schema", async () => {
+    const output = '{"verdict":"FAIL"}'
+    const result = await run(assistant([{ text: JSON.stringify(output) }]), { type: ["string", "null"] })
+    expect(result.events).toEqual([{ type: "completed", output }])
+    expect(result.receipt).toEqual({ present: true, value: output })
+  })
+
+  it("rejects a JSON object under a string schema", async () => {
+    const result = await run(assistant([{ text: '{"verdict":"FAIL"}' }]), { type: "string" })
+    expect(result.events[0]?.type).toBe("failed")
+    expect(result.events[0]?.reason).toContain('expected type "string", got object')
+    expect(result.receipt).toBeUndefined()
+  })
+
   it("rejects prose around JSON and never asks for a legacy tool nudge", async () => {
     const result = await run(assistant([{ text: 'Here: {"ok":true}' }]), { type: "object" })
     expect(result.events[0]?.type).toBe("failed")
@@ -255,7 +282,7 @@ describe("recovered final-response settlement", () => {
         getNode: () => Effect.succeed(node),
         getNodes: () => Effect.succeed([node]),
         getWorkflow: () =>
-          Effect.succeed({ status: "running", projectId: "project", directory: "/tmp/project" } as never),
+          Effect.succeed({ status: "running", projectId: "project", directory: process.cwd() } as never),
         setCapturedOutput: (_sessionID: string, value: unknown, snapshotID?: string) =>
           Effect.sync(() => {
             writes.push({ value, snapshotID })
@@ -300,7 +327,7 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: "/tmp/project" } as never),
+        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
       } as unknown as DagStore.Interface,
       nodeCompleted: (_dagID, _nodeID, output, attempt) =>
         Effect.sync(() => {
@@ -340,7 +367,7 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: "/tmp/project" } as never),
+        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
       } as unknown as DagStore.Interface,
       nodeCompleted: () =>
         Effect.sync(() => {
@@ -492,7 +519,7 @@ describe("recovered final-response settlement", () => {
           { result_protocol: "final_response", nodes: [{ id: "n" }] },
           undefined,
           directory,
-          (_sessionID, expected) =>
+          () => (_sessionID, expected) =>
             Effect.sync(() => {
               expect(expected).toBe(source)
               authorized = true
@@ -521,7 +548,7 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: "/tmp/project" } as never),
+        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
         setCapturedOutput: () =>
           Effect.sync(() => {
             writes++
@@ -567,7 +594,7 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: "/tmp/project" } as never),
+        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
         setCapturedOutput: (_sessionID: string, value: unknown) =>
           Effect.sync(() => {
             persisted = value

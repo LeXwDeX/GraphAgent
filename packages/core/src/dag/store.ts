@@ -3,7 +3,7 @@
 
 export * as DagStore from "./store"
 
-import { and, asc, count, desc, eq, gt, inArray, or } from "drizzle-orm"
+import { and, asc, count, desc, eq, gt, inArray, max, or } from "drizzle-orm"
 import { Context, Effect, Layer } from "effect"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { Database } from "../database/database"
@@ -22,6 +22,8 @@ export interface WorkflowRow {
   sessionId: string
   /** Execution-location key (DAG-LOC-01): the creating instance's directory. */
   directory: string | null
+  /** #943: bound workspace where children run; NULL/absent means the owner directory. */
+  executionDirectory?: string | null
   title: string
   status: string
   config: string
@@ -64,6 +66,13 @@ export interface NodeRow {
   seq: number
   startedAt: number | null
   completedAt: number | null
+  /** #949: execution directory and HEAD snapshotted by NodeStarted. */
+  directory?: string | null
+  baseHead?: string | null
+  /** Projection timestamps. Optional so hand-built rows in tests keep a
+   * minimal shape; the database read always projects them. */
+  timeCreated?: number
+  timeUpdated?: number
 }
 
 export interface WakeBatch {
@@ -99,6 +108,7 @@ const mapWorkflow = (r: typeof WorkflowTable.$inferSelect): WorkflowRow => ({
   projectId: r.project_id,
   sessionId: r.session_id,
   directory: r.directory,
+  executionDirectory: r.execution_directory,
   title: r.title,
   status: r.status,
   config: r.config,
@@ -122,6 +132,8 @@ const mapNode = (r: typeof WorkflowNodeTable.$inferSelect): NodeRow => ({
   modelId: r.model_id,
   modelProviderId: r.model_provider_id,
   childSessionId: r.child_session_id,
+  directory: r.directory,
+  baseHead: r.base_head,
   output: r.output,
   capturedOutput: r.captured_output,
   capturedOutputPresent: r.captured_output_present,
@@ -138,6 +150,8 @@ const mapNode = (r: typeof WorkflowNodeTable.$inferSelect): NodeRow => ({
   seq: r.seq,
   startedAt: r.started_at,
   completedAt: r.completed_at,
+  timeCreated: r.time_created,
+  timeUpdated: r.time_updated,
 })
 
 // F11: wake eligibility gates TERMINAL notifications (the report_to_parent
@@ -166,6 +180,11 @@ const checkpointControlTypes = [DagEvent.WorkflowResumed, DagEvent.WorkflowRepla
   },
 )
 
+const workflowFailedType = (() => {
+  if (!DagEvent.WorkflowFailed.durable) throw new Error("WorkflowFailed event is not durable")
+  return versionedType(DagEvent.WorkflowFailed.type, DagEvent.WorkflowFailed.durable.version)
+})()
+
 // ============================================================================
 // Service interface
 // ============================================================================
@@ -180,8 +199,18 @@ export interface Interface {
   readonly getWorkflowSummaries: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
   /** Latest explicit parent control that can dispose of a checkpoint veto. */
   readonly getLatestCheckpointControlSeq: (workflowId: string) => Effect.Effect<number | undefined>
+  /**
+   * The reason carried by the latest durable WorkflowFailed event. Optional
+   * for lightweight store doubles; `workflow status` includes it when
+   * present, so a terminal failure explains itself without a new column.
+   */
+  readonly getWorkflowFailureReason?: (workflowId: string) => Effect.Effect<string | undefined>
 
   readonly getNodes: (workflowId: string) => Effect.Effect<NodeRow[]>
+  /** Latest node-row update time for one workflow (optional for lightweight test doubles). */
+  readonly getLastNodeChange?: (workflowId: string) => Effect.Effect<number | undefined>
+  /** Current row update time for one exact node (optional for lightweight test doubles). */
+  readonly getNodeTime?: (workflowId: string, nodeId: string) => Effect.Effect<number | undefined>
   /**
    * Rev-view (v1.0.15 Train A): the CURRENT graph revision only — rows the
    * replan pushed out of the graph (superseded) are filtered out. This is the
@@ -227,6 +256,18 @@ export const layer = Layer.effect(
           .get()
           .pipe(Effect.orDie)
         return row?.seq
+      }),
+
+      getWorkflowFailureReason: Effect.fn("DagStore.getWorkflowFailureReason")(function* (workflowId) {
+        const row = yield* db
+          .select({ data: EventTable.data })
+          .from(EventTable)
+          .where(and(eq(EventTable.aggregate_id, workflowId), eq(EventTable.type, workflowFailedType)))
+          .orderBy(desc(EventTable.seq))
+          .get()
+          .pipe(Effect.orDie)
+        const reason = row?.data.reason
+        return typeof reason === "string" ? reason : undefined
       }),
 
       // #270 atomic-adoption fence (C2). The adoption sites previously re-read the
@@ -381,6 +422,26 @@ export const layer = Layer.effect(
           .all()
           .pipe(Effect.orDie)
         return rows.map(mapNode)
+      }),
+
+      getLastNodeChange: Effect.fn("DagStore.getLastNodeChange")(function* (workflowId) {
+        const row = yield* db
+          .select({ at: max(WorkflowNodeTable.time_updated) })
+          .from(WorkflowNodeTable)
+          .where(eq(WorkflowNodeTable.workflow_id, workflowId))
+          .get()
+          .pipe(Effect.orDie)
+        return row?.at ?? undefined
+      }),
+
+      getNodeTime: Effect.fn("DagStore.getNodeTime")(function* (workflowId, nodeId) {
+        const row = yield* db
+          .select({ at: WorkflowNodeTable.time_updated })
+          .from(WorkflowNodeTable)
+          .where(and(eq(WorkflowNodeTable.workflow_id, workflowId), eq(WorkflowNodeTable.id, nodeId)))
+          .get()
+          .pipe(Effect.orDie)
+        return row?.at ?? undefined
       }),
 
       getNode: Effect.fn("DagStore.getNode")(function* (workflowId, nodeId) {

@@ -95,15 +95,24 @@ export interface Metadata {
   delivered: number
   undeliverable: number
   closedReason?: string
+  /** Latest durable message timestamp for this mailbox (optionally workflow-scoped). */
+  lastMessageAt?: number
 }
 export interface Interface {
   /** Host-only event/projection boundary. No provider or other remote I/O inside commit. */
+  /**
+   * Run `commit` in the workflow's immediate transaction, then close any
+   * still-live mailbox. `reason` may be computed from the committed result so
+   * a transition that resolves to a no-op does not close a live channel.
+   */
   fenceWorkflow: <A, E, R>(
     workflowID: string,
-    reason: string | undefined,
+    reason: string | undefined | ((result: A) => string | undefined),
     commit: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>
   resolve: (caller: Caller, workflowID: string, nodeID?: string) => Effect.Effect<Result<Endpoint>>
+  /** Authenticate the caller's current mailbox identity without reading or creating messages. */
+  identify: (caller: Caller, workflowID?: string) => Effect.Effect<Result<Endpoint>>
   send: (caller: Caller, request: Send) => Effect.Effect<Result<Message>>
   receive: (
     caller: Caller,
@@ -126,6 +135,8 @@ export interface Interface {
   closeWorkflow: (workflowID: string, reason: string) => Effect.Effect<void>
   reconcile: (caller: Caller) => Effect.Effect<void>
   revisions: (caller: Caller) => Effect.Effect<Result<Metadata>>
+  /** Latest message timestamp for the caller's mailbox, optionally scoped to one workflow. */
+  latestMessageAt?: (caller: Caller, workflowID?: string) => Effect.Effect<Result<number | undefined>>
   pendingRecipients: (scope: {
     projectID: string
     directory: string
@@ -137,11 +148,12 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 
 type DB = Database.Interface["db"]
 type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0]
-type Workflow = { id: string; project_id: string; session_id: string; directory: string | null; status: string }
+type Workflow = { id: string; project_id: string; session_id: string; directory: string | null; execution_directory: string | null; status: string }
 type Node = {
   id: string
   workflow_id: string
   child_session_id: string | null
+  directory: string | null
   status: string
   superseded: number
   replan_attempts: number
@@ -236,6 +248,19 @@ export const layer = Layer.effect(
       tx.get<Session>(sql`SELECT id, project_id, directory, time_created, parent_id FROM session WHERE id = ${id}`)
     const authorizedSession = (caller: Caller, s: Session | undefined) =>
       !!s && s.project_id === caller.projectID && resolvePath(s.directory) === resolvePath(caller.directory)
+    const workflowParent = (tx: Tx, wf: Workflow) =>
+      Effect.gen(function* () {
+        const parent = yield* session(tx, wf.session_id)
+        return parent && wf.directory && parent.project_id === wf.project_id &&
+          resolvePath(parent.directory) === resolvePath(wf.directory)
+          ? parent
+          : undefined
+      })
+    const boundChild = (wf: Workflow, n: Node, s: Session | undefined) => {
+      const directory = n.directory ?? wf.execution_directory ?? wf.directory
+      return !!s && !!directory && s.id === n.child_session_id && s.project_id === wf.project_id &&
+        s.parent_id === wf.session_id && resolvePath(s.directory) === resolvePath(directory)
+    }
     const main = (s: Session): Endpoint => ({
       id: JSON.stringify(["main", s.id, s.time_created]),
       kind: "main",
@@ -252,18 +277,15 @@ export const layer = Layer.effect(
     const owner = (tx: Tx, caller: Caller, wf: Workflow) =>
       Effect.gen(function* () {
         const s = yield* session(tx, caller.sessionID)
-        if (
-          !authorizedSession(caller, s) ||
-          wf.project_id !== caller.projectID ||
-          !wf.directory ||
-          resolvePath(wf.directory) !== resolvePath(caller.directory)
-        )
+        if (!authorizedSession(caller, s) || wf.project_id !== caller.projectID || !(yield* workflowParent(tx, wf)))
           return undefined
         if (wf.session_id === caller.sessionID) return main(s!)
         const n = yield* tx.get<Node>(
           sql`SELECT * FROM workflow_node WHERE workflow_id = ${wf.id} AND child_session_id = ${caller.sessionID}`,
         )
-        return n && !n.superseded && s!.parent_id === wf.session_id ? child(n) : undefined
+        return n && !n.superseded && n.status !== "pending" && n.status !== "queued" && boundChild(wf, n, s)
+          ? child(n)
+          : undefined
       })
     const self = (tx: Tx, caller: Caller) =>
       Effect.gen(function* () {
@@ -272,7 +294,12 @@ export const layer = Layer.effect(
         const n = yield* tx.get<Node>(
           sql`SELECT * FROM workflow_node WHERE child_session_id = ${caller.sessionID} LIMIT 1`,
         )
-        if (!n) return main(s!)
+        if (!n) {
+          const historical = yield* tx.get<{ id: string }>(
+            sql`SELECT id FROM agent_mailbox WHERE session_id = ${caller.sessionID} AND node_id IS NOT NULL LIMIT 1`,
+          )
+          return historical ? undefined : main(s!)
+        }
         const wf = yield* workflow(tx, n.workflow_id)
         return wf && (yield* owner(tx, caller, wf))
       })
@@ -313,7 +340,7 @@ export const layer = Layer.effect(
           )
         }
       })
-    const metadata = (tx: Tx, endpoint: Endpoint) =>
+    const metadata = (tx: Tx, endpoint: Endpoint, workflowID?: string) =>
       Effect.gen(function* () {
         const b = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${endpoint.id}`)
         const snap = yield* tx.get<{ id: string; revision: number }>(
@@ -321,6 +348,9 @@ export const layer = Layer.effect(
         )
         const rows = yield* tx.all<{ state: string; n: number }>(
           sql`SELECT state,COUNT(*) AS n FROM agent_message WHERE recipient_id = ${endpoint.id} GROUP BY state`,
+        )
+        const latest = yield* tx.get<{ at: number | null }>(
+          sql`SELECT MAX(time_created) AS at FROM agent_message WHERE recipient_id = ${endpoint.id} ${workflowID ? sql`AND workflow_id = ${workflowID}` : sql``}`,
         )
         const counts = Object.fromEntries(rows.map((r) => [r.state, r.n]))
         return {
@@ -332,26 +362,47 @@ export const layer = Layer.effect(
           delivered: counts.delivered ?? 0,
           undeliverable: counts.undeliverable ?? 0,
           closedReason: b?.closed_reason ?? undefined,
+          lastMessageAt: latest?.at ?? undefined,
         }
       })
     return Service.of({
+      identify: (caller, workflowID) =>
+        read((tx) =>
+          Effect.gen(function* () {
+            const endpoint = yield* self(tx, caller)
+            if (!endpoint) return reject("unauthorized")
+            if (workflowID) {
+              const wf = yield* workflow(tx, workflowID)
+              if (!wf || !(yield* owner(tx, caller, wf))) return reject("unauthorized")
+            }
+            return success(endpoint)
+          }),
+        ),
       fenceWorkflow: (workflowID, reason, commit) =>
         db
           .transaction(
             (tx) =>
               Effect.gen(function* () {
                 const result = yield* commit
+                const finalReason = typeof reason === "function" ? reason(result) : reason
                 const boxes = yield* tx.all<Mailbox>(
                   sql`SELECT * FROM agent_mailbox WHERE workflow_id = ${workflowID} AND closed_reason IS NULL`,
                 )
                 const wf = yield* workflow(tx, workflowID)
                 for (const box of boxes) {
                   const n = box.node_id ? yield* node(tx, workflowID, box.node_id) : undefined
-                  if (reason || !wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== box.attempt_id)
+                  // A session-level box has no attempt to invalidate. Close it
+                  // only on an explicit terminal reason; a no-op commit (for
+                  // example a concurrently moved workflow) must leave a live
+                  // parent mailbox open.
+                  const invalidAttempt =
+                    box.node_id !== null &&
+                    (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== box.attempt_id)
+                  if (finalReason || invalidAttempt)
                     yield* close(
                       tx,
                       [box.id],
-                      reason ??
+                      finalReason ??
                         (n && attempt(n) !== box.attempt_id
                           ? "attempt_replaced"
                           : n?.superseded
@@ -420,13 +471,13 @@ export const layer = Layer.effect(
               if (!n || !request.attemptID || attempt(n) !== request.attemptID) return reject("stale_attempt")
               if (!liveNode(n)) return reject("closed")
               const targetSession = yield* session(tx, n.child_session_id!)
-              if (!authorizedSession(caller, targetSession) || targetSession!.parent_id !== wf.session_id)
+              if (!boundChild(wf, n, targetSession))
                 return reject("closed")
               recipient = child(n)
             } else {
               if (sender.kind !== "node") return reject("unauthorized")
-              const s = yield* session(tx, wf.session_id)
-              if (!s || !authorizedSession(caller, s)) return reject("closed")
+              const s = yield* workflowParent(tx, wf)
+              if (!s) return reject("closed")
               recipient = main(s)
             }
             if (request.replyTo) {
@@ -486,7 +537,7 @@ export const layer = Layer.effect(
               return reject("unauthorized")
             if (!nodeID) {
               const s = yield* session(tx, wf.session_id)
-              return s ? success(yield* metadata(tx, main(s))) : reject("closed")
+              return s ? success(yield* metadata(tx, main(s), workflowID)) : reject("closed")
             }
             const n = yield* node(tx, workflowID, nodeID)
             if (attemptID && sender.kind === "main") {
@@ -495,18 +546,22 @@ export const layer = Layer.effect(
               )
               if (old)
                 return success(
-                  yield* metadata(tx, {
-                    id: old.id,
-                    kind: "node",
-                    sessionID: old.session_id,
+                  yield* metadata(
+                    tx,
+                    {
+                      id: old.id,
+                      kind: "node",
+                      sessionID: old.session_id,
+                      workflowID,
+                      nodeID,
+                      attemptID,
+                    },
                     workflowID,
-                    nodeID,
-                    attemptID,
-                  }),
+                  ),
                 )
             }
             if (!n?.child_session_id) return reject("stale_attempt")
-            if (!attemptID || attemptID === attempt(n)) return success(yield* metadata(tx, child(n)))
+            if (!attemptID || attemptID === attempt(n)) return success(yield* metadata(tx, child(n), workflowID))
             return reject(sender.kind === "main" ? "stale_attempt" : "unauthorized")
           }),
         ),
@@ -665,6 +720,12 @@ export const layer = Layer.effect(
                   (sender.kind === "node" && sender.nodeID !== n.id)
                 )
                   return reject("stale_attempt")
+                const childSession = yield* session(tx, n.child_session_id!)
+                if (
+                  !boundChild(wf, n, childSession) &&
+                  !(!childSession && sender.kind === "main" && input.failureReason && input.close !== false)
+                )
+                  return reject("unauthorized")
                 if (!liveWorkflow(wf.status)) return reject("closed")
                 const endpoint = child(n)
                 const box = yield* mailbox(tx, endpoint)
@@ -734,20 +795,16 @@ export const layer = Layer.effect(
       reconcile: (caller) =>
         transaction((tx) =>
           Effect.gen(function* () {
-            if (!authorizedSession(caller, yield* session(tx, caller.sessionID))) return
+            const current = yield* session(tx, caller.sessionID)
+            if (!authorizedSession(caller, current)) return
             const boxes = yield* tx.all<Mailbox>(
               sql`SELECT * FROM agent_mailbox WHERE closed_reason IS NULL AND (session_id = ${caller.sessionID} OR workflow_id IN (SELECT id FROM workflow WHERE session_id = ${caller.sessionID} AND project_id = ${caller.projectID}))`,
             )
             for (const b of boxes) {
               if (!b.workflow_id || !b.node_id) continue
               const wf = yield* workflow(tx, b.workflow_id)
-              if (
-                wf &&
-                (wf.project_id !== caller.projectID ||
-                  !wf.directory ||
-                  resolvePath(wf.directory) !== resolvePath(caller.directory))
-              )
-                continue
+              if (wf && (wf.project_id !== caller.projectID || !(yield* workflowParent(tx, wf)) ||
+                (caller.sessionID !== wf.session_id && (b.session_id !== caller.sessionID || current!.parent_id !== wf.session_id)))) continue
               const n = yield* node(tx, b.workflow_id, b.node_id)
               if (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== b.attempt_id)
                 yield* close(
@@ -768,6 +825,21 @@ export const layer = Layer.effect(
             const endpoint = yield* self(tx, caller)
             if (!endpoint) return reject("unauthorized")
             return success(yield* metadata(tx, endpoint))
+          }),
+        ),
+      latestMessageAt: (caller, workflowID) =>
+        transaction((tx) =>
+          Effect.gen(function* () {
+            if (workflowID) {
+              const wf = yield* workflow(tx, workflowID)
+              if (!wf || !(yield* owner(tx, caller, wf))) return reject("unauthorized")
+            }
+            const endpoint = yield* self(tx, caller)
+            if (!endpoint) return reject("unauthorized")
+            const latest = yield* tx.get<{ at: number | null }>(
+              sql`SELECT MAX(time_created) AS at FROM agent_message WHERE recipient_id = ${endpoint.id} ${workflowID ? sql`AND workflow_id = ${workflowID}` : sql``}`,
+            )
+            return success(latest?.at ?? undefined)
           }),
         ),
       // Polled every 250ms per directory: a read-only scan must not take the

@@ -28,4 +28,29 @@ export function verdictField(output: unknown): string | undefined {
   return typeof value.verdict === "string" ? value.verdict.trim().toUpperCase() : undefined
 }
 
+/** Verdicts that make a completed gate node a failed required node. Review
+ * decisions are excluded by the caller: REJECT/BLOCKED there are reopenable
+ * outcomes, not workflow failures. */
+const FAILING_GATE_VERDICTS = new Set(["FAIL", "BLOCKING", "BLOCKED", "INCOMPLETE"])
+
+/** The failing gate verdict of a normalized output, if present. Structured
+ * `{ verdict }` objects always count. A plain scalar (`"FAIL"`) counts only
+ * when the caller identifies an explicit verdict contract; ordinary task data
+ * must not be reinterpreted as a gate verdict. */
+export function failingGateVerdict(
+  output: unknown,
+  options: { readonly allowScalar?: boolean; readonly parseString?: boolean } = {},
+): string | undefined {
+  // A string declared as ordinary data must never be parsed as JSON: text such
+  // as `{"verdict":"FAIL"}` is the node's answer, not a gate contract.
+  if (typeof output === "string" && options.parseString === false) {
+    if (!options.allowScalar) return undefined
+    const scalar = output.trim().toUpperCase()
+    return FAILING_GATE_VERDICTS.has(scalar) ? scalar : undefined
+  }
+  const value = normalizeOutput(output)
+  const verdict = typeof value === "string" ? (options.allowScalar ? value.trim().toUpperCase() : undefined) : verdictField(value)
+  return verdict && FAILING_GATE_VERDICTS.has(verdict) ? verdict : undefined
+}
+
 export * as DagVerdict from "./verdict"

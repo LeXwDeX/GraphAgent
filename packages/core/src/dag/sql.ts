@@ -38,6 +38,11 @@ export const WorkflowTable = sqliteTable(
     // predating the column match no instance (fail-closed — never adopted until
     // recreated).
     directory: text(),
+    // Execution directory (#943): the bound workspace (absolute realpath) where
+    // this workflow's child sessions run. Separate from `directory`, which
+    // keeps deciding ownership, adoption, recovery and wake. NULL means "run in
+    // the owner directory" — the pre-#943 behavior for every legacy row.
+    execution_directory: text(),
     title: text().notNull(),
     status: text().notNull(),
     config: text().notNull(), // YAML string
@@ -75,6 +80,12 @@ export const WorkflowNodeTable = sqliteTable(
     model_id: text(), // optional model override (modelID from DagEvent.NodeModel)
     model_provider_id: text(), // optional model override (providerID)
     child_session_id: text(),
+    // Per-attempt execution location (#949): the directory this node ran in
+    // and the repo HEAD observed when it started. Snapshotted on NodeStarted
+    // so status/observe keep reporting the attempt's origin after the branch
+    // moves. Nullable: legacy rows and non-git directories have no HEAD.
+    directory: text(),
+    base_head: text(),
     output: text({ mode: "json" }).$type<unknown>(),
     error_reason: text(),
     error_class: text(), // dag.node.failed trigger (timeout/exec_failed/verdict_fail/push_exhausted) for failure triage

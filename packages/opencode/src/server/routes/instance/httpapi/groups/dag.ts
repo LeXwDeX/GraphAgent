@@ -42,6 +42,11 @@ export const NodeResponse = Schema.Struct({
   model_id: Schema.optional(Schema.String),
   model_provider_id: Schema.optional(Schema.String),
   child_session_id: Schema.optional(Schema.String),
+  // #949: per-attempt execution location. Optional so older servers and
+  // legacy rows keep the same shape.
+  directory: Schema.optional(Schema.String),
+  head: Schema.optional(Schema.String),
+  last_activity_at: Schema.optional(Schema.String),
   attempt_id: Schema.optional(Schema.String),
   accepted_input_revision: Schema.optional(NonNegativeInt),
   snapshot_revision: Schema.optional(NonNegativeInt),

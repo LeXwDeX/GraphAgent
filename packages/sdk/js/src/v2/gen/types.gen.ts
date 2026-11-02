@@ -4208,6 +4208,9 @@ export type DagNode = {
   model_id?: string
   model_provider_id?: string
   child_session_id?: string
+  directory?: string
+  head?: string
+  last_activity_at?: string
   attempt_id?: string
   accepted_input_revision?: number
   snapshot_revision?: number

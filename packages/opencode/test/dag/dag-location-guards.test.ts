@@ -33,8 +33,8 @@
  * uses. Observables (prompt queues, cancels, interrupts) are routed by the
  * AMBIENT instance directory, so each probe can tell which instance acted.
  */
-import { describe, expect, it } from "bun:test"
-import { DateTime, Deferred, Effect, Fiber, Layer, Option, Queue, Logger, Scope } from "effect"
+import { afterAll, describe, expect, it } from "bun:test"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Logger, Scope } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionV1 as SessionV1Events } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -53,6 +53,7 @@ import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
 import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { makeDeadlineWatcher } from "@/dag/runtime/spawn"
 import { DagLocation } from "@/dag/location"
 import { Goal } from "@/goal/goal"
@@ -64,16 +65,27 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { SessionAutomationLease } from "@/session/automation-lease"
 import { pollWithTimeout } from "../lib/effect"
+import { withIdleAdmission } from "../lib/session-prompt"
 import { makeNodeRow } from "./fixtures"
 import { eq } from "drizzle-orm"
 import { EventTable } from "@opencode-ai/core/event/sql"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import path from "node:path"
 
 const PROJECT_ID = "project-1"
-const DIR_A = "/wtA"
-const DIR_B = "/wtB"
+// #948 requires execution directories to exist. Keep this harness on real
+// worktree-shaped directories so every adoption/spawn path exercises the same
+// existence check production now performs (a /wtA that does not exist would
+// be correctly terminalized as workspace_missing).
+const directoryRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-location-guards-")))
+const DIR_A = path.join(directoryRoot, "wtA")
+const DIR_B = path.join(directoryRoot, "wtB")
+mkdirSync(DIR_A, { recursive: true })
+mkdirSync(DIR_B, { recursive: true })
+afterAll(() => rmSync(directoryRoot, { recursive: true, force: true }))
 const SES_A = "sesA"
 const SES_B = "sesB"
 
@@ -153,6 +165,12 @@ interface TwoInstanceInput {
   readonly messagesBySession: Map<string, SessionV1.WithParts[]>
   /** Injected one-shot defects for DagStore.getWorkflow (parity with the template). */
   readonly failGetWorkflow?: { remaining: number }
+  /**
+   * Admit and run delivered wakes instead of returning `none` from
+   * prepareIfIdle. Used by the notification-ownership probe; default off so
+   * every other probe keeps its no-delivery baseline.
+   */
+  readonly deliverWakes?: boolean
    /**
     * Optional deterministic park on DagStore.getNodes. When present, every
     * getNodes call sets `parked.value = true` and then awaits `wait` before
@@ -260,7 +278,16 @@ function twoInstanceLayer(input: TwoInstanceInput) {
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
-    get: () => Effect.succeed({ id: "ses_parent", permission: [], agent: "build" } as never),
+    // The notification-only ownership check reads the parent session's
+    // durable directory; route it by session id, not by the caller (a sibling
+    // may ask for the other directory's session).
+    get: (id) =>
+      Effect.succeed({
+        id,
+        directory: String(id) === SES_B ? input.directoryB : input.directoryA,
+        permission: [],
+        agent: "build",
+      } as never),
     create: (value) =>
       Effect.sync(() => {
         const id = `ses_child_${created.length + 1}`
@@ -342,7 +369,10 @@ function twoInstanceLayer(input: TwoInstanceInput) {
     prepareIfIdle: (value, persistAdmission) =>
       Effect.sync(() => {
         const gate = input.parkWakeDelivery
-        if (!gate) return Option.none()
+        if (!gate) {
+          if (!input.deliverWakes) return Option.none()
+          return Option.some({ activate: Effect.void, result: deliver(value), abort: Effect.void })
+        }
         gate.calls.value++
         if (gate.released.value) return Option.none()
         gate.parked.value = true
@@ -373,15 +403,21 @@ function twoInstanceLayer(input: TwoInstanceInput) {
     Layer.provide(prompt),
     Layer.provide(agent),
   )
+  const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(
+    Layer.provide(base),
+    Layer.provide(prompt),
+    Layer.provide(SessionAutomationLease.defaultLayer),
+  )
   // The session mock is also surfaced to the test body (Session.remove for
   // the deletion-teardown probe); mergeAll memoizes by layer identity, so the
   // instance the loop sees is the same one the test drives.
-  return Layer.mergeAll(base, loop, session)
+  return Layer.mergeAll(base, loop, session, sweep)
 }
 
 interface TwoInstanceServices {
   readonly dag: Dag.Interface
   readonly loop: DagLoop.Interface
+  readonly sweep: DagSupervisionSweep.Interface
   readonly store: DagStore.Interface
   readonly database: Database.Interface
   readonly bridge: EventV2.Interface
@@ -405,6 +441,7 @@ function runTwoInstanceGuardTest<A>(
     readonly directoryB?: string
     readonly sessionA?: string
     readonly sessionB?: string
+    readonly deliverWakes?: boolean
     readonly failGetWorkflow?: { remaining: number }
     readonly parkGetNodes?: {
       readonly wait: Promise<void>
@@ -442,6 +479,7 @@ function runTwoInstanceGuardTest<A>(
     return yield* Effect.gen(function* () {
       const dag = yield* Dag.Service
       const loop = yield* DagLoop.Service
+      const sweep = yield* DagSupervisionSweep.Service
       const store = yield* DagStore.Service
       const database = yield* Database.Service
       const bridge = yield* EventV2Bridge.Service
@@ -475,6 +513,7 @@ function runTwoInstanceGuardTest<A>(
       return yield* test({
         dag,
         loop,
+        sweep,
         store,
         database,
         bridge,
@@ -504,6 +543,7 @@ function runTwoInstanceGuardTest<A>(
         ]),
         promptInterrupts,
         messagesBySession,
+        deliverWakes: options.deliverWakes,
         failGetWorkflow: options.failGetWorkflow,
         parkGetNodes: options.parkGetNodes,
         parkWakeDelivery: options.parkWakeDelivery,
@@ -765,6 +805,8 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     // Negative half: the dag sources must not read the session's directory
     // column (session.directory / SessionTable.directory) — the execution-
     // location key belongs on the workflow row itself, stamped at create.
+    // #948's notification-only gate goes through Session.Service.get instead:
+    // it may decide who DELIVERS a terminal-only wake, never who may execute.
     const sessionDirRefs = sources
       .filter(({ source }) => /session\.directory|SessionTable\.directory/.test(source))
       .map(({ file }) => file)
@@ -933,6 +975,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
  */
 function goalLoopLayer(input: {
   readonly judgeCalls: Map<string, number[]>
+  readonly continuationCalls: Map<string, number[]>
   readonly messagesBySession: Map<string, SessionV1.WithParts[]>
   /** Ambient Database output for the merged graph; defaults to the shared one. */
   readonly ambientDatabase?: Layer.Layer<Database.Service>
@@ -964,13 +1007,24 @@ function goalLoopLayer(input: {
     messages: (value) =>
       Effect.sync(() => input.messagesBySession.get((value as { sessionID?: string }).sessionID ?? "") ?? []),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, {
-    prompt: () => Effect.succeed(reply("goal-parent", "continuation dispatched")),
-  })
+  const promptWithIdle = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
+      prompt: () => Effect.succeed(reply("goal-parent", "continuation dispatched")),
+      promptIfIdle: (value) =>
+        Effect.gen(function* () {
+          const dir = (yield* InstanceRef)?.directory ?? ""
+          const list = input.continuationCalls.get(dir) ?? []
+          list.push(1)
+          input.continuationCalls.set(dir, list)
+          return Option.some(reply(String(value.sessionID), "continuation dispatched"))
+        }),
+    }),
+  )
   const provider = Layer.mock(Provider.Service, {})
   const loop = GoalLoop.layer.pipe(
     Layer.provide(session),
-    Layer.provide(prompt),
+    Layer.provide(promptWithIdle),
     Layer.provide(provider),
     Layer.provide(judge),
     Layer.provide(goal),
@@ -983,6 +1037,9 @@ function goalLoopLayer(input: {
 describe("DAG-LOC-01 P2 follow-ups", () => {
   it("P2-A: a sibling instance does not drive another directory's goal-only session", async () => {
     const judgeCalls = new Map<string, number[]>()
+    const continuationCalls = new Map<string, number[]>()
+    const logs: string[] = []
+    const collector = Logger.make((opts) => logs.push(String(opts.message)))
     await Effect.runPromise(
       Effect.gen(function* () {
         const database = yield* Database.Service
@@ -1032,8 +1089,10 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         yield* Effect.sleep("300 millis")
         expect(judgeCalls.get(DIR_B) ?? []).toEqual([])
       }).pipe(
+        Effect.withLogger(collector),
         Effect.provide(goalLoopLayer({
           judgeCalls,
+          continuationCalls,
           messagesBySession: new Map([[SES_A, [reply(SES_A, "making progress")]]]),
         })),
         Effect.provideService(InstanceRef, {
@@ -1044,6 +1103,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         Effect.scoped,
       ),
     )
+    expect(continuationCalls.get(DIR_A) ?? []).not.toHaveLength(0)
+    expect(continuationCalls.get(DIR_B) ?? []).toEqual([])
+    expect(logs).not.toContain("goal afterIdle failed")
   })
 
   it("P2-F: creating a workflow for a foreign session stamps the SESSION's directory", async () => {
@@ -1065,6 +1127,272 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             const wf = yield* store.getWorkflow(dagID)
             expect(wf?.directory).toBe(DIR_B)
           }),
+      ),
+    )
+  })
+
+  it("#948: recovery terminalizes a workflow whose execution directory disappeared", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-recovery-missing-")))
+    const directory = path.join(root, "linked-worktree")
+    mkdirSync(directory, { recursive: true })
+    try {
+      await Effect.runPromise(
+        runTwoInstanceGuardTest(
+          { directoryA: directory },
+          ({ dag, store, initA, childPromptsA }) =>
+            Effect.gen(function* () {
+              // Created while the directory still exists, as a real linked
+              // worktree workflow would be. No loop is booted yet, so the
+              // WorkflowStarted event has no subscriber and the row stays
+              // running with a pending node.
+              const dagID = yield* dag.create({
+                projectID: PROJECT_ID,
+                sessionID: SES_A,
+                title: "worktree recovery",
+                config: { name: "w1", nodes: [node()] },
+              })
+              rmSync(directory, { recursive: true, force: true })
+
+              yield* initA
+
+              const workflow = yield* store.getWorkflow(dagID)
+              expect(workflow?.status).toBe("failed")
+              expect(yield* store.getWorkflowFailureReason!(dagID)).toContain("workspace_missing")
+              // Exactly one durable terminal wake row — the parent is not
+              // notified once per pending node.
+              expect((yield* store.getUnreportedWakeWorkflows(SES_A)).map((row) => row.id)).toEqual([dagID])
+              // Recovery must not reach reconciliation/spawn with a dead path.
+              expect(Option.isNone(yield* Queue.poll(childPromptsA))).toBe(true)
+            }),
+        ),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("#948: spawn stops when the execution directory disappears mid-run", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-spawn-missing-")))
+    const directory = path.join(root, "linked-worktree")
+    mkdirSync(directory, { recursive: true })
+    try {
+      await Effect.runPromise(
+        runTwoInstanceGuardTest(
+          { directoryA: directory },
+          ({ dag, store, initA, childPromptsA }) =>
+            Effect.gen(function* () {
+              yield* initA
+              const dagID = yield* dag.create({
+                projectID: PROJECT_ID,
+                sessionID: SES_A,
+                title: "worktree spawn",
+                config: { name: "w2", nodes: [node({ id: "n1" }), node({ id: "n2", depends_on: ["n1"] })] },
+              })
+              yield* takeWithin(childPromptsA, "n1 did not start")
+              rmSync(directory, { recursive: true, force: true })
+              // Completing n1 makes n2 ready. The scheduling round must check
+              // the shared verdict before rendering or spawning n2.
+              yield* dag.nodeCompleted(dagID, "n1", { ok: true })
+              yield* pollWithTimeout(
+                Effect.gen(function* () {
+                  const workflow = yield* store.getWorkflow(dagID)
+                  return workflow?.status === "failed" ? (true as const) : undefined
+                }),
+                "workflow did not fail after its execution directory disappeared",
+              )
+              expect(yield* store.getWorkflowFailureReason!(dagID)).toContain("workspace_missing")
+              expect(Option.isNone(yield* Queue.poll(childPromptsA))).toBe(true)
+            }),
+        ),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("#948: failUnrecoverable revalidates a workspace moved to a valid directory inside the lock", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-move-fail-")))
+    const directory = path.join(root, "linked-worktree")
+    mkdirSync(directory, { recursive: true })
+    try {
+      await Effect.runPromise(
+        runTwoInstanceGuardTest(
+          { directoryA: directory },
+          ({ dag, store, bridge }) =>
+            Effect.gen(function* () {
+              const dagID = yield* dag.create({
+                projectID: PROJECT_ID,
+                sessionID: SES_A,
+                title: "moved before fail",
+                config: { name: "move-fail", nodes: [node()] },
+              })
+              // The caller's observation is now stale: the workspace is gone,
+              // but a concurrent Moved re-stamps the row to DIR_B before the
+              // terminal transition commits.
+              rmSync(directory, { recursive: true, force: true })
+              yield* moveSession(bridge, SES_A, DIR_B)
+
+              expect(yield* dag.failUnrecoverable(dagID, "workspace_missing: stale")).toBe("ignored")
+              expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+              expect(yield* store.getWorkflowFailureReason!(dagID)).toBeUndefined()
+            }),
+        ),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("#948: missing workspace terminalization interrupts parked sibling children", async () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-sibling-abort-")))
+    const directory = path.join(root, "linked-worktree")
+    mkdirSync(directory, { recursive: true })
+    try {
+      await Effect.runPromise(
+        runTwoInstanceGuardTest(
+          { directoryA: directory },
+          ({ dag, store, initA, childPromptsA, promptInterrupts, cancelsA }) =>
+            Effect.gen(function* () {
+              yield* initA
+              const dagID = yield* dag.create({
+                projectID: PROJECT_ID,
+                sessionID: SES_A,
+                title: "sibling abort",
+                config: { name: "siblings", nodes: [node({ id: "n1" }), node({ id: "n2" })] },
+              })
+              const prompts = [
+                yield* takeWithin(childPromptsA, "n1 did not start"),
+                yield* takeWithin(childPromptsA, "n2 did not start"),
+              ]
+              const nodes = yield* store.getNodes(dagID)
+              const siblingSessionID = nodes.find((row) => row.id === "n2")?.childSessionId
+              if (!siblingSessionID) throw new Error("n2 did not start a child session")
+              expect(prompts.map((prompt) => prompt.input.sessionID as string)).toContain(siblingSessionID)
+
+              rmSync(directory, { recursive: true, force: true })
+              // Completing n1 drives a scheduling round; the missing-workspace
+              // check must fail the workflow while the runtime entry still
+              // exists, so the terminal handler can abort n2's parked child.
+              yield* dag.nodeCompleted(dagID, "n1", { ok: true })
+              yield* pollWithTimeout(
+                Effect.sync(() => (promptInterrupts.includes(siblingSessionID) ? true : undefined)),
+                "terminal handler did not interrupt the parked sibling child",
+                "2 seconds",
+              )
+              expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+              expect(yield* store.getWorkflowFailureReason!(dagID)).toContain("workspace_missing")
+              expect(cancelsA).toContain(siblingSessionID)
+            }),
+        ),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("#948: an unstamped terminal wake reaches the parent directory and does not block a later valid workflow", async () => {
+    await Effect.runPromise(
+      runTwoInstanceGuardTest(
+        { deliverWakes: true },
+        ({ store, initA, initB, childPromptsA, childPromptsB }) =>
+          Effect.gen(function* () {
+            // Boot the sibling first. It sees the same terminal-only session
+            // (ownsSession ignores terminal rows) but the notification gate
+            // must reject it: the parent session belongs to A.
+            yield* initB
+            yield* Effect.sleep("300 millis")
+            expect(Option.isNone(yield* Queue.poll(childPromptsB))).toBe(true)
+
+            yield* initA
+            const wake = yield* takeWithin(childPromptsA, "parent did not receive the terminal wake")
+            const text = wake.input.parts
+              .map((part) => (part.type === "text" ? part.text : ""))
+              .join("\n")
+            expect(text).toContain("NULL zombie")
+            expect(text).toContain("Valid later workflow")
+            yield* Deferred.succeed(wake.release, "acknowledged")
+
+            yield* pollWithTimeout(
+              Effect.gen(function* () {
+                const unreported = yield* store.getUnreportedWakeWorkflows(SES_A)
+                return unreported.length === 0 ? true : undefined
+              }),
+              "terminal wake was not acknowledged for both workflows",
+            )
+            // Replay after the durable acknowledgement: no duplicate wake.
+            yield* Effect.sleep("300 millis")
+            expect(Option.isNone(yield* Queue.poll(childPromptsA))).toBe(true)
+          }),
+        ({ database }) =>
+          Effect.gen(function* () {
+            yield* database.db.insert(WorkflowTable).values([
+              {
+                id: "wake-null",
+                project_id: PROJECT_ID as never,
+                session_id: SES_A as never,
+                title: "NULL zombie",
+                status: "failed",
+                config: "{}",
+                seq: 1,
+                wake_reported: false,
+              },
+              {
+                id: "wake-valid",
+                project_id: PROJECT_ID as never,
+                session_id: SES_A as never,
+                directory: DIR_A as never,
+                title: "Valid later workflow",
+                status: "failed",
+                config: "{}",
+                seq: 2,
+                wake_reported: false,
+              },
+            ]).run().pipe(Effect.orDie)
+          }),
+      ),
+    )
+  })
+
+  it("#948: a sweep-terminalized NULL workflow notifies the parent without a runtime entry", async () => {
+    await Effect.runPromise(
+      runTwoInstanceGuardTest(
+        { deliverWakes: true },
+        ({ store, sweep, initA, childPromptsA }) =>
+          Effect.gen(function* () {
+            yield* initA
+            // No idle event is injected: the only trigger is the terminal
+            // event published by the host-level sweep for a workflow the live
+            // loop never adopted (no runtime entry).
+            yield* sweep.sweepOnce()
+            expect((yield* store.getWorkflow("dag-wake-swept-null"))?.status).toBe("failed")
+
+            const wake = yield* takeWithin(childPromptsA, "parent did not receive the swept workflow wake")
+            const text = wake.input.parts
+              .map((part) => (part.type === "text" ? part.text : ""))
+              .join("\n")
+            expect(text).toContain("Swept NULL workflow")
+            yield* Deferred.succeed(wake.release, "acknowledged")
+            yield* pollWithTimeout(
+              Effect.gen(function* () {
+                const unreported = yield* store.getUnreportedWakeWorkflows(SES_A)
+                return unreported.length === 0 ? true : undefined
+              }),
+              "swept workflow wake was not acknowledged",
+            )
+            yield* Effect.sleep("300 millis")
+            expect(Option.isNone(yield* Queue.poll(childPromptsA))).toBe(true)
+          }),
+        ({ database }) =>
+          database.db.insert(WorkflowTable).values({
+            id: "dag-wake-swept-null",
+            project_id: PROJECT_ID as never,
+            session_id: SES_A as never,
+            title: "Swept NULL workflow",
+            status: "running",
+            config: "{}",
+            seq: 1,
+            wake_reported: false,
+          }).run().pipe(Effect.orDie, Effect.as(undefined)),
       ),
     )
   })
@@ -1110,6 +1438,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
 
   it("P2-B: a store defect in the goal guard degrades to a skipped evaluation, not a dead loop", async () => {
     const judgeCalls = new Map<string, number[]>()
+    const continuationCalls = new Map<string, number[]>()
+    const logs: string[] = []
+    const collector = Logger.make((opts) => logs.push(String(opts.message)))
     const fail = { armed: true }
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -1152,8 +1483,10 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         )
         expect(fail.armed).toBe(false)
       }).pipe(
+        Effect.withLogger(collector),
         Effect.provide(goalLoopLayer({
           judgeCalls,
+          continuationCalls,
           messagesBySession: new Map([[SES_A, [reply(SES_A, "making progress")]]]),
           ambientDatabase: Layer.effect(
             Database.Service,
@@ -1185,9 +1518,11 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         Effect.scoped,
       ),
     )
+    expect(continuationCalls.get(DIR_A) ?? []).not.toHaveLength(0)
+    expect(logs).not.toContain("goal afterIdle failed")
   })
 
-  it("P2-D: a NULL-directory workflow is skipped with a deduped visible warning", async () => {
+  it("P2-D: a NULL-directory workflow is never owned and raises no per-process skip warning", async () => {
     const lines: string[] = []
     const collector = Logger.make((opts) => {
       lines.push(String(opts.message))
@@ -1209,8 +1544,8 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           version: "test",
         }).run().pipe(Effect.orDie)
         // A pre-DAG-LOC-01 workflow with no directory stamp (post-backfill
-        // cross-version write): every ownership check must skip it and say
-        // so — exactly once per workflow per process (P2-D).
+        // cross-version write): ownership stays fail-closed, but the sweep is
+        // now the terminalization path (covered by the workspace-missing test).
         yield* database.db.insert(WorkflowTable).values({
           id: "p2d-null-wf",
           project_id: PROJECT_ID as never,
@@ -1223,7 +1558,11 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         yield* DagLocation.ownsWorkflow("p2d-null-wf", DIR_A).pipe(Effect.ignore)
         yield* DagLocation.ownsWorkflow("p2d-null-wf", DIR_A).pipe(Effect.ignore)
         const warnings = lines.filter((line) => line.includes("NULL execution-location directory"))
-        expect(warnings).toHaveLength(1)
+        expect(warnings).toHaveLength(0)
+        expect(DagLocation.resolveExecution({ directory: null })._tag).toBe("unstamped")
+        expect(DagLocation.resolveExecution({ directory: "" })._tag).toBe("unstamped")
+        expect(DagLocation.resolveExecution({ directory: DIR_A })).toEqual({ _tag: "ok", directory: DIR_A })
+        expect(DagLocation.resolveExecution({ directory: path.join(directoryRoot, "gone") })._tag).toBe("missing")
       }).pipe(
         Effect.withLogger(collector),
         Effect.provide(Database.layerFromPath(":memory:")),
@@ -1918,6 +2257,67 @@ describe("DAG-LOC-01 H1 adopt-exactly-once latch", () => {
             expect(row?.status).toBe("running")
             expect(row?.childSessionId).toBe(first.input.sessionID as string)
             expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+          }),
+      ),
+    )
+  })
+})
+
+describe("DAG workspace binding", () => {
+  it("#943: rejects an invalid config workspace through the Error channel before persistence", async () => {
+    await Effect.runPromise(
+      runTwoInstanceGuardTest(
+        {},
+        ({ dag, database }) =>
+          Effect.gen(function* () {
+            const exit = yield* dag
+              .create({
+                projectID: PROJECT_ID,
+                sessionID: SES_A,
+                title: "invalid config workspace",
+                config: {
+                  name: "invalid-config-workspace",
+                  workspace: path.join(directoryRoot, "missing-config-workspace"),
+                  nodes: [node()],
+                },
+              })
+              .pipe(Effect.exit)
+            expect(Exit.isFailure(exit)).toBe(true)
+            if (Exit.isFailure(exit)) {
+              expect(Cause.hasDies(exit.cause)).toBe(false)
+              expect(Cause.squash(exit.cause)).toBeInstanceOf(Error)
+            }
+            expect(yield* database.db.select().from(WorkflowTable).all()).toHaveLength(0)
+            expect(yield* database.db.select().from(EventTable).all()).toHaveLength(0)
+          }),
+      ),
+    )
+  })
+
+  it("#943: rejects an invalid node workspace through the Error channel before persistence", async () => {
+    await Effect.runPromise(
+      runTwoInstanceGuardTest(
+        {},
+        ({ dag, database }) =>
+          Effect.gen(function* () {
+            const exit = yield* dag
+              .create({
+                projectID: PROJECT_ID,
+                sessionID: SES_A,
+                title: "invalid node workspace",
+                config: {
+                  name: "invalid-node-workspace",
+                  nodes: [node({ workspace: path.join(directoryRoot, "missing-node-workspace") })],
+                },
+              })
+              .pipe(Effect.exit)
+            expect(Exit.isFailure(exit)).toBe(true)
+            if (Exit.isFailure(exit)) {
+              expect(Cause.hasDies(exit.cause)).toBe(false)
+              expect(Cause.squash(exit.cause)).toBeInstanceOf(Error)
+            }
+            expect(yield* database.db.select().from(WorkflowTable).all()).toHaveLength(0)
+            expect(yield* database.db.select().from(EventTable).all()).toHaveLength(0)
           }),
       ),
     )

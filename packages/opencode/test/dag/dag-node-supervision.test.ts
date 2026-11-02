@@ -5,6 +5,11 @@
 // converting them would fork the template's shape without changing behavior.
 // oxlint-disable eslint/no-unused-vars -- gate objects are taken for their
 // readiness side effect (takeWithin), not their value.
+// oxlint-disable typescript-eslint/no-unnecessary-type-assertion -- the runtime
+// layer strips the automation dependency; tsgo needs the assertion to keep
+// test callbacks R=never.
+// oxlint-disable typescript-eslint/no-unnecessary-type-arguments -- the
+// explicit never documents the boundary the assertion establishes.
 import { describe, expect, it } from "bun:test"
 import { Deferred, Effect, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -23,7 +28,7 @@ import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionAutomationLease } from "@/session/automation-lease"
-import { MessageID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
@@ -150,12 +155,12 @@ function supervisionLayer(input: {
   // #343: the sweep terminalizes workflows and releases their automation
   // lease after a host-level settle — give it the real (process-level) lease
   // registry so the unregister path is exercised, not a silent mock no-op.
+  const automation = SessionAutomationLease.defaultLayer
   const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(
     Layer.provide(base),
     Layer.provide(prompt),
-    Layer.provide(SessionAutomationLease.defaultLayer),
   )
-  return Layer.merge(Layer.merge(base, loop), sweep)
+  return Layer.mergeAll(base, loop, sweep).pipe(Layer.provideMerge(automation))
 }
 
 interface SupervisionServices {
@@ -165,10 +170,11 @@ interface SupervisionServices {
   readonly sweep: import("@/dag/runtime/supervision-sweep").Interface
   readonly childPrompts: Queue.Queue<PromptGate>
   readonly cancels: string[]
+  readonly automation: SessionAutomationLease.Interface
   readonly database: Database.Interface
 }
 function runSupervisionTest<A>(
-  options: { readonly instanceProject: string; readonly cancelDefect?: boolean },
+  options: { readonly instanceProject: string; readonly cancelDefect?: boolean; readonly initLoop?: boolean },
   test: (services: SupervisionServices) => Effect.Effect<A, Error>,
 ) {
   return Effect.gen(function* () {
@@ -179,6 +185,7 @@ function runSupervisionTest<A>(
       const loop = yield* DagLoop.Service
       const store = yield* DagStore.Service
       const sweep = yield* DagSupervisionSweep.Service
+      const automation = yield* SessionAutomationLease.Service
       const database = yield* Database.Service
       for (const project of ["project-1", "project-2"]) {
         yield* database.db
@@ -199,8 +206,8 @@ function runSupervisionTest<A>(
           .run()
           .pipe(Effect.orDie)
       }
-      yield* loop.init()
-      return yield* test({ dag, loop, store, sweep, childPrompts, cancels, database })
+      if (options.initLoop !== false) yield* loop.init()
+      return yield* test({ dag, loop, store, sweep, automation, childPrompts, cancels, database })
     }).pipe(
       Effect.provide(supervisionLayer({ childPrompts, cancels, cancelDefect: options.cancelDefect })),
       Effect.provideService(InstanceRef, {
@@ -209,7 +216,7 @@ function runSupervisionTest<A>(
         project: { id: options.instanceProject },
       } as never),
       Effect.scoped,
-    )
+    ) as Effect.Effect<A, Error, never>
   })
 }
 
@@ -530,4 +537,61 @@ describe("DagSupervisionSweep cadence derivation (pure)", () => {
     const reTimedWindow = Math.max(600_000, DagSupervisionSweep.escalateIntervalDurable(600_000, 0))
     expect(DagSupervisionSweep.frozenTicksNeeded(reTimedWindow)).toBe(11)
   })
+
+  it("settles a completed FAIL verifier without an owning loop and releases the lease", async () => {
+    await Effect.runPromise(
+      runSupervisionTest({ instanceProject: "project-1", initLoop: false }, ({ dag, store, sweep, automation }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_project-1",
+            title: "no owning loop",
+            config: {
+              name: "no-owning-loop",
+              nodes: [
+                node({
+                  id: "verify",
+                  required: true,
+                  output_schema: {
+                    type: "object",
+                    properties: { verdict: { type: "string" } },
+                    required: ["verdict"],
+                  },
+                }),
+                node({ id: "optional", required: false, worker_config: { timeout_ms: 2_000 } }),
+              ],
+            },
+          })
+          yield* dag.nodeQueued(dagID, "verify", Date.now() + 60_000)
+          yield* dag.nodeStarted(dagID, "verify", "ses_verify", Date.now() + 60_000)
+          yield* dag.nodeCompleted(dagID, "verify", { verdict: "FAIL" })
+          yield* dag.nodeQueued(dagID, "optional", Date.now() - 1_000)
+          yield* dag.nodeStarted(dagID, "optional", "ses_optional", Date.now() - 1_000)
+
+          const sessionID = SessionID.make("ses_project-1")
+          yield* automation.register(sessionID, { kind: "dag", id: dagID })
+          expect(Option.isNone(yield* automation.claim(sessionID, { kind: "goal", id: "goal-test" }))).toBe(true)
+
+          const needed = DagSupervisionSweep.frozenTicksNeeded(2_000)
+          for (let tick = 0; tick <= needed; tick++) {
+            yield* sweep.sweepOnce()
+            yield* Effect.sleep("50 millis")
+          }
+          const wf = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((row) => (row?.status === "failed" ? row : undefined)),
+            ),
+            "sweep did not fail the workflow with a completed verifier",
+            "10 seconds",
+          )
+          expect(wf.status).toBe("failed")
+          expect((yield* store.getNode(dagID, "optional"))?.status).toBe("failed")
+          // A goal owner can claim only after the dag registration is released;
+          // before the unregister the registered dag blocks this claim.
+          yield* automation.register(sessionID, { kind: "goal", id: "goal-test" })
+          expect(Option.isSome(yield* automation.claim(sessionID, { kind: "goal", id: "goal-test" }))).toBe(true)
+        }),
+      ),
+    )
+  }, 30_000)
 })

@@ -90,7 +90,8 @@ function contractLayer(childPrompts: Queue.Queue<PromptGate>) {
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     get: () => Effect.succeed({ id: "ses_parent", permission: [], agent: "build" } as never),
-    create: () => Effect.succeed({ id: "ses_child_1" } as never),
+    create: (input?: { directory?: string }) =>
+      Effect.succeed({ id: "ses_child_1", directory: input?.directory ?? process.cwd() } as never),
     messages: () => Effect.succeed([]),
   })
   const deliver = Effect.fn("test.SessionPrompt.deliver")(function* (value: SessionPrompt.PromptInput) {
@@ -194,6 +195,47 @@ describe("DAG schema prompt contract (issue #386)", () => {
             "new protocol did not complete from final JSON",
           )
           expect(row.output).toEqual({ summary: "Captured from final answer." })
+        }),
+      ),
+    )
+  })
+
+  it("states allowed verdict values last and makes the output contract override instruction wording", async () => {
+    await Effect.runPromise(
+      runContractTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Verdict contract",
+            config: {
+              name: "verdict-contract",
+              nodes: [
+                {
+                  ...schemaNode(),
+                  id: "review",
+                  name: "review",
+                  prompt_template: { inline: "Return PASS or BLOCKING" },
+                  output_schema: {
+                    type: "object",
+                    required: ["verdict"],
+                    properties: { verdict: { type: "string", enum: ["ACCEPT", "REJECT"] } },
+                  },
+                },
+              ],
+            },
+          })
+          const gate = yield* Queue.take(childPrompts)
+          const prompt = promptText(gate.input)
+          expect(prompt).toContain('Allowed values: verdict in ["ACCEPT","REJECT"]')
+          expect(prompt).toContain("This output contract overrides any conflicting verdict wording")
+          expect(prompt.indexOf("Allowed values")).toBeGreaterThan(prompt.indexOf("[OUTPUT CONTRACT"))
+          yield* Deferred.succeed(gate.release, '{"verdict":"ACCEPT"}')
+          const row = yield* pollWithTimeout(
+            store.getNode(dagID, "review").pipe(Effect.map((node) => (node?.status === "completed" ? node : undefined))),
+            "verdict node did not complete",
+          )
+          expect(row.output).toEqual({ verdict: "ACCEPT" })
         }),
       ),
     )

@@ -656,6 +656,13 @@ describe("message settlement through durable DAG events", () => {
           value(
             yield* messages.send(child, { workflowID: "dag_messages", idempotencyKey: "report", content: "finding" }),
           )
+          // This suite exercises terminal message disposition, not the
+          // completion gate; keep the running fixture optional so explicit
+          // completion remains legal while the child still holds input.
+          if (action === "complete") {
+            const { db } = yield* Database.Service
+            yield* db.run(sql`UPDATE workflow_node SET required = 0 WHERE workflow_id = 'dag_messages' AND id = 'n'`)
+          }
           if (action === "fail") yield* dag.fail("dag_messages", "workflow stopped")
           else yield* dag[action]("dag_messages")
           expect(value(yield* messages.receive(child))[0].state).toBe("undeliverable")

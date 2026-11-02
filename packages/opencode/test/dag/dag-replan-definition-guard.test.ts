@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it as bunIt } from "bun:test"
-import { Deferred, Effect, Fiber, Layer } from "effect"
+import { $ } from "bun"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { and, eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
 import { DagStore } from "@opencode-ai/core/dag/store"
-import { WorkflowNodeTable } from "@opencode-ai/core/dag/sql"
+import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -18,6 +22,7 @@ import { ReplanDefinition } from "@/dag/replan-definition"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
+import { tmpdir } from "../fixture/fixture"
 
 const persistence = Layer.mergeAll(
   Database.defaultLayer,
@@ -40,7 +45,7 @@ function node(id: string, dependsOn: string[] = []): NodeConfig {
   }
 }
 
-function setup(sessionID: string) {
+function setup(sessionID: string, directory = "/project") {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
@@ -58,7 +63,7 @@ function setup(sessionID: string) {
         id: SessionID.make(sessionID),
         project_id: Project.ID.global,
         slug: sessionID,
-        directory: AbsolutePath.make("/project"),
+        directory: AbsolutePath.make(directory),
         title: sessionID,
         version: "test",
       })
@@ -132,6 +137,7 @@ describe("replan admitted-definition guard", () => {
         worker_config: { timeout_ms: 5_000 },
         input_mapping: { value: "dep.output.value" },
         condition: "dep.output.value == 1",
+        skip_ok: false,
         model: { providerID: "test", modelID: "old-model" },
         output_schema: { type: "string", description: "old output" },
       }
@@ -192,6 +198,41 @@ describe("replan admitted-definition guard", () => {
       expect(persisted?.nodes.find((value) => value.id === "target")).toEqual(target)
     }),
   )
+
+  for (const status of ["queued", "paused", "running"] as const) {
+    it.effect(`admits an unchanged legacy definition while ${status}`, () =>
+      Effect.gen(function* () {
+        const sessionID = `ses_replan_legacy_${status}`
+        yield* setup(sessionID)
+        const dag = yield* Dag.Service
+        const { db } = yield* Database.Service
+        const dagID = yield* create(dag, sessionID, [node("legacy")])
+        const before = (yield* dag.store.getWorkflow(dagID))!
+        const config = parseWorkflowConfig(before.config)!
+        const legacy = config.nodes.find((candidate) => candidate.id === "legacy")!
+        const { skip_ok: _skipOk, ...legacyWithoutSkip } = legacy
+        yield* db
+          .update(WorkflowTable)
+          .set({ config: JSON.stringify({ ...config, nodes: [legacyWithoutSkip] }) })
+          .where(eq(WorkflowTable.id, dagID))
+          .run()
+
+        yield* dag.nodeQueued(dagID, "legacy", Date.now() + 60_000)
+        if (status === "paused")
+          yield* db
+            .update(WorkflowNodeTable)
+            .set({ status: "paused" })
+            .where(and(eq(WorkflowNodeTable.workflow_id, dagID), eq(WorkflowNodeTable.id, "legacy")))
+            .run()
+        if (status === "running") yield* dag.nodeStarted(dagID, "legacy", "ses_legacy", Date.now() + 60_000)
+
+        const result = yield* dag.replan(dagID, { nodes: [legacyWithoutSkip] }).pipe(Effect.result)
+        expect(result._tag).toBe("Success")
+        const after = parseWorkflowConfig((yield* dag.store.getWorkflow(dagID))!.config)!
+        expect(after.nodes.find((candidate) => candidate.id === "legacy")?.skip_ok).toBeUndefined()
+      }),
+    )
+  }
 
   it.effect("allows a running timeout update and definitions that differ only by object key order", () =>
     Effect.gen(function* () {
@@ -327,6 +368,54 @@ describe("replan admitted-definition guard", () => {
       yield* start(dag, dagID, "running", "ses_replan_definition_restarted")
       yield* dag.nodeCompleted(dagID, "running", "new result")
       expect((yield* dag.store.getNode(dagID, "running"))?.output).toBe("new result")
+    }),
+  )
+
+  it.effect("pins a direct replan node workspace to its realpath", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.promise(() => tmpdir({ git: true }))
+      const linked = path.join(os.tmpdir(), `opencode-replan-ws-${Math.random().toString(36).slice(2)}`)
+      const alias = path.join(os.tmpdir(), `opencode-replan-ws-alias-${Math.random().toString(36).slice(2)}`)
+      const cleanup = Effect.promise(async () => {
+        await fs.rm(alias, { force: true })
+        await $`git -C ${tmp.path} worktree remove --force ${linked}`.quiet().catch(() => undefined)
+        await fs.rm(linked, { recursive: true, force: true })
+        await tmp[Symbol.asyncDispose]()
+      })
+      return yield* Effect.gen(function* () {
+        yield* Effect.promise(() => $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet())
+        const real = yield* Effect.promise(() => fs.realpath(linked))
+        yield* Effect.promise(() => fs.symlink(real, alias))
+        const sessionID = "ses_replan_workspace_pin"
+        yield* setup(sessionID, tmp.path)
+        const dag = yield* Dag.Service
+        const old = { ...node("old"), report_to_parent: false }
+        const dagID = yield* create(dag, sessionID, [old])
+        yield* dag.replan(dagID, { nodes: [old, { ...node("new", ["old"]), workspace: alias }] })
+        const persisted = parseWorkflowConfig((yield* dag.store.getWorkflow(dagID))!.config)
+        expect(persisted?.nodes.find((value) => value.id === "new")?.workspace).toBe(real)
+      }).pipe(Effect.ensuring(cleanup))
+    }),
+  )
+
+  it.effect("rejects an invalid direct replan node workspace through the error channel", () =>
+    Effect.gen(function* () {
+      yield* setup("ses_replan_workspace_invalid")
+      const dag = yield* Dag.Service
+      const old = { ...node("old"), report_to_parent: false }
+      const dagID = yield* create(dag, "ses_replan_workspace_invalid", [old])
+      const exit = yield* Effect.exit(
+        dag.replan(dagID, {
+          nodes: [old, { ...node("new", ["old"]), workspace: "../outside" }],
+        }),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasDies(exit.cause)).toBe(false)
+        expect(Cause.pretty(exit.cause)).toContain("absolute path")
+      }
+      const persisted = parseWorkflowConfig((yield* dag.store.getWorkflow(dagID))!.config)
+      expect(persisted?.nodes.find((value) => value.id === "new")).toBeUndefined()
     }),
   )
 

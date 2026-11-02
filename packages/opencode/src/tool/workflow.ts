@@ -7,6 +7,7 @@ import { Cause, Effect, Exit, Option, Schema } from "effect"
 import { Dag } from "@/dag/dag"
 import { DagReviewLifecycle } from "@/dag/review-lifecycle"
 import { DagWorkflows } from "@/dag/workflows"
+import { DagLocation } from "@/dag/location"
 import { DagValidation, type Diagnostic } from "@/dag/validation"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagEnvironmentCatalogs } from "@/dag/environment-catalogs"
@@ -20,6 +21,7 @@ import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
+import { argumentAction, bound, formatSchemaFailures } from "./schema-error"
 import { InstanceRef } from "@/effect/instance-ref"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -58,7 +60,7 @@ export { Parameters as WorkflowParameters }
 // ============================================================================
 
 const specPathDescription =
-  '(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The `builtin://<name>` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory'
+  '(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The `builtin://<name>` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory, not a config.workspace declared inside that file'
 
 const StartPath = Schema.Struct({
   action: Schema.Literal("start").annotate({ description: "Create a workflow" }),
@@ -337,12 +339,23 @@ export const WorkflowTool = Tool.define<
       description: CommandPlugin.WorkflowContent,
       parameters: Parameters,
       parseOptions: { onExcessProperty: "error" },
+      repairContainerFields: ["params"],
       repairArguments: repairFlatWorkflowCall,
-      formatValidationError: (error) =>
-        [
-          `Workflow call rejected by the action schema: ${error instanceof Error ? error.message : String(error)}`,
-          "The call takes a single { params } object: params { action, ...action-owned fields } where each action owns only its own fields: start {spec_path}; extend {workflow_id, spec_path}; control(replan) {workflow_id, operation, spec_path}; other control operations {workflow_id, operation}; status {workflow_id}; result {workflow_id, node_id, cursor?, limit?}; list {}; read {spec_path}; guide {topic?}; draft {title?, config}; validate {spec_path, profile?}. Put graph content in draft (structured, schema-checked) or a .yaml/.yml file; session/project identity is never a parameter.",
-        ].join("\n"),
+      formatValidationError: (error, input) => {
+        const action = argumentAction(input)
+        const detail = formatSchemaFailures(error, 2, action)
+        const actions =
+          "workflow expects {params:{action,...action-owned fields}}; start {spec_path}; extend {workflow_id, spec_path}; control {workflow_id, operation}; status {workflow_id}; result {workflow_id, node_id}; list {}; read {spec_path}; guide {topic?}; draft {title?, config}; validate {spec_path}. Put graph content in draft config or a .yaml/.yml file."
+        const message =
+          action === "send" || action === "receive" || action === "observe"
+            ? `workflow has no ${action} action; use agent {params:{action:"${action}", ...}} for messaging and workflow status for graph progress.`
+            : action === "extend_timeout"
+              ? 'workflow has no extend_timeout action; use {params:{action:"control",operation:"extend_timeout",workflow_id,node_id,timeout_ms}}.'
+              : action === "draft"
+                ? "workflow draft config expects one graph shape: nodes[...] or blocks[...]; remove extra fields."
+                : "workflow call rejected by the action schema."
+        return bound(`${message}${detail ? ` Details: ${detail}.` : ""} ${actions}`, 480)
+      },
       execute: (call: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
           const params = call.params
@@ -538,6 +551,12 @@ export const WorkflowTool = Tool.define<
               // the CURRENT graph revision only. Superseded replaced segments
               // stay reachable via the result seam (getNode is unfiltered).
               const nodes = yield* dag.store.getCurrentNodes(params.workflow_id).pipe(Effect.orDie)
+              // #948: the failure reason lives on the durable WorkflowFailed
+              // event (no new column). Surface it here so a terminal workflow
+              // explains itself, including workspace_missing/unstamped.
+              const failureReason = dag.store.getWorkflowFailureReason
+                ? yield* dag.store.getWorkflowFailureReason(workflow.id)
+                : undefined
               const config = Dag.parseWorkflowConfig(workflow.config)
               // A completed graph can still carry an unresolved review verdict
               // (REJECT checkpoint, issue #294); surface it explicitly instead
@@ -550,6 +569,7 @@ export const WorkflowTool = Tool.define<
                     id: workflow.id,
                     title: workflow.title,
                     status: workflow.status,
+                    ...(failureReason ? { failure_reason: failureReason } : {}),
                     graph_rev: workflow.graphRev,
                     session_id: workflow.sessionId,
                     mode: config?.mode ?? "standard",
@@ -578,6 +598,7 @@ export const WorkflowTool = Tool.define<
                       required: node.required,
                       depends_on: node.dependsOn,
                       ...(node.childSessionId ? { child_session_id: node.childSessionId } : {}),
+                      ...DagLocation.nodeLocationView(node),
                       ...(node.errorReason ? { error_reason: node.errorReason } : {}),
                       ...(node.errorClass ? { error_class: node.errorClass } : {}),
                       ...(config?.nodes.find((definition) => definition.id === node.id)?.recovery
@@ -611,6 +632,7 @@ export const WorkflowTool = Tool.define<
                       workflow_id: params.workflow_id,
                       node_id: params.node_id,
                       status: node.status,
+                      ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                       content_ref: node.capturedOutput.content_ref,
                       path: node.capturedOutput.path,
                       summary: node.capturedOutput.summary,
@@ -687,6 +709,7 @@ export const WorkflowTool = Tool.define<
                     workflow_id: params.workflow_id,
                     node_id: params.node_id,
                     status: node.status,
+                    ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                     content: content.slice(cursor.value.offset, pageEnd),
                     truncated,
                     next_cursor: nextCursor,
@@ -750,7 +773,8 @@ export const WorkflowTool = Tool.define<
             }
             case "extend": {
               const workflow = yield* requireOwnedWorkflow(params.workflow_id, ctx.sessionID)
-              const workflowDefaults = Dag.parseWorkflowConfig(workflow.config)?.node_defaults
+              const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
+              const workflowDefaults = workflowConfig?.node_defaults
               const knownDependencies = (yield* dag.store.getNodes(params.workflow_id).pipe(Effect.orDie)).map(
                 (node) => node.id,
               )
@@ -762,6 +786,7 @@ export const WorkflowTool = Tool.define<
                 source,
                 profile: "environment",
                 environment: { directory: callingSession.directory, parent: callingSession.model },
+                executionWorkspace: workflowConfig?.workspace,
                 known_dependencies: knownDependencies,
                 node_defaults: workflowDefaults,
               })
@@ -843,7 +868,8 @@ export const WorkflowTool = Tool.define<
                 }
               }
               if (params.operation === "replan") {
-                const workflowDefaults = Dag.parseWorkflowConfig(workflow.config)?.node_defaults
+                const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
+                const workflowDefaults = workflowConfig?.node_defaults
                 const knownDependencies = (yield* dag.store.getNodes(wfId).pipe(Effect.orDie)).map((node) => node.id)
                 const source = yield* loadAuthoringSource(params.spec_path, callingSession.directory, ctx).pipe(
                   Effect.orDie,
@@ -853,6 +879,7 @@ export const WorkflowTool = Tool.define<
                   source,
                   profile: "environment",
                   environment: { directory: callingSession.directory, parent: callingSession.model },
+                  executionWorkspace: workflowConfig?.workspace,
                   known_dependencies: knownDependencies,
                   node_defaults: workflowDefaults,
                 })

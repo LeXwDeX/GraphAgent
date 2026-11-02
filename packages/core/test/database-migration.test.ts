@@ -19,6 +19,8 @@ import capturedOutputMigration from "@opencode-ai/core/database/migration/202607
 import fearlessCammiMigration from "@opencode-ai/core/database/migration/20260717034735_fearless_cammi"
 import dagWorkflowNodeIdentityMigration from "@opencode-ai/core/database/migration/20260720013828_dag-workflow-node-identity"
 import dropSessionSummaryDiffsMigration from "@opencode-ai/core/database/migration/20260903044702_drop_session_summary_diffs"
+import workflowExecutionDirectoryMigration from "@opencode-ai/core/database/migration/20261101044937_perfect_shaman"
+import workflowNodeExecutionLocationMigration from "@opencode-ai/core/database/migration/20261101033752_workflow_node_execution_location"
 import { EventV2 } from "@opencode-ai/core/event"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -814,6 +816,83 @@ describe("DatabaseMigration", () => {
         yield* DatabaseMigration.applyOnly(db, [])
 
         expect(yield* db.all(sql`SELECT id FROM migration ORDER BY id`)).toEqual([{ id: "existing" }])
+      }),
+    )
+  })
+
+  test("adds workflow_node execution location columns on a new database", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('directory', 'base_head') ORDER BY name`,
+          ),
+        ).toEqual([{ name: "base_head" }, { name: "directory" }])
+      }),
+    )
+  })
+
+  test("upgrades a legacy workflow_node row with execution location columns", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'wf', 'Legacy node', 'running')`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [workflowNodeExecutionLocationMigration])
+
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('directory', 'base_head') ORDER BY name`,
+          ),
+        ).toEqual([{ name: "base_head" }, { name: "directory" }])
+        expect(
+          yield* db.get(
+            sql`SELECT id, directory, base_head AS baseHead FROM workflow_node WHERE workflow_id = 'wf' AND id = 'legacy-node'`,
+          ),
+        ).toEqual({ id: "legacy-node", directory: null, baseHead: null })
+      }),
+    )
+  })
+
+  test("adds workflow execution_directory on a new database", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(
+          yield* db.all(sql`SELECT name FROM pragma_table_info('workflow') WHERE name = 'execution_directory'`),
+        ).toEqual([{ name: "execution_directory" }])
+        expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
+      }),
+    )
+  })
+
+  test("upgrades a legacy workflow row without losing it", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE workflow (id text PRIMARY KEY, title text)`)
+        yield* db.run(sql`INSERT INTO workflow (id, title) VALUES ('legacy', 'Legacy workflow')`)
+
+        yield* DatabaseMigration.applyOnly(db, [workflowExecutionDirectoryMigration])
+
+        expect(
+          yield* db.all(sql`SELECT name FROM pragma_table_info('workflow') WHERE name = 'execution_directory'`),
+        ).toEqual([{ name: "execution_directory" }])
+        expect(
+          yield* db.get(
+            sql`SELECT id, title, execution_directory AS executionDirectory FROM workflow WHERE id = 'legacy'`,
+          ),
+        ).toEqual({ id: "legacy", title: "Legacy workflow", executionDirectory: null })
       }),
     )
   })

@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "0cac197b-bb48-46ac-8965-2b65dfe31dcc",
+  "id": "1b957bc5-6124-4842-820d-4beb409967f8",
   "prevIds": [
-    "b507440c-f045-4be4-a1c4-905c6b390a92"
+    "7ee0c365-5ae0-4244-b0a8-c29a0815049b"
   ],
   "ddl": [
     {
@@ -970,6 +970,26 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "directory",
+      "entityType": "columns",
+      "table": "workflow_node"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "base_head",
+      "entityType": "columns",
+      "table": "workflow_node"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "output",
       "entityType": "columns",
       "table": "workflow_node"
@@ -1181,6 +1201,16 @@
       "default": null,
       "generated": null,
       "name": "directory",
+      "entityType": "columns",
+      "table": "workflow"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "execution_directory",
       "entityType": "columns",
       "table": "workflow"
     },

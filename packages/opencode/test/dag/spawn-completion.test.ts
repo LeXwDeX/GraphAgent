@@ -1,18 +1,27 @@
 import { SettingsHook } from "@/hook/settings"
+import { $ } from "bun"
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Semaphore, Fiber } from "effect"
+import { Effect, Layer, Semaphore, Fiber, Deferred, Option } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { Project } from "@opencode-ai/core/project"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import type { DagStore } from "@opencode-ai/core/dag/store"
-import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
+import { boundedCancel, spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
+import { commitOutputFileRef } from "@/dag/runtime/output-ref"
+import { Permission } from "@/permission"
 import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
-import { makeNodeRow } from "./fixtures"
+import { InstanceStore } from "@/project/instance-store"
+import { makeNodeRow, makeWorkflowRow } from "./fixtures"
+import { tmpdir } from "../fixture/fixture"
 
 type TrackedEvent = {
   type: string
@@ -21,6 +30,8 @@ type TrackedEvent = {
   output?: unknown
   reason?: string
   trigger?: string
+  directory?: string
+  baseHead?: string
 }
 
 function makeEventTracker(store: Partial<DagStore.Interface> = {}) {
@@ -30,14 +41,29 @@ function makeEventTracker(store: Partial<DagStore.Interface> = {}) {
     nodeQueued: Effect.fn("stub.nodeQueued")((dagID: string, nodeID: string) =>
       Effect.sync(() => events.push({ type: "nodeQueued", dagID, nodeID })),
     ),
-    nodeStarted: Effect.fn("stub.nodeStarted")((dagID: string, nodeID: string) =>
-      Effect.sync(() => events.push({ type: "nodeStarted", dagID, nodeID })),
+    nodeStarted: Effect.fn("stub.nodeStarted")(
+      (
+        dagID: string,
+        nodeID: string,
+        _childSessionID: string,
+        _deadlineMs?: number,
+        _wakeEligible?: boolean,
+        _attempt?: unknown,
+        directory?: string,
+        baseHead?: string,
+      ) => Effect.sync(() => events.push({ type: "nodeStarted", dagID, nodeID, directory, baseHead })),
     ),
     nodeCompleted: Effect.fn("stub.nodeCompleted")((dagID: string, nodeID: string, output: unknown) =>
       Effect.sync(() => events.push({ type: "nodeCompleted", dagID, nodeID, output })),
     ),
     nodeFailed: Effect.fn("stub.nodeFailed")((dagID: string, nodeID: string, reason: string, trigger: string) =>
       Effect.sync(() => events.push({ type: "nodeFailed", dagID, nodeID, reason, trigger })),
+    ),
+    failUnrecoverable: Effect.fn("stub.failUnrecoverable")((dagID: string, reason: string) =>
+      Effect.sync(() => {
+        events.push({ type: "failUnrecoverable", dagID, nodeID: "", reason })
+        return "failed" as const
+      }),
     ),
   })
   return { events, dagLayer }
@@ -62,11 +88,32 @@ const agentLayer = Layer.mock(Agent.Service, {
 
 const sessionStub = {
   get: () => Effect.succeed({ id: "ses_parent" as never, permission: [], agent: "build" } as never),
-  create: () => Effect.succeed({ id: "ses_child" as never } as never),
+  create: (input?: { directory?: string }) =>
+    Effect.succeed({ id: "ses_child" as never, directory: input?.directory ?? process.cwd() } as never),
   list: () => Effect.succeed([]),
   messages: () => Effect.succeed([]),
 }
 const sessionLayer = Layer.mock(Session.Service, sessionStub)
+
+const sessionInfo = (id: string, directory = process.cwd(), model?: Session.Info["model"]): Session.Info => ({
+  id: SessionID.make(id),
+  slug: id,
+  projectID: Project.ID.make("p"),
+  directory,
+  title: id,
+  version: "test",
+  time: { created: 0, updated: 0 },
+  model,
+})
+
+const instanceStoreWith = (provide: InstanceStore.Interface["provide"]): InstanceStore.Interface => ({
+  load: () => Effect.die("unused in spawn completion test"),
+  reload: () => Effect.die("unused in spawn completion test"),
+  dispose: () => Effect.die("unused in spawn completion test"),
+  disposeDirectory: () => Effect.die("unused in spawn completion test"),
+  disposeAll: () => Effect.die("unused in spawn completion test"),
+  provide,
+})
 
 function reply(text: string, includeText = text !== ""): SessionV1.WithParts {
   return {
@@ -89,13 +136,13 @@ function reply(text: string, includeText = text !== ""): SessionV1.WithParts {
   }
 }
 
-function makePromptLayer(result: SessionV1.WithParts): Layer.Layer<never> {
+function makePromptLayer(result: SessionV1.WithParts): Layer.Layer<SessionPrompt.Service> {
   return Layer.mock(SessionPrompt.Service, {
     prompt: () => Effect.succeed(result),
   })
 }
 
-function makeFailingPromptLayer(error: string): Layer.Layer<never> {
+function makeFailingPromptLayer(error: string): Layer.Layer<SessionPrompt.Service> {
   return Layer.mock(SessionPrompt.Service, {
     prompt: () => Effect.die(new Error(error)),
   })
@@ -129,6 +176,292 @@ function findEvent(events: TrackedEvent[], type: string) {
 }
 
 describe("spawnNode completion bridge", () => {
+  it("injects the execution directory and starting HEAD into the child system context", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const head = (await $`git -C ${tmp.path} rev-parse HEAD`.text()).trim()
+    let promptSystem: SessionPrompt.PromptInput["system"]
+    const prompt = Layer.mock(SessionPrompt.Service, {
+      prompt: (input) =>
+        Effect.sync(() => {
+          promptSystem = input.system
+          return reply("done")
+        }),
+    })
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), { ...makeSpawnInput(), directory: tmp.path })
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            makeEventTracker({
+              getWorkflow: () => Effect.succeed(makeWorkflowRow({ directory: tmp.path })),
+            }).dagLayer,
+            agentLayer,
+            sessionLayer,
+            prompt,
+          ),
+        ),
+      ) as Effect.Effect<never>,
+    )
+
+    expect(promptSystem).toContain(`Execution directory: ${tmp.path}`)
+    expect(promptSystem).toContain(`HEAD at start: ${head}`)
+  })
+
+  it("creates the child in the bound workspace with its permissions and instance", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = path.join(os.tmpdir(), `opencode-spawn-workspace-${Math.random().toString(36).slice(2)}`)
+    await $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet()
+    const workspace = await fs.realpath(linked)
+    const head = (await $`git -C ${workspace} rev-parse HEAD`.text()).trim()
+    let created: Parameters<Session.Interface["create"]>[0]
+    let providedDirectory: string | undefined
+    try {
+      const { events, dagLayer } = makeEventTracker({
+        getWorkflow: () => Effect.succeed(makeWorkflowRow({ directory: tmp.path, executionDirectory: workspace })),
+      })
+      const sessions = Layer.mock(Session.Service, {
+        get: () => Effect.succeed(sessionInfo("ses_parent")),
+        create: (input?: Parameters<Session.Interface["create"]>[0]) =>
+          Effect.sync(() => {
+            created = input
+            return sessionInfo("ses_child", input?.directory ?? process.cwd())
+          }),
+        list: () => Effect.succeed([]),
+        messages: () => Effect.succeed([]),
+      })
+      const provideInstance: InstanceStore.Interface["provide"] = (input, effect) =>
+        Effect.tap(effect, () =>
+          Effect.sync(() => {
+            providedDirectory = input.directory
+          }),
+        )
+      const instanceStore = instanceStoreWith(provideInstance)
+      const prompt = makePromptLayer(reply("done"))
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+              ...makeSpawnInput(),
+              directory: tmp.path,
+              executionDirectory: workspace,
+            })
+            yield* Fiber.await(result.fiber)
+          }),
+        ).pipe(
+          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)),
+          Effect.provideService(InstanceStore.Service, instanceStore),
+          Effect.orDie,
+        ),
+      )
+
+      expect(created?.directory).toBe(workspace)
+      expect(providedDirectory).toBe(workspace)
+      const started = findEvent(events, "nodeStarted")
+      expect(started?.directory).toBe(workspace)
+      expect(started?.baseHead).toBe(head)
+      // The child runs inside B's InstanceRef, so the workspace is already
+      // internal there. A workspace-wide external_directory allow would only
+      // weaken an inherited deny (and a wildcard path could widen it).
+      expect(
+        (created?.permission ?? []).filter(
+          (rule) =>
+            rule.permission === "external_directory" &&
+            rule.action === "allow" &&
+            rule.pattern.startsWith(workspace.replaceAll("\\", "/") + "/"),
+        ),
+      ).toEqual([])
+    } finally {
+      await $`git worktree remove --force ${workspace}`.cwd(tmp.path).quiet().catch(() => undefined)
+    }
+  })
+
+  it("preserves an inherited workspace external-directory deny", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = path.join(os.tmpdir(), `opencode-spawn-deny-${Math.random().toString(36).slice(2)}`)
+    await $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet()
+    const workspace = await fs.realpath(linked)
+    const deny = {
+      permission: "external_directory",
+      pattern: path.join(workspace, "**").replaceAll("\\", "/"),
+      action: "deny",
+    } as const
+    let created: Parameters<Session.Interface["create"]>[0]
+    try {
+      const { dagLayer } = makeEventTracker({
+        getWorkflow: () => Effect.succeed(makeWorkflowRow({ directory: tmp.path, executionDirectory: workspace })),
+      })
+      const sessions = Layer.mock(Session.Service, {
+        get: () => Effect.succeed({ ...sessionInfo("ses_parent"), permission: [deny] }),
+        create: (input) =>
+          Effect.sync(() => {
+            created = input
+            return sessionInfo("ses_child", input?.directory ?? process.cwd())
+          }),
+        list: () => Effect.succeed([]),
+        messages: () => Effect.succeed([]),
+      })
+      const prompt = makePromptLayer(reply("done"))
+      const instanceStore = instanceStoreWith(<A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect)
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+              ...makeSpawnInput(),
+              directory: tmp.path,
+              executionDirectory: workspace,
+            })
+            yield* Fiber.await(result.fiber)
+          }),
+        ).pipe(
+          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)),
+          Effect.provideService(InstanceStore.Service, instanceStore),
+          Effect.orDie,
+        ),
+      )
+
+      const rules = created?.permission ?? []
+      expect(rules).toContainEqual(deny)
+      expect(Permission.evaluate("external_directory", path.join(workspace, "file"), rules).action).toBe("deny")
+      expect(rules.filter((rule) => rule.permission === "external_directory" && rule.action === "allow")).toEqual([])
+    } finally {
+      await $`git worktree remove --force ${workspace}`.cwd(tmp.path).quiet().catch(() => undefined)
+    }
+  })
+
+  it("grants only the verified artifact directory and keeps an inherited deny", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const linked = path.join(os.tmpdir(), `opencode-spawn-artifact-${Math.random().toString(36).slice(2)}`)
+    await $`git worktree add --detach ${linked} HEAD`.cwd(tmp.path).quiet()
+    const workspace = await fs.realpath(linked)
+    const source = path.join(workspace, "report.txt")
+    await fs.writeFile(source, "source")
+    const ref = await Effect.runPromise(
+      commitOutputFileRef(source, {
+        workflow_id: "wf-1",
+        node_id: "node-1",
+        child_session_id: "ses_child",
+        replan_attempt: 0,
+      }),
+    )
+    if (!ref) throw new Error("failed to commit artifact")
+    const target = ref.path
+    const deny = {
+      permission: "external_directory",
+      pattern: path.join(workspace, "secret", "**").replaceAll("\\", "/"),
+      action: "deny",
+    } as const
+    let created: Parameters<Session.Interface["create"]>[0]
+    try {
+      const { dagLayer } = makeEventTracker({
+        getWorkflow: () => Effect.succeed(makeWorkflowRow({ directory: tmp.path, executionDirectory: workspace })),
+      })
+      const sessions = Layer.mock(Session.Service, {
+        get: () => Effect.succeed({ ...sessionInfo("ses_parent"), permission: [deny] }),
+        create: (input) =>
+          Effect.sync(() => {
+            created = input
+            return sessionInfo("ses_child", input?.directory ?? process.cwd())
+          }),
+        list: () => Effect.succeed([]),
+        messages: () => Effect.succeed([]),
+      })
+      const prompt = makePromptLayer(reply("done"))
+      const instanceStore = instanceStoreWith(<A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect)
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+              ...makeSpawnInput(),
+              directory: tmp.path,
+              executionDirectory: workspace,
+              inputArtifacts: [ref],
+            })
+            yield* Fiber.await(result.fiber)
+          }),
+        ).pipe(
+          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)),
+          Effect.provideService(InstanceStore.Service, instanceStore),
+          Effect.orDie,
+        ),
+      )
+
+      const rules = created?.permission ?? []
+      expect(rules).toContainEqual(deny)
+      expect(rules).toContainEqual({
+        permission: "external_directory",
+        pattern: path.join(path.dirname(target), "*").replaceAll("\\", "/"),
+        action: "allow",
+      })
+      expect(
+        rules.filter(
+          (rule) =>
+            rule.permission === "external_directory" &&
+            rule.action === "allow" &&
+            rule.pattern.startsWith(workspace.replaceAll("\\", "/") + "/"),
+        ),
+      ).toEqual([])
+      expect(Permission.evaluate("external_directory", path.join(workspace, "secret", "file"), rules).action).toBe(
+        "deny",
+      )
+      expect(Permission.evaluate("external_directory", target, rules).action).toBe("allow")
+    } finally {
+      await $`git worktree remove --force ${workspace}`.cwd(tmp.path).quiet().catch(() => undefined)
+      await fs.rm(path.dirname(target), { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a node workspace replaced by a plain directory before creating a child", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const plain = path.join(tmp.path, "plain")
+    await fs.mkdir(plain)
+    let created = 0
+    const { events, dagLayer } = makeEventTracker({
+      getWorkflow: () => Effect.succeed(makeWorkflowRow({ directory: tmp.path })),
+    })
+    const sessions = Layer.mock(Session.Service, {
+      get: () => Effect.succeed(sessionInfo("ses_parent")),
+      create: () =>
+        Effect.sync(() => {
+          created++
+          return sessionInfo("ses_child", tmp.path)
+        }),
+      list: () => Effect.succeed([]),
+      messages: () => Effect.succeed([]),
+    })
+    const prompt = makePromptLayer(reply("done"))
+    const instanceStore = instanceStoreWith(<A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect)
+    const fullLayer: Layer.Layer<Dag.Service | Agent.Service | Session.Service | SessionPrompt.Service> =
+      Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+            ...makeSpawnInput(),
+            directory: tmp.path,
+            executionDirectory: plain,
+          })
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(
+        Effect.provide(fullLayer),
+        Effect.provideService(InstanceStore.Service, instanceStore),
+        Effect.orDie,
+      ),
+    )
+
+    expect(created).toBe(0)
+    expect(events.find((event) => event.type === "failUnrecoverable")?.reason).toContain("workspace_invalid")
+  })
+
   it("inherits the parent session model when the node and agent omit one", async () => {
     const { events, dagLayer } = makeEventTracker()
     let promptModel: SessionPrompt.PromptInput["model"]
@@ -148,12 +481,13 @@ describe("spawnNode completion bridge", () => {
     const parentWithModel = Layer.mock(Session.Service, {
       get: () =>
         Effect.succeed({
-          id: "ses_parent",
-          permission: [],
-          agent: "build",
-          model: { providerID: "local-proxy-compatible", id: "glm-5.2" },
-        } as never),
-      create: () => Effect.succeed({ id: "ses_child" as never } as never),
+          ...sessionInfo("ses_parent", process.cwd(), {
+            providerID: ProviderV2.ID.make("local-proxy-compatible"),
+            id: ModelV2.ID.make("glm-5.2"),
+          }),
+        }),
+      create: (input?: { directory?: string }) =>
+        Effect.succeed(sessionInfo("ses_child", input?.directory ?? process.cwd())),
     })
     const prompt = Layer.mock(SessionPrompt.Service, {
       prompt: (input) =>
@@ -169,9 +503,7 @@ describe("spawnNode completion bridge", () => {
           const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(
-        Effect.provide(Layer.mergeAll(dagLayer, agentWithoutModel, parentWithModel, prompt)),
-      ) as Effect.Effect<never>,
+      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentWithoutModel, parentWithModel, prompt)), Effect.orDie),
     )
 
     expect(promptModel as unknown).toEqual({
@@ -204,7 +536,7 @@ describe("spawnNode completion bridge", () => {
           })
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, prompt))) as Effect.Effect<never>,
+      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, prompt)), Effect.orDie),
     )
 
     expect(promptModel as unknown).toEqual({
@@ -237,7 +569,7 @@ describe("spawnNode completion bridge", () => {
           })
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, prompt))) as Effect.Effect<never>,
+      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, prompt)), Effect.orDie),
     )
 
     expect(promptModel as unknown).toEqual({
@@ -603,5 +935,31 @@ describe("spawnNode terminalization during spawn window", () => {
     expect(promptCalled).toBe(false)
     expect(findEvent(events, "nodeFailed")?.reason).toContain("nodeStarted write failed")
     expect(cancelCalled).toBe(true)
+  })
+})
+
+describe("boundedCancel", () => {
+  it("does not interrupt an uninterruptible cancellation at its bound", async () => {
+    const release = Deferred.makeUnsafe<void>()
+    const entered = Deferred.makeUnsafe<void>()
+    const fiber = Effect.runFork(
+      boundedCancel(
+        Effect.uninterruptible(
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        ),
+        "uninterruptible-test",
+        20,
+      ),
+    )
+    const result = await Effect.runPromise(
+      Deferred.await(entered).pipe(
+        Effect.andThen(Fiber.await(fiber).pipe(Effect.timeoutOption("100 millis"))),
+      ),
+    )
+
+    expect(Option.isNone(result)).toBe(true)
+    expect(Deferred.isDoneUnsafe(release)).toBe(false)
+    Deferred.doneUnsafe(release, Effect.void)
+    await Effect.runPromise(Fiber.await(fiber))
   })
 })

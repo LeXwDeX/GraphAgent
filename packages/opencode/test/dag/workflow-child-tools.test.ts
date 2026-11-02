@@ -4,8 +4,9 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Effect, Layer, Schema } from "effect"
 import { Agent } from "@/agent/agent"
+import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { MCP } from "@/mcp"
-import { Permission } from "@/permission"
+import { Permission, type AskOptions } from "@/permission"
 import { Plugin } from "@/plugin"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionProcessor } from "@/session/processor"
@@ -19,6 +20,8 @@ import { testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { Database } from "@opencode-ai/core/database/database"
+import { sql } from "drizzle-orm"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
@@ -46,7 +49,17 @@ const agentDefinition: Tool.Def<typeof Parameters> = {
   execute: () => Effect.succeed({ title: "agent", output: "queued", metadata: {} }),
 }
 const submitDefinition: Tool.Def<typeof Parameters> = { ...agentDefinition, id: "submit_result" }
+const todoDefinition: Tool.Def<typeof Parameters> = {
+  id: "todowrite",
+  description: "todowrite",
+  parameters: Parameters,
+  execute: (_args, ctx) =>
+    ctx
+      .ask({ permission: "todowrite", patterns: ["*"], always: [], metadata: {} })
+      .pipe(Effect.as({ title: "todo", output: "ok", metadata: {} })),
+}
 const trigger: Plugin.Interface["trigger"] = (_name, _input, output) => Effect.succeed(output)
+const askCapture: AskOptions[] = []
 const it = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
@@ -57,7 +70,10 @@ const it = testEffect(
       trigger,
     }),
     Layer.mock(Permission.Service, {
-      ask: () => Effect.void,
+      ask: (_input, options) => {
+        if (options) askCapture.push(options)
+        return Effect.void
+      },
       hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
     }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
@@ -69,6 +85,7 @@ const it = testEffect(
           { definition: taskDefinition, sourceKind: "host-builtin", registrationID: "test:task" },
           { definition: agentDefinition, sourceKind: "host-builtin", registrationID: "test:agent" },
           { definition: submitDefinition, sourceKind: "host-builtin", registrationID: "test:submit" },
+          { definition: todoDefinition, sourceKind: "host-builtin", registrationID: "test:todo" },
         ]),
     }),
   ),
@@ -213,9 +230,77 @@ describe("workflow child boundary", () => {
       }
     }),
   )
+  it.instance("resolves workspace child tools using durable mailbox membership", () =>
+    Effect.gen(function* () {
+      const build = yield* (yield* Agent.Service).get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
+      const database = Database.layerFromPath(":memory:")
+      const services = Layer.mergeAll(database, DagStore.layer.pipe(Layer.provide(database)), DagMessages.layer.pipe(Layer.provide(database)))
+      yield* Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const messages = yield* DagMessages.Service
+        const owner = { ...session(SessionID.make("ses_real_owner")), projectID: ProjectV2.ID.make("p-workspace") }
+        const worker = { ...session(SessionID.make("ses_real_child"), owner.id), projectID: owner.projectID, directory: "/tmp/opencode-linked" }
+        yield* db.run(sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${owner.projectID},${owner.directory},'[]',1,1)`)
+        for (const s of [owner, worker]) yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES (${s.id},${s.projectID},${s.parentID ?? null},${s.id},${s.directory},${s.title},'test',1,1)`)
+        yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,title,status,config,seq,time_created,time_updated) VALUES ('wf-real',${owner.projectID},${owner.id},${owner.directory},${worker.directory},'W','running','{}',1,1,1)`)
+        yield* db.run(sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,directory,seq,time_created,time_updated) VALUES ('n','wf-real','N','task','running','[]',${worker.id},${worker.directory},1,1,1)`)
+        expect(yield* resolvedToolIDs(build, owner)).toContain("agent")
+        const childTools = yield* resolvedToolIDs(build, worker)
+        expect(childTools).toContain("agent")
+        expect(childTools).not.toContain("task")
+        expect(childTools).not.toContain("workflow")
+        expect(yield* resolvedToolIDs(build, { ...worker, directory: owner.directory })).not.toContain("agent")
+        expect(yield* resolvedToolIDs(build, { ...worker, projectID: ProjectV2.ID.make("foreign") })).not.toContain("agent")
+        const parentCaller = { projectID: owner.projectID, directory: owner.directory, sessionID: owner.id }
+        const childCaller = { projectID: worker.projectID, directory: worker.directory, sessionID: worker.id }
+        const sent = yield* messages.send(parentCaller, { workflowID: "wf-real", nodeID: "n", attemptID: DagMessages.nodeAttemptID(worker.id, 0), idempotencyKey: "hello", content: "hello" })
+        expect(sent.ok).toBe(true)
+        const received = yield* messages.receive(childCaller)
+        expect(received.ok && received.value.map((item) => item.content)).toEqual(["hello"])
+        expect((yield* messages.send(childCaller, { workflowID: "wf-real", idempotencyKey: "reply", content: "reply" })).ok).toBe(true)
+        yield* db.run(sql`UPDATE session SET parent_id = 'wrong' WHERE id = ${worker.id}`)
+        expect(yield* resolvedToolIDs(build, worker)).not.toContain("agent")
+        yield* db.run(sql`UPDATE session SET parent_id = ${owner.id} WHERE id = ${worker.id}`)
+        yield* db.run(sql`UPDATE workflow_node SET status = 'pending', replan_attempts = 1 WHERE id = 'n'`)
+        expect(yield* resolvedToolIDs(build, worker)).not.toContain("agent")
+      }).pipe(Effect.provide(services))
+    }),
+  )
+  it.instance("passes the child role defaults to permission checks", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
+      if (!build) throw new Error("Expected configured agent fixture")
+      const parentID = SessionID.make("ses_workflow_tool_parent")
+      const child = {
+        ...session(SessionID.make("ses_workflow_tool_permission_child"), parentID),
+        permission: [...deriveSubagentSessionPermission({ parentSessionPermission: [], subagent: build })],
+      }
+      const tools = yield* resolveSessionTools(build, child)
+      askCapture.length = 0
+
+      yield* Effect.promise(() =>
+        Promise.resolve(
+          tools.todowrite.execute!(
+            {},
+            {
+              toolCallId: "call_todo",
+              messages: [],
+              abortSignal: new AbortController().signal,
+            },
+          ),
+        ),
+      )
+
+      expect(askCapture[0]?.role).toBe("build")
+      expect(askCapture[0]?.roleDefaultIndices).toEqual([0, 1])
+      expect(askCapture[0]?.sessionRuleCount).toBe(2)
+    }),
+  )
 })
 
-function resolvedToolIDs(agent: Agent.Info, info: Session.Info) {
+function resolveSessionTools(agent: Agent.Info, info: Session.Info) {
   const userID = MessageID.make(`msg_${info.id}`)
   const processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall"> = {
     message: {
@@ -251,7 +336,11 @@ function resolvedToolIDs(agent: Agent.Info, info: Session.Info) {
     bypassAgentCheck: false,
     messages: [],
     promptOps,
-  }).pipe(Effect.map((tools) => Object.keys(tools)))
+  })
+}
+
+function resolvedToolIDs(agent: Agent.Info, info: Session.Info) {
+  return resolveSessionTools(agent, info).pipe(Effect.map((tools) => Object.keys(tools)))
 }
 
 function session(id: SessionID, parentID?: SessionID): Session.Info {
