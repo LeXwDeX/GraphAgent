@@ -504,7 +504,9 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
 
   it("B-p4(g) serializes hostile repository names as JSON data", async () => {
     const parent = await tmpRoot("dag-ref-hostile-")
-    const name = process.platform === "win32" ? "quote' back\t tab" : 'quote" back\\slash\ttab\u001b[31m'
+    // Windows rejects `"`, `\`, and control characters in file names, so its
+    // hostile name uses shell-special characters that are legal on NTFS.
+    const name = process.platform === "win32" ? "quote' back space & semi; paren()" : 'quote" back\\slash\ttab\u001b[31m'
     const projectDir = path.join(parent, name)
     await fs.mkdir(projectDir)
     await $`git init -q ${projectDir}`.quiet()
@@ -512,13 +514,18 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     await fs.mkdir(subdir)
     const directive = await Effect.runPromise(reportAreaDirective(subdir))
     expect(directive).toBeDefined()
-    expect(directive).not.toContain("\u001b")
-    expect(directive).not.toContain("\t")
+    if (process.platform !== "win32") {
+      expect(directive).not.toContain("\u001b")
+      expect(directive).not.toContain("\t")
+    }
     const json = directive!.split("\n").find((line) => line.startsWith('{"report_directory"'))
     expect(json).toBeDefined()
     const payload = JSON.parse(json!) as { report_directory: string }
     const root = path.join(await fs.realpath(parent), name)
-    expect(payload.report_directory).toBe(`${path.join(root, ".opencode", "workflow-reports")}${path.sep}`)
+    const expected = `${path.join(root, ".opencode", "workflow-reports")}${path.sep}`
+    // On win32 the path separators must survive JSON escaping; elsewhere the
+    // name also carries a quote, a backslash, a tab, and an ESC byte.
+    expect(payload.report_directory).toBe(expected)
   })
 
   it("B-p4(h) skips the directive when a repository path breaks git's line protocol", async () => {
