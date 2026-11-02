@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { APICallError, TypeValidationError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
+import { SessionAbortReason } from "../../src/session/abort-reason"
 import { ProviderTransform } from "@/provider/transform"
 import { ProviderError } from "@/provider/error"
 import type { Provider } from "@/provider/provider"
@@ -601,8 +602,13 @@ describe("session.message-v2.toModelMessage", () => {
       },
       {
         role: "user",
+        providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
         content: [
-          { type: "text", text: "Attached media from tool result:" },
+          {
+            type: "text",
+            text: "Attached media from tool result:",
+            providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+          },
           {
             type: "file",
             mediaType: "application/pdf",
@@ -612,6 +618,198 @@ describe("session.message-v2.toModelMessage", () => {
         ],
       },
     ])
+  })
+
+  test("keeps the synthetic attachment marker across grouped tool results and step-start blocks", async () => {
+    const bedrockModel: Provider.Model = {
+      ...model,
+      id: ModelV2.ID.make("amazon-bedrock/anthropic.claude-sonnet-4-6"),
+      providerID: ProviderV2.ID.make("amazon-bedrock"),
+      api: {
+        id: "anthropic.claude-sonnet-4-6",
+        url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        npm: "@ai-sdk/amazon-bedrock",
+      },
+      capabilities: {
+        ...model.capabilities,
+        attachment: true,
+        input: { ...model.capabilities.input, image: true, pdf: true },
+      },
+    }
+    const pdf = Buffer.from("%PDF-1.4\n").toString("base64")
+    const tool = (messageID: string, partID: string, callID: string): SessionV1.Part =>
+      ({
+        ...basePart(messageID, partID),
+        type: "tool",
+        callID,
+        tool: "read",
+        state: {
+          status: "completed",
+          input: {},
+          output: "read",
+          title: "read",
+          metadata: {},
+          time: { start: 0, end: 1 },
+          attachments: [
+            {
+              ...basePart(messageID, `${partID}-file`),
+              type: "file",
+              mime: "application/pdf",
+              filename: "example.pdf",
+              url: `data:application/pdf;base64,${pdf}`,
+            },
+          ],
+        },
+      }) as SessionV1.Part
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo("u-grouped"),
+        parts: [{ ...basePart("u-grouped", "u1"), type: "text", text: "run tools" }],
+      },
+      {
+        info: assistantInfo("a1-grouped", "u-grouped"),
+        parts: [
+          { ...basePart("a1-grouped", "a1-step"), type: "step-start" } as SessionV1.Part,
+          tool("a1-grouped", "a1-t1", "call-1"),
+          tool("a1-grouped", "a1-t2", "call-2"),
+        ],
+      },
+      {
+        info: assistantInfo("a2-grouped", "u-grouped"),
+        parts: [
+          { ...basePart("a2-grouped", "a2-step"), type: "step-start" } as SessionV1.Part,
+          tool("a2-grouped", "a2-t3", "call-3"),
+        ],
+      },
+    ]
+    const output = await MessageV2.toModelMessages(input, bedrockModel)
+    const synthetic = output.filter(
+      (message) =>
+        message.role === "user" &&
+        Array.isArray(message.content) &&
+        message.content.some(
+          (part) =>
+            part.type === "text" &&
+            part.providerOptions?.opencode?.synthetic === "attachment",
+        ),
+    )
+    expect(synthetic).toHaveLength(2)
+    for (const message of synthetic) {
+      expect(message.role).toBe("user")
+      expect(message.providerOptions?.opencode).toEqual({ synthetic: "attachment", cache: "none" })
+    }
+    const toolResults = output.filter((message) => message.role === "tool")
+    expect(toolResults).toHaveLength(2)
+    expect(toolResults.map((message) => (Array.isArray(message.content) ? message.content.length : 0))).toEqual([2, 1])
+  })
+
+  test("keeps the synthetic attachment marker for provider-executed tool results", async () => {
+    const bedrockModel: Provider.Model = {
+      ...model,
+      id: ModelV2.ID.make("amazon-bedrock/anthropic.claude-sonnet-4-6"),
+      providerID: ProviderV2.ID.make("amazon-bedrock"),
+      api: {
+        id: "anthropic.claude-sonnet-4-6",
+        url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+        npm: "@ai-sdk/amazon-bedrock",
+      },
+      capabilities: {
+        ...model.capabilities,
+        attachment: true,
+        input: { ...model.capabilities.input, image: true, pdf: true },
+      },
+    }
+    const pdf = Buffer.from("%PDF-1.4\n").toString("base64")
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo("u-provider"),
+        parts: [{ ...basePart("u-provider", "u1"), type: "text", text: "run provider tool" }],
+      },
+      {
+        info: assistantInfo("a-provider", "u-provider"),
+        parts: [
+          {
+            ...basePart("a-provider", "a1"),
+            type: "tool",
+            callID: "provider-call",
+            tool: "web_search",
+            metadata: { providerExecuted: true },
+            state: {
+              status: "completed",
+              input: {},
+              output: "search result",
+              title: "search",
+              metadata: {},
+              time: { start: 0, end: 1 },
+              attachments: [
+                {
+                  ...basePart("a-provider", "a1-file"),
+                  type: "file",
+                  mime: "application/pdf",
+                  filename: "result.pdf",
+                  url: `data:application/pdf;base64,${pdf}`,
+                },
+              ],
+            },
+          } as SessionV1.Part,
+        ],
+      },
+    ]
+    const output = await MessageV2.toModelMessages(input, bedrockModel)
+    expect(output.map((message) => message.role)).toEqual(["user", "assistant", "user"])
+    const synthetic = output.at(-1)
+    expect(synthetic?.role).toBe("user")
+    expect(synthetic?.providerOptions?.opencode).toEqual({ synthetic: "attachment", cache: "none" })
+    expect(JSON.stringify(synthetic)).toContain("synthetic")
+    expect(JSON.stringify(synthetic)).toContain("attachment")
+  })
+
+  test("converts provider-executed tool history for OpenAI-compatible chat requests", async () => {
+    const compatibleModel: Provider.Model = {
+      ...model,
+      id: ModelV2.ID.make("qwen3"),
+      providerID: ProviderV2.ID.make("local"),
+      api: { id: "qwen3", url: "http://127.0.0.1:1/v1", npm: "@ai-sdk/openai-compatible" },
+    }
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo("m-hosted-user"),
+        parts: [{ ...basePart("m-hosted-user", "u1"), type: "text", text: "search the web" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo("m-hosted-assistant", "m-hosted-user", undefined, {
+          providerID: "local",
+          modelID: "qwen3",
+        }),
+        parts: [
+          {
+            ...basePart("m-hosted-assistant", "a1"),
+            type: "tool",
+            callID: "hosted_1",
+            tool: "web_search",
+            metadata: { providerExecuted: true },
+            state: {
+              status: "completed",
+              input: { query: "agents" },
+              output: "search summary",
+              title: "search",
+              metadata: {},
+              time: { start: 0, end: 1 },
+            },
+          } as SessionV1.Part,
+        ],
+      },
+    ]
+
+    const converted = await MessageV2.toModelMessages(input, compatibleModel)
+    expect(JSON.stringify(converted)).toContain('"providerExecuted":true')
+
+    const transformed = ProviderTransform.message(converted, compatibleModel, {})
+    const serialized = JSON.stringify(transformed)
+    expect(serialized).not.toContain('"type":"tool-call"')
+    expect(serialized).not.toContain('"type":"tool-result"')
+    expect(serialized).toContain("web_search")
+    expect(serialized).toContain("search summary")
   })
 
   test("omits provider metadata when assistant model differs", async () => {
@@ -1892,6 +2090,21 @@ describe("session.message-v2.fromError", () => {
     const result = MessageV2.fromError(new DOMException("The operation was aborted.", "AbortError"), { providerID })
 
     expect(result.name).toBe("MessageAbortedError")
+    expect(result).toMatchObject({ data: { message: SessionAbortReason.provider("The operation was aborted.") } })
+    if (!SessionV1.AbortedError.isInstance(result)) throw new Error("Expected AbortedError")
+    expect(SessionAbortReason.origin(result.data.message)).toBe("provider")
+  })
+
+  test("keeps runtime cancellation abort messages unmarked", () => {
+    const result = MessageV2.fromError(new DOMException("Aborted", "AbortError"), {
+      providerID,
+      aborted: true,
+    })
+
+    expect(result.name).toBe("MessageAbortedError")
+    expect(result).toMatchObject({ data: { message: "Aborted" } })
+    if (!SessionV1.AbortedError.isInstance(result)) throw new Error("Expected AbortedError")
+    expect(SessionAbortReason.origin(result.data.message)).toBe("legacy")
   })
 
   test("classifies Anthropic invalid thinking signatures as actionable APIError", () => {

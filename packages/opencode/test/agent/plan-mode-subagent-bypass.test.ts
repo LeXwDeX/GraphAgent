@@ -2,7 +2,11 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { expect } from "bun:test"
 import { Effect } from "effect"
 import { Agent } from "../../src/agent/agent"
-import { deriveSubagentSessionPermission } from "../../src/agent/subagent-permissions"
+import {
+  deriveSubagentSessionPermission,
+  subagentRoleDefaultRuleCount,
+  subagentRoleDefaultRuleIndices,
+} from "../../src/agent/subagent-permissions"
 import { Permission } from "../../src/permission"
 import { testEffect } from "../lib/effect"
 
@@ -155,5 +159,64 @@ it.effect("subagent inherits parent session deny rules as hard runtime ceilings"
     )
 
     expect(Permission.evaluate("bash", "git status", effective).action).toBe("deny")
+  }),
+)
+
+it.effect("parent deny follows role defaults and keeps its own winning rule", () =>
+  Effect.sync(() => {
+    const executor = testAgent({
+      name: "executor",
+      mode: "subagent",
+      permission: { "*": "allow" },
+    })
+    const derived = deriveSubagentSessionPermission({
+      parentSessionPermission: Permission.fromConfig({ bash: "deny" }),
+      subagent: executor,
+    })
+
+    expect(subagentRoleDefaultRuleCount(derived, executor)).toBe(2)
+    expect(derived.map((rule) => rule.permission)).toEqual(["todowrite", "task", "bash"])
+    expect(derived.at(-1)).toEqual({ permission: "bash", pattern: "*", action: "deny" })
+
+    const ambiguous = deriveSubagentSessionPermission({
+      parentSessionPermission: Permission.fromConfig({ todowrite: "deny" }),
+      subagent: executor,
+    })
+    expect(subagentRoleDefaultRuleCount(ambiguous, executor)).toBe(0)
+
+    const defaults = deriveSubagentSessionPermission({ parentSessionPermission: [], subagent: executor })
+    expect(subagentRoleDefaultRuleCount(defaults, executor)).toBe(2)
+  }),
+)
+
+it.effect("legacy child permission layout still identifies trailing role defaults", () =>
+  Effect.sync(() => {
+    const executor = testAgent({
+      name: "executor",
+      mode: "subagent",
+      permission: { "*": "allow" },
+    })
+    const legacy = [
+      { permission: "bash", pattern: "*", action: "deny" as const },
+      { permission: "todowrite", pattern: "*", action: "deny" as const },
+      { permission: "task", pattern: "*", action: "deny" as const },
+    ]
+    expect(subagentRoleDefaultRuleIndices(legacy, executor)).toEqual([1, 2])
+  }),
+)
+
+it.effect("ambiguous inherited deny keeps role defaults conservative", () =>
+  Effect.sync(() => {
+    const executor = testAgent({
+      name: "executor",
+      mode: "subagent",
+      permission: { "*": "allow" },
+    })
+    const ambiguous = [
+      { permission: "todowrite", pattern: "*", action: "deny" as const },
+      { permission: "task", pattern: "*", action: "deny" as const },
+      { permission: "todowrite", pattern: "*", action: "deny" as const },
+    ]
+    expect(subagentRoleDefaultRuleIndices(ambiguous, executor)).toEqual([])
   }),
 )

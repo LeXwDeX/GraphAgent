@@ -124,6 +124,8 @@ it.instance("explore agent denies edit and write", () =>
     expect(evalPerm(explore, "edit")).toBe("deny")
     expect(evalPerm(explore, "write")).toBe("deny")
     expect(evalPerm(explore, "todowrite")).toBe("deny")
+    expect(evalPerm(explore, "skill")).toBe("allow")
+    expect(evalPerm(explore, "serena_initial_instructions")).toBe("allow")
     expect(Permission.evaluate("bash", "touch mutation", explore!.permission).action).toBe("allow")
     expect(evalPerm(explore, "webfetch")).toBe("allow")
     expect(evalPerm(explore, "websearch")).toBe("allow")

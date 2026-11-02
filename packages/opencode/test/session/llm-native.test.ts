@@ -7,6 +7,7 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { LLMNative } from "@/session/llm/native-request"
 import { LLMNativeRuntime } from "@/session/llm/native-runtime"
 import { OpenAIWebSocketPool, TITLE_HEADER } from "@/plugin/openai/ws-pool"
+import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
 
 import { OAUTH_DUMMY_KEY } from "@/auth"
@@ -126,7 +127,12 @@ const openAIResponses = {
   }),
 }
 
-const prepareNativeRequest = (input: NativeRequestInput) => LLMClient.prepare(LLMNative.request(input))
+type PreparedMessagesBody = {
+  messages: Array<{ role: string; content: Array<Record<string, unknown>> }>
+}
+
+const prepareNativeRequest = <Body = unknown>(input: NativeRequestInput) =>
+  LLMClient.prepare<Body>(LLMNative.request(input))
 
 const expectOpenAIResponsesRequest = (input: {
   readonly history: NativeRequestInput["messages"]
@@ -1092,6 +1098,291 @@ describe("session.llm-native.request", () => {
           expect.objectContaining({ type: "finish" }),
         ]),
       )
+    }),
+  )
+
+  it.effect("keeps native cache metadata off synthetic attachments and runtime context", () =>
+    Effect.gen(function* () {
+      const anthropicModel: Provider.Model = {
+        ...baseModel,
+        id: ModelV2.ID.make("claude-haiku-5-5"),
+        providerID: ProviderV2.ID.make("anthropic"),
+        api: { id: "claude-haiku-5-5", url: "https://api.anthropic.com", npm: "@ai-sdk/anthropic" },
+        capabilities: {
+          ...baseModel.capabilities,
+          input: { ...baseModel.capabilities.input, pdf: true },
+        },
+      }
+      const messages: ModelMessage[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "<runtime_context>\n\n<project_memory_data>epoch 1</project_memory_data>\n\n</runtime_context>",
+            },
+          ],
+          providerOptions: { opencode: { context: true, cache: "none" } },
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "persisted user" },
+            {
+              type: "text",
+              text: "[todo reminder] ephemeral",
+              providerOptions: { opencode: { cache: "none" } },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: {} }],
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: "call_1", toolName: "read", output: { type: "text", value: "ok" } },
+          ],
+        },
+        {
+          role: "user",
+          providerOptions: {
+            opencode: { synthetic: "attachment", cache: "none" },
+            anthropic: { cacheControl: { type: "ephemeral" } },
+          },
+          content: [
+            {
+              type: "text",
+              text: "Attached media from tool result:",
+              providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+            },
+            { type: "file", mediaType: "image/png", data: "data:image/png;base64,AA==", filename: "attachment.png" },
+          ],
+        },
+      ]
+      const transformed = ProviderTransform.message(messages, anthropicModel, {})
+      const canonical = LLMNative.request({
+        model: anthropicModel,
+        apiKey: "test-anthropic-key",
+        messages: transformed,
+      })
+      const attachment = canonical.messages.find((message) => JSON.stringify(message).includes("Attached media"))!
+      expect(attachment.metadata).toEqual({ cache: "none" })
+      expect(attachment.native).toMatchObject({ anthropic: { cacheControl: { type: "ephemeral" } } })
+      expect(attachment.native?.opencode).toBeUndefined()
+      const context = canonical.messages.find((message) => JSON.stringify(message).includes("<project_memory_data>"))!
+      expect(context.metadata).toEqual({ cache: "none" })
+      expect(context.native?.opencode).toBeUndefined()
+
+       const prepared = yield* prepareNativeRequest<PreparedMessagesBody>({
+        model: anthropicModel,
+        apiKey: "test-anthropic-key",
+        messages: transformed,
+      })
+       const body = prepared.body
+      const blocks = body.messages.flatMap((message) => message.content)
+      expect(blocks.find((block) => block.text === "persisted user")).toMatchObject({
+        cache_control: { type: "ephemeral" },
+      })
+      expect(
+        JSON.stringify(blocks.find((block) => JSON.stringify(block).includes("<project_memory_data>"))),
+      ).not.toContain("cache_control")
+      const attachmentBody = body.messages.find((message) => JSON.stringify(message).includes("Attached media"))
+      expect(attachmentBody).toBeDefined()
+      expect(JSON.stringify(attachmentBody)).not.toContain("cache_control")
+    }),
+  )
+
+  it.effect("prepares provider-executed history after switching to an OpenAI-compatible chat model", () =>
+    Effect.gen(function* () {
+      const compatibleModel: Provider.Model = {
+        ...baseModel,
+        id: ModelV2.ID.make("qwen3"),
+        providerID: ProviderV2.ID.make("local"),
+        api: { id: "qwen3", url: "http://127.0.0.1:1/v1", npm: "@ai-sdk/openai-compatible" },
+      }
+      const history: ModelMessage[] = [
+        { role: "user", content: [{ type: "text", text: "Search the web for agents." }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "hosted_1",
+              toolName: "web_search",
+              input: { query: "agents" },
+              providerExecuted: true,
+            },
+            {
+              type: "tool-result",
+              toolCallId: "hosted_1",
+              toolName: "web_search",
+              output: { type: "text", value: "search summary" },
+            },
+            { type: "text", text: "The search found agents." },
+          ],
+        },
+      ]
+
+       const prepared = yield* prepareNativeRequest<PreparedMessagesBody>({
+        model: compatibleModel,
+        apiKey: "test-compatible-key",
+        messages: ProviderTransform.message(history, compatibleModel, {}),
+      })
+
+      expect(prepared.route).toBe("openai-compatible-chat")
+      const body = JSON.stringify(prepared.body)
+      expect(body).not.toContain('"tool_calls"')
+      expect(body).toContain("web_search")
+      expect(body).toContain("search summary")
+      expect(body).toContain("The search found agents.")
+    }),
+  )
+
+  it.effect("prepares incomplete and malformed provider-executed history after switching models", () =>
+    Effect.gen(function* () {
+      const compatibleModel: Provider.Model = {
+        ...baseModel,
+        id: ModelV2.ID.make("qwen3"),
+        providerID: ProviderV2.ID.make("local"),
+        api: { id: "qwen3", url: "http://127.0.0.1:1/v1", npm: "@ai-sdk/openai-compatible" },
+      }
+      const history: ModelMessage[] = [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "hosted_call",
+              toolName: "web_search",
+              input: { query: "agents" },
+              providerExecuted: true,
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "",
+              toolName: "",
+              input: undefined,
+              providerExecuted: true,
+            },
+            { type: "tool-result", toolCallId: "", toolName: "", output: { type: "text", value: "fetched page" } },
+          ],
+        },
+      ]
+
+      const prepared = yield* prepareNativeRequest({
+        model: compatibleModel,
+        apiKey: "test-compatible-key",
+        messages: ProviderTransform.message(history, compatibleModel, {}),
+      })
+
+      const body = JSON.stringify(prepared.body)
+      expect(body.match(/"role":"assistant"/g)).toHaveLength(2)
+      expect(body).not.toContain('"tool_calls"')
+      expect(body).toContain("web_search")
+      expect(body).toContain("fetched page")
+    }),
+  )
+
+  it.effect("keeps native Bedrock cache points off synthetic attachments and runtime context", () =>
+    Effect.gen(function* () {
+      const bedrockModel: Provider.Model = {
+        ...baseModel,
+        id: ModelV2.ID.make("anthropic.claude-3-5-sonnet-20241022-v2:0"),
+        providerID: ProviderV2.ID.make("amazon-bedrock"),
+        api: {
+          id: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+          url: "https://bedrock-runtime.us-east-1.amazonaws.com",
+          npm: "@ai-sdk/amazon-bedrock",
+        },
+        capabilities: {
+          ...baseModel.capabilities,
+          input: { ...baseModel.capabilities.input, pdf: true },
+        },
+      }
+      const messages: ModelMessage[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "<runtime_context>\n\n<project_memory_data>epoch 1</project_memory_data>\n\n</runtime_context>",
+            },
+          ],
+          providerOptions: { opencode: { context: true, cache: "none" } },
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "persisted user" },
+            {
+              type: "text",
+              text: "[todo reminder] ephemeral",
+              providerOptions: { opencode: { cache: "none" } },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "call_1", toolName: "read", input: {} }],
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId: "call_1", toolName: "read", output: { type: "text", value: "ok" } },
+          ],
+        },
+        {
+          role: "user",
+          providerOptions: {
+            opencode: { synthetic: "attachment", cache: "none" },
+            bedrock: { cachePoint: { type: "default" } },
+          },
+          content: [
+            {
+              type: "text",
+              text: "Attached media from tool result:",
+              providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+            },
+            { type: "file", mediaType: "image/png", data: "data:image/png;base64,AA==", filename: "attachment.png" },
+          ],
+        },
+      ]
+      const transformed = ProviderTransform.message(messages, bedrockModel, {})
+      const canonical = LLMNative.request({
+        model: bedrockModel,
+        apiKey: "test-bedrock-key",
+        messages: transformed,
+      })
+      const attachment = canonical.messages.find((message) => JSON.stringify(message).includes("Attached media"))!
+      expect(attachment.metadata).toEqual({ cache: "none" })
+      expect(attachment.native).toMatchObject({ bedrock: { cachePoint: { type: "default" } } })
+      expect(attachment.native?.opencode).toBeUndefined()
+      const context = canonical.messages.find((message) => JSON.stringify(message).includes("<project_memory_data>"))!
+      expect(context.metadata).toEqual({ cache: "none" })
+
+      const prepared = yield* prepareNativeRequest<PreparedMessagesBody>({
+        model: bedrockModel,
+        apiKey: "test-bedrock-key",
+        messages: transformed,
+        tools: { read: { description: "read", inputSchema: { type: "object", properties: {} } } },
+      })
+       const body = prepared.body
+      const blocks = body.messages.flatMap((message) => message.content)
+      const persisted = body.messages.find((message) => JSON.stringify(message).includes("persisted user"))!
+      expect(JSON.stringify(persisted)).toContain("cachePoint")
+      expect(
+        JSON.stringify(blocks.find((block) => JSON.stringify(block).includes("<project_memory_data>"))),
+      ).not.toContain("cachePoint")
+      const attachmentBody = body.messages.find((message) => JSON.stringify(message).includes("Attached media"))
+      expect(attachmentBody).toBeDefined()
+      expect(JSON.stringify(attachmentBody)).not.toContain("cachePoint")
     }),
   )
 })

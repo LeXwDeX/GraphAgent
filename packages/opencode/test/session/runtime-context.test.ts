@@ -3,6 +3,11 @@ import type { ModelMessage } from "ai"
 import { RuntimeContext } from "../../src/session/runtime-context"
 
 const user = (text: string): ModelMessage => ({ role: "user", content: text })
+const contextUser = (text: string): ModelMessage => ({
+  role: "user",
+  content: text,
+  providerOptions: { opencode: { context: true, cache: "none" } },
+})
 const assistant = (text: string): ModelMessage => ({ role: "assistant", content: text })
 
 function request(
@@ -41,7 +46,7 @@ describe("RuntimeContext.place", () => {
 
   test("each request extends the previous prefix while the state is unchanged", () => {
     const first = request([], [user("q1")], ["Turns: 1/20"])
-    expect(first.messages).toEqual([user("q1"), user(RuntimeContext.render(["Turns: 1/20"])!)])
+    expect(first.messages).toEqual([user("q1"), contextUser(RuntimeContext.render(["Turns: 1/20"])!)])
 
     const second = request(first.ledger, [user("q1"), assistant("a1"), user("q2")], ["Turns: 1/20"])
     expect(second.ledger).toEqual(first.ledger)
@@ -53,14 +58,14 @@ describe("RuntimeContext.place", () => {
     const first = request([], [user("q1")], ["Turns: 1/20"])
     const second = request(first.ledger, [user("q1"), assistant("a1"), user("q2")], ["Turns: 2/20"])
     expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages)
-    expect(second.messages.at(-1)).toEqual(user(RuntimeContext.render(["Turns: 2/20"])!))
+    expect(second.messages.at(-1)).toEqual(contextUser(RuntimeContext.render(["Turns: 2/20"])!))
     expect(second.ledger).toHaveLength(2)
   })
 
   test("replaces the latest block when no model output followed it", () => {
     const first = request([], [user("q1")], ["memory A"])
     const retry = request(first.ledger, [user("q1")], ["memory B"])
-    expect(retry.messages).toEqual([user("q1"), user(RuntimeContext.render(["memory B"])!)])
+    expect(retry.messages).toEqual([user("q1"), contextUser(RuntimeContext.render(["memory B"])!)])
     expect(request(first.ledger, [user("q1")], []).messages).toEqual([user("q1")])
   })
 
@@ -76,14 +81,18 @@ describe("RuntimeContext.place", () => {
     const first = request([], [user("q1"), assistant("a1"), user("q2")], ["memory"])
     const compacted = request(first.ledger, [user("summary")], ["memory"])
     expect(compacted.ledger).toHaveLength(1)
-    expect(compacted.messages).toEqual([user("summary"), user(RuntimeContext.render(["memory"])!)])
+    expect(compacted.messages).toEqual([user("summary"), contextUser(RuntimeContext.render(["memory"])!)])
   })
 
   test("sends one-shot events once and re-sends them in place", () => {
     const first = request([], [user("q1")], [], ["hook finished"])
-    expect(first.messages).toEqual([user("q1"), user(RuntimeContext.render(["hook finished"])!)])
+    expect(first.messages).toEqual([user("q1"), contextUser(RuntimeContext.render(["hook finished"])!)])
     const second = request(first.ledger, [user("q1"), assistant("a1")], [])
-    expect(second.messages).toEqual([user("q1"), user(RuntimeContext.render(["hook finished"])!), assistant("a1")])
+    expect(second.messages).toEqual([
+      user("q1"),
+      contextUser(RuntimeContext.render(["hook finished"])!),
+      assistant("a1"),
+    ])
   })
 
   test("never separates a tool call from its tool result", () => {
@@ -101,7 +110,7 @@ describe("RuntimeContext.place", () => {
     expect(pending.messages).toEqual([user("q1"), call])
     expect(pending.unplaced).toEqual(["hook finished"])
     const answered = request(pending.ledger, [user("q1"), call, result], ["memory"])
-    expect(answered.messages).toEqual([user("q1"), call, result, user(RuntimeContext.render(["memory"])!)])
+    expect(answered.messages).toEqual([user("q1"), call, result, contextUser(RuntimeContext.render(["memory"])!)])
   })
 
   test("tracks each state kind separately so one change does not resend the others", () => {
@@ -143,5 +152,6 @@ describe("RuntimeContext.place", () => {
     const placed = request([], [user("q1")], ["memory"])
     expect(placed.messages.map(RuntimeContext.isMessage)).toEqual([false, true])
     expect(RuntimeContext.isMessage(user(RuntimeContext.render(["memory"])!))).toBe(false)
+    expect(RuntimeContext.isMessage(contextUser(RuntimeContext.render(["memory"])!))).toBe(true)
   })
 })

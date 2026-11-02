@@ -25,6 +25,8 @@ import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
+import { Todo } from "../../src/session/todo"
+import { DagStore } from "@opencode-ai/core/dag/store"
 import { SessionSummary } from "../../src/session/summary"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
@@ -41,7 +43,7 @@ import { LLMEvent, Usage } from "@opencode-ai/llm"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Memory } from "@/memory/memory"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook, HOOK_REWAKE_SENTINEL } from "@/hook/settings"
 import { HookStartContext } from "@/hook/start-context"
 import { CompactionTimeoutError } from "../../src/session/compaction-timeout"
 
@@ -276,6 +278,8 @@ type CompactionProcessOptions = {
   memory?: Layer.Layer<Memory.Service>
   settingsHook?: Layer.Layer<SettingsHook.Service>
   startContext?: Layer.Layer<HookStartContext.Service>
+  todo?: Layer.Layer<Todo.Service>
+  dagStore?: Layer.Layer<DagStore.Service>
 }
 
 function withCompaction(options?: CompactionProcessOptions) {
@@ -300,6 +304,8 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
         options?.memory ?? Layer.empty,
         options?.settingsHook ?? Layer.empty,
         options?.startContext ?? Layer.empty,
+        options?.todo ?? Layer.empty,
+        options?.dagStore ?? Layer.empty,
       ),
     ),
   )
@@ -406,6 +412,30 @@ function autocontinue(enabled: boolean) {
     init: () => Effect.void,
   })
 }
+
+const todoLayer = (todos: Todo.Info[]) => Layer.mock(Todo.Service)({ get: () => Effect.succeed(todos) })
+
+function workflowRow(input: { id: string; title: string; status: string }): DagStore.WorkflowRow {
+  return {
+    id: input.id,
+    projectId: "test-project",
+    sessionId: "test-session",
+    directory: null,
+    title: input.title,
+    status: input.status,
+    config: "",
+    seq: 0,
+    wakeReported: false,
+    graphRev: 0,
+    startedAt: null,
+    completedAt: null,
+    timeCreated: 0,
+    timeUpdated: 0,
+  }
+}
+
+const dagStoreLayer = (workflows: DagStore.WorkflowRow[]) =>
+  Layer.mock(DagStore.Service)({ listBySession: () => Effect.succeed(workflows) })
 
 describe("session.compaction.isOverflow", () => {
   it.live(
@@ -955,6 +985,308 @@ describe("session.compaction.process", () => {
     }),
   )
 
+  itCompaction.instance(
+    "continues with the pending plan after auto compaction",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Goal
+- Finish issue 954
+
+## Constraints & Preferences
+- (none)
+
+## Progress
+### Done
+- (none)
+
+### In Progress
+- Waiting on DAG workflow wf_7f3a (running)
+
+### Blocked
+- (none)
+
+## Key Decisions
+- (none)
+
+## Next Steps
+- Complete open todos: write boundary tests, update documentation
+
+## Critical Context
+- (none)
+
+## Relevant Files
+- (none)`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "finish issue 954")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        const text = syntheticTexts(last).join("\n")
+
+        expect(result).toBe("continue")
+        expect(last?.info.role).toBe("user")
+        expect(text).toContain("Continue the pending work only if the latest user request still calls for it")
+        expect(text).toContain("The latest user request takes precedence")
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain("finish issue 954")
+        expect(text).toContain("Summary goal: Finish issue 954")
+        expect(text).toContain("Summary in progress (may be stale):")
+        expect(text).toContain("Waiting on DAG workflow wf_7f3a (running)")
+        expect(text).toContain("Summary next steps (may be stale):")
+        expect(text).toContain("Complete open todos: write boundary tests, update documentation")
+        expect(text).not.toContain("Continue with the pending plan")
+        expect(text).not.toContain("Continue if you have next steps")
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "still asks when the compacted summary has no pending work",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Goal
+- Explain the difference between let and const
+
+## Progress
+### In Progress
+- (none)
+
+## Next Steps
+- (none)`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "explain let and const")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        const text = syntheticTexts(last).join("\n")
+
+        expect(result).toBe("continue")
+        expect(text).toContain("Continue if you have next steps")
+        expect(text).not.toContain("Continue with the pending plan")
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "continues with the latest instruction and current pending state",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      const todos: Todo.Info[] = [
+        { content: "write boundary tests", status: "pending", priority: "high" },
+        { content: "read issue", status: "completed", priority: "low" },
+        { content: "obsolete plan", status: "cancelled", priority: "low" },
+      ]
+      const workflows = [
+        workflowRow({ id: "wf_live", title: "Issue 954", status: "running" }),
+        workflowRow({ id: "wf_done", title: "Old", status: "completed" }),
+      ]
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "finish issue 954")
+        yield* createUserMessage(session.id, "also check the typecheck")
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        const text = syntheticTexts(last).join("\n")
+        expect(result).toBe("continue")
+        expect(text).toContain("Continue the pending work only if the latest user request still calls for it")
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain("also check the typecheck")
+        expect(text).toContain("Open todos:")
+        expect(text).toContain("- pending: write boundary tests")
+        expect(text).toContain("Active workflows:")
+        expect(text).toContain("- running: wf_live (Issue 954)")
+        expect(text).not.toContain("read issue")
+        expect(text).not.toContain("obsolete plan")
+        expect(text).not.toContain("wf_done")
+        expect(text).toContain("Summary next steps (may be stale):")
+        expect(text).toContain("- old cancelled step")
+        expect(text.indexOf("Summary next steps (may be stale):")).toBeLessThan(text.indexOf("old cancelled step"))
+        expect(text).not.toContain("Continue with the pending plan")
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 1 }),
+          todo: todoLayer(todos),
+          dagStore: dagStoreLayer(workflows),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not report a completed workflow as current pending work",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- wf_live still running`),
+      )
+      const todos: Todo.Info[] = [{ content: "follow up", status: "pending", priority: "high" }]
+      const workflows = [workflowRow({ id: "wf_live", title: "Issue 954", status: "completed" })]
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old work")
+        yield* createUserMessage(session.id, "continue the release")
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(result).toBe("continue")
+        expect(text).toContain("Open todos:")
+        expect(text).toContain("- pending: follow up")
+        expect(text).not.toContain("Active workflows:")
+        expect(text).not.toContain("- completed: wf_live")
+        expect(text).toContain("Summary next steps (may be stale):")
+        expect(text).toContain("- wf_live still running")
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 1 }),
+          todo: todoLayer(todos),
+          dagStore: dagStoreLayer(workflows),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps a cancelled plan as stale context instead of a renewed command",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Goal
+- Finish the old plan
+
+## Next Steps
+- old cancelled step`),
+      )
+      const todos: Todo.Info[] = [{ content: "still open", status: "pending", priority: "high" }]
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "finish the old plan")
+        yield* createUserMessage(session.id, "cancel the old plan; do not continue it")
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        const text = syntheticTexts(last).join("\n")
+        expect(result).toBe("continue")
+        expect(text).toContain("Continue the pending work only if the latest user request still calls for it")
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain("cancel the old plan; do not continue it")
+        expect(text).toContain("Open todos:")
+        expect(text).toContain("- pending: still open")
+        expect(text).toContain("Summary next steps (may be stale):")
+        expect(text).toContain("- old cancelled step")
+        expect(text).not.toContain("Continue with the pending plan")
+        expect(text).not.toContain("Continue with the current pending work")
+        expect(text).not.toContain("Continue if you have next steps")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }), todo: todoLayer(todos) }))
+    },
+    { git: true },
+  )
+
+  for (const request of ["取消旧计划，不要继续", "Stop; do not resume", "don't stop", "fix the stop button"]) {
+    itCompaction.instance(
+      `defers stale summary and todos to the latest request: ${request}`,
+      () => {
+        const stub = llm()
+        stub.push(
+          reply(`## Next Steps
+- old cancelled step`),
+        )
+        const todos: Todo.Info[] = [{ content: "historical todo", status: "pending", priority: "high" }]
+        return Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          yield* createUserMessage(session.id, "old plan")
+          yield* createUserMessage(session.id, request)
+          yield* createSummaryCompaction(session.id)
+          const msgs = yield* ssn.messages({ sessionID: session.id })
+          const parentID = msgs.at(-1)!.info.id
+
+          yield* SessionCompaction.use.process({
+            parentID,
+            messages: msgs,
+            sessionID: session.id,
+            auto: true,
+          })
+
+          const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+          expect(text).toContain("Continue the pending work only if the latest user request still calls for it")
+          expect(text).toContain("Latest user request:")
+          expect(text).toContain(request)
+          expect(text).toContain("Open todos:")
+          expect(text).toContain("- pending: historical todo")
+          expect(text).toContain("Summary next steps (may be stale):")
+          expect(text).toContain("- old cancelled step")
+          expect(text).not.toContain("Continue with the pending plan")
+          expect(text).not.toContain("Continue if you have next steps")
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1 }), todo: todoLayer(todos) }))
+      },
+      { git: true },
+    )
+  }
+
   itCompaction.instance("does not send signed history to the separate summarizer context", () => {
     const stub = llm()
     const captured: string[] = []
@@ -1435,6 +1767,569 @@ describe("session.compaction.process", () => {
         withCompaction({
           llm: stub.layer,
           settingsHook: sessionStartHook(sources),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not re-inject SessionStart context already visible in the session",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: msg.id,
+          sessionID: session.id,
+          type: "text",
+          text: "compact-ctx",
+          synthetic: true,
+        })
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        const texts = syntheticTexts(last)
+        expect(result).toBe("continue")
+        expect(sources).toEqual(["compact"])
+        expect(texts.filter((text) => text === "compact-ctx")).toEqual([])
+        expect(texts.filter((text) => text === "fresh-ctx")).toEqual(["fresh-ctx"])
+        expect(texts.some((text) => text.includes("Continue if you have next steps"))).toBe(true)
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources, ["compact-ctx", "fresh-ctx", "fresh-ctx"]),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not re-inject SessionStart context copied verbatim into the summary",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const boilerplate =
+        "Session start boilerplate: follow the repository instructions, preserve existing user work, and report verification gaps honestly."
+      const stub = llm()
+      stub.push(
+        reply(`## Critical Context
+- ${boilerplate}
+
+## Next Steps
+- (none)`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        const result = yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const last = (yield* ssn.messages({ sessionID: session.id })).at(-1)
+        const texts = syntheticTexts(last)
+        expect(result).toBe("continue")
+        expect(texts.filter((text) => text === boilerplate)).toEqual([])
+        expect(texts.some((text) => text.includes("Continue if you have next steps"))).toBe(true)
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          settingsHook: sessionStartHook(sources, [boilerplate]),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "re-injects SessionStart context dropped from the compacted view",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const ctx = "historical SessionStart context that the compacted view dropped"
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const old = yield* createUserMessage(session.id, "old work")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: old.id,
+          sessionID: session.id,
+          type: "text",
+          text: ctx,
+          synthetic: true,
+        })
+        yield* createUserMessage(session.id, "recent work")
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const stored = yield* ssn.messages({ sessionID: session.id })
+        const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
+        const continueID = stored.at(-1)?.info.id
+        expect(visible.some((message) => message.info.id === old.id)).toBe(false)
+        expect(
+          visible.some(
+            (message) =>
+              message.info.id !== continueID && message.parts.some((part) => part.type === "text" && part.text === ctx),
+          ),
+        ).toBe(false)
+
+        const texts = syntheticTexts(stored.at(-1))
+        expect(result).toBe("continue")
+        expect(texts).toContain(ctx)
+        expect(
+          texts.some((text) =>
+            text.includes("Continue the pending work only if the latest user request still calls for it"),
+          ),
+        ).toBe(true)
+        expect(texts.join("\n")).toContain("Summary next steps (may be stale):")
+        expect(texts.join("\n")).toContain("old cancelled step")
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 1 }),
+          settingsHook: sessionStartHook(sources, [ctx]),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps the latest request when full compaction drops the tail",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const ctx = "old SessionStart context in the discarded head"
+      const request = "also check the typecheck"
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const old = yield* createUserMessage(session.id, "old work")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: old.id,
+          sessionID: session.id,
+          type: "text",
+          text: ctx,
+          synthetic: true,
+        })
+        yield* createUserMessage(session.id, request)
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const stored = yield* ssn.messages({ sessionID: session.id })
+        const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
+        const continueID = stored.at(-1)?.info.id
+        expect(result).toBe("continue")
+        expect(visible.some((message) => message.info.id === old.id)).toBe(false)
+        expect(visible.some((message) => message.info.id === continueID)).toBe(true)
+        expect(
+          visible.some(
+            (message) =>
+              message.info.id !== continueID &&
+              message.parts.some((part) => part.type === "text" && part.text === request),
+          ),
+        ).toBe(false)
+
+        const texts = syntheticTexts(stored.at(-1))
+        expect(texts.join("\n")).toContain(request)
+        expect(texts).toContain(ctx)
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 0 }),
+          settingsHook: sessionStartHook(sources, [ctx]),
+          startContext: recordingStartContext(queued),
+        }),
+      )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "quotes the complete authoritative request past the old 500-character cut",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      const request = `${"x".repeat(600)} do not deploy`
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old work")
+        const requestMessage = yield* createUserMessage(session.id, request)
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const stored = yield* ssn.messages({ sessionID: session.id })
+        const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
+        const text = syntheticTexts(stored.at(-1)).join("\n")
+        expect(result).toBe("continue")
+        expect(visible.some((message) => message.info.id === requestMessage.id)).toBe(false)
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain(request)
+        expect(text).toContain("do not deploy")
+        expect(text).not.toContain("Continue if you have next steps")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "asks instead of quoting a request over the authoritative budget",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      const request = "z".repeat(2_100)
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old work")
+        yield* createUserMessage(session.id, request)
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(result).toBe("continue")
+        expect(text).toContain("Continue if you have next steps")
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain(request)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "ignores the async-hook rewake sentinel when choosing the latest request",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old request")
+        yield* createUserMessage(session.id, `${HOOK_REWAKE_SENTINEL} (command: test, event: Stop):\nrun the hook`)
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain("old request")
+        expect(text).not.toContain("Async hook completed")
+        expect(text).not.toContain("run the hook")
+        expect(text).not.toContain("Continue if you have next steps")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "asks when the newest user turn is attachment-only",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old cancelled step`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old request")
+        const image = yield* createUserMessage(session.id, " ")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: image.id,
+          sessionID: session.id,
+          type: "file",
+          mime: "image/png",
+          filename: "cat.png",
+          url: "https://example.com/cat.png",
+        })
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(result).toBe("continue")
+        expect(text).toContain("Continue if you have next steps")
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain("old request")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "continues across repeated auto compactions with open todos",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- step one`),
+      )
+      stub.push(
+        reply(`## Next Steps
+- step two`),
+      )
+      const todos: Todo.Info[] = [{ content: "open todo", status: "pending", priority: "high" }]
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "finish the task")
+        yield* createSummaryCompaction(session.id)
+        const firstMessages = yield* ssn.messages({ sessionID: session.id })
+        const first = yield* SessionCompaction.use.process({
+          parentID: firstMessages.at(-1)!.info.id,
+          messages: firstMessages,
+          sessionID: session.id,
+          auto: true,
+        })
+        expect(first).toBe("continue")
+
+        yield* createSummaryCompaction(session.id)
+        const secondMessages = yield* ssn.messages({ sessionID: session.id })
+        const second = yield* SessionCompaction.use.process({
+          parentID: secondMessages.at(-1)!.info.id,
+          messages: secondMessages,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(second).toBe("continue")
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain("finish the task")
+        expect(text).toContain("- pending: open todo")
+        expect(text).not.toContain("Continue if you have next steps")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }), todo: todoLayer(todos) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "asks instead of reviving an older request when the latest text turn carries an attachment",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old step`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old request")
+        const latest = yield* createUserMessage(session.id, "review the attachment")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: latest.id,
+          sessionID: session.id,
+          type: "file",
+          mime: "text/plain",
+          filename: "pasted.txt",
+          url: `data:text/plain,${encodeURIComponent(`${HOOK_REWAKE_SENTINEL} attached content`)}`,
+        })
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(visible.some((message) => message.info.id === latest.id)).toBe(false)
+        expect(text).toContain("Continue if you have next steps")
+        expect(text).not.toContain("Latest user request:")
+        expect(text).not.toContain("old request")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "keeps a later text part sentinel from hiding the newest request",
+    () => {
+      const stub = llm()
+      stub.push(
+        reply(`## Next Steps
+- old step`),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old request")
+        const latest = yield* createUserMessage(session.id, "please review")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: latest.id,
+          sessionID: session.id,
+          type: "text",
+          text: `${HOOK_REWAKE_SENTINEL} pasted text`,
+        })
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
+        const text = syntheticTexts((yield* ssn.messages({ sessionID: session.id })).at(-1)).join("\n")
+        expect(visible.some((message) => message.info.id === latest.id)).toBe(false)
+        expect(text).toContain("Latest user request:")
+        expect(text).toContain("please review")
+        expect(text).toContain("pasted text")
+        expect(text).not.toContain("old request")
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "does not re-inject SessionStart context retained in the compacted view",
+    () => {
+      const sources: string[] = []
+      const queued: string[] = []
+      const ctx = "retained SessionStart context still visible after compaction"
+      const stub = llm()
+      stub.push(reply("summary"))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "old work")
+        const recent = yield* createUserMessage(session.id, "recent work")
+        yield* ssn.updatePart({
+          id: PartID.ascending(),
+          messageID: recent.id,
+          sessionID: session.id,
+          type: "text",
+          text: ctx,
+          synthetic: true,
+        })
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parentID = msgs.at(-1)!.info.id
+
+        const result = yield* SessionCompaction.use.process({
+          parentID,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        const stored = yield* ssn.messages({ sessionID: session.id })
+        const visible = yield* MessageV2.filterCompactedEffect(session.id).pipe(Effect.orDie)
+        expect(visible.some((message) => message.info.id === recent.id)).toBe(true)
+
+        const texts = syntheticTexts(stored.at(-1))
+        expect(result).toBe("continue")
+        expect(texts).not.toContain(ctx)
+        expect(queued).toEqual([])
+      }).pipe(
+        withCompaction({
+          llm: stub.layer,
+          config: cfg({ tail_turns: 1 }),
+          settingsHook: sessionStartHook(sources, [ctx]),
           startContext: recordingStartContext(queued),
         }),
       )

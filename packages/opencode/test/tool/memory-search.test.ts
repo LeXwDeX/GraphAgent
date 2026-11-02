@@ -56,6 +56,36 @@ const resolveIt = testEffect(
   ),
 )
 
+const nativeDenyAgent: Agent.Info = {
+  name: "build",
+  mode: "primary",
+  options: {},
+  permission: Permission.fromConfig({ memory_search: "allow" }),
+}
+const nativeDenyIt = testEffect(
+  Layer.mergeAll(
+    Layer.mock(Agent.Service, {
+      get: () => Effect.succeed(nativeDenyAgent),
+      permissionPolicy: () =>
+        Effect.succeed({
+          native: Permission.fromConfig({ memory_search: "deny" }),
+          rules: nativeDenyAgent.permission,
+        }),
+    }),
+    Truncate.defaultLayer,
+    pluginLayer,
+    Layer.mock(Permission.Service, { ask: () => Effect.void }),
+    Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
+    Layer.mock(ToolRegistry.Service, {
+      tools: () => Effect.succeed([memoryDefinition]),
+      registrations: () =>
+        Effect.succeed([
+          { definition: memoryDefinition, sourceKind: "host-builtin", registrationID: "test:memory_search" },
+        ]),
+    }),
+  ),
+)
+
 describe("tool.memory_search", () => {
   it.instance("trims one natural-language query and persists only an attachment acknowledgement", () =>
     Effect.gen(function* () {
@@ -117,6 +147,13 @@ describe("tool.memory_search", () => {
       expect(yield* resolvedToolIDs(build, { ...session(sessionID), permission: [deny] })).not.toContain(
         "memory_search",
       )
+    }),
+  )
+
+  nativeDenyIt.instance("native deny removes memory_search despite a configured allow", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("ses_memory_native_denied")
+      expect(yield* resolvedToolIDs(nativeDenyAgent, session(sessionID))).not.toContain("memory_search")
     }),
   )
 

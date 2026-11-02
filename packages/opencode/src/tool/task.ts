@@ -10,7 +10,7 @@ import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
-import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
+import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
@@ -223,12 +223,11 @@ export const TaskTool = Tool.define(
         subagent: next,
       })
       const childToolDenies = [
-        ...(next.permission.some((rule) => rule.permission === "todowrite")
-          ? []
-          : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-        ...(next.permission.some((rule) => rule.permission === id)
-          ? []
-          : [{ permission: id, pattern: "*" as const, action: "deny" as const }]),
+        ...subagentDefaultDeniedTools(next).map((permission) => ({
+          permission,
+          pattern: "*" as const,
+          action: "deny" as const,
+        })),
         ...(cfg.experimental?.primary_tools?.map((permission) => ({
           permission,
           pattern: "*" as const,

@@ -128,6 +128,58 @@ describe("session.system", () => {
     }),
   )
 
+  it.effect("skills output follows the effective ruleset", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+
+      expect(yield* prompt.skills(build, Permission.fromConfig({ skill: "deny" }))).toBeUndefined()
+      expect((yield* prompt.skills(build, Permission.fromConfig({ "*": "deny", skill: "allow" }))) ?? "").toContain(
+        "alpha-skill",
+      )
+    }),
+  )
+
+  it.effect("skills output filters individual session-denied skills", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.skills(build, Permission.fromConfig({ skill: { "zeta-skill": "deny" } }))
+
+      expect(output).toContain("alpha-skill")
+      expect(output).not.toContain("zeta-skill")
+    }),
+  )
+
+  it.effect("skills output filters skills denied by native rules despite a session allow", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.skills(
+        build,
+        Permission.fromConfig({ skill: { "zeta-skill": "allow" } }),
+        Permission.fromConfig({
+          "*": "deny",
+          skill: { "*": "allow", "zeta-skill": "deny" },
+        }),
+      )
+
+      expect(output).toContain("alpha-skill")
+      expect(output).not.toContain("zeta-skill")
+    }),
+  )
+
+  it.effect("MCP output omits servers denied by native rules despite a session allow", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.mcp(
+        build,
+        Permission.fromConfig({ "tool-server_*": "allow" }),
+        Permission.fromConfig({ "*": "deny" }),
+      )
+
+      expect(output).toContain("guide-server")
+      expect(output).not.toContain("tool-server")
+    }),
+  )
+
   it.effect("MCP output includes connected server instructions", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service

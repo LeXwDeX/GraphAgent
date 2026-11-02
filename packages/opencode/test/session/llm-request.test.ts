@@ -11,7 +11,8 @@ import { Provider } from "../../src/provider/provider"
 import { prepare } from "../../src/session/llm/request"
 import { RuntimeContext } from "../../src/session/runtime-context"
 import { testEffect } from "../lib/effect"
-import { jsonSchema, tool } from "ai"
+import { jsonSchema, streamText, tool, wrapLanguageModel, type ModelMessage } from "ai"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { Permission } from "@/permission"
 
 const PROMPT_IDENTITY = "You are graphagent, a coding agent working in the user's workspace."
@@ -119,6 +120,23 @@ describe("runtime capabilities in model requests", () => {
         expect(system.includes("No file-editing tool is available")).toBe(disabled !== "none")
       }),
     )
+  it.instance("native role denies stay ahead of user allows in advertised tools", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const toolDef = (description: string) =>
+        tool({ description, inputSchema: jsonSchema({ type: "object", properties: {} }) })
+      const prepared = yield* prepare({
+        ...input,
+        tools: { edit: toolDef("edit"), read: toolDef("read") },
+        agent: {
+          ...input.agent,
+          permission: Permission.fromConfig({ "*": "allow", edit: "allow" }),
+        },
+        nativePermission: Permission.fromConfig({ "*": "deny", read: "allow" }),
+      })
+      expect(Object.keys(prepared.tools)).toEqual(["read"])
+    }),
+  )
   for (const [provider, model, npm] of [
     ["anthropic", "claude-sonnet-4", "@ai-sdk/anthropic"],
     ["openai", "gpt-5", "@ai-sdk/openai"],
@@ -276,6 +294,101 @@ describe("output token override", () => {
         },
       })
       expect(prepared.params.maxOutputTokens).toBe(64_000)
+    }),
+  )
+})
+
+describe("hosted history projection before SDK prompt conversion", () => {
+  it.effect("projects expired hosted file URLs before AI SDK downloads them", () =>
+    Effect.gen(function* () {
+      const input = yield* request("local", "qwen3", "@ai-sdk/openai-compatible")
+      const messages: ModelMessage[] = [
+        { role: "user", content: [{ type: "text", text: "Fetch the page." }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "hosted_1",
+              toolName: "web_fetch",
+              input: { url: "https://expired.invalid/secret" },
+              providerExecuted: true,
+            },
+            {
+              type: "tool-result",
+              toolCallId: "hosted_1",
+              toolName: "web_fetch",
+              output: {
+                type: "content",
+                value: [
+                  {
+                    type: "file-url",
+                    mediaType: "text/plain",
+                    url: "https://expired.invalid/secret?token=abc#frag",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]
+
+      const prepared = yield* prepare({ ...input, messages })
+      expect(JSON.stringify(prepared.messages)).not.toContain('"file-url"')
+      expect(JSON.stringify(prepared.messages)).toContain("https://expired.invalid/secret [redacted]")
+
+      const requested: string[] = []
+      const provider = createOpenAICompatible({
+        name: "local",
+        baseURL: "https://example.invalid/v1",
+        apiKey: "test-key",
+        fetch: Object.assign(
+          async (request: RequestInfo | URL) => {
+            requested.push(request instanceof Request ? request.url : String(request))
+            return new Response(
+              [
+                `data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "qwen3", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] })}`,
+                `data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "qwen3", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}`,
+                "data: [DONE]",
+              ].join("\n\n") + "\n\n",
+              { headers: { "Content-Type": "text/event-stream" } },
+            )
+          },
+          { preconnect: () => undefined },
+        ),
+      })
+      const observed: unknown[] = []
+      const model = wrapLanguageModel({
+        model: provider("qwen3"),
+        middleware: {
+          specificationVersion: "v3" as const,
+          async transformParams({ params }) {
+            observed.push(params.prompt)
+            return params
+          },
+        },
+      })
+
+      const originalFetch = globalThis.fetch
+      const downloaded: string[] = []
+      globalThis.fetch = Object.assign(
+        async (source: RequestInfo | URL) => {
+          downloaded.push(source instanceof Request ? source.url : String(source))
+          throw new Error("network disabled")
+        },
+        { preconnect: () => undefined },
+      )
+      try {
+        const result = streamText({ model, messages: prepared.messages, maxRetries: 0 })
+        yield* Effect.promise(() => result.consumeStream())
+      } finally {
+        globalThis.fetch = originalFetch
+      }
+
+      expect(downloaded).toEqual([])
+      expect(requested).toEqual(["https://example.invalid/v1/chat/completions"])
+      expect(JSON.stringify(observed)).toContain("expired.invalid/secret")
+      expect(JSON.stringify(observed)).not.toContain('"type":"file"')
     }),
   )
 })

@@ -32,8 +32,16 @@ export function provider(tools: readonly string[] = ["edit", "write"]) {
 
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
-  readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
-  readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
+  readonly skills: (
+    agent: Agent.Info,
+    permission?: PermissionV1.Ruleset,
+    nativePermission?: PermissionV1.Ruleset,
+  ) => Effect.Effect<string | undefined>
+  readonly mcp: (
+    agent: Agent.Info,
+    permission?: PermissionV1.Ruleset,
+    nativePermission?: PermissionV1.Ruleset,
+  ) => Effect.Effect<string | undefined>
   /** `system` is constant while a goal stays active or paused; `context` is the live state for this request. */
   readonly goal: (sessionID: SessionID) => Effect.Effect<{ system: string[]; context: string[] }>
   readonly hooks: () => Effect.Effect<string[]>
@@ -109,10 +117,19 @@ export const layer = Layer.effect(
         ].filter((part): part is string => part !== undefined)
       }),
 
-      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
-        if (Permission.disabled(["skill"], agent.permission).has("skill")) return
+      skills: Effect.fn("SystemPrompt.skills")(function* (
+        agent: Agent.Info,
+        permission?: PermissionV1.Ruleset,
+        nativePermission?: PermissionV1.Ruleset,
+      ) {
+        const ruleset = Permission.merge(agent.permission, permission ?? [])
+        if (Permission.disabledByPolicy(["skill"], nativePermission ?? [], ruleset).has("skill")) return
 
-        const list = yield* skill.available(agent)
+        const list = (yield* skill.available(agent)).filter(
+          (item) =>
+            Permission.evaluate("skill", item.name, nativePermission ?? []).action !== "deny" &&
+            Permission.evaluate("skill", item.name, ruleset).action !== "deny",
+        )
 
         return [
           "Skills provide specialized instructions and workflows for specific tasks.",
@@ -122,10 +139,16 @@ export const layer = Layer.effect(
         ].join("\n")
       }),
 
-      mcp: Effect.fn("SystemPrompt.mcp")(function* (agent: Agent.Info, permission?: PermissionV1.Ruleset) {
+      mcp: Effect.fn("SystemPrompt.mcp")(function* (
+        agent: Agent.Info,
+        permission?: PermissionV1.Ruleset,
+        nativePermission?: PermissionV1.Ruleset,
+      ) {
         const ruleset = Permission.merge(agent.permission, permission ?? [])
         const instructions = (yield* mcp.instructions()).filter(
-          (item) => item.tools.length === 0 || Permission.disabled(item.tools, ruleset).size < item.tools.length,
+          (item) =>
+            item.tools.length === 0 ||
+            Permission.disabledByPolicy(item.tools, nativePermission ?? [], ruleset).size < item.tools.length,
         )
         if (instructions.length === 0) return
 

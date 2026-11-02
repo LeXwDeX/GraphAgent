@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer, Result, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Result, Schema } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import { Agent } from "@/agent/agent"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { MessageID, SessionID } from "@/session/schema"
@@ -47,6 +48,71 @@ const send = {
 }
 
 describe("agent tool contract", () => {
+  it.effect("redacts unknown flat argument names in repair logs", () =>
+    Effect.gen(function* () {
+      const definition = yield* (yield* AgentTool.pipe(Effect.provide(Layer.mock(DagAgentMessages.Service, {})))).init()
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- exercise an untrusted flat tool call
+      const result = yield* Effect.exit(definition.execute({ action: "receive", SYNTHETIC_KEY_SECRET: "synthetic-value" } as any, context()))
+      expect(Exit.isFailure(result)).toBe(true)
+      const logs = JSON.stringify(yield* logLines)
+      expect(logs).toContain("tool arguments repaired")
+      expect(logs).toContain("params:undefined->object")
+      expect(logs).not.toContain("SYNTHETIC_KEY_SECRET")
+      expect(logs).not.toContain("synthetic-value")
+    }),
+  )
+  it.effect("handles each of the six recovered call shapes at the tool boundary", () =>
+    Effect.gen(function* () {
+      const service = Layer.mock(DagAgentMessages.Service, {
+        receive: () => Effect.succeed({ ok: true, messages: [], cursor: 0 }),
+        send: () => Effect.succeed({ ok: true }),
+      })
+      const definition = yield* (yield* AgentTool.pipe(Effect.provide(service))).init()
+      const cases = [
+        { params: { action: "send", recipient: "parent", idempotency_key: "k", content: "synthetic" } },
+        { params: { action: "send", workflow_id: "", recipient: "parent", idempotency_key: "k", content: "synthetic" } },
+        { params: { action: "send", workflow_id: "", recipient: "parent", idempotency_key: "k", content: "synthetic" } },
+        { action: "receive", wait_ms: 0 },
+        { action: "send", content: "synthetic", idempotency_key: "k", recipient: "parent", workflow_id: "wf" },
+        { action: "receive", wait_ms: 0 },
+      ]
+      for (const [index, input] of cases.entries()) {
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- test the real decoder with original unvalidated envelopes
+        const result = yield* Effect.exit(definition.execute(input as any, context()))
+        if (index < 3) {
+          expect(Exit.isFailure(result)).toBe(true)
+          const error = Exit.isFailure(result) ? String(Cause.squash(result.cause)) : ""
+          expect(error).toContain("workflow_id")
+          expect(error).not.toContain("synthetic")
+          expect(error).not.toContain("\n")
+          expect(error.length).toBeLessThanOrEqual(600)
+        } else {
+          expect(Exit.isSuccess(result)).toBe(true)
+        }
+      }
+    }),
+  )
+
+  it.effect("does not echo unknown action or property names in validation errors", () =>
+    Effect.gen(function* () {
+      const definition = yield* (yield* AgentTool.pipe(Effect.provide(Layer.mock(DagAgentMessages.Service, {})))).init()
+      for (const input of [
+        { params: { action: "SECRET_ACTION\nvalue" } },
+        { params: { action: "receive", SECRET_PROPERTY: "private" } },
+      ]) {
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- exercise invalid model arguments through the actual tool boundary
+        const result = yield* Effect.exit(definition.execute(input as any, context()))
+        expect(Exit.isFailure(result)).toBe(true)
+        const text = Exit.isFailure(result) ? String(Cause.squash(result.cause)) : ""
+        expect(text).not.toContain("SECRET_")
+        expect(text).not.toContain("private")
+        expect(text).not.toContain("\n")
+        expect(text).toContain("[\"params\"]")
+        expect(text.length).toBeLessThan(600)
+      }
+    }),
+  )
+
   test("has a plain object schema on Qwen, GLM and DeepSeek transports", () => {
     for (const modelID of ["qwen3.5-plus", "glm-5.3", "deepseek-v4-pro"]) {
       const modalities = { text: true, audio: false, image: false, video: false, pdf: false }
@@ -152,6 +218,158 @@ describe("agent tool contract", () => {
       const result = yield* definition.execute({ params: { action: "receive", wait_ms: 10 } }, ctx)
       expect(signal).toBe(ctx.abort)
       expect(JSON.parse(result.output).messages[0].state).toBe("queued")
+    }),
+  )
+
+  it.effect("accepts flat envelopes and preserves JSON-looking scalar fields", () =>
+    Effect.gen(function* () {
+      const calls: string[] = []
+      let sentContent: string | undefined
+      let sentKey: string | undefined
+      let observedCursor: string | undefined
+      const service = Layer.mock(DagAgentMessages.Service, {
+        receive: (input) =>
+          Effect.sync(() => {
+            calls.push(`receive:${input.sessionID}:${input.workflow_id ?? ""}`)
+            return { ok: true, messages: [], cursor: 0 }
+          }),
+        send: (input) =>
+          Effect.sync(() => {
+            calls.push(`send:${input.sessionID}:${input.workflow_id}`)
+            sentContent = input.content
+            sentKey = input.idempotency_key
+            return { ok: true, message_id: "message_flat" }
+          }),
+        observe: (input) =>
+          Effect.sync(() => {
+            calls.push(`observe:${input.workflow_id}`)
+            observedCursor = input.cursor
+            return { ok: true, nodes: [] }
+          }),
+      })
+      const tool = yield* AgentTool.pipe(Effect.provide(service))
+      const definition = yield* tool.init()
+      const ctx = context()
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- flat envelope and rejection fixtures intentionally bypass the decoded parameter type
+      const received = yield* definition.execute({ action: "receive", wait_ms: 0 } as any, ctx)
+      const sent = yield* definition.execute(
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- flat envelope and rejection fixtures intentionally bypass the decoded parameter type
+        {
+          action: "send",
+          workflow_id: "wf_owned",
+          recipient: "parent",
+          idempotency_key: '{"key":1}',
+          content: '{"approval":true}',
+        } as any,
+        ctx,
+      )
+      const observed = yield* definition.execute(
+        {
+          params: {
+            action: "observe",
+            workflow_id: "wf_owned",
+            cursor: '{"workflowID":"wf_owned"}',
+          },
+        },
+        ctx,
+      )
+      const stringified = yield* definition.execute(
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- provider stringified-container compatibility
+        { params: '{"action":"receive","wait_ms":0}' } as any,
+        ctx,
+      )
+      expect(JSON.parse(received.output).ok).toBe(true)
+      expect(JSON.parse(sent.output).ok).toBe(true)
+      expect(JSON.parse(observed.output).ok).toBe(true)
+      expect(JSON.parse(stringified.output).ok).toBe(true)
+      expect(sentContent).toBe('{"approval":true}')
+      expect(sentKey).toBe('{"key":1}')
+      expect(observedCursor).toBe('{"workflowID":"wf_owned"}')
+      expect(calls).toEqual([
+        "receive:ses_agent_actual:",
+        "send:ses_agent_actual:wf_owned",
+        "observe:wf_owned",
+        "receive:ses_agent_actual:",
+      ])
+    }),
+  )
+
+  it.effect("returns bounded actionable errors for missing or empty send workflow ids", () =>
+    Effect.gen(function* () {
+      const tool = yield* AgentTool.pipe(Effect.provide(Layer.mock(DagAgentMessages.Service, {})))
+      const definition = yield* tool.init()
+      for (const params of [
+        { action: "send", workflow_id: "", recipient: "parent", idempotency_key: "k", content: "c" },
+        { action: "send", recipient: "parent", idempotency_key: "k", content: "c" },
+      ]) {
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- flat envelope and rejection fixtures intentionally bypass the decoded parameter type
+        const exit = yield* Effect.exit(definition.execute({ params } as any, context()))
+        expect(Exit.isFailure(exit)).toBe(true)
+        const message = Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : ""
+        expect(message).toContain("workflow_id")
+        expect(message.length).toBeLessThan(600)
+      }
+    }),
+  )
+
+  it.effect("bounds schema errors for out-of-range receive fields", () =>
+    Effect.gen(function* () {
+      const tool = yield* AgentTool.pipe(Effect.provide(Layer.mock(DagAgentMessages.Service, {})))
+      const definition = yield* tool.init()
+      for (const params of [
+        { action: "receive", wait_ms: 60_000 },
+        { action: "receive", limit: 51 },
+      ]) {
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- flat envelope and rejection fixtures intentionally bypass the decoded parameter type
+        const exit = yield* Effect.exit(definition.execute({ params } as any, context()))
+        expect(Exit.isFailure(exit)).toBe(true)
+        const message = Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : ""
+        expect(message).toMatch(/wait_ms|limit/)
+        expect(message.length).toBeLessThan(600)
+      }
+    }),
+  )
+
+  it.effect("preserves the rate-limited receive response shape", () =>
+    Effect.gen(function* () {
+      const service = Layer.mock(DagAgentMessages.Service, {
+        receive: () =>
+          Effect.succeed({
+            ok: false,
+            reason: "rate_limited",
+            retry_after_ms: 900,
+            read_performed: false,
+            hint: "This request did not check for new messages. Retry with the original cursor.",
+          }),
+      })
+      const tool = yield* AgentTool.pipe(Effect.provide(service))
+      const definition = yield* tool.init()
+      const result = yield* definition.execute(
+        { params: { action: "receive", workflow_id: "wf_owned", after_sequence: 7 } },
+        context(),
+      )
+      expect(JSON.parse(result.output)).toMatchObject({
+        ok: false,
+        reason: "rate_limited",
+        retry_after_ms: 900,
+        read_performed: false,
+      })
+      expect(JSON.parse(result.output)).not.toHaveProperty("messages")
+      expect(JSON.parse(result.output)).not.toHaveProperty("cursor")
+    }),
+  )
+
+  it.effect("returns an actionable error for observe without a workflow id", () =>
+    Effect.gen(function* () {
+      const tool = yield* AgentTool.pipe(Effect.provide(Layer.mock(DagAgentMessages.Service, {})))
+      const definition = yield* tool.init()
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- flat envelope and rejection fixtures intentionally bypass the decoded parameter type
+      const exit = yield* Effect.exit(definition.execute({ params: { action: "observe" } } as any, context()))
+      expect(Exit.isFailure(exit)).toBe(true)
+      const message = Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : ""
+      expect(message).toContain("agent observe")
+      expect(message).toContain("workflow_id")
+      expect(message.length).toBeLessThan(600)
     }),
   )
 })

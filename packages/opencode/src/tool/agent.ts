@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { Tool } from "./tool"
+import { argumentAction, bound, formatSchemaFailures } from "./schema-error"
 
 const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))
 const Limit = Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })))
@@ -45,6 +46,15 @@ export const Parameters = Schema.Struct({
 
 export { Parameters as AgentParameters }
 
+/** Accept the flat `{ action, ... }` form that models commonly emit. The
+ * schema keeps the object-rooted `params` contract on the wire. */
+function repairFlatAgentCall(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value
+  if (Object.hasOwn(value, "params")) return value
+  if (!Object.hasOwn(value, "action")) return value
+  return { params: value }
+}
+
 type Metadata = { action: "observe" | "send" | "receive"; workflowId?: string }
 
 export const AgentTool = Tool.define<typeof Parameters, Metadata, DagAgentMessages.Service>(
@@ -65,6 +75,21 @@ export const AgentTool = Tool.define<typeof Parameters, Metadata, DagAgentMessag
       ].join("\n"),
       parameters: Parameters,
       parseOptions: { onExcessProperty: "error" },
+      repairContainerFields: ["params"],
+      repairArguments: repairFlatAgentCall,
+      formatValidationError: (error, input) => {
+        const action = argumentAction(input)
+        const hint =
+          action === "send"
+            ? "agent send needs a non-empty exact workflow_id, recipient, idempotency_key and content; node sends also need node_id and attempt_id."
+            : action === "receive"
+              ? "agent receive expects {workflow_id?, after_sequence?, limit 1-50, wait_ms 0-30000} under {params}."
+              : action === "observe"
+                ? "agent observe expects {workflow_id, node_id?, attempt_id?, cursor?, limit 1-50} under {params}."
+                : 'agent expects {params:{action:"observe"|"send"|"receive", ...}}; workflow-only actions are not accepted.'
+        const detail = formatSchemaFailures(error, 2, action)
+        return bound(`agent call rejected: ${hint}${detail ? ` Details: ${detail}.` : ""}`, 480)
+      },
       execute: ({ params }, ctx) =>
         Effect.gen(function* () {
           const result =

@@ -4,10 +4,11 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
-import { Effect, Latch, Layer, Option, Scope, Context } from "effect"
+import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context } from "effect"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
+import { SessionAbortReason } from "./abort-reason"
 
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
@@ -51,13 +52,32 @@ export const layer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("SessionRunState.state")(function* () {
-        const scope = yield* Scope.Scope
+        // Runner fibers get their own scope so the state finalizer can write
+        // shutdown attribution BEFORE interrupting them. Forking them into the
+        // InstanceState scope would let scope teardown interrupt the prompt
+        // first, making the durable abort reason depend on finalizer order.
+        const scope = yield* Scope.make()
         const directory = yield* InstanceState.directory
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
+            const entries = [...runners.entries()]
+            const reasons: Array<readonly [SessionID, SessionAbortReason.Info]> = []
+            for (const [sessionID] of entries) {
+              const existing = SessionAbortReason.take(sessionID)
+              if (existing) {
+                // A cancel can still be in flight when the instance is disposed.
+                // Preserve its specific reason; relabelling it as shutdown would
+                // hide why the interrupted turn actually stopped.
+                SessionAbortReason.set(sessionID, existing)
+                continue
+              }
+              const abort = SessionAbortReason.make("shutdown", "session-scope")
+              SessionAbortReason.set(sessionID, abort)
+              reasons.push([sessionID, abort] as const)
+            }
             yield* Effect.forEach(
-              runners.entries(),
+              entries,
               ([sessionID, runner]) =>
                 Logging.backgroundDebug("lifecycle.session.cancel", {
                   source: "instance.scope.finalizer",
@@ -68,6 +88,15 @@ export const layer = Layer.effect(
                 concurrency: "unbounded",
                 discard: true,
               },
+            ).pipe(
+              Effect.ensuring(
+                Effect.uninterruptible(
+                  Effect.gen(function* () {
+                    yield* Scope.close(scope, Exit.void).pipe(Effect.ignore)
+                    for (const [sessionID, abort] of reasons) SessionAbortReason.clear(sessionID, abort)
+                  }),
+                ),
+              ),
             )
             runners.clear()
           }),
@@ -75,6 +104,22 @@ export const layer = Layer.effect(
         return { runners, scope }
       }),
     )
+
+    // Disposal marks the directory closing before it invalidates per-service
+    // state. A runner finalizer must still cancel its turn in that window; only
+    // the status write is allowed to be a fail-closed no-op. Any other defect
+    // keeps propagating.
+    const setStatus = (sessionID: SessionID, info: Parameters<typeof status.set>[1]) =>
+      status.set(sessionID, info).pipe(
+        Effect.catchCause((cause) => {
+          const onlyClosing =
+            cause.reasons.length > 0 &&
+            cause.reasons.every(
+              (reason) => Cause.isDieReason(reason) && reason.defect instanceof InstanceState.Closing,
+            )
+          return onlyClosing ? Effect.void : Effect.failCause(cause)
+        }),
+      )
 
     const runner = Effect.fn("SessionRunState.runner")(function* (
       sessionID: SessionID,
@@ -86,9 +131,9 @@ export const layer = Layer.effect(
       const next = Runner.make<SessionV1.WithParts>(data.scope, {
         onIdle: Effect.gen(function* () {
           data.runners.delete(sessionID)
-          yield* status.set(sessionID, { type: "idle" })
+          yield* setStatus(sessionID, { type: "idle" })
         }),
-        onBusy: status.set(sessionID, { type: "busy" }),
+        onBusy: setStatus(sessionID, { type: "busy" }),
         onInterrupt,
       })
       data.runners.set(sessionID, next)
@@ -105,10 +150,10 @@ export const layer = Layer.effect(
       yield* cancelBackgroundJobs(background, sessionID)
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
-      if (!existing) {
-        yield* status.set(sessionID, { type: "idle" })
-        return
-      }
+      // A session with no runner in this instance has no turn to stop. Publishing
+      // idle here would fake a turn boundary in a directory that only owns the
+      // durable row after a move; DagLoop and GoalLoop treat every idle as real.
+      if (!existing) return
       yield* existing.cancel
     })
 

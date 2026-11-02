@@ -390,6 +390,37 @@ describe("Tool.define", () => {
     }),
   )
 
+  it.effect("bounds and redacts fallback errors for tools without a formatter", () =>
+    Effect.gen(function* () {
+      const secret = `SECRET-${"x".repeat(5_000)}`
+      const parameters = Schema.Struct({
+        value: Schema.Union([Schema.Struct({ a: Schema.String }), Schema.Struct({ b: Schema.String })]),
+      })
+      const info = yield* Tool.define(
+        "union-secret",
+        Effect.succeed({
+          description: "test tool",
+          parameters,
+          execute() {
+            return Effect.succeed({ title: "ok", output: "ok", metadata: {} })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const execute = executeRaw(tool.execute)
+
+      const exit = yield* execute({ value: { a: 1, secret } }, makeCtx()).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = exit.cause.reasons.find(Cause.isDieReason)?.defect
+      if (!(error instanceof Tool.InvalidArgumentsError)) throw new Error("expected InvalidArgumentsError")
+      expect(error.message).toContain("invalid arguments")
+      expect(error.message).toContain("value")
+      expect(error.message).not.toContain("SECRET-")
+      expect(error.message.length).toBeLessThan(600)
+    }),
+  )
+
   it.effect("rejects a root-combinator parameter schema at construction time", () =>
     Effect.gen(function* () {
       const union = yield* Tool.define(

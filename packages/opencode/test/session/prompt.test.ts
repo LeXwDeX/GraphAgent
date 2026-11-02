@@ -1,5 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { disposeInstance } from "@/effect/instance-registry"
+import { InstanceStore } from "@/project/instance-store"
 import { createHash } from "node:crypto"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -28,6 +29,7 @@ import { Image } from "../../src/image/image"
 
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
+import { TodoReminders } from "../../src/session/todo-reminders"
 import { Session } from "@/session/session"
 import { SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { LLM } from "../../src/session/llm"
@@ -41,6 +43,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
+import { SessionAbortReason } from "../../src/session/abort-reason"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
@@ -67,7 +70,7 @@ import { decodeRecord, decodeRecords, decodeString } from "../lib/hook-json"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
-import { TestInstance } from "../fixture/fixture"
+import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -205,6 +208,7 @@ let subagentStopBlockAlways = false
 let hookOverride: ((payload: HookPayload) => TriggerResult | undefined) | undefined
 let userPromptAdmissionStarted: Deferred.Deferred<void> | undefined
 let userPromptAdmissionGate: Deferred.Deferred<void> | undefined
+let metadataCommitGate: (input: typeof Session.SetMetadataInput.Type) => Effect.Effect<void> = () => Effect.void
 let snapshotFenceStarted: Deferred.Deferred<void> | undefined
 let snapshotFenceGate: Deferred.Deferred<void> | undefined
 const hookRecorderLayer = Layer.succeed(
@@ -256,6 +260,42 @@ const blockingProcessor = Layer.succeed(
     create: () => Effect.sync(() => processorCreateStarted.shift()?.()).pipe(Effect.andThen(Effect.never)),
   }),
 )
+let markStoppedCalls = 0
+let discardPendingCalls = 0
+const closingFailureProcessor = Layer.succeed(
+  SessionProcessor.Service,
+  SessionProcessor.Service.of({
+    create: (input) =>
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- partial handle only needs message and process
+      Effect.succeed({
+        message: input.assistantMessage,
+        process: () =>
+          Effect.failCause(
+            Cause.combine(
+              Cause.die(new Error("mixed real failure")),
+              Cause.die(new InstanceState.Closing("/tmp/mixed-finalizer")),
+            ),
+          ),
+      } as never),
+  }),
+)
+const spyDagMessages = Layer.effect(
+  DagMessages.Service,
+  Effect.gen(function* () {
+    const service = yield* DagMessages.Service
+    return DagMessages.Service.of({
+      ...service,
+      markStopped: (caller, snapshotID, reason) => {
+        markStoppedCalls++
+        return service.markStopped(caller, snapshotID, reason)
+      },
+      discardPending: (caller, reason) => {
+        discardPendingCalls++
+        return service.discardPending(caller, reason)
+      },
+    })
+  }),
+).pipe(Layer.provide(DagMessages.defaultLayer))
 
 const fencedAgent: AgentSvc.Info = {
   name: "build",
@@ -285,11 +325,13 @@ const snapshotFenceAgentLayer: Layer.Layer<AgentSvc.Service> = Layer.succeed(
 type PromptLayerOptions = {
   settingsHookLayer?: Layer.Layer<SettingsHook.Service>
   observeMessages?: (input: Parameters<Session.Interface["messages"]>[0]) => void
+  setMetadataGate?: (input: typeof Session.SetMetadataInput.Type) => Effect.Effect<void>
   organizer?: LLM.Interface["organizer"]
   mcpInstructions?: MCP.ServerInstructions[]
   mcpTools?: Record<string, AITool>
   toolsReady?: Effect.Effect<void>
-  processor?: "blocking"
+  processor?: "blocking" | "closing"
+  dagMessagesLayer?: Layer.Layer<DagMessages.Service>
   goal?: boolean
   goalLayer?: Layer.Layer<Goal.Service>
   memoryPrepare?: Memory.Interface["prepare"]
@@ -347,22 +389,27 @@ function makePrompt(input?: PromptLayerOptions) {
         }),
       ).pipe(Layer.provide(baseLLM))
     : baseLLM
-  const sessionLayer = input?.observeMessages
-    ? Layer.effect(
-        Session.Service,
-        Effect.gen(function* () {
-          const service = yield* Session.Service
-          return Session.Service.of({
-            ...service,
-            messages: (request) =>
-              Effect.suspend(() => {
-                input.observeMessages?.(request)
-                return service.messages(request)
-              }),
-          })
-        }),
-      ).pipe(Layer.provide(Session.defaultLayer))
-    : Session.defaultLayer
+  const sessionLayer =
+    input?.observeMessages || input?.setMetadataGate
+      ? Layer.effect(
+          Session.Service,
+          Effect.gen(function* () {
+            const service = yield* Session.Service
+            return Session.Service.of({
+              ...service,
+              messages: (request) =>
+                Effect.suspend(() => {
+                  input.observeMessages?.(request)
+                  return service.messages(request)
+                }),
+              setMetadata: (request, guard) =>
+                Effect.suspend(() => input.setMetadataGate?.(request) ?? Effect.void).pipe(
+                  Effect.andThen(service.setMetadata(request, guard)),
+                ),
+            })
+          }),
+        ).pipe(Layer.provide(Session.defaultLayer))
+      : Session.defaultLayer
   const deps = Layer.mergeAll(
     input?.settingsHookLayer ?? hookRecorderLayer,
     HookLifecycle.defaultLayer,
@@ -383,9 +430,10 @@ function makePrompt(input?: PromptLayerOptions) {
     BackgroundJob.defaultLayer,
     status,
     Database.defaultLayer,
-    DagMessages.defaultLayer,
+    input?.dagMessagesLayer ?? DagMessages.defaultLayer,
     DagStore.defaultLayer,
     EventV2Bridge.defaultLayer,
+    TodoReminders.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
     ToolSourceLedger.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
@@ -408,12 +456,14 @@ function makePrompt(input?: PromptLayerOptions) {
   const proc =
     input?.processor === "blocking"
       ? blockingProcessor
-      : SessionProcessor.layer.pipe(
-          Layer.provide(summary),
-          Layer.provide(Image.defaultLayer),
-          Layer.provide(flags),
-          Layer.provideMerge(deps),
-        )
+      : input?.processor === "closing"
+        ? closingFailureProcessor
+        : SessionProcessor.layer.pipe(
+            Layer.provide(summary),
+            Layer.provide(Image.defaultLayer),
+            Layer.provide(flags),
+            Layer.provideMerge(deps),
+          )
   const compact = SessionCompaction.layer.pipe(Layer.provide(flags), Layer.provideMerge(proc), Layer.provideMerge(deps))
   return SessionPrompt.layer.pipe(
     Layer.provide(SessionRevert.defaultLayer),
@@ -497,6 +547,8 @@ const withOversizedToolSchema = testEffect(
   }),
 )
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
+const metadataCommitIt = testEffect(makeHttp({ setMetadataGate: (input) => metadataCommitGate(input) }))
+const closingFailureIt = testEffect(makeHttp({ processor: "closing", dagMessagesLayer: spyDagMessages }))
 const snapshotFenceNoLLMServer = testEffect(makeHttpNoLLMServer({ agentLayer: snapshotFenceAgentLayer }))
 const withMcpInstructions = testEffect(
   makeHttp({
@@ -511,6 +563,12 @@ const withMcpInstructions = testEffect(
 )
 const withMemoryContext = testEffect(
   makeHttp({ memoryContext: ["<project_memory_data>project-memory-probe</project_memory_data>"] }),
+)
+const withMemoryContextNative = testEffect(
+  makeHttp({
+    native: true,
+    memoryContext: ["<project_memory_data>project-memory-probe</project_memory_data>"],
+  }),
 )
 let memoryStep = 0
 const withChangingMemoryContext = testEffect(
@@ -1112,6 +1170,7 @@ const boundedMessageIt = testEffect(
       defaultAgent: () => Effect.succeed("build"),
       defaultInfo: () => Effect.succeed({ ...fencedAgent, steps: 1 }),
       list: () => Effect.succeed([{ ...fencedAgent, steps: 1 }]),
+      permissionPolicy: () => Effect.succeed({ native: [], rules: fencedAgent.permission }),
     }),
   }),
 )
@@ -1419,6 +1478,48 @@ it.instance("DAG structured output cannot turn a content-filter finish into a su
   }),
 )
 
+closingFailureIt.instance(
+  "a non-interrupt closing mixed with a model defect keeps the real error and cleans input",
+  () =>
+    Effect.gen(function* () {
+      markStoppedCalls = 0
+      discardPendingCalls = 0
+      yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const mailbox = yield* DagMessages.Service
+      const { parent, childCaller, parentCaller, workflowID } = yield* seedAgentConversation()
+      expect(
+        yield* mailbox.send(childCaller, {
+          workflowID,
+          idempotencyKey: "defect-closing-input",
+          content: "DAG_DEFECT_WITH_CLOSING_INPUT",
+        }),
+      ).toMatchObject({ ok: true })
+
+      const exit = yield* prompt
+        .prompt({
+          sessionID: parent.id,
+          model: ref,
+          parts: [{ type: "text", text: "defect with closing" }],
+        })
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+
+      const history = yield* sessions.messages({ sessionID: parent.id })
+      const assistant = history.findLast((message) => message.info.role === "assistant")?.info
+      if (!assistant || assistant.role !== "assistant") throw new Error("Expected persisted failed assistant")
+      expect(assistant.error?.name).not.toBe("MessageAbortedError")
+      expect(JSON.stringify(assistant.error)).toContain("mixed real failure")
+      expect(assistant.time.completed).toBeDefined()
+      expect(markStoppedCalls).toBeGreaterThan(0)
+      expect(discardPendingCalls).toBeGreaterThan(0)
+      expect(yield* mailbox.snapshotForTurn(parentCaller, assistant.id)).toMatchObject({
+        value: { associated: true, stopReason: "model_error" },
+      })
+    }),
+)
+
 it.instance("DAG request preparation failure finalizes the assistant and retains unassociated input", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
@@ -1578,6 +1679,7 @@ const liveAgentIt = testEffect(
       defaultAgent: () => Effect.succeed("build"),
       defaultInfo: () => Effect.succeed(fencedAgent),
       list: () => Effect.succeed([fencedAgent]),
+      permissionPolicy: () => Effect.succeed({ native: [], rules: fencedAgent.permission }),
     }),
   }),
 )
@@ -2162,6 +2264,168 @@ const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { fi
     text: "hi there",
   })
   return { user: msg, assistant }
+})
+
+const seedToolAttachment = Effect.fn("test.seedToolAttachment")(function* (sessionID: SessionID) {
+  const session = yield* Session.Service
+  const msg = yield* user(sessionID, "first turn")
+  const assistant: SessionV1.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: msg.id,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now() },
+    finish: "tool-calls",
+  }
+  yield* session.updateMessage(assistant)
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: assistant.id,
+    sessionID,
+    type: "tool",
+    callID: "call-attachment",
+    tool: "read",
+    state: {
+      status: "completed",
+      input: { filePath: "/tmp/attachment.png" },
+      output: "read",
+      title: "read",
+      metadata: {},
+      time: { start: 0, end: 1 },
+      attachments: [
+        {
+          id: PartID.ascending(),
+          sessionID,
+          messageID: assistant.id,
+          type: "file",
+          mime: "image/png",
+          filename: "attachment.png",
+          url: "data:image/png;base64,AA==",
+        },
+      ],
+    },
+  })
+  return { user: msg, assistant }
+})
+
+const seedProviderToolAttachment = Effect.fn("test.seedProviderToolAttachment")(function* (sessionID: SessionID) {
+  const session = yield* Session.Service
+  const msg = yield* user(sessionID, "provider tool attachment")
+  const assistant: SessionV1.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: msg.id,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now() },
+    finish: "tool-calls",
+  }
+  yield* session.updateMessage(assistant)
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: assistant.id,
+    sessionID,
+    type: "tool",
+    callID: "provider-attachment-call",
+    tool: "web_search",
+    metadata: { providerExecuted: true },
+    state: {
+      status: "completed",
+      input: {},
+      output: "search result",
+      title: "search",
+      metadata: {},
+      time: { start: 0, end: 1 },
+      attachments: [
+        {
+          id: PartID.ascending(),
+          sessionID,
+          messageID: assistant.id,
+          type: "file",
+          mime: "application/pdf",
+          filename: "result.pdf",
+          url: "data:application/pdf;base64,JVBERi0xLjQK",
+        },
+      ],
+    },
+  })
+  return { user: msg, assistant }
+})
+
+const seedAttachmentGroups = Effect.fn("test.seedAttachmentGroups")(function* (sessionID: SessionID) {
+  const session = yield* Session.Service
+  const msg = yield* user(sessionID, "attachment groups")
+  const tool = (
+    messageID: MessageID,
+    suffix: string,
+    callID: string,
+    providerExecuted = false,
+  ): SessionV1.ToolPart => ({
+    id: PartID.ascending(),
+    messageID,
+    sessionID,
+    type: "tool",
+    callID,
+    tool: "read",
+    ...(providerExecuted ? { metadata: { providerExecuted: true } } : {}),
+    state: {
+      status: "completed",
+      input: {},
+      output: "read",
+      title: "read",
+      metadata: {},
+      time: { start: 0, end: 1 },
+      attachments: [
+        {
+          id: PartID.ascending(),
+          sessionID,
+          messageID,
+          type: "file",
+          mime: "application/pdf",
+          filename: `${suffix}.pdf`,
+          url: "data:application/pdf;base64,JVBERi0xLjQK",
+        },
+      ],
+    },
+  })
+  const first: SessionV1.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: msg.id,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now() },
+    finish: "tool-calls",
+  }
+  yield* session.updateMessage(first)
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: first.id,
+    sessionID,
+    type: "step-start",
+  })
+  yield* session.updatePart(tool(first.id, "first-a", "call-group-a"))
+  yield* session.updatePart(tool(first.id, "first-b", "call-group-b"))
+  return { user: msg, first }
 })
 
 const addSubtask = (sessionID: SessionID, messageID: MessageID, model = ref) =>
@@ -3107,33 +3371,609 @@ it.instance("loop continues when finish is tool-calls", () =>
   }),
 )
 
-it.instance("loop retries a gateway 502 on the step after a tool call", () =>
+it.instance("injects the todo reminder into model requests, not stored tool output (#953)", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
-    const session = yield* sessions.create({
-      title: "Retry after tool",
+    const todo = yield* Todo.Service
+    const chat = yield* sessions.create({
+      title: "Todo reminder",
       permission: [{ permission: "*", pattern: "*", action: "allow" }],
     })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [
+        { content: "keep the request prefix", status: "in_progress", priority: "high" },
+        { content: "settled item", status: "completed", priority: "low" },
+      ],
+    })
     yield* prompt.prompt({
-      sessionID: session.id,
+      sessionID: chat.id,
       agent: "build",
       noReply: true,
-      parts: [{ type: "text", text: "hello" }],
+      parts: [{ type: "text", text: "run a multi-tool turn" }],
     })
-    yield* llm.tool("first", { value: "first" })
-    yield* llm.error(502, "Bad Gateway\n")
-    yield* llm.text("second")
+    yield* llm.tool("glob", { pattern: "**/todo-reminder-missing-1" })
+    yield* llm.tool("glob", { pattern: "**/todo-reminder-missing-2" })
+    yield* llm.tool("todowrite", {
+      todos: [{ content: "updated item", status: "pending", priority: "high" }],
+    })
+    yield* llm.text("done")
 
-    const result = yield* prompt.loop({ sessionID: session.id })
-    expect(yield* llm.calls).toBe(3)
-    expect(result.info.role).toBe("assistant")
-    if (result.info.role === "assistant") {
-      expect(result.info.error).toBeUndefined()
-      expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
-    }
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(4)
+    const requests = hits.map((hit) => requestMessages(hit.body))
+    const count = (request: ReturnType<typeof requestMessages>) =>
+      (JSON.stringify(request.conversation).match(/\[todo reminder\]/g) ?? []).length
+    for (const request of requests) expect(count(request)).toBe(1)
+    expect(JSON.stringify(requests[0].conversation)).toContain("keep the request prefix")
+    // Steps 1 and 2 have unchanged todos, so the second request extends the cached prefix.
+    expect(requests[1].conversation.slice(0, requests[0].conversation.length)).toEqual(requests[0].conversation)
+    // todowrite changes the list after this turn was assembled; the same turn
+    // keeps the frozen reminder and the next user turn picks up the update.
+    const reminderTexts = (conversation: unknown[]) =>
+      conversation.flatMap((message) => {
+        const content =
+          typeof message === "object" && message !== null && "content" in message ? message.content : undefined
+        if (typeof content === "string") return content.startsWith("[todo reminder]") ? [content] : []
+        if (!Array.isArray(content)) return []
+        return content.flatMap((part) =>
+          typeof part === "object" &&
+          part !== null &&
+          "text" in part &&
+          typeof part.text === "string" &&
+          part.text.startsWith("[todo reminder]")
+            ? [part.text]
+            : [],
+        )
+      })
+    expect(reminderTexts(requests[2].conversation)).toHaveLength(1)
+    expect(reminderTexts(requests[3].conversation)).toHaveLength(1)
+    expect(reminderTexts(requests[3].conversation)[0]).toContain("keep the request prefix")
+    expect(reminderTexts(requests[3].conversation)[0]).not.toContain("updated item")
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "start the next turn" }],
+    })
+    yield* llm.text("done again")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const after = (yield* llm.hits).map((hit) => requestMessages(hit.body))
+    expect(after).toHaveLength(5)
+    // Exactly one reminder per request: the previous turn's reminder is replaced,
+    // not retained as historical context.
+    expect(reminderTexts(after[4].conversation)).toHaveLength(1)
+    expect(reminderTexts(after[4].conversation)[0]).toContain("updated item")
+    expect(reminderTexts(after[4].conversation)[0]).not.toContain("keep the request prefix")
+
+    const stored = yield* sessions.messages({ sessionID: chat.id })
+    expect(JSON.stringify(stored)).not.toContain("[todo reminder]")
+    const toolParts = stored
+      .flatMap((message) => message.parts)
+      .filter((part): part is SessionV1.ToolPart => part.type === "tool")
+    expect(toolParts).toHaveLength(3)
+    expect(toolParts.every((part) => !JSON.stringify(part.state).includes("[todo reminder]"))).toBe(true)
   }),
+)
+
+it.instance("skips the todo reminder when the session cannot call todowrite (#953)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const chat = yield* sessions.create({
+      title: "No todo",
+      permission: [
+        { permission: "*", pattern: "*", action: "allow" },
+        { permission: "todowrite", pattern: "*", action: "deny" },
+      ],
+    })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "unreachable reminder", status: "in_progress", priority: "high" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "work without a todo tool" }],
+    })
+    yield* llm.tool("glob", { pattern: "**/todo-reminder-denied" })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    expect(JSON.stringify((yield* llm.hits)[0]?.body)).not.toContain("[todo reminder]")
+    expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+  }),
+)
+
+metadataCommitIt.instance("cancel does not leave a followup marked started by a concurrent resume", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Cancel started followup race" })
+    yield* llm.text("INITIAL_ANSWER")
+    yield* prompt.prompt({ sessionID: chat.id, model: ref, parts: [{ type: "text", text: "INITIAL" }] })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: {
+        hookPendingInput: {
+          version: 1,
+          messageID: MessageID.ascending(),
+          phase: "pending",
+          input: { kind: "prompt", parts: [{ type: "text", text: "CANCELLED_FOLLOWUP" }] },
+        },
+      },
+    })
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const cleared = yield* Deferred.make<void>()
+    let sawStarted = false
+    let sawClear = false
+    metadataCommitGate = (input) => {
+      const pending = (input.metadata as { hookPendingInput?: { phase?: string } } | undefined)?.hookPendingInput
+      if (pending?.phase === "started" && !sawStarted) {
+        sawStarted = true
+        return Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+      }
+      if (!pending && sawStarted && !sawClear) {
+        sawClear = true
+        return Deferred.succeed(cleared, undefined).pipe(Effect.asVoid)
+      }
+      return Effect.void
+    }
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        metadataCommitGate = () => Effect.void
+      }),
+    )
+
+    const resumed = yield* prompt.resume({ sessionID: chat.id, hookMode: "noninteractive" }).pipe(Effect.forkChild)
+    yield* Deferred.await(started)
+    const cancelled = yield* prompt.cancel(chat.id).pipe(Effect.forkChild)
+    // Red: the unconditional durable clear runs before admission, so `cleared`
+    // fires. Green: the clear waits behind the in-flight commit and the bounded
+    // wait only releases the commit.
+    const observed = yield* Deferred.await(cleared).pipe(Effect.timeoutOption("2 seconds"))
+    yield* Deferred.succeed(release, undefined)
+    yield* Deferred.await(cleared).pipe(Effect.timeoutOption("2 seconds"))
+    yield* Fiber.join(cancelled)
+    yield* Fiber.await(resumed).pipe(Effect.ignore)
+    expect(Option.isNone(observed)).toBe(true)
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+  }),
+)
+
+for (const [runtime, runner] of [
+  ["ai-sdk", it],
+  ["native", nativeIt],
+] as const) {
+  runner.instance(`keeps the reminder inside the persisted user message (${runtime}, #953)`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const todo = yield* Todo.Service
+      const chat = yield* sessions.create({
+        title: "Reminder part",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* todo.update({
+        sessionID: chat.id,
+        todos: [{ content: "stable region", status: "in_progress", priority: "high" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "first turn" }],
+      })
+      yield* llm.text("first answer")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second turn" }],
+      })
+      yield* llm.text("second answer")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const requests = (yield* llm.hits).map((hit) => requestMessages(hit.body))
+      expect(requests).toHaveLength(2)
+      for (const request of requests)
+        expect(JSON.stringify(request.conversation).match(/\[todo reminder\]/g)).toHaveLength(1)
+      expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+    }),
+  )
+}
+
+for (const [runtime, runner] of [
+  ["ai-sdk", withMemoryContext],
+  ["native", withMemoryContextNative],
+] as const) {
+  runner.instance(
+    `attaches the reminder to the persisted user with runtime context and a tool continuation (${runtime}, #953)`,
+    () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig(providerCfg)
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const todo = yield* Todo.Service
+        const chat = yield* sessions.create({
+          title: "Runtime context reminder",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        yield* todo.update({
+          sessionID: chat.id,
+          todos: [{ content: "persisted region", status: "in_progress", priority: "high" }],
+        })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "run a tool with runtime context" }],
+        })
+        yield* llm.tool("glob", { pattern: "**/todo-reminder-runtime-context" })
+        yield* llm.text("done")
+
+        yield* prompt.loop({ sessionID: chat.id })
+
+        const request = requestMessages((yield* llm.hits).at(-1)?.body ?? {})
+        const messages = request.conversation
+        expect(messages.map((message) => message.role)).toEqual(["user", "user", "assistant", "tool"])
+        expect(JSON.stringify(messages[0])).toContain("run a tool with runtime context")
+        expect(JSON.stringify(messages[0])).toContain("[todo reminder]")
+        expect(JSON.stringify(messages[1])).toContain("project-memory-probe")
+        expect(JSON.stringify(messages[1])).not.toContain("[todo reminder]")
+        expect(JSON.stringify(messages[2])).toContain("glob")
+        expect(JSON.stringify(messages[3])).toContain("tool")
+      }),
+  )
+}
+
+for (const [runtime, runner] of [
+  ["ai-sdk", withMemoryContext],
+  ["native", withMemoryContextNative],
+] as const) {
+  runner.instance(`does not target a synthetic tool-result attachment user message (${runtime}, #953)`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const todo = yield* Todo.Service
+      const chat = yield* sessions.create({
+        title: "Synthetic attachment reminder",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* seedToolAttachment(chat.id)
+      yield* todo.update({
+        sessionID: chat.id,
+        todos: [{ content: "synthetic guard", status: "in_progress", priority: "high" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second turn" }],
+      })
+      yield* llm.text("done")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const request = requestMessages((yield* llm.hits).at(-1)?.body ?? {})
+      const messages = request.conversation
+      const reminderUsers = messages.filter((message) => JSON.stringify(message).includes("[todo reminder]"))
+      expect(reminderUsers).toHaveLength(1)
+      expect(JSON.stringify(reminderUsers[0])).toContain("second turn")
+      const synthetic = messages.find((message) => JSON.stringify(message).includes("Attached media from tool result"))
+      expect(synthetic).toBeDefined()
+      expect(JSON.stringify(synthetic)).not.toContain("[todo reminder]")
+      const context = messages.at(-1)
+      expect(JSON.stringify(context)).toContain("project-memory-probe")
+      expect(JSON.stringify(context)).not.toContain("[todo reminder]")
+      expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+    }),
+  )
+}
+
+for (const [runtime, runner] of [
+  ["ai-sdk", withMemoryContext],
+  ["native", withMemoryContextNative],
+] as const) {
+  runner.instance(`does not target grouped or provider-executed synthetic attachments (${runtime}, #953)`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const todo = yield* Todo.Service
+      const chat = yield* sessions.create({
+        title: "Grouped synthetic attachments",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* seedAttachmentGroups(chat.id)
+      yield* todo.update({
+        sessionID: chat.id,
+        todos: [{ content: "grouped attachment guard", status: "in_progress", priority: "high" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "after attachment groups" }],
+      })
+      yield* llm.text("done")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const request = requestMessages((yield* llm.hits).at(-1)?.body ?? {})
+      const messages = request.conversation
+      const reminderUsers = messages.filter((message) => JSON.stringify(message).includes("[todo reminder]"))
+      expect(reminderUsers).toHaveLength(1)
+      expect(JSON.stringify(reminderUsers[0])).toContain("after attachment groups")
+      const synthetic = messages.filter((message) =>
+        JSON.stringify(message).includes("Attached media from tool result"),
+      )
+      expect(synthetic.length).toBeGreaterThanOrEqual(1)
+      for (const message of synthetic) expect(JSON.stringify(message)).not.toContain("[todo reminder]")
+      const context = messages.at(-1)
+      expect(JSON.stringify(context)).toContain("project-memory-probe")
+      expect(JSON.stringify(context)).not.toContain("[todo reminder]")
+      expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+    }),
+  )
+}
+
+withMemoryContext.instance("does not target provider-executed tool attachment messages (ai-sdk, #953)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const chat = yield* sessions.create({
+      title: "Provider attachment",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* seedProviderToolAttachment(chat.id)
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "provider attachment guard", status: "in_progress", priority: "high" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "after provider attachment" }],
+    })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const request = requestMessages((yield* llm.hits).at(-1)?.body ?? {})
+    const messages = request.conversation
+    const reminderUsers = messages.filter((message) => JSON.stringify(message).includes("[todo reminder]"))
+    expect(reminderUsers).toHaveLength(1)
+    expect(JSON.stringify(reminderUsers[0])).toContain("after provider attachment")
+    const synthetic = messages.filter((message) => JSON.stringify(message).includes("Attached media from tool result"))
+    expect(synthetic.length).toBeGreaterThanOrEqual(1)
+    for (const message of synthetic) expect(JSON.stringify(message)).not.toContain("[todo reminder]")
+    expect(JSON.stringify(messages.at(-1))).toContain("project-memory-probe")
+    expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
+  }),
+)
+
+it.instance("applies plugin redaction before the todo reminder is attached (#953)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const plugins = yield* Plugin.Service
+    const chat = yield* sessions.create({
+      title: "Plugin redaction",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "redacted turn", status: "in_progress", priority: "high" }],
+    })
+    const hooks = yield* plugins.list()
+    hooks.push({
+      "experimental.chat.messages.transform": async (_input, output) => {
+        for (const message of output.messages)
+          for (const part of message.parts)
+            if (part.type === "text") part.text = part.text.replaceAll("PLUGIN_SECRET", "[REDACTED]")
+      },
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "keep PLUGIN_SECRET out of the provider request" }],
+    })
+    yield* llm.tool("glob", { pattern: "**/todo-reminder-redaction" })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(2)
+    for (const hit of hits) {
+      const body = JSON.stringify(hit.body)
+      expect(body).not.toContain("PLUGIN_SECRET")
+      expect(body).toContain("[REDACTED]")
+      expect(body.match(/\[todo reminder\]/g)).toHaveLength(1)
+    }
+    const stored = JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))
+    expect(stored).toContain("PLUGIN_SECRET")
+    expect(stored).not.toContain("[todo reminder]")
+  }),
+)
+
+it.instance("keeps the todo reminder after a plugin removes the user text (#953)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const plugins = yield* Plugin.Service
+    const chat = yield* sessions.create({
+      title: "Plugin removal",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "removed user text", status: "in_progress", priority: "high" }],
+    })
+    const hooks = yield* plugins.list()
+    hooks.push({
+      "experimental.chat.messages.transform": async (_input, output) => {
+        for (const message of output.messages)
+          if (message.info.role === "user") message.parts = message.parts.filter((part) => part.type !== "text")
+      },
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "REMOVED_BY_PLUGIN" }],
+    })
+    yield* llm.tool("glob", { pattern: "**/todo-reminder-removal" })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits).toHaveLength(2)
+    for (const hit of hits) {
+      const body = JSON.stringify(hit.body)
+      expect(body).not.toContain("REMOVED_BY_PLUGIN")
+      // The plugin removed the user content, so there is no persisted user
+      // message left to carry the reminder; do not manufacture a user turn.
+      expect(body).not.toContain("[todo reminder]")
+    }
+    const stored = JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))
+    expect(stored).toContain("REMOVED_BY_PLUGIN")
+    expect(stored).not.toContain("[todo reminder]")
+  }),
+)
+
+it.instance("keeps the reminder on a tools-disabled last step (#953)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      agent: { build: { steps: 2 } },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const chat = yield* sessions.create({
+      title: "Last step reminder",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "stable last step", status: "in_progress", priority: "high" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "act, then hit the step limit" }],
+    })
+    yield* llm.tool("glob", { pattern: "**/todo-reminder-last-step" })
+    yield* llm.text("last step")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1].tools ?? []).toEqual([])
+    const bodies = inputs.map((input) => JSON.stringify(input.messages))
+    for (const body of bodies) expect(body.match(/\[todo reminder\]/g)).toHaveLength(1)
+    expect(bodies[1]).toContain("stable last step")
+    const stored = yield* sessions.messages({ sessionID: chat.id })
+    expect(JSON.stringify(stored)).not.toContain("[todo reminder]")
+  }),
+)
+
+it.instance("clears the todo reminder ledger when the session is deleted (#953)", () =>
+  Effect.gen(function* () {
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const todo = yield* Todo.Service
+    const reminders = yield* TodoReminders.Service
+    const chat = yield* sessions.create({
+      title: "Deleted reminder",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "delete cleanup", status: "in_progress", priority: "high" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "create a reminder before deletion" }],
+    })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const before = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
+    expect(before).toContain("[todo reminder]")
+
+    yield* sessions.remove(chat.id)
+
+    expect(
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const current = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
+          return current?.includes("[todo reminder]") ? undefined : true
+        }),
+        "todo reminder ledger was not cleared after session deletion",
+      ),
+    ).toBe(true)
+  }),
+)
+
+it.instance(
+  "loop retries a gateway 502 on the step after a tool call",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Retry after tool",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.tool("first", { value: "first" })
+      yield* llm.error(502, "Bad Gateway\n")
+      yield* llm.text("second")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      expect(yield* llm.calls).toBe(3)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.info.error).toBeUndefined()
+        expect(result.parts.some((part) => part.type === "text" && part.text === "second")).toBe(true)
+      }
+    }),
   30_000,
 )
 
@@ -5125,6 +5965,77 @@ it.instance("cancel records MessageAbortedError on interrupted process", () =>
   }),
 )
 
+it.instance("cancel records the runtime abort reason in the durable MessageAbortedError", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Interrupt reason" })
+    yield* llm.hang
+    yield* user(chat.id, "hello")
+
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+    const abort = SessionAbortReason.make("deadline-cap", "deadline-watcher")
+    yield* prompt.cancel(chat.id, { reason: abort })
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit) && exit.value.info.role === "assistant") {
+      expect(exit.value.info.error?.name).toBe("MessageAbortedError")
+      expect(exit.value.info.error?.data).toEqual({ message: SessionAbortReason.format(abort) })
+    }
+  }),
+)
+
+it.instance("overlapping deadline and cleanup cancellations keep the first admitted reason", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Overlapping reasons" })
+    yield* llm.hang
+    yield* user(chat.id, "hello")
+
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+    const deadline = SessionAbortReason.make("deadline-cap", "deadline-watcher")
+    const cleanup = SessionAbortReason.make("failure-cleanup", "dag-loop")
+    const first = yield* prompt.cancel(chat.id, { reason: deadline }).pipe(Effect.forkChild)
+    yield* Effect.yieldNow
+    const second = yield* prompt.cancel(chat.id, { reason: cleanup }).pipe(Effect.forkChild)
+    yield* Fiber.await(first)
+    yield* Fiber.await(second)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit) && exit.value.info.role === "assistant")
+      expect(exit.value.info.error?.data).toEqual({ message: SessionAbortReason.format(deadline) })
+  }),
+)
+
+it.instance("instance disposal persists the shutdown abort reason", () =>
+  Effect.gen(function* () {
+    const { llm, dir } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Shutdown reason" })
+    yield* llm.hang
+    yield* user(chat.id, "hello")
+
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+    yield* Effect.promise(() => disposeInstance(dir))
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+    if (Exit.isSuccess(exit) && exit.value.info.role === "assistant")
+      expect(exit.value.info.error?.data).toEqual({
+        message: SessionAbortReason.format(SessionAbortReason.make("shutdown", "session-scope")),
+      })
+  }),
+)
+
 raceNoLLMServer.instance(
   "finalizes assistant when cancelled before processor creation completes",
   () =>
@@ -6287,13 +7198,21 @@ withMemoryContext.instance("injects MEMORY data into the main model system conte
   }),
 )
 
+type RequestMessage = { role: string; content: unknown }
+
+function isRequestMessage(message: unknown): message is RequestMessage {
+  return typeof message === "object" && message !== null && "role" in message && typeof message.role === "string"
+}
+
 function requestMessages(input: { messages?: unknown }) {
   const messages: unknown[] = Array.isArray(input.messages) ? input.messages : []
   const role = (message: unknown) =>
     typeof message === "object" && message !== null && "role" in message ? message.role : undefined
   return {
     system: JSON.stringify(messages.filter((message) => role(message) === "system")),
-    conversation: messages.filter((message) => role(message) !== "system"),
+    conversation: messages.filter(
+      (message): message is RequestMessage => role(message) !== "system" && isRequestMessage(message),
+    ),
     lastRole: role(messages.at(-1)),
     last: JSON.stringify(messages.at(-1)),
   }
@@ -6589,8 +7508,10 @@ unix(
         }),
         "timed out waiting for truncated shell output",
       )
-      // Let the shell reader publish its final truncation metadata before cancellation races it.
-      yield* Effect.sleep(50)
+      // The poll proves the reader consumed the final chunk: chunks are
+      // processed in order and the full-output write completes before the
+      // preview that exposes "truncation-ready". Cancel now; the shell tool
+      // must finalize this retained output instead of being force-aborted.
       yield* prompt.cancel(chat.id)
 
       const exit = yield* Fiber.await(run)
@@ -6765,7 +7686,6 @@ noLLMServer.instance(
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const session = yield* sessions.create({})
-
       const missing = path.join(dir, "does-not-exist.ts")
       const msg = yield* prompt.prompt({
         sessionID: session.id,
@@ -7082,7 +8002,9 @@ noLLMServer.instance(
         .where(eq(EventTable.aggregate_id, session.id))
       const switches = before.filter((event) => event.type.startsWith("session.next.model.switched"))
       expect(switches.length).toBeGreaterThan(0)
-      expect(after.filter((event) => event.type.startsWith("session.next.model.switched"))).toHaveLength(switches.length)
+      expect(after.filter((event) => event.type.startsWith("session.next.model.switched"))).toHaveLength(
+        switches.length,
+      )
 
       yield* prompt.prompt({
         sessionID: session.id,
@@ -9335,5 +10257,257 @@ it.instance("manual compaction recovers a session whose upstream rejects persist
     expect(answer.info.error).toBeUndefined()
     expect(answer.parts.some((part) => part.type === "text" && part.text === "recovered")).toBe(true)
     expect(JSON.stringify((yield* llm.inputs).at(-1))).not.toContain("bad-cipher")
+  }),
+)
+
+it.instance("cancel fences a followup resume that was already waiting on the prompt lock", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Queued followup cancel",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    hookOverride = (payload) =>
+      payload.event === "PreToolUse" && payload.toolName === "write"
+        ? { additionalContexts: [], systemMessages: [], permissionDecision: "defer" }
+        : undefined
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        hookOverride = undefined
+      }),
+    )
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      noReply: true,
+      hookMode: "noninteractive",
+      parts: [{ type: "text", text: "Leave a deferred tool for the followup." }],
+    })
+    yield* llm.tool("write", { filePath: path.join(dir, "queued-followup.txt"), content: "deferred" })
+    const deferred = yield* prompt.loop({ sessionID: chat.id })
+    expect(deferred.info.role === "assistant" && deferred.info.finish).toBe("tool_deferred")
+
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const barrier = yield* prompt
+      .withIdle(
+        chat.id,
+        Effect.gen(function* () {
+          yield* Deferred.succeed(entered, undefined)
+          yield* Deferred.await(release)
+          return Option.none()
+        }),
+      )
+      .pipe(Effect.forkChild)
+    yield* awaitWithTimeout(Deferred.await(entered), "prompt lock barrier did not start", "5 seconds")
+
+    const resumeFiber = yield* prompt
+      .resume({
+        sessionID: chat.id,
+        followup: { kind: "prompt", parts: [{ type: "text", text: "QUEUED_FOLLOWUP" }] },
+      })
+      .pipe(Effect.forkChild)
+    // The barrier holds promptLocks, so a registered owner that has not finished
+    // is provably waiting for that lock.
+    yield* pollWithTimeout(
+      prompt.followupAdmissionOwnerCount(chat.id).pipe(Effect.map((count) => (count > 0 ? true : undefined))),
+      "the queued resume did not register a followup admission",
+      "5 seconds",
+    )
+
+    const hitsBeforeCancel = (yield* llm.hits).length
+    yield* prompt.cancel(chat.id)
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(barrier)
+
+    const finished = yield* Fiber.await(resumeFiber).pipe(Effect.timeoutOption("3 seconds"))
+    expect(Option.isSome(finished), "the fenced resume did not finish").toBe(true)
+    if (Option.isSome(finished)) expect(Exit.isFailure(finished.value)).toBe(true)
+
+    yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const saved = (yield* sessions.get(chat.id)).metadata?.hookPendingInput
+        return saved ? saved : undefined
+      }),
+      "queued resume did not attempt to write a followup",
+      "2 seconds",
+    ).pipe(Effect.option)
+    expect(
+      (yield* sessions.get(chat.id)).metadata?.hookPendingInput,
+      "a resume that was queued before cancel wrote a followup after cancel returned",
+    ).toBeUndefined()
+    expect(
+      JSON.stringify(yield* sessions.messages({ sessionID: chat.id })),
+      "the cancelled followup reached the transcript",
+    ).not.toContain("QUEUED_FOLLOWUP")
+    expect((yield* llm.hits).length, "the cancelled followup started a runner").toBe(hitsBeforeCancel)
+
+    yield* prompt.cancel(chat.id)
+    yield* pollWithTimeout(
+      prompt.followupAdmissionOwnerCount(chat.id).pipe(Effect.map((count) => (count === 0 ? true : undefined))),
+      "the fenced resume did not release its admission owner",
+      "2 seconds",
+    )
+    yield* Fiber.await(resumeFiber).pipe(Effect.timeoutOption("3 seconds"))
+  }),
+)
+
+it.instance("a followup resume started after cancel is a new request", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Followup after cancel",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    hookOverride = (payload) =>
+      payload.event === "PreToolUse" && payload.toolName === "write"
+        ? { additionalContexts: [], systemMessages: [], permissionDecision: "defer" }
+        : undefined
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        hookOverride = undefined
+      }),
+    )
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      noReply: true,
+      hookMode: "noninteractive",
+      parts: [{ type: "text", text: "Leave a deferred tool for the new request." }],
+    })
+    yield* llm.tool("write", { filePath: path.join(dir, "new-followup.txt"), content: "deferred" })
+    const deferred = yield* prompt.loop({ sessionID: chat.id })
+    expect(deferred.info.role === "assistant" && deferred.info.finish).toBe("tool_deferred")
+
+    yield* prompt.cancel(chat.id)
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+
+    const resumeFiber = yield* prompt
+      .resume({
+        sessionID: chat.id,
+        followup: { kind: "prompt", parts: [{ type: "text", text: "NEW_FOLLOWUP" }] },
+      })
+      .pipe(Effect.forkChild)
+    const saved = yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const pending = Option.getOrUndefined(
+          Schema.decodeUnknownOption(SessionPrompt.HookPendingInput)(
+            (yield* sessions.get(chat.id)).metadata?.hookPendingInput,
+          ),
+        )
+        return pending?.input.kind === "prompt" &&
+          pending.input.parts.some((part) => part.type === "text" && part.text === "NEW_FOLLOWUP")
+          ? pending
+          : undefined
+      }),
+      "a resume started after cancel did not accept its new followup",
+      "3 seconds",
+    )
+    expect(saved).toBeDefined()
+
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(resumeFiber).pipe(Effect.timeoutOption("3 seconds"))
+  }),
+)
+
+it.instance("cancelling one session does not clear another session's followup", () =>
+  Effect.gen(function* () {
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const first = yield* sessions.create({ title: "Cancel target" })
+    const second = yield* sessions.create({ title: "Cancel bystander" })
+    const pending = (text: string) => ({
+      version: 1,
+      messageID: MessageID.ascending(),
+      phase: "pending",
+      input: { kind: "prompt", parts: [{ type: "text", text }] },
+    })
+    yield* sessions.setMetadata({ sessionID: first.id, metadata: { hookPendingInput: pending("FIRST_FOLLOWUP") } })
+    yield* sessions.setMetadata({ sessionID: second.id, metadata: { hookPendingInput: pending("SECOND_FOLLOWUP") } })
+
+    yield* prompt.cancel(first.id)
+
+    expect((yield* sessions.get(first.id)).metadata?.hookPendingInput).toBeUndefined()
+    const saved = (yield* sessions.get(second.id)).metadata?.hookPendingInput
+    expect(JSON.stringify(saved)).toContain("SECOND_FOLLOWUP")
+    expect(JSON.stringify(saved)).toContain('"phase":"pending"')
+  }),
+)
+
+metadataCommitIt.instance("cancel does not resurrect a disposing target's followup from an in-flight commit", () =>
+  Effect.gen(function* () {
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const instances = yield* InstanceStore.Service
+    const target = yield* tmpdirScoped()
+    yield* instances.load({ directory: target })
+    const chat = yield* sessions.create({ title: "Disposing followup", directory: target })
+    yield* seed(chat.id, { finish: "stop" })
+    yield* sessions.setMetadata({
+      sessionID: chat.id,
+      metadata: {
+        hookPendingInput: {
+          version: 1,
+          messageID: MessageID.ascending(),
+          phase: "pending",
+          input: { kind: "prompt", parts: [{ type: "text", text: "DISPOSING_FOLLOWUP" }] },
+        },
+      },
+    })
+
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    let sawStarted = false
+    metadataCommitGate = (input) => {
+      const pending = (input.metadata as { hookPendingInput?: { phase?: string } } | undefined)?.hookPendingInput
+      if (pending?.phase === "started" && !sawStarted) {
+        sawStarted = true
+        return Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+      }
+      return Effect.void
+    }
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        metadataCommitGate = () => Effect.void
+      }),
+    )
+
+    const resumeFiber = yield* instances
+      .provide({ directory: target }, prompt.resume({ sessionID: chat.id, hookMode: "noninteractive" }))
+      .pipe(Effect.forkChild)
+    yield* awaitWithTimeout(Deferred.await(started), "target commit did not reach the metadata gate", "5 seconds")
+
+    const disposing = yield* instances.disposeDirectory(target).pipe(Effect.forkChild)
+    yield* pollWithTimeout(
+      instances.provideIfLoaded!({ directory: target }, Effect.succeed("loaded")).pipe(
+        Effect.map((loaded) => (Option.isNone(loaded) ? true : undefined)),
+      ),
+      "target instance was not marked disposing",
+      "5 seconds",
+    )
+
+    yield* prompt.cancel(chat.id)
+    expect(
+      (yield* sessions.get(chat.id)).metadata?.hookPendingInput,
+      "cancel did not clear the disposing target's followup",
+    ).toBeUndefined()
+    yield* Deferred.succeed(release, undefined)
+    // The gate proved the commit reached the write point. Once cancel clears
+    // the pending item, releasing the gate must not let that stale commit
+    // revive it; the interrupted resume itself must finish.
+    const finished = yield* Fiber.await(resumeFiber).pipe(Effect.timeoutOption("3 seconds"))
+    expect(Option.isSome(finished), "the fenced resume did not finish").toBe(true)
+    if (Option.isSome(finished)) expect(Exit.isFailure(finished.value)).toBe(true)
+    expect(
+      (yield* sessions.get(chat.id)).metadata?.hookPendingInput,
+      "an in-flight commit restored a followup after cancel cleared the disposing target",
+    ).toBeUndefined()
+
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(resumeFiber).pipe(Effect.timeoutOption("3 seconds"))
+    yield* Fiber.await(disposing).pipe(Effect.timeoutOption("3 seconds"))
   }),
 )
