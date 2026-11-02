@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
+import { EventTable } from "@opencode-ai/core/event/sql"
 import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/unstable/http"
@@ -6938,6 +6939,47 @@ it.instance("records aborted errors when prompt is cancelled mid-stream", () =>
 
 // Agent variant
 
+it.instance("a reply inherits the persisted session variant", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const base = providerCfg(url)
+      return {
+        ...base,
+        provider: {
+          ...base.provider,
+          test: {
+            ...base.provider.test,
+            models: {
+              "test-model": { ...cfg.provider.test.models["test-model"], variants: { xhigh: {} } },
+            },
+          },
+        },
+      }
+    })
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({ title: "Pinned" })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      model: ref,
+      variant: "xhigh",
+      noReply: true,
+      parts: [{ type: "text", text: "select variant" }],
+    })
+    yield* llm.text("reply")
+    const answer = yield* prompt.prompt({
+      sessionID: session.id,
+      model: ref,
+      parts: [{ type: "text", text: "internal reply" }],
+    })
+    expect(answer.info.role).toBe("assistant")
+    if (answer.info.role !== "assistant") throw new Error("expected assistant message")
+    expect(answer.info.variant).toBe("xhigh")
+    expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
+    expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
 noLLMServer.instance(
   "applies agent variant only when using agent model",
   () =>
@@ -6945,6 +6987,15 @@ noLLMServer.instance(
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const session = yield* sessions.create({})
+      const fresh = yield* sessions.create({})
+      const freshMessage = yield* prompt.prompt({
+        sessionID: fresh.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "fresh session" }],
+      })
+      if (freshMessage.info.role !== "user") throw new Error("expected user message")
+      expect(freshMessage.info.model.variant).toBe("high")
 
       const other = yield* prompt.prompt({
         sessionID: session.id,
@@ -6966,21 +7017,118 @@ noLLMServer.instance(
       expect(match.info.model).toEqual({
         providerID: ProviderV2.ID.make("test"),
         modelID: ModelV2.ID.make("test-model"),
-        variant: "xhigh",
+        variant: "high",
       })
-      expect(match.info.model.variant).toBe("xhigh")
+      expect(match.info.model.variant).toBe("high")
 
       const override = yield* prompt.prompt({
         sessionID: session.id,
         agent: "build",
         noReply: true,
-        variant: "high",
+        variant: "xhigh",
         parts: [{ type: "text", text: "hello third" }],
       })
       if (override.info.role !== "user") throw new Error("expected user message")
-      expect(override.info.model.variant).toBe("high")
+      expect(override.info.model.variant).toBe("xhigh")
+
+      const internal = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "internal notice" }],
+      })
+      if (internal.info.role !== "user") throw new Error("expected user message")
+      expect(internal.info.model.variant).toBe("xhigh")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
+
+      const explicitHigh = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        variant: "high",
+        parts: [{ type: "text", text: "explicit high" }],
+      })
+      if (explicitHigh.info.role !== "user") throw new Error("expected user message")
+      expect(explicitHigh.info.model.variant).toBe("high")
+
+      const explicitDefault = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        variant: "default",
+        parts: [{ type: "text", text: "explicit default" }],
+      })
+      if (explicitDefault.info.role !== "user") throw new Error("expected user message")
+      expect(explicitDefault.info.model.variant).toBe("default")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("default")
+
+      const { db } = yield* Database.Service
+      const before = yield* db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, session.id))
+      const inheritedDefault = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "internal default" }],
+      })
+      if (inheritedDefault.info.role !== "user") throw new Error("expected user message")
+      expect(inheritedDefault.info.model.variant).toBe("default")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("default")
+      const after = yield* db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, session.id))
+      const switches = before.filter((event) => event.type.startsWith("session.next.model.switched"))
+      expect(switches.length).toBeGreaterThan(0)
+      expect(after.filter((event) => event.type.startsWith("session.next.model.switched"))).toHaveLength(switches.length)
+
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        variant: "xhigh",
+        parts: [{ type: "text", text: "select before model change" }],
+      })
+      const changed = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        model: { providerID: ref.providerID, modelID: ModelV2.ID.make("other-test-model") },
+        noReply: true,
+        parts: [{ type: "text", text: "change model" }],
+      })
+      if (changed.info.role !== "user") throw new Error("expected user message")
+      expect(changed.info.model.variant).toBeUndefined()
+
+      yield* db
+        .update(SessionTable)
+        .set({ model: { providerID: ref.providerID, id: ref.modelID } })
+        .where(eq(SessionTable.id, fresh.id))
+      yield* prompt.prompt({
+        sessionID: fresh.id,
+        agent: "build",
+        noReply: true,
+        variant: "default",
+        parts: [{ type: "text", text: "select default on legacy session" }],
+      })
+      const legacy = yield* db
+        .select({ model: SessionTable.model })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, fresh.id))
+        .get()
+      expect(legacy?.model?.variant).toBe("default")
+      const legacyInternal = yield* prompt.prompt({
+        sessionID: fresh.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "legacy internal" }],
+      })
+      if (legacyInternal.info.role !== "user") throw new Error("expected user message")
+      expect(legacyInternal.info.model.variant).toBe("default")
 
       yield* sessions.remove(session.id)
+      yield* sessions.remove(fresh.id)
     }),
   {
     config: {
@@ -7005,7 +7153,7 @@ noLLMServer.instance(
       agent: {
         build: {
           model: "test/test-model",
-          variant: "xhigh",
+          variant: "high",
         },
       },
     },

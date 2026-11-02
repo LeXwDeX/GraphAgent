@@ -1,4 +1,5 @@
 import { SessionAdmission } from "@opencode-ai/core/session/admission"
+import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
 import { randomUUID } from "node:crypto"
 import { Question } from "@/question"
 import { HookToolBatch } from "@/hook/tool-batch"
@@ -175,6 +176,18 @@ function formatMcpResourceBytes(value: number) {
   return `${Math.ceil(value / (1024 * 1024))} MB`
 }
 
+/** Maps an admission cancellation to the prompt's typed rejected-command error. */
+function mapAdmissionBlocked<A, E, R>(
+  effect: Effect.Effect<A, E | SessionConversationHooks.Blocked, R>,
+): Effect.Effect<A, E | ModelSwitchBlocked, R> {
+  return effect.pipe(
+    Effect.catchIf(
+      (error): error is SessionConversationHooks.Blocked => error instanceof SessionConversationHooks.Blocked,
+      (error) => Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
+    ),
+  )
+}
+
 function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   // cleanup() marks abandoned tool_use blocks this way after retries/aborts.
   // They are not pending work and must not trigger an assistant-prefill request.
@@ -202,6 +215,11 @@ export interface AdmissionOptions {
    */
   readonly stopChainToken?: unknown
 }
+
+/** Admission-guarded commit: fails with Blocked when the session was cancelled first. */
+export type AdmissionCommit = <B, E, R>(
+  body: Effect.Effect<B, E, R>,
+) => Effect.Effect<B, E | SessionConversationHooks.Blocked, R>
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
@@ -623,6 +641,34 @@ export const layer = Layer.effect(
     })
     const promptLocks = KeyedMutex.makeUnsafe<SessionID>()
     const followupAdmissions = yield* InstanceState.make(() => Effect.sync(SessionAdmission.make))
+    // App-layer model-write epochs for sessions with a pending command. This is
+    // not directory state: one AppLayer shares it across workspaces. Entries
+    // exist only while at least one command is pending and are removed on the
+    // last release. No cross-process/restart claim is made.
+    type ModelWriteState = { epoch: number; refs: number }
+    const modelWrites = new Map<SessionID, ModelWriteState>()
+    const modelWriteBegin = (sessionID: SessionID) => {
+      const state = modelWrites.get(sessionID) ?? { epoch: 0, refs: 0 }
+      state.refs++
+      modelWrites.set(sessionID, state)
+      let released = false
+      return {
+        epoch: state.epoch,
+        release: () => {
+          if (released) return
+          released = true
+          const current = modelWrites.get(sessionID)
+          if (!current) return
+          current.refs--
+          if (current.refs <= 0) modelWrites.delete(sessionID)
+        },
+      }
+    }
+    const modelWriteEpoch = (sessionID: SessionID) => modelWrites.get(sessionID)?.epoch
+    const modelWriteBump = (sessionID: SessionID) => {
+      const state = modelWrites.get(sessionID)
+      if (state) state.epoch++
+    }
     const toolBudgets = yield* InstanceState.make(() =>
       Effect.gen(function* () {
         const budgets = new Map<SessionID, { active?: ToolBudget.Budget; pending: Map<MessageID, ToolBudget.Budget> }>()
@@ -1468,7 +1514,7 @@ export const layer = Layer.effect(
       return yield* Effect.die(err)
     })
 
-    const applyModelSwitch = Effect.fn("SessionPrompt.applyModelSwitch")(function* (
+    const prepareModelSwitch = Effect.fn("SessionPrompt.prepareModelSwitch")(function* (
       input: Omit<SetModelInput, "source"> & { source?: "command" | "picker" | "sdk" | "auto" | "resume" },
     ) {
       const previous = yield* currentModel(input.sessionID)
@@ -1481,7 +1527,10 @@ export const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       const changed = previous.providerID !== selected.providerID || previous.modelID !== selected.modelID
-      const variantChanged = ("variant" in previous ? previous.variant : undefined) !== input.variant
+      const variantChanged =
+        input.variant === "default"
+          ? current?.model?.variant !== "default"
+          : ("variant" in previous ? previous.variant : undefined) !== input.variant
       const source = input.source ?? "sdk"
       const history =
         (changed || source === "resume") && settingsHook
@@ -1526,9 +1575,12 @@ export const layer = Layer.effect(
       }
       // Restoring a saved model is a runtime lifecycle event. It must not
       // rewrite durable state or rerun PreModelSwitch for an already saved choice.
+      const result = { providerID: selected.providerID, modelID: selected.modelID }
       if (source === "resume") {
-        yield* queueModelSwitch(input.sessionID, { ...payload, event: "PostModelSwitch" })
-        return { providerID: selected.providerID, modelID: selected.modelID }
+        return {
+          result,
+          persist: queueModelSwitch(input.sessionID, { ...payload, event: "PostModelSwitch" }),
+        }
       }
       if (changed && current?.model && settingsHook && source !== "auto") {
         const result = yield* settingsHook.trigger(payload, { sessionID: input.sessionID, transcriptPath: "" })
@@ -1565,21 +1617,68 @@ export const layer = Layer.effect(
             return yield* Effect.fail(new ModelSwitchBlocked({ message: reason }))
         }
       }
-      if (!current?.model || changed || variantChanged) {
-        yield* events.publish(SessionEvent.ModelSwitched, {
-          sessionID: input.sessionID,
-          messageID: SessionMessage.ID.create(),
-          timestamp: yield* DateTime.now,
-          model: {
-            id: selected.modelID,
-            providerID: selected.providerID,
-            variant: ModelV2.VariantID.make(input.variant ?? "default"),
-          },
-        })
-        if (changed && current?.model)
-          yield* queueModelSwitch(input.sessionID, { ...payload, event: "PostModelSwitch" })
-      }
-      return { providerID: selected.providerID, modelID: selected.modelID }
+      // The caller decides where ModelSwitched lands: a plain prompt applies it
+      // immediately, while a cancellable command commits it under admission.
+      const persist = Effect.suspend(() => {
+        if (current?.model && !changed && !variantChanged) return Effect.void
+        return Effect.uninterruptible(
+          Effect.gen(function* () {
+            yield* events.publish(SessionEvent.ModelSwitched, {
+              sessionID: input.sessionID,
+              messageID: SessionMessage.ID.create(),
+              timestamp: yield* DateTime.now,
+              model: {
+                id: selected.modelID,
+                providerID: selected.providerID,
+                variant: ModelV2.VariantID.make(input.variant ?? "default"),
+              },
+            })
+            // The durable write completed; bump before any interruption can
+            // separate the write from the epoch observation.
+            modelWriteBump(input.sessionID)
+            if (changed && current?.model)
+              yield* queueModelSwitch(input.sessionID, { ...payload, event: "PostModelSwitch" })
+          }),
+        )
+      })
+      return { result, persist }
+    })
+    /** Raw persisted model selection, used to detect a later user setModel. */
+    const modelSelection = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const row = yield* db
+        .select({ model: SessionTable.model })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      return {
+        providerID: row?.model?.providerID,
+        modelID: row?.model?.id,
+        variant: row?.model?.variant,
+      } as const
+    })
+    type ModelSelection = {
+      readonly providerID: string | undefined
+      readonly modelID: string | undefined
+      readonly variant: string | undefined
+    }
+    type ModelBaseline = ModelSelection & { readonly epoch: number | undefined }
+
+    const applyModelSwitch = Effect.fn("SessionPrompt.applyModelSwitch")(function* (
+      input: Omit<SetModelInput, "source"> & { source?: "command" | "picker" | "sdk" | "auto" | "resume" },
+      options?: { readonly bump?: boolean },
+    ) {
+      const prepared = yield* prepareModelSwitch(input)
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          yield* prepared.persist
+          // An explicit successful model write advances the causal version even
+          // when the durable value did not change (no-op) or returned to an
+          // earlier value (ABA).
+          if (options?.bump) modelWriteBump(input.sessionID)
+        }),
+      )
+      return prepared.result
     })
     const restoreModelContext: Interface["restoreModelContext"] = Effect.fn("SessionPrompt.restoreModelContext")(
       function* (sessionID) {
@@ -1601,12 +1700,14 @@ export const layer = Layer.effect(
       },
     )
     const setModel: Interface["setModel"] = Effect.fn("SessionPrompt.setModel")((input) =>
-      promptLocks.withLock(input.sessionID)(applyModelSwitch(input)),
+      promptLocks.withLock(input.sessionID)(applyModelSwitch(input, { bump: true })),
     )
 
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (
       input: PromptInput,
       persistAdmission?: Effect.Effect<void>,
+      commitAdmission?: AdmissionCommit,
+      modelBaseline?: ModelBaseline,
     ) {
       const agentName = input.agent
       const ag = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
@@ -1626,13 +1727,18 @@ export const layer = Layer.effect(
         .pipe(Effect.orDie)
       const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
+      const savedVariant =
+        current?.model?.providerID === model.providerID && current.model.id === model.modelID
+          ? current.model.variant
+          : undefined
       const full =
-        !input.variant && ag.variant && same
+        input.variant === undefined && savedVariant === undefined && ag.variant && same
           ? yield* provider
               .getModel(model.providerID, model.modelID)
               .pipe(Effect.catchIf(Provider.ModelNotFoundError.isInstance, () => Effect.succeed(undefined)))
           : undefined
-      const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
+      const variant =
+        input.variant ?? savedVariant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
 
       const info: SessionV1.User = {
         id: input.messageID ?? MessageID.ascending(),
@@ -1651,21 +1757,16 @@ export const layer = Layer.effect(
         format: input.format,
       }
 
-      yield* applyModelSwitch({
+      // Model/agent switch events belong to the same transaction as the message:
+      // admission checks the owner inside the commit, so a cancelled command
+      // cannot publish a model switch or persist its message afterwards.
+      const modelSwitch = yield* prepareModelSwitch({
         sessionID: input.sessionID,
         model: info.model,
         variant,
         hookMode: input.hookMode,
         source: "sdk",
       })
-      if (current?.agent !== info.agent) {
-        yield* events.publish(SessionEvent.AgentSwitched, {
-          sessionID: input.sessionID,
-          messageID: SessionMessage.ID.create(),
-          timestamp: DateTime.makeUnsafe(info.time.created),
-          agent: info.agent,
-        })
-      }
 
       yield* Effect.addFinalizer(() => instruction.clear(info.id))
 
@@ -2023,6 +2124,31 @@ export const layer = Layer.effect(
       }
 
       const persist = Effect.gen(function* () {
+        // A command's model selection was captured before expansion. If the
+        // user changed the session model while the command was still pending,
+        // the old command must not publish its ModelSwitched (or run its post
+        // switch hook) after the newer write. The message itself keeps the
+        // command's original variant for compatibility.
+        const unchanged = modelBaseline
+          ? yield* Effect.gen(function* () {
+              const live = yield* modelSelection(input.sessionID)
+              return (
+                live.providerID === modelBaseline.providerID &&
+                live.modelID === modelBaseline.modelID &&
+                live.variant === modelBaseline.variant &&
+                modelWriteEpoch(input.sessionID) === modelBaseline.epoch
+              )
+            })
+          : true
+        if (unchanged) yield* modelSwitch.persist
+        if (current?.agent !== info.agent) {
+          yield* events.publish(SessionEvent.AgentSwitched, {
+            sessionID: input.sessionID,
+            messageID: SessionMessage.ID.create(),
+            timestamp: DateTime.makeUnsafe(info.time.created),
+            agent: info.agent,
+          })
+        }
         yield* sessions.updateMessage(info)
         for (const part of parts) yield* sessions.updatePart(part)
         const nextPrompt = parts.reduce(
@@ -2100,7 +2226,11 @@ export const layer = Layer.effect(
       })
       // Preparation, plugin callbacks and hooks stay outside the write reservation.
       // Internal wakes commit their transcript receipt and reporting mark together.
-      yield* persistAdmission ? db.transaction(() => persist, { behavior: "immediate" }).pipe(Effect.orDie) : persist
+      const reserved = () =>
+        persistAdmission || modelBaseline
+          ? db.transaction(() => persist, { behavior: "immediate" }).pipe(Effect.orDie)
+          : persist
+      yield* commitAdmission ? commitAdmission(reserved()) : reserved()
       return { info, parts }
     }, Effect.scoped)
 
@@ -2176,6 +2306,8 @@ export const layer = Layer.effect(
       input: PromptInput,
       persistAdmission?: Effect.Effect<void>,
       options?: AdmissionOptions,
+      commitAdmission?: AdmissionCommit,
+      modelBaseline?: ModelBaseline,
     ) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
@@ -2211,6 +2343,8 @@ export const layer = Layer.effect(
               ],
             },
             persistAdmission,
+            commitAdmission,
+            modelBaseline,
           )
           yield* sessions.touch(input.sessionID)
           return { message, run: false as const }
@@ -2255,6 +2389,8 @@ export const layer = Layer.effect(
             parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }],
           },
           persistAdmission,
+          commitAdmission,
+          modelBaseline,
         )
         yield* sessions.touch(input.sessionID)
         // systemMessages are logged only: nothing about a blocked prompt reaches the model.
@@ -2273,7 +2409,12 @@ export const layer = Layer.effect(
       // Rewake prompts are internal re-entries into a live session and never claim resume.
       const resumeTexts = isRewake ? [] : yield* resumeContexts(session)
 
-      const message = yield* createUserMessage({ ...input, messageID: promptMessageID }, persistAdmission)
+      const message = yield* createUserMessage(
+        { ...input, messageID: promptMessageID },
+        persistAdmission,
+        commitAdmission,
+        modelBaseline,
+      )
       yield* sessions.touch(input.sessionID)
 
       // The chain was validated before admission, but cancel can land while
@@ -2336,9 +2477,11 @@ export const layer = Layer.effect(
       return { message, run: input.noReply !== true }
     })
 
-    const prompt: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (
+    const promptImpl = Effect.fnUntraced(function* (
       input: PromptInput,
       options?: AdmissionOptions,
+      commitAdmission?: AdmissionCommit,
+      modelBaseline?: ModelBaseline,
     ) {
       if (attention) yield* attention.input(input.sessionID)
       if (
@@ -2365,7 +2508,7 @@ export const layer = Layer.effect(
       const wait = yield* promptLocks.withLock(input.sessionID)(
         Effect.gen(function* () {
           if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
-          const admitted = yield* admitPrompt(input, undefined, options)
+          const admitted = yield* admitPrompt(input, undefined, options, commitAdmission, modelBaseline)
           if (!admitted.run) return Effect.succeed(admitted.message)
           // The runner registers before this fence runs: a cancel landing
           // after a passing fence interrupts the registered runner instead of
@@ -2383,6 +2526,13 @@ export const layer = Layer.effect(
         }),
       )
       return yield* wait
+    })
+    const prompt: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (input, options) {
+      // Plain prompts never carry an admission commit; the internal command
+      // path calls promptImpl directly so its cancellation fence stays typed.
+      return yield* promptImpl(input, options).pipe(
+        Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)),
+      )
     })
 
     const withIdle: Interface["withIdle"] = Effect.fn("SessionPrompt.withIdle")(
@@ -2426,7 +2576,11 @@ export const layer = Layer.effect(
             )
             if (Option.isNone(wait)) return Option.none<IdleAdmission>()
 
-            const admitted = yield* restore(admitPrompt(input, persistAdmission, options)).pipe(Effect.exit)
+            const admitted = yield* restore(
+              admitPrompt(input, persistAdmission, options).pipe(
+                Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)),
+              ),
+            ).pipe(Effect.exit)
             yield* Deferred.succeed(admission, admitted)
             if (Exit.isFailure(admitted)) {
               yield* Deferred.succeed(activation, undefined)
@@ -3600,7 +3754,7 @@ export const layer = Layer.effect(
               },
               undefined,
               options?.internalDelegation ? { internalDelegation: true } : undefined,
-            )
+            ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
             if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
           } else if (input.hookMode) {
             const user = history.findLast((message) => message.info.role === "user")?.info
@@ -3642,11 +3796,18 @@ export const layer = Layer.effect(
       )
     })
 
-    const command = Effect.fn("SessionPrompt.command")(function* (
+    const commandBody = Effect.fnUntraced(function* (
       input: CommandInput,
-      options?: { skipHookStart?: boolean },
+      options: { skipHookStart?: boolean } | undefined,
+      commitAdmission: AdmissionCommit | undefined,
+      epoch: number,
     ) {
       if (attention) yield* attention.input(input.sessionID)
+      // Capture the durable model selection and the app-layer write epoch
+      // before the expansion hook. The command commit compares both inside its
+      // transaction and skips the old ModelSwitched/post-switch hook if a newer
+      // user write landed meanwhile (including no-op and ABA writes).
+      const modelBaseline: ModelBaseline = { ...(yield* modelSelection(input.sessionID)), epoch }
       if (!options?.skipHookStart && input.hookMode !== "interactive") {
         const { sessionID, ...followup } = input
         const initial = yield* resume({
@@ -3886,20 +4047,39 @@ export const layer = Layer.effect(
         // This branch returns before the normal landing point below, so notices
         // from the hook that stopped the command must be published here.
         if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
-        return yield* commandTurn(
-          input.sessionID,
-          createUserMessage({
-            sessionID: input.sessionID,
-            messageID: input.messageID,
-            agent: input.agent,
-            parts: [
+        return yield* promptLocks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            // A command cancelled while this blocked notice is being admitted
+            // must surface as the normal rejected-command error, not a defect
+            // that the HTTP layer reports as 500.
+            const message = yield* createUserMessage(
               {
-                type: "text",
-                text: `[Hook stopped] ${expansion.stopReason ?? expansion.blocked?.reason ?? "Command expansion blocked"}`,
-                ignored: true,
+                sessionID: input.sessionID,
+                messageID: input.messageID,
+                agent: input.agent,
+                parts: [
+                  {
+                    type: "text",
+                    text: `[Hook stopped] ${expansion.stopReason ?? expansion.blocked?.reason ?? "Command expansion blocked"}`,
+                    ignored: true,
+                  },
+                ],
               },
-            ],
-          }).pipe(Effect.orDie),
+              undefined,
+              commitAdmission,
+              modelBaseline,
+            ).pipe(
+              Effect.catchTag("SessionConversationHookBlocked", (error) =>
+                Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
+              ),
+            )
+            const handle = yield* state.startIfIdle(
+              input.sessionID,
+              lastAssistant(input.sessionID),
+              Effect.succeed(message),
+            )
+            return yield* Option.getOrElse(handle, () => Effect.succeed(message))
+          }),
         )
       }
 
@@ -3990,7 +4170,7 @@ export const layer = Layer.effect(
         { parts },
       )
 
-      const result = yield* prompt(
+      const result = yield* promptImpl(
         {
           sessionID: input.sessionID,
           messageID: input.messageID,
@@ -4001,6 +4181,8 @@ export const layer = Layer.effect(
           hookMode: input.hookMode,
         },
         { skipHookStart: true },
+        commitAdmission,
+        modelBaseline,
       )
       yield* events.publish(Command.Event.Executed, {
         name: input.command,
@@ -4009,6 +4191,30 @@ export const layer = Layer.effect(
         messageID: result.info.id,
       })
       return result
+    })
+    const commandImpl = Effect.fnUntraced(function* (
+      input: CommandInput,
+      options: { skipHookStart?: boolean } | undefined,
+      commitAdmission?: AdmissionCommit,
+    ) {
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => modelWriteBegin(input.sessionID)),
+        (scope) => commandBody(input, options, commitAdmission, scope.epoch),
+        (scope) => Effect.sync(scope.release),
+      )
+    })
+    // The expansion hook can run for a long time before the message is admitted.
+    // Register the admission owner before any hook so an abort fences this command
+    // even while it is still expanding, and so its commit cannot land afterwards.
+    const command: (
+      input: CommandInput,
+      options?: { skipHookStart?: boolean },
+    ) => Effect.Effect<SessionV1.WithParts, PromptError> = Effect.fn("SessionPrompt.command")(function* (input, options) {
+      if (options?.skipHookStart)
+        return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(commandImpl(input, options))
+      const admissions = yield* InstanceState.get(followupAdmissions)
+      const admitted = admissions.run(input.sessionID, (commit) => commandImpl(input, options, commit))
+      return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(admitted)
     })
 
     return Service.of({

@@ -4,13 +4,15 @@ import { HookFileWatch } from "@/hook/file-watch"
 import { expect, spyOn } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { HookNotification } from "@/hook/notifications"
 import { SessionSummary } from "@/session/summary"
 import { Database } from "@opencode-ai/core/database/database"
+import { EventTable } from "@opencode-ai/core/event/sql"
+import { eq } from "drizzle-orm"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect, pollWithTimeout } from "../lib/effect"
@@ -24,6 +26,10 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Plugin } from "@/plugin"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { MessageID } from "@/session/schema"
+import { Goal } from "@/goal/goal"
+import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
+import { SessionStatus } from "@/session/status"
 
 const mcp = Layer.succeed(
   MCP.Service,
@@ -146,6 +152,7 @@ const providerCfg = (url: string) => ({
           limit: { context: 100000, output: 10000 },
           cost: { input: 0, output: 0 },
           options: {},
+          variants: { xhigh: {}, high: {} },
         },
       },
       options: {
@@ -155,6 +162,69 @@ const providerCfg = (url: string) => ({
     },
   },
 })
+
+const goalIt = testEffect(
+  LayerNode.buildLayer(LayerNode.group([root, GoalLoop.node, Goal.node, SessionStatus.node]), {
+    replacements: [
+      LayerNode.replace(MCP.node, mcp),
+      LayerNode.replace(LSP.node, lsp),
+      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
+      LayerNode.replace(Plugin.node, pluginMock),
+    ],
+  }).pipe(
+    Layer.provideMerge(
+      Layer.succeed(GoalLoopJudgeLLM, { call: () => Effect.succeed(JSON.stringify({ verdict: "done", reason: "finished" })) }),
+    ),
+  ),
+)
+
+for (const outcome of ["pause", "done"] as const) {
+  goalIt.live(`Goal ${outcome} notice preserves the selected session variant`, () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const status = yield* SessionStatus.Service
+        const session = yield* sessions.create({ title: `Goal ${outcome} variant`, permission: [] })
+        if (outcome === "done") yield* llm.text("work completed")
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          variant: "xhigh",
+          noReply: outcome === "pause",
+          parts: [{ type: "text", text: "select xhigh and do the work" }],
+        })
+        expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
+        yield* (yield* GoalLoop.Service).init()
+        yield* status.set(session.id, { type: "busy" })
+        yield* goal.set(session.id, "finish the work", 5)
+        yield* status.set(session.id, { type: "idle" })
+        const notice = yield* pollWithTimeout(
+          sessions.messages({ sessionID: session.id }).pipe(
+            Effect.map((messages) =>
+              messages.find((message) =>
+                message.parts.some(
+                  (part) =>
+                    part.type === "text" &&
+                    (outcome === "pause" ? part.text.includes("目标已暂停") : part.text.includes("finished")),
+                ),
+              ),
+            ),
+          ),
+          `Goal ${outcome} notice was not persisted`,
+          "8 seconds",
+        )
+        expect(notice.info.role).toBe("user")
+        if (notice.info.role === "user") expect(notice.info.model.variant).toBe("xhigh")
+        expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
+        if (outcome === "pause") expect((yield* goal.load(session.id))?.status).toBe("paused")
+        else expect((yield* goal.lastOutcome(session.id))?.status).toBe("done")
+      }),
+      { git: true, config: providerCfg },
+    ),
+  )
+}
 
 for (const variant of ["block", "continue-false"] as const) {
   it.live(`UserPromptSubmit ${variant} must stop before invoking the model`, () =>
@@ -213,6 +283,7 @@ it.live("async hooks re-enter the real session after their caller has completed"
       yield* prompt.prompt({
         sessionID: session.id,
         agent: "build",
+        variant: "xhigh",
         parts: [{ type: "text", text: "start async hook" }],
       })
       expect(yield* llm.calls).toBe(1)
@@ -221,12 +292,25 @@ it.live("async hooks re-enter the real session after their caller has completed"
         llm.calls.pipe(Effect.map((calls) => (calls === 2 ? true : undefined))),
         "async hook did not invoke the model again",
       )
-      const messages = yield* sessions.messages({ sessionID: session.id })
+      const messages = yield* pollWithTimeout(
+        sessions.messages({ sessionID: session.id }).pipe(
+          Effect.map((messages) =>
+            messages.filter((message) => message.info.role === "assistant").length >= 2 ? messages : undefined,
+          ),
+        ),
+        "async rewake assistant was not persisted",
+      )
       expect(
         messages.some((message) =>
           message.parts.some((part) => part.type === "text" && part.text.includes("Async hook completed")),
         ),
       ).toBe(true)
+      const assistants = messages.filter((message) => message.info.role === "assistant")
+      expect(assistants).toHaveLength(2)
+      const rewake = assistants[1].info
+      if (rewake.role !== "assistant") throw new Error("expected rewake assistant")
+      expect(rewake.variant).toBe("xhigh")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
     }),
     { git: true, config: providerCfg },
   ),
@@ -959,5 +1043,462 @@ it.live("StopFailure asyncRewake records the failure but does not start a new mo
       yield* hooks.clear(session.id)
     }),
     { git: true, config: providerCfg },
+  ),
+)
+
+it.live("a command held in UserPromptExpansion cannot overwrite a variant written before abort", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Late command variant", permission: [] })
+      const release = path.join(dir, "release-expansion")
+      const entered = path.join(dir, "expansion-entered")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      yield* hooks.add(session.id, {
+        event: "UserPromptExpansion",
+        once: true,
+        hooks: [
+          {
+            type: "command",
+            command: `touch ${quote(entered)}; while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{}'`,
+          },
+        ],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        variant: "xhigh",
+        noReply: true,
+        parts: [{ type: "text", text: "select xhigh" }],
+      })
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
+
+      const messageID = MessageID.ascending()
+      const running = yield* prompt
+        .command({
+          sessionID: session.id,
+          messageID,
+          command: "fixture",
+          arguments: "",
+          agent: "build",
+          variant: "xhigh",
+          hookMode: "interactive",
+        })
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.promise(() =>
+          fs.access(entered).then(
+            () => true as const,
+            () => undefined,
+          ),
+        ),
+        "command expansion hook never started",
+      )
+      // The command is still held in expansion: nothing for its messageID was accepted.
+      expect(
+        (yield* sessions.messages({ sessionID: session.id })).some((message) => message.info.id === messageID),
+      ).toBe(false)
+
+      // A later variant write must win over the command that started expanding earlier.
+      yield* prompt.setModel({
+        sessionID: session.id,
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        variant: "high",
+        source: "picker",
+        hookMode: "interactive",
+      })
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+
+      // The real abort must fence the command even though its hook is still held.
+      yield* prompt.cancel(session.id)
+      expect(
+        (yield* sessions.messages({ sessionID: session.id })).some((message) => message.info.id === messageID),
+      ).toBe(false)
+
+      yield* Effect.promise(() => fs.writeFile(release, "go"))
+      const finished = yield* Fiber.await(running)
+      // A cancelled command cannot be accepted late and commit its old variant.
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+      expect(Exit.isFailure(finished)).toBe(true)
+      expect(
+        (yield* sessions.messages({ sessionID: session.id })).some((message) => message.info.id === messageID),
+      ).toBe(false)
+      expect(yield* llm.calls).toBe(0)
+    }),
+    {
+      git: true,
+      config: (url) => ({ ...providerCfg(url), command: { fixture: { template: "fixture" } } }),
+    },
+  ),
+)
+it.live("a blocked command expansion records [Hook stopped] without changing the session variant", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Blocked command variant", permission: [] })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        variant: "high",
+        noReply: true,
+        parts: [{ type: "text", text: "select high" }],
+      })
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+      yield* hooks.add(session.id, {
+        event: "UserPromptExpansion",
+        hooks: [
+          {
+            type: "command",
+            command: `printf '%s' '{"decision":"block","reason":"blocked-by-expansion"}'`,
+          },
+        ],
+      })
+      const result = yield* prompt.command({
+        sessionID: session.id,
+        command: "fixture",
+        arguments: "",
+        agent: "build",
+        variant: "xhigh",
+        hookMode: "interactive",
+      })
+      expect(result.info.role).toBe("user")
+      if (result.info.role === "user") expect(result.info.model.variant).toBe("high")
+      expect(
+        result.parts.some((part) => part.type === "text" && part.text.includes("[Hook stopped]")),
+      ).toBe(true)
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+    }),
+    {
+      git: true,
+      config: (url) => ({ ...providerCfg(url), command: { fixture: { template: "fixture" } } }),
+    },
+  ),
+)
+it.live("a command expanded before a later variant write cannot restore its old variant", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Command model fence", permission: [] })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        variant: "xhigh",
+        noReply: true,
+        parts: [{ type: "text", text: "select xhigh" }],
+      })
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
+      const release = path.join(dir, "release-command-fence")
+      const entered = path.join(dir, "command-fence-entered")
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      yield* hooks.add(session.id, {
+        event: "UserPromptExpansion",
+        once: true,
+        hooks: [
+          {
+            type: "command",
+            command: `touch ${quote(entered)}; while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{}'`,
+          },
+        ],
+      })
+      yield* llm.text("command completed")
+      const running = yield* prompt
+        .command({
+          sessionID: session.id,
+          command: "fixture",
+          arguments: "",
+          agent: "build",
+          variant: "xhigh",
+          hookMode: "interactive",
+        })
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
+        "command expansion hook never started",
+      )
+      yield* prompt.setModel({
+        sessionID: session.id,
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        variant: "high",
+        source: "picker",
+        hookMode: "interactive",
+      })
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+      yield* Effect.promise(() => fs.writeFile(release, "go"))
+      const result = yield* Fiber.join(running)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") expect(result.info.variant).toBe("xhigh")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+    }),
+    {
+      git: true,
+      config: (url) => ({ ...providerCfg(url), command: { fixture: { template: "fixture" } } }),
+    },
+  ),
+)
+it.live("successive commands use the model selection current when each one starts", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Successive command fence", permission: [] })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        variant: "xhigh",
+        noReply: true,
+        parts: [{ type: "text", text: "select xhigh" }],
+      })
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      const releaseA = path.join(dir, "release-command-a")
+      const releaseB = path.join(dir, "release-command-b")
+      const enteredA = path.join(dir, "command-a-entered")
+      const enteredB = path.join(dir, "command-b-entered")
+      const gate = (entered: string, release: string) => ({
+        type: "command" as const,
+        command: `touch ${quote(entered)}; while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{}'`,
+      })
+      yield* hooks.add(session.id, {
+        event: "UserPromptExpansion",
+        matcher: "fixturea",
+        once: true,
+        hooks: [gate(enteredA, releaseA)],
+      })
+      yield* hooks.add(session.id, {
+        event: "UserPromptExpansion",
+        matcher: "fixtureb",
+        once: true,
+        hooks: [gate(enteredB, releaseB)],
+      })
+      yield* llm.text("command A completed")
+      yield* llm.text("command B completed")
+
+      const runningA = yield* prompt
+        .command({
+          sessionID: session.id,
+          command: "fixturea",
+          arguments: "a",
+          agent: "build",
+          variant: "xhigh",
+          hookMode: "interactive",
+        })
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.promise(() => fs.access(enteredA).then(() => true as const, () => undefined)),
+        "command A expansion hook never started",
+      )
+      yield* prompt.setModel({
+        sessionID: session.id,
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        variant: "high",
+        source: "picker",
+        hookMode: "interactive",
+      })
+      yield* Effect.promise(() => fs.writeFile(releaseA, "go"))
+      const resultA = yield* Fiber.join(runningA)
+      expect(resultA.info.role).toBe("assistant")
+      if (resultA.info.role === "assistant") expect(resultA.info.variant).toBe("xhigh")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+
+      const runningB = yield* prompt
+        .command({
+          sessionID: session.id,
+          command: "fixtureb",
+          arguments: "b",
+          agent: "build",
+          variant: "high",
+          hookMode: "interactive",
+        })
+        .pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.promise(() => fs.access(enteredB).then(() => true as const, () => undefined)),
+        "command B expansion hook never started",
+      )
+      yield* Effect.promise(() => fs.writeFile(releaseB, "go"))
+      const resultB = yield* Fiber.join(runningB)
+      expect(resultB.info.role).toBe("assistant")
+      if (resultB.info.role === "assistant") expect(resultB.info.variant).toBe("high")
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+    }),
+    {
+      git: true,
+      config: (url) => ({
+        ...providerCfg(url),
+        command: { fixturea: { template: "fixture" }, fixtureb: { template: "fixture" } },
+      }),
+    },
+  ),
+)
+
+it.live("a no-op model write appends no ModelSwitched event and uses the versioned type", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      const session = yield* sessions.create({ title: "No-op model switch", permission: [] })
+      const types = () =>
+        db
+          .select({ type: EventTable.type })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, session.id))
+      yield* prompt.setModel({
+        sessionID: session.id,
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        variant: "high",
+        source: "picker",
+        hookMode: "interactive",
+      })
+      const before = yield* types()
+      expect(before.filter((row) => row.type.startsWith("session.next.model.switched"))).toHaveLength(1)
+      yield* prompt.setModel({
+        sessionID: session.id,
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+        variant: "high",
+        source: "picker",
+        hookMode: "interactive",
+      })
+      const after = yield* types()
+      expect(after.filter((row) => row.type.startsWith("session.next.model.switched"))).toHaveLength(1)
+      expect(after.every((row) => !row.type.endsWith("."))).toBe(true)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+for (const scenario of ["no-op", "aba"] as const) {
+  it.live(`a ${scenario} model write still fences a command expanded before it`, () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm, dir }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const hooks = yield* SessionHooks.Service
+        const session = yield* sessions.create({ title: `Command epoch ${scenario}`, permission: [] })
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          variant: "high",
+          noReply: true,
+          parts: [{ type: "text", text: "select high" }],
+        })
+        expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+        const release = path.join(dir, `release-command-epoch-${scenario}`)
+        const entered = path.join(dir, `command-epoch-entered-${scenario}`)
+        const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+        yield* hooks.add(session.id, {
+          event: "UserPromptExpansion",
+          once: true,
+          hooks: [
+            {
+              type: "command",
+              command: `touch ${quote(entered)}; while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{}'`,
+            },
+          ],
+        })
+        yield* llm.text("command completed")
+        const running = yield* prompt
+          .command({
+            sessionID: session.id,
+            command: "fixture",
+            arguments: scenario,
+            agent: "build",
+            variant: "xhigh",
+            hookMode: "interactive",
+          })
+          .pipe(Effect.forkChild)
+        yield* pollWithTimeout(
+          Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
+          "command expansion hook never started",
+        )
+        if (scenario === "aba") {
+          yield* prompt.setModel({
+            sessionID: session.id,
+            model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+            variant: "xhigh",
+            source: "picker",
+            hookMode: "interactive",
+          })
+        }
+        yield* prompt.setModel({
+          sessionID: session.id,
+          model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+          variant: "high",
+          source: "picker",
+          hookMode: "interactive",
+        })
+        expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+        yield* Effect.promise(() => fs.writeFile(release, "go"))
+        const result = yield* Fiber.join(running)
+        expect(result.info.role).toBe("assistant")
+        if (result.info.role === "assistant") expect(result.info.variant).toBe("xhigh")
+        expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+      }),
+      {
+        git: true,
+        config: (url) => ({ ...providerCfg(url), command: { fixture: { template: "fixture" } } }),
+      },
+    ),
+  )
+}
+it.live("a blocked command cancelled during notice admission fails as a rejected command", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "Blocked command admission cancel", permission: [] })
+      yield* hooks.add(session.id, {
+        event: "UserPromptExpansion",
+        hooks: [
+          {
+            type: "command",
+            command: `printf '%s' '{"decision":"block","reason":"blocked-by-admission"}'`,
+          },
+        ],
+      })
+      const gate: ChatMessageGate = { entered: false, open: () => {} }
+      chatMessageGates.set(session.id, gate)
+      try {
+        const running = yield* prompt
+          .command({
+            sessionID: session.id,
+            command: "fixture",
+            arguments: "",
+            agent: "build",
+            variant: "xhigh",
+            hookMode: "interactive",
+          })
+          .pipe(Effect.forkChild)
+        yield* pollWithTimeout(
+          Effect.sync(() => (gate.entered ? (true as const) : undefined)),
+          "blocked command never reached chat.message",
+        )
+        yield* prompt.cancel(session.id)
+        gate.open()
+        const exit = yield* Fiber.await(running)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause)
+          expect(error).toBeInstanceOf(SessionPrompt.ModelSwitchBlocked)
+        }
+        const messages = yield* sessions.messages({ sessionID: session.id })
+        expect(
+          messages.some((message) =>
+            message.parts.some((part) => part.type === "text" && part.text.includes("[Hook stopped]")),
+          ),
+        ).toBe(false)
+      } finally {
+        chatMessageGates.delete(session.id)
+      }
+    }),
+    {
+      git: true,
+      config: (url) => ({ ...providerCfg(url), command: { fixture: { template: "fixture" } } }),
+    },
   ),
 )
