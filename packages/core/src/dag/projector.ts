@@ -206,6 +206,14 @@ export const layer = Layer.effectDiscard(
           .update(WorkflowTable)
           .set({
             ...(recovery ? { status: ws("running"), wake_reported: false, completed_at: null } : {}),
+            // #945: a retarget also rebinds the execution directory and the
+            // target identity in the same revision bump.
+            ...(event.data.retarget?.toDirectory !== undefined
+              ? { execution_directory: event.data.retarget.toDirectory }
+              : {}),
+            ...(event.data.retarget?.toFingerprint !== undefined
+              ? { target_fingerprint: event.data.retarget.toFingerprint }
+              : {}),
             graph_rev: sql`${WorkflowTable.graph_rev} + 1`,
             seq: event.durable!.seq,
             time_updated: toMillis(event.data.timestamp),

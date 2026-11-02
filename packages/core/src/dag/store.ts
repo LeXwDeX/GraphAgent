@@ -3,8 +3,8 @@
 
 export * as DagStore from "./store"
 
-import { and, asc, count, desc, eq, gt, inArray, max, or } from "drizzle-orm"
-import { Context, Effect, Layer } from "effect"
+import { and, asc, count, desc, eq, gt, inArray, max, or, sql } from "drizzle-orm"
+import { Context, Effect, Layer, Option, Schema } from "effect"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { Database } from "../database/database"
 import { versionedType } from "../event"
@@ -88,6 +88,14 @@ export interface WakeBatch {
 export interface WakeSnapshot {
   readonly nodes: readonly NodeRow[]
   readonly workflows: readonly WorkflowRow[]
+}
+
+/** #945: the durable target change carried by the latest retarget replan. */
+export type RetargetData = NonNullable<(typeof DagEvent.WorkflowReplanned.data)["Type"]["retarget"]>
+
+export interface RetargetRecord {
+  readonly seq: number
+  readonly retarget: RetargetData
 }
 
 /** Aggregated per-workflow progress for UI display. Shape matches the TUI's DagWorkflowSummary. */
@@ -193,6 +201,11 @@ const workflowFailedType = (() => {
   return versionedType(DagEvent.WorkflowFailed.type, DagEvent.WorkflowFailed.durable.version)
 })()
 
+const workflowReplannedType = (() => {
+  if (!DagEvent.WorkflowReplanned.durable) throw new Error("WorkflowReplanned event is not durable")
+  return versionedType(DagEvent.WorkflowReplanned.type, DagEvent.WorkflowReplanned.durable.version)
+})()
+
 // ============================================================================
 // Service interface
 // ============================================================================
@@ -213,6 +226,12 @@ export interface Interface {
    * present, so a terminal failure explains itself without a new column.
    */
   readonly getWorkflowFailureReason?: (workflowId: string) => Effect.Effect<string | undefined>
+  /**
+   * #945: the latest durable WorkflowReplanned event that carried a target
+   * change. Optional for lightweight store doubles; `workflow status` includes
+   * it when present. The event seq is the audit reference.
+   */
+  readonly getLatestRetarget?: (workflowId: string) => Effect.Effect<RetargetRecord | undefined>
 
   readonly getNodes: (workflowId: string) => Effect.Effect<NodeRow[]>
   /** Latest node-row update time for one workflow (optional for lightweight test doubles). */
@@ -276,6 +295,26 @@ export const layer = Layer.effect(
           .pipe(Effect.orDie)
         const reason = row?.data.reason
         return typeof reason === "string" ? reason : undefined
+      }),
+
+      getLatestRetarget: Effect.fn("DagStore.getLatestRetarget")(function* (workflowId) {
+        const rows = yield* db
+          .select({ seq: EventTable.seq, data: EventTable.data })
+          .from(EventTable)
+          .where(and(
+            eq(EventTable.aggregate_id, workflowId),
+            eq(EventTable.type, workflowReplannedType),
+            sql`json_extract(${EventTable.data}, '$.retarget') IS NOT NULL`,
+          ))
+          .orderBy(desc(EventTable.seq))
+          .limit(1)
+          .all()
+          .pipe(Effect.orDie)
+        const row = rows[0]
+        if (!row) return undefined
+        const decoded = Schema.decodeUnknownOption(DagEvent.WorkflowReplanned.data)(row.data)
+        if (Option.isNone(decoded) || !decoded.value.retarget) return undefined
+        return { seq: row.seq, retarget: decoded.value.retarget }
       }),
 
       // #270 atomic-adoption fence (C2). The adoption sites previously re-read the

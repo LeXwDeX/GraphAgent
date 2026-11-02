@@ -222,6 +222,16 @@ export const WorkflowReplanned = Event.define({
       nodeSeqs: Schema.Array(Schema.Struct({ nodeID: NodeID, seq: NonNegativeInt })),
       resumeCancelled: Schema.Boolean,
     })),
+    /** #945: a mid-run target change. Optional so legacy durable events
+     * decode; absent means this replan did not retarget. */
+    retarget: Schema.optional(Schema.Struct({
+      fromDirectory: Schema.optional(Schema.String),
+      toDirectory: Schema.optional(Schema.String),
+      fromFingerprint: Schema.optional(TargetFingerprint),
+      toFingerprint: Schema.optional(TargetFingerprint),
+      reason: Schema.optional(Schema.String),
+      nodes: Schema.Array(NodeID),
+    })),
   },
 })
 export type WorkflowReplanned = typeof WorkflowReplanned.Type

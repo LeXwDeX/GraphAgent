@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { DagEvent } from "@opencode-ai/schema/dag-event"
 import type { NodeConfig, WorkflowConfig } from "./dag"
+import { DagLocation } from "./location"
 import { conditionReference, parseInputMappingReference } from "./runtime/eval"
 
 export interface RecoveryPlan {
@@ -14,6 +16,23 @@ export interface RecoveryPlan {
 }
 
 const TERMINATION_REASONS = new Set(["workflow_failed", "workflow_cancelled"])
+
+/** #945: render-ready list of reused upstream results whose target changed. */
+export function staleUpstreamNodes(recovery: unknown): string[] {
+  if (typeof recovery !== "object" || recovery === null || !("upstream" in recovery)) return []
+  const upstream = recovery.upstream
+  if (!Array.isArray(upstream)) return []
+  return upstream.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return []
+    const node = "node_id" in entry && typeof entry.node_id === "string" ? entry.node_id : undefined
+    return node && "stale" in entry && entry.stale === true ? [node] : []
+  })
+}
+
+export function staleUpstreamNote(nodes: readonly string[]): string {
+  if (nodes.length === 0) return ""
+  return `\n\nUpstream evidence is stale (produced before the current target): ${nodes.join(", ")}. Re-check those results or use fresh upstream output before relying on them.`
+}
 
 /** Rows that workflow termination interrupted (never a node's own verdict). */
 function isTerminationCollateral(node: DagStore.NodeRow) {
@@ -27,6 +46,8 @@ export function planRecovery(
   selected: readonly string[],
   graphRev: number,
   maxAttempts: number,
+  /** #945: current workflow target, used to mark reused upstream evidence stale. */
+  currentFingerprint?: DagEvent.TargetFingerprint | null,
 ): RecoveryPlan {
   if (selected.length === 0) throw new Error("Recovery requires at least one node_id")
   if (new Set(selected).size !== selected.length) throw new Error("Recovery node_ids must be unique")
@@ -81,10 +102,45 @@ export function planRecovery(
     return `${mapID(parsed.nodeID)}${source.slice(parsed.nodeID.length)}`
   }
   const activeConfig = config.nodes.filter((node) => currentByID.has(node.id))
+  const reused = new Set(
+    current.filter((node) => !affected.has(node.id) && node.status === "completed").map((node) => node.id),
+  )
   const updatedNodes = activeConfig.map((node): NodeConfig => {
     const replacement = replacements.find((item) => item.previous === node.id)
     if (!replacement) return node
     const old = currentByID.get(node.id)!
+    // #945: reused upstream outputs carry the fingerprint they were produced
+    // from. A mismatch with the current target is explicit stale evidence.
+    // Input mappings can cite a node outside depends_on; count that result too.
+    const upstreamIDs = new Set(node.depends_on)
+    for (const source of Object.values(node.input_mapping ?? {})) {
+      const parsed = parseInputMappingReference(source)
+      if (parsed.ok) upstreamIDs.add(parsed.nodeID)
+    }
+    const upstream = [...upstreamIDs].flatMap((id) => {
+      if (!reused.has(id)) return []
+      const source = currentByID.get(id)
+      if (!source) return []
+      const fingerprint = source.targetFingerprint ?? undefined
+      return [{
+        node_id: id,
+        ...(fingerprint ? { fingerprint } : {}),
+        stale: fingerprint !== undefined && !DagLocation.sameFingerprint(fingerprint, currentFingerprint),
+      }]
+    })
+    const recoveryContext: Record<string, unknown> = {
+      previous_node_id: node.id,
+      previous_status: old.status,
+      previous_error: old.errorReason,
+      upstream,
+      ...(old.childSessionId
+        ? {
+            previous_child_session_id: old.childSessionId,
+            instruction:
+              "Inspect the prior session and current workspace before repeating writes or external actions. Continue from existing work where valid; this is a new execution attempt, not a rollback.",
+          }
+        : { previous_attempt: "never_started" }),
+    }
     const conditionNode = conditionReference(node.condition)
     const condition =
       conditionNode && remap.has(conditionNode)
@@ -108,14 +164,7 @@ export function planRecovery(
         ...node.prompt_template,
         input: {
           ...node.prompt_template.input,
-          __workflow_recovery: {
-            previous_node_id: node.id,
-            previous_child_session_id: old.childSessionId,
-            previous_status: old.status,
-            previous_error: old.errorReason,
-            instruction:
-              "Inspect the prior session and current workspace before repeating writes or external actions. Continue from existing work where valid; this is a new execution attempt, not a rollback.",
-          },
+          __workflow_recovery: recoveryContext,
         },
       },
       ...(node.review

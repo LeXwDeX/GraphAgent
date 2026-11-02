@@ -124,4 +124,56 @@ describe("DagStore checkpoint control sequence", () => {
       expect(yield* dagStore.getWorkflowFailureReason!("dag-without-failure")).toBeUndefined()
     }),
   )
+
+  it.effect("returns the latest durable retarget and ignores replans without one", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const dagStore = yield* DagStore.Service
+      const dagID = "dag-retarget-audit"
+      const replanned = (seq: number, retarget?: Record<string, unknown>) => ({
+        id: EventV2.ID.create(),
+        aggregate_id: dagID,
+        seq,
+        type: durableType(DagEvent.WorkflowReplanned),
+        data: {
+          dagID,
+          added: 0,
+          removed: 0,
+          replaced: 0,
+          restarted: 1,
+          timestamp: 1,
+          ...(retarget ? { retarget } : {}),
+        },
+      })
+      yield* db.insert(EventSequenceTable).values({ aggregate_id: dagID, seq: 5 }).run().pipe(Effect.orDie)
+      yield* db
+        .insert(EventSequenceTable)
+        .values({ aggregate_id: "dag-retarget-malformed", seq: 1 })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(EventTable)
+        .values([
+          replanned(2, { fromDirectory: "/old", toDirectory: "/new", reason: "older", nodes: ["review"] }),
+          replanned(4),
+          replanned(5, { reason: "latest", nodes: ["review"] }),
+          {
+            id: EventV2.ID.create(),
+            aggregate_id: "dag-retarget-malformed",
+            seq: 1,
+            type: durableType(DagEvent.WorkflowReplanned),
+            data: { dagID: "dag-retarget-malformed", retarget: { nodes: "not-an-array" } },
+          },
+        ])
+        .run()
+        .pipe(Effect.orDie)
+
+      expect(yield* dagStore.getLatestRetarget!(dagID)).toEqual({
+        seq: 5,
+        retarget: { reason: "latest", nodes: [DagEvent.NodeID.make("review")] },
+      })
+      expect(yield* dagStore.getLatestRetarget!("dag-retarget-malformed")).toBeUndefined()
+      expect(yield* dagStore.getLatestRetarget!("dag-without-retarget")).toBeUndefined()
+    }),
+  )
 })
