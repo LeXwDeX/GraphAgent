@@ -357,6 +357,8 @@ export function policy(opts: {
   parse: (error: unknown) => Err
   /** Attempt-local safety gate, checked after the dispatch table classifies the failure. */
   shouldRetry?: (error: unknown) => boolean
+  /** Called when the safety gate stops a retry, so the caller can record its reason. */
+  onGated?: () => void
   /** Gate state logged when the gate or the attempt cap stops a retry. */
   gates?: () => Record<string, unknown>
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
@@ -379,7 +381,10 @@ export function policy(opts: {
           ...(opts.gates?.() ?? {}),
         }).pipe(Effect.andThen(Cause.done(meta.attempt)))
       if (decision.maxRetries === 0) return Cause.done(meta.attempt)
-      if (opts.shouldRetry?.(meta.input) === false) return stop("gated")
+      if (opts.shouldRetry?.(meta.input) === false) {
+        opts.onGated?.()
+        return stop("gated")
+      }
       if (meta.attempt > decision.maxRetries) return stop("exhausted")
       return Effect.gen(function* () {
         const wait =

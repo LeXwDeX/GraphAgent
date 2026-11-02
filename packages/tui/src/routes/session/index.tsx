@@ -1589,6 +1589,12 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
+  const retryBlocked = createMemo(() => {
+    const error = recordValue(props.message.error)
+    if (error?.name !== "APIError") return false
+    const metadata = recordValue(recordValue(error.data)?.metadata)
+    return typeof metadata?.retryBlockedBy === "string"
+  })
 
   return (
     <>
@@ -1644,6 +1650,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           borderColor={theme.error}
         >
           <text fg={theme.textMuted}>{String(props.message.error?.data.message ?? "")}</text>
+          <Show when={retryBlocked()}>
+            <text fg={theme.textMuted}>
+              Tools started in this turn, so it was not replayed automatically. Retry manually.
+            </text>
+          </Show>
         </box>
       </Show>
       <Switch>

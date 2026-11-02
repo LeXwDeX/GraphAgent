@@ -53,7 +53,15 @@ interface Entry {
   readonly disposeDone: Deferred.Deferred<void>
   active: number
   idle: Deferred.Deferred<void>
+  // A lifecycle call made from inside this entry must not close its own scope
+  // before the caller can finish; close is deferred until the last use exits.
+  selfClose?: boolean
+  scopeClosed?: boolean
 }
+
+const entryRef = Context.Reference<Entry | undefined>("~opencode/InstanceStoreEntry", {
+  defaultValue: () => undefined,
+})
 
 export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Service> = Layer.effect(
   Service,
@@ -190,6 +198,22 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
 
     const waitIdle = (entry: Entry) => (entry.active === 0 ? Effect.void : Deferred.await(entry.idle))
 
+    // A lifecycle call from inside the entry cannot close the scope synchronously:
+    // that would interrupt the caller before it can observe the permission abort.
+    // Close in the cleanup scope after the last admitted effect exits.
+    const closeAfterUse = (entry: Entry) =>
+      Effect.suspend(() => {
+        if (!entry.selfClose || entry.scopeClosed || entry.active > 0) return Effect.void
+        entry.scopeClosed = true
+        return closeEntryScope(entry).pipe(Effect.forkIn(cleanupScope, { startImmediately: false }), Effect.ignore)
+      })
+
+    const onUseExit = (entry: Entry) =>
+      Effect.gen(function* () {
+        endUse(entry)
+        yield* closeAfterUse(entry)
+      })
+
     // Caller interruption only abandons the wait. Cleanup runs in the
     // application-layer cleanup scope so a shutdown timeout cannot lose it, and
     // the entry stays a tombstone until cleanup finishes. A hung disposer
@@ -234,10 +258,12 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
           entry.generation,
           InstanceState.withClosingCleanup(
             directory,
-            Effect.gen(function* () {
-              yield* closeEntryScope(entry)
-              yield* disposeContext(ctx)
-            }),
+            entry.selfClose
+              ? disposeContext(ctx)
+              : Effect.gen(function* () {
+                  yield* closeEntryScope(entry)
+                  yield* disposeContext(ctx)
+                }),
           ),
         )
         const task = Effect.gen(function* () {
@@ -293,6 +319,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       Effect.gen(function* () {
         if (cache.get(directory) !== entry) return false
         entry.disposing = true
+        entry.selfClose ??= (yield* entryRef) === entry
         entry.closing ??= InstanceState.markClosing(directory, entry.generation)
         const cleanup = yield* Effect.uninterruptible(startCleanup(directory, entry, ctx, options))
         const exit = yield* Deferred.await(cleanup).pipe(Effect.onInterrupt(() => failDisposeWaiters(directory, entry)))
@@ -408,6 +435,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
                   yield* removeEntry(directory, previous)
                 } else {
                   previous.disposing = true
+                  previous.selfClose ??= (yield* entryRef) === previous
                   previous.closing ??= InstanceState.markClosing(directory, previous.generation)
                   const cleanup = yield* Effect.uninterruptible(
                     startCleanup(directory, previous, loaded.value, { waitIdle: true }),
@@ -535,13 +563,14 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         const forked = InstanceState.withGeneration(entry.generation, effect).pipe(
           Scope.provide(entry.scope),
           Effect.provideService(InstanceRef, ctx),
-          Effect.onExit(() => Effect.sync(() => endUse(entry))),
+          Effect.provideService(entryRef, entry),
+          Effect.onExit(() => onUseExit(entry)),
           Effect.forkIn(entry.scope, { startImmediately: true }),
         )
         const fiber = yield* forked.pipe(
           // A fork into an already-closed scope can fail before the child's
           // own onExit is installed. Release the active count in that case.
-          Effect.onExit((exit) => (Exit.isFailure(exit) ? Effect.sync(() => endUse(entry)) : Effect.void)),
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? onUseExit(entry) : Effect.void)),
         )
         return yield* Fiber.join(fiber).pipe(Effect.onInterrupt(() => Fiber.interrupt(fiber).pipe(Effect.ignore)))
       })
@@ -573,11 +602,12 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             const forked = InstanceState.withGeneration(entry.generation, effect).pipe(
               Scope.provide(entry.scope),
               Effect.provideService(InstanceRef, loaded.value),
-              Effect.onExit(() => Effect.sync(() => endUse(entry))),
+              Effect.provideService(entryRef, entry),
+              Effect.onExit(() => onUseExit(entry)),
               Effect.forkIn(entry.scope, { startImmediately: true }),
             )
             const fiber = yield* forked.pipe(
-              Effect.onExit((exit) => (Exit.isFailure(exit) ? Effect.sync(() => endUse(entry)) : Effect.void)),
+              Effect.onExit((exit) => (Exit.isFailure(exit) ? onUseExit(entry) : Effect.void)),
             )
             // Let the effect reach its first suspension point so a reload can
             // observe that it has entered before the gate is released.

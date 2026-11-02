@@ -989,6 +989,28 @@ describe("InstanceStore", () => {
     }),
   )
 
+  it.live("dispose from inside the entry closes its scope after the caller exits", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const ctx = yield* store.load({ directory: dir })
+      const closed = yield* Deferred.make<void>()
+
+      yield* store.provide(
+        { directory: dir },
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined).pipe(Effect.asVoid))
+          yield* store.dispose(ctx)
+          // The caller must outlive the scope that dispose is tearing down.
+          expect(yield* Deferred.isDone(closed)).toBe(false)
+        }),
+      )
+
+      const closedInTime = yield* Deferred.await(closed).pipe(Effect.timeoutOption("2 seconds"))
+      expect(Option.isSome(closedInTime)).toBe(true)
+    }),
+  )
+
   it.live("reload waits for an in-progress disposal cleanup", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
