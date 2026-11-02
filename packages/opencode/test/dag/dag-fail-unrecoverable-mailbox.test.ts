@@ -5,7 +5,7 @@
  * failure reason into the mailbox fence and close a live parent mailbox.
  */
 import { describe, expect, it } from "bun:test"
-import { DateTime, Effect, Layer } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -43,7 +43,10 @@ function layers() {
 }
 
 describe("#950 terminal settlement closes the parent mailbox", () => {
-  async function settle(outcome: "completed" | "failed" | "ignored" | "stale", options?: { repeat?: boolean }) {
+  async function settle(
+    outcome: "completed" | "failed" | "ignored" | "stale",
+    options?: { repeat?: boolean; concurrent?: boolean },
+  ) {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-mailbox-settle-")))
     const directory = path.join(root, "a")
     mkdirSync(directory, { recursive: true })
@@ -114,11 +117,27 @@ describe("#950 terminal settlement closes the parent mailbox", () => {
             .pipe(Effect.orDie)
 
           const current = yield* dag.store.getWorkflow(dagID).pipe(Effect.orDie)
-          const settled = yield* dag.settleCompletion(
-            dagID,
-            outcome === "stale" ? { expectedGraphRev: (current?.graphRev ?? 0) + 1 } : undefined,
-          )
-          const duplicate = options?.repeat ? yield* dag.settleCompletion(dagID) : undefined
+          const settleOnce = () =>
+            dag.settleCompletion(
+              dagID,
+              outcome === "stale" ? { expectedGraphRev: (current?.graphRev ?? 0) + 1 } : undefined,
+            )
+          const [settled, duplicate] = options?.concurrent
+            ? yield* Effect.scoped(
+                Effect.gen(function* () {
+                  // Both callers wait on one barrier, then race the workflow lock.
+                  const barrier = yield* Deferred.make<void>()
+                  const run = Deferred.await(barrier).pipe(Effect.andThen(settleOnce()))
+                  const first = yield* run.pipe(Effect.forkScoped)
+                  const second = yield* run.pipe(Effect.forkScoped)
+                  yield* Deferred.succeed(barrier, void 0)
+                  return yield* Effect.all([Fiber.join(first), Fiber.join(second)])
+                }),
+              )
+            : [
+                yield* settleOnce(),
+                options?.repeat ? yield* dag.settleCompletion(dagID) : undefined,
+              ] as const
           const mailbox = yield* database.db
             .select()
             .from(AgentMailboxTable)
@@ -166,6 +185,15 @@ describe("#950 terminal settlement closes the parent mailbox", () => {
     expect(mailbox?.closed_reason).toBe("completed")
     expect(workflow?.status).toBe("completed")
   })
+  for (const outcome of ["completed", "failed"] as const) {
+    it(`settles exactly once when concurrent ${outcome} settlement races`, async () => {
+      const { settled, duplicate, mailbox, workflow } = await settle(outcome, { concurrent: true })
+      expect([settled.status, duplicate?.status]).toContain(outcome)
+      expect([settled.status, duplicate?.status]).toContain("ignored")
+      expect(mailbox?.closed_reason).toBe(outcome)
+      expect(workflow?.status).toBe(outcome)
+    })
+  }
 })
 
 describe("#948 failUnrecoverable mailbox safety", () => {

@@ -8,6 +8,7 @@ import path from "node:path"
 import { createHash } from "node:crypto"
 import { Effect, Fiber, Layer } from "effect"
 import { Global } from "@opencode-ai/core/global"
+import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Project } from "@opencode-ai/core/project"
 import { Agent } from "@/agent/agent"
@@ -308,10 +309,13 @@ for (const permission of ["read", "external_directory"] as const) {
           Effect.promise(() => fs.rm(path.dirname(target), { recursive: true, force: true })),
         )
         yield* Effect.promise(() => fs.writeFile(source, body))
+        // The external pattern uses the canonical directory (capture resolves
+        // symlinks before authorizing); the read rule keeps the submitted path.
+        const canonicalSource = yield* Effect.promise(() => fs.realpath(source).then(FSUtil.normalizePath))
         const pattern =
           permission === "read"
             ? path.relative(process.cwd(), FSUtil.normalizePath(source))
-            : FSUtil.normalizePathPattern(path.join(directory, "*"))
+            : FSUtil.normalizePathPattern(path.join(path.dirname(canonicalSource), "*"))
         const sessionRules = [{ permission, pattern, action: decision === "deny" ? "deny" : "ask" }] as const
         const program = Effect.gen(function* () {
           const sessions = yield* Session.Service
@@ -393,3 +397,92 @@ for (const permission of ["read", "external_directory"] as const) {
     )
   }
 }
+
+test.skipIf(process.platform === "win32")("artifact capture follows symlinks only through the external policy", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "dag-artifact-symlink-"))
+  const boundary = path.join(root, "boundary")
+  const outsideDirectory = path.join(root, "outside")
+  const outside = path.join(outsideDirectory, "secret.txt")
+  const inside = path.join(boundary, "inside.txt")
+  const linkOut = path.join(boundary, "link-out.txt")
+  const linkIn = path.join(boundary, "link-in.txt")
+  const alias = path.join(root, "alias")
+  const objectDirectories: string[] = []
+  try {
+    await fs.mkdir(boundary, { recursive: true })
+    await fs.mkdir(outsideDirectory, { recursive: true })
+    await fs.writeFile(outside, "outside bytes")
+    await fs.writeFile(inside, "inside bytes")
+    await fs.symlink(outside, linkOut)
+    await fs.symlink(inside, linkIn)
+    await fs.symlink(boundary, alias, "dir")
+
+    const sessions = {
+      get: () => Effect.succeed({ agent: "build", permission: [] } as never),
+    } as never
+    const authorizeWith = (permission: PermissionV1.Ruleset, asked: string[]) =>
+      makeArtifactSourceAuthorizer(
+        sessions,
+        { get: () => Effect.succeed({ permission } as never) } as never,
+        boundary,
+        {
+          ask: (request: { permission: string }) =>
+            Effect.sync(() => {
+              asked.push(request.permission)
+            }),
+        } as never,
+      )
+    const commit = (source: string, authorize: ReturnType<typeof makeArtifactSourceAuthorizer>) =>
+      Effect.runPromise(
+        commitOutputFileRef(source, provenance, (sourcePath, symlink, canonical) =>
+          authorize("ses_producer", sourcePath, undefined, symlink, canonical),
+        ),
+      )
+
+    // A symlink inside the boundary that points outside must be authorized as
+    // external, never silently committed.
+    const deniedAsked: string[] = []
+    const denyExternal = authorizeWith(
+      [
+        { permission: "read", pattern: "*", action: "allow" },
+        { permission: "external_directory", pattern: "*", action: "deny" },
+      ],
+      deniedAsked,
+    )
+    const denial = await Effect.runPromise(
+      commitOutputFileRef(linkOut, provenance, (sourcePath, symlink, canonical) =>
+        denyExternal("ses_producer", sourcePath, undefined, symlink, canonical),
+      ).pipe(Effect.flip),
+    )
+    expect(denial.message).toContain("external_directory denied")
+
+    // A symlink inside the boundary that points inside still needs external
+    // approval (the path itself is a link), and may commit when allowed.
+    const asked: string[] = []
+    const askExternal = authorizeWith([{ permission: "read", pattern: "*", action: "allow" }], asked)
+    const linked = await commit(linkIn, askExternal)
+    expect(asked).toEqual(["external_directory"])
+    expect(linked).toBeDefined()
+    if (linked) objectDirectories.push(path.dirname(linked.path))
+    expect(linked?.source_path).toBe(linkIn)
+    expect(linked && (await fs.readFile(linked.path, "utf8"))).toBe("inside bytes")
+
+    // Lexically outside the boundary but resolving inside is not external.
+    const aliasAsked: string[] = []
+    const aliasAuthorize = authorizeWith(
+      [
+        { permission: "read", pattern: "*", action: "allow" },
+        { permission: "external_directory", pattern: "*", action: "deny" },
+      ],
+      aliasAsked,
+    )
+    const aliased = await commit(path.join(alias, "inside.txt"), aliasAuthorize)
+    expect(aliasAsked).toEqual([])
+    expect(aliased).toBeDefined()
+    if (aliased) objectDirectories.push(path.dirname(aliased.path))
+    expect(aliased?.source_path).toBe(path.join(alias, "inside.txt"))
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+    for (const directory of objectDirectories) await fs.rm(directory, { recursive: true, force: true })
+  }
+})

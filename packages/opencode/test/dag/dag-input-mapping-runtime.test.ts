@@ -81,7 +81,9 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
   const permissions = new Map<string, PermissionV1.Ruleset>()
   // Resolve the existing temp root before adding wildcard segments: Windows
   // realpath cannot expand RUNNER~1 through a non-existent dag-* directory.
-  const agentPermissions = Permission.fromConfig({ read: "allow", external_directory: { "*": "ask", [path.join(FSUtil.normalizePath(os.tmpdir()), "dag-*", "*")]: "allow" } })
+  // The authorizer matches external_directory against the canonical source
+  // (artifact capture resolves symlinks before authorizing).
+  const agentPermissions = Permission.fromConfig({ read: "allow", external_directory: { "*": "ask", [path.join(FSUtil.resolve(os.tmpdir()), "dag-*", "*")]: "allow" } })
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     get: (id) => Effect.succeed({ id, permission: permissions.get(id) ?? parentPermissions, agent: "build" } as never),

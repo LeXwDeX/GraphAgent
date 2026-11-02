@@ -1353,9 +1353,17 @@ export function spawnNode(
                   // turn in the same session — the work is already done, only the
                   // structured hand-back is missing. A captured-but-invalid payload
                   // is NOT nudged: that is a deterministic contract violation and
-                  // a retry would only re-bill the same mistake.
+                  // a retry would only re-bill the same mistake. A structural
+                  // rejection with no field-level fix (schemaRejected alone) also
+                  // called the tool — the nudge text would be false, so skip it.
                   const lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
-                  if (verdict.settlement.kind === "fail" && verdict.neverCalled && !lengthLimited) {
+                  const structuralRejection = schemaRejected && schemaFix === undefined
+                  if (
+                    verdict.settlement.kind === "fail" &&
+                    verdict.neverCalled &&
+                    !lengthLimited &&
+                    !structuralRejection
+                  ) {
                     if (!(yield* claimResubmission)) return
                     registerCaptureSlot(childSession.id, input.outputSchema)
                     result = yield* inExecution(
@@ -1449,14 +1457,14 @@ export function spawnNode(
                       replan_attempt: settlementAttempt.replanAttempts,
                       graph_rev: input.graphRev,
                     },
-                    (source) =>
+                    (source, symlink, canonical) =>
                       makeArtifactSourceAuthorizer(
                         sessions,
                         agentService,
-                         worktree,
-                         permissionSvc,
-                         boundary,
-                      )(childSession.id, source, agent.name),
+                        worktree,
+                        permissionSvc,
+                        boundary,
+                      )(childSession.id, source, agent.name, symlink, canonical),
                   )
                   if (fileRef && childSessionID) {
                     // Receipt persistence precedes completion. A crash between the

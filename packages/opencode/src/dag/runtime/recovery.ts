@@ -70,7 +70,13 @@ export function reconcileWorkflow(
   /** Build the source authorizer for a node's effective execution directory. */
   authorizeSource?: (
     executionDirectory: string,
-  ) => (childSessionID: string, source: string, workerType?: string) => Effect.Effect<void, Error>,
+  ) => (
+    childSessionID: string,
+    source: string,
+    workerType?: string,
+    symlink?: boolean,
+    canonical?: string,
+  ) => Effect.Effect<void, Error>,
   lastAssistantMessage?: (childSessionID: string) => Effect.Effect<SessionV1.WithParts | undefined, Error>,
 ): Effect.Effect<{ reconciled: number; ownershipLost: number; continuations?: string[] }, Error, Dag.Service> {
   return Effect.gen(function* () {
@@ -432,7 +438,10 @@ export function reconcileWorkflow(
                   child_session_id: node.childSessionId!,
                   replan_attempt: node.replanAttempts,
                 },
-                authorize ? (source) => authorize(node.childSessionId!, source, node.workerType) : undefined,
+                authorize
+                  ? (source, symlink, canonical) =>
+                      authorize(node.childSessionId!, source, node.workerType, symlink, canonical)
+                  : undefined,
               )
               if (
                 workflowConfig?.result_protocol === "final_response" &&
@@ -578,7 +587,13 @@ export function continueRecoveredMessageNode(
     | null
     | undefined,
   directory?: string,
-  authorizeSource?: (childSessionID: string, source: string, workerType?: string) => Effect.Effect<void, Error>,
+  authorizeSource?: (
+    childSessionID: string,
+    source: string,
+    workerType?: string,
+    symlink?: boolean,
+    canonical?: string,
+  ) => Effect.Effect<void, Error>,
   /** #943: execution directory resolved by the loop; node workspace wins. */
   executionDirectory?: string,
 ): Effect.Effect<void, Error, Dag.Service | SessionPrompt.Service> {
@@ -848,7 +863,10 @@ export function continueRecoveredMessageNode(
                 child_session_id: childSessionID,
                 replan_attempt: attempt.replanAttempts,
               },
-              authorizeSource ? (source) => authorizeSource(childSessionID, source, current.workerType) : undefined,
+              authorizeSource
+                ? (source, symlink, canonical) =>
+                    authorizeSource(childSessionID, source, current.workerType, symlink, canonical)
+                : undefined,
             )
             if (ref) {
               const receipt = yield* messages.value.guard(

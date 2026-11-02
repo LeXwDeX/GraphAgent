@@ -97,7 +97,12 @@ async function verifyManagedFile(value: unknown) {
 async function readBoundedFile(candidate: string): Promise<Buffer | undefined> {
   const file = await open(candidate, "r")
   try {
+    // The descriptor must still name the checked entry: a swap to a symlink or
+    // a different file after path resolution is refused, not read.
+    const entry = await lstat(candidate)
+    if (entry.isSymbolicLink()) throw new Error("source is a symlink")
     const info = await file.stat()
+    if (info.dev !== entry.dev || info.ino !== entry.ino) throw new Error("source changed during capture")
     if (!info.isFile() || info.size <= 0 || info.size > FILE_REF_MAX_BYTES) return undefined
     const bytes = Buffer.alloc(info.size)
     let offset = 0
@@ -121,7 +126,7 @@ async function readBoundedFile(candidate: string): Promise<Buffer | undefined> {
 export function commitOutputFileRef(
   rawText: string,
   provenance: ArtifactProvenance,
-  authorizeSource?: (source: string) => Effect.Effect<void, Error>,
+  authorizeSource?: (source: string, symlink: boolean, canonical?: string) => Effect.Effect<void, Error>,
 ): Effect.Effect<ManagedOutputFileRef | undefined, Error> {
   const candidate = rawText.trim()
   if (!candidate || candidate.length > MAX_PATH_CHARS || /[\r\n]/.test(candidate) || !path.isAbsolute(candidate))
@@ -130,12 +135,20 @@ export function commitOutputFileRef(
     // Freeze the Windows identity while the source still exists. Receipts
     // must retain permission matching after its worktree or alias is deleted.
     const source = process.platform === "win32" ? FSUtil.normalizePath(candidate) : candidate
-    const info = yield* Effect.promise(() => stat(source).catch(() => undefined))
+    // Resolve the real target BEFORE authorizing and reading. A symlink that
+    // is lexically inside the boundary can point anywhere, and the canonical
+    // path is what the permission pattern and the read must both use.
+    const entry = yield* Effect.promise(() => lstat(source).catch(() => undefined))
+    if (!entry || (!entry.isFile() && !entry.isSymbolicLink())) return undefined
+    const resolved = yield* Effect.promise(() => realpath(source).catch(() => undefined))
+    if (!resolved) return undefined
+    const canonicalSource = process.platform === "win32" ? FSUtil.normalizePath(resolved) : resolved
+    const info = yield* Effect.promise(() => stat(canonicalSource).catch(() => undefined))
     if (!info?.isFile() || info.size <= 0 || info.size > FILE_REF_MAX_BYTES) return undefined
-    if (authorizeSource) yield* authorizeSource(source)
+    if (authorizeSource) yield* authorizeSource(source, entry.isSymbolicLink(), canonicalSource)
     return yield* Effect.tryPromise({
       try: async () => {
-        const bytes = await readBoundedFile(source)
+        const bytes = await readBoundedFile(canonicalSource)
         if (!bytes) throw new Error("source became unavailable during capture")
         const digest = Hash.sha256(bytes)
         const destination = artifactPath(digest)
@@ -144,6 +157,8 @@ export function commitOutputFileRef(
         const ref: ManagedOutputFileRef = {
           kind: "file_ref",
           storage: "managed-v1",
+          // Keep the submitted spelling for receipt identity/comparison; the
+          // permission pattern and the bytes above use the canonical target.
           source_path: source,
           provenance,
           path: destination,

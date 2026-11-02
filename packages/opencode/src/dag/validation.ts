@@ -1718,6 +1718,10 @@ export function validatePostCompile(input: {
   /** The original blocks when the graph used the high-level interface. */
   blocks?: readonly DagBlocks.WorkflowBlock[]
   directory?: string
+  /** The persisted workflow workspace. Extend/replan fragments cannot carry
+   * `workspace`, so callers pass the durable value; a fragment's own
+   * config.workspace still wins when present. */
+  executionWorkspace?: string
   catalogs?: EnvironmentCatalogs
   /** Fragment actions are structurally validated by Dag.replan after merge;
    * authoring still owns profile checks without pretending a fragment is a
@@ -1725,6 +1729,7 @@ export function validatePostCompile(input: {
   structural?: boolean
 }): Effect.Effect<ValidationResult> {
   return Effect.gen(function* () {
+    const workspace = input.config.workspace ?? input.executionWorkspace
     const diagnostics = [
       ...(input.structural === false
         ? []
@@ -1760,13 +1765,13 @@ export function validatePostCompile(input: {
         ...(yield* environmentDiagnostics({
           nodes: input.nodes,
           directory: input.directory,
-          workspace: input.config.workspace,
+          workspace,
           catalogs: input.catalogs,
           defaults: input.config.node_defaults,
         })),
         ...worktreeMismatchDiagnostics({
           directory: input.directory,
-          workspace: input.config.workspace,
+          workspace,
           objective: input.config.objective,
           nodes: input.nodes,
         }),

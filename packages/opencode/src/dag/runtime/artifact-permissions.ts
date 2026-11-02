@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import path from "node:path"
+import { realpath } from "node:fs/promises"
 import { Effect } from "effect"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -88,7 +89,11 @@ export function artifactReadPermissions(
 }
 
 /** Runtime capture is a read too. Use the current child session restrictions,
- * in the same agent-then-session order as tool execution, before copying bytes. */
+ * in the same agent-then-session order as tool execution, before copying bytes.
+ * The caller passes the submitted source plus its resolved canonical path when
+ * known: a symlink counts as external even when its target stays inside the
+ * boundary, and the boundary itself is canonical so a lexical alias cannot
+ * widen it. */
 export function makeArtifactSourceAuthorizer(
   sessions: Session.Interface,
   agents: Agent.Interface,
@@ -96,24 +101,39 @@ export function makeArtifactSourceAuthorizer(
   permissions?: Permission.Interface,
   boundary = worktree,
 ) {
-  return (childSessionID: string, source: string, workerType?: string): Effect.Effect<void, Error> =>
+  const canonicalBoundary = DagLocation.canonicalDirectory(boundary)
+  return (
+    childSessionID: string,
+    source: string,
+    workerType?: string,
+    symlink = false,
+    canonical?: string,
+  ): Effect.Effect<void, Error> =>
     Effect.gen(function* () {
       const child = yield* sessions.get(SessionID.make(childSessionID))
       const agent = yield* agents.get(child.agent ?? workerType ?? "build")
       if (!agent) return yield* Effect.fail(new Error("DAG artifact source permission could not be resolved"))
       const rules = [agent.permission, child.permission ?? []]
-      const target = permissionPath(source)
+      // The caller already resolved the source at capture time; fall back to a
+      // defensive realpath for re-authorization of committed receipts (whose
+      // source may be gone).
+      const resolved = canonical ?? (yield* Effect.promise(() => realpath(source).catch(() => undefined)))
+      // Boundary/external checks use the canonical target; the read rule keeps
+      // the submitted spelling so it matches artifactReadPermissions and the
+      // child's own lexical permission rules.
+      const target = permissionPath(resolved ?? source)
+      const readTarget = permissionPath(source)
       // An approval for a wildcard-bearing path would widen to siblings when
       // persisted as an "always" rule. Refuse instead. Check the basename too:
       // the read rule keeps it and Wildcard treats it as a pattern.
-      if (hasPermissionWildcard(target)) {
+      if (hasPermissionWildcard(target) || hasPermissionWildcard(readTarget)) {
         return yield* Effect.fail(new Error(`DAG artifact source has a non-literal directory: ${source}`))
       }
       const requests = [
-        ...(!FSUtil.contains(boundary, target)
+        ...(symlink || !FSUtil.contains(canonicalBoundary, target)
           ? [{ permission: "external_directory", pattern: directoryGlob(path.dirname(target)) }]
           : []),
-        { permission: "read", pattern: path.relative(worktree, target) },
+        { permission: "read", pattern: path.relative(worktree, readTarget) },
       ]
       for (const request of requests) {
         const action = Permission.evaluate(request.permission, request.pattern, ...rules).action

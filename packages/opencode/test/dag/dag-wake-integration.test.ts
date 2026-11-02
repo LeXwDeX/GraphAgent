@@ -939,7 +939,7 @@ describe("DagLoop atomic wake integration", () => {
           undefined,
           [
             { permission: "read", pattern: path.relative(process.cwd(), FSUtil.normalizePath(reportPath)), action: "allow" },
-            { permission: "external_directory", pattern: FSUtil.normalizePathPattern(path.join(dir, "*")), action: "allow" },
+            { permission: "external_directory", pattern: FSUtil.normalizePathPattern(path.join(FSUtil.resolve(dir), "*")), action: "allow" },
           ],
         ),
       )

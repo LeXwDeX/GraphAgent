@@ -275,6 +275,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
           directory: owner?.directory ?? (yield* InstanceState.context).directory,
           parent: owner?.model ?? undefined,
         },
+        executionWorkspace: config?.workspace,
         known_dependencies: knownDependencies,
         node_defaults: config?.node_defaults,
       })

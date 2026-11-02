@@ -47,6 +47,9 @@ interface PrepareInput {
   source: Source
   profile?: DagValidation.Profile
   environment?: EnvironmentContext
+  /** Persisted workflow workspace for extend/replan. Fragments cannot carry
+   * workspace; the runtime spawns their nodes in the durable workspace. */
+  executionWorkspace?: string
   known_dependencies?: string[]
   node_defaults?: NodeDefaults
 }
@@ -156,6 +159,7 @@ export function make(options: Options = {}) {
         nodes,
         blocks: compiled.blocks,
         directory: input.environment?.directory,
+        executionWorkspace: input.action === "start" ? undefined : input.executionWorkspace,
         catalogs,
         structural: input.action === "start",
       })
@@ -394,6 +398,7 @@ function cacheKey(input: PrepareInput, profile: DagValidation.Profile) {
     source: input.source.kind === "yaml" ? input.source.source : (input.source.source ?? "<inline>"),
     directory: input.environment?.directory,
     parent: input.environment?.parent,
+    execution_workspace: input.executionWorkspace,
     known_dependencies: input.known_dependencies,
     node_defaults: input.node_defaults,
   })

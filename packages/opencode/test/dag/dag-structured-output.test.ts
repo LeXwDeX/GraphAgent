@@ -627,8 +627,10 @@ describe("spawnNode submit_result capture", () => {
     expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
     expect(events.find((event) => event.type === "nodeFailed")?.trigger).toBe("verdict_fail")
     expect(events.find((event) => event.type === "nodeFailed")?.errorClass).toBe("schema_invalid")
-    expect(seen).toHaveLength(2)
-    expect(seen[1]).not.toContain('Field "verdict"')
+    // A structural rejection already called the tool: no misleading
+    // "you never called submit_result" nudge is sent.
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).not.toContain("without calling the submit_result tool")
   })
 
   it("(b4a) a repaired submission that is again structurally invalid settles as schema_invalid", async () => {
@@ -643,7 +645,9 @@ describe("spawnNode submit_result capture", () => {
       dagLayer,
       makeRepairPromptLayer(
         [
-          { result: reply("reviewed"), submit: { wrong: "field" } },
+          // A field-level near miss earns the single repair turn...
+          { result: reply("reviewed"), submit: { verdict: "MAYBE" } },
+          // ...and a structural failure on that turn has no further nudge.
           { result: reply("still wrong"), submit: { wrong: "again" } },
         ],
         seen,

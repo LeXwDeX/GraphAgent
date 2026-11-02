@@ -446,11 +446,12 @@ describe("workflow spec validator", () => {
         )
         const workspacePrompts = path.join(workspace, ".opencode", "dag-prompts")
         const ownerPrompts = path.join(owner, ".opencode", "dag-prompts")
+        const workspaceOnly = `workspace-only-${Math.random().toString(36).slice(2)}`
         const ownerOnly = `owner-only-${Math.random().toString(36).slice(2)}`
         yield* Effect.promise(async () => {
           await fs.mkdir(workspacePrompts, { recursive: true })
           await fs.mkdir(ownerPrompts, { recursive: true })
-          await fs.writeFile(path.join(workspacePrompts, "workspace-only.md"), "Workspace {{target}}")
+          await fs.writeFile(path.join(workspacePrompts, `${workspaceOnly}.md`), "Workspace {{target}}")
           await fs.writeFile(path.join(ownerPrompts, `${ownerOnly}.md`), "Owner {{target}}")
         })
         const spec = (promptId: string, execution: { workspace?: string; nodeWorkspace?: string }) => ({
@@ -478,7 +479,7 @@ describe("workflow spec validator", () => {
           })
 
         // Only the workspace has the asset: it must resolve, not report missing.
-        const workspaceAsset = yield* validate("workspace-only", { workspace })
+        const workspaceAsset = yield* validate(workspaceOnly, { workspace })
         expect(workspaceAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(
           false,
         )
@@ -491,8 +492,43 @@ describe("workflow spec validator", () => {
         expect(ownerAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(true)
 
         // A node workspace overrides the workflow workspace for its prompt.
-        const nodeAsset = yield* validate("workspace-only", { workspace: owner, nodeWorkspace: workspace })
+        const nodeAsset = yield* validate(workspaceOnly, { workspace: owner, nodeWorkspace: workspace })
         expect(nodeAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(false)
+
+        // Fragments cannot carry workspace, so extend/replan must inherit the
+        // persisted workflow workspace passed by the caller.
+        const authoring = WorkflowAuthoring.make({ loadEnvironment: () => Effect.succeed({}) })
+        const fragmentNode = (promptId: string, nodeWorkspace?: string) => ({
+          id: "added",
+          name: "added",
+          worker_type: "explore",
+          depends_on: [],
+          ...(nodeWorkspace ? { workspace: nodeWorkspace } : {}),
+          prompt_template: { id: promptId, input: { target: "dag" } },
+        })
+        const prepareFragment = (action: "extend" | "replan", promptId: string, nodeWorkspace?: string) =>
+          authoring.prepare({
+            action,
+            source: {
+              kind: "inline",
+              source: `${action}.yaml`,
+              value:
+                action === "extend"
+                  ? { nodes: [fragmentNode(promptId, nodeWorkspace)] }
+                  : { fragment: { name: "replanned", nodes: [fragmentNode(promptId, nodeWorkspace)] } },
+            },
+            profile: "environment",
+            environment: { directory: owner },
+            executionWorkspace: workspace,
+          })
+        const missingAsset = (result: { errors: readonly DagValidation.Diagnostic[] }) =>
+          result.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)
+
+        for (const action of ["extend", "replan"] as const) {
+          expect(missingAsset(yield* prepareFragment(action, workspaceOnly))).toBe(false)
+          expect(missingAsset(yield* prepareFragment(action, ownerOnly))).toBe(true)
+          expect(missingAsset(yield* prepareFragment(action, ownerOnly, owner))).toBe(false)
+        }
       }),
     )
 

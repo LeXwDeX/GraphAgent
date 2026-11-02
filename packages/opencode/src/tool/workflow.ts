@@ -773,7 +773,8 @@ export const WorkflowTool = Tool.define<
             }
             case "extend": {
               const workflow = yield* requireOwnedWorkflow(params.workflow_id, ctx.sessionID)
-              const workflowDefaults = Dag.parseWorkflowConfig(workflow.config)?.node_defaults
+              const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
+              const workflowDefaults = workflowConfig?.node_defaults
               const knownDependencies = (yield* dag.store.getNodes(params.workflow_id).pipe(Effect.orDie)).map(
                 (node) => node.id,
               )
@@ -785,6 +786,7 @@ export const WorkflowTool = Tool.define<
                 source,
                 profile: "environment",
                 environment: { directory: callingSession.directory, parent: callingSession.model },
+                executionWorkspace: workflowConfig?.workspace,
                 known_dependencies: knownDependencies,
                 node_defaults: workflowDefaults,
               })
@@ -866,7 +868,8 @@ export const WorkflowTool = Tool.define<
                 }
               }
               if (params.operation === "replan") {
-                const workflowDefaults = Dag.parseWorkflowConfig(workflow.config)?.node_defaults
+                const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
+                const workflowDefaults = workflowConfig?.node_defaults
                 const knownDependencies = (yield* dag.store.getNodes(wfId).pipe(Effect.orDie)).map((node) => node.id)
                 const source = yield* loadAuthoringSource(params.spec_path, callingSession.directory, ctx).pipe(
                   Effect.orDie,
@@ -876,6 +879,7 @@ export const WorkflowTool = Tool.define<
                   source,
                   profile: "environment",
                   environment: { directory: callingSession.directory, parent: callingSession.model },
+                  executionWorkspace: workflowConfig?.workspace,
                   known_dependencies: knownDependencies,
                   node_defaults: workflowDefaults,
                 })
