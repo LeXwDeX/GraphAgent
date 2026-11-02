@@ -10,11 +10,25 @@ import type { ManagedOutputFileRef } from "./output-ref"
 import type { Session } from "@/session/session"
 import type { Agent } from "@/agent/agent"
 import { SessionID } from "@/session/schema"
+import { DagLocation } from "../location"
+
+export function artifactPermissionBase(directory: string, worktree: string, executionDirectory = directory) {
+  if (DagLocation.canonicalDirectory(executionDirectory) !== DagLocation.canonicalDirectory(directory)) {
+    return { worktree: executionDirectory, boundary: executionDirectory }
+  }
+  return { worktree, boundary: worktree === "/" ? directory : worktree }
+}
 
 function directoryGlob(directory: string) {
   return process.platform === "win32"
     ? FSUtil.normalizePathPattern(path.join(directory, "*"))
     : path.join(directory, "*").replaceAll("\\", "/")
+}
+
+/** Wildcard.match has no literal escape: a directory containing `*` or `?`
+ * cannot be represented as a permission pattern without widening its scope. */
+function hasPermissionWildcard(directory: string) {
+  return directory.includes("*") || directory.includes("?")
 }
 
 function permissionPath(filepath: string) {
@@ -36,19 +50,27 @@ export function artifactReadPermissions(
     const source = permissionPath(ref.source_path)
     const directory = path.dirname(target)
     const glob = directoryGlob(directory)
-    const denied = rulesets
-      .flat()
-      .some(
-        (rule) =>
-          rule.action === "deny" &&
-          [glob, directoryGlob(path.dirname(source))].some(
-            (target) => Permission.evaluate("external_directory", target, [rule]).action === "deny",
-          ),
-      )
+    // A wildcard in a path segment is literal for the filesystem but active in
+    // Permission patterns. Fail closed instead of granting a sibling.
+    const literalDirectory = !hasPermissionWildcard(directory)
+    const literalTarget = !hasPermissionWildcard(target)
+    const denied =
+      !literalDirectory ||
+      rulesets
+        .flat()
+        .some(
+          (rule) =>
+            rule.action === "deny" &&
+            [target, source, glob, directoryGlob(path.dirname(source))].some(
+              (candidate) => Permission.evaluate("external_directory", candidate, [rule]).action === "deny",
+            ),
+        )
     const sourceRead = Permission.evaluate("read", path.relative(worktree, source), ...rulesets)
     const targetRead = Permission.evaluate("read", path.relative(worktree, target), ...rulesets)
     const readAction: PermissionV1.Rule["action"] =
-      sourceRead.action === "deny" || targetRead.action === "deny" ? "deny" : sourceRead.action
+      !literalTarget || !literalDirectory || sourceRead.action === "deny" || targetRead.action === "deny"
+        ? "deny"
+        : sourceRead.action
     return [
       { permission: "external_directory", pattern: glob, action: denied ? "deny" : "allow" },
       ...(readAction !== "allow"
@@ -72,6 +94,7 @@ export function makeArtifactSourceAuthorizer(
   agents: Agent.Interface,
   worktree: string,
   permissions?: Permission.Interface,
+  boundary = worktree,
 ) {
   return (childSessionID: string, source: string, workerType?: string): Effect.Effect<void, Error> =>
     Effect.gen(function* () {
@@ -80,8 +103,14 @@ export function makeArtifactSourceAuthorizer(
       if (!agent) return yield* Effect.fail(new Error("DAG artifact source permission could not be resolved"))
       const rules = [agent.permission, child.permission ?? []]
       const target = permissionPath(source)
+      // An approval for a wildcard-bearing path would widen to siblings when
+      // persisted as an "always" rule. Refuse instead. Check the basename too:
+      // the read rule keeps it and Wildcard treats it as a pattern.
+      if (hasPermissionWildcard(target)) {
+        return yield* Effect.fail(new Error(`DAG artifact source has a non-literal directory: ${source}`))
+      }
       const requests = [
-        ...(!FSUtil.contains(worktree, target)
+        ...(!FSUtil.contains(boundary, target)
           ? [{ permission: "external_directory", pattern: directoryGlob(path.dirname(target)) }]
           : []),
         { permission: "read", pattern: path.relative(worktree, target) },

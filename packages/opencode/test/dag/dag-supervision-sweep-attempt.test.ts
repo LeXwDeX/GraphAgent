@@ -7,7 +7,7 @@
 // guard must reject the stale verdict instead of failing the FRESH attempt
 // with "deadline supervision lost" while its child keeps running.
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Option } from "effect"
+import { Cause, Effect, Exit, Layer, Option } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
 import { DagStore } from "@opencode-ai/core/dag/store"
@@ -98,6 +98,21 @@ describe("DagSupervisionSweep attempt identity", () => {
         yield* dagSvc.nodeQueued(dagID, "n1", past)
         yield* dagSvc.nodeStarted(dagID, "n1", "ses_old", past)
 
+        // Cancellation must not discard a defect merely because the same
+        // Cause also contains an interruption.
+        hook.onCancel = () => Effect.failCause(Cause.combine(Cause.interrupt(42), Cause.die("cancel defect")))
+        const needed = DagSupervisionSweep.frozenTicksNeeded(1_000)
+        let cancellationExit: Exit.Exit<void> = Exit.void
+        for (let tick = 0; tick <= needed; tick++) {
+          cancellationExit = yield* Effect.exit(sweep.sweepOnce())
+          if (Exit.isFailure(cancellationExit)) break
+        }
+        expect(Exit.isFailure(cancellationExit)).toBe(true)
+        if (Exit.isFailure(cancellationExit)) {
+          expect(Cause.hasInterrupts(cancellationExit.cause)).toBe(true)
+          expect(Cause.hasDies(cancellationExit.cause)).toBe(true)
+        }
+
         // While the sweep is settling (between its SELECT and its write), the
         // parent restarts n1 and the replacement attempt starts with child
         // ses_new and a fresh deadline.
@@ -108,10 +123,9 @@ describe("DagSupervisionSweep attempt identity", () => {
             yield* dagSvc.nodeStarted(dagID, "n1", "ses_new", Date.now() + 600_000)
           }).pipe(Effect.orDie)
 
-        const needed = DagSupervisionSweep.frozenTicksNeeded(1_000)
         for (let tick = 0; tick <= needed; tick++) yield* sweep.sweepOnce()
 
-        expect(cancels).toEqual(["ses_old"])
+        expect(cancels).toEqual(["ses_old", "ses_old"])
         const row = yield* storeSvc.getNode(dagID, "n1")
         // The fresh attempt (ses_new, replanAttempts 1) keeps running, and only
         // the observed attempt's child was cancelled.

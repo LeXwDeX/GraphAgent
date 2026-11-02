@@ -539,4 +539,72 @@ describe("workflow spec validator", () => {
       }),
     )
   })
+
+  describe("verdict vocabulary lint", () => {
+    function blocksSpec(objective: string, block: Record<string, unknown>) {
+      return {
+        config: {
+          name: "verdict-vocabulary",
+          objective,
+          blocks: [{ id: "gate", ...block }],
+        },
+      }
+    }
+
+    it.effect("warns when a review instruction names PASS/BLOCKING", () =>
+      Effect.gen(function* () {
+        const result = yield* validateSpec({
+          value: blocksSpec("Review the change", { kind: "review", instruction: "Return PASS or BLOCKING" }),
+          source: "<inline>",
+        })
+        const warning = result.warnings.find(
+          (diagnostic) => diagnostic.code === DagValidation.DIAGNOSTIC_CODES.verdictVocabulary,
+        )
+        expect(warning?.path).toBe("config.blocks[gate].instruction")
+        expect(warning?.message).toContain("PASS")
+        expect(warning?.message).toContain("BLOCKING")
+      }),
+    )
+
+    it.effect("does not warn when the review vocabulary matches", () =>
+      Effect.gen(function* () {
+        const result = yield* validateSpec({
+          value: blocksSpec("Review the change", { kind: "review", instruction: "Return ACCEPT or REJECT" }),
+          source: "<inline>",
+        })
+        expect(
+          result.warnings.filter((diagnostic) => diagnostic.code === DagValidation.DIAGNOSTIC_CODES.verdictVocabulary),
+        ).toEqual([])
+      }),
+    )
+
+    it.effect("warns when the shared objective names review words for a verify block", () =>
+      Effect.gen(function* () {
+        const result = yield* validateSpec({
+          value: blocksSpec("Output PASS/BLOCKING", { kind: "verify" }),
+          source: "<inline>",
+        })
+        const warnings = result.warnings.filter(
+          (diagnostic) => diagnostic.code === DagValidation.DIAGNOSTIC_CODES.verdictVocabulary,
+        )
+        expect(warnings.some((warning) => warning.path === "config.objective")).toBe(true)
+        expect(warnings.map((warning) => warning.message).join("\n")).toContain("BLOCKING")
+        expect(warnings.map((warning) => warning.message).join("\n")).not.toContain("PASS")
+      }),
+    )
+
+    it.effect("warns when the objective names ACCEPT for a verify-only graph", () =>
+      Effect.gen(function* () {
+        const result = yield* validateSpec({
+          value: blocksSpec("Return ACCEPT or REJECT", { kind: "verify" }),
+          source: "<inline>",
+        })
+        const warnings = result.warnings.filter(
+          (diagnostic) => diagnostic.code === DagValidation.DIAGNOSTIC_CODES.verdictVocabulary,
+        )
+        expect(warnings.map((warning) => warning.message).join("\n")).toContain("ACCEPT")
+        expect(warnings.map((warning) => warning.message).join("\n")).toContain("REJECT")
+      }),
+    )
+  })
 })

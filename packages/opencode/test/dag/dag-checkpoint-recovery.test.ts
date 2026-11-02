@@ -57,6 +57,7 @@ function checkpointNodes(): NodeConfig[] {
       depends_on: ["checkpoint"],
       required: true,
       condition: 'checkpoint.output.verdict == "continue"',
+      skip_ok: true,
       prompt_template: { inline: "continue" },
     },
   ]

@@ -162,6 +162,21 @@ describe("planFanOut", () => {
     expect(byID.get("slices")?.recovery).toEqual(recovered.recovery)
   })
 
+  it("preserves the writer's workspace on package writers and the aggregator", () => {
+    const plan = DagFanOut.planFanOut(
+      { ...writer(), workspace: "/worktrees/slices" },
+      { packages: [pkg("a", ["x"]), pkg("b", ["y"])] },
+      new Set(),
+    )
+    expect(plan.kind).toBe("expand")
+    if (plan.kind !== "expand") return
+    expect(plan.nodes.map((node) => node.workspace)).toEqual([
+      "/worktrees/slices",
+      "/worktrees/slices",
+      "/worktrees/slices",
+    ])
+  })
+
   it("declines when a writer id is already taken", () => {
     const plan = DagFanOut.planFanOut(
       writer(),

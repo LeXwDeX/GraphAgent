@@ -19,7 +19,14 @@ import { registerCaptureSlot, validatePayload, clearCaptureSlot, validateAgainst
 import { makeNodeRow } from "./fixtures"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 
-type TrackedEvent = { type: string; nodeID: string; output?: unknown; reason?: string; trigger?: string }
+type TrackedEvent = {
+  type: string
+  nodeID: string
+  output?: unknown
+  reason?: string
+  trigger?: string
+  errorClass?: string
+}
 
 let capturedStore: Map<string, unknown> = new Map()
 
@@ -33,7 +40,7 @@ function makeEventTracker() {
         ...makeNodeRow({ id: nodeID, status: "running", childSessionId: "ses_child" }),
         capturedOutput: capturedStore.get(nodeID),
       }))),
-    getWorkflow: Effect.fn("s")(() => Effect.succeed({ status: "running" } as never)),
+    getWorkflow: Effect.fn("s")(() => Effect.succeed({ status: "running", directory: process.cwd() } as never)),
     setCapturedOutput: Effect.fn("s")((_childSessionID: string, payload: unknown) =>
       Effect.sync(() => { capturedStore.set("node-1", payload) })),
   }
@@ -43,8 +50,10 @@ function makeEventTracker() {
     nodeStarted: Effect.fn("s")((_dagID: string, _nodeID: string) => Effect.void),
     nodeCompleted: Effect.fn("s")((_dagID: string, nodeID: string, output: unknown) =>
       Effect.sync(() => events.push({ type: "nodeCompleted", nodeID, output }))),
-    nodeFailed: Effect.fn("s")((_dagID: string, nodeID: string, reason: string, trigger?: string) =>
-      Effect.sync(() => events.push({ type: "nodeFailed", nodeID, reason, trigger }))),
+    nodeFailed: Effect.fn("s")(
+      (_dagID: string, nodeID: string, reason: string, trigger?: string, _attempt?: unknown, errorClass?: string) =>
+        Effect.sync(() => events.push({ type: "nodeFailed", nodeID, reason, trigger, errorClass })),
+    ),
     nodeSkipped: Effect.fn("s")((_dagID: string, nodeID: string) =>
       Effect.sync(() => events.push({ type: "nodeSkipped", nodeID }))),
   })
@@ -63,7 +72,8 @@ const agentLayer = Layer.mock(Agent.Service, {
 
 const sessionLayer = Layer.mock(Session.Service, {
   get: () => Effect.succeed({ id: "ses_parent" as never, permission: [], agent: "build" } as never),
-  create: () => Effect.succeed({ id: "ses_child" as never } as never),
+  create: (input?: { directory?: string }) =>
+    Effect.succeed({ id: "ses_child" as never, directory: input?.directory ?? process.cwd() } as never),
   list: () => Effect.succeed([]),
   messages: () => Effect.succeed([]),
 })
@@ -98,6 +108,32 @@ function makePromptLayerWithCapture(result: SessionV1.WithParts, payloads: unkno
       }
       return result
     }),
+  })
+}
+
+function makeRepairPromptLayer(
+  steps: Array<{ result: SessionV1.WithParts; submit?: unknown }>,
+  seen: string[],
+  schema: Record<string, unknown>,
+): Layer.Layer<never> {
+  let index = 0
+  return Layer.mock(SessionPrompt.Service, {
+    prompt: (input) =>
+      Effect.gen(function* () {
+        const step = steps[Math.min(index++, steps.length - 1)]
+        seen.push(
+          input.parts
+            .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+            .map((part) => part.text)
+            .join(""),
+        )
+        registerCaptureSlot("ses_child", schema)
+        if (step.submit !== undefined) {
+          const result = validatePayload("ses_child", step.submit)
+          if (result.ok) capturedStore.set("node-1", step.submit)
+        }
+        return step.result
+      }),
   })
 }
 
@@ -453,6 +489,62 @@ describe("spawnNode submit_result capture", () => {
     expect(completed!.output).toEqual(payload)
   })
 
+  it("(a2) JSON-shaped string payload under a string schema stays ordinary data", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = { type: "string" }
+    const output = '{"verdict":"FAIL"}'
+    await runSpawn(dagLayer, makePromptLayerWithCapture(reply("text"), [output], schema), schema)
+    const completed = events.find((event) => event.type === "nodeCompleted")
+    expect(completed?.output).toBe(output)
+    const config = Dag.parseWorkflowConfig(
+      JSON.stringify({ name: "string-result", nodes: [{ id: "n", depends_on: [], output_schema: schema }] }),
+    )
+    expect(
+      Dag.requiredCompletionGaps(config, [
+        { id: "n", status: "completed", required: true, output: completed!.output, errorReason: null },
+      ]),
+    ).toEqual([])
+  })
+
+  it("(a3) JSON-shaped string payload under a nullable string schema stays ordinary data", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = { type: ["string", "null"] }
+    const output = '{"verdict":"FAIL"}'
+    await runSpawn(dagLayer, makePromptLayerWithCapture(reply("text"), [output], schema), schema)
+    const completed = events.find((event) => event.type === "nodeCompleted")
+    expect(completed?.output).toBe(output)
+    const config = Dag.parseWorkflowConfig(
+      JSON.stringify({ name: "nullable-string-result", nodes: [{ id: "n", depends_on: [], output_schema: schema }] }),
+    )
+    expect(
+      Dag.requiredCompletionGaps(config, [
+        { id: "n", status: "completed", required: true, output: completed!.output, errorReason: null },
+      ]),
+    ).toEqual([])
+  })
+
+  it("(a4) object schema rejects a JSON-shaped string payload", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = { type: "object", required: ["verdict"] }
+    await runSpawn(dagLayer, makePromptLayerWithCapture(reply("text"), ['{"verdict":"FAIL"}'], schema), schema)
+    expect(events.find((event) => event.type === "nodeFailed")?.trigger).toBe("verdict_fail")
+    expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
+  })
+
+  it("(a5) completion gate treats a string-capable anyOf schema as data", () => {
+    const config = Dag.parseWorkflowConfig(
+      JSON.stringify({
+        name: "anyof-string-result",
+        nodes: [{ id: "n", depends_on: [], output_schema: { anyOf: [{ type: "string" }, { type: "null" }] } }],
+      }),
+    )
+    expect(
+      Dag.requiredCompletionGaps(config, [
+        { id: "n", status: "completed", required: true, output: '{"verdict":"FAIL"}', errorReason: null },
+      ]),
+    ).toEqual([])
+  })
+
   it("(b) invalid payload then valid retry → nodeCompleted with valid payload", async () => {
     const { events, dagLayer } = makeEventTracker()
     const schema = { type: "object", required: ["status"] }
@@ -481,6 +573,86 @@ describe("spawnNode submit_result capture", () => {
     const completed = events.find((e) => e.type === "nodeCompleted")
     expect(completed).toBeDefined()
     expect(completed!.output).toEqual({ verdict: "ACCEPT" })
+  })
+
+  it("(b3) a near-miss submit_result gets one repair turn and completes on resubmission", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string", enum: ["ACCEPT", "REJECT"] } },
+    }
+    const seen: string[] = []
+    await runSpawn(
+      dagLayer,
+      makeRepairPromptLayer(
+        [
+          { result: reply("reviewed"), submit: { verdict: "PASS" } },
+          { result: reply("corrected"), submit: { verdict: "ACCEPT" } },
+        ],
+        seen,
+        schema,
+      ),
+      schema,
+    )
+    const completed = events.find((event) => event.type === "nodeCompleted")
+    expect(completed).toBeDefined()
+    expect(completed!.output).toEqual({ verdict: "ACCEPT" })
+    expect(seen).toHaveLength(2)
+    expect(seen[1]).toContain('Field "verdict"')
+    expect(seen[1]).toContain("ACCEPT")
+    expect(seen[1]).toContain("submit_result")
+  })
+
+  it("(b4) a structurally invalid submit_result does not get a field repair prompt", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string", enum: ["ACCEPT", "REJECT"] } },
+    }
+    const seen: string[] = []
+    await runSpawn(
+      dagLayer,
+      makeRepairPromptLayer(
+        [
+          { result: reply("reviewed"), submit: { wrong: "field" } },
+          { result: reply("no structured output") },
+        ],
+        seen,
+        schema,
+      ),
+      schema,
+    )
+    expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
+    expect(events.find((event) => event.type === "nodeFailed")?.trigger).toBe("verdict_fail")
+    expect(events.find((event) => event.type === "nodeFailed")?.errorClass).toBeUndefined()
+    expect(seen).toHaveLength(2)
+    expect(seen[1]).not.toContain('Field "verdict"')
+  })
+
+  it("(b5) a failed structured repair settles as schema_invalid", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string", enum: ["ACCEPT", "REJECT"] } },
+    }
+    const seen: string[] = []
+    await runSpawn(
+      dagLayer,
+      makeRepairPromptLayer(
+        [
+          { result: reply("reviewed"), submit: { verdict: "PASS" } },
+          { result: reply("still wrong"), submit: { verdict: "MAYBE" } },
+        ],
+        seen,
+        schema,
+      ),
+      schema,
+    )
+    expect(events.find((event) => event.type === "nodeFailed")?.errorClass).toBe("schema_invalid")
+    expect(seen).toHaveLength(2)
   })
 
   it("(c) schema declared, no submit_result call → nodeFailed with verdict_fail", async () => {

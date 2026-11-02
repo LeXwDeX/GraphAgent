@@ -117,6 +117,7 @@ const storeImpl = {
     ),
   getNodes: () => Effect.succeed(allRows),
   getCurrentNodes: () => Effect.succeed(currentRows),
+  getWorkflowFailureReason: () => Effect.succeed(undefined),
   getNode: (workflowID: string, nodeID: string) =>
     Effect.succeed(allRows.find((node) => node.workflowId === workflowID && node.id === nodeID)),
 }

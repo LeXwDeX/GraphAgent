@@ -1,11 +1,21 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+/** A near-miss on a present field: the payload has the field, but its value is
+ * outside the declared enum or has the wrong scalar type. Structural failures
+ * (missing fields, unparseable payloads, extra keys, array items) carry no fix. */
+export type SchemaValidationFix =
+  | { kind: "enum"; path: string; allowed: string; got: string }
+  | { kind: "type"; path: string; expected: string; got: string }
+
+export type SchemaValidationResult = { ok: true } | { ok: false; error: string; fix?: SchemaValidationFix }
+
 // Pure JSON Schema subset. Production runs this entire computation in a bounded Worker.
 export function validateAgainstSchema(
   value: unknown,
   schema: Record<string, unknown>,
-): { ok: true } | { ok: false; error: string } {
+  path: readonly string[] = [],
+): SchemaValidationResult {
   // JSON Schema allows `type` to be a single name or an array of names
   // (nullable/union types like ["string","null"]) — the value must match one.
   const type = schema["type"]
@@ -19,6 +29,16 @@ export function validateAgainstSchema(
     return {
       ok: false,
       error: `expected type ${declared.length === 1 ? `"${declared[0]}"` : JSON.stringify(declared)}, got ${describeType(value)}`,
+      ...(path.length > 0
+        ? {
+            fix: {
+              kind: "type" as const,
+              path: path.join("."),
+              expected: `type ${declared.length === 1 ? `"${declared[0]}"` : JSON.stringify(declared)}`,
+              got: describeType(value),
+            },
+          }
+        : {}),
     }
 
   if (Object.hasOwn(schema, "const") && !deepEqual(value, schema["const"]))
@@ -32,6 +52,16 @@ export function validateAgainstSchema(
     return {
       ok: false,
       error: `expected one of ${truncate(JSON.stringify(enumVals))}, got ${truncate(JSON.stringify(value))}`,
+      ...(path.length > 0
+        ? {
+            fix: {
+              kind: "enum" as const,
+              path: path.join("."),
+              allowed: truncate(JSON.stringify(enumVals)),
+              got: truncate(JSON.stringify(value)),
+            },
+          }
+        : {}),
     }
 
   if (typeof value === "number") {
@@ -123,8 +153,9 @@ export function validateAgainstSchema(
   if (narrowedProperties !== undefined && isSchemaObject(value)) {
     for (const [key, propSchema] of Object.entries(narrowedProperties)) {
       if (Object.hasOwn(value, key) && isSchemaObject(propSchema)) {
-        const result = validateAgainstSchema(value[key], propSchema)
-        if (!result.ok) return { ok: false, error: `field "${key}": ${result.error}` }
+        const result = validateAgainstSchema(value[key], propSchema, [...path, key])
+        if (!result.ok)
+          return { ok: false, error: `field "${key}": ${result.error}`, ...(result.fix ? { fix: result.fix } : {}) }
       }
     }
   }

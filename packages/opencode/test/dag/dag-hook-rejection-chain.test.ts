@@ -1,8 +1,18 @@
 // The provider transport is scripted; hooks, tools, sessions, DAG scheduling,
 // cancellation, instance disposal and durable recovery are the real services.
 // Live model choice is validated separately; these tests pin runtime semantics.
-import { expect } from "bun:test"
-import { Effect } from "effect"
+// oxlint-disable typescript-eslint/no-unsafe-type-assertion -- narrow finalizer test fixtures
+import { expect, test } from "bun:test"
+import { Context, Cause, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { BackgroundJob } from "@/background/job"
+import { SessionRunState } from "@/session/run-state"
+import { SessionStatus } from "@/session/status"
+import { SessionAbortReason } from "@/session/abort-reason"
+import { SessionID } from "@/session/schema"
+import { InstanceRef } from "@/effect/instance-ref"
+import { InstanceState } from "@/effect/instance-state"
+import { isClosingOnlyCause } from "@/session/prompt"
+import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { randomBytes } from "node:crypto"
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -196,7 +206,8 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             if (mode === "dispose") {
               expect(verify.status).toBe("failed")
               expect(verify.error_reason).toContain("MessageAbortedError")
-              expect(verify.error_reason).toContain("source unknown")
+              expect(verify.error_reason).toMatch(/reason: (shutdown|runtime-interrupt)/)
+              expect(verify.error_reason).not.toContain("source unknown")
               expect(review.status).toBe("skipped")
             }
             // Repeated recovery reads cannot create a new execution attempt.
@@ -218,3 +229,78 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
     120_000,
   )
 }
+
+async function observeFinalizerReason(
+  existing?: SessionAbortReason.Info,
+  statusSet: () => Effect.Effect<void> = () => Effect.yieldNow,
+) {
+  const sessionID = SessionID.make(`ses_finalizer_${Math.random().toString(36).slice(2)}`)
+  let observed: SessionAbortReason.Info | undefined
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scope = yield* Scope.make()
+        const context = yield* Layer.buildWithScope(
+          SessionRunState.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(BackgroundJob.Service, {
+                  list: () => Effect.succeed([]),
+                  cancel: () => Effect.succeed(undefined),
+                }),
+                Layer.mock(SessionStatus.Service, { set: statusSet }),
+              ),
+            ),
+          ),
+          scope,
+        )
+        const runs = Context.get(context, SessionRunState.Service)
+        const handle = yield* runs
+          .ensureRunningHandle(
+            sessionID,
+            Effect.sync(() => {
+              observed = SessionAbortReason.take(sessionID)
+              return {} as SessionV1.WithParts
+            }),
+            Effect.never,
+          )
+          .pipe(
+            Effect.provideService(InstanceRef, {
+              directory: "/tmp/finalizer-test",
+              worktree: "/tmp/finalizer-test",
+              project: { id: "finalizer-test" },
+            } as never),
+          )
+        const joining = yield* handle.pipe(Effect.forkScoped)
+        if (existing) SessionAbortReason.set(sessionID, existing)
+        yield* Scope.close(scope, Exit.void)
+        yield* Fiber.join(joining)
+      }),
+    ),
+  )
+  return observed
+}
+
+test("run-state finalizer preserves an existing in-flight abort reason", async () => {
+  const existing = SessionAbortReason.make("runtime-interrupt", "runtime-scope")
+  expect(await observeFinalizerReason(existing)).toEqual(existing)
+})
+
+test("run-state finalizer writes shutdown when no reason exists", async () => {
+  expect(await observeFinalizerReason()).toEqual(SessionAbortReason.make("shutdown", "session-scope"))
+})
+
+test("run-state finalizer completes when status is closing", async () => {
+  const observed = await observeFinalizerReason(undefined, () =>
+    Effect.yieldNow.pipe(Effect.andThen(Effect.die(new InstanceState.Closing("/tmp/finalizer-test")))),
+  )
+  expect(observed).toEqual(SessionAbortReason.make("shutdown", "session-scope"))
+})
+
+test("closing-only cause classification keeps mixed failures as failures", () => {
+  const closing = Cause.die(new InstanceState.Closing("/tmp/finalizer-test"))
+  expect(isClosingOnlyCause(closing)).toBe(true)
+  expect(isClosingOnlyCause(Cause.combine(closing, Cause.die(new Error("real failure"))))).toBe(false)
+  expect(isClosingOnlyCause(Cause.combine(Cause.interrupt(1), closing))).toBe(true)
+  expect(isClosingOnlyCause(Cause.combine(Cause.interrupt(1), Cause.die(new Error("real failure"))))).toBe(false)
+})

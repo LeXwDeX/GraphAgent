@@ -85,4 +85,43 @@ describe("DagStore checkpoint control sequence", () => {
       expect(yield* dagStore.getLatestCheckpointControlSeq("dag-without-controls")).toBeUndefined()
     }),
   )
+
+  it.effect("reads the reason from the latest durable WorkflowFailed event", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const dagStore = yield* DagStore.Service
+      const dagID = "dag-failure-reason"
+      yield* db.insert(EventSequenceTable).values({ aggregate_id: dagID, seq: 4 }).run().pipe(Effect.orDie)
+      yield* db
+        .insert(EventTable)
+        .values([
+          {
+            id: EventV2.ID.create(),
+            aggregate_id: dagID,
+            seq: 2,
+            type: durableType(DagEvent.WorkflowFailed),
+            data: { reason: "workspace_missing: old" },
+          },
+          {
+            id: EventV2.ID.create(),
+            aggregate_id: dagID,
+            seq: 3,
+            type: durableType(DagEvent.WorkflowFailed),
+            data: { reason: "workspace_unstamped: latest" },
+          },
+          {
+            id: EventV2.ID.create(),
+            aggregate_id: dagID,
+            seq: 4,
+            type: EventV2.versionedType(DagEvent.NodeCompleted.type, 1),
+            data: {},
+          },
+        ])
+        .run()
+        .pipe(Effect.orDie)
+
+      expect(yield* dagStore.getWorkflowFailureReason!(dagID)).toBe("workspace_unstamped: latest")
+      expect(yield* dagStore.getWorkflowFailureReason!("dag-without-failure")).toBeUndefined()
+    }),
+  )
 })

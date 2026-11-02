@@ -62,6 +62,7 @@ export function planFanOut(
     depends_on: writerIDs,
     required: writer.required,
     report_to_parent: writer.report_to_parent,
+    ...(writer.workspace ? { workspace: writer.workspace } : {}),
     prompt_template: {
       inline: [
         typeof objective === "string" ? "Workflow objective:\n{{objective}}" : "",

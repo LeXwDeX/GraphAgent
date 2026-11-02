@@ -181,7 +181,7 @@ describe("final-response failure freshness", () => {
           const sessions = Layer.mock(Session.Service, {
             get: () =>
               Effect.succeed({ id: SessionID.make(parent.sessionID), permission: [], agent: "build" } as never),
-            create: () => Effect.succeed({ id: SessionID.make(child.sessionID) } as never),
+            create: () => Effect.succeed({ id: SessionID.make(child.sessionID), directory: child.directory } as never),
           })
           const node = (yield* dag.store.getNode(workflowID, "n"))!
           const spawned = yield* spawnNode(Semaphore.makeUnsafe(1), {

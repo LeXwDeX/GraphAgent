@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -17,6 +18,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import type { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { Parameters, WorkflowTool } from "@/tool/workflow"
+import { schemaFailures } from "@/tool/schema-error"
 import { testEffect } from "../lib/effect"
 import { fingerprintBrief, type State } from "@/dag/admission"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -111,7 +113,9 @@ const resultNodes = [
   }),
 ]
 const mockNodes = (id: string) =>
-  id === "dag_status"
+  id === "dag_finishable"
+    ? [makeNodeRow({ id: "node_done", workflowId: id, name: "Done node", status: "completed", required: true, output: "done" })]
+    : id === "dag_status"
     ? [
         {
           id: "node_running",
@@ -124,6 +128,8 @@ const mockNodes = (id: string) =>
           modelId: null,
           modelProviderId: null,
           childSessionId: "ses_child",
+          directory: "/repo/.worktrees/status",
+          baseHead: "0123456789abcdef",
           output: null,
           capturedOutput: null,
           errorReason: null,
@@ -218,9 +224,28 @@ const mockWorkflowConfig = (id: string) => JSON.stringify({
 })
 
 const store = Layer.mock(DagStore.Service, {
+  getWorkflowFailureReason: (id: string) =>
+    Effect.succeed(id === "dag_workspace_failed" ? "workspace_missing: /gone/worktree" : undefined),
   getWorkflow: (id: string) =>
     Effect.succeed(
-      id === "dag_status"
+      id === "dag_workspace_failed"
+        ? {
+            id,
+            projectId: projectID,
+            sessionId: "ses_workflow_parent",
+            title: "Missing workspace",
+            directory: "/gone/worktree",
+            status: "failed",
+            config: mockWorkflowConfig(id),
+            seq: 1,
+            wakeReported: false,
+            graphRev: 1,
+            startedAt: 1,
+            completedAt: 2,
+            timeCreated: 1,
+            timeUpdated: 2,
+          }
+        : id === "dag_status"
         ? {
             id,
             projectId: projectID,
@@ -254,7 +279,7 @@ const store = Layer.mock(DagStore.Service, {
               timeCreated: 1,
               timeUpdated: 2,
             }
-          : id === "dag_paused" || id === "dag_step" || id === "dag_completed" || id === "dag_pause_failure" || id === "dag_runtime_failure" || id === "dag_runtime_extend_failure"
+          : id === "dag_paused" || id === "dag_step" || id === "dag_completed" || id === "dag_finishable" || id === "dag_pause_failure" || id === "dag_runtime_failure" || id === "dag_runtime_extend_failure"
             ? {
                 id,
                 projectId: projectID,
@@ -1149,9 +1174,38 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"status": "running"')
       expect(result.output).toContain('"id": "node_running"')
       expect(result.output).toContain('"child_session_id": "ses_child"')
+      expect(result.output).toContain('"directory": "/repo/.worktrees/status"')
+      expect(result.output).toContain('"head": "0123456789ab"')
+      expect(result.output).toContain('"last_activity_at": "1970-01-01T00:00:00.002Z"')
       expect(result.output).toContain('"mode": "standard"')
       expect(result.output).toContain('"id": "node_failed"')
       expect(result.output).toContain('"error_class": "timeout"')
+    }),
+  )
+
+  runtime.effect("status exposes the durable failure reason", () =>
+    Effect.gen(function* () {
+      const info = yield* WorkflowTool
+      const workflow = yield* info.init()
+      const result = yield* workflow.execute(
+        {
+          params: {
+            action: "status",
+            workflow_id: Dag.ID.make("dag_workspace_failed"),
+          },
+        },
+        {
+          sessionID: SessionID.make("ses_workflow_parent"),
+          messageID: MessageID.ascending(),
+          agent: "build",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        } satisfies Tool.Context,
+      )
+      expect(result.output).toContain('"status": "failed"')
+      expect(result.output).toContain('"failure_reason": "workspace_missing: /gone/worktree"')
     }),
   )
 
@@ -1412,7 +1466,7 @@ describe("workflow tool execution", () => {
         { workflowID: Dag.ID.make("dag_status"), operation: "pause" },
         { workflowID: Dag.ID.make("dag_paused"), operation: "resume" },
         { workflowID: Dag.ID.make("dag_status"), operation: "cancel" },
-        { workflowID: Dag.ID.make("dag_status"), operation: "complete" },
+        { workflowID: Dag.ID.make("dag_finishable"), operation: "complete" },
         { workflowID: Dag.ID.make("dag_step"), operation: "step" },
       ] as const
       const routed = yield* Effect.forEach(controls, (control) =>
@@ -1900,6 +1954,116 @@ describe("workflow tool execution", () => {
       expect(guidance).toContain(".yaml/.yml file")
     }),
   )
+
+  runtime.effect("bounds schema errors and points workflow messaging actions at agent", () =>
+    Effect.gen(function* () {
+      const info = yield* WorkflowTool
+      const workflow = yield* info.init()
+      const decode = Schema.decodeUnknownResult(Parameters, { onExcessProperty: "error" })
+      const marker = "DAG_952_NODE_MARKER_"
+      const long = marker.repeat(200)
+      const cases = [
+        {
+          input: {
+            params: {
+              action: "draft",
+              config: {
+                name: "large-draft",
+                objective: "prove bounded schema output",
+                nodes: [
+                  {
+                    id: "a",
+                    name: long,
+                    worker_type: "general",
+                    depends_on: [],
+                    prompt_template: { inline: long },
+                  },
+                ],
+                blocks: [{ id: "b", kind: "explore" }],
+              },
+            },
+          },
+          expected: "draft config expects",
+        },
+        {
+          input: {
+            params: { action: "extend_timeout", workflow_id: "wf", node_id: "a", timeout_ms: 900_000 },
+          },
+          expected: 'operation:"extend_timeout"',
+          expectedDetail: '["params"]["action"] "extend_timeout"',
+        },
+        {
+          input: { params: { action: "receive" } },
+          expected: "use agent",
+          expectedDetail: '["params"]["action"] "receive"',
+        },
+        {
+          input: { params: { action: "SECRET_MARKER\nprivate" } },
+          expected: "workflow call rejected",
+          expectedDetail: '["params"]["action"]',
+        },
+      ]
+      for (const item of cases) {
+        const result = decode(item.input)
+        expect(result._tag).toBe("Failure")
+        if (result._tag !== "Failure") continue
+        const text = workflow.formatValidationError?.(result.failure, item.input) ?? ""
+        expect(text).toContain(item.expected)
+        if (item.expectedDetail) expect(text).toContain(item.expectedDetail)
+        expect(text).not.toContain(marker)
+        expect(text).not.toContain("SECRET_MARKER")
+        expect(text).not.toContain("\n")
+        expect(text.length).toBeLessThan(600)
+      }
+    }),
+  )
+
+  runtime.effect("redacts dynamic record keys in real draft errors and logs", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const ctx: Tool.Context = {
+        sessionID: SessionID.make("ses_synthetic"), messageID: MessageID.ascending(), agent: "build",
+        abort: new AbortController().signal, messages: [], metadata: () => Effect.void, ask: () => Effect.void,
+      }
+      const params = { action: "draft", config: { name: "test", nodes: [{
+        id: "a", name: "a", worker_type: "general", depends_on: [], prompt_template: { inline: "test" },
+        input_mapping: { SYNTHETIC_KEY_952: 7 },
+      }] } }
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- malformed value tests the real tool decoder
+      const exit = yield* Effect.exit(workflow.execute({ params } as any, ctx))
+      expect(Exit.isFailure(exit)).toBe(true)
+      const error = Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : ""
+      expect(error).not.toContain("SYNTHETIC_KEY_952")
+      expect(error).toContain("input_mapping")
+      expect(error).toContain('["input_mapping"]["<key>"]')
+      expect(error).toContain("[0]")
+      expect(error.length).toBeLessThan(650)
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- flat malformed call must also traverse repair logging
+      const flat = yield* Effect.exit(workflow.execute(params as any, ctx))
+      expect(Exit.isFailure(flat)).toBe(true)
+      const flatError = Exit.isFailure(flat) ? String(Cause.squash(flat.cause)) : ""
+      expect(flatError).not.toContain("SYNTHETIC_KEY_952")
+      const logs = JSON.stringify(yield* logLines)
+      expect(logs).toContain("tool arguments repaired")
+      expect(logs).not.toContain("SYNTHETIC_KEY_952")
+      const valid = { ...params, config: { ...params.config, nodes: [{ ...params.config.nodes[0], input_mapping: { source: "value" } }] } }
+      const decoded = Schema.decodeUnknownResult(Parameters)({ params: valid })
+      expect(decoded._tag).toBe("Success")
+      if (decoded._tag === "Success" && decoded.success.params.action === "draft" && "nodes" in decoded.success.params.config)
+        expect(decoded.success.params.config.nodes[0].input_mapping).toEqual({ source: "value" })
+    }),
+  )
+
+  it("redacts dynamic keys for arbitrary schemas without hardcoded field names", () => {
+    const schema = Schema.Struct({ arbitrary: Schema.Array(Schema.Record(Schema.String, Schema.String)) })
+    const decoded = Schema.decodeUnknownResult(schema)({ arbitrary: [{ arbitrary: 7, SECRET_OTHER: 9 }] })
+    expect(decoded._tag).toBe("Failure")
+    if (decoded._tag !== "Failure") return
+    const failures = schemaFailures(decoded.failure, 10)
+    expect(failures.some((failure) => failure.path === '["arbitrary"][0]["<key>"]')).toBe(true)
+    expect(JSON.stringify(failures)).not.toContain("SECRET_OTHER")
+  })
+
 
   runtime.effect("status and recovery reads retain consumed deep admission audit fields", () =>
     Effect.gen(function* () {

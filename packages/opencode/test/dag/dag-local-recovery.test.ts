@@ -38,6 +38,14 @@ function node(id: string, dependsOn: string[] = []): NodeConfig {
   return { id, name: id, worker_type: "build", depends_on: dependsOn, required: true, prompt_template: { inline: id } }
 }
 
+/** Projection write times are local database defaults, not durable fields:
+ * recovery/replay rewrites rows with fresh values while the durable identity
+ * and payload must stay equal. */
+function withoutProjectionTimes<T extends { timeCreated?: number; timeUpdated?: number }>(row: T) {
+  const { timeCreated: _created, timeUpdated: _updated, ...durable } = row
+  return durable
+}
+
 const setup = Effect.fn(function* (nodes: NodeConfig[], maxAttempts = 5) {
   const { db } = yield* Database.Service
   const sessionID = SessionID.make("ses_recovery_parent")
@@ -96,14 +104,19 @@ describe("DAG local recovery", () => {
       const snapshot = { workflow: yield* dag.store.getWorkflow(id), nodes: yield* dag.store.getNodes(id) }
       for (const nodeIDs of [[], ["missing"], ["A", "A"], ["A"]]) {
         expect((yield* dag.recover(id, { nodeIDs, expectedGraphRev: rev }).pipe(Effect.result))._tag).toBe("Failure")
-        expect({ workflow: yield* dag.store.getWorkflow(id), nodes: yield* dag.store.getNodes(id) }).toEqual(snapshot)
+        expect({
+          workflow: yield* dag.store.getWorkflow(id),
+          nodes: (yield* dag.store.getNodes(id)).map(withoutProjectionTimes),
+        }).toEqual({ ...snapshot, nodes: snapshot.nodes.map(withoutProjectionTimes) })
       }
       const { db } = yield* Database.Service
       const original = Dag.parseWorkflowConfig(snapshot.workflow!.config)!
       for (const config of ["{broken", JSON.stringify({ ...original, nodes: [] })]) {
         yield* db.update(WorkflowTable).set({ config }).where(eq(WorkflowTable.id, id)).run().pipe(Effect.orDie)
         expect((yield* dag.recover(id, { nodeIDs: ["A", "B"], expectedGraphRev: rev }).pipe(Effect.result))._tag).toBe("Failure")
-        expect(yield* dag.store.getNodes(id)).toEqual(snapshot.nodes)
+        expect((yield* dag.store.getNodes(id)).map(withoutProjectionTimes)).toEqual(
+          snapshot.nodes.map(withoutProjectionTimes),
+        )
         expect((yield* dag.store.getWorkflow(id))!.graphRev).toBe(rev)
       }
     }),
@@ -135,7 +148,9 @@ describe("DAG local recovery", () => {
       expect(recovered.reused.sort()).toEqual(["A", "B"])
       expect(recovered.superseded.sort()).toEqual(["C", "D"])
       for (const key of ["A", "B"])
-        expect(yield* dag.store.getNode(id, key)).toEqual(before.find((row) => row.id === key))
+        expect(withoutProjectionTimes((yield* dag.store.getNode(id, key))!)).toEqual(
+          withoutProjectionTimes(before.find((row) => row.id === key)!),
+        )
       expect((yield* dag.store.getNode(id, "C"))?.errorReason).toBe("verification transport failed")
       expect((yield* dag.store.getNode(id, "D"))?.status).toBe("skipped")
       const retryC = recovered.replacements.find((item) => item.previous === "C")!.current
@@ -183,7 +198,10 @@ describe("DAG local recovery", () => {
       yield* events.replayAll(serialized)
       const replayed = (yield* dag.store.getWorkflow(id))!
       // Creation time is a local database default, not a durable event field.
-      expect({ workflow: { ...replayed, timeCreated: snapshot.workflow.timeCreated }, nodes: yield* dag.store.getNodes(id) }).toEqual(snapshot)
+      expect({
+        workflow: { ...replayed, timeCreated: snapshot.workflow.timeCreated },
+        nodes: (yield* dag.store.getNodes(id)).map(withoutProjectionTimes),
+      }).toEqual({ ...snapshot, nodes: snapshot.nodes.map(withoutProjectionTimes) })
     }),
   )
 

@@ -9,6 +9,7 @@ import { DatabaseMigration } from "../src/database/migration"
 
 const parent = { projectID: "p", directory: process.cwd(), sessionID: "parent" }
 const child = { ...parent, sessionID: "child" }
+const foreign = { ...parent, sessionID: "foreign" }
 const layer = (filename = ":memory:") => {
   const db = Database.layerFromPath(filename)
   return Layer.merge(db, DagMessages.layer.pipe(Layer.provide(db)))
@@ -58,6 +59,143 @@ function persist(snapshot: DagMessages.Snapshot, text?: string) {
 }
 
 describe("durable DAG agent mailboxes", () => {
+  test("identifies the authorized caller without creating a mailbox", async () =>
+    run(Effect.gen(function* () {
+      yield* seed
+      const messages = yield* DagMessages.Service
+      const { db } = yield* Database.Service
+      const parentEndpoint = value(yield* messages.identify(parent))
+      const childEndpoint = value(yield* messages.identify(child, "wf"))
+      expect(parentEndpoint).toMatchObject({ kind: "main", sessionID: "parent" })
+      expect(childEndpoint).toMatchObject({ kind: "node", sessionID: "child", workflowID: "wf", attemptID: "child:0" })
+      expect(value(yield* messages.identify(child))).toEqual(childEndpoint)
+      expect(yield* messages.identify(foreign, "wf")).toEqual({ ok: false, reason: "unauthorized" })
+      expect(yield* messages.identify({ ...child, projectID: "wrong" })).toEqual({ ok: false, reason: "unauthorized" })
+      expect(yield* messages.identify({ ...child, directory: "/wrong" })).toEqual({ ok: false, reason: "unauthorized" })
+      expect((yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM agent_mailbox`))?.n).toBe(0)
+      expect(value(yield* messages.identify(child)).id).toBe(childEndpoint.id)
+      yield* db.run(sql`UPDATE session SET parent_id = 'foreign' WHERE id = 'child'`)
+      expect(yield* messages.identify(child)).toEqual({ ok: false, reason: "unauthorized" })
+      expect(yield* messages.receive(child)).toEqual({ ok: false, reason: "unauthorized" })
+      yield* db.run(sql`UPDATE session SET parent_id = 'parent' WHERE id = 'child'`)
+      yield* db.run(sql`UPDATE workflow_node SET status = 'queued' WHERE id = 'n'`)
+      expect(yield* messages.identify(child)).toEqual({ ok: false, reason: "unauthorized" })
+      yield* db.run(sql`UPDATE workflow_node SET status = 'running' WHERE id = 'n'`)
+      value(yield* messages.send(parent, request()))
+      yield* db.run(sql`UPDATE workflow_node SET child_session_id = NULL, replan_attempts = 1 WHERE id = 'n'`)
+      expect(yield* messages.identify(child)).toEqual({ ok: false, reason: "unauthorized" })
+    }).pipe(Effect.orDie)))
+
+  test("only the authenticated owner can fail an orphaned current attempt", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const messages = yield* DagMessages.Service
+        const { db } = yield* Database.Service
+        yield* db.run(sql`DELETE FROM session WHERE id = 'child'`)
+        const guard = { workflowID: "wf", nodeID: "n", attemptID: DagMessages.nodeAttemptID("child", 0) }
+        expect(yield* messages.guard(foreign, { ...guard, failureReason: "exec_failed" }, Effect.void)).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.guard(child, { ...guard, failureReason: "exec_failed" }, Effect.void)).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.guard(parent, { ...guard, attemptID: "child:1", failureReason: "exec_failed" }, Effect.void)).toEqual({ ok: false, reason: "stale_attempt" })
+        expect(yield* messages.guard(parent, guard, Effect.void)).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.guard(parent, { ...guard, failureReason: "exec_failed", close: false }, Effect.void)).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.guard(parent, { ...guard, failureReason: "exec_failed", expectedAcceptedRevision: 1 }, Effect.void)).toEqual({ ok: false, reason: "stale_input" })
+        value(yield* messages.guard(parent, { ...guard, failureReason: "exec_failed" }, db.run(sql`UPDATE workflow_node SET status = 'failed' WHERE id = 'n'`).pipe(Effect.orDie)))
+        expect((yield* db.get<{ status: string }>(sql`SELECT status FROM workflow_node WHERE id = 'n'`))?.status).toBe("failed")
+        expect(value(yield* messages.metadata(parent, "wf", "n", guard.attemptID)).closedReason).toBe("exec_failed")
+      }),
+    ))
+  test("cross-worktree endpoints use durable parent and current child identities", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const messages = yield* DagMessages.Service
+        const { db } = yield* Database.Service
+        const workspace = path.join(process.cwd(), "linked-worktree")
+        const worker = { ...child, directory: workspace }
+        yield* db.run(sql`UPDATE session SET directory = ${workspace} WHERE id = 'child'`)
+        yield* db.run(sql`UPDATE workflow_node SET directory = ${workspace} WHERE id = 'n'`)
+
+        const inbound = value(yield* messages.send(parent, request()))
+        expect(value(yield* messages.receive(worker)).map((m) => m.id)).toEqual([inbound.id])
+        const frozen = value(yield* messages.freeze(worker, "turn"))
+        expect(yield* messages.associate(worker, frozen.id)).toEqual({ ok: false, reason: "unassociated" })
+        yield* persist(frozen)
+        expect(value(yield* messages.associate(worker, frozen.id)).associated).toBe(true)
+        const outbound = value(yield* messages.send(worker, {
+          workflowID: "wf", idempotencyKey: "reply", content: "result", replyTo: inbound.id,
+        }))
+        expect(value(yield* messages.receive(parent)).map((m) => m.id)).toEqual([outbound.id])
+        const capture = yield* messages.guard(worker, {
+          workflowID: "wf", nodeID: "n", attemptID: request().attemptID!, snapshotID: frozen.id, close: false,
+        }, Effect.succeed("captured"))
+        expect(value(capture)).toBe("captured")
+        expect(yield* messages.guard({ ...worker, directory: parent.directory }, {
+          workflowID: "wf", nodeID: "n", attemptID: request().attemptID!, snapshotID: frozen.id,
+        }, Effect.void)).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.send({ ...worker, projectID: "other" }, {
+          workflowID: "wf", idempotencyKey: "foreign", content: "no",
+        })).toEqual({ ok: false, reason: "unauthorized" })
+        yield* db.run(sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES ('other',${workspace},'[]',1,1)`)
+        yield* db.run(sql`UPDATE session SET project_id = 'other' WHERE id = 'child'`)
+        expect(yield* messages.freeze({ ...worker, projectID: "other" }, "foreign-project")).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.send(parent, request("foreign-project"))).toEqual({ ok: false, reason: "closed" })
+        yield* db.run(sql`UPDATE session SET project_id = 'p' WHERE id = 'child'`)
+        yield* db.run(sql`UPDATE session SET parent_id = 'foreign' WHERE id = 'child'`)
+        expect(yield* messages.freeze(worker, "wrong-parent")).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.send(parent, request("wrong-parent"))).toEqual({ ok: false, reason: "closed" })
+        yield* db.run(sql`UPDATE session SET parent_id = 'parent' WHERE id = 'child'`)
+        yield* db.run(sql`UPDATE workflow_node SET directory = ${workspace + "-other"} WHERE id = 'n'`)
+        expect(yield* messages.freeze(worker, "wrong-binding")).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* messages.send(parent, request("wrong-binding"))).toEqual({ ok: false, reason: "closed" })
+        yield* db.run(sql`UPDATE workflow_node SET directory = ${workspace} WHERE id = 'n'`)
+        yield* db.run(sql`UPDATE session SET directory = ${workspace} WHERE id = 'parent'`)
+        expect(yield* messages.freeze(worker, "wrong-owner")).toEqual({ ok: false, reason: "unauthorized" })
+        yield* db.run(sql`UPDATE session SET directory = ${parent.directory} WHERE id = 'parent'`)
+        yield* db.run(sql`UPDATE workflow_node SET superseded = 1 WHERE id = 'n'`)
+        expect(yield* messages.freeze(worker, "superseded")).toEqual({ ok: false, reason: "unauthorized" })
+        yield* db.run(sql`UPDATE workflow_node SET superseded = 0, replan_attempts = 1 WHERE id = 'n'`)
+        expect(yield* messages.guard(worker, {
+          workflowID: "wf", nodeID: "n", attemptID: request().attemptID!, snapshotID: frozen.id,
+        }, Effect.void)).toEqual({ ok: false, reason: "stale_attempt" })
+        yield* messages.reconcile(worker)
+        expect(value(yield* messages.metadata(parent, "wf", "n", request().attemptID)).closedReason).toBe("attempt_replaced")
+        const next = value(yield* messages.freeze(worker, "next-turn"))
+        value(yield* messages.associate(worker, next.id))
+        expect(value(yield* messages.guard(worker, {
+          workflowID: "wf", nodeID: "n", attemptID: DagMessages.nodeAttemptID("child", 1), snapshotID: next.id,
+        }, Effect.succeed("settled")))).toBe("settled")
+      }),
+    ))
+  test("a replaced child cannot reopen its historical mailbox as a main session", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const messages = yield* DagMessages.Service
+        const { db } = yield* Database.Service
+        value(yield* messages.send(parent, request()))
+        yield* db.run(sql`UPDATE workflow_node SET child_session_id = NULL, replan_attempts = 1 WHERE id = 'n'`)
+        expect(yield* messages.freeze(child, "stale")).toEqual({ ok: false, reason: "unauthorized" })
+        yield* messages.reconcile(child)
+        expect(value(yield* messages.metadata(parent, "wf", "n", request().attemptID)).closedReason).toBe("attempt_replaced")
+      }),
+    ))
+  test("a restarted node cannot authorize its previous child while pending or queued", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const messages = yield* DagMessages.Service
+        const { db } = yield* Database.Service
+        for (const status of ["pending", "queued"]) {
+          yield* db.run(sql`UPDATE workflow_node SET status = ${status}, replan_attempts = 1 WHERE id = 'n'`)
+          expect(yield* messages.freeze(child, status)).toEqual({ ok: false, reason: "unauthorized" })
+          expect(yield* messages.send(child, { workflowID: "wf", idempotencyKey: status, content: "old" })).toEqual({
+            ok: false,
+            reason: "unauthorized",
+          })
+        }
+      }),
+    ))
   test("separate processes claim one durable result nudge and reopen preserves exhaustion", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "nudge.sqlite")
@@ -619,6 +757,20 @@ describe("durable DAG agent mailboxes", () => {
           reason: "detached",
         })
         expect(yield* m.send(child, { ...out, idempotencyKey: "new" })).toEqual({ ok: false, reason: "closed" })
+      }),
+    ))
+
+  test("latestMessageAt authorizes workflow scope in the same transaction", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const messages = yield* DagMessages.Service
+        const latest = messages.latestMessageAt!
+        expect(yield* latest(parent, "wf")).toEqual({ ok: true, value: undefined })
+        value(yield* messages.send(parent, request()))
+        expect(value(yield* latest(child, "wf"))).toBeGreaterThan(0)
+        expect(yield* latest(parent, "missing")).toEqual({ ok: false, reason: "unauthorized" })
+        expect(yield* latest(foreign, "wf")).toEqual({ ok: false, reason: "unauthorized" })
       }),
     ))
 

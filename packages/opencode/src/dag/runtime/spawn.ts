@@ -30,6 +30,7 @@
  * (Level 2) is a documented boundary — see eval.ts.
  */
 
+import path from "node:path"
 import type { TriggerResult } from "@/hook/trigger-result"
 import { HookTurnContext } from "@/hook/turn-context"
 import { BackgroundJob } from "@/background/job"
@@ -51,28 +52,34 @@ import type { VerdictEvidence } from "../review-lifecycle"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
-import { childFailureReason } from "./child-failure-reason"
+import { childAbort, childFailureReason } from "./child-failure-reason"
 import { InstanceRef } from "@/effect/instance-ref"
-import { isTransitionRejection, isNodeTerminalStatus } from "@opencode-ai/core/dag/core/types"
+import {
+  isTransitionRejection,
+  isNodeTerminalStatus,
+  isTerminalWorkflowStatusValue,
+} from "@opencode-ai/core/dag/core/types"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
+  getLastValidationFix,
   registerFinalResponseSession,
   clearFinalResponseSession,
   settleCapturedOutput,
   settlePlainTextOutput,
 } from "./capture"
-import { captureFinalResponse, finalAssistantText, outputLimitReason } from "./final-response"
+import { captureFinalResponse, finalAssistantText, outputLimitReason, repairPrompt } from "./final-response"
 import {
   commitOutputFileRef,
   ensureReportAreaGitignore,
+  reportAreaDirective,
   verifyOutputFileRef,
   type ManagedOutputFileRef,
 } from "./output-ref"
-import { artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
+import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -80,6 +87,19 @@ import { ProviderTransform } from "@/provider/transform"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 type PromptParts = SessionPrompt.PromptInput["parts"]
+
+/** #949: the system context a spawned node receives about its execution
+ * location. The value is stable for the attempt: HEAD is snapshotted before
+ * the first prompt. */
+export function dagExecutionContext(directory: string | undefined, head: string | undefined) {
+  if (!directory) return undefined
+  return [
+    "<dag-execution-context>",
+    `  Execution directory: ${directory}`,
+    `  HEAD at start: ${head ?? "unknown (not a git repository, or no commit yet)"}`,
+    "</dag-execution-context>",
+  ].join("\n")
+}
 
 export interface NodeSpawnInput {
   dagID: string
@@ -91,8 +111,12 @@ export interface NodeSpawnInput {
   onAdmitted?: Effect.Effect<void, never>
   parentSessionID: string
   promptParts: PromptParts
-  /** Workflow execution directory — keys the report-area gitignore guarantee (Train B, B4). */
+  /** DAG-LOC-01 owner directory — decides workflow ownership. Used as the
+   * execution fallback only when executionDirectory is omitted. */
   directory?: string
+  /** #943: resolved node execution directory (absolute realpath). Omit to keep
+   * executing in the owner directory. Keys the report area and child instance. */
+  executionDirectory?: string
   /** Verified completed dependency artifacts, scoped to this child session. */
   inputArtifacts?: ManagedOutputFileRef[]
   outputSchema?: Record<string, unknown>
@@ -253,27 +277,24 @@ export function makeDeadlineWatcher(
         // leave a RUNNING node past its cap with nobody left to fail it. A
         // rejected guard means someone else already terminalized the node,
         // which counts as done.
+        const usedMs = node.startedAt === null ? undefined : Math.max(0, now - node.startedAt)
+        const reason =
+          `timeout extensions exhausted (${extensions}/${maxExtensions}); timed out at the cap` +
+          (usedMs === undefined ? "" : ` after ${usedMs}ms`) +
+          ` (configured cap ${maxExtensions})`
         const attempt = {
           replanAttempts: node.replanAttempts,
           ...(node.childSessionId ? { childSessionID: node.childSessionId } : {}),
         }
-        const outcome = yield* dag
-          .nodeFailed(
-            input.dagID,
-            input.nodeID,
-            `timeout extensions exhausted (${extensions}/${maxExtensions})`,
-            "timeout",
-            attempt,
-          )
-          .pipe(
-            Effect.as("failed" as const),
-            Effect.catchIf(isTransitionRejection, () =>
-              Effect.logWarning(
-                "nodeFailed (timeout extensions exhausted) guard rejected — node attempt is no longer current",
-              ).pipe(Effect.as("stale" as const)),
-            ),
-            Effect.exit,
-          )
+        const outcome = yield* dag.nodeFailed(input.dagID, input.nodeID, reason, "timeout", attempt).pipe(
+          Effect.as("failed" as const),
+          Effect.catchIf(isTransitionRejection, () =>
+            Effect.logWarning(
+              "nodeFailed (timeout extensions exhausted) guard rejected — node attempt is no longer current",
+            ).pipe(Effect.as("stale" as const)),
+          ),
+          Effect.exit,
+        )
         if (Exit.isSuccess(outcome)) {
           if (outcome.value === "stale") return
           if (node.childSessionId) {
@@ -284,7 +305,9 @@ export function makeDeadlineWatcher(
               replanAttempts: node.replanAttempts,
               childSessionID: node.childSessionId,
             })
-            yield* promptSvc.cancel(node.childSessionId as never).pipe(Effect.ignore)
+            yield* boundedCancel(
+              promptSvc.cancel(node.childSessionId as never, { reason: childAbort("deadline-cap", "deadline-watcher") }),
+            )
           }
           return
         }
@@ -370,6 +393,49 @@ function sleepUntilDeadlineMs(deadlineMs: number | null, now: number, overdueMs:
   if (deadlineMs > now) return Math.max(deadlineMs - now, 10)
   return overdueMs
 }
+
+/**
+ * Best-effort bounded child cancellation. SessionAdmission.cancel is
+ * uninterruptible and waits for the commit lock, so the timeout is not a hard
+ * limit: an uninterruptible loser can keep the race from settling. The warning
+ * records that the cancellation is still running instead of pretending it
+ * finished.
+ */
+export const boundedCancel = <E, R>(
+  effect: Effect.Effect<void, E, R>,
+  label = "session-cancel",
+  timeoutMs = 5_000,
+): Effect.Effect<void, never, R> =>
+  Effect.gen(function* () {
+    const outcome = yield* Effect.race(
+      effect.pipe(Effect.ignore, Effect.as("completed" as const)),
+      Effect.sleep(timeoutMs).pipe(Effect.as("timed-out" as const)),
+    )
+    if (outcome === "timed-out") {
+      yield* Effect.logWarning(
+        "session cancellation exceeded its bound; the uninterruptible admission wait may still be running",
+        { label },
+      )
+    }
+  })
+
+/**
+ * Fork bounded cancellation into the owning scope. The caller returns at
+ * once (so an evalLock is not held behind the commit lock); the time bound
+ * keeps the detached work from running forever after the caller gives up.
+ * Typed errors are ignored; defects stay visible to the scope supervisor.
+ */
+export const forkCancel = <E, R>(
+  effect: Effect.Effect<void, E, R>,
+  label = "session-cancel",
+): Effect.Effect<void, never, R | Scope.Scope> =>
+  boundedCancel(effect, label).pipe(
+    Effect.forkScoped,
+    // Let the detached fiber reach its first suspension point. This does not
+    // wait for cancellation to finish; it only makes the start observable.
+    Effect.andThen(Effect.yieldNow),
+    Effect.asVoid,
+  )
 
 export function spawnNode(
   semaphore: Semaphore.Semaphore,
@@ -482,14 +548,38 @@ export function spawnNode(
       }),
     ]
     const instance = yield* Effect.serviceOption(InstanceRef)
-    const worktree =
-      (Option.isSome(instance) ? instance.value?.worktree : undefined) ?? input.directory ?? process.cwd()
+    const ambient = Option.isSome(instance) ? instance.value : undefined
+    // #943: the node's execution directory is explicit. Legacy callers that
+    // omit it keep the owner/ambient behavior unchanged, including non-git
+    // directories (no worktree requirement here).
+    const executionDirectory = input.executionDirectory ?? input.directory ?? ambient?.directory
+    const executionReal = executionDirectory ? DagLocation.canonicalDirectory(executionDirectory) : undefined
+    const ambientReal = ambient?.directory ? DagLocation.canonicalDirectory(ambient.directory) : undefined
+    const directory = ambient?.directory ?? executionDirectory ?? process.cwd()
+    const { worktree, boundary } = artifactPermissionBase(
+      directory,
+      ambient?.worktree ?? directory,
+      executionReal ?? directory,
+    )
     if (input.inputArtifacts?.length) {
       if (worktree)
         childPermission.push(
           ...artifactReadPermissions(input.inputArtifacts, worktree, agent.permission, childPermission),
         )
     }
+    // Child prompts and their tools resolve `InstanceState` from the fiber.
+    // A bound workspace must therefore execute inside that directory's
+    // instance, not the owner's ambient one. The module is imported lazily:
+    // InstanceStore tears down instance-scoped services and its static import
+    // closes a bootstrap → DAG → spawn cycle (same pattern as session.ts).
+    // Harness runtimes without InstanceStore keep the old direct path; the
+    // directory assertion below still catches a child that ignored it.
+    const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
+    const instanceStore = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
+    const inExecution = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      instanceStore && executionReal && executionReal !== ambientReal
+        ? instanceStore.provide({ directory: executionReal }, effect)
+        : effect
 
     // Resolve timeout and compute the absolute deadline at ADMISSION time
     // (P0-2). The deadline is persisted on the durable queued row so
@@ -613,6 +703,87 @@ export function spawnNode(
           // survives). This is the revalidation that closes the spawn window the
           // nodeQueued guard alone leaves open between its read and its publish.
           if (!(yield* dag.store.tryClaimAdoption(input.dagID))) return
+          // #948: model resolution, permit acquisition, and the pause hold all
+          // happen before this point, so the scheduling-round workspace check
+          // can be stale. Revalidate the shared execution verdict before the
+          // child session exists; a disappeared workspace fails the WORKFLOW,
+          // not this node, and never cascades into per-node errors.
+          //
+          // The check is fail-closed whenever this spawn has execution context
+          // (the loop always passes the workflow directory). A read error or a
+          // vanished row must not create a child. Only a context-free direct
+          // call (unit harness) keeps the old permissive seam.
+          const expectedDirectory = input.directory ?? (Option.isSome(instance) ? instance.value?.directory : undefined)
+          const expectedProject = Option.isSome(instance) ? instance.value?.project?.id : undefined
+          const readWorkspace = Effect.fn("DagRuntime.spawn.readWorkspace")(function* () {
+            for (let attempt = 0; attempt <= 2; attempt++) {
+              const outcome = yield* Effect.exit(Effect.suspend(() => dag.store.getWorkflow(input.dagID)))
+              if (Exit.isSuccess(outcome)) return outcome.value
+              if (attempt < 2) yield* Effect.sleep(100)
+            }
+            // Only a call with execution context is fail-closed. Context-free
+            // unit harnesses keep the historical permissive seam.
+            if (!expectedDirectory && !expectedProject) return undefined
+            return yield* Effect.fail(new Error(`DAG spawn could not read workflow ${input.dagID} after retries`))
+          })
+          const ownsExpectedLocation = (workflow: DagStore.WorkflowRow) =>
+            (!expectedDirectory ||
+              (workflow.directory !== null &&
+                DagLocation.canonicalDirectory(workflow.directory) ===
+                  DagLocation.canonicalDirectory(expectedDirectory))) &&
+            (!expectedProject || workflow.projectId === expectedProject)
+          const hasExecutionContext = expectedDirectory !== undefined || expectedProject !== undefined
+          const spawnable = yield* Effect.gen(function* () {
+            const current = yield* readWorkspace()
+            if (!current) {
+              if (hasExecutionContext) return yield* Effect.fail(new Error(`DAG spawn lost workflow ${input.dagID}`))
+              return true
+            }
+            const failWorkspace = (reason: string) =>
+              dag
+                .failUnrecoverable(input.dagID, reason)
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterrupts(cause)
+                      ? Effect.interrupt
+                      : Effect.logWarning(
+                          "DAG spawn could not terminalize a workflow with an unusable execution directory",
+                          { dagID: input.dagID, nodeID: input.nodeID, cause },
+                        ),
+                  ),
+                )
+            const location = DagLocation.resolveExecution(current)
+            if (location._tag === "ok") {
+              if (!ownsExpectedLocation(current)) return false
+              // #943: a node-level workspace is revalidated here too. The
+              // workflow row check above covers the bound workflow directory;
+              // the node override can point at a different worktree that was
+              // removed or replaced since the graph was persisted.
+              if (
+                input.executionDirectory &&
+                expectedDirectory &&
+                DagLocation.canonicalDirectory(input.executionDirectory) !==
+                  DagLocation.canonicalDirectory(expectedDirectory)
+              ) {
+                const nodeWorkspace = DagLocation.resolveWorkspace(input.executionDirectory, expectedDirectory)
+                if (nodeWorkspace._tag === "invalid") {
+                  yield* failWorkspace(`workspace_invalid: ${nodeWorkspace.reason}`)
+                  return false
+                }
+              }
+              return true
+            }
+            yield* failWorkspace(DagLocation.executionFailureReason(location))
+            const settled = yield* Effect.exit(Effect.suspend(() => dag.store.getWorkflow(input.dagID)))
+            return (
+              Exit.isSuccess(settled) &&
+              !!settled.value &&
+              !isTerminalWorkflowStatusValue(settled.value.status) &&
+              DagLocation.resolveExecution(settled.value)._tag === "ok" &&
+              ownsExpectedLocation(settled.value)
+            )
+          })
+          if (!spawnable) return
           // A permit or pause wait may outlive the scheduling-round check.
           // Validate again before the child can consume or read its inputs.
           yield* Effect.forEach(input.inputArtifacts ?? [], verifyOutputFileRef, { discard: true })
@@ -626,15 +797,42 @@ export function spawnNode(
             agent: agent.name,
             model: { id: model.modelID, providerID: model.providerID },
             permission: childPermission,
+            ...(executionDirectory ? { directory: executionDirectory } : {}),
           })
           childSessionID = childSession.id as string
+          // #943: a child that silently falls back to the ambient instance
+          // would run in the wrong checkout — exactly the incident this binds
+          // away. An omitted session directory resolves to the ambient one;
+          // test harnesses that model only that ambient path therefore pass,
+          // while any real fallback to a different directory fails loudly.
+          const childDirectory = childSession.directory ?? ambient?.directory
+          if (executionReal && (!childDirectory || DagLocation.canonicalDirectory(childDirectory) !== executionReal)) {
+            return yield* Effect.die(
+              new Error(
+                `DAG child session ${childSession.id} has directory "${childDirectory ?? "<missing>"}" but the node is bound to "${executionDirectory}"`,
+              ),
+            )
+          }
+
+          // #949: snapshot where this attempt runs and the HEAD it starts from.
+          // Both are optional: non-git directories have no HEAD.
+          const baseHead = executionDirectory ? DagLocation.gitHead(executionDirectory) : undefined
 
           // A concurrent replan(cancel/restart) may have terminalized the node
           // while it waited for the permit. nodeStarted's guard rejects; cancel
           // the just-created child session and stop — the winning control op is
           // the sole terminalization, no spurious NodeFailed.
           const terminalized = yield* dag
-            .nodeStarted(input.dagID, input.nodeID, childSession.id, deadlineMs, input.reportToParent, executionAttempt)
+            .nodeStarted(
+              input.dagID,
+              input.nodeID,
+              childSession.id,
+              deadlineMs,
+              input.reportToParent,
+              executionAttempt,
+              executionDirectory,
+              baseHead,
+            )
             .pipe(
               Effect.map(() => false),
               Effect.catchIf(isTransitionRejection, () =>
@@ -646,7 +844,9 @@ export function spawnNode(
                     replanAttempts: input.node.replanAttempts,
                     childSessionID: childSession.id,
                   })
-                  yield* promptSvc.cancel(childSession.id).pipe(Effect.catch(() => Effect.void))
+                  yield* forkCancel(
+                    promptSvc.cancel(childSession.id, { reason: childAbort("admission-rejected", "dag-loop") }),
+                  )
                   yield* Effect.logWarning(
                     `Node ${input.nodeID} was terminalized during queue wait — child session cancelled, no spurious failure published`,
                   )
@@ -660,7 +860,13 @@ export function spawnNode(
                   nodeID: input.nodeID,
                   replanAttempts: input.node.replanAttempts,
                   childSessionID: childSession.id,
-                }).pipe(Effect.andThen(promptSvc.cancel(childSession.id).pipe(Effect.ignore))),
+                }).pipe(
+                  Effect.andThen(
+                    forkCancel(
+                      promptSvc.cancel(childSession.id, { reason: childAbort("admission-error", "dag-loop") }),
+                    ),
+                  ),
+                ),
               ),
             )
           if (terminalized) return
@@ -680,7 +886,7 @@ export function spawnNode(
           const messageService = yield* Effect.serviceOption(DagMessages.Service)
           const workflow = Option.isSome(messageService) ? yield* dag.store.getWorkflow(input.dagID) : undefined
           const caller = workflow?.directory
-            ? { projectID: workflow.projectId, directory: workflow.directory, sessionID: childSession.id }
+            ? { projectID: workflow.projectId, directory: childSession.directory, sessionID: childSession.id }
             : undefined
           const readSettlement = Effect.fn("DagRuntime.spawn.readSettlement")(function* () {
             const updatedNode = yield* dag.store.getNode(input.dagID, input.nodeID).pipe(Effect.orDie)
@@ -782,16 +988,27 @@ export function spawnNode(
             yield* SettingsHook.landSystemMessages(started, { sessionID: childSession.id })
             if (hookStart) for (const text of started.additionalContexts) yield* hookStart.append(childSession.id, text)
           }
-          let result = yield* promptSvc.prompt(
-            {
-              messageID: MessageID.ascending(),
-              sessionID: childSession.id,
-              model,
-              agent: agent.name,
-              ...(input.variant ? { variant: input.variant } : {}),
-              parts: input.promptParts,
-            },
-            { internalDelegation: true },
+          const reportDirective = yield* reportAreaDirective(executionDirectory)
+          const parts: PromptParts = reportDirective
+            ? [...input.promptParts, { type: "text", text: reportDirective }]
+            : input.promptParts
+          // #949: the child must be able to tell where it runs and which HEAD
+          // it started from. Only the DAG path injects this; the shared
+          // environment prompt keeps its existing content.
+          const executionContext = dagExecutionContext(executionDirectory, baseHead)
+          let result = yield* inExecution(
+            promptSvc.prompt(
+              {
+                messageID: MessageID.ascending(),
+                sessionID: childSession.id,
+                model,
+                agent: agent.name,
+                ...(executionContext ? { system: executionContext } : {}),
+                ...(input.variant ? { variant: input.variant } : {}),
+                parts,
+              },
+              { internalDelegation: true },
+            ),
           )
           // A nudge or stale-input continuation is still the same live attempt.
           // The finalizer is installed before settlement can publish a terminal
@@ -957,24 +1174,26 @@ export function spawnNode(
                   // submit_result needs its capture slot re-armed for the continued turn.
                   if (input.outputSchema && input.resultProtocol !== "final_response")
                     registerCaptureSlot(childSession.id, input.outputSchema)
-                  result = yield* promptSvc.prompt(
-                    {
-                      messageID: MessageID.ascending(),
-                      sessionID: childSession.id,
-                      model,
-                      agent: agent.name,
-                      ...(input.variant ? { variant: input.variant } : {}),
-                      parts: [
-                        {
-                          type: "text",
-                          text:
-                            input.outputSchema && input.resultProtocol !== "final_response"
-                              ? "Your previous turn hit the output token limit. Do not redo the work. If the work is complete, call submit_result with your full result matching the schema from your instructions and end your turn; otherwise finish the remaining work first."
-                              : "Your previous turn hit the output token limit. Do not redo the work; finish and emit only the final response now.",
-                        },
-                      ],
-                    },
-                    { continueToolBudget: true, internalDelegation: true },
+                  result = yield* inExecution(
+                    promptSvc.prompt(
+                      {
+                        messageID: MessageID.ascending(),
+                        sessionID: childSession.id,
+                        model,
+                        agent: agent.name,
+                        ...(input.variant ? { variant: input.variant } : {}),
+                        parts: [
+                          {
+                            type: "text",
+                            text:
+                              input.outputSchema && input.resultProtocol !== "final_response"
+                                ? "Your previous turn hit the output token limit. Do not redo the work. If the work is complete, call submit_result with your full result matching the schema from your instructions and end your turn; otherwise finish the remaining work first."
+                                : "Your previous turn hit the output token limit. Do not redo the work; finish and emit only the final response now.",
+                          },
+                        ],
+                      },
+                      { continueToolBudget: true, internalDelegation: true },
+                    ),
                   )
                   continuedFromLength = true
                   if (Option.isSome(messageService) && caller) {
@@ -1017,7 +1236,7 @@ export function spawnNode(
                       nodeID: input.nodeID,
                       reason: "unassociated",
                     })
-                  const captured = yield* captureFinalResponse({
+                  let captured = yield* captureFinalResponse({
                     store: dag.store,
                     sessionID: childSession.id,
                     message: result,
@@ -1029,6 +1248,49 @@ export function spawnNode(
                       attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
                     },
                   })
+                  const lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
+                  // A near-miss on a present field gets one bounded correction
+                  // turn in the same attempt. Structural failures (unparseable,
+                  // missing fields, wrong root type) keep failing immediately.
+                  if (!captured.ok && captured.fix && !lengthLimited) {
+                    if (!(yield* claimResubmission)) return
+                    const repair = captured.fix
+                    result = yield* inExecution(
+                      promptSvc.prompt(
+                        {
+                          messageID: MessageID.ascending(),
+                          sessionID: childSession.id,
+                          model,
+                          agent: agent.name,
+                          ...(input.variant ? { variant: input.variant } : {}),
+                          parts: [{ type: "text", text: repairPrompt(repair) }],
+                        },
+                        { continueToolBudget: true, internalDelegation: true },
+                      ),
+                    )
+                    if (Option.isSome(messageService) && caller) {
+                      inputSnapshot = yield* messageService.value.snapshotForTurn(caller, result.info.id)
+                      snapshotID = inputSnapshot?.ok ? inputSnapshot.value?.id : undefined
+                      if (!snapshotID)
+                        yield* new Dag.StaleMessageInputError({
+                          dagID: input.dagID,
+                          nodeID: input.nodeID,
+                          reason: "unassociated",
+                        })
+                    }
+                    captured = yield* captureFinalResponse({
+                      store: dag.store,
+                      sessionID: childSession.id,
+                      message: result,
+                      snapshotID,
+                      caller,
+                      guard: {
+                        workflowID: input.dagID,
+                        nodeID: input.nodeID,
+                        attemptID: DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts),
+                      },
+                    })
+                  }
                   if (!captured.ok && (captured.code === "stale_input" || captured.code === "unassociated"))
                     yield* new Dag.StaleMessageInputError({
                       dagID: input.dagID,
@@ -1045,24 +1307,40 @@ export function spawnNode(
                       )
                     : ({
                         kind: "fail",
-                        reason: result.info.finish === "length" ? yield* lengthReason : captured.reason,
+                        reason: lengthLimited ? yield* lengthReason : captured.reason,
                       } as const)
+                  // A captured-but-invalid payload is a schema failure, not a
+                  // genuine REJECT/FAIL verdict. The length cap keeps its own
+                  // existing classification.
+                  const schemaInvalid = !captured.ok && captured.schemaInvalid === true && !lengthLimited
                   yield* (
                     settlement.kind === "complete"
                       ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
                           ...settlementAttempt,
                           inputSnapshotID: snapshotID,
                         })
-                      : dag.nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", {
-                          ...settlementAttempt,
-                          inputSnapshotID: snapshotID,
-                        })
+                      : dag.nodeFailed(
+                          input.dagID,
+                          input.nodeID,
+                          settlement.reason,
+                          "verdict_fail",
+                          {
+                            ...settlementAttempt,
+                            inputSnapshotID: snapshotID,
+                          },
+                          schemaInvalid ? "schema_invalid" : undefined,
+                        )
                   ).pipe(
                     Effect.catchIf(isTransitionRejection, () =>
                       Effect.logWarning("final-response settlement guard rejected — node already terminal"),
                     ),
                   )
                 } else if (input.outputSchema) {
+                  // #956: the tool already told the model which present field
+                  // failed. Keep that near-miss for the single repair turn;
+                  // structural failures record no fix and keep failing.
+                  const lastFix = getLastValidationFix(childSession.id)
+                  let schemaFix = lastFix
                   clearCaptureSlot(childSession.id)
                   let verdict = yield* readSettlement()
                   if (!verdict) return
@@ -1076,26 +1354,31 @@ export function spawnNode(
                   if (verdict.settlement.kind === "fail" && verdict.neverCalled && !lengthLimited) {
                     if (!(yield* claimResubmission)) return
                     registerCaptureSlot(childSession.id, input.outputSchema)
-                    result = yield* promptSvc.prompt(
-                      {
-                        messageID: MessageID.ascending(),
-                        sessionID: childSession.id,
-                        model,
-                        agent: agent.name,
-                        ...(input.variant ? { variant: input.variant } : {}),
-                        parts: [
-                          {
-                            type: "text",
-                            text: `You ended your turn without calling the submit_result tool, so this node recorded no structured output. Do not redo the work. If tools remain available, call submit_result with your full result matching the schema from your instructions. This follow-up retains your existing tool-call budget. If tools are disabled because that budget is exhausted, report the blocker in text; the node cannot succeed without a submitted result.`,
-                          },
-                        ],
-                      },
-                      { continueToolBudget: true, internalDelegation: true },
+                    result = yield* inExecution(
+                      promptSvc.prompt(
+                        {
+                          messageID: MessageID.ascending(),
+                          sessionID: childSession.id,
+                          model,
+                          agent: agent.name,
+                          ...(input.variant ? { variant: input.variant } : {}),
+                          parts: [
+                            {
+                              type: "text",
+                              text: lastFix
+                                ? `${repairPrompt(lastFix)} Call submit_result with the corrected payload and end your turn. If tools remain available, keep your existing tool-call budget.`
+                                : `You ended your turn without calling the submit_result tool, so this node recorded no structured output. Do not redo the work. If tools remain available, call submit_result with your full result matching the schema from your instructions. This follow-up retains your existing tool-call budget. If tools are disabled because that budget is exhausted, report the blocker in text; the node cannot succeed without a submitted result.`,
+                            },
+                          ],
+                        },
+                        { continueToolBudget: true, internalDelegation: true },
+                      ),
                     )
                     inputSnapshot =
                       Option.isSome(messageService) && caller
                         ? yield* messageService.value.snapshotForTurn(caller, result.info.id)
                         : undefined
+                    schemaFix = getLastValidationFix(childSession.id)
                     clearCaptureSlot(childSession.id)
                     verdict = yield* readSettlement()
                     if (!verdict) return
@@ -1106,13 +1389,21 @@ export function spawnNode(
                     verdict.settlement.kind === "fail" && verdict.neverCalled && lengthLimited
                       ? ({ kind: "fail", reason: yield* lengthReason } as const)
                       : verdict.settlement
+                  const schemaInvalid = !lengthLimited && verdict.neverCalled && schemaFix !== undefined
                   yield* (
                     settlement.kind === "complete"
                       ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
                           ...settlementAttempt,
                           inputSnapshotID: verdict.snapshotID,
                         })
-                      : dag.nodeFailed(input.dagID, input.nodeID, settlement.reason, "verdict_fail", settlementAttempt)
+                      : dag.nodeFailed(
+                          input.dagID,
+                          input.nodeID,
+                          settlement.reason,
+                          "verdict_fail",
+                          settlementAttempt,
+                          schemaInvalid ? "schema_invalid" : undefined,
+                        )
                   ).pipe(
                     Effect.catchIf(isTransitionRejection, () =>
                       Effect.logWarning(
@@ -1156,8 +1447,9 @@ export function spawnNode(
                       makeArtifactSourceAuthorizer(
                         sessions,
                         agentService,
-                        worktree,
-                        permissionSvc,
+                         worktree,
+                         permissionSvc,
+                         boundary,
                       )(childSession.id, source, agent.name),
                   )
                   if (fileRef && childSessionID) {
@@ -1186,7 +1478,7 @@ export function spawnNode(
                         return
                       }
                     } else yield* capture
-                    if (input.directory) yield* ensureReportAreaGitignore(input.directory, fileRef.source_path)
+                    if (executionDirectory) yield* ensureReportAreaGitignore(executionDirectory, fileRef.source_path)
                   }
                   yield* dag
                     .nodeCompleted(
@@ -1247,23 +1539,25 @@ export function spawnNode(
                 nudge = admitted === true
               }
               result = nudge
-                ? yield* promptSvc.prompt(
-                    {
-                      messageID: MessageID.ascending(),
-                      sessionID: childSession.id,
-                      model,
-                      agent: agent.name,
-                      ...(input.variant ? { variant: input.variant } : {}),
-                      parts: [
-                        {
-                          type: "text",
-                          text: "Runtime continuation: the earlier structured result belongs to an older input snapshot. Review the recorded agent messages and submit an updated result. Keep completed tool evidence and do not repeat completed writes.",
-                        },
-                      ],
-                    },
-                    { internalDelegation: true },
+                ? yield* inExecution(
+                    promptSvc.prompt(
+                      {
+                        messageID: MessageID.ascending(),
+                        sessionID: childSession.id,
+                        model,
+                        agent: agent.name,
+                        ...(input.variant ? { variant: input.variant } : {}),
+                        parts: [
+                          {
+                            type: "text",
+                            text: "Runtime continuation: the earlier structured result belongs to an older input snapshot. Review the recorded agent messages and submit an updated result. Keep completed tool evidence and do not repeat completed writes.",
+                          },
+                        ],
+                      },
+                      { internalDelegation: true },
+                    ),
                   )
-                : yield* promptSvc.loop({ sessionID: childSession.id })
+                : yield* inExecution(promptSvc.loop({ sessionID: childSession.id }))
             }
           }).pipe(Effect.ensuring(notifyStop))
         }).pipe(Effect.ensuring(semaphore.release(1)))
@@ -1294,7 +1588,12 @@ export function spawnNode(
               replanAttempts: input.node.replanAttempts,
               childSessionID,
             })
-            if (childSessionID) yield* promptSvc.cancel(SessionID.make(childSessionID)).pipe(Effect.ignore)
+            if (childSessionID)
+              yield* forkCancel(
+                promptSvc.cancel(SessionID.make(childSessionID), {
+                  reason: childAbort("runtime-interrupt", "runtime-scope"),
+                }),
+              )
           }),
         ),
         Effect.catchCause((cause) =>

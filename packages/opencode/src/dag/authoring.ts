@@ -91,14 +91,20 @@ export function make(options: Options = {}) {
       }
       if (decoded.value.action === "replan") {
         const fragment = decoded.value.spec.fragment
-        const rejected = (["result_protocol", "delivery_node"] as const)
+        const rejected = (["result_protocol", "delivery_node", "workspace"] as const)
           .filter((field) => fragment[field] !== undefined)
           .map((field) =>
             DagValidation.diagnostic({
               code: DagValidation.DIAGNOSTIC_CODES.schemaInvalid,
               path: `fragment.${field}`,
-              message: `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
-              hint: `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
+              message:
+                field === "workspace"
+                  ? "workspace only applies to start; set workspace on individual nodes instead"
+                  : `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
+              hint:
+                field === "workspace"
+                  ? 'Remove "workspace" from the fragment and set it on each node that needs a different checkout.'
+                  : `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
             }),
           )
         if (rejected.length > 0) {
@@ -192,6 +198,7 @@ function prepareGraph(decoded: DecodedAction, nodes: NodeConfig[], nodeDefaults?
         ? { max_node_replan_attempts: spec.config.max_node_replan_attempts }
         : {}),
       ...(spec.config.max_total_nodes !== undefined ? { max_total_nodes: spec.config.max_total_nodes } : {}),
+      ...(spec.config.workspace !== undefined ? { workspace: spec.config.workspace } : {}),
       ...(nodeDefaults ? { node_defaults: nodeDefaults } : {}),
       nodes,
     },
@@ -273,7 +280,13 @@ function compileAction(
   diagnostics: DagValidation.Diagnostic[]
   blocks?: readonly import("./blocks").DagBlocks.WorkflowBlock[]
   node_defaults?: NodeDefaults
-  config: { mode?: "standard" | "deep"; max_total_nodes?: number; delivery_node?: string }
+  config: {
+    mode?: "standard" | "deep"
+    objective?: string
+    max_total_nodes?: number
+    delivery_node?: string
+    workspace?: string
+  }
 } {
   if (decoded.action === "extend") {
     const extend = decoded.spec
@@ -281,7 +294,7 @@ function compileAction(
     return {
       ...compiled,
       blocks: "blocks" in extend ? extend.blocks : undefined,
-      config: {},
+      config: "objective" in extend ? { objective: extend.objective } : {},
     }
   }
   const graph = decoded.action === "start" ? decoded.spec.config : decoded.spec.fragment

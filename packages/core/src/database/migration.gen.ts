@@ -61,5 +61,7 @@ export const migrations = (
     import("./migration/20261002224523_dag_agent_messages"),
     import("./migration/20261002233822_dag_result_nudge"),
     import("./migration/20261003000100_dag_capture_presence"),
+    import("./migration/20261101033752_workflow_node_execution_location"),
+    import("./migration/20261101044937_perfect_shaman"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

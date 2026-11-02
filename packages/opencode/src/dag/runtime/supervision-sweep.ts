@@ -10,12 +10,15 @@ import { Logging } from "@opencode-ai/core/observability/logging"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { WorkflowNodeTable } from "@opencode-ai/core/dag/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { isNodeTerminalStatus, isTransitionRejection, isWorkflowTerminalStatus } from "@opencode-ai/core/dag/core/types"
+import { isTransitionRejection, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
 import { and, eq, sql } from "drizzle-orm"
 import { Dag, parseWorkflowConfig } from "@/dag/dag"
+import { DagLocation } from "@/dag/location"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionAutomationLease } from "@/session/automation-lease"
+import { SessionID } from "@/session/schema"
 import { InstanceRef } from "@/effect/instance-ref"
+import { childAbort } from "./child-failure-reason"
 
 /**
  * Host-level deadline-supervision sweep — the fallback retry for the
@@ -147,9 +150,9 @@ const serviceLayer = Layer.effect(
     // failure degrades to the DEFAULT cadence (the widest guaranteed-safe
     // window).
     const escalateIntervalFor = Effect.fnUntraced(function* (workflowId: string, nodeId: string) {
-      const wf = yield* store.getWorkflow(workflowId).pipe(
-        Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))),
-      )
+      const wf = yield* store
+        .getWorkflow(workflowId)
+        .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))))
       return escalateIntervalFromConfig(wf?.config, nodeId)
     })
 
@@ -162,10 +165,10 @@ const serviceLayer = Layer.effect(
     // the owning directory's consumers see them. Falls back to unstamped
     // when the row cannot be resolved — same visibility as before, never
     // worse.
-    const withWorkflowLocation = Effect.fnUntraced(function* (workflowId: string, body: Effect.Effect<void, Error>) {
-      const wf = yield* store.getWorkflow(workflowId).pipe(
-        Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))),
-      )
+    const withWorkflowLocation = Effect.fnUntraced(function* <A, E>(workflowId: string, body: Effect.Effect<A, E>) {
+      const wf = yield* store
+        .getWorkflow(workflowId)
+        .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))))
       if (!wf?.directory) return yield* body
       const project = yield* db
         .select()
@@ -174,7 +177,7 @@ const serviceLayer = Layer.effect(
         .where(eq(ProjectTable.id, wf.projectId as never))
         .get()
         .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))))
-      yield* body.pipe(
+      return yield* body.pipe(
         // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- partial InstanceContext: only directory/worktree/project.id are read by the publish-side location stamp.
         Effect.provideService(InstanceRef, {
           directory: wf.directory,
@@ -184,7 +187,58 @@ const serviceLayer = Layer.effect(
       )
     })
 
+    /**
+     * #948: the host-level sweep is the only actor that sees workflows whose
+     * owning instance is gone. Terminalize every non-terminal row whose
+     * durable execution location is unstamped or missing, so a removed
+     * worktree or a pre-DAG-LOC-01 NULL row cannot stay live forever. The
+     * shared DagLocation verdict is the same one recovery and spawn use;
+     * `failUnrecoverable` is idempotent and legalizes the pending/paused legs.
+     * Wake delivery stays with the owning DagLoop (the durable wake row is
+     * re-armed once) and converges through the normal drain.
+     */
+    const failUnusableWorkspaces = Effect.fnUntraced(function* () {
+      const workflows = yield* store.listWorkflows().pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("DagSupervisionSweep workflow scan failed — skipping workspace check", {
+                cause,
+              }).pipe(Effect.as([] as DagStore.WorkflowRow[])),
+        ),
+      )
+      for (const wf of workflows) {
+        if (isTerminalWorkflowStatusValue(wf.status)) continue
+        const location = DagLocation.resolveExecution(wf)
+        if (location._tag === "ok") continue
+        const outcome = yield* withWorkflowLocation(
+          wf.id,
+          dag.failUnrecoverable(wf.id, DagLocation.executionFailureReason(location)),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("DagSupervisionSweep workspace terminalization failed", {
+                  dagID: wf.id,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as("ignored" as const)),
+          ),
+        )
+        if (outcome !== "failed") continue
+        yield* Effect.logWarning("DagSupervisionSweep terminalized a workflow with an unusable execution directory", {
+          dagID: wf.id,
+          reason: location._tag,
+        })
+        // The owning DagLoop may be gone; release the lease registration this
+        // process still holds so a dead graph cannot pin the parent session.
+        yield* automation
+          .unregister(SessionID.make(wf.sessionId), { kind: "dag", id: wf.id })
+          .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void)))
+      }
+    })
+
     const sweepOnce = Effect.fn("DagSupervisionSweep.sweepOnce")(function* () {
+      yield* failUnusableWorkspaces()
       const rows = yield* db
         .select({
           workflowId: WorkflowNodeTable.workflow_id,
@@ -235,10 +289,7 @@ const serviceLayer = Layer.effect(
         // #342: the window must cover the LIVE watcher's actual cadence, not
         // just the current config's — replan may have lowered the persisted
         // timeout while the re-time gate kept the old watcher.
-        const windowIntervalMs = Math.max(
-          escalateIntervalMs,
-          escalateIntervalDurable(row.deadlineMs, row.startedAt),
-        )
+        const windowIntervalMs = Math.max(escalateIntervalMs, escalateIntervalDurable(row.deadlineMs, row.startedAt))
         if (flatTicks < frozenTicksNeeded(windowIntervalMs)) continue
         // Frozen across the full window: cancel the (possibly dead) child and
         // settle the node. Same-host races (a live watcher) are serialized by
@@ -264,9 +315,11 @@ const serviceLayer = Layer.effect(
           // with the scope, so a skipped cancel is also the correct outcome;
           // the durable settle below is the source of truth either way.
           // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the durable column is typed string|null; the cancel seam brands SessionID.
-          yield* promptSvc.cancel(row.childSessionId as never).pipe(
-            Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void)),
-          )
+          yield* promptSvc
+            .cancel(row.childSessionId as never, {
+              reason: childAbort("deadline-supervision-lost", "deadline-watcher"),
+            })
+            .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void)))
         }
         const settled = yield* withWorkflowLocation(
           row.workflowId,
@@ -341,38 +394,38 @@ const serviceLayer = Layer.effect(
     })
 
     // #343 host-level mirror of DagLoop.checkCompletion's durable half: when
-    // every current-revision node is terminal and the workflow row is not,
-    // land the terminal transition (fail on required-node failure, complete
-    // otherwise) and release the workflow's automation lease registration.
+    // every current-revision node is terminal, land the SAME natural outcome
+    // (fail on a required failure or gate gap, complete otherwise) and release
+    // the workflow's automation lease registration. The decision and transition
+    // run under the workflow lock inside Dag.settleCompletion, so a completed
+    // verifier with a FAIL verdict can no longer turn into a swallowed
+    // CompletionGateError that leaves the workflow running and leased.
     // Wake delivery to the parent session stays with the owning instance —
     // it needs session context (ownsSession guard, prompt injection) — and
     // converges through the DagLoop init drain on the next instance load.
-    // Transition rejections (a live DagLoop completed first, or a replan
-    // re-registered nodes between the reads and the write) are expected and
-    // silent; the next tick re-evaluates from the durable rows.
     const settleWorkflowIfComplete = Effect.fnUntraced(function* (workflowId: string) {
-      const wf = yield* store.getWorkflow(workflowId).pipe(
-        Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))),
-      )
-      if (!wf || isWorkflowTerminalStatus(wf.status as never)) return
-      const nodes = yield* store.getCurrentNodes(workflowId).pipe(
-        Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed([]))),
-      )
-      if (nodes.length === 0 || nodes.some((node) => !isNodeTerminalStatus(node.status as never))) return
-      const failed = nodes.filter((node) => node.status === "failed" && node.required).map((node) => node.id)
-      const transition = failed.length > 0
-        ? yield* dag.fail(workflowId, `required node(s) failed: ${failed.join(", ")}`).pipe(
-            Effect.as("failed" as const),
-            Effect.catchIf(isTransitionRejection, () => Effect.succeed(undefined)),
-          )
-        : yield* dag.complete(workflowId, { skipReviewGate: true }).pipe(
-            Effect.as("completed" as const),
-            Effect.catchIf(isTransitionRejection, () => Effect.succeed(undefined)),
-          )
-      if (transition === undefined) return
+      const wf = yield* store
+        .getWorkflow(workflowId)
+        .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined))))
+      if (!wf) return
+      if (!wf.directory) return
+      const outcome = yield* dag
+        .settleCompletion(workflowId, {
+          owner: { projectID: wf.projectId, directory: wf.directory },
+          allowAcceptedSkips: true,
+          skipReviewGate: true,
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("DagSupervisionSweep terminalize failed", { cause }),
+          ),
+        )
+      if (!outcome || (outcome.status !== "completed" && outcome.status !== "failed")) return
       yield* Effect.logWarning("DagSupervisionSweep terminalized a workflow whose instance is gone", {
         dagID: workflowId,
-        outcome: transition,
+        outcome: outcome.status,
       })
       // The lease registration outlived the owning DagLoop's handlers; this
       // process's registry entry must not pin the parent session's automation
@@ -395,7 +448,7 @@ const serviceLayer = Layer.effect(
             // Interrupts (scope disposal) still exit the loop.
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
-                ? Effect.interrupt
+                ? Effect.failCause(cause)
                 : Effect.logWarning("DagSupervisionSweep tick failed — retrying next interval", { cause }),
             ),
           )

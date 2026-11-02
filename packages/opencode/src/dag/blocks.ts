@@ -204,7 +204,32 @@ export function compileWorkflowBlocks(
       `Block expansion creates duplicate node ids: ${duplicateNodeIDs.join(", ")}. Rename the colliding block`,
     )
   }
-  return nodes
+  return markConditionalDescendants(nodes)
+}
+
+/**
+ * A conditional branch root is an explicit accepted branch. Every required
+ * descendant of that root belongs to the same mutually-exclusive branch, so a
+ * cascade skip is expected there too. Unrelated nodes stay strict; an explicit
+ * skip_ok value is never overwritten.
+ */
+function markConditionalDescendants(nodes: NodeConfig[]): NodeConfig[] {
+  const accepted = new Set(
+    nodes.filter((node) => node.condition !== undefined && node.skip_ok === true).map((node) => node.id),
+  )
+  for (;;) {
+    const added = nodes.filter(
+      (node) =>
+        !accepted.has(node.id)
+        && node.skip_ok === undefined
+        && node.depends_on.some((dependency) => accepted.has(dependency)),
+    )
+    if (added.length === 0) break
+    for (const node of added) accepted.add(node.id)
+  }
+  return nodes.map((node) =>
+    accepted.has(node.id) && node.skip_ok === undefined ? { ...node, skip_ok: true } : node,
+  )
 }
 
 function compileBlock(
@@ -239,6 +264,7 @@ function compileBlock(
         reportToParent: false,
         workerConfig: block.worker_config,
         condition,
+        skipOk: condition !== undefined,
       }),
       node({
         id: block.id,
@@ -318,6 +344,7 @@ function compileBlock(
         reportToParent: block.report_to_parent ?? true,
         workerConfig: block.worker_config,
         condition: reviewCondition,
+        skipOk: reviewCondition !== undefined,
         inputMapping: route
           ? {
               ...reviewEvidence,
@@ -398,6 +425,7 @@ function compileBlock(
       adversarial: routeVerificationGate ? false : undefined,
       workerConfig: block.worker_config,
       condition,
+      skipOk: condition !== undefined,
       inputMapping: verifyAggregator
         ? {
             implementation_changed_files: `${verifyAggregator}.output.changed_files`,
@@ -428,6 +456,9 @@ function node(input: {
   reportToParent: boolean
   workerConfig?: { timeout_ms: number }
   condition?: string
+  /** Accept a false condition on this required node. Set only at intentional
+   * mutually-exclusive branch points; omitted means the node stays strict. */
+  skipOk?: boolean
   inputMapping?: Record<string, string>
   review?: NodeConfig["review"]
   outputSchema?: Record<string, unknown>
@@ -476,6 +507,7 @@ function node(input: {
     },
     ...(input.workerConfig ? { worker_config: input.workerConfig } : {}),
     ...(input.condition ? { condition: input.condition } : {}),
+    ...(input.condition && input.skipOk ? { skip_ok: true } : {}),
     ...(input.inputMapping ? { input_mapping: input.inputMapping } : {}),
     ...(input.review ? { review: input.review } : {}),
     ...(input.outputSchema ? { output_schema: input.outputSchema } : {}),

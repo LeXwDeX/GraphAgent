@@ -57,7 +57,7 @@ import { SessionAutomationLease } from "@/session/automation-lease"
 import { renderTemplate } from "../templates/resolve"
 import { sanitizeInput } from "../templates/sanitize"
 import { DagConfig } from "../config"
-import { spawnNode, makeDeadlineWatcher } from "./spawn"
+import { spawnNode, makeDeadlineWatcher, forkCancel } from "./spawn"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
@@ -67,9 +67,11 @@ import {
   makeLastAssistantMessageReader,
 } from "./recovery"
 import { Checkpoint } from "./checkpoint"
+import { childAbort } from "./child-failure-reason"
+import { SessionAbortReason } from "@/session/abort-reason"
 import { normalizeOutput } from "./verdict"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
-import { makeArtifactSourceAuthorizer } from "./artifact-permissions"
+import { artifactPermissionBase, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
@@ -77,6 +79,22 @@ import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-
 import { Logging } from "@opencode-ai/core/observability/logging"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+
+/** State the schema's enum values at the end of the output contract so the
+ * runtime answer wins over conflicting verdict wording in the instruction. */
+function allowedVerdictHint(schema: Record<string, unknown>): string {
+  const properties = schema.properties
+  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) return ""
+  const allowed = Object.entries(properties).flatMap(([field, value]) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return []
+    const values = (value as Record<string, unknown>).enum
+    if (!Array.isArray(values) || !values.every((item) => typeof item === "string")) return []
+    return [`${field} in ${JSON.stringify(values)}`]
+  })
+  return allowed.length === 0
+    ? ""
+    : ` Allowed values: ${allowed.join("; ")}. This output contract overrides any conflicting verdict wording in the instruction or objective.`
+}
 
 /** Explicit input text for a dependency that settled without output. */
 function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
@@ -138,6 +156,8 @@ interface WorkflowEntry {
   evalLock: Semaphore.Semaphore
   parentSessionID: string
   config: WorkflowConfig | undefined
+  /** #943: bound workspace where children run; undefined means the owner directory. */
+  executionDirectory?: string
   /** Durable graph revision paired with config and the scheduling runtime. */
   graphRev: number
   fibers: Map<string, Fiber.Fiber<unknown, unknown>>
@@ -288,6 +308,46 @@ const serviceLayer = Layer.effect(
         let startMessageContinuations: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
         // Forward reference for the condition-skip rescan inside spawnReady.
         let rescanReady: (dagID: string) => Effect.Effect<void, Error, Scope.Scope> = () => Effect.void
+
+        /**
+         * #948: one failure path for a workflow whose durable execution
+         * location can no longer be used. The shared DagLocation verdict is
+         * made by every entry point; this helper only performs the durable
+         * terminalization, releases the in-memory lease registration, and
+         * asks the normal wake drain to notify the parent once. The durable
+         * wake row itself is the single-notification authority, so concurrent
+         * callers (recovery, spawn, sweep) collapse to one report.
+         */
+        const failUnusableWorkspace = Effect.fn("DagLoop.failUnusableWorkspace")(function* (
+          wf: DagStore.WorkflowRow,
+          location: Exclude<DagLocation.ExecutionLocation, { _tag: "ok" }>,
+        ) {
+          const outcome = yield* dag.failUnrecoverable(wf.id, DagLocation.executionFailureReason(location)).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("DagLoop could not terminalize a workflow with an unusable execution directory", {
+                    dagID: wf.id,
+                    location: location._tag,
+                    cause,
+                  }).pipe(Effect.as("ignored" as const)),
+            ),
+          )
+          if (outcome !== "failed") return outcome
+          yield* Effect.logWarning("DagLoop terminalized a workflow with an unusable execution directory", {
+            dagID: wf.id,
+            reason: location._tag,
+          })
+          // The workflow can never release its own registration now; do it
+          // here before the terminal wake so the parent's session is not
+          // pinned by a dead graph.
+          yield* automation
+            .unregister(SessionID.make(wf.sessionId), { kind: "dag", id: wf.id })
+            .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void)))
+          yield* tryDeliverWake(wf.sessionId).pipe(Effect.ignore, Effect.forkScoped)
+          return outcome
+        })
+
         const spawnReady = Effect.fn("DagLoop.spawnReady")(function* (dagID: string) {
           const entry = runtimes.get(dagID)
           if (!entry) return
@@ -300,6 +360,34 @@ const serviceLayer = Layer.effect(
           if (!(yield* DagLocation.ownsWorkflow(dagID, ctx.directory))) {
             runtimes.delete(dagID)
             return
+          }
+          // #948: a workflow whose execution directory vanished must fail
+          // before any template render, artifact read, or child spawn touches
+          // that path. Drop the entry so no later stimulus resumes scheduling.
+          const durableWorkflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+          if (durableWorkflow) {
+            const location = DagLocation.resolveExecution(durableWorkflow)
+            if (location._tag !== "ok") {
+              // Keep the runtime entry alive through terminalization: the
+              // WorkflowFailed handler needs it to abort running sibling
+              // children and interrupt their fibers, then drops the entry.
+              // Removing it here would orphan those attempts.
+              const outcome = yield* failUnusableWorkspace(durableWorkflow, location)
+              if (outcome === "failed") return
+              // ignored = a concurrent Moved re-stamped the row to a valid
+              // directory (continue scheduling) or another actor terminalized
+              // it (the terminal handler owns cleanup).
+              const current = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+              if (
+                !current ||
+                isTerminalWorkflowStatusValue(current.status) ||
+                DagLocation.resolveExecution(current)._tag !== "ok" ||
+                // A move to a DIFFERENT directory transfers execution
+                // ownership; the new owner adopts, this stale entry must stop.
+                DagLocation.canonicalDirectory(current.directory!) !== DagLocation.canonicalDirectory(ctx.directory)
+              )
+                return
+            }
           }
           // Checkpoint vetoes are a scheduling boundary, not merely a
           // NodeCompleted-handler side effect. A different event stream can
@@ -314,9 +402,21 @@ const serviceLayer = Layer.effect(
           // their outputs cannot change during this loop — per-node re-reads
           // were O(ready × nodes) pure overhead.
           const nodesSnapshot = ready.length > 0 ? yield* store.getNodes(dagID) : []
+          // #943: config defaults resolve against the bound workspace, not the
+          // owner directory. Cache per directory so a node-level override does
+          // not re-read the file for every spawn in this round.
+          const executionBase = entry.executionDirectory ?? ctx.directory
+          const dagConfigs = new Map<string, DagConfig.Info>()
+          const loadDagConfig = (directory: string) => {
+            const cached = dagConfigs.get(directory)
+            if (cached) return Effect.succeed(cached)
+            return DagConfig.load(directory).pipe(
+              Effect.tap((loaded) => Effect.sync(() => dagConfigs.set(directory, loaded))),
+            )
+          }
           // dag.jsonc defaults are read once per scheduling round (lazy, like
           // templates) so edits apply to the next round without a restart.
-          const dagConfig: DagConfig.Info = ready.length > 0 ? yield* DagConfig.load(ctx.directory) : {}
+          const dagConfig: DagConfig.Info = ready.length > 0 ? yield* loadDagConfig(executionBase) : {}
           // A condition_false skip settles a node inside this round, after the
           // ready set was computed. Its NodeSkipped handler sees the node
           // already settled and does not reschedule, so a mixed fan-in it just
@@ -408,7 +508,10 @@ const serviceLayer = Layer.effect(
                 Effect.as(plan),
                 Effect.catch((error) => {
                   if (plan.kind !== "expand" || isTransitionRejection(error)) return Effect.fail(error)
-                  const declined = DagFanOut.declineFanOut(nodeConfig, `the expanded graph was rejected: ${error.message}`)
+                  const declined = DagFanOut.declineFanOut(
+                    nodeConfig,
+                    `the expanded graph was rejected: ${error.message}`,
+                  )
                   return dag.extend(dagID, [declined.node], fence).pipe(Effect.as<DagFanOut.FanOutPlan>(declined))
                 }),
                 // A stale fence means the parent reshaped this writer first;
@@ -417,7 +520,13 @@ const serviceLayer = Layer.effect(
                   isTransitionRejection(error)
                     ? Effect.succeed(undefined)
                     : dag
-                        .nodeFailed(dagID, nodeID, `Fan-out expansion failed: ${error.message}`, "exec_failed", admissionAttempt)
+                        .nodeFailed(
+                          dagID,
+                          nodeID,
+                          `Fan-out expansion failed: ${error.message}`,
+                          "exec_failed",
+                          admissionAttempt,
+                        )
                         .pipe(Effect.ignore, Effect.as(undefined)),
                 ),
               )
@@ -524,8 +633,12 @@ const serviceLayer = Layer.effect(
               }
             }
 
+            // #943: a node workspace overrides the workflow workspace for
+            // prompt assets, dag.jsonc defaults and the child session.
+            const nodeDirectory = nodeConfig.workspace ?? executionBase
+            const nodeDagConfig = nodeDirectory === executionBase ? dagConfig : yield* loadDagConfig(nodeDirectory)
             const resolved = yield* nodeConfig?.prompt_template
-              ? renderTemplate(nodeConfig.prompt_template, ctx.directory, resolvedMapping).pipe(
+              ? renderTemplate(nodeConfig.prompt_template, nodeDirectory, resolvedMapping).pipe(
                   Effect.tap((result) =>
                     result.text.trim() === ""
                       ? Effect.logWarning("DAG node resolved template is empty", { dagID, nodeID })
@@ -602,7 +715,7 @@ const serviceLayer = Layer.effect(
                 type: "text",
                 text:
                   resultProtocol(entry.config) === "final_response"
-                    ? `\n\n[OUTPUT CONTRACT] End with exactly one JSON value matching this schema:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nUse your final assistant answer only: no Markdown fence or surrounding prose. The runtime validates and captures it automatically. Do not send the final result through agent.send. File changes and other side effects are not rolled back if validation fails.`
+                    ? `\n\n[OUTPUT CONTRACT] End with exactly one JSON value matching this schema:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nUse your final assistant answer only: no Markdown fence or surrounding prose. The runtime validates and captures it automatically. Do not send the final result through agent.send. File changes and other side effects are not rolled back if validation fails.${allowedVerdictHint(nodeConfig.output_schema)}`
                     : `\n\n[OUTPUT CONTRACT — this node's success depends on it] You MUST call the submit_result tool with a JSON payload matching this schema before ending your turn:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nPut your full summary inside the payload. Do not repeat the payload in your message text. Writing the payload in message text does NOT count as submitting: if you end your turn without a successful submit_result call, this node FAILS and no structured result is accepted. File changes and other side effects are not rolled back; inspect them before retrying. After submit_result succeeds, end your turn without restating the result.`,
               })
             }
@@ -628,7 +741,13 @@ const serviceLayer = Layer.effect(
                 entry.runtime.markRunning(nodeID)
                 const oldFiber = entry.fibers.get(nodeID)
                 const oldWatcher = entry.watchers.get(nodeID)
-                yield* abortChild(dagID, nodeID, node.childSessionId, "dag.loop.admission.replace").pipe(Effect.ignore)
+                yield* abortChild(
+                  dagID,
+                  nodeID,
+                  node.childSessionId,
+                  "dag.loop.admission.replace",
+                  childAbort("attempt-replaced", "dag-loop"),
+                ).pipe(Effect.ignore)
                 if (oldFiber) yield* Fiber.interrupt(oldFiber).pipe(Effect.ignore)
                 // Interrupt the old watcher before installing a new one. The
                 // old self-renewing watcher would otherwise become unreachable
@@ -637,6 +756,7 @@ const serviceLayer = Layer.effect(
               }),
               parentSessionID: entry.parentSessionID,
               directory: ctx.directory,
+              executionDirectory: nodeDirectory,
               inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
               promptParts,
               outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
@@ -649,8 +769,11 @@ const serviceLayer = Layer.effect(
               verdictEvidence: nodesSnapshot
                 .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
                 .map((source) => ({ nodeID: source.id, output: source.output })),
-              fallbackModel: DagConfig.tierModel(dagConfig, { required: node.required, workerType: node.workerType }),
-              variant: dagConfig.thinking_depth,
+              fallbackModel: DagConfig.tierModel(nodeDagConfig, {
+                required: node.required,
+                workerType: node.workerType,
+              }),
+              variant: nodeDagConfig.thinking_depth,
               maxTimeoutExtensions:
                 entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
             }).pipe(
@@ -724,17 +847,17 @@ const serviceLayer = Layer.effect(
           if (wf?.status === "paused") return
           // A required-node failure is a workflow FAILURE, not a cancellation —
           // "cancelled" is reserved for explicit user/agent cancels so the
-          // terminal status attributes the outcome correctly (P2-1).
-          if (entry.runtime.hasRequiredFailure()) {
-            yield* dag.fail(dagID, `required node(s) failed: ${entry.runtime.getRequiredFailures().join(", ")}`)
-            return
-          }
-          // Unresolved review outcomes terminalize the graph as COMPLETED at
-          // the checkpoint, not as a failure: the REJECT shape (skipped
-          // dependents, reporting leaf) is exactly what reopen-extend is
-          // designed to pick up, and a failed workflow is immutable
-          // (issue #294). Explicit completion shortcuts keep the review gate.
-          yield* dag.complete(dagID, { skipReviewGate: true })
+          // terminal status attributes the outcome correctly (P2-1). Required
+          // verdict/skip gaps are evaluated from the current durable revision.
+          // settleCompletion holds the workflow lock across the decision and
+          // the terminal transition; expectedGraphRev prevents a stale runtime
+          // snapshot from failing a graph that recover/replan already replaced.
+          yield* dag.settleCompletion(dagID, {
+            expectedGraphRev: entry.graphRev,
+            owner: { projectID: ctx.project.id, directory: ctx.directory },
+            skipReviewGate: true,
+            allowAcceptedSkips: true,
+          })
         })
 
         const checkSessionStatus = makeSessionStatusChecker(sessionSvc)
@@ -751,6 +874,7 @@ const serviceLayer = Layer.effect(
           nodeID: string,
           childSessionId: string | null,
           source: string,
+          abort: SessionAbortReason.Info,
         ) {
           if (!childSessionId) return
           // File-only DEBUG attribution for a future interruption whose initiator
@@ -761,7 +885,9 @@ const serviceLayer = Layer.effect(
             nodeID,
             childSessionID: childSessionId,
           })
-          yield* promptSvc.cancel(childSessionId as never).pipe(Effect.ignore)
+          yield* forkCancel(promptSvc.cancel(childSessionId as never, { reason: abort })).pipe(
+            Effect.provideService(Scope.Scope, stateScope),
+          )
         })
 
         // Subscription handlers must never die. dag.ts guards and checkCompletion
@@ -801,6 +927,15 @@ const serviceLayer = Layer.effect(
             if (entry.fibers.has(nodeID)) continue
             const registered = yield* Deferred.make<void>()
             let ownedFiber: Fiber.Fiber<unknown, unknown> | undefined
+            // #943: the continuation must run where this node was bound.
+            // Ownership/mailbox stays on the owner directory; prompt, report
+            // and artifact authorization follow the execution workspace.
+            const nodeConfig = entry.config?.nodes.find((candidate) => candidate.id === nodeID)
+            const executionDirectory = nodeConfig?.workspace ?? entry.executionDirectory ?? ctx.directory
+            const authorizationWorktree =
+              DagLocation.canonicalDirectory(executionDirectory) !== DagLocation.canonicalDirectory(ctx.directory)
+                ? executionDirectory
+                : ctx.worktree
             const continuation = entry.semaphore
               .withPermits(1)(
                 Deferred.await(registered).pipe(
@@ -809,8 +944,9 @@ const serviceLayer = Layer.effect(
                       dagID,
                       nodeID,
                       entry.config ?? null,
-                      ctx.directory,
-                      makeArtifactSourceAuthorizer(sessionSvc, agentSvc, ctx.worktree, permissionSvc),
+                      workflow.directory ?? ctx.directory,
+                      makeArtifactSourceAuthorizer(sessionSvc, agentSvc, authorizationWorktree, permissionSvc),
+                      executionDirectory,
                     ),
                   ),
                 ),
@@ -849,7 +985,6 @@ const serviceLayer = Layer.effect(
             const fiber = yield* continuation.pipe(Effect.forkIn(stateScope))
             ownedFiber = fiber
             entry.fibers.set(nodeID, fiber)
-            const nodeConfig = entry.config?.nodes.find((candidate) => candidate.id === nodeID)
             const watcher =
               entry.watchers.get(nodeID) ??
               (yield* makeDeadlineWatcher({
@@ -880,6 +1015,19 @@ const serviceLayer = Layer.effect(
           // stamped directory is the deciding guard.
           if (!(yield* DagLocation.ownsWorkflow(wf.id, ctx.directory))) return
           const dagID = wf.id
+          // #948: recovery must not reconcile child sessions or rebuild a
+          // runtime for a workflow whose execution directory is gone (or was
+          // never stamped). The shared verdict keeps this path, spawn, and
+          // the host sweep from drifting.
+          const location = DagLocation.resolveExecution(wf)
+          if (location._tag !== "ok") {
+            if (runtimes.has(dagID) || recovering.has(dagID)) return
+            recovering.add(dagID)
+            yield* failUnusableWorkspace(wf, location).pipe(
+              Effect.ensuring(Effect.sync(() => recovering.delete(dagID))),
+            )
+            return
+          }
           // Idempotency guard: the startup scan and the WorkflowReplanned
           // handler's re-adoption path can both reach here for the same
           // workflow (e.g. a replan call arriving while the scan is still
@@ -902,13 +1050,26 @@ const serviceLayer = Layer.effect(
                   source: "dag.recovery.cancel",
                   workflowID: dagID,
                   childSessionID: sid,
-                }).pipe(Effect.andThen(promptSvc.cancel(sid as never))),
+                }).pipe(
+                  Effect.andThen(
+                    forkCancel(
+                      promptSvc.cancel(sid as never, { reason: childAbort("recovery", "recovery") }),
+                    ).pipe(Effect.provideService(Scope.Scope, stateScope)),
+                  ),
+                ),
               // null (not undefined) marks an unparseable row so recovery
               // fails such nodes loudly instead of undefined-completing them.
               config ?? null,
               lastAssistantText,
-              ctx.directory,
-              makeArtifactSourceAuthorizer(sessionSvc, agentSvc, ctx.worktree, permissionSvc),
+              wf.executionDirectory ?? wf.directory ?? ctx.directory,
+              (executionDirectory) => {
+                const { worktree, boundary } = artifactPermissionBase(
+                  ctx.directory,
+                  ctx.worktree,
+                  executionDirectory,
+                )
+                return makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary)
+              },
               lastAssistantMessage,
             ).pipe(Effect.provideService(Dag.Service, dag), (self) =>
               messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self,
@@ -997,6 +1158,8 @@ const serviceLayer = Layer.effect(
               evalLock: Semaphore.makeUnsafe(1),
               parentSessionID: wf.sessionId,
               config,
+              executionDirectory:
+                currentWorkflow?.executionDirectory ?? wf.executionDirectory ?? wf.directory ?? ctx.directory,
               graphRev: currentWorkflow?.graphRev ?? wf.graphRev,
               fibers: new Map(),
               watchers: new Map(),
@@ -1055,7 +1218,12 @@ const serviceLayer = Layer.effect(
           // Same cross-instance guard as recoverWorkflow, through the same
           // execution-location authority: only the instance whose DIRECTORY
           // owns the workflow may dispose of the orphan.
-          if (!(yield* DagLocation.ownsWorkflow(wf.id, ctx.directory))) return
+          // A NULL-directory row has no owner under ownsWorkflow (fail-closed
+          // by design), so no instance would ever terminalize it. This sweep
+          // is the one place that must still dispose of such an orphan: the
+          // row is provably an abandoned create sequence, and leaving it
+          // pending forever is the zombie #948 removes.
+          if (wf.directory !== null && !(yield* DagLocation.ownsWorkflow(wf.id, ctx.directory))) return
           const dagID = wf.id
           if (runtimes.has(dagID) || recovering.has(dagID)) return
           // Reserve the adoption slot for the whole terminalization sequence:
@@ -1067,6 +1235,11 @@ const serviceLayer = Layer.effect(
           // the sequence — a finally block does not survive interruption.
           recovering.add(dagID)
           yield* Effect.gen(function* () {
+            const location = DagLocation.resolveExecution(wf)
+            if (location._tag !== "ok") {
+              yield* failUnusableWorkspace(wf, location)
+              return
+            }
             const nodes = yield* store.getNodes(dagID)
             // Defensive no-miss-kill criterion: any non-pending node proves the
             // workflow was adopted and progressed — it is mid-flight, not
@@ -1123,6 +1296,14 @@ const serviceLayer = Layer.effect(
                 // (see recoverWorkflow). First-wave spawns must not race across
                 // directory contexts.
                 if (!(yield* DagLocation.ownsWorkflow(dagID, ctx.directory))) return
+                // #948: first-wave adoption is also an execution entry point.
+                // Never build a runtime or spawn the initial ready nodes when
+                // the stamped workspace is already unusable.
+                const location = DagLocation.resolveExecution(wf)
+                if (location._tag !== "ok") {
+                  yield* failUnusableWorkspace(wf, location)
+                  return
+                }
                 const config = parseWorkflowConfig(wf.config)
                 // Rev-view (v1.0.15 Train A): same current-revision rebuild
                 // input as recoverWorkflow — adoption must not resurrect the
@@ -1140,6 +1321,7 @@ const serviceLayer = Layer.effect(
                   evalLock: Semaphore.makeUnsafe(1),
                   parentSessionID: wf.sessionId,
                   config,
+                  executionDirectory: wf.executionDirectory ?? wf.directory ?? ctx.directory,
                   graphRev: wf.graphRev,
                   fibers: new Map(),
                   watchers: new Map(),
@@ -1216,11 +1398,19 @@ const serviceLayer = Layer.effect(
                           // delete — their fiber published the event and is finishing.
                           const fiber = entry.fibers.get(nodeID)
                           if (fiber) {
+                            const reason = "reason" in evt.data ? evt.data.reason : undefined
+                            const abort =
+                              reason === "agent_complete"
+                                ? childAbort("workflow-complete", "dag-loop")
+                                : reason === "workflow_failed"
+                                  ? childAbort("workflow-failed", "dag-loop")
+                                  : childAbort("control-cancel", "parent-control")
                             yield* abortChild(
                               dagID,
                               nodeID,
                               node?.childSessionId ?? null,
                               "dag.loop.nodeSkipped.cancel-race",
+                              abort,
                             ).pipe(Effect.ignore)
                             yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                           }
@@ -1301,9 +1491,13 @@ const serviceLayer = Layer.effect(
                 Effect.gen(function* () {
                   const fiber = entry.fibers.get(nodeID)
                   const node = yield* store.getNode(dagID, nodeID)
-                  yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.nodeCancelled").pipe(
-                    Effect.ignore,
-                  )
+                  yield* abortChild(
+                    dagID,
+                    nodeID,
+                    node?.childSessionId ?? null,
+                    "dag.loop.nodeCancelled",
+                    childAbort("replan", "dag-replan"),
+                  ).pipe(Effect.ignore)
                   if (fiber) {
                     yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                     entry.fibers.delete(nodeID)
@@ -1349,9 +1543,13 @@ const serviceLayer = Layer.effect(
                       const watcher = entry.watchers.get(nid)
                       entry.fibers.delete(nid)
                       entry.watchers.delete(nid)
-                      yield* abortChild(dagID, nid, node.childSessionId ?? null, "dag.loop.nodeFailed.cleanup").pipe(
-                        Effect.ignore,
-                      )
+                      yield* abortChild(
+                        dagID,
+                        nid,
+                        node.childSessionId ?? null,
+                        "dag.loop.nodeFailed.cleanup",
+                        childAbort("failure-cleanup", "dag-loop"),
+                      ).pipe(Effect.ignore)
                       if (fiber) yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                       if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
                       entry.runtime.markUnsatisfied(nid)
@@ -1683,9 +1881,13 @@ const serviceLayer = Layer.effect(
                   for (const [nodeID, fiber] of [...entry.fibers]) {
                     const node = nodes.find((n) => n.id === nodeID)
                     if (node && (node.status === "running" || node.status === "queued")) continue
-                    yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.replan.cleanup").pipe(
-                      Effect.ignore,
-                    )
+                    yield* abortChild(
+                      dagID,
+                      nodeID,
+                      node?.childSessionId ?? null,
+                      "dag.loop.replan.cleanup",
+                      childAbort("replan", "dag-replan"),
+                    ).pipe(Effect.ignore)
                     yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                     const watcher = entry.watchers.get(nodeID)
                     if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
@@ -1702,6 +1904,12 @@ const serviceLayer = Layer.effect(
         )
 
         for (const def of [DagEvent.WorkflowCompleted, DagEvent.WorkflowFailed, DagEvent.WorkflowCancelled]) {
+          const terminalAbort =
+            def === DagEvent.WorkflowCompleted
+              ? childAbort("workflow-complete", "dag-loop")
+              : def === DagEvent.WorkflowFailed
+                ? childAbort("workflow-failed", "dag-loop")
+                : childAbort("control-cancel", "parent-control")
           // Deliberately NO runtimes.has filter: a workflow terminalized by a
           // control op after a failed startup recovery (e.g. recoverWorkflow
           // aborted on an unreadable persisted row) has no runtime entry but
@@ -1722,9 +1930,13 @@ const serviceLayer = Layer.effect(
                     Effect.gen(function* () {
                       for (const [nodeID, fiber] of entry.fibers) {
                         const node = yield* store.getNode(dagID, nodeID)
-                        yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.workflowTerminal").pipe(
-                          Effect.ignore,
-                        )
+                        yield* abortChild(
+                          dagID,
+                          nodeID,
+                          node?.childSessionId ?? null,
+                          "dag.loop.workflowTerminal",
+                          terminalAbort,
+                        ).pipe(Effect.ignore)
                         yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                         const watcher = entry.watchers.get(nodeID)
                         if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
@@ -1759,6 +1971,11 @@ const serviceLayer = Layer.effect(
                   const wf = yield* store.getWorkflow(dagID)
                   if (wf && wf.projectId === ctx.project.id) {
                     yield* automation.unregister(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
+                    // #948: a workflow terminalized without a runtime entry
+                    // (legacy NULL row swept at host level, or recovery that
+                    // never adopted) still owes the parent one wake. The drain
+                    // re-applies execution and notification-only ownership.
+                    yield* tryDeliverWake(wf.sessionId).pipe(Effect.ignore, Effect.forkScoped)
                   }
                 }
               }).pipe(guarded("WorkflowTerminal")),
@@ -1902,6 +2119,53 @@ const serviceLayer = Layer.effect(
           }
         })
 
+        /**
+         * #948 notification-only ownership. `ownsSession` ignores terminal
+         * rows so a legacy NULL-terminal zombie cannot block a later valid
+         * workflow in the same session. That leaves one gap: a terminal-only
+         * batch has no execution owner. Gate it on the parent session's
+         * durable directory instead — this grants notification delivery only,
+         * never execution, and never falls back to process.cwd.
+         */
+        const sessionNotificationOwned = Effect.fnUntraced(function* (sessionID: string) {
+          const snapshot = yield* store
+            .getWakeSnapshot(sessionID)
+            .pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.succeed({ nodes: [], workflows: [] } satisfies DagStore.WakeSnapshot),
+              ),
+            )
+          const terminal = snapshot.workflows.filter(
+            (workflow) => !workflow.wakeReported && isTerminalWorkflowStatusValue(workflow.status),
+          )
+          if (terminal.length === 0) return true
+          let sessionDirectory: string | undefined
+          for (const workflow of terminal) {
+            if (workflow.directory !== null && workflow.directory !== "") {
+              // A stamped terminal row keeps its normal execution-location
+              // owner; only legacy NULL rows need the notification-only proof.
+              if (!(yield* DagLocation.ownsWorkflow(workflow.id, ctx.directory))) return false
+              continue
+            }
+            if (sessionDirectory === undefined) {
+              const info = yield* sessionSvc
+                .get(SessionID.make(sessionID))
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined),
+                  ),
+                )
+              sessionDirectory = info?.directory
+            }
+            if (!sessionDirectory) return false
+            if (DagLocation.canonicalDirectory(sessionDirectory) !== DagLocation.canonicalDirectory(ctx.directory))
+              return false
+          }
+          return true
+        })
+
         let tryDeliverWake: (sessionID: string) => Effect.Effect<void> = () => Effect.void
         const deliverWake = Effect.fn("DagLoop.tryDeliverWake")(function* (sessionID: string) {
           // Cross-instance guard via the execution-location authority: wake
@@ -1912,6 +2176,7 @@ const serviceLayer = Layer.effect(
           // sessions. The guard also covers the workflow-terminal stimulus
           // after a session deletion (the durable rows are gone).
           if (!(yield* DagLocation.ownsSession(sessionID, ctx.directory))) return
+          if (!(yield* sessionNotificationOwned(sessionID))) return
           if (wakeInFlight.has(sessionID)) {
             wakePending.add(sessionID)
             return
@@ -2136,7 +2401,8 @@ const serviceLayer = Layer.effect(
                   // extend — escalation_pending and timeoutExtensions>0 agree
                   // here; the flag is the intent-level signal.
                   if (node.status === "running" && node.escalationPending) {
-                    return `[DAG Node Timeout] RUNNING node "${node.name}" exceeded its execution deadline (timeout escalation ${node.timeoutExtensions}) and is still executing. If the workflow's cumulative escalation cap is not exhausted, control(extend_timeout) { workflow_id, node_id, timeout_ms } grants more execution time WITHOUT a replan — it keeps the same child session and attempt, consumes no replan, rewrites no graph, and the deadline watcher picks up the new deadline on its next read. At the cap, extension of this attempt is refused and the watcher enforces the timeout verdict. The cumulative extension count is NOT reset (only a new attempt resets it). Use control(replan) with a NEW worker_config.timeout_ms when you must also change the graph; restart or cancel the node to stop the current attempt. Queued nodes are not extended: their admission deadline was fixed at permit acquisition and is not adjusted by extensions.`
+                    const at = new Date(node.timeUpdated ?? node.startedAt ?? Date.now()).toISOString()
+                    return `[DAG Node Timeout] RUNNING node "${node.name}" exceeded its execution deadline at ${at} (timeout escalation ${node.timeoutExtensions}) and is still executing. If the workflow's cumulative escalation cap is not exhausted, control(extend_timeout) { workflow_id, node_id, timeout_ms } grants more execution time WITHOUT a replan — it keeps the same child session and attempt, consumes no replan, rewrites no graph, and the deadline watcher picks up the new deadline on its next read. At the cap, extension of this attempt is refused and the watcher enforces the timeout verdict. The cumulative extension count is NOT reset (only a new attempt resets it). Use control(replan) with a NEW worker_config.timeout_ms when you must also change the graph; restart or cancel the node to stop the current attempt. Queued nodes are not extended: their admission deadline was fixed at permit acquisition and is not adjusted by extensions.`
                   }
                   const durableResult =
                     typeof node.output === "string"
@@ -2145,10 +2411,13 @@ const serviceLayer = Layer.effect(
                   const truncated = durableResult.length > 500
                   const output = durableResult.slice(0, 500)
                   const failureClass = node.status === "failed" && node.errorClass ? ` (${node.errorClass})` : ""
+                  // #949: every delivered result states when the node settled,
+                  // so the parent can answer "when did this arrive?".
+                  const at = new Date(node.completedAt ?? node.startedAt ?? node.timeUpdated ?? Date.now()).toISOString()
                   const retrieval = truncated
                     ? `\nComplete output: call workflow result with workflow_id="${node.workflowId}" and node_id="${node.id}".`
                     : ""
-                  return `[DAG Node Result] Node "${node.name}" ${node.status}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated}${retrieval}`
+                  return `[DAG Node Result] Node "${node.name}" ${node.status}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}`
                 }),
                 ...batch.workflows.map((workflow) => {
                   const failures = failuresByWorkflow.get(workflow.id)
@@ -2160,7 +2429,7 @@ const serviceLayer = Layer.effect(
                       : ""
                   return workflow.status === "paused"
                     ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
-                    : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status.${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
+                    : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
                 }),
               ]
               const summary = [
@@ -2523,6 +2792,7 @@ const serviceLayer = Layer.effect(
                         nodeID,
                         node?.childSessionId ?? null,
                         "dag.loop.parentSessionDeleted",
+                        childAbort("parent-session-deleted", "parent-session"),
                       ).pipe(Effect.ignore)
                       yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                       const watcher = entry.watchers.get(nodeID)
@@ -2565,9 +2835,13 @@ const serviceLayer = Layer.effect(
                   Effect.gen(function* () {
                     for (const [nodeID, fiber] of entry.fibers) {
                       const node = yield* store.getNode(dagID, nodeID)
-                      yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.locationMoved").pipe(
-                        Effect.ignore,
-                      )
+                      yield* abortChild(
+                        dagID,
+                        nodeID,
+                        node?.childSessionId ?? null,
+                        "dag.loop.locationMoved",
+                        childAbort("location-moved", "dag-location"),
+                      ).pipe(Effect.ignore)
                       yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                       const watcher = entry.watchers.get(nodeID)
                       if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)

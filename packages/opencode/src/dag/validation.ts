@@ -21,6 +21,7 @@
 export * as DagValidation from "./validation"
 
 import { Effect, Option, Schema } from "effect"
+import { isAbsolute } from "node:path"
 import { buildGraph } from "@opencode-ai/core/dag/core/scheduling"
 import { CycleError } from "@opencode-ai/core/dag/core/graph"
 import { validateRequiredNodes } from "@opencode-ai/core/dag/core/required-validator"
@@ -32,6 +33,7 @@ import { validateReviewLifecycle } from "./review-lifecycle"
 import { conditionReference, conditionSyntaxError, parseInputMappingReference } from "./runtime/eval"
 import { unsupportedSchemaKeywords } from "./runtime/capture"
 import { placeholderKeys, templateSourceById } from "./templates/resolve"
+import { DagLocation } from "./location"
 
 // ============================================================================
 // Diagnostic contract
@@ -57,6 +59,9 @@ export const DIAGNOSTIC_CODES = {
   modelLegacyPin: "model.legacy_pin",
   environmentUnavailable: "environment.unavailable",
   schemaKeywordWarning: "schema.keyword_warning",
+  verdictVocabulary: "prompt.verdict_vocabulary",
+  workspaceWorktreeMismatch: "workspace.worktree_mismatch",
+  workspaceInvalid: "workspace.invalid",
 } as const
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[keyof typeof DIAGNOSTIC_CODES]
@@ -200,6 +205,10 @@ export const NodeSchema = Schema.Struct({
     description:
       "If true and this node fails, the workflow terminalizes as failed. Inherits config.node_defaults.required",
   }),
+  skip_ok: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "If true, a required node skipped by its condition (or a cascade) does not fail the workflow. New required nodes default to false; explicitly mark intentional mutually-exclusive branches true",
+  }),
   prompt_template: PromptTemplateSource.annotate({
     description:
       'Template: exactly one of { id: "..." } or { inline: "...", input: {...} }. Direct dependency outputs are available as {{node-id}} by default',
@@ -247,6 +256,10 @@ export const NodeSchema = Schema.Struct({
     description:
       "(implementation writers) Direct dependency whose output.packages [{ id, instruction, write_set }] fans this writer out when it becomes ready: two or more disjoint packages run as parallel writers <id>--<package-id> and this node becomes their implementation aggregator under the same id; fewer packages, or an unsafe shape, run this writer unchanged",
   }),
+  workspace: Schema.optional(Schema.String).annotate({
+    description:
+      "Absolute path to a linked worktree of the same project where this node runs. Overrides config.workspace. Omit to run in config.workspace or the session directory.",
+  }),
 })
 
 const NodeDefaults = Schema.Struct({
@@ -274,6 +287,10 @@ const GraphBudgetFields = {
   }),
   max_total_nodes: Schema.optional(Schema.Number).annotate({
     description: "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
+  }),
+  workspace: Schema.optional(Schema.String).annotate({
+    description:
+      "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
   }),
 } as const
 
@@ -725,6 +742,64 @@ function conditionDiagnostics(nodes: readonly NodeConfig[], grandfathered?: Read
       hint: "A condition may only read outputs of the node's direct depends_on",
     }),
   ]
+}
+
+// Verdict words a block's schema could plausibly demand. A block only emits
+// one vocabulary; naming another one in the shared objective or instruction
+// teaches the worker the wrong contract at the exact place the runtime will
+// reject it.
+const VERDICT_WORD_PATTERN =
+  /\b(?:ACCEPT|ACCEPTED|REJECT|REJECTED|REVISE|REVISED|BLOCKED|BLOCKING|PASS|PASSED|FAIL|FAILED|INCOMPLETE)\b/g
+
+const BLOCK_VERDICT_ALLOWED: Partial<Record<DagBlocks.WorkflowBlockKind, readonly string[]>> = {
+  verify: ["PASS", "FAIL"],
+  review: ["ACCEPT", "REJECT"],
+}
+
+function verdictWords(text: string | undefined): string[] {
+  if (!text) return []
+  return [...new Set(text.match(VERDICT_WORD_PATTERN) ?? [])]
+}
+
+/** Warn when the text injected into a verdict-bearing block names words that
+ * block's output schema cannot accept (#956). The check is advisory: the
+ * runtime contract still fails invalid output, and the repair turn is only a
+ * bounded near-miss path. */
+export function verdictVocabularyDiagnostics(
+  objective: string | undefined,
+  blocks: readonly DagBlocks.WorkflowBlock[] | undefined,
+): Diagnostic[] {
+  if (!blocks) return []
+  return blocks.flatMap((block) => {
+    const allowed = BLOCK_VERDICT_ALLOWED[block.kind]
+    if (!allowed) return []
+    const diagnostics: Diagnostic[] = []
+    const instructionConflicts = verdictWords(block.instruction).filter((word) => !allowed.includes(word))
+    if (instructionConflicts.length > 0) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: DIAGNOSTIC_CODES.verdictVocabulary,
+          path: `config.blocks[${block.id}].instruction`,
+          message: `block "${block.id}" (${block.kind}) instruction names verdict words its output schema does not accept: ${instructionConflicts.join(", ")}`,
+          hint: `Use only ${allowed.join(", ")} for this block, or remove the verdict wording. The runtime validates the output schema, not the instruction.`,
+        }),
+      )
+    }
+    const objectiveConflicts = verdictWords(objective).filter((word) => !allowed.includes(word))
+    if (objectiveConflicts.length > 0) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: DIAGNOSTIC_CODES.verdictVocabulary,
+          path: "config.objective",
+          message: `objective names verdict words block "${block.id}" (${block.kind}) cannot output: ${objectiveConflicts.join(", ")}`,
+          hint: `This objective is injected into the block's prompt. Use only ${allowed.join(", ")} for block "${block.id}", or scope those words to the block that accepts them. The runtime validates the output schema, not the objective.`,
+        }),
+      )
+    }
+    return diagnostics
+  })
 }
 
 /** input_mapping is a data dependency, not a scheduling edge. Every declared
@@ -1452,6 +1527,105 @@ export function environmentDiagnostics(input: {
   })
 }
 
+/**
+ * #949: warn when the text that will become a node's instructions names an
+ * absolute path of ANOTHER worktree of the same repository while the workflow
+ * executes elsewhere. Cheap by construction: one `git worktree list` per
+ * validation, then plain string matching. Non-git directories and unreadable
+ * git commands skip the check instead of inventing a mismatch.
+ */
+export function worktreeMismatchDiagnostics(input: {
+  directory?: string
+  workspace?: string
+  objective?: string
+  nodes: readonly NodeConfig[]
+}): Diagnostic[] {
+  if (!input.directory) return []
+  const worktrees = DagLocation.gitWorktrees(input.directory)
+  if (!worktrees || worktrees.length < 2) return []
+  const owner = DagLocation.canonicalDirectory(input.directory)
+  const resolveExecution = (workspace: string | undefined) => {
+    if (!workspace) return undefined
+    const resolved = DagLocation.resolveWorkspace(workspace, input.directory!)
+    return resolved._tag === "ok" ? resolved.directory : undefined
+  }
+  // #949: the workflow workspace binds the objective and every node without
+  // its own workspace. A node workspace overrides it for that node's prompt.
+  const workflowExecution = resolveExecution(input.workspace) ?? owner
+  const texts = [
+    ...(input.objective ? [{ path: "config.objective", text: input.objective, execution: workflowExecution }] : []),
+    ...input.nodes.flatMap((node) => {
+      if (!node.prompt_template.inline) return []
+      const execution = resolveExecution(node.workspace) ?? workflowExecution
+      return [{ path: `nodes[${node.id}].prompt_template.inline`, text: node.prompt_template.inline, execution }]
+    }),
+  ]
+  return texts.flatMap(({ path, text, execution }) => {
+    const others = worktrees.filter((worktree) => worktree !== execution)
+    return others
+      .filter((worktree) => mentionsAbsolutePath(text, worktree))
+      .map((worktree) =>
+        diagnostic({
+          severity: "warning",
+          code: DIAGNOSTIC_CODES.workspaceWorktreeMismatch,
+          path,
+          message: `this text names worktree "${worktree}" of the same project, but nodes execute in "${execution}"`,
+          hint: "Run the workflow from the named worktree, or change the path in the text to the execution directory.",
+        }),
+      )
+  })
+}
+
+/**
+ * #943: `workspace` binds child sessions to an explicit checkout. Reject a
+ * malformed value in every profile (a relative path can never be resolved
+ * consistently at runtime); existence, project and worktree checks need the
+ * owner directory and therefore run only in the environment profile.
+ */
+export function workspaceDiagnostics(input: {
+  workspace?: string
+  nodes: readonly NodeConfig[]
+  ownerDirectory?: string
+  profile: Profile
+}): Diagnostic[] {
+  const targets = [
+    ...(input.workspace !== undefined ? [{ path: "config.workspace", workspace: input.workspace }] : []),
+    ...input.nodes.flatMap((node) =>
+      node.workspace !== undefined ? [{ path: `nodes[${node.id}].workspace`, workspace: node.workspace }] : [],
+    ),
+  ]
+  return targets.flatMap(({ path, workspace }) => {
+    if (!isAbsolute(workspace)) {
+      return [
+        diagnostic({
+          code: DIAGNOSTIC_CODES.workspaceInvalid,
+          path,
+          message: `workspace must be an absolute path, got "${workspace}"`,
+          hint: "Use an absolute path to a linked worktree of this project, or remove workspace.",
+        }),
+      ]
+    }
+    if (input.profile !== "environment" || !input.ownerDirectory) return []
+    const resolved = DagLocation.resolveWorkspace(workspace, input.ownerDirectory)
+    if (resolved._tag === "ok") return []
+    return [
+      diagnostic({
+        code: DIAGNOSTIC_CODES.workspaceInvalid,
+        path,
+        message: resolved.reason,
+        hint: "Use an absolute path to a linked worktree of the same project (git worktree list), or remove workspace.",
+      }),
+    ]
+  })
+}
+
+/** A path mention must start at a path boundary and end at a separator or
+ * token boundary, so `/repo/wt-a` never matches `/repo/wt-ab`. */
+function mentionsAbsolutePath(text: string, target: string) {
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`(?:^|[\\s"'\\x60(<\\[]|file://)${escaped}(?=$|[\\s"'\\x60)>\\],:;./\\\\])`).test(text)
+}
+
 function nodeBoundVariables(node: NodeConfig): Set<string> {
   return new Set([
     ...Object.keys(node.prompt_template.input ?? {}),
@@ -1521,8 +1695,10 @@ export function validatePostCompile(input: {
   profile: Profile
   config: {
     mode?: ExecutionMode
+    objective?: string
     delivery_node?: string
     max_total_nodes?: number
+    workspace?: string
     node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
   }
   nodes: readonly NodeConfig[]
@@ -1553,7 +1729,18 @@ export function validatePostCompile(input: {
       // attach an ungated dependent to a reporting checkpoint and the engine
       // spawned it the moment the checkpoint completed.
       ...checkpointGateDiagnostics(input.nodes, input.config.node_defaults),
+      ...verdictVocabularyDiagnostics(input.config.objective, input.blocks),
     ]
+    // Absolute-path syntax is a source-level contract: report it in both
+    // profiles. Existence/project/worktree checks remain environment-only.
+    diagnostics.push(
+      ...workspaceDiagnostics({
+        workspace: input.config.workspace,
+        nodes: input.nodes,
+        ownerDirectory: input.directory,
+        profile: input.profile,
+      }),
+    )
     if (input.profile === "portable") diagnostics.push(...nonportablePromptDiagnostics(input.nodes))
     if (input.profile === "environment") {
       diagnostics.push(
@@ -1563,6 +1750,12 @@ export function validatePostCompile(input: {
           catalogs: input.catalogs,
           defaults: input.config.node_defaults,
         })),
+        ...worktreeMismatchDiagnostics({
+          directory: input.directory,
+          workspace: input.config.workspace,
+          objective: input.config.objective,
+          nodes: input.nodes,
+        }),
       )
     }
     const errors = sortDiagnostics(diagnostics.filter((d) => d.severity === "error"))

@@ -102,6 +102,59 @@ describe("DagStore wake batch", () => {
     )
   })
 
+  test("keeps a timeout-extended node wake after escalation is cleared", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const store = yield* DagStore.Service
+        yield* database.db.insert(ProjectTable).values({
+          id: "project-1" as never,
+          worktree: process.cwd() as never,
+          sandboxes: [],
+        }).run().pipe(Effect.orDie)
+        yield* database.db.insert(SessionTable).values({
+          id: "ses_parent" as never,
+          project_id: "project-1" as never,
+          slug: "parent",
+          directory: process.cwd() as never,
+          title: "Parent",
+          version: "test",
+        }).run().pipe(Effect.orDie)
+        yield* database.db.insert(WorkflowTable).values({
+          id: "wf-1",
+          project_id: "project-1" as never,
+          session_id: "ses_parent" as never,
+          title: "Timeout",
+          status: "running",
+          config: "{}",
+          seq: 1,
+          wake_reported: false,
+        }).run().pipe(Effect.orDie)
+        yield* database.db.insert(WorkflowNodeTable).values({
+          id: "timeout-node",
+          workflow_id: "wf-1",
+          name: "Timeout",
+          worker_type: "build",
+          status: "running",
+          required: true,
+          depends_on: [],
+          wake_eligible: false,
+          wake_reported: false,
+          escalation_pending: false,
+          timeout_extensions: 1,
+          seq: 1,
+        }).run().pipe(Effect.orDie)
+
+        expect((yield* store.getUnreportedWakeNodes("ses_parent")).map((node) => node.id)).toEqual([
+          "timeout-node",
+        ])
+      }).pipe(
+        Effect.provide(storeLayer(":memory:")),
+        Effect.scoped,
+      ),
+    )
+  })
+
   test("rolls back the whole batch when one acknowledgement update fails", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {

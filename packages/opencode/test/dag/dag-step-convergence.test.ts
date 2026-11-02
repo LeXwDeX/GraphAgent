@@ -176,7 +176,12 @@ function createGatedWorkflow(dag: Dag.Interface, withSibling = false) {
     title: "Step convergence",
     config: {
       name: "step-convergence",
-      nodes: [node("p"), node("a", ["p"], 'p.output == "yes"'), node("b", ["a"]), ...(withSibling ? [node("c")] : [])],
+      nodes: [
+        node("p"),
+        { ...node("a", ["p"], 'p.output == "yes"'), skip_ok: true },
+        { ...node("b", ["a"]), skip_ok: true },
+        ...(withSibling ? [node("c")] : []),
+      ],
     },
   })
 }

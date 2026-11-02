@@ -1004,6 +1004,7 @@ describe("DagLoop atomic wake integration", () => {
               {
                 ...node("downstream", ["checkpoint"]),
                 condition: 'checkpoint.output == "GO"',
+                skip_ok: true,
               },
             ],
           },
@@ -1058,35 +1059,43 @@ describe("DagLoop atomic wake integration", () => {
     ),
   )
 
-  integration.live("keeps an early-completed workflow terminal", () =>
+  integration.live("rejects early completion while required work remains, then completes after it finishes", () =>
     runWakeTest(({ dag, store, childPrompts }) =>
       Effect.gen(function* () {
         const dagID = yield* dag.create({
           projectID: "project-1",
           sessionID: "ses_parent",
-          title: "Early completion",
+          title: "Guarded completion",
           config: {
-            name: "early-completion",
-            nodes: [node("checkpoint"), node("later", ["checkpoint"])],
+            name: "guarded-completion",
+            nodes: [node("checkpoint"), { ...node("later", ["checkpoint"]), required: false }],
           },
         })
 
-        yield* takeWithin(childPrompts, "checkpoint did not start")
-        yield* dag.complete(dagID)
-        yield* pollWithTimeout(
-          store.getWorkflow(dagID).pipe(
-            Effect.map((workflow) => workflow?.status === "completed" ? true : undefined),
-          ),
-          "workflow did not early-complete",
+        const checkpoint = yield* takeWithin(childPrompts, "checkpoint did not start")
+        const denied = yield* dag.complete(dagID).pipe(
+          Effect.as(undefined),
+          Effect.catch((error) => Effect.succeed(error)),
         )
-        expect((yield* store.getNode(dagID, "later"))?.errorReason).toBe("agent_complete")
-        expect((yield* store.getNode(dagID, "checkpoint"))?.status).toBe("aborted")
+        expect(denied).toBeInstanceOf(Dag.CompletionGateError)
+        if (!(denied instanceof Error)) throw new Error("early completion unexpectedly succeeded")
+        expect(denied.message).toContain("checkpoint (running)")
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+        expect((yield* store.getNode(dagID, "checkpoint"))?.status).toBe("running")
+        expect((yield* store.getNode(dagID, "later"))?.status).toBe("pending")
+
+        yield* dag.nodeCompleted(dagID, "checkpoint", "done")
+        yield* dag.complete(dagID)
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("completed")
+        expect((yield* store.getNode(dagID, "checkpoint"))?.status).toBe("completed")
         expect((yield* store.getNode(dagID, "later"))?.status).toBe("skipped")
+        expect((yield* store.getNode(dagID, "later"))?.errorReason).toBe("agent_complete")
 
         const error = yield* dag.extend(dagID, [node("repair", ["checkpoint"])]).pipe(
           Effect.catch((cause: Error) => Effect.succeed(cause)),
         )
         expect(error).toBeInstanceOf(TerminalViolationError)
+        yield* Deferred.succeed(checkpoint.release, "late")
       }),
     ),
   )
@@ -1307,6 +1316,45 @@ describe("DagLoop atomic wake integration", () => {
     } finally {
       await fs.rm(templateFile, { force: true })
     }
+  })
+
+  it("reports schema_invalid in workflow status and the parent wake for an unparseable final response", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Schema failure",
+            config: {
+              name: "schema-failure",
+              result_protocol: "final_response",
+              nodes: [
+                {
+                  ...node("review"),
+                  output_schema: { type: "object", required: ["verdict"] },
+                },
+              ],
+            },
+          })
+
+          const child = yield* takeWithin(childPrompts, "review node did not start")
+          yield* Deferred.succeed(child.release, "not one JSON value")
+
+          yield* pollWithTimeout(
+            store.getNode(dagID, "review").pipe(Effect.map((item) => (item?.status === "failed" ? item : undefined))),
+            "review node did not fail",
+          )
+          const failed = yield* store.getNode(dagID, "review")
+          expect(failed?.errorClass).toBe("schema_invalid")
+          expect(failed?.errorReason).toContain("one JSON value")
+
+          const parent = yield* takeWithin(parentPrompts, "workflow failure did not wake the parent")
+          expect(promptText(parent.input)).toContain("(schema_invalid)")
+          yield* Deferred.succeed(parent.release, "success")
+        }),
+      ),
+    )
   })
 
   it("does not block a second workflow's downstream scheduling on a parent wake", async () => {
@@ -1854,10 +1902,244 @@ describe("DagLoop atomic wake integration", () => {
     )
   })
 
-  // Issue #294: a workflow whose verification skips every diff review settles
-  // as COMPLETED at the checkpoint (not failed) so the parent can dispose of
-  // the unresolved review verdict via reopen-extend; failed stays immutable.
-  it.each(["deep", "standard"] as const)("completes a recovered %s workflow when verification skips every diff review", async (mode) => {
+  it("fails a required node skipped by condition_false when skip_ok is not set", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Required conditional skip",
+            config: {
+              name: "required-conditional-skip",
+              nodes: [
+                node("gate"),
+                {
+                  ...node("branch", ["gate"]),
+                  report_to_parent: false,
+                  condition: 'gate.output.verdict == "ACCEPT"',
+                },
+              ],
+            },
+          })
+
+          const gate = yield* takeWithin(childPrompts, "gate did not start")
+          yield* dag.nodeCompleted(dagID, "gate", { verdict: "REJECT" })
+
+          const workflow = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((row) => (row?.status === "failed" ? row : undefined)),
+            ),
+            "required condition_false skip did not fail the workflow",
+          )
+          expect(workflow.status).toBe("failed")
+          const branch = yield* store.getNode(dagID, "branch")
+          expect(branch?.status).toBe("skipped")
+          expect(branch?.errorReason).toBe("condition_false")
+          yield* Deferred.succeed(gate.release, "late")
+        }),
+      ),
+    )
+  })
+
+  it("fails a required cascade skip that the specification did not opt into", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Unaccepted cascade skip",
+            config: {
+              name: "unaccepted-cascade-skip",
+              nodes: [
+                node("gate"),
+                {
+                  ...node("branch", ["gate"]),
+                  report_to_parent: false,
+                  condition: 'gate.output.verdict == "ACCEPT"',
+                  skip_ok: true,
+                },
+                { ...node("cascade", ["branch"]), report_to_parent: false },
+              ],
+            },
+          })
+
+          const gate = yield* takeWithin(childPrompts, "gate did not start")
+          yield* dag.nodeCompleted(dagID, "gate", { verdict: "REJECT" })
+
+          const workflow = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((row) => (row?.status === "failed" ? row : undefined)),
+            ),
+            "unaccepted required cascade skip did not fail the workflow",
+          )
+          expect(workflow.status).toBe("failed")
+          expect((yield* store.getNode(dagID, "branch"))?.status).toBe("skipped")
+          const cascade = yield* store.getNode(dagID, "cascade")
+          expect(cascade?.status).toBe("skipped")
+          expect(cascade?.errorReason).toBe("orphan_cascade")
+          yield* Deferred.succeed(gate.release, "late")
+        }),
+      ),
+    )
+  })
+
+  it("fails a required verify node whose structured verdict is FAIL", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Verification verdict failure",
+            config: {
+              name: "verification-verdict-failure",
+              nodes: [
+                {
+                  ...node("verify"),
+                  output_schema: {
+                    type: "object",
+                    required: ["verdict"],
+                    properties: { verdict: { type: "string", enum: ["PASS", "FAIL"] } },
+                  },
+                },
+              ],
+            },
+          })
+
+          const verify = yield* takeWithin(childPrompts, "verify did not start")
+          yield* dag.nodeCompleted(dagID, "verify", { verdict: "FAIL" })
+
+          const workflow = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((row) => (row?.status === "failed" ? row : undefined)),
+            ),
+            "verify FAIL did not fail the workflow",
+          )
+          expect(workflow.status).toBe("failed")
+          yield* Deferred.succeed(verify.release, "late")
+        }),
+      ),
+    )
+  })
+
+  it("keeps a required verify node with a PASS verdict on the completed path", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Verification verdict pass",
+            config: {
+              name: "verification-verdict-pass",
+              nodes: [
+                {
+                  ...node("verify"),
+                  output_schema: {
+                    type: "object",
+                    required: ["verdict"],
+                    properties: { verdict: { type: "string", enum: ["PASS", "FAIL"] } },
+                  },
+                },
+              ],
+            },
+          })
+
+          const verify = yield* takeWithin(childPrompts, "verify did not start")
+          yield* dag.nodeCompleted(dagID, "verify", { verdict: "PASS" })
+
+          const workflow = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(
+              Effect.map((row) => (row?.status === "completed" ? row : undefined)),
+            ),
+            "verify PASS did not complete the workflow",
+          )
+          expect(workflow.status).toBe("completed")
+          yield* Deferred.succeed(verify.release, "late")
+        }),
+      ),
+    )
+  })
+
+  it("fails a recovered workflow whose required node was skipped without skip_ok", async () => {
+    await Effect.runPromise(
+      runWakeTest(
+        ({ store }) =>
+          Effect.gen(function* () {
+            const workflow = yield* pollWithTimeout(
+              store.getWorkflow("dag_recovered_required_skip").pipe(
+                Effect.map((row) => (row && ["completed", "failed"].includes(row.status) ? row : undefined)),
+              ),
+              "recovered required-skip workflow did not settle",
+            )
+            expect(workflow.status).toBe("failed")
+            expect((yield* store.getNode(workflow.id, "branch"))?.status).toBe("skipped")
+          }),
+        ({ database }) =>
+          database.db.transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx.insert(WorkflowTable).values({
+                id: "dag_recovered_required_skip",
+                project_id: Project.ID.make("project-1"),
+                session_id: SessionID.make("ses_parent"),
+                directory: process.cwd(),
+                title: "Recovered required skip",
+                status: "running",
+                config: JSON.stringify({
+                  name: "dag_recovered_required_skip",
+                  nodes: [
+                    node("gate"),
+                    {
+                      ...node("branch", ["gate"]),
+                      report_to_parent: false,
+                      condition: 'gate.output.verdict == "ACCEPT"',
+                      skip_ok: false,
+                    },
+                  ],
+                }),
+                seq: 4,
+                wake_reported: false,
+              }).run()
+              yield* tx.insert(WorkflowNodeTable).values([
+                {
+                  id: "gate",
+                  workflow_id: "dag_recovered_required_skip",
+                  name: "gate",
+                  worker_type: "build",
+                  status: "completed",
+                  required: true,
+                  depends_on: [],
+                  output: { verdict: "REJECT" },
+                  wake_eligible: false,
+                  wake_reported: true,
+                  seq: 2,
+                },
+                {
+                  id: "branch",
+                  workflow_id: "dag_recovered_required_skip",
+                  name: "branch",
+                  worker_type: "build",
+                  status: "skipped",
+                  required: true,
+                  depends_on: ["gate"],
+                  error_reason: "condition_false",
+                  wake_eligible: false,
+                  wake_reported: false,
+                  seq: 1,
+                },
+              ]).run()
+            }),
+          ).pipe(Effect.orDie),
+      ),
+    )
+  })
+
+  // Issue #950: a verification FAIL is a real failure even though it skips
+  // every diff review. The graph no longer settles COMPLETED at the checkpoint;
+  // it fails and the parent can recover through the failed-workflow path.
+  it.each(["deep", "standard"] as const)("fails a recovered %s workflow when verification skips every diff review", async (mode) => {
     await Effect.runPromise(
       runWakeTest(
         ({ store, parentPrompts }) =>
@@ -1868,13 +2150,13 @@ describe("DagLoop atomic wake integration", () => {
               ),
               "recovered workflow without an accepted review did not settle",
             )
-            expect(workflow.status).toBe("completed")
+            expect(workflow.status).toBe("failed")
             expect((yield* store.getNode(workflow.id, "review-diff"))?.status).toBe("skipped")
             expect((yield* store.getNode(workflow.id, "final-audit"))?.status).toBe("skipped")
 
-            const parent = yield* takeWithin(parentPrompts, "review rejection completion did not wake the parent")
+            const parent = yield* takeWithin(parentPrompts, "review rejection failure did not wake the parent")
             expect(promptText(parent.input)).toContain(
-              '[DAG Workflow completed] Workflow "Recovered review rejection" has reached terminal status.',
+              '[DAG Workflow failed] Workflow "Recovered review rejection" has reached terminal status.',
             )
             yield* Deferred.succeed(parent.release, "success")
           }),
@@ -2005,11 +2287,11 @@ describe("DagLoop atomic wake integration", () => {
   })
 
   // A block review route: verify FAIL skips the review lanes and decision
-  // (condition false) and cascade-skips the synthesis, so the graph settles
-  // COMPLETED. The parent must receive the verification verdict and be able
-  // to route back through reopen-extend — the verify gate is the reporting
-  // checkpoint of that terminal shape.
-  it("reports a failed review-route verification and reopens it via extend", async () => {
+  // (condition false) and cascade-skips the synthesis. Issue #950 requires the
+  // failed verification verdict to fail the workflow instead of reporting the
+  // skipped branch as a completed success; failed workflows recover through
+  // control(recover), not the completed-only reopen-extend path.
+  it("fails a review-route verification and wakes the parent", async () => {
     await Effect.runPromise(
       runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
         Effect.gen(function* () {
@@ -2050,7 +2332,7 @@ describe("DagLoop atomic wake integration", () => {
             ),
             "workflow did not settle after the verification failed",
           )
-          expect(workflow.status).toBe("completed")
+          expect(workflow.status).toBe("failed")
           expect((yield* store.getNode(dagID, "audit"))?.status).toBe("skipped")
           expect((yield* store.getNode(dagID, "final"))?.status).toBe("skipped")
 
@@ -2058,23 +2340,9 @@ describe("DagLoop atomic wake integration", () => {
           const text = promptText(parent.input)
           expect(text).toContain('Node "check: verify" completed')
           expect(text).toContain("parser regression test still fails")
+          expect(text).toContain("[DAG Workflow failed]")
           yield* Deferred.succeed(parent.release, "success")
-
-          const plan = yield* dag.extend(dagID, [
-            {
-              id: "impl-fix",
-              name: "impl-fix",
-              worker_type: "build",
-              depends_on: ["check"],
-              required: true,
-              prompt_template: { inline: "fix the failing regression" },
-            },
-          ])
-          expect(plan.add).toEqual(["impl-fix"])
-          const fix = yield* takeWithin(childPrompts, "the reopened workflow did not run the fix")
-          expect(fix.title).toBe("impl-fix")
-          expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
-          for (const gate of [impl, check, fix]) yield* Deferred.succeed(gate.release, "late")
+          for (const gate of [impl, check]) yield* Deferred.succeed(gate.release, "late")
         }),
       ),
     )
@@ -2134,9 +2402,10 @@ describe("DagLoop atomic wake integration", () => {
                   ...node("implement", ["quality-gate"]),
                   report_to_parent: false,
                   condition: 'quality-gate.output.verdict == "ACCEPT"',
+                  skip_ok: true,
                 },
-                { ...node("integrate", ["implement"]), report_to_parent: false },
-                { ...node("final-audit", ["integrate"]), report_to_parent: false },
+                { ...node("integrate", ["implement"]), report_to_parent: false, skip_ok: true },
+                { ...node("final-audit", ["integrate"]), report_to_parent: false, skip_ok: true },
               ],
             },
           })

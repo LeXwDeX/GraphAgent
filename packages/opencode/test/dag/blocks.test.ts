@@ -250,6 +250,61 @@ describe("workflow blocks", () => {
     expect(nodes.find((node) => node.id === "report")?.condition).toBe('decision.output.verdict == "ACCEPT"')
   })
 
+  it("accepts skips only on the intentional review-gate branches", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Review the implementation",
+      blocks: [
+        { id: "implementation", kind: "coding" },
+        { id: "verification", kind: "verify", depends_on: ["implementation"] },
+        { id: "decision", kind: "review", depends_on: ["verification"] },
+        { id: "report", kind: "synthesize", depends_on: ["decision"] },
+      ],
+    })
+
+    // The review-gated decision and the review-dependent final gate are the
+    // intentional mutually-exclusive branches; their false condition is an
+    // accepted skip.
+    expect(nodes.find((node) => node.id === "decision")).toMatchObject({
+      condition: 'verification.output.verdict == "PASS"',
+      skip_ok: true,
+    })
+    expect(nodes.find((node) => node.id === "report")).toMatchObject({
+      condition: 'decision.output.verdict == "ACCEPT"',
+      skip_ok: true,
+    })
+    // Ordinary required work stays strict; the compiler must not opt every
+    // node into accepted skips.
+    for (const id of ["implementation", "verification"]) {
+      const compiled = nodes.find((node) => node.id === id)
+      expect(compiled?.condition).toBeUndefined()
+      expect(compiled?.skip_ok).toBeUndefined()
+    }
+  })
+
+  it("propagates review-branch membership through optional expanded internals", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Review the implementation, then debug the reviewed state",
+      blocks: [
+        { id: "implementation", kind: "coding" },
+        { id: "verification", kind: "verify", depends_on: ["implementation"] },
+        { id: "decision", kind: "review", depends_on: ["verification"] },
+        { id: "follow-up", kind: "debug", depends_on: ["decision"], required: true },
+      ],
+    })
+
+    // debug's evidence node is optional but belongs to the review branch; the
+    // required diagnose node depends on it. Both must accept the branch skip.
+    expect(nodes.find((node) => node.id === "follow-up--evidence")).toMatchObject({
+      required: false,
+      condition: 'decision.output.verdict == "ACCEPT"',
+      skip_ok: true,
+    })
+    expect(nodes.find((node) => node.id === "follow-up")).toMatchObject({
+      required: true,
+      skip_ok: true,
+    })
+  })
+
   // Issue #304: a synthesize following a review is the route's final gate —
   // it must map the review output, otherwise an ACCEPTed review stays listed
   // as an unresolved review outcome forever.

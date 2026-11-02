@@ -92,6 +92,9 @@ export const layer = Layer.effectDiscard(
           // A legacy event without the field projects to NULL — a row that
           // matches no instance directory and is never adopted.
           directory: event.data.directory ?? null,
+          // #943: NULL for legacy events and workflows without a workspace;
+          // spawn then keeps executing in the owner directory.
+          execution_directory: event.data.executionDirectory ?? null,
           title: event.data.title,
           status: event.data.status,
           config: event.data.config,
@@ -318,12 +321,20 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeStarted, (event) =>
-      db
+    yield* events.project(DagEvent.NodeStarted, (event) => {
+      // #949: snapshot the attempt's execution location without a bare
+      // `directory:` key inside `.set(...)`: the DAG-LOC-01 write-once static
+      // contract reserves that spelling for the workflow stamp.
+      const executionLocation = {
+        directory: event.data.directory ?? null,
+        base_head: event.data.baseHead ?? null,
+      }
+      return db
         .update(WorkflowNodeTable)
         .set({
           status: "running",
           child_session_id: event.data.childSessionID,
+          ...executionLocation,
           captured_output: null,
           captured_output_present: false,
           captured_snapshot_id: null,
@@ -352,8 +363,8 @@ export const layer = Layer.effectDiscard(
           inArray(WorkflowNodeTable.status, [...NodeStatusProjection.started.from]),
         ))
         .run()
-        .pipe(Effect.orDie),
-    )
+        .pipe(Effect.orDie)
+    })
 
     yield* events.project(DagEvent.NodeCompleted, (event) =>
       db
@@ -395,7 +406,7 @@ export const layer = Layer.effectDiscard(
         .set({
           status: "failed",
           error_reason: event.data.reason,
-          error_class: event.data.trigger,
+          error_class: event.data.errorClass ?? event.data.trigger,
           completed_at: toMillis(event.data.timestamp),
           // Q1: a terminal node is no longer awaiting adjudication — clear the
           // escalation flag.

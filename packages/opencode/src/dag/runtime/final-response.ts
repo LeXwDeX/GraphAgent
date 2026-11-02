@@ -6,7 +6,12 @@ import { Database } from "@opencode-ai/core/database/database"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
-import { isCaptureValidationCurrent, validatePayloadAsync, type CaptureValidation } from "./capture"
+import {
+  isCaptureValidationCurrent,
+  validatePayloadAsync,
+  type CaptureValidation,
+  type SchemaValidationFix,
+} from "./capture"
 
 export type FinalText = { ok: true; text: string } | { ok: false; reason: string }
 
@@ -53,7 +58,24 @@ export function parseFinalResponse(text: string): ParsedFinalResponse {
 
 export type CaptureReceipt = { ok: true } | { ok: false; reason: string; code?: string }
 export type FinalCaptureResult =
-  { ok: true; output: unknown; snapshotID?: string } | { ok: false; reason: string; code?: string }
+  | { ok: true; output: unknown; snapshotID?: string }
+  | {
+      ok: false
+      reason: string
+      code?: string
+      /** The turn ended normally but its final output failed the schema contract. */
+      schemaInvalid?: boolean
+      /** Present only for a near-miss worth one bounded correction turn. */
+      fix?: SchemaValidationFix
+    }
+
+/** Quote only the failing field and its allowed values, never the draft or the
+ * whole schema: the correction turn must stay cheap and must not echo secrets. */
+export function repairPrompt(fix: SchemaValidationFix): string {
+  const subject = `Field "${fix.path}"`
+  const expected = fix.kind === "enum" ? `must be one of ${fix.allowed}` : `must have ${fix.expected}`
+  return `${subject} ${expected}; got ${fix.got}. Do not redo the work. Resubmit the same result as one JSON value with only that field corrected.`
+}
 
 /** Shared guarded persistence for submit_result and final-response capture. */
 export function persistValidatedCapture(input: {
@@ -100,12 +122,15 @@ export function captureFinalResponse(input: {
   snapshotID?: string
   caller?: DagMessages.Caller
   guard?: Omit<DagMessages.Guard, "snapshotID" | "close">
-}) {
+}): Effect.Effect<FinalCaptureResult> {
   return Effect.gen(function* () {
     const final = finalAssistantText(input.message, true)
-    if (!final.ok) return { ...final, code: undefined } as const
+    if (!final.ok) return { ...final, code: undefined, schemaInvalid: true } as const
+    // The worker protocol is one JSON value. Decode that outer value once;
+    // a string schema then receives the decoded string as data. An assistant
+    // object JSON under a string schema must not be rescued as raw text.
     const parsed = parseFinalResponse(final.text)
-    if (!parsed.ok) return { ...parsed, code: undefined } as const
+    if (!parsed.ok) return { ...parsed, code: undefined, schemaInvalid: true } as const
     let validationSignal: AbortSignal | undefined
     const validated = yield* Effect.promise((signal) => {
       validationSignal = signal
@@ -115,7 +140,13 @@ export function captureFinalResponse(input: {
         input.abort ? AbortSignal.any([signal, input.abort]) : signal,
       )
     })
-    if (!validated.ok) return { ok: false, reason: `final response schema validation failed: ${validated.error}` } as const
+    if (!validated.ok)
+      return {
+        ok: false,
+        reason: `final response schema validation failed: ${validated.error}`,
+        schemaInvalid: true,
+        ...(validated.fix ? { fix: validated.fix } : {}),
+      } as const
     const receipt = yield* persistValidatedCapture({ ...input, validated, abort: input.abort ?? validationSignal! })
     if (!receipt.ok)
       return { ok: false, reason: `final response capture rejected: ${receipt.reason}`, code: receipt.code } as const

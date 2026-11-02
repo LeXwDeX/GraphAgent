@@ -16,7 +16,8 @@ import { Permission } from "@/permission"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
-import { artifactReadPermissions, makeArtifactSourceAuthorizer } from "@/dag/runtime/artifact-permissions"
+import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "@/dag/runtime/artifact-permissions"
+import type { ManagedOutputFileRef } from "@/dag/runtime/output-ref"
 import { it, pollWithTimeout } from "../lib/effect"
 
 const provenance = {
@@ -25,6 +26,159 @@ const provenance = {
   child_session_id: "ses_producer",
   replan_attempt: 0,
 }
+
+test("moves the artifact worktree and boundary to the bound execution directory", () => {
+  expect(artifactPermissionBase("/owner", "/owner", "/worktree-b")).toEqual({
+    worktree: "/worktree-b",
+    boundary: "/worktree-b",
+  })
+  expect(artifactPermissionBase("/owner", "/owner", "/owner")).toEqual({
+    worktree: "/owner",
+    boundary: "/owner",
+  })
+})
+
+test("non-git artifact authorization uses the instance boundary without changing read rule paths", async () => {
+  const directory = path.join(os.tmpdir(), "dag-non-git-instance")
+  const inside = path.join(directory, "inside.txt")
+  const outside = path.join(path.dirname(directory), "dag-outside.txt")
+  const secret = path.join(directory, "secret.txt")
+  const rules = Permission.fromConfig({
+    read: { "*": "allow", [path.relative("/", secret)]: "deny" },
+    external_directory: { "*": "deny" },
+  })
+  const authorize = makeArtifactSourceAuthorizer(
+    { get: () => Effect.succeed({ agent: "build", permission: rules } as never) } as never,
+    { get: () => Effect.succeed({ permission: [] } as never) } as never,
+    "/",
+    undefined,
+    directory,
+  )
+  await Effect.runPromise(authorize("ses_producer", inside))
+  await expect(Effect.runPromise(authorize("ses_producer", outside))).rejects.toThrow("external_directory denied")
+  await expect(Effect.runPromise(authorize("ses_producer", secret))).rejects.toThrow("read denied")
+})
+
+test.skipIf(process.platform === "win32")(
+  "literal wildcard artifact directories fail closed and never override a sibling deny",
+  async () => {
+    const root = path.join(os.tmpdir(), "dag-artifact-??")
+    const sibling = path.join(os.tmpdir(), "dag-artifact-ab", "content.txt")
+    const ref = {
+      kind: "file_ref",
+      content_ref: "managed-v1:test",
+      path: path.join(root, "content.txt"),
+      size: 0,
+      sha256: "0".repeat(64),
+      summary: "",
+      storage: "managed-v1",
+      source_path: path.join(root, "source.txt"),
+      provenance,
+    } satisfies ManagedOutputFileRef
+    const deny = {
+      permission: "external_directory",
+      pattern: path.join(path.dirname(sibling), "**").replaceAll("\\", "/"),
+      action: "deny",
+    } as const
+    const grants = artifactReadPermissions([ref], os.tmpdir(), [deny])
+
+    expect(Permission.evaluate("external_directory", sibling, [deny], grants).action).toBe("deny")
+    expect(grants.filter((rule) => rule.permission === "external_directory" && rule.action === "allow")).toEqual([])
+
+    const authorize = makeArtifactSourceAuthorizer(
+      { get: () => Effect.succeed({ agent: "build", permission: [] } as never) } as never,
+      { get: () => Effect.succeed({ permission: [] } as never) } as never,
+      os.tmpdir(),
+    )
+    const failure = await Effect.runPromise(
+      authorize("ses_producer", path.join(root, "source.txt")).pipe(Effect.flip),
+    )
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure.message).toContain("non-literal directory")
+
+    const basenameFailure = await Effect.runPromise(
+      authorize("ses_producer", path.join(os.tmpdir(), "dag-artifact-source-??.txt")).pipe(Effect.flip),
+    )
+    expect(basenameFailure).toBeInstanceOf(Error)
+    expect(basenameFailure.message).toContain("non-literal directory")
+  },
+)
+
+test.skipIf(process.platform === "win32")(
+  "specific file external denies fail closed",
+  () => {
+    const root = path.join(os.tmpdir(), "dag-artifact-specific-deny")
+    const target = path.join(root, "content.txt")
+    const source = path.join(root, "source.txt")
+    const ref = {
+      kind: "file_ref",
+      content_ref: "managed-v1:test",
+      path: target,
+      size: 0,
+      sha256: "0".repeat(64),
+      summary: "",
+      storage: "managed-v1",
+      source_path: source,
+      provenance,
+    } satisfies ManagedOutputFileRef
+
+    for (const deniedPath of [target, source]) {
+      const deny = {
+        permission: "external_directory",
+        pattern: deniedPath,
+        action: "deny",
+      } as const
+      const grants = artifactReadPermissions([ref], os.tmpdir(), [deny])
+      expect(Permission.evaluate("external_directory", deniedPath, [deny], grants).action).toBe("deny")
+      expect(grants.filter((rule) => rule.permission === "external_directory" && rule.action === "allow")).toEqual([])
+    }
+  },
+)
+
+test.skipIf(process.platform === "win32")(
+  "literal wildcard target basenames fail closed",
+  async () => {
+    const directory = path.join(os.tmpdir(), "dag-artifact-basename")
+    const target = path.join(directory, "artifact-??.txt")
+    const ref = {
+      kind: "file_ref",
+      content_ref: "managed-v1:test",
+      path: target,
+      size: 0,
+      sha256: "0".repeat(64),
+      summary: "",
+      storage: "managed-v1",
+      source_path: path.join(directory, "source.txt"),
+      provenance,
+    } satisfies ManagedOutputFileRef
+    const grants = artifactReadPermissions([ref], os.tmpdir())
+    const sibling = path.join(directory, "artifact-ab.txt")
+
+    expect(Permission.evaluate("read", path.relative(os.tmpdir(), sibling), grants).action).toBe("deny")
+    expect(grants.filter((rule) => rule.permission === "read" && rule.action === "allow")).toEqual([])
+
+    let approvals = 0
+    const authorize = makeArtifactSourceAuthorizer(
+      { get: () => Effect.succeed({ agent: "build", permission: [] } as never) } as never,
+      { get: () => Effect.succeed({ permission: [] } as never) } as never,
+      os.tmpdir(),
+      {
+        ask: () =>
+          Effect.sync(() => {
+            approvals++
+          }),
+      } as never,
+    )
+    for (const name of ["artifact-??.txt", "artifact-*.txt"]) {
+      const failure = await Effect.runPromise(
+        authorize("ses_producer", path.join(directory, name)).pipe(Effect.flip),
+      )
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure.message).toContain("non-literal directory")
+    }
+    expect(approvals).toBe(0)
+  },
+)
 
 test.skipIf(process.platform !== "win32")(
   "keeps canonical source deny and managed edit deny after the entire aliased worktree is deleted",
