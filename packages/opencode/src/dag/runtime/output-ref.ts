@@ -94,15 +94,31 @@ async function verifyManagedFile(value: unknown) {
   if (!bytes || Hash.sha256(bytes) !== value.sha256) throw new Error("object digest mismatch")
 }
 
-async function readBoundedFile(candidate: string): Promise<Buffer | undefined> {
+interface AuthorizedSource {
+  canonical: string
+  dev: number
+  ino: number
+}
+
+async function readBoundedFile(candidate: string, authorized?: AuthorizedSource): Promise<Buffer | undefined> {
   const file = await open(candidate, "r")
   try {
+    // The path must still resolve to the file that was authorized. An
+    // intermediate parent swapped for a symlink after authorization would
+    // otherwise redirect this open to an outside file.
+    if (authorized) {
+      const resolved = await realpath(candidate).catch(() => undefined)
+      const canonical = resolved && (process.platform === "win32" ? FSUtil.normalizePath(resolved) : resolved)
+      if (canonical !== authorized.canonical) throw new Error("source changed during capture")
+    }
     // The descriptor must still name the checked entry: a swap to a symlink or
     // a different file after path resolution is refused, not read.
     const entry = await lstat(candidate)
     if (entry.isSymbolicLink()) throw new Error("source is a symlink")
     const info = await file.stat()
     if (info.dev !== entry.dev || info.ino !== entry.ino) throw new Error("source changed during capture")
+    if (authorized && (info.dev !== authorized.dev || info.ino !== authorized.ino))
+      throw new Error("source changed during capture")
     if (!info.isFile() || info.size <= 0 || info.size > FILE_REF_MAX_BYTES) return undefined
     const bytes = Buffer.alloc(info.size)
     let offset = 0
@@ -145,10 +161,13 @@ export function commitOutputFileRef(
     const canonicalSource = process.platform === "win32" ? FSUtil.normalizePath(resolved) : resolved
     const info = yield* Effect.promise(() => stat(canonicalSource).catch(() => undefined))
     if (!info?.isFile() || info.size <= 0 || info.size > FILE_REF_MAX_BYTES) return undefined
+    // Bind the authorized identity to the read so a parent-directory swap
+    // between authorization and open cannot redirect the capture.
+    const authorized = { canonical: canonicalSource, dev: info.dev, ino: info.ino }
     if (authorizeSource) yield* authorizeSource(source, entry.isSymbolicLink(), canonicalSource)
     return yield* Effect.tryPromise({
       try: async () => {
-        const bytes = await readBoundedFile(canonicalSource)
+        const bytes = await readBoundedFile(canonicalSource, authorized)
         if (!bytes) throw new Error("source became unavailable during capture")
         const digest = Hash.sha256(bytes)
         const destination = artifactPath(digest)

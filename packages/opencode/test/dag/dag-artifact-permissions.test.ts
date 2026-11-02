@@ -398,6 +398,62 @@ for (const permission of ["read", "external_directory"] as const) {
   }
 }
 
+test.skipIf(process.platform === "win32")(
+  "artifact capture refuses a parent directory swapped for a symlink after authorization",
+  async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "dag-artifact-parent-swap-"))
+    const boundary = path.join(root, "boundary")
+    const parent = path.join(boundary, "reports")
+    const outsideParent = path.join(root, "outside")
+    const source = path.join(parent, "report.txt")
+    const outside = path.join(outsideParent, "report.txt")
+    const insideBody = `inside body ${root}`
+    const outsideBody = `outside body ${root}`
+    const objectPath = (body: string) => {
+      const digest = createHash("sha256").update(body).digest("hex")
+      return path.join(Global.Path.data, "workflow-artifacts", "objects", digest.slice(0, 2), digest, "content.txt")
+    }
+    const objectDirectories: string[] = []
+    try {
+      await fs.mkdir(parent, { recursive: true })
+      await fs.mkdir(outsideParent, { recursive: true })
+      await fs.writeFile(source, insideBody)
+      await fs.writeFile(outside, outsideBody)
+
+      // The legitimate path still captures the authorized bytes.
+      const committed = await Effect.runPromise(commitOutputFileRef(source, provenance))
+      expect(committed).toBeDefined()
+      if (!committed) throw new Error("missing committed report")
+      objectDirectories.push(path.dirname(committed.path))
+      expect(await fs.readFile(committed.path, "utf8")).toBe(insideBody)
+      await fs.rm(path.dirname(committed.path), { recursive: true, force: true })
+
+      // Replace an intermediate parent directory after authorization: open
+      // would follow the new symlink and read the outside file.
+      const failure = await Effect.runPromise(
+        commitOutputFileRef(source, provenance, () =>
+          Effect.promise(async () => {
+            await fs.rm(parent, { recursive: true, force: true })
+            await fs.symlink(outsideParent, parent, "dir")
+          }),
+        ).pipe(Effect.flip),
+      )
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure.message).toContain("source changed during capture")
+      for (const body of [insideBody, outsideBody])
+        expect(
+          await fs.stat(objectPath(body)).then(
+            () => true,
+            () => false,
+          ),
+        ).toBe(false)
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+      for (const directory of objectDirectories) await fs.rm(directory, { recursive: true, force: true })
+    }
+  },
+)
+
 test.skipIf(process.platform === "win32")("artifact capture follows symlinks only through the external policy", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dag-artifact-symlink-"))
   const boundary = path.join(root, "boundary")
