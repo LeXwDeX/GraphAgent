@@ -932,10 +932,10 @@ const serviceLayer = Layer.effect(
             // and artifact authorization follow the execution workspace.
             const nodeConfig = entry.config?.nodes.find((candidate) => candidate.id === nodeID)
             const executionDirectory = nodeConfig?.workspace ?? entry.executionDirectory ?? ctx.directory
-            const authorizationWorktree =
-              DagLocation.canonicalDirectory(executionDirectory) !== DagLocation.canonicalDirectory(ctx.directory)
-                ? executionDirectory
-                : ctx.worktree
+            // A non-git owner has worktree "/", which would make every absolute
+            // path "inside" the boundary. Derive the boundary from the instance
+            // directory instead so external sources still require approval.
+            const { worktree, boundary } = artifactPermissionBase(ctx.directory, ctx.worktree, executionDirectory)
             const continuation = entry.semaphore
               .withPermits(1)(
                 Deferred.await(registered).pipe(
@@ -945,7 +945,7 @@ const serviceLayer = Layer.effect(
                       nodeID,
                       entry.config ?? null,
                       workflow.directory ?? ctx.directory,
-                      makeArtifactSourceAuthorizer(sessionSvc, agentSvc, authorizationWorktree, permissionSvc),
+                      makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary),
                       executionDirectory,
                     ),
                   ),

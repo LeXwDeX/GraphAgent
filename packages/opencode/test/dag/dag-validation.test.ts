@@ -1,6 +1,8 @@
 import { describe, expect } from "bun:test"
+import { $ } from "bun"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { DagValidation } from "../../src/dag/validation"
@@ -424,6 +426,73 @@ describe("workflow spec validator", () => {
           directory: tmp,
         })
         expect(result.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(true)
+      }),
+    )
+
+    it.effect("resolves prompt assets from the node's effective execution directory", () =>
+      Effect.gen(function* () {
+        const owner = yield* tmpdirScoped({ git: true })
+        const linkedPath = path.join(os.tmpdir(), `opencode-dag-prompt-${Math.random().toString(36).slice(2)}`)
+        yield* Effect.promise(() => $`git worktree add --detach ${linkedPath} HEAD`.cwd(owner).quiet())
+        const workspace = yield* Effect.promise(() => fs.realpath(linkedPath))
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(async () => {
+            await $`git worktree remove --force ${workspace}`
+              .cwd(owner)
+              .quiet()
+              .catch(() => undefined)
+            await fs.rm(linkedPath, { recursive: true, force: true })
+          }),
+        )
+        const workspacePrompts = path.join(workspace, ".opencode", "dag-prompts")
+        const ownerPrompts = path.join(owner, ".opencode", "dag-prompts")
+        const ownerOnly = `owner-only-${Math.random().toString(36).slice(2)}`
+        yield* Effect.promise(async () => {
+          await fs.mkdir(workspacePrompts, { recursive: true })
+          await fs.mkdir(ownerPrompts, { recursive: true })
+          await fs.writeFile(path.join(workspacePrompts, "workspace-only.md"), "Workspace {{target}}")
+          await fs.writeFile(path.join(ownerPrompts, `${ownerOnly}.md`), "Owner {{target}}")
+        })
+        const spec = (promptId: string, execution: { workspace?: string; nodeWorkspace?: string }) => ({
+          config: {
+            name: "workspace-prompt",
+            ...(execution.workspace ? { workspace: execution.workspace } : {}),
+            nodes: [
+              {
+                id: "explore",
+                name: "explore",
+                worker_type: "explore",
+                depends_on: [],
+                ...(execution.nodeWorkspace ? { workspace: execution.nodeWorkspace } : {}),
+                prompt_template: { id: promptId, input: { target: "dag" } },
+              },
+            ],
+          },
+        })
+        const validate = (promptId: string, execution: { workspace?: string; nodeWorkspace?: string }) =>
+          validateSpec({
+            value: spec(promptId, execution),
+            source: "env.yaml",
+            profile: "environment",
+            directory: owner,
+          })
+
+        // Only the workspace has the asset: it must resolve, not report missing.
+        const workspaceAsset = yield* validate("workspace-only", { workspace })
+        expect(workspaceAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(
+          false,
+        )
+        expect(workspaceAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptUnboundVariable)).toBe(
+          false,
+        )
+
+        // Only the owner has the asset: it must not mask the workspace lookup.
+        const ownerAsset = yield* validate(ownerOnly, { workspace })
+        expect(ownerAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(true)
+
+        // A node workspace overrides the workflow workspace for its prompt.
+        const nodeAsset = yield* validate("workspace-only", { workspace: owner, nodeWorkspace: workspace })
+        expect(nodeAsset.errors.some((d) => d.code === DagValidation.DIAGNOSTIC_CODES.promptMissingAsset)).toBe(false)
       }),
     )
 

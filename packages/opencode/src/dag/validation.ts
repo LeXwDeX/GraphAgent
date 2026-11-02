@@ -1289,8 +1289,6 @@ function outputSchemaKeywordDiagnostics(nodes: readonly NodeConfig[]): Diagnosti
   })
 }
 
-/** Pure structural validation. No events, no store, no logging — callers
- * decide how to surface the diagnostics (tool output vs. create rejection). */
 /** A fan-out writer expands from a direct dependency's `packages` output into
  * parallel writers plus an aggregator under its own id, so downstream
  * implementation bindings must already read the implementation shape. */
@@ -1481,12 +1479,23 @@ export interface EnvironmentCatalogs {
   ) => Effect.Effect<boolean>
 }
 
+/** The directory a node actually executes in, or undefined when the workspace
+ * cannot resolve (workspaceDiagnostics reports that separately). */
+function resolveExecutionDirectory(workspace: string | undefined, owner: string | undefined): string | undefined {
+  if (!workspace || !owner) return undefined
+  const resolved = DagLocation.resolveWorkspace(workspace, owner)
+  return resolved._tag === "ok" ? resolved.directory : undefined
+}
+
 /** Environment-only diagnostics for an already-compiled node list: prompt-id
  * resolution and bindings, worker catalog, and model
  * resolution. Used by start/extend/replan before any durable side effect. */
 export function environmentDiagnostics(input: {
   nodes: readonly NodeConfig[]
   directory?: string
+  /** Workflow-level workspace; node assets resolve from their effective
+   * execution directory, the same directory spawn uses. */
+  workspace?: string
   catalogs?: EnvironmentCatalogs
   /** Graph-level required default, applied when a node does not declare one. */
   defaults?: { required?: boolean }
@@ -1494,7 +1503,11 @@ export function environmentDiagnostics(input: {
   return Effect.gen(function* () {
     const diagnostics: Diagnostic[] = []
     for (const node of input.nodes) {
-      diagnostics.push(...(yield* promptIdDiagnostics(node, input.directory)))
+      const promptDirectory =
+        resolveExecutionDirectory(node.workspace, input.directory) ??
+        resolveExecutionDirectory(input.workspace, input.directory) ??
+        input.directory
+      diagnostics.push(...(yield* promptIdDiagnostics(node, promptDirectory)))
       if (input.catalogs?.worker_types && !input.catalogs.worker_types.has(node.worker_type)) {
         diagnostics.push(
           diagnostic({
@@ -1747,6 +1760,7 @@ export function validatePostCompile(input: {
         ...(yield* environmentDiagnostics({
           nodes: input.nodes,
           directory: input.directory,
+          workspace: input.config.workspace,
           catalogs: input.catalogs,
           defaults: input.config.node_defaults,
         })),

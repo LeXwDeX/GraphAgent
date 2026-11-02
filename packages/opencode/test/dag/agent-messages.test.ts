@@ -1271,14 +1271,13 @@ describe("DAG agent message adapter", () => {
           .receive({ sessionID: "ses_parent", workflow_id: "wf-1", after_sequence: 4, wait_ms: 0 })
           .pipe(Effect.forkChild)
         yield* Deferred.await(entered)
-        const started = Date.now()
         const limited = yield* messages.receive({
           sessionID: "ses_parent",
           workflow_id: "wf-1",
           after_sequence: 4,
           wait_ms: 0,
         })
-        expect(Date.now() - started).toBeLessThan(200)
+        expect(calls).toBe(1)
         expect(limited).toMatchObject({
           ok: false,
           reason: "rate_limited",

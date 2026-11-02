@@ -711,4 +711,35 @@ describe("message recovery continuation admission and settlement branches", () =
       await $`git worktree remove --force ${workspace}`.quiet().catch(() => undefined)
     }
   })
+  test("non-git continuation output authorizes outside paths against the instance boundary", async () => {
+    await using owner = await tmpdir()
+    const inside = path.join(owner.path, "inside.txt")
+    const outside = path.join(os.tmpdir(), `opencode-dag-outside-${Math.random().toString(36).slice(2)}.txt`)
+    await Bun.write(inside, "inside evidence")
+    await Bun.write(outside, "outside evidence")
+    try {
+      // The authorizer boundary itself is covered in dag-artifact-permissions;
+      // this test proves the continuation passes capture paths through it.
+      const calls: string[] = []
+      const authorizeSource = (_child: string, source: string) =>
+        Effect.gen(function* () {
+          calls.push(source)
+          if (source === outside)
+            yield* Effect.fail(new Error(`DAG artifact source external_directory denied: ${source}`))
+        })
+
+      const allowed = harness({ text: inside, workflow: { directory: owner.path } })
+      await allowed.run(undefined, owner.path, authorizeSource)
+      expect(allowed.h.completed).toHaveLength(1)
+
+      const denied = harness({ text: outside, workflow: { directory: owner.path } })
+      await denied.run(undefined, owner.path, authorizeSource)
+      expect(denied.h.completed).toHaveLength(0)
+      expect(denied.h.failed[0]?.errorClass).toBe("exec_failed")
+      expect(denied.h.failed[0]?.reason).toContain("external_directory denied")
+      expect(calls).toEqual([inside, outside])
+    } finally {
+      await fs.rm(outside, { force: true })
+    }
+  })
 })

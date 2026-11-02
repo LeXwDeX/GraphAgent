@@ -43,12 +43,12 @@ function layers() {
 }
 
 describe("#950 terminal settlement closes the parent mailbox", () => {
-  async function settle(outcome: "completed" | "failed") {
+  async function settle(outcome: "completed" | "failed" | "ignored" | "stale", options?: { repeat?: boolean }) {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-mailbox-settle-")))
     const directory = path.join(root, "a")
     mkdirSync(directory, { recursive: true })
     try {
-      await Effect.runPromise(
+      return await Effect.runPromise(
         Effect.gen(function* () {
           const database = yield* Database.Service
           const dag = yield* Dag.Service
@@ -92,9 +92,11 @@ describe("#950 terminal settlement closes the parent mailbox", () => {
           // This fixture has a mailbox service but no child mailbox/snapshot;
           // set the terminal node state directly so the fence, not the guard,
           // is what the test observes.
-          yield* database.db
-            .run(sql`UPDATE workflow_node SET status = ${outcome} WHERE workflow_id = ${dagID} AND id = 'n1'`)
-            .pipe(Effect.orDie)
+          if (outcome === "completed" || outcome === "failed") {
+            yield* database.db
+              .run(sql`UPDATE workflow_node SET status = ${outcome} WHERE workflow_id = ${dagID} AND id = 'n1'`)
+              .pipe(Effect.orDie)
+          }
           yield* database.db
             .insert(AgentMailboxTable)
             .values({
@@ -111,15 +113,20 @@ describe("#950 terminal settlement closes the parent mailbox", () => {
             .run()
             .pipe(Effect.orDie)
 
-          const settled = yield* dag.settleCompletion(dagID)
-          expect(settled.status).toBe(outcome)
+          const current = yield* dag.store.getWorkflow(dagID).pipe(Effect.orDie)
+          const settled = yield* dag.settleCompletion(
+            dagID,
+            outcome === "stale" ? { expectedGraphRev: (current?.graphRev ?? 0) + 1 } : undefined,
+          )
+          const duplicate = options?.repeat ? yield* dag.settleCompletion(dagID) : undefined
           const mailbox = yield* database.db
             .select()
             .from(AgentMailboxTable)
             .where(eq(AgentMailboxTable.id, MAILBOX_ID))
             .get()
             .pipe(Effect.orDie)
-          expect(mailbox?.closed_reason).toBe(outcome)
+          const workflow = yield* dag.store.getWorkflow(dagID).pipe(Effect.orDie)
+          return { settled, duplicate, mailbox, workflow }
         }).pipe(
           Effect.provide(layers()),
           Effect.provideService(InstanceRef, {
@@ -135,8 +142,30 @@ describe("#950 terminal settlement closes the parent mailbox", () => {
     }
   }
 
-  it("closes the parent mailbox as completed on natural completion", () => settle("completed"))
-  it("closes the parent mailbox as failed on natural failure", () => settle("failed"))
+  it("closes the parent mailbox as completed on natural completion", async () => {
+    const { settled, mailbox } = await settle("completed")
+    expect(settled.status).toBe("completed")
+    expect(mailbox?.closed_reason).toBe("completed")
+  })
+  it("closes the parent mailbox as failed on natural failure", async () => {
+    const { settled, mailbox } = await settle("failed")
+    expect(settled.status).toBe("failed")
+    expect(mailbox?.closed_reason).toBe("failed")
+  })
+  it("keeps the parent mailbox open when settlement is ignored or stale", async () => {
+    for (const outcome of ["ignored", "stale"] as const) {
+      const { settled, mailbox } = await settle(outcome)
+      expect(settled.status).toBe(outcome)
+      expect(mailbox?.closed_reason).toBeNull()
+    }
+  })
+  it("settles exactly once when completion runs twice", async () => {
+    const { settled, duplicate, mailbox, workflow } = await settle("completed", { repeat: true })
+    expect(settled.status).toBe("completed")
+    expect(duplicate?.status).toBe("ignored")
+    expect(mailbox?.closed_reason).toBe("completed")
+    expect(workflow?.status).toBe("completed")
+  })
 })
 
 describe("#948 failUnrecoverable mailbox safety", () => {

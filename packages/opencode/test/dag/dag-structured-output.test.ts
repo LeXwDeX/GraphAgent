@@ -604,7 +604,7 @@ describe("spawnNode submit_result capture", () => {
     expect(seen[1]).toContain("submit_result")
   })
 
-  it("(b4) a structurally invalid submit_result does not get a field repair prompt", async () => {
+  it("(b4) a structurally invalid submit_result settles as schema_invalid", async () => {
     const { events, dagLayer } = makeEventTracker()
     const schema = {
       type: "object",
@@ -626,9 +626,48 @@ describe("spawnNode submit_result capture", () => {
     )
     expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
     expect(events.find((event) => event.type === "nodeFailed")?.trigger).toBe("verdict_fail")
-    expect(events.find((event) => event.type === "nodeFailed")?.errorClass).toBeUndefined()
+    expect(events.find((event) => event.type === "nodeFailed")?.errorClass).toBe("schema_invalid")
     expect(seen).toHaveLength(2)
     expect(seen[1]).not.toContain('Field "verdict"')
+  })
+
+  it("(b4a) a repaired submission that is again structurally invalid settles as schema_invalid", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const schema = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string", enum: ["ACCEPT", "REJECT"] } },
+    }
+    const seen: string[] = []
+    await runSpawn(
+      dagLayer,
+      makeRepairPromptLayer(
+        [
+          { result: reply("reviewed"), submit: { wrong: "field" } },
+          { result: reply("still wrong"), submit: { wrong: "again" } },
+        ],
+        seen,
+        schema,
+      ),
+      schema,
+    )
+    expect(events.find((event) => event.type === "nodeFailed")?.errorClass).toBe("schema_invalid")
+    expect(seen).toHaveLength(2)
+  })
+
+  it("(b4b) distinguishes a structural rejection from a turn that never called submit_result", async () => {
+    const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } }
+    const rejected = makeEventTracker()
+    await runSpawn(
+      rejected.dagLayer,
+      makeRepairPromptLayer([{ result: reply("reviewed"), submit: { wrong: "field" } }], [], schema),
+      schema,
+    )
+    expect(rejected.events.find((event) => event.type === "nodeFailed")?.errorClass).toBe("schema_invalid")
+
+    const neverCalled = makeEventTracker()
+    await runSpawn(neverCalled.dagLayer, makePromptLayer(reply("no structured output")), schema)
+    expect(neverCalled.events.find((event) => event.type === "nodeFailed")?.errorClass).toBeUndefined()
   })
 
   it("(b5) a failed structured repair settles as schema_invalid", async () => {

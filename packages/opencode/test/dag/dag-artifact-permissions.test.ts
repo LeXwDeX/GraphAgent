@@ -59,6 +59,51 @@ test("non-git artifact authorization uses the instance boundary without changing
   await expect(Effect.runPromise(authorize("ses_producer", secret))).rejects.toThrow("read denied")
 })
 
+test("non-git continuation authorization keeps the instance boundary for outside sources", async () => {
+  const directory = path.join(os.tmpdir(), "dag-continuation-non-git")
+  const inside = path.join(directory, "inside.txt")
+  const outside = path.join(path.dirname(directory), "dag-continuation-outside.txt")
+  const sessions = {
+    get: () => Effect.succeed({ agent: "build", permission: [] } as never),
+  } as never
+  const agents = { get: () => Effect.succeed({ permission: [] } as never) } as never
+  // Mirror loop.ts for a non-git owner: worktree "/" must not widen the boundary.
+  const base = artifactPermissionBase(directory, "/", directory)
+  expect(base).toEqual({ worktree: "/", boundary: directory })
+
+  const denyOutside = Permission.fromConfig({
+    read: { "*": "allow" },
+    external_directory: { "*": "deny" },
+  })
+  const denyAuthorize = makeArtifactSourceAuthorizer(
+    { get: () => Effect.succeed({ agent: "build", permission: denyOutside } as never) } as never,
+    agents,
+    base.worktree,
+    undefined,
+    base.boundary,
+  )
+  await Effect.runPromise(denyAuthorize("ses_producer", inside))
+  const denial = await Effect.runPromise(denyAuthorize("ses_producer", outside).pipe(Effect.flip))
+  expect(denial.message).toContain("external_directory denied")
+
+  const asked: string[] = []
+  const askAuthorize = makeArtifactSourceAuthorizer(
+    sessions,
+    { get: () => Effect.succeed({ permission: Permission.fromConfig({ read: { "*": "allow" } }) } as never) } as never,
+    base.worktree,
+    {
+      ask: (request: { permission: string }) =>
+        Effect.sync(() => {
+          asked.push(request.permission)
+        }),
+    } as never,
+    base.boundary,
+  )
+  await Effect.runPromise(askAuthorize("ses_producer", inside))
+  await Effect.runPromise(askAuthorize("ses_producer", outside))
+  expect(asked).toEqual(["external_directory"])
+})
+
 test.skipIf(process.platform === "win32")(
   "literal wildcard artifact directories fail closed and never override a sibling deny",
   async () => {

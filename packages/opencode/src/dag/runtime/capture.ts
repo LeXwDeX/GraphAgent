@@ -17,7 +17,14 @@ import { validateInWorker, type Validation } from "./schema-validation"
 export { validateAgainstSchema, unsupportedSchemaKeywords } from "./schema-validator"
 export type { SchemaValidationFix } from "./schema-validator"
 
-type CaptureSlot = { schema: Record<string, unknown>; generation: number; pending?: AbortController }
+type CaptureSlot = {
+  schema: Record<string, unknown>
+  generation: number
+  pending?: AbortController
+  /** A submit_result call was rejected by the schema. Distinct from a turn
+   * that never called the tool: both leave no captured output. */
+  rejectedBySchema?: boolean
+}
 const schemas = new Map<string, CaptureSlot>()
 let generation = 0
 const snapshots = new Map<string, string>()
@@ -74,25 +81,33 @@ export function getLastValidationFix(sessionID: string): SchemaValidationFix | u
 }
 
 function rememberValidationFix(
+  slot: CaptureSlot,
   sessionID: string,
   result: { ok: true } | { ok: false; fix?: SchemaValidationFix },
 ): void {
   if (result.ok) {
     validationFixes.delete(sessionID)
+    slot.rejectedBySchema = false
     return
   }
+  slot.rejectedBySchema = true
   if (result.fix) validationFixes.set(sessionID, result.fix)
   else validationFixes.delete(sessionID)
+}
+
+/** Whether this capture slot saw a submit_result rejected by the schema. */
+export function captureRejectedBySchema(sessionID: string): boolean {
+  return schemas.get(sessionID)?.rejectedBySchema === true
 }
 
 export function validatePayload(
   sessionID: string,
   payload: unknown,
 ): { ok: true } | { ok: false; error: string; notAvailable?: boolean; fix?: SchemaValidationFix } {
-  const schema = schemas.get(sessionID)?.schema
-  if (!schema) return { ok: false, error: "submit_result is not available in this session", notAvailable: true }
-  const result = validateAgainstSchema(payload, schema)
-  rememberValidationFix(sessionID, result)
+  const slot = schemas.get(sessionID)
+  if (!slot) return { ok: false, error: "submit_result is not available in this session", notAvailable: true }
+  const result = validateAgainstSchema(payload, slot.schema)
+  rememberValidationFix(slot, sessionID, result)
   return result
 }
 
@@ -121,7 +136,7 @@ export async function validatePayloadAsync(
     const result: Validation = await validateInWorker(slot.schema, payload, pending.signal)
     if (schemas.get(sessionID) !== slot)
       return { ok: false, error: "capture slot changed during schema validation", notAvailable: true }
-    rememberValidationFix(sessionID, result)
+    rememberValidationFix(slot, sessionID, result)
     return result.ok ? { ...result, generation: slot.generation } : result
   } finally {
     signal.removeEventListener("abort", cancel)

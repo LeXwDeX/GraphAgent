@@ -65,6 +65,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
+  captureRejectedBySchema,
   getLastValidationFix,
   registerFinalResponseSession,
   clearFinalResponseSession,
@@ -1341,6 +1342,9 @@ export function spawnNode(
                   // structural failures record no fix and keep failing.
                   const lastFix = getLastValidationFix(childSession.id)
                   let schemaFix = lastFix
+                  // #956: a structural rejection also leaves no captured output,
+                  // but it is not a turn that never called submit_result.
+                  let schemaRejected = captureRejectedBySchema(childSession.id)
                   clearCaptureSlot(childSession.id)
                   let verdict = yield* readSettlement()
                   if (!verdict) return
@@ -1379,6 +1383,7 @@ export function spawnNode(
                         ? yield* messageService.value.snapshotForTurn(caller, result.info.id)
                         : undefined
                     schemaFix = getLastValidationFix(childSession.id)
+                    schemaRejected = schemaRejected || captureRejectedBySchema(childSession.id)
                     clearCaptureSlot(childSession.id)
                     verdict = yield* readSettlement()
                     if (!verdict) return
@@ -1389,7 +1394,8 @@ export function spawnNode(
                     verdict.settlement.kind === "fail" && verdict.neverCalled && lengthLimited
                       ? ({ kind: "fail", reason: yield* lengthReason } as const)
                       : verdict.settlement
-                  const schemaInvalid = !lengthLimited && verdict.neverCalled && schemaFix !== undefined
+                  const schemaInvalid =
+                    !lengthLimited && verdict.neverCalled && (schemaFix !== undefined || schemaRejected)
                   yield* (
                     settlement.kind === "complete"
                       ? dag.nodeCompleted(input.dagID, input.nodeID, settlement.output, {
