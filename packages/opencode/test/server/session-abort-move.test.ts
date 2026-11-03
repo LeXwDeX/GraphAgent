@@ -1,9 +1,10 @@
 import { afterEach, describe, expect } from "bun:test"
 import { readFileSync } from "node:fs"
-import { mkdir, readFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { Deferred, Effect, Fiber, Layer, Option } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Shell } from "@opencode-ai/core/shell"
 import { BackgroundJob } from "@/background/job"
 import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { InstanceStore } from "@/project/instance-store"
@@ -86,19 +87,28 @@ function idleEvents(sessionID: string) {
 
 function spawnShell(directory: string, sessionID: string, pidFile: string) {
   return Effect.gen(function* () {
-    // The shell runs in its own process group; clean it up even on a failed assertion.
+    const script = `${pidFile}.cjs`
+    yield* Effect.promise(() =>
+      writeFile(
+        script,
+        'require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000)',
+      ),
+    )
+    const shell = Shell.preferred()
+    const prefix = shell && Shell.ps(shell) ? "& " : ""
+    // Clean up the probe even if an assertion fails before session cancellation.
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         try {
           const pid = Number(readFileSync(pidFile, "utf8"))
-          if (Number.isInteger(pid) && pid > 0) process.kill(-pid, "SIGKILL")
+          if (Number.isInteger(pid) && pid > 0) process.kill(pid, "SIGKILL")
         } catch {}
       }),
     )
     return yield* request(directory, `/session/${sessionID}/shell`, {
       agent: "build",
       model: { providerID: "test", modelID: "test-model" },
-      command: `echo $$ > "${pidFile}"; exec sleep 30`,
+      command: `${prefix}"${process.execPath}" "${script}" "${pidFile}"`,
     }).pipe(Effect.forkChild)
   })
 }

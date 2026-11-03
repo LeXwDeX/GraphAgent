@@ -561,7 +561,10 @@ export const layer = Layer.effect(
     const goal = Option.getOrUndefined(yield* Effect.serviceOption(Goal.Service))
     const modelSwitches = yield* InstanceState.make(() =>
       Effect.gen(function* () {
-        const pending = new Map<SessionID, { target: string; fiber: Fiber.Fiber<TriggerResult> }>()
+        const pending = new Map<
+          SessionID,
+          { target: string; fiber: Fiber.Fiber<TriggerResult>; unregister: () => void }
+        >()
         yield* Effect.acquireRelease(
           events.listen((event) =>
             Effect.gen(function* () {
@@ -578,10 +581,20 @@ export const layer = Layer.effect(
               const id = SessionID.make(data.info.id)
               const entry = pending.get(id)
               pending.delete(id)
-              if (entry) yield* Fiber.interrupt(entry.fiber)
+              if (entry) {
+                entry.unregister()
+                yield* Fiber.interrupt(entry.fiber)
+              }
             }),
           ),
           (unsubscribe) => unsubscribe,
+        )
+        yield* Effect.addFinalizer(() =>
+          Effect.forEach(
+            pending.values(),
+            (entry) => Effect.sync(entry.unregister).pipe(Effect.andThen(Fiber.interrupt(entry.fiber))),
+            { concurrency: "unbounded", discard: true },
+          ),
         )
         return pending
       }),
@@ -591,16 +604,52 @@ export const layer = Layer.effect(
       payload: Extract<HookPayload, { event: "PreModelSwitch" | "PostModelSwitch" }>,
     ) {
       if (!settingsHook) return
-      const pending = yield* InstanceState.get(modelSwitches)
-      const prior = pending.get(sessionID)
-      if (prior) yield* Fiber.interrupt(prior.fiber)
-      const fiber = yield* settingsHook
-        .trigger({ ...payload, event: "PostModelSwitch" }, { sessionID, transcriptPath: "" })
-        .pipe(
+      const request = SessionCancellation.request(sessionID)
+      yield* Effect.gen(function* () {
+        const pending = yield* InstanceState.get(modelSwitches)
+        const context = yield* Effect.context()
+        const generation = yield* InstanceState.currentGeneration
+        const directory = yield* InstanceState.directory
+        const previous = pending.get(sessionID)
+        if (previous) {
+          pending.delete(sessionID)
+          previous.unregister()
+          yield* Fiber.interrupt(previous.fiber)
+        }
+        if (!request.current()) return
+        const fiber = yield* Effect.suspend(() =>
+          request.current()
+            ? settingsHook.trigger({ ...payload, event: "PostModelSwitch" }, { sessionID, transcriptPath: "" })
+            : Effect.interrupt,
+        ).pipe(
           Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
           Effect.forkIn(scope),
         )
-      pending.set(sessionID, { target: payload.toModel, fiber })
+        const entry = { target: payload.toModel, fiber, unregister: () => {} }
+        const unregister = request.register(
+          () =>
+            InstanceState.withGeneration(
+              generation,
+              Effect.suspend(() => {
+                if (pending.get(sessionID) === entry) pending.delete(sessionID)
+                entry.unregister()
+                return Fiber.interrupt(fiber).pipe(Effect.asVoid)
+              }),
+            ).pipe(Effect.provide(context)),
+          directory,
+        )
+        if (!unregister) {
+          yield* Fiber.interrupt(fiber)
+          return
+        }
+        entry.unregister = unregister
+        const prior = pending.get(sessionID)
+        pending.set(sessionID, entry)
+        if (prior) {
+          prior.unregister()
+          yield* Fiber.interrupt(prior.fiber)
+        }
+      }).pipe(Effect.ensuring(Effect.sync(() => request.release())))
     })
     const modelSwitchContext = Effect.fn("SessionPrompt.modelSwitchContext")(function* (
       sessionID: SessionID,
@@ -612,6 +661,7 @@ export const layer = Layer.effect(
       const result = yield* Fiber.join(entry.fiber).pipe(Effect.timeoutOption("5 seconds"))
       if (Option.isNone(result) || pending.get(sessionID) !== entry) return [] as string[]
       pending.delete(sessionID)
+      entry.unregister()
       yield* SettingsHook.landSystemMessages(result.value, { sessionID })
       return result.value.additionalContexts
     })
@@ -918,13 +968,7 @@ export const layer = Layer.effect(
         )
     })
 
-    const cancelImpl = Effect.fnUntraced(function* (sessionID: SessionID) {
-      yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
-      yield* Effect.logInfo("cancel", { "session.id": sessionID })
-      const pendingSwitches = yield* InstanceState.get(modelSwitches)
-      const pendingSwitch = pendingSwitches.get(sessionID)
-      pendingSwitches.delete(sessionID)
-      if (pendingSwitch) yield* Fiber.interrupt(pendingSwitch.fiber)
+    const pauseGoalForCancel = Effect.fnUntraced(function* (sessionID: SessionID) {
       // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
       // working on the goal", not just "stop this turn". Without this, the idle
       // event after cancel re-enters afterIdle, shouldPreempt returns false (the
@@ -934,6 +978,11 @@ export const layer = Layer.effect(
       if (goal && (yield* goal.isTurnDriven(sessionID))) {
         yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
       }
+    })
+
+    const cancelImpl = Effect.fnUntraced(function* (sessionID: SessionID) {
+      yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
+      yield* Effect.logInfo("cancel", { "session.id": sessionID })
       if (agentMessages) {
         const context = yield* InstanceState.context
         const identity = { projectID: context.project.id, directory: context.directory, sessionID }
@@ -973,6 +1022,15 @@ export const layer = Layer.effect(
                   const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
                   const store = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
                   const provideIfLoaded = store?.provideIfLoaded
+                  const pause =
+                    Option.isSome(target) && current && provideIfLoaded
+                      ? provideIfLoaded({ directory: target.value.directory }, pauseGoalForCancel(sessionID)).pipe(
+                          Effect.asVoid,
+                        )
+                      : pauseGoalForCancel(sessionID)
+                  const pauseExit = yield* pause.pipe(Effect.exit)
+                  if (Exit.isFailure(pauseExit))
+                    yield* Effect.logWarning("session cancel goal pause failed", { sessionID })
                   const local =
                     Option.isSome(target) && current && provideIfLoaded
                       ? provideIfLoaded({ directory: target.value.directory }, cancelImpl(sessionID)).pipe(
@@ -4002,14 +4060,19 @@ export const layer = Layer.effect(
                 // Fork the runner under the same commit lock as the owner check:
                 // a cancel cannot land between the check and the fork. Wait outside
                 // the prompt lock; runLoop claims it for its snapshot.
-                return yield* commit(
-                  Effect.suspend((): Effect.Effect<Effect.Effect<SessionV1.WithParts>> =>
-                    state.ensureRunningHandle(
-                      input.sessionID,
-                      lastAssistant(input.sessionID),
-                      runLoop(input.sessionID),
+                const request = SessionCancellation.request(input.sessionID)
+                return yield* request.wait.pipe(
+                  Effect.andThen(
+                    commit(
+                      state.ensureRunningHandle(
+                        input.sessionID,
+                        lastAssistant(input.sessionID),
+                        runLoop(input.sessionID),
+                        request,
+                      ),
                     ),
                   ),
+                  Effect.ensuring(Effect.sync(() => request.release())),
                 )
               }),
             ),

@@ -7,6 +7,8 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Location } from "@opencode-ai/core/location"
 import { SessionEvent } from "@opencode-ai/core/session/event"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AppLayer } from "@/effect/app-runtime"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookRewake } from "@/hook/rewake"
@@ -15,9 +17,11 @@ import { SettingsHook } from "@/hook/settings"
 import { InstanceStore } from "@/project/instance-store"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
+import { SessionCancellation } from "@/session/cancellation"
 import * as Log from "@/util/log"
 import { tmpdir } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout } from "../lib/effect"
+import { testProviderConfig } from "../lib/test-provider"
 
 test("abort after a move invalidates the old Stop callback without masking the next chain", async () => {
   await using a = await tmpdir({ git: true })
@@ -117,6 +121,79 @@ test("abort after a move invalidates the old Stop callback without masking the n
               .pipe(Effect.provideService(HookRewake.Service, rewake)),
           )
           yield* awaitWithTimeout(Deferred.await(woke), "new Stop callback was masked", "10 seconds")
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(AppLayer, CrossSpawnSpawner.defaultLayer))),
+    )
+  } finally {
+    await $`git worktree remove --force ${b.path}`.cwd(a.path).quiet()
+  }
+}, 60_000)
+
+test("abort after a move cancels an old pending model switch without a runner", async () => {
+  await using a = await tmpdir({ git: true, config: testProviderConfig("http://127.0.0.1:1") })
+  await using b = await tmpdir()
+  await rm(b.path, { recursive: true, force: true })
+  await $`git worktree add --detach ${b.path} HEAD`.cwd(a.path).quiet()
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const instances = yield* InstanceStore.Service
+          const sessions = yield* Session.Service
+          const prompt = yield* SessionPrompt.Service
+          const settings = yield* SettingsHook.Service
+          const events = yield* EventV2Bridge.Service
+          yield* instances.load({ directory: a.path })
+          yield* instances.load({ directory: b.path })
+          yield* Effect.addFinalizer(() => instances.disposeAll())
+          const inA = <A, E, R>(effect: Effect.Effect<A, E, R>) => instances.provide({ directory: a.path }, effect)
+          const inB = <A, E, R>(effect: Effect.Effect<A, E, R>) => instances.provide({ directory: b.path }, effect)
+          const session = yield* inA(
+            sessions.create({
+              title: "moved model switch",
+              model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") },
+            }),
+          )
+          const started = yield* Deferred.make<void>()
+          const stopped = yield* Deferred.make<void>()
+          const replacementStarted = yield* Deferred.make<void>()
+          const replacementStopped = yield* Deferred.make<void>()
+          let calls = 0
+          const trigger = settings.trigger
+          const spy = spyOn(settings, "trigger").mockImplementation((payload, context) =>
+            payload.event === "PostModelSwitch" && context.sessionID === session.id
+              ? Effect.suspend(() => {
+                  const first = calls++ === 0
+                  return Deferred.succeed(first ? started : replacementStarted, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                    Effect.ensuring(Deferred.succeed(first ? stopped : replacementStopped, undefined)),
+                  )
+                })
+              : trigger(payload, context),
+          )
+          yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+          yield* inA(prompt.restoreModelContext(session.id))
+          yield* awaitWithTimeout(Deferred.await(started), "model switch did not start", "10 seconds")
+          const old = SessionCancellation.begin(session.id)
+          yield* Effect.addFinalizer(() => Effect.sync(old.finish))
+          expect(old.owners).toHaveLength(1)
+          old.finish()
+          yield* inA(prompt.restoreModelContext(session.id))
+          yield* awaitWithTimeout(Deferred.await(stopped), "old model switch was not replaced")
+          yield* awaitWithTimeout(Deferred.await(replacementStarted), "replacement model switch did not start")
+          yield* Effect.all(old.owners)
+          expect(yield* Deferred.isDone(replacementStopped)).toBe(false)
+          yield* inA(
+            events
+              .publish(SessionEvent.Moved, {
+                sessionID: session.id,
+                location: Location.Ref.make({ directory: AbsolutePath.make(b.path) }),
+                timestamp: yield* DateTime.now,
+              })
+              .pipe(Effect.orDie),
+          )
+          yield* inB(prompt.cancel(session.id))
+          yield* awaitWithTimeout(Deferred.await(replacementStopped), "old model switch was not cancelled", "3 seconds")
         }),
       ).pipe(Effect.provide(Layer.mergeAll(AppLayer, CrossSpawnSpawner.defaultLayer))),
     )

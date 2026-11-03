@@ -175,7 +175,13 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
           const verify = settled.find((row) => row.id === "verify")!
           const review = settled.find((row) => row.id === "review")!
           expect(JSON.parse(await readFile(protectedFile, "utf8"))).toEqual({ proof })
-          const messages: Row[] = await request(`/session/${verify.child_session_id}/message`)
+          const messages: Row[] =
+            mode === "complete"
+              ? await request(`/session/${verify.child_session_id}/message`)
+              : await waitUntil<Row[]>(
+                  () => request(`/session/${verify.child_session_id}/message`),
+                  (rows) => rows.some((message) => message.info.error?.name === "MessageAbortedError"),
+                )
           const parts = messages.flatMap((message) => message.parts)
           expect(parts.some((part) => part.state?.metadata?.hookDenied)).toBe(true)
           if (mode === "complete") {

@@ -1,11 +1,14 @@
-import { expect } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { expect, spyOn } from "bun:test"
+import { Deferred, Effect, Exit, Fiber, Latch, Layer } from "effect"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { BackgroundJob } from "@/background/job"
 import { SessionCancellation } from "@/session/cancellation"
 import { SessionRunState } from "@/session/run-state"
-import { SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { InstanceState } from "@/effect/instance-state"
+import { Runner } from "@/effect/runner"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 const writes = new Map<SessionID, (info: SessionStatus.Info) => Effect.Effect<void>>()
@@ -77,6 +80,69 @@ it.instance("failed start unregisters the owner and restores idle", () =>
     const abort = SessionCancellation.begin(id)
     yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
     expect(abort.owners).toHaveLength(0)
+  }),
+)
+
+it.instance("completion during start handoff publishes idle", () =>
+  Effect.gen(function* () {
+    const runs = yield* SessionRunState.Service
+    const id = SessionID.create()
+    const release = yield* Deferred.make<void>()
+    const completed = yield* Deferred.make<void>()
+    const statuses: string[] = []
+    let isBusy = () => true
+    const make = Runner.make
+    const spy = spyOn(Runner, "make").mockImplementation((scope, opts) => {
+      const inner = make(scope, opts)
+      isBusy = () => inner.busy
+      return {
+        ...inner,
+        get busy() {
+          return inner.busy
+        },
+        get state() {
+          return inner.state
+        },
+        ensureRunningHandle: (work) => inner.ensureRunningHandle(work).pipe(Effect.tap(() => Deferred.await(release))),
+      }
+    })
+    writes.set(id, (info) => Effect.sync(() => statuses.push(info.type)).pipe(Effect.asVoid))
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        spy.mockRestore()
+        writes.delete(id)
+        yield* Deferred.succeed(release, undefined)
+      }),
+    )
+    const message = {
+      info: {
+        id: MessageID.ascending(),
+        sessionID: id,
+        role: "user" as const,
+        time: { created: 0 },
+        agent: "build",
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test") },
+      },
+      parts: [],
+    }
+    const starting = yield* runs
+      .ensureRunningHandle(
+        id,
+        Effect.die("interrupted"),
+        Deferred.succeed(completed, undefined).pipe(Effect.as(message)),
+      )
+      .pipe(Effect.forkChild)
+    yield* awaitWithTimeout(Deferred.await(completed), "run did not complete")
+    yield* awaitWithTimeout(
+      Effect.gen(function* () {
+        while (isBusy()) yield* Effect.yieldNow
+      }),
+      "runner did not reach idle during handoff",
+    )
+    yield* Deferred.succeed(release, undefined)
+    const result = yield* Fiber.join(starting)
+    expect(yield* awaitWithTimeout(result, "completed run did not return")).toEqual(message)
+    expect(statuses).toEqual(["busy", "idle"])
   }),
 )
 
@@ -158,6 +224,59 @@ it.instance("abort fences a runner whose start is already in flight", () =>
     const after = SessionCancellation.begin(id)
     yield* Effect.addFinalizer(() => Effect.sync(after.finish))
     expect(after.owners).toHaveLength(0)
+  }),
+)
+
+it.instance("abort settles a shell rejected before initialization and admits the next request", () =>
+  Effect.gen(function* () {
+    const runs = yield* SessionRunState.Service
+    const id = SessionID.create()
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const ready = yield* Latch.make()
+    const laterStarted = yield* Deferred.make<void>()
+    let ran = false
+    writes.set(id, (info) =>
+      info.type === "busy"
+        ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+        : Effect.void,
+    )
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        writes.delete(id)
+        yield* Deferred.succeed(release, undefined)
+        yield* ready.open
+      }),
+    )
+    const shell = yield* runs
+      .startShellHandle(
+        id,
+        Effect.die("interrupted"),
+        Effect.sync(() => {
+          ran = true
+        }).pipe(Effect.andThen(Effect.never)),
+        ready,
+      )
+      .pipe(Effect.forkChild)
+    yield* awaitWithTimeout(Deferred.await(entered), "shell did not reach busy status")
+    const abort = SessionCancellation.begin(id)
+    yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
+    const cancel = yield* Effect.all(abort.owners).pipe(Effect.forkChild)
+    yield* Deferred.succeed(release, undefined)
+    yield* awaitWithTimeout(Fiber.await(cancel), "rejected shell blocked cancellation")
+    const handle = yield* Fiber.join(shell)
+    yield* handle.pipe(Effect.exit)
+    expect(ran).toBe(false)
+    abort.finish()
+    writes.delete(id)
+    const later = yield* runs.ensureRunningHandle(
+      id,
+      Effect.die("interrupted"),
+      Deferred.succeed(laterStarted, undefined).pipe(Effect.andThen(Effect.never)),
+    )
+    yield* awaitWithTimeout(Deferred.await(laterStarted), "later request did not start")
+    yield* runs.cancel(id)
+    yield* later.pipe(Effect.exit)
   }),
 )
 

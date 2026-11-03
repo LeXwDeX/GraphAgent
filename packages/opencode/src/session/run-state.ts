@@ -25,6 +25,7 @@ export interface Interface {
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
+    request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Effect.Effect<SessionV1.WithParts>>
   readonly startIfIdle: (
     sessionID: SessionID,
@@ -137,9 +138,10 @@ export const layer = Layer.effect(
         work: Effect.Effect<SessionV1.WithParts>,
       ) => Effect.Effect<A, E>,
       work: Effect.Effect<SessionV1.WithParts>,
+      admitted?: ReturnType<typeof SessionCancellation.request>,
     ): Effect.Effect<A, E> =>
       Effect.suspend(() => {
-        const request = SessionCancellation.request(sessionID)
+        const request = admitted ?? SessionCancellation.request(sessionID)
         return Effect.gen(function* () {
           yield* request.wait
           if (!request.valid()) return fallback
@@ -194,11 +196,6 @@ export const layer = Layer.effect(
                   data.owners.delete(sessionID)
                   yield* setStatus(sessionID, { type: "idle" })
                 }
-                if (Exit.isSuccess(result) && data.runners.get(sessionID) === next && !next.busy) {
-                  data.runners.delete(sessionID)
-                  data.owners.get(sessionID)?.()
-                  data.owners.delete(sessionID)
-                }
                 return yield* result
               }),
             ),
@@ -241,6 +238,7 @@ export const layer = Layer.effect(
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
+      request?: ReturnType<typeof SessionCancellation.request>,
     ) {
       return yield* start(
         sessionID,
@@ -248,6 +246,7 @@ export const layer = Layer.effect(
         onInterrupt,
         (runner, guarded) => runner.ensureRunningHandle(guarded),
         work,
+        request,
       )
     })
 

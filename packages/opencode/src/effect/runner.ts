@@ -114,7 +114,7 @@ export const make = <A, E = never>(
 
   const stopShell = (shell: ShellHandle<A, E>) =>
     Effect.gen(function* () {
-      if (shell.ready) yield* shell.ready.await.pipe(Effect.exit, Effect.asVoid)
+      if (shell.ready) yield* Effect.raceFirst(shell.ready.await, Fiber.await(shell.fiber)).pipe(Effect.asVoid)
       yield* Deferred.succeed(shell.cancelled, undefined).pipe(Effect.asVoid)
       yield* Fiber.interrupt(shell.fiber)
     })

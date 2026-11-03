@@ -1,6 +1,7 @@
 import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { HookFileWatch } from "@/hook/file-watch"
+import { HookLifecycle } from "@/hook/lifecycle"
 import { expect, spyOn } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
@@ -15,7 +16,7 @@ import { EventTable } from "@opencode-ai/core/event/sql"
 import { eq } from "drizzle-orm"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { provideTmpdirServer } from "../fixture/fixture"
-import { testEffect, pollWithTimeout } from "../lib/effect"
+import { awaitWithTimeout, testEffect, pollWithTimeout } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 
 import { LSP } from "@/lsp/lsp"
@@ -116,6 +117,7 @@ const pluginMock = Layer.suspend(() =>
 const root = LayerNode.group([
   SessionPrompt.node,
   SettingsHook.node,
+  HookLifecycle.node,
   SessionHooks.node,
   HookFileWatch.node,
   Session.node,
@@ -191,6 +193,49 @@ it.live("followup admission owners are visible across instances", () =>
   ),
 )
 
+it.live("resume does not wait on cancellation while holding the admission commit lock", () =>
+  provideTmpdirServer(({ llm }) =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const lifecycle = yield* HookLifecycle.Service
+      const session = yield* sessions.create({ title: "resume cancellation lock ordering" })
+      yield* lifecycle.queueInitial(session.id, "initial")
+      const gate: ChatMessageGate = { entered: false, open: () => {} }
+      chatMessageGates.set(session.id, gate)
+      const requested = Deferred.makeUnsafe<void>()
+      const request = SessionCancellation.request
+      const spy = spyOn(SessionCancellation, "request").mockImplementation((id) => {
+        const result = request(id)
+        if (id === session.id) Deferred.doneUnsafe(requested, Effect.void)
+        return result
+      })
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          gate.open()
+          chatMessageGates.delete(session.id)
+          spy.mockRestore()
+        }),
+      )
+      const resumed = yield* prompt.resume({ sessionID: session.id, hookMode: "noninteractive" }).pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.sync(() => (gate.entered ? true : undefined)),
+        "resume did not reach admission",
+      )
+      const abort = SessionCancellation.begin(session.id)
+      yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
+      gate.open()
+      yield* awaitWithTimeout(Deferred.await(requested), "resume did not reach runner admission")
+      const cancelled = yield* SessionCancellation.admissions
+        .cancel(session.id, Effect.sync(abort.finish))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Fiber.join(cancelled), "cancel waited on the resume commit lock")
+      expect(Exit.isFailure(yield* Fiber.await(resumed))).toBe(true)
+      expect(yield* llm.calls).toBe(0)
+    }),
+  ),
+)
+
 const goalIt = testEffect(
   LayerNode.buildLayer(LayerNode.group([root, GoalLoop.node, Goal.node, SessionStatus.node]), {
     replacements: [
@@ -203,6 +248,51 @@ const goalIt = testEffect(
     Layer.provideMerge(
       Layer.succeed(GoalLoopJudgeLLM, { call: () => Effect.succeed(JSON.stringify({ verdict: "done", reason: "finished" })) }),
     ),
+  ),
+)
+
+goalIt.live("cancel decides the goal pause before dispatching owners", () =>
+  provideTmpdirServer(() =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const goal = yield* Goal.Service
+      const session = yield* sessions.create({ title: "goal cancel ordering" })
+      yield* goal.set(session.id, "finish work", 5)
+      yield* goal.markTurnDriven(session.id)
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const dispatched = Deferred.makeUnsafe<void>()
+      const isTurnDriven = goal.isTurnDriven
+      const spy = spyOn(goal, "isTurnDriven").mockImplementation((id) =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(isTurnDriven(id)),
+        ),
+      )
+      const request = SessionCancellation.request(session.id)
+      const unregister = request.register(() =>
+        Effect.sync(() => Deferred.doneUnsafe(dispatched, Effect.void)).pipe(
+          Effect.andThen(goal.clearTurnDriven(session.id)),
+        ),
+      )
+      request.release()
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          spy.mockRestore()
+          unregister?.()
+          yield* Deferred.succeed(release, undefined)
+        }),
+      )
+      const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(entered), "goal pause decision did not start")
+      const dispatchedBeforeDecision = yield* Deferred.isDone(dispatched)
+      yield* Deferred.succeed(release, undefined)
+      yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancellation did not finish")
+      expect(dispatchedBeforeDecision).toBe(false)
+      expect((yield* goal.load(session.id))?.status).toBe("paused")
+      expect(yield* Deferred.isDone(dispatched)).toBe(true)
+    }),
   ),
 )
 
