@@ -138,7 +138,7 @@ export function withHookFailure(error: unknown, result: TriggerResult, preContex
  */
 export function landSystemMessages(
   result: TriggerResult,
-  opts: { sessionID: string; inject?: (message: string) => Effect.Effect<unknown> },
+  opts: { sessionID: string; inject?: (message: string) => Effect.Effect<unknown>; shouldLand?: () => boolean },
 ): Effect.Effect<void> {
   const messages = [...(result.systemMessages ?? []), ...(result.hookErrors ?? [])]
   if (messages.length === 0) return Effect.void
@@ -146,6 +146,7 @@ export function landSystemMessages(
     // Lazy import preserves this leaf's cycle-free module initialization.
     const { HookNotification } = yield* Effect.promise(() => import("./notifications"))
     for (const message of messages) {
+      if (opts.shouldLand && !opts.shouldLand()) return
       yield* HookNotification.message(opts.sessionID, message)
     }
   })

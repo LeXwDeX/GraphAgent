@@ -4,6 +4,23 @@ import { Deferred, Effect, Exit, Scope } from "effect"
 import { it } from "./lib/effect"
 
 describe("BackgroundJob", () => {
+  it.effect("captures a job identity even when its replacement has the same timestamp", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const old = yield* jobs.start({ id: "reused", type: "test", run: Effect.never })
+      const captured = yield* jobs.capture(old)
+      if (!captured) throw new Error("missing job capture")
+      yield* jobs.cancel(old.id)
+      const replacement = yield* jobs.start({ id: old.id, type: "test", run: Effect.never })
+
+      expect(replacement.started_at).toBe(old.started_at)
+      expect((yield* captured.done).status).toBe("cancelled")
+      expect(yield* captured.cancel).toBeUndefined()
+      expect((yield* jobs.get(old.id))?.status).toBe("running")
+      yield* jobs.cancel(old.id)
+    }).pipe(Effect.provide(BackgroundJob.layer)),
+  )
+
   it.live("tracks process-local work through explicit observation", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service

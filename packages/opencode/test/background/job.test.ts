@@ -1,11 +1,90 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect } from "effect"
 import { BackgroundJob } from "@/background/job"
-import { testEffect } from "../lib/effect"
+import { SessionCancellation } from "@/session/cancellation"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(BackgroundJob.defaultLayer)
 
 describe("background.job", () => {
+  it.instance("captures the original job for both its session and its parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const id = "captured-child"
+      const parent = "captured-parent"
+      yield* jobs.start({ id, type: "test", metadata: { sessionId: id, parentSessionId: parent }, run: Effect.never })
+      const abort = SessionCancellation.begin(parent)
+      yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
+      expect(abort.owners).toHaveLength(1)
+      yield* jobs.cancel(id)
+      yield* jobs.start({ id, type: "test", metadata: { sessionId: id, parentSessionId: parent }, run: Effect.never })
+      yield* Effect.all(abort.owners)
+      expect((yield* jobs.get(id))?.status).toBe("running")
+      abort.finish()
+
+      const childAbort = SessionCancellation.begin(id)
+      yield* Effect.addFinalizer(() => Effect.sync(childAbort.finish))
+      expect(childAbort.owners.length).toBeGreaterThan(0)
+      yield* Effect.all(childAbort.owners)
+      expect((yield* jobs.get(id))?.status).toBe("cancelled")
+    }),
+  )
+
+  it.instance("removes the owner only after all extensions finish", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const parent = "completed-parent"
+      const first = yield* Deferred.make<void>()
+      const second = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "test",
+        metadata: { parentSessionId: parent },
+        run: Deferred.await(first).pipe(Effect.as("first")),
+      })
+      yield* jobs.extend({ id: job.id, run: Deferred.await(second).pipe(Effect.as("second")) })
+      yield* Deferred.succeed(first, undefined)
+      const active = SessionCancellation.begin(parent)
+      expect(active.owners).toHaveLength(1)
+      active.finish()
+      yield* Deferred.succeed(second, undefined)
+      yield* jobs.wait({ id: job.id })
+      yield* pollWithTimeout(
+        Effect.sync(() => {
+          const finished = SessionCancellation.begin(parent)
+          const empty = finished.owners.length === 0
+          finished.finish()
+          return empty ? true : undefined
+        }),
+        "completed background job retained its owner",
+      )
+    }),
+  )
+
+  it.instance("captures nested jobs without cancelling an unrelated session", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      yield* jobs.start({
+        id: "nested-child",
+        type: "test",
+        metadata: { sessionId: "nested-child", parentSessionId: "nested-parent" },
+        run: Effect.never,
+      })
+      yield* jobs.start({
+        id: "nested-grandchild",
+        type: "test",
+        metadata: { sessionId: "nested-grandchild", parentSessionId: "nested-child" },
+        run: Effect.never,
+      })
+      const unrelated = yield* jobs.start({ type: "test", metadata: { sessionId: "unrelated" }, run: Effect.never })
+      const abort = SessionCancellation.begin("nested-parent")
+      yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
+      yield* Effect.all(abort.owners)
+      expect((yield* jobs.get("nested-child"))?.status).toBe("cancelled")
+      expect((yield* jobs.get("nested-grandchild"))?.status).toBe("cancelled")
+      expect((yield* jobs.get(unrelated.id))?.status).toBe("running")
+    }),
+  )
+
   it.instance("tracks started jobs through completion", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service

@@ -55,6 +55,11 @@ export function set(sessionID: string, info: Info): void {
   pending.set(sessionID, info)
 }
 
+/** Multiple interrupted owners may need the same reason. */
+export function peek(sessionID: string): Info | undefined {
+  return pending.get(sessionID)
+}
+
 export function take(sessionID: string): Info | undefined {
   const info = pending.get(sessionID)
   if (info) pending.delete(sessionID)

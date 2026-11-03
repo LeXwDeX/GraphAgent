@@ -10,6 +10,7 @@ export const make = () => {
   const owners = new Map<string, Set<Deferred.Deferred<void>>>()
   const cancelling = new Map<string, Deferred.Deferred<void>>()
   const commits = KeyedMutex.makeUnsafe<string>()
+  const active = new Map<string, Deferred.Deferred<void>>()
   const cancelled = () => new SessionConversationHooks.Blocked({ reason: "Prompt cancelled before admission" })
   const run = <A, E, R>(
     id: string,
@@ -27,13 +28,30 @@ export const make = () => {
       current.add(owner)
       owners.set(id, current)
       const commit = <B, E2, R2>(body: Effect.Effect<B, E2, R2>) =>
-        commits.withLock(id)(
-          Effect.uninterruptible(
-            Effect.suspend<B, E2 | SessionConversationHooks.Blocked, R2>(() =>
-              Deferred.isDoneUnsafe(owner) ? Effect.fail(cancelled()) : body,
-            ),
-          ),
-        )
+        Effect.suspend<B, E2 | SessionConversationHooks.Blocked, R2>(() => {
+          const invalid = () => cancelling.has(id) || Deferred.isDoneUnsafe(owner)
+          if (invalid()) return Effect.fail(cancelled())
+          return Effect.raceFirst(
+            Effect.interruptible(commits.withLock(id)(
+              Effect.uninterruptible(
+                Effect.suspend<B, E2 | SessionConversationHooks.Blocked, R2>(() => {
+                  if (invalid()) return Effect.fail(cancelled())
+                  const finished = Deferred.makeUnsafe<void>()
+                  active.set(id, finished)
+                  return body.pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        active.delete(id)
+                        Deferred.doneUnsafe(finished, Effect.void)
+                      }),
+                    ),
+                  )
+                }),
+              ),
+            )),
+            Deferred.await(owner).pipe(Effect.flatMap(() => Effect.fail(cancelled()))),
+          )
+        })
       return Effect.raceFirst(
         Effect.suspend(() => effect(commit)),
         Deferred.await(owner).pipe(Effect.flatMap(() => Effect.fail(cancelled()))),
@@ -54,9 +72,11 @@ export const make = () => {
         const barrier = Deferred.makeUnsafe<void>()
         cancelling.set(id, barrier)
         const snapshot = [...(owners.get(id) ?? [])]
+        const committing = active.get(id)
         return Effect.gen(function* () {
           for (const owner of snapshot) yield* Deferred.succeed(owner, undefined)
-          yield* commits.withLock(id)(effect)
+          if (committing) yield* Deferred.await(committing)
+          yield* effect
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {

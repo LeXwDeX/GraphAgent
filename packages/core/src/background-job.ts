@@ -84,6 +84,12 @@ export type WaitResult = {
   timedOut: boolean
 }
 
+export type Captured = {
+  readonly identity: object
+  readonly cancel: Effect.Effect<Info | undefined>
+  readonly done: Effect.Effect<Info>
+}
+
 export interface Interface {
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: string) => Effect.Effect<Info | undefined>
@@ -93,16 +99,10 @@ export interface Interface {
   readonly waitForPromotion: (id: string) => Effect.Effect<Info>
   readonly promote: (id: string) => Effect.Effect<Info | undefined>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  readonly capture: (info: Info) => Effect.Effect<Captured | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/BackgroundJob") {}
-
-function snapshot(job: Active): Info {
-  return {
-    ...job.info,
-    ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}),
-  }
-}
 
 function errorText(error: unknown) {
   if (error instanceof Error) return error.message
@@ -120,6 +120,12 @@ export const make = Effect.gen(function* () {
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map()),
     scope: yield* Scope.Scope,
+  }
+  const identities = new WeakMap<Info, { id: string; token: object; done: Deferred.Deferred<Info> }>()
+  const snapshot = (job: Active): Info => {
+    const info = { ...job.info, ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}) }
+    identities.set(info, { id: job.info.id, token: job.token, done: job.done })
+    return info
   }
 
   const settle = Effect.fn("BackgroundJob.settle")(function* (
@@ -333,11 +339,12 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  const cancel: Interface["cancel"] = Effect.fn("BackgroundJob.cancel")(function* (id) {
+  const cancelIf = Effect.fn("BackgroundJob.cancel")(function* (id: string, token?: object) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modify(state.jobs, (jobs): readonly [FinishResult, Map<string, Active>] => {
       const job = jobs.get(id)
       if (!job) return [{}, jobs]
+      if (token && job.token !== token) return [{}, jobs]
       if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
       const next = {
         ...job,
@@ -356,7 +363,19 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  return Service.of({ list, get, start, extend, wait, waitForPromotion, promote, cancel })
+  const cancel: Interface["cancel"] = (id) => cancelIf(id)
+  const capture: Interface["capture"] = (info) =>
+    Effect.sync(() => {
+      const identity = identities.get(info)
+      if (!identity) return undefined
+      return {
+        identity: identity.token,
+        cancel: cancelIf(identity.id, identity.token),
+        done: Deferred.await(identity.done),
+      }
+    })
+
+  return Service.of({ list, get, start, extend, wait, waitForPromotion, promote, cancel, capture })
 })
 
 export const layer = Layer.effect(Service, make)

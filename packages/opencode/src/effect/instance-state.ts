@@ -35,7 +35,10 @@ const generationCellRef = Context.Reference<GenerationCell | undefined>("~openco
 
 /** Run effects belonging to one instance generation, so a replacement
  * generation can initialize while the old one is still draining. */
-export const withGeneration = <A, E, R>(generation: object, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+export const withGeneration = <A, E, R>(
+  generation: object | undefined,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
   Effect.provideService(Effect.provideService(effect, generationRef, generation), generationCellRef, {
     current: generation,
   })
@@ -48,7 +51,7 @@ export const adoptGeneration = (generation: object | undefined) =>
     if (cell) cell.current = generation
   })
 
-const currentGeneration = Effect.gen(function* () {
+export const currentGeneration = Effect.gen(function* () {
   const cell = yield* generationCellRef
   return cell ? cell.current : yield* generationRef
 })
