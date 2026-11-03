@@ -1,4 +1,3 @@
-import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
 import { randomUUID } from "node:crypto"
 import { Question } from "@/question"
@@ -28,6 +27,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { SessionAbortReason } from "./abort-reason"
+import { SessionCancellation } from "./cancellation"
 import { Token } from "@/util/token"
 import { estimateOverhead, measured } from "./overflow"
 import { SessionRevert } from "./revert"
@@ -664,7 +664,7 @@ export const layer = Layer.effect(
       } else active.delete(session.id)
     })
     const promptLocks = KeyedMutex.makeUnsafe<SessionID>()
-    const followupAdmissions = yield* InstanceState.make(() => Effect.sync(SessionAdmission.make))
+    const followupAdmissions = SessionCancellation.admissions
     // App-layer model-write epochs for sessions with a pending command. This is
     // not directory state: one AppLayer shares it across workspaces. Entries
     // exist only while at least one command is pending and are removed on the
@@ -693,13 +693,8 @@ export const layer = Layer.effect(
       const state = modelWrites.get(sessionID)
       if (state) state.epoch++
     }
-    // App-layer cancel epochs. A cancel must fence a resume committing after
-    // it even when the target instance is disposing and cannot run cancelImpl.
-    const cancelEpochs = new Map<SessionID, number>()
-    const cancelEpoch = (sessionID: SessionID) => cancelEpochs.get(sessionID) ?? 0
-    const cancelBump = (sessionID: SessionID) => {
-      cancelEpochs.set(sessionID, cancelEpoch(sessionID) + 1)
-    }
+    // A cancel also fences followups started by a different layer graph.
+    const cancelEpoch = SessionCancellation.epoch
     const toolBudgets = yield* InstanceState.make(() =>
       Effect.gen(function* () {
         const budgets = new Map<SessionID, { active?: ToolBudget.Budget; pending: Map<MessageID, ToolBudget.Budget> }>()
@@ -899,16 +894,20 @@ export const layer = Layer.effect(
     // Cancellation owns the durable followup cleanup even when the target
     // instance is not loaded: the session row is global, so this must not be
     // skipped by the instance-routing no-op.
-    const clearPendingHookInput = Effect.fnUntraced(function* (sessionID: SessionID) {
+    const clearPendingHookInput = Effect.fnUntraced(function* (sessionID: SessionID, snapshot: string | undefined) {
+      if (snapshot === undefined) return
       yield* db
         .transaction(
           () =>
             Effect.gen(function* () {
               const target = yield* sessions.get(sessionID).pipe(Effect.option)
-              if (Option.isNone(target) || target.value.metadata?.hookPendingInput === undefined) return
+              if (Option.isNone(target) || JSON.stringify(target.value.metadata?.hookPendingInput) !== snapshot) return
               const metadata = { ...target.value.metadata }
               delete metadata.hookPendingInput
-              yield* sessions.setMetadata({ sessionID, metadata })
+              yield* sessions.setMetadata(
+                { sessionID, metadata },
+                (current) => JSON.stringify(current.metadata?.hookPendingInput) === snapshot,
+              )
             }),
           { behavior: "immediate" },
         )
@@ -919,113 +918,168 @@ export const layer = Layer.effect(
         )
     })
 
-    const cancelImpl = Effect.fnUntraced(function* (
-      sessionID: SessionID,
-      options?: { readonly reason?: SessionAbortReason.Info },
-    ) {
-      const abort = options?.reason
-      const admissions = yield* InstanceState.get(followupAdmissions)
-      return yield* admissions.cancel(
-        sessionID,
-        Effect.gen(function* () {
-          // Run under the admission barrier: a followup commit that started
-          // before cancellation can still write phase "started" after a
-          // routing-layer clear. The barrier releases that commit first.
-          yield* clearPendingHookInput(sessionID)
-          if (abort) SessionAbortReason.set(sessionID, abort)
-          yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
-          yield* Effect.logInfo("cancel", { "session.id": sessionID })
-          // Explicit cancellation abandons a supplied followup. Crash/restart recovery
-          // keeps it, but cancel must not make a later prompt replay or reject it.
-          // The routing layer explicitly clears the missing/disposing-instance no-op.
-          // A user abort invalidates any pending async Stop-hook rewake chain;
-          // otherwise a callback completing afterwards would silently restart the
-          // cancelled session. Lock-free on purpose: admission can block for a
-          // long time inside the prompt lock (hook gates), so cancel must always
-          // make progress. Stale rewakes are fenced in admitPrompt (pre-commit
-          // and post-commit) and again on the run path before runLoop.
-          // Invalidation failure must never block the cancel itself.
-          if (settingsHook?.invalidateStopRewakeChain) {
-            yield* settingsHook.invalidateStopRewakeChain(sessionID).pipe(Effect.ignore)
-          }
-          const pendingSwitches = yield* InstanceState.get(modelSwitches)
-          const pendingSwitch = pendingSwitches.get(sessionID)
-          pendingSwitches.delete(sessionID)
-          if (pendingSwitch) yield* Fiber.interrupt(pendingSwitch.fiber)
-          // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
-          // working on the goal", not just "stop this turn". Without this, the idle
-          // event after cancel re-enters afterIdle, shouldPreempt returns false (the
-          // last user message is the /goal command itself, necessarily older than
-          // this turn's assistant output), and the judge auto-resurrects the goal
-          // with a continuation the user just tried to abort. Pause instead.
-          if (goal && (yield* goal.isTurnDriven(sessionID))) {
-            yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
-          }
-          if (agentMessages) {
-            const context = yield* InstanceState.context
-            const identity = { projectID: context.project.id, directory: context.directory, sessionID }
-            const input = yield* agentMessages.revisions(identity)
-            if (input.ok && input.value.snapshotID)
-              yield* agentMessages.markStopped(identity, input.value.snapshotID, "cancelled")
-            yield* agentMessages.discardPending(identity, "cancelled")
-          }
-          yield* state.cancel(sessionID)
-        }).pipe(Effect.ensuring(abort ? Effect.sync(() => SessionAbortReason.clear(sessionID, abort)) : Effect.void)),
-      )
+    const cancelImpl = Effect.fnUntraced(function* (sessionID: SessionID) {
+      yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
+      yield* Effect.logInfo("cancel", { "session.id": sessionID })
+      const pendingSwitches = yield* InstanceState.get(modelSwitches)
+      const pendingSwitch = pendingSwitches.get(sessionID)
+      pendingSwitches.delete(sessionID)
+      if (pendingSwitch) yield* Fiber.interrupt(pendingSwitch.fiber)
+      // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
+      // working on the goal", not just "stop this turn". Without this, the idle
+      // event after cancel re-enters afterIdle, shouldPreempt returns false (the
+      // last user message is the /goal command itself, necessarily older than
+      // this turn's assistant output), and the judge auto-resurrects the goal
+      // with a continuation the user just tried to abort. Pause instead.
+      if (goal && (yield* goal.isTurnDriven(sessionID))) {
+        yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
+      }
+      if (agentMessages) {
+        const context = yield* InstanceState.context
+        const identity = { projectID: context.project.id, directory: context.directory, sessionID }
+        const input = yield* agentMessages.revisions(identity)
+        if (input.ok && input.value.snapshotID)
+          yield* agentMessages.markStopped(identity, input.value.snapshotID, "cancelled")
+        yield* agentMessages.discardPending(identity, "cancelled")
+      }
+      yield* state.cancelBackground(sessionID, true)
     })
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (
       sessionID: SessionID,
       options?: { readonly reason?: SessionAbortReason.Info },
     ) {
-      // Advance before any wait: a resume that starts after this point captures
-      // the new epoch and remains usable, while one already in flight is fenced.
-      cancelBump(sessionID)
-      // Session rows are global, so the durable directory selects the instance
-      // whose admission, status and runner maps own this cancel. Without that
-      // routing, an owner-directory cancel publishes child idle in the wrong
-      // workspace and leaves the real runner busy.
-      const target = yield* sessions.get(sessionID).pipe(Effect.option)
-      const current = yield* InstanceRef
-      if (Option.isNone(target) || !current) return yield* cancelImpl(sessionID, options)
-      const sameDirectory = Filesystem.resolve(current.directory) === Filesystem.resolve(target.value.directory)
-      // Lazy import avoids the bootstrap → DAG → prompt import cycle (same
-      // pattern as spawn.ts). Harnesses without InstanceStore keep the old
-      // ambient behavior.
-      const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
-      const store = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
-      const provideIfLoaded = store?.provideIfLoaded
-      if (!provideIfLoaded) return yield* cancelImpl(sessionID, options)
-      // A move re-stamps the durable directory but does not migrate the
-      // running fiber or instance-local background jobs. Record whether the
-      // caller is busy so its old runner keeps the full cancel path (including
-      // the abort reason). An idle caller may still own background work, so it
-      // gets the instance-local run-state cancel first; that cancels jobs and a
-      // real runner, and does not publish idle without one.
-      const currentBusy = sameDirectory
-        ? false
-        : yield* status.get(sessionID).pipe(
-            Effect.map((info) => info.type !== "idle"),
-            Effect.catchCause((cause) =>
-              Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(false),
+      const cancellation = SessionCancellation.begin(sessionID)
+      const abort = options?.reason
+      let transferred = false
+      let waiters: Array<Fiber.Fiber<void>> = []
+      const release = () => {
+        if (abort) SessionAbortReason.clear(sessionID, abort)
+        cancellation.finish()
+      }
+      return yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const pendingSnapshot = Deferred.makeUnsafe<string | undefined>()
+          const action = cancellation.previous.pipe(
+            Effect.andThen(
+              followupAdmissions.cancel(
+                sessionID,
+                Effect.gen(function* () {
+                  const pending = yield* Deferred.await(pendingSnapshot)
+                  yield* clearPendingHookInput(sessionID, pending)
+                  if (abort) SessionAbortReason.set(sessionID, abort)
+                  const target = yield* sessions.get(sessionID).pipe(Effect.option)
+                  const current = yield* InstanceRef
+                  const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
+                  const store = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
+                  const provideIfLoaded = store?.provideIfLoaded
+                  const local =
+                    Option.isSome(target) && current && provideIfLoaded
+                      ? provideIfLoaded({ directory: target.value.directory }, cancelImpl(sessionID)).pipe(
+                          Effect.asVoid,
+                        )
+                      : cancelImpl(sessionID)
+                  const owners = Effect.forEach(
+                    cancellation.targets,
+                    (owner) =>
+                      Effect.gen(function* () {
+                        const stop =
+                          owner.directory && provideIfLoaded
+                            ? provideIfLoaded({ directory: owner.directory }, owner.cancel).pipe(
+                                Effect.tap((result) =>
+                                  Option.isNone(result)
+                                    ? Effect.logWarning("session cancel owner unavailable", {
+                                        sessionID,
+                                        directory: owner.directory,
+                                      })
+                                    : Effect.void,
+                                ),
+                                Effect.asVoid,
+                              )
+                            : owner.cancel
+                        const fiber = yield* stop.pipe(Effect.forkIn(scope, { startImmediately: true }))
+                        const result = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("3 seconds"))
+                        if (Option.isNone(result) || Exit.isFailure(result.value))
+                          yield* Effect.logWarning("session cancel owner did not settle", {
+                            sessionID,
+                            directory: owner.directory,
+                          })
+                        return Option.isNone(result) ? fiber : undefined
+                      }),
+                    { concurrency: "unbounded" },
+                  )
+                  const origin =
+                    Option.isSome(target) &&
+                    current &&
+                    Filesystem.resolve(current.directory) !== Filesystem.resolve(target.value.directory)
+                      ? state.cancelBackground(sessionID, true)
+                      : Effect.void
+                  const [localExit, originExit, pendingOwners] = yield* Effect.all(
+                    [local.pipe(Effect.exit), origin.pipe(Effect.exit), owners],
+                    {
+                      concurrency: "unbounded",
+                    },
+                  )
+                  if (Exit.isFailure(localExit) || Exit.isFailure(originExit))
+                    yield* Effect.logWarning("session cancel local cleanup failed", { sessionID })
+                  const unsettled = pendingOwners.filter((fiber) => fiber !== undefined)
+                  waiters = unsettled
+                }),
+              ),
             ),
           )
-      // A moved session leaves its local work behind. Finish it before the
-      // target is resolved: a missing, disposing or slow target must not leave
-      // this workspace's runner or background job running. The idle path is
-      // background-only; repeating cancelImpl there would duplicate global
-      // followup/goal/reason cleanup. Same-directory cancels keep the single
-      // cancelImpl path so the abort reason is set before the runner stops.
-      if (!sameDirectory) {
-        if (currentBusy) yield* cancelImpl(sessionID, options)
-        else yield* state.cancel(sessionID)
-      }
-      // Never load, reload or synthesize the target instance. A missing,
-      // disposing or disposed workspace is a deliberate no-op: no fake idle and
-      // no state rebuild from a stale InstanceRef. The durable followup cleanup
-      // is instance-independent, so the no-op still clears it.
-      const provided = yield* provideIfLoaded({ directory: target.value.directory }, cancelImpl(sessionID, options))
-      if (Option.isNone(provided)) yield* clearPendingHookInput(sessionID)
+          const { InstanceStore: Store } = yield* Effect.promise(() => import("@/project/instance-store"))
+          const store = Option.getOrUndefined(yield* Effect.serviceOption(Store.Service))
+          const fiber = yield* action.pipe(Effect.forkIn(scope, { startImmediately: true }))
+          const read = yield* sessions.get(sessionID).pipe(Effect.option, Effect.exit)
+          if (Exit.isFailure(read)) {
+            yield* Deferred.succeed(pendingSnapshot, undefined)
+            yield* Fiber.await(fiber)
+            return yield* read
+          }
+          const target = read.value
+          yield* Deferred.succeed(
+            pendingSnapshot,
+            Option.isSome(target) ? JSON.stringify(target.value.metadata?.hookPendingInput) : undefined,
+          )
+          if (Option.isSome(target) && store?.provideIfLoaded) {
+            const loaded = yield* store.provideIfLoaded({ directory: target.value.directory }, Effect.void)
+            if (Option.isNone(loaded) && InstanceState.isClosing(Filesystem.resolve(target.value.directory))) {
+              yield* clearPendingHookInput(sessionID, JSON.stringify(target.value.metadata?.hookPendingInput))
+              const completed = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("1 second"))
+              if (Option.isNone(completed)) {
+                yield* Fiber.await(fiber).pipe(
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      Effect.forEach(waiters, Fiber.await, { concurrency: "unbounded", discard: true }),
+                    ),
+                  ),
+                  Effect.ensuring(Effect.sync(release)),
+                  Effect.forkIn(scope, { startImmediately: false }),
+                )
+                transferred = true
+                return
+              }
+            }
+          }
+          yield* Fiber.join(fiber)
+          if (waiters.length) {
+            yield* Effect.forEach(waiters, Fiber.await, { concurrency: "unbounded", discard: true }).pipe(
+              Effect.ensuring(Effect.sync(release)),
+              Effect.forkIn(scope, { startImmediately: false }),
+            )
+            transferred = true
+          }
+        }).pipe(
+          Effect.onInterrupt(() => Effect.forEach(waiters, Fiber.await, { concurrency: "unbounded", discard: true })),
+        ),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (!transferred) release()
+          }),
+        ),
+      )
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -3255,7 +3309,7 @@ export const layer = Layer.effect(
           }
           yield* sessions.updateMessage(msg)
           const finalizeInterruptedAssistant = Effect.gen(function* () {
-            const abort = SessionAbortReason.take(sessionID)
+            const abort = SessionAbortReason.peek(sessionID)
             const legacyAbort =
               msg.error?.name === "MessageAbortedError" &&
               SessionAbortReason.replaceableByCancellation(
@@ -3807,8 +3861,7 @@ export const layer = Layer.effect(
         completed.info.finish === "tool_deferred_unavailable"
       )
         return completed
-      const admissions = yield* InstanceState.get(followupAdmissions)
-      return yield* admissions
+      return yield* followupAdmissions
         .run(sessionID, (commit) =>
           Effect.gen(function* () {
             const pending = yield* promptLocks.withLock(sessionID)(
@@ -3878,11 +3931,10 @@ export const layer = Layer.effect(
 
     const resume: Interface["resume"] = Effect.fn("SessionPrompt.resume")(function* (input, options) {
       const epoch = cancelEpoch(input.sessionID)
-      const admissions = yield* InstanceState.get(followupAdmissions)
       // Register the owner before waiting on the prompt lock. Cancel then fences
       // a followup that has not reached the lock yet, and a resume started after
       // cancel returns registers a fresh owner as a new request.
-      const result = admissions
+      const result = followupAdmissions
         .run(
           input.sessionID,
           (
@@ -4412,8 +4464,7 @@ export const layer = Layer.effect(
       function* (input, options) {
         if (options?.skipHookStart)
           return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(commandImpl(input, options))
-        const admissions = yield* InstanceState.get(followupAdmissions)
-        const admitted = admissions.run(input.sessionID, (commit) => commandImpl(input, options, commit))
+        const admitted = followupAdmissions.run(input.sessionID, (commit) => commandImpl(input, options, commit))
         return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(admitted)
       },
     )
@@ -4428,8 +4479,7 @@ export const layer = Layer.effect(
       restoreModelContext,
       takeModelSwitchContext: (input) => modelSwitchContext(input.sessionID, input.apiModelID),
       resume,
-      followupAdmissionOwnerCount: (sessionID) =>
-        InstanceState.get(followupAdmissions).pipe(Effect.flatMap((admissions) => admissions.ownerCount(sessionID))),
+      followupAdmissionOwnerCount: (sessionID) => followupAdmissions.ownerCount(sessionID),
       loop,
       shell,
       command,

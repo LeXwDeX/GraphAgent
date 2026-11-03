@@ -18,6 +18,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionAbortReason } from "@/session/abort-reason"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionID } from "@/session/schema"
@@ -305,6 +306,106 @@ test("cancel stops a moved session's runner in its original workspace", async ()
     await $`git worktree remove --force ${workspace.path}`.cwd(owner.path).quiet()
   }
 })
+
+test("both moved runner owners read the same cancellation reason", async () => {
+  await using owner = await tmpdir({ git: true })
+  await using workspace = await tmpdir()
+  await rm(workspace.path, { recursive: true, force: true })
+  await $`git worktree add --detach ${workspace.path} HEAD`.cwd(owner.path).quiet()
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const instances = yield* InstanceStore.Service
+          const sessions = yield* Session.Service
+          const prompt = yield* SessionPrompt.Service
+          const runs = yield* SessionRunState.Service
+          yield* instances.load({ directory: owner.path })
+          yield* instances.load({ directory: workspace.path })
+          yield* Effect.addFinalizer(() => instances.disposeAll())
+          const session = yield* instances.provide({ directory: owner.path }, sessions.create({ title: "two owners" }))
+          const seen: Array<SessionAbortReason.Info | undefined> = []
+          const makeRun = (directory: string) =>
+            Effect.gen(function* () {
+              const started = yield* Deferred.make<void>()
+              const handle = yield* instances.provide(
+                { directory },
+                runs.ensureRunningHandle(
+                  session.id,
+                  Effect.die("interrupted"),
+                  Deferred.succeed(started, undefined).pipe(
+                    Effect.andThen(Effect.never),
+                    Effect.onInterrupt(() =>
+                      Effect.sync(() => {
+                        seen.push(SessionAbortReason.peek(session.id))
+                      }),
+                    ),
+                  ),
+                ),
+              )
+              yield* awaitWithTimeout(Deferred.await(started), "owner did not start", "10 seconds")
+              return handle
+            })
+          const first = yield* makeRun(owner.path)
+          const second = yield* makeRun(workspace.path)
+          const reason = SessionAbortReason.make("replan", "dag-replan")
+          yield* instances.provide({ directory: owner.path }, prompt.cancel(session.id, { reason }))
+          yield* awaitWithTimeout(first.pipe(Effect.exit), "first owner did not stop", "5 seconds")
+          yield* awaitWithTimeout(second.pipe(Effect.exit), "second owner did not stop", "5 seconds")
+          expect(seen).toEqual([reason, reason])
+          expect(SessionAbortReason.peek(session.id)).toBeUndefined()
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(AppLayer, CrossSpawnSpawner.defaultLayer))),
+    )
+  } finally {
+    await $`git worktree remove --force ${workspace.path}`.cwd(owner.path).quiet()
+  }
+}, 60_000)
+
+test("interrupting the abort caller does not abandon its owner snapshot", async () => {
+  await using workspace = await tmpdir({ git: true })
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const instances = yield* InstanceStore.Service
+        const sessions = yield* Session.Service
+        const prompt = yield* SessionPrompt.Service
+        const runs = yield* SessionRunState.Service
+        const entered = yield* Deferred.make<void>()
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const stopped = yield* Deferred.make<void>()
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(release, undefined).pipe(Effect.andThen(instances.disposeAll())),
+        )
+        const session = yield* instances.provide({ directory: workspace.path }, sessions.create({ title: "caller interrupt" }))
+        const owner = yield* instances.provide(
+          { directory: workspace.path },
+          runs.ensureRunningHandle(
+            session.id,
+            Effect.die("interrupted"),
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+              Effect.ensuring(Deferred.succeed(stopped, undefined)),
+            ),
+          ),
+        )
+        yield* awaitWithTimeout(Deferred.await(started), "owner did not start", "5 seconds")
+        const cancel = yield* instances
+          .provide({ directory: workspace.path }, prompt.cancel(session.id))
+          .pipe(Effect.forkChild({ startImmediately: true }))
+        yield* awaitWithTimeout(Deferred.await(entered), "abort did not reach owner", "5 seconds")
+        const interrupted = yield* Fiber.interrupt(cancel).pipe(Effect.forkChild({ startImmediately: true }))
+        expect(Option.isNone(yield* Fiber.await(cancel).pipe(Effect.timeoutOption("100 millis")))).toBe(true)
+        yield* Deferred.succeed(release, undefined)
+        yield* awaitWithTimeout(Fiber.await(interrupted), "abort caller did not terminate", "5 seconds")
+        yield* awaitWithTimeout(Deferred.await(stopped), "abort abandoned its owner", "5 seconds")
+        yield* awaitWithTimeout(owner.pipe(Effect.exit), "owner did not settle", "5 seconds")
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(AppLayer, CrossSpawnSpawner.defaultLayer))),
+  )
+}, 60_000)
 
 test("cross-directory cancel does not publish idle in a loaded moved target without a runner", async () => {
   await using owner = await tmpdir({ git: true })

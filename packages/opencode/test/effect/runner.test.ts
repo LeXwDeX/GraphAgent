@@ -172,6 +172,63 @@ describe("Runner", () => {
   // --- cancel semantics ---
 
   it.live(
+    "snapshot cancellation does not interrupt a replacement run",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const runner = Runner.make<string>(scope, { onInterrupt: Effect.succeed("interrupted") })
+      const firstRelease = yield* Deferred.make<void>()
+      const secondRelease = yield* Deferred.make<void>()
+      const first = yield* runner.ensureRunningHandle(Deferred.await(firstRelease).pipe(Effect.as("first")))
+      const cancel = runner.cancelSnapshot()
+      yield* Deferred.succeed(firstRelease, undefined)
+      expect(yield* first).toBe("first")
+      const second = yield* runner.ensureRunningHandle(Deferred.await(secondRelease).pipe(Effect.as("second")))
+      yield* cancel
+      expect(runner.busy).toBe(true)
+      yield* Deferred.succeed(secondRelease, undefined)
+      expect(yield* second).toBe("second")
+    }),
+  )
+
+  it.live(
+    "snapshot cancellation preserves a later run queued behind a shell",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const runner = Runner.make<string>(scope, { onInterrupt: Effect.succeed("interrupted") })
+      const shell = yield* runner.startShellHandle(Effect.never)
+      const cancel = runner.cancelSnapshot()
+      const runRelease = yield* Deferred.make<void>()
+      const run = yield* runner.ensureRunningHandle(Deferred.await(runRelease).pipe(Effect.as("later")))
+      yield* cancel
+      expect(yield* shell).toBe("interrupted")
+      expect(runner.state._tag).toBe("Running")
+      yield* Deferred.succeed(runRelease, undefined)
+      expect(yield* run).toBe("later")
+    }),
+  )
+
+  it.live(
+    "snapshot cancellation follows a queued run after its shell finishes",
+    Effect.gen(function* () {
+      const scope = yield* Scope.Scope
+      const runner = Runner.make<string>(scope, { onInterrupt: Effect.succeed("interrupted") })
+      const shellRelease = yield* Deferred.make<void>()
+      const started = yield* Deferred.make<void>()
+      const shell = yield* runner.startShellHandle(Deferred.await(shellRelease).pipe(Effect.as("shell")))
+      const run = yield* runner.ensureRunningHandle(
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      )
+      const cancel = runner.cancelSnapshot()
+      yield* Deferred.succeed(shellRelease, undefined)
+      expect(yield* shell).toBe("shell")
+      yield* Deferred.await(started)
+      yield* cancel
+      expect(yield* run).toBe("interrupted")
+      expect(runner.busy).toBe(false)
+    }),
+  )
+
+  it.live(
     "cancel interrupts running work",
     Effect.gen(function* () {
       const s = yield* Scope.Scope

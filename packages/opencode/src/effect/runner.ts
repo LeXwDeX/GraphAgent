@@ -12,6 +12,7 @@ export interface Runner<A, E = never> {
   ) => Effect.Effect<Effect.Effect<A, E | Busy>>
   readonly startShell: (work: Effect.Effect<A, E>, ready?: Latch.Latch) => Effect.Effect<A, E | Busy>
   readonly cancel: Effect.Effect<void>
+  readonly cancelSnapshot: () => Effect.Effect<void>
 }
 
 export class Cancelled extends Schema.TaggedErrorClass<Cancelled>()("RunnerCancelled", {}) {}
@@ -86,9 +87,9 @@ export const make = <A, E = never>(
         ] as const,
     ).pipe(Effect.flatten)
 
-  const startRun = (work: Effect.Effect<A, E>, done: Deferred.Deferred<A, E | Cancelled>) =>
+  const startRun = (work: Effect.Effect<A, E>, done: Deferred.Deferred<A, E | Cancelled>, runID?: number) =>
     Effect.gen(function* () {
-      const id = next()
+      const id = runID ?? next()
       const fiber = yield* work.pipe(
         Effect.onExit((exit) => finishRun(id, done, exit)),
         Effect.forkIn(scope),
@@ -104,7 +105,7 @@ export const make = <A, E = never>(
           return [idle, { _tag: "Idle" }] as const
         }
         if (st._tag === "ShellThenRun" && st.shell.id === id) {
-          const run = yield* startRun(st.run.work, st.run.done)
+          const run = yield* startRun(st.run.work, st.run.done, st.run.id)
           return [Effect.void, { _tag: "Running", run }] as const
         }
         return [Effect.void, st] as const
@@ -195,38 +196,59 @@ export const make = <A, E = never>(
   const startShell = (work: Effect.Effect<A, E>, ready?: Latch.Latch) =>
     startShellHandle(work, ready).pipe(Effect.flatten)
 
-  const cancel = SynchronizedRef.modify(ref, (st) => {
-    switch (st._tag) {
-      case "Idle":
-        return [Effect.void, st] as const
-      case "Running":
-        return [
-          Effect.gen(function* () {
-            yield* Fiber.interrupt(st.run.fiber)
-            yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
-            yield* idleIfCurrent()
-          }),
-          { _tag: "Idle" } as const,
-        ] as const
-      case "Shell":
-        return [
-          Effect.gen(function* () {
-            yield* stopShell(st.shell)
-            yield* idleIfCurrent()
-          }),
-          { _tag: "Idle" } as const,
-        ] as const
-      case "ShellThenRun":
-        return [
-          Effect.gen(function* () {
-            yield* stopShell(st.shell)
-            yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
-            yield* idleIfCurrent()
-          }),
-          { _tag: "Idle" } as const,
-        ] as const
-    }
-  }).pipe(Effect.flatten)
+  const cancelMatching = (snapshot?: State<A, E>) =>
+    SynchronizedRef.modify(ref, (st) => {
+      switch (st._tag) {
+        case "Idle":
+          return [Effect.void, st] as const
+        case "Running":
+          if (
+            snapshot &&
+            !((snapshot._tag === "Running" || snapshot._tag === "ShellThenRun") && snapshot.run.id === st.run.id)
+          )
+            return [Effect.void, st] as const
+          return [
+            Effect.gen(function* () {
+              yield* Fiber.interrupt(st.run.fiber)
+              yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
+              yield* idleIfCurrent()
+            }),
+            { _tag: "Idle" } as const,
+          ] as const
+        case "Shell":
+          if (
+            snapshot &&
+            !((snapshot._tag === "Shell" || snapshot._tag === "ShellThenRun") && snapshot.shell.id === st.shell.id)
+          )
+            return [Effect.void, st] as const
+          return [
+            Effect.gen(function* () {
+              yield* stopShell(st.shell)
+              yield* idleIfCurrent()
+            }),
+            { _tag: "Idle" } as const,
+          ] as const
+        case "ShellThenRun":
+          if (snapshot) {
+            if ((snapshot._tag !== "Shell" && snapshot._tag !== "ShellThenRun") || snapshot.shell.id !== st.shell.id)
+              return [Effect.void, st] as const
+            // A run queued after the snapshot belongs to a later request.
+            if (snapshot._tag === "Shell" || snapshot.run.id !== st.run.id)
+              return [stopShell(st.shell).pipe(Effect.andThen(finishShell(st.shell.id))), st] as const
+          }
+          return [
+            Effect.gen(function* () {
+              yield* stopShell(st.shell)
+              yield* Deferred.fail(st.run.done, new Cancelled()).pipe(Effect.asVoid)
+              yield* idleIfCurrent()
+            }),
+            { _tag: "Idle" } as const,
+          ] as const
+      }
+    }).pipe(Effect.flatten)
+
+  const cancel = cancelMatching()
+  const cancelSnapshot = () => cancelMatching(state())
 
   return {
     get state() {
@@ -241,6 +263,7 @@ export const make = <A, E = never>(
     startShell,
     startShellHandle,
     cancel,
+    cancelSnapshot,
   }
 }
 

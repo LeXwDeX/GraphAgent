@@ -72,6 +72,7 @@ import { SessionHooks, type ScopedHooksInput } from "./session-hooks"
 import type { SessionHookEntry } from "./session-hooks"
 import { HookNotification } from "./notifications"
 import { SessionID } from "@/session/schema"
+import { SessionCancellation } from "@/session/cancellation"
 import { HookRewake } from "./rewake"
 import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
@@ -2347,6 +2348,15 @@ function supportsHandler(event: HookEvent, type: HookCommand["type"]): boolean {
 
 interface StopRewakeChain {
   count: number
+  unregister?: () => void
+}
+
+function removeStopChain(state: State, key: string, expected?: StopRewakeChain): boolean {
+  const chain = state.stopRewakeChains.get(key)
+  if (!chain || (expected && chain !== expected)) return false
+  state.stopRewakeChains.delete(key)
+  chain.unregister?.()
+  return true
 }
 
 interface State {
@@ -3189,7 +3199,7 @@ export const layer = Layer.effect(
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             handle.close()
-            stateObj.stopRewakeChains.clear()
+            for (const key of stateObj.stopRewakeChains.keys()) removeStopChain(stateObj, key)
           }),
         )
 
@@ -3444,15 +3454,20 @@ export const layer = Layer.effect(
         )
     })
 
-    const triggerRun = Effect.fn("SettingsHook.trigger")(function* (payload: HookPayload, ctx: TriggerContext) {
+    const triggerRun = Effect.fn("SettingsHook.trigger")(function* (
+      payload: HookPayload,
+      ctx: TriggerContext,
+      owner?: ReturnType<typeof SessionCancellation.request>,
+    ) {
       using _ = log.time("trigger", { event: payload.event, sessionID: ctx.sessionID })
       const s = yield* InstanceState.get(state)
       const result: TriggerResult = { additionalContexts: [], systemMessages: [] }
+      if (owner && !owner.valid()) return result
 
       // Hook rewake prompts skip UserPromptSubmit in SessionPrompt. Every other
       // prompt (including a Goal continuation) begins a new automatic hook chain.
       const clearStopChains = (sessionID: string) => {
-        for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) s.stopRewakeChains.delete(key)
+        for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) removeStopChain(s, key)
       }
       if (payload.event === "UserPromptSubmit" && ctx.sessionID) clearStopChains(ctx.sessionID)
       if (payload.event === "SessionEnd" && ctx.sessionID) clearStopChains(ctx.sessionID)
@@ -3464,8 +3479,21 @@ export const layer = Layer.effect(
         // Stop, StopFailure and SubagentStop have independent chains. Sharing one key leaks stop_hook_active from a
         // main Stop rewake into a later subagent stop.
         const chainKey = `${payload.event}:${ctx.sessionID}`
-        stopChain = s.stopRewakeChains.get(chainKey) ?? { count: 0 }
-        s.stopRewakeChains.set(chainKey, stopChain)
+        stopChain = s.stopRewakeChains.get(chainKey)
+        if (!stopChain) {
+          const chain: StopRewakeChain = { count: 0 }
+          const unregister = owner?.register(
+            () =>
+              Effect.sync(() => {
+                removeStopChain(s, chainKey, chain)
+              }),
+            s.cwd,
+          )
+          if (owner && !unregister) return result
+          chain.unregister = unregister
+          stopChain = chain
+          s.stopRewakeChains.set(chainKey, chain)
+        }
         if (stopChain.count > 0) payload = { ...payload, stopHookActive: true }
       }
 
@@ -4217,7 +4245,24 @@ export const layer = Layer.effect(
       }
       return result
     })
-    const trigger = (payload: HookPayload, ctx: TriggerContext) => triggerRun(payload, ctx).pipe(Effect.scoped)
+    const trigger = (payload: HookPayload, ctx: TriggerContext) => {
+      if (!ctx.sessionID || !["Stop", "StopFailure", "SubagentStop"].includes(payload.event))
+        return triggerRun(payload, ctx).pipe(Effect.scoped)
+      return Effect.suspend(() => {
+        const owner = SessionCancellation.request(ctx.sessionID)
+        return owner.wait.pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              owner.valid()
+                ? triggerRun(payload, ctx, owner)
+                : Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] }),
+            ),
+          ),
+          Effect.ensuring(Effect.sync(() => owner.release())),
+          Effect.scoped,
+        )
+      })
+    }
 
     const list = Effect.fn("SettingsHook.list")(function* () {
       const s = yield* InstanceState.get(state)
@@ -4246,7 +4291,7 @@ export const layer = Layer.effect(
       s.seen.delete(sessionID)
       s.once.delete(sessionID)
       s.onceRunning.delete(sessionID)
-      for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) s.stopRewakeChains.delete(key)
+      for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) removeStopChain(s, key)
       for (const fiber of s.asyncFibers.get(sessionID) ?? []) yield* Fiber.interrupt(fiber)
       s.asyncFibers.delete(sessionID)
       yield* sessionHooks.clear(SessionID.make(String(sessionID)))
@@ -4307,7 +4352,7 @@ export const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       let deleted = false
       for (const key of s.stopRewakeChains.keys())
-        if (key.endsWith(`:${sessionID}`)) deleted = s.stopRewakeChains.delete(key) || deleted
+        if (key.endsWith(`:${sessionID}`)) deleted = removeStopChain(s, key) || deleted
       if (deleted) log.info("stop rewake chain invalidated", { sessionID })
     })
 

@@ -4,7 +4,7 @@ import { HookFileWatch } from "@/hook/file-watch"
 import { expect, spyOn } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -26,7 +26,10 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Plugin } from "@/plugin"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { MessageID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
+import { SessionCancellation } from "@/session/cancellation"
+import { InstanceRef } from "@/effect/instance-ref"
+import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { SessionStatus } from "@/session/status"
@@ -162,6 +165,31 @@ const providerCfg = (url: string) => ({
     },
   },
 })
+
+it.live("followup admission owners are visible across instances", () =>
+  provideTmpdirServer(({ dir }) =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const ctx = yield* InstanceState.context
+      const sessionID = SessionID.create()
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+      const owner = yield* SessionCancellation.admissions
+        .run(sessionID, () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))))
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      expect(yield* prompt.followupAdmissionOwnerCount(sessionID)).toBe(1)
+      const elsewhere = { ...ctx, directory: path.join(dir, "other") }
+      expect(
+        yield* prompt.followupAdmissionOwnerCount(sessionID).pipe(Effect.provideService(InstanceRef, elsewhere)),
+      ).toBe(1)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.await(owner)
+      expect(yield* prompt.followupAdmissionOwnerCount(sessionID)).toBe(0)
+    }),
+  ),
+)
 
 const goalIt = testEffect(
   LayerNode.buildLayer(LayerNode.group([root, GoalLoop.node, Goal.node, SessionStatus.node]), {
