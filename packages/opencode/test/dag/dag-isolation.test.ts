@@ -120,6 +120,22 @@ describe("DagIsolation worktree commits", () => {
     expect(DagIsolation.commitWorktree(a, base, "dag: a")).toEqual({ ok: true })
   })
 
+  it("detects and commits untracked files even when Git hides them", () => {
+    const root = repo()
+    const a = worktree(root, "a")
+    const base = git(root, ["rev-parse", "HEAD"])
+    git(root, ["config", "extensions.worktreeConfig", "true"])
+    git(a, ["config", "--worktree", "status.showUntrackedFiles", "no"])
+    writeFileSync(path.join(a, "only.txt"), "untracked\n")
+    expect(git(a, ["status", "--porcelain"])).toBe("")
+    expect(DagIsolation.touchedPaths(a)).toEqual(["only.txt"])
+    const result = DagIsolation.commitWorktree(a, base, "dag: a")
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.change?.touchedPaths).toEqual(["only.txt"])
+    expect(result.change?.patch).toContain("untracked")
+  })
+
   it("includes paths committed before the completion commit in touched paths and conflicts", () => {
     const root = repo()
     const a = worktree(root, "a")

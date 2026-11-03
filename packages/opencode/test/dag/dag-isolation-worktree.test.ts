@@ -489,6 +489,40 @@ describe("spawn worktree isolation", () => {
     expect(git(directory, ["show", "HEAD:shared.txt"])).toBe("from a")
   })
 
+  it("keeps a worktree when Git hides an untracked post-commit residual", async () => {
+    const target = repo()
+    const hook = path.join(target, ".git", "hooks", "post-commit")
+    git(target, ["config", "core.hooksPath", path.dirname(hook)])
+    git(target, ["config", "extensions.worktreeConfig", "true"])
+    writeFileSync(hook, "#!/bin/sh\nprintf 'residual\\n' > hook.txt\n")
+    chmodSync(hook, 0o755)
+    const harness = makeHarness(target)
+    const input = spawnInput(target, "a", "success", harness)
+    harness.prompt = (_sessionID, directory) => {
+      git(directory, ["config", "--worktree", "status.showUntrackedFiles", "no"])
+      writeFileSync(path.join(directory, "base.txt"), "committed\n")
+    }
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), input)
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toHaveLength(1)
+    expect(harness.failed[0]?.reason).toContain("hook.txt")
+    expect(harness.failed[0]?.worktree?.state).toBe("kept")
+    expect(harness.removals).toEqual([])
+    const directory = harness.failed[0]?.worktree?.directory ?? ""
+    expect(readFileSync(path.join(directory, "hook.txt"), "utf8")).toBe("residual\n")
+    expect(git(directory, ["show", "HEAD:base.txt"])).toBe("committed")
+    expect(git(directory, ["status", "--porcelain"])).toBe("")
+    expect(git(directory, ["status", "--porcelain", "--untracked-files=all"])).toBe("?? hook.txt")
+  })
+
   it("removes a worktree whose nodeStarted was rejected before any row referenced it", async () => {
     const target = repo()
     const harness = makeHarness(target)
