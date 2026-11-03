@@ -689,6 +689,50 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("omits URL and userinfo identifiers from failure diagnostics", () =>
+    Effect.gen(function* () {
+      const cases = [
+        {
+          providerID: "https://user:secret@example.test/provider",
+          modelID: "azure/gpt-4o",
+          expectedProviderID: undefined,
+          expectedModelID: "azure/gpt-4o",
+        },
+        {
+          providerID: "openrouter:anthropic/claude-3.5",
+          modelID: "https://example.test/model",
+          expectedProviderID: "openrouter:anthropic/claude-3.5",
+          expectedModelID: undefined,
+        },
+        {
+          providerID: "user:secret@example.test",
+          modelID: "gpt-4o",
+          expectedProviderID: undefined,
+          expectedModelID: "gpt-4o",
+        },
+        {
+          providerID: "openrouter",
+          modelID: "user:secret@example.test/model",
+          expectedProviderID: "openrouter",
+          expectedModelID: undefined,
+        },
+      ]
+      for (const { providerID, modelID, expectedProviderID, expectedModelID } of cases) {
+        const logs: Array<ReturnType<typeof Logger.formatStructured.log>> = []
+        const logger = Logger.map(Logger.formatStructured, (entry) => logs.push(entry))
+        yield* SessionExecutionLocal.drain(sessionID, (onModelResolved) =>
+          Effect.sync(() => onModelResolved({ providerID, modelID })).pipe(Effect.andThen(Effect.die("test failure"))),
+        ).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])), Effect.exit)
+        expect(logs).toHaveLength(1)
+        expect(logs[0]?.message).toMatchObject([
+          "Failed to drain Session",
+          { sessionID, providerID: expectedProviderID, modelID: expectedModelID },
+        ])
+        expect(JSON.stringify(logs)).not.toContain("secret")
+      }
+    }),
+  )
+
   it.effect("advertises and executes a globally attached application tool", () =>
     Effect.gen(function* () {
       yield* setup

@@ -14,7 +14,7 @@ import { SessionStore } from "../store"
 import { SessionExecution } from "../execution"
 
 const identity = (value: string | undefined) =>
-  value && /^[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,127}$/.test(value) ? value : undefined
+  value && !value.includes("://") && /^[a-zA-Z0-9][a-zA-Z0-9._:/+-]{0,127}$/.test(value) ? value : undefined
 
 const llmCategories = new Set([
   "InvalidRequest",
