@@ -6,6 +6,8 @@ import { ShellID } from "./id"
 
 const PS = new Set(["powershell", "pwsh"])
 const CMD = new Set(["cmd"])
+const FILTER_GUIDANCE =
+  "When only part of a large output matters, filter at the command (for example, pipe through grep/awk/jq or use the tool's native filter) instead of dumping everything and paging afterwards; paging the saved file is the fallback."
 
 /** Inline lines kept from the end of a long command; the rest lives in the output file. */
 export const SHELL_TAIL_LINES = 20
@@ -104,6 +106,7 @@ Usage notes:
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
   - If the output exceeds ${SHELL_TAIL_LINES} lines or ${limits.maxBytes} bytes, the result keeps the last lines that fit ${limits.maxBytes} bytes (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
+  - ${FILTER_GUIDANCE}
 
   - Avoid using Bash with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT find or ls)
@@ -157,6 +160,7 @@ Usage notes:
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
   - If the output exceeds ${SHELL_TAIL_LINES} lines or ${limits.maxBytes} bytes, the result keeps the last lines that fit ${limits.maxBytes} bytes (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output is already captured for precise paging and searching.
+  - ${FILTER_GUIDANCE}
 
   - Avoid using Shell with PowerShell file/content cmdlets unless explicitly instructed or when these cmdlets are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT Get-ChildItem)
@@ -207,6 +211,7 @@ Usage notes:
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
   - If a command produces no output for ${silenceWarnMs}ms, a warn-only inactivity warning is emitted. For commands that legitimately stay silent (watchers, listeners, waits), pass \`expectedSilent: true\` to opt out.
   - If the output exceeds ${SHELL_TAIL_LINES} lines or ${limits.maxBytes} bytes, the result keeps the last lines that fit ${limits.maxBytes} bytes (at most ${SHELL_TAIL_LINES}) and the complete output is saved to a file. Its footer gives the exact calls to page it (page=-1 is the last page; follow its byte-cap note when the last page is not the whole end; page=-2 is the page before when one exists) or search it with grep context=10. Do NOT use \`more\` or other pagination commands to limit output; the full output is already captured for precise paging and searching.
+  - ${FILTER_GUIDANCE}
 
   - Avoid using Shell with cmd.exe file/content commands unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT dir /s)

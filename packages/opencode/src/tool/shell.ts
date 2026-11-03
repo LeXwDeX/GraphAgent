@@ -233,6 +233,13 @@ function preview(text: string) {
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
 }
 
+function pageRanges(totalLines: number, pages: number) {
+  const range = (page: number) =>
+    `${(page - 1) * Truncate.PAGE_LINES + 1}-${Math.min(page * Truncate.PAGE_LINES, totalLines)}`
+  if (pages > 4) return `${range(1)}, ${range(2)}, ... ${range(pages)}`
+  return Array.from({ length: pages }, (_, i) => range(i + 1)).join(", ")
+}
+
 /**
  * The complete stream lives in the tool-output file even when the inline
  * preview keeps only its tail. The footer names the file, its size, and the
@@ -271,10 +278,11 @@ export function outputFooter(
     "--------- full output ---------",
     `path: ${file}`,
     `size: ${Truncate.formatSize(totalBytes)} (${totalBytes} bytes), ${totalLines} lines, ${pages} pages of ${Truncate.PAGE_LINES} lines`,
+    ...(pages > 1 ? [`pages: ${pageRanges(totalLines, pages)}`] : []),
     `start:  read filePath="${file}"`,
     `last:   read filePath="${file}" page=-1   (last page; follow its notice if the read byte cap stops early)`,
     ...(pages > 1 ? [`back:   read filePath="${file}" page=-2${further}`] : []),
-    `search: grep pattern="<regex>" path="${file}" context=10`,
+    `search: grep pattern="<regex>" path="${file}" context=10   (grep reports the match count; narrow the pattern instead of paging blindly)`,
   ].join("\n")
 }
 

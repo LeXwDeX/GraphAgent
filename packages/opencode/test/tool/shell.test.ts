@@ -7,7 +7,7 @@ import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
 import { outputFooter, ShellTool, trimPartialHead } from "../../src/tool/shell"
-import { SHELL_TAIL_LINES } from "../../src/tool/shell/prompt"
+import { SHELL_TAIL_LINES, ShellPrompt } from "../../src/tool/shell/prompt"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -1292,6 +1292,23 @@ describe("tool.shell silence guard", () => {
 })
 
 describe("tool.shell truncation", () => {
+  test("recommends filtering large output in each shell description", () => {
+    for (const name of ["bash", "powershell", "pwsh", "cmd"]) {
+      const { description } = ShellPrompt.render(name, "win32", { maxLines: 200, maxBytes: 50_000 }, 120_000, 300_000)
+      expect(description).toContain("When only part of a large output matters, filter at the command")
+    }
+  })
+
+  test("indexes page ranges and explains the search match count", () => {
+    expect(outputFooter("/tmp/out", 25, 100, 20)).not.toContain("\npages:")
+    expect(outputFooter("/tmp/out", 201, 1000, 20)).toContain("\npages: 1-200, 201-201\n")
+    expect(outputFooter("/tmp/out", 600, 1000, 20)).toContain("\npages: 1-200, 201-400, 401-600\n")
+    expect(outputFooter("/tmp/out", 650, 1000, 20)).toContain("\npages: 1-200, 201-400, 401-600, 601-650\n")
+    expect(outputFooter("/tmp/out", 1000, 1000, 20)).toContain("\npages: 1-200, 201-400, ... 801-1000\n")
+    expect(outputFooter("/tmp/out", 1050, 1000, 20)).toContain("\npages: 1-200, 201-400, ... 1001-1050\n")
+    expect(outputFooter("/tmp/out", 25, 100, 20)).toContain("grep reports the match count")
+  })
+
   test("advertises only negative pages that exist", () => {
     expect(outputFooter("/tmp/out", 450, 4500, 20)).toContain(
       `back:   read filePath="/tmp/out" page=-2   (page=-3)`,
@@ -1331,8 +1348,10 @@ describe("tool.shell truncation", () => {
         // 100 lines fit one page, so there is no page before the last one.
         expect(result.output).not.toContain(`back:`)
         expect(result.output).not.toContain(`page=-2`)
+        expect(result.output).not.toContain("\npages:")
         expect(result.output).toContain(`grep pattern="<regex>"`)
         expect(result.output).toContain(`context=10`)
+        expect(result.output).toContain("grep reports the match count")
 
         const filepath = (result.metadata as { outputPath?: string }).outputPath
         expect(filepath).toBeTruthy()
@@ -1493,6 +1512,7 @@ describe("tool.shell truncation", () => {
         expect(result.output).toContain(`[truncated: showing the last ${SHELL_TAIL_LINES} of ${lineCount} lines`)
         expect(result.output).toContain(`back:   read filePath=`)
         expect(result.output).toContain("page=-2")
+        expect(result.output).toContain("\npages: 1-200, 201-400, 401-450\n")
         // 450 lines make exactly three pages; page=-4 does not exist.
         expect(result.output).toContain("(page=-3)")
         expect(result.output).not.toContain("page=-4")
@@ -1507,6 +1527,17 @@ describe("tool.shell truncation", () => {
         expect(result.output).toContain(
           `size: ${Truncate.formatSize(bytes)} (${bytes} bytes), ${lines} lines, ${pages} pages of ${Truncate.PAGE_LINES} lines`,
         )
+      }),
+    ),
+  )
+
+  it.live("abbreviates the page index for large output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: fill("lines", 1000) })
+        mustTruncate(result)
+        expect(result.output).toContain("\npages: 1-200, 201-400, ... 801-1000\n")
       }),
     ),
   )
