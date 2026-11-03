@@ -4,6 +4,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DagIsolation } from "@/dag/isolation"
+import { recoverIsolatedWorktree } from "@/dag/runtime/worktree-completion"
+import { Worktree } from "@/worktree"
+import { Effect, Layer } from "effect"
+import { makeNodeRow } from "./fixtures"
 
 const roots: string[] = []
 
@@ -50,6 +54,53 @@ describe("DagIsolation porcelain parsing", () => {
 })
 
 describe("DagIsolation worktree commits", () => {
+  it("fails completion when an active worktree is missing", () => {
+    const root = repo()
+    const directory = path.join(root, "missing")
+    const result = DagIsolation.completeWorktree({
+      worktree: { directory, state: "active", touchedPaths: [], conflictsWith: [] },
+      reportRoot: root,
+      dagID: "dag_1",
+      nodeID: "node-1",
+      message: "dag: node-1",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toContain(directory)
+  })
+
+  for (const state of ["active", "removed", "kept"] as const)
+    it(`recovers a missing worktree in ${state} state`, async () => {
+      const root = repo()
+      const directory = path.join(root, "missing")
+      let removals = 0
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const worktreeSvc = yield* Worktree.Service
+          return yield* recoverIsolatedWorktree({
+            node: makeNodeRow({ worktreeDirectory: directory, worktreeState: state, touchedPaths: ["saved.txt"] }),
+            dagID: "dag_1",
+            ownerDirectory: root,
+            worktreeSvc,
+            remove: () =>
+              Effect.sync(() => {
+                removals++
+                return true
+              }),
+          })
+        }).pipe(Effect.provide(Layer.mock(Worktree.Service, {}))),
+      )
+      if (state === "active") {
+        expect(result.ok).toBe(false)
+        if (!result.ok) expect(result.reason).toContain(directory)
+      } else {
+        expect(result.ok).toBe(true)
+        if (result.ok) {
+          expect(result.worktree?.state).toBe(state)
+          expect(result.touchedPaths).toEqual(["saved.txt"])
+        }
+      }
+      expect(removals).toBe(0)
+    })
   it("creates two commits and patches for parallel edits of the same file and reports the conflict", () => {
     const root = repo()
     const a = worktree(root, "a")

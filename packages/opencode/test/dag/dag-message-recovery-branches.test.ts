@@ -15,6 +15,7 @@ import { DagStore } from "@opencode-ai/core/dag/store"
 import { continueRecoveredMessageNode } from "@/dag/runtime/recovery"
 import { hasCaptureSlot } from "@/dag/runtime/capture"
 import { SessionPrompt } from "@/session/prompt"
+import { Worktree } from "@/worktree"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -66,6 +67,7 @@ function harness(
     beforeFailure?: (h: ReturnType<typeof state>, attempt?: NodeExecutionAttempt) => void
     afterStale?: (h: ReturnType<typeof state>) => void
     afterLoop?: (h: ReturnType<typeof state>) => void
+    worktreeRemoval?: (directory: string | undefined) => void
   } = {},
 ) {
   const h = state(input)
@@ -238,13 +240,28 @@ function harness(
         } satisfies InstanceContext),
       ),
   })
+  const worktree = Layer.mock(Worktree.Service, {
+    remove: () =>
+      Effect.gen(function* () {
+        const instance = yield* InstanceRef
+        input.worktreeRemoval?.(instance?.directory)
+        return false
+      }),
+  })
   const execution = (
     config?: Config,
     directory?: string,
     authorizeSource?: Parameters<typeof continueRecoveredMessageNode>[4],
     executionDirectory?: Parameters<typeof continueRecoveredMessageNode>[5],
   ) => {
-    const layers = Layer.mergeAll(dag, prompt, lifecycle, ...(input.noMessages ? [] : [messages]), instanceStore)
+    const layers = Layer.mergeAll(
+      dag,
+      prompt,
+      lifecycle,
+      ...(input.noMessages ? [] : [messages]),
+      instanceStore,
+      worktree,
+    )
     const effect = continueRecoveredMessageNode(
       "dag_recovery",
       "n",
@@ -353,6 +370,37 @@ function state(input: {
 const structured: Config = { nodes: [{ id: "n", output_schema: { type: ["string", "null"] } }] }
 
 describe("message recovery continuation admission and settlement branches", () => {
+  test("runs a recovered isolated attempt in its durable worktree", async () => {
+    await using owner = await tmpdir()
+    const worktree = path.join(owner.path, "worktree")
+    const { h, run } = harness({
+      workflow: { directory: owner.path },
+      node: { directory: worktree, worktreeDirectory: worktree, worktreeState: "active" },
+    })
+    await run(undefined, owner.path, undefined, owner.path)
+    expect(h.promptDirectories).toEqual([worktree])
+    expect(h.callers).toEqual([worktree])
+  })
+  test("finishes an isolated attempt from the owner instance and stores its patch there", async () => {
+    await using owner = await tmpdir({ git: true })
+    const worktree = path.join(owner.path, "worktree")
+    const baseHead = (await $`git rev-parse HEAD`.cwd(owner.path).text()).trim()
+    await $`git worktree add --detach ${worktree} HEAD`.cwd(owner.path).quiet()
+    await fs.writeFile(path.join(worktree, "change.txt"), "recovered change\n")
+    const removals: (string | undefined)[] = []
+    const { h, run } = harness({
+      workflow: { directory: owner.path },
+      node: { directory: worktree, worktreeDirectory: worktree, worktreeState: "active", baseHead },
+      worktreeRemoval: (directory) => removals.push(directory),
+    })
+    await run(undefined, owner.path, undefined, owner.path)
+    expect(h.promptDirectories).toEqual([worktree])
+    expect(removals).toEqual([owner.path])
+    expect(await fs.readFile(path.join(owner.path, ".opencode/workflow-reports/dag_recovery/n.patch"), "utf8")).toContain(
+      "recovered change",
+    )
+    expect(h.completed).toHaveLength(1)
+  })
   for (const [name, input] of [
     ["absent mailbox service", { noMessages: true }],
     ["missing node", { noNode: true }],

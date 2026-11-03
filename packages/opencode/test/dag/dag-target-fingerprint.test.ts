@@ -104,6 +104,29 @@ function startReview(directory: string) {
 }
 
 describe("fingerprintTarget", () => {
+  it("treats unavailable fingerprint evidence as stale while preserving legacy missing values", () => {
+    const git = { kind: "git", head: "head", diff: "clean", untracked: "clean", value: "value" } as const
+    const unavailable = { ...git, diff: "unavailable" }
+    const unavailableUntracked = { ...git, untracked: "unavailable" }
+    const none = { kind: "none" } as const
+    expect(DagLocation.sameFingerprint(unavailable, unavailable)).toBe(false)
+    expect(DagLocation.sameFingerprint(unavailable, git)).toBe(false)
+    expect(DagLocation.sameFingerprint(git, unavailable)).toBe(false)
+    expect(DagLocation.sameFingerprint(unavailable, none)).toBe(false)
+    expect(DagLocation.sameFingerprint(none, unavailable)).toBe(false)
+    expect(DagLocation.sameFingerprint(unavailableUntracked, unavailableUntracked)).toBe(false)
+    expect(DagLocation.sameFingerprint(unavailableUntracked, git)).toBe(false)
+    expect(DagLocation.sameFingerprint(git, unavailableUntracked)).toBe(false)
+    expect(DagLocation.sameFingerprint(unavailableUntracked, none)).toBe(false)
+    expect(DagLocation.sameFingerprint(none, unavailableUntracked)).toBe(false)
+    for (const missing of [null, undefined]) {
+      for (const value of [git, unavailable, unavailableUntracked, none, null, undefined]) {
+        expect(DagLocation.sameFingerprint(missing, value)).toBe(true)
+        expect(DagLocation.sameFingerprint(value, missing)).toBe(true)
+      }
+    }
+    expect(DagLocation.sameFingerprint(git, { ...git })).toBe(true)
+  })
   it("keeps a clean git target stable", async () => {
     await using tmp = await tmpdir({ git: true })
     const first = DagLocation.fingerprintTarget(tmp.path)

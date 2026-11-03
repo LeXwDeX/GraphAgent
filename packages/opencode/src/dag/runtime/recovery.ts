@@ -693,8 +693,10 @@ export function continueRecoveredMessageNode(
     const childSessionID = node.childSessionId
     // Workflow ownership remains with the parent, while the mailbox belongs to the child session.
     const ownerDirectory = workflow.directory ?? location.directory
-    const boundExecutionDirectory =
+    const ownerExecutionDirectory =
       executionDirectory ?? nodeConfig?.workspace ?? workflow.executionDirectory ?? ownerDirectory
+    const boundExecutionDirectory =
+      node.directory && node.directory !== ownerDirectory ? node.directory : ownerExecutionDirectory
     const sessions = yield* Effect.serviceOption(Session.Service)
     const session = Option.isSome(sessions)
       ? yield* sessions.value.get(SessionID.make(childSessionID)).pipe(
@@ -730,10 +732,10 @@ export function continueRecoveredMessageNode(
         return false
       }
       if (
-        DagLocation.canonicalDirectory(resolved.directory) !== DagLocation.canonicalDirectory(boundExecutionDirectory)
+          DagLocation.canonicalDirectory(resolved.directory) !== DagLocation.canonicalDirectory(ownerExecutionDirectory)
       ) {
         yield* failExecution(
-          `workspace_invalid: node "${nodeID}" is bound to "${resolved.directory}", but recovery resolved "${boundExecutionDirectory}".`,
+          `workspace_invalid: node "${nodeID}" is bound to "${resolved.directory}", but recovery resolved "${ownerExecutionDirectory}".`,
         )
         return false
       }
@@ -807,9 +809,12 @@ export function continueRecoveredMessageNode(
         const completion = yield* recoverIsolatedWorktree({
           node: row,
           dagID,
-          ownerDirectory: boundExecutionDirectory,
+          ownerDirectory: ownerExecutionDirectory,
           worktreeSvc,
-          remove: (directory) => (worktreeSvc ? worktreeSvc.remove({ directory }) : Effect.succeed(false)),
+          remove: (directory) => {
+            const remove = worktreeSvc ? worktreeSvc.remove({ directory }) : Effect.succeed(false)
+            return Option.isSome(ambient) ? remove.pipe(Effect.provideService(InstanceRef, ambient.value)) : remove
+          },
         })
         if (!completion.ok)
           return yield* failNode(row, `worktree completion failed: ${completion.reason}`, "exec_failed", attempt)

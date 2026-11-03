@@ -229,11 +229,14 @@ export function completeWorktree(input: {
   nodeID: string
   message: string
 }): WorktreeCompletionResult {
-  if (!existsSync(input.worktree.directory))
+  if (!existsSync(input.worktree.directory)) {
+    if (input.worktree.state === "active")
+      return { ok: false, reason: `active worktree directory is missing: ${input.worktree.directory}` }
     return {
       ok: true,
       completion: { worktree: { ...input.worktree, state: "removed" }, touchedPaths: [] },
     }
+  }
   const commit = commitWorktree(input.worktree.directory, input.worktree.baseHead ?? "", input.message)
   if (!commit.ok) return commit
   if (!commit.change)
