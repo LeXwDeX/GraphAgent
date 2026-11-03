@@ -3,11 +3,22 @@
 // methods this spawn path calls.
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Effect, Fiber, Layer, Semaphore } from "effect"
+import { DateTime, Effect, Fiber, Layer, Semaphore } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Database } from "@opencode-ai/core/database/database"
+import { DagProjector } from "@opencode-ai/core/dag/projector"
+import { DagStore } from "@opencode-ai/core/dag/store"
+import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
+import { EventV2 } from "@opencode-ai/core/event"
+import { Project } from "@opencode-ai/core/project"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
@@ -17,9 +28,12 @@ import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef } from "@/effect/instance-ref"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { DagIsolation } from "@/dag/isolation"
+import { Provider } from "@/provider/provider"
+import { MessageID, SessionID } from "@/session/schema"
+import { Truncate } from "@/tool/truncate"
+import { WorkflowTool } from "@/tool/workflow"
 import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
-import type { DagStore } from "@opencode-ai/core/dag/store"
 
 const roots: string[] = []
 
@@ -52,11 +66,14 @@ interface Completion {
 interface Harness {
   layer: Layer.Layer<never>
   completed: Completion[]
-  failed: { nodeID: string; worktree?: { state: string; directory: string } }[]
+  failed: { nodeID: string; reason: string; worktree?: DagEvent.NodeWorktree }[]
   removals: string[]
   directories: Map<string, string>
   worktrees: string[]
   fail: boolean
+  failSessionCreate: boolean
+  failRemoval: boolean
+  onFailure: (reason: string, worktree: DagEvent.NodeWorktree | undefined) => Effect.Effect<void>
   rejectNodeStarted: boolean
   prompt: (sessionID: string, directory: string) => void
 }
@@ -91,6 +108,9 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
     directories: new Map(),
     worktrees: [],
     fail: mode === "failure",
+    failSessionCreate: false,
+    failRemoval: false,
+    onFailure: () => Effect.void,
     rejectNodeStarted: false,
     prompt: () => {},
   }
@@ -150,9 +170,10 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
         }),
     ),
     nodeFailed: Effect.fn("s")(
-      (_dagID: string, nodeID: string, _reason: string, _trigger: string, _attempt?: unknown, _errorClass?: unknown, worktree?: Completion["worktree"]) =>
-        Effect.sync(() => {
-          harness.failed.push({ nodeID, ...(worktree ? { worktree } : {}) })
+      (_dagID: string, nodeID: string, reason: string, _trigger: string, _attempt?: unknown, _errorClass?: unknown, worktree?: DagEvent.NodeWorktree) =>
+        Effect.gen(function* () {
+          harness.failed.push({ nodeID, reason, ...(worktree ? { worktree } : {}) })
+          yield* harness.onFailure(reason, worktree)
         }),
     ),
     failUnrecoverable: Effect.fn("s")(() => Effect.succeed("failed" as const)),
@@ -183,6 +204,7 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
       } as never),
     create: (input?: { directory?: string }) =>
       Effect.sync(() => {
+        if (harness.failSessionCreate) throw new Error("session create failed")
         const id = `ses_child_${harness.directories.size + 1}`
         const directory = input?.directory ?? target
         harness.directories.set(id, directory)
@@ -216,6 +238,8 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
         // Mirror Worktree.removeLocked: the current instance must never be the
         // worktree being removed.
         const current = yield* InstanceRef
+        if (harness.failRemoval)
+          return yield* Effect.fail(new Worktree.RemoveFailedError({ message: "cleanup failed" }))
         if (current && path.resolve(current.directory) === path.resolve(input.directory))
           return yield* Effect.fail(new Worktree.RemoveFailedError({ message: "Cannot remove the primary or current worktree" }))
         execFileSync("git", ["-C", target, "worktree", "remove", "--force", input.directory])
@@ -354,6 +378,115 @@ describe("spawn worktree isolation", () => {
     expect(harness.failed[0]?.worktree?.state).toBe("kept")
     expect(harness.removals).toEqual([])
     expect(existsSync(harness.failed[0]?.worktree?.directory ?? "")).toBe(true)
+  })
+
+  it("shows both attempts when replacement session creation and cleanup fail", async () => {
+    const target = repo()
+    const first = mkdtempSync(path.join(tmpdir(), "dag-isolation-first-"))
+    roots.push(first)
+    rmSync(first, { recursive: true, force: true })
+    git(target, ["worktree", "add", "--detach", first, "HEAD"])
+    const harness = makeHarness(target)
+    harness.failSessionCreate = true
+    harness.failRemoval = true
+    const database = Database.layerFromPath(":memory:")
+    const eventsLayer = EventV2.layer.pipe(Layer.provide(database))
+    const storeLayer = DagStore.layer.pipe(Layer.provide(database))
+    const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, eventsLayer)))
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          const events = yield* EventV2.Service
+          const store = yield* DagStore.Service
+          yield* db.insert(ProjectTable).values({
+            id: Project.ID.make("project-1"), worktree: AbsolutePath.make(target), sandboxes: [],
+          }).run().pipe(Effect.orDie)
+          yield* db.insert(SessionTable).values({
+            id: SessionV2.ID.make("ses_parent"), project_id: Project.ID.make("project-1"), slug: "parent",
+            directory: AbsolutePath.make(target), title: "Parent", version: "test",
+          }).run().pipe(Effect.orDie)
+          yield* db.insert(WorkflowTable).values({
+            id: "dag_1", project_id: Project.ID.make("project-1"), session_id: SessionV2.ID.make("ses_parent"),
+            title: "Isolation", status: "running", config: "{}", seq: 0,
+          }).run().pipe(Effect.orDie)
+          yield* db.insert(WorkflowNodeTable).values({
+            id: "a", workflow_id: "dag_1", name: "Node", worker_type: "build", status: "pending",
+            required: true, depends_on: [], seq: 0,
+          }).run().pipe(Effect.orDie)
+          const dagID = DagEvent.DagID.make("dag_1")
+          const nodeID = DagEvent.NodeID.make("a")
+          yield* events.publish(DagEvent.NodeStarted, {
+            dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), timestamp: yield* DateTime.now,
+            worktree: { directory: first, touchedPaths: [], state: "active", conflictsWith: [] },
+          })
+          yield* events.publish(DagEvent.NodeRestarted, {
+            dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), timestamp: yield* DateTime.now,
+          })
+          harness.onFailure = (reason, worktree) => Effect.gen(function* () {
+            yield* events.publish(DagEvent.NodeFailed, {
+              dagID, nodeID, reason, trigger: "exec_failed", worktree, timestamp: yield* DateTime.now,
+            })
+          })
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          yield* Fiber.await(result.fiber)
+          const status = yield* Effect.gen(function* () {
+            const info = yield* WorkflowTool
+            const workflow = yield* info.init()
+            return yield* workflow.execute({ params: { action: "status", workflow_id: Dag.ID.make("dag_1") } }, {
+              sessionID: SessionID.make("ses_parent"), messageID: MessageID.ascending(), agent: "build",
+              abort: new AbortController().signal, messages: [], metadata: () => Effect.void, ask: () => Effect.void,
+            })
+          }).pipe(Effect.provide(Layer.mergeAll(
+            Layer.mock(Dag.Service, { store }),
+            Layer.mock(Provider.Service, {}),
+            Layer.mock(Truncate.Service, { output: (content) => Effect.succeed({ content, truncated: false }) }),
+          )))
+          const view = JSON.parse(status.output)
+          expect(view.worktrees).toEqual(expect.arrayContaining([
+            expect.objectContaining({ directory: first, state: "active", retired: true }),
+            expect.objectContaining({ directory: harness.worktrees[0], state: "kept" }),
+          ]))
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(harness.layer, database, eventsLayer, storeLayer, projector))) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toHaveLength(1)
+    expect(harness.failed[0]?.reason).toContain("session create failed")
+    expect(harness.failed[0]?.worktree).toEqual({
+      directory: harness.worktrees[0], branch: "opencode/dag-dag_1-a", baseHead: git(target, ["rev-parse", "HEAD"]),
+      touchedPaths: [], state: "kept", conflictsWith: [],
+    })
+    expect(existsSync(harness.worktrees[0])).toBe(true)
+  })
+
+  it("keeps a worktree when a successful commit hook leaves residual changes", async () => {
+    const target = repo()
+    const hook = path.join(target, ".git", "hooks", "pre-commit")
+    git(target, ["config", "core.hooksPath", path.dirname(hook)])
+    writeFileSync(hook, "#!/bin/sh\nprintf 'residual\\n' > hook.txt\nprintf 'hook change\\n' >> base.txt\n")
+    chmodSync(hook, 0o755)
+    const harness = makeHarness(target)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toHaveLength(1)
+    expect(harness.failed[0]?.reason).toContain("hook.txt")
+    expect(harness.failed[0]?.reason).toContain("base.txt")
+    expect(harness.failed[0]?.worktree?.state).toBe("kept")
+    expect(harness.removals).toEqual([])
+    const directory = harness.failed[0]?.worktree?.directory ?? ""
+    expect(readFileSync(path.join(directory, "hook.txt"), "utf8")).toBe("residual\n")
+    expect(readFileSync(path.join(directory, "base.txt"), "utf8")).toContain("hook change")
+    expect(git(directory, ["show", "HEAD:shared.txt"])).toBe("from a")
   })
 
   it("removes a worktree whose nodeStarted was rejected before any row referenced it", async () => {

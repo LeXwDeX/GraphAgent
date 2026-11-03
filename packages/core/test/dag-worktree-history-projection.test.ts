@@ -174,4 +174,79 @@ describe("DAG worktree history projection (#946)", () => {
       }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
     )
   })
+
+  test("a failed replacement archives the previous pointer and ignores stale failures", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed()
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+        const dagID = DagEvent.DagID.make("dag_history")
+        const nodeID = DagEvent.NodeID.make("node")
+        const first: DagEvent.NodeWorktree = {
+          directory: "/repo/.worktrees/first",
+          branch: "opencode/first",
+          baseHead: "first-base",
+          touchedPaths: [],
+          state: "active",
+          conflictsWith: [],
+        }
+        const second: DagEvent.NodeWorktree = {
+          directory: "/repo/.worktrees/second",
+          branch: "opencode/second",
+          baseHead: "second-base",
+          touchedPaths: [],
+          state: "kept",
+          conflictsWith: [],
+        }
+        yield* events.publish(DagEvent.NodeStarted, {
+          dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"),
+          baseHead: first.baseHead, worktree: first, timestamp: yield* DateTime.now,
+        })
+        yield* events.publish(DagEvent.NodeRestarted, {
+          dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), timestamp: yield* DateTime.now,
+        })
+        const failure = {
+          dagID, nodeID, reason: "session create and cleanup failed", trigger: "exec_failed" as const,
+          worktree: second, timestamp: yield* DateTime.now,
+        }
+        yield* events.publish(DagEvent.NodeFailed, failure)
+        yield* events.publish(DagEvent.NodeFailed, failure)
+        yield* events.publish(DagEvent.NodeFailed, {
+          ...failure, worktree: { ...second, directory: "/repo/.worktrees/stale" },
+        })
+
+        expect(yield* store.getNode("dag_history", "node")).toEqual(expect.objectContaining({
+          status: "failed",
+          worktreeDirectory: second.directory,
+          worktreeState: "kept",
+          baseHead: "second-base",
+          worktreeHistory: [first],
+        }))
+      }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
+    )
+  })
+
+  test("a failure of the current worktree does not archive the same pointer", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed()
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+        const dagID = DagEvent.DagID.make("dag_history")
+        const nodeID = DagEvent.NodeID.make("node")
+        const worktree: DagEvent.NodeWorktree = {
+          directory: "/repo/.worktrees/same", touchedPaths: [], state: "active", conflictsWith: [],
+        }
+        yield* events.publish(DagEvent.NodeStarted, {
+          dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), worktree, timestamp: yield* DateTime.now,
+        })
+        yield* events.publish(DagEvent.NodeFailed, {
+          dagID, nodeID, reason: "failed", trigger: "exec_failed", worktree: { ...worktree, state: "kept" },
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getNode("dag_history", "node"))?.worktreeHistory ?? []).toEqual([])
+      }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
+    )
+  })
 })

@@ -159,6 +159,11 @@ export function commitWorktree(directory: string, baseHead: string, message: str
   if (!added.ok) return { ok: false, reason: `git add failed: ${added.reason}` }
   const committed = git(directory, ["commit", "-m", message])
   if (!committed.ok) return { ok: false, reason: `git commit failed: ${committed.reason}` }
+  const afterCommit = git(directory, ["status", "--porcelain"])
+  if (!afterCommit.ok) return { ok: false, reason: `git status after commit failed: ${afterCommit.reason}` }
+  const touchedAfterCommit = mergePaths(touched, parsePorcelain(afterCommit.text))
+  if (afterCommit.text.length > 0)
+    return { ok: false, reason: `git commit left uncommitted changes; touched paths: ${touchedAfterCommit.join(", ")}` }
   const head = git(directory, ["rev-parse", "HEAD"])
   if (!head.ok) return { ok: false, reason: `git rev-parse failed: ${head.reason}` }
   // #946: a child may have committed earlier in this attempt. The completion
@@ -168,7 +173,7 @@ export function commitWorktree(directory: string, baseHead: string, message: str
     ? git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"])
     : undefined
   if (names && !names.ok) return { ok: false, reason: `git diff --name-only failed: ${names.reason}` }
-  const touchedPaths = names ? mergePaths(touched, parseNameList(names.text)) : touched
+  const touchedPaths = names ? mergePaths(touchedAfterCommit, parseNameList(names.text)) : touchedAfterCommit
   const patch = git(directory, ["diff", "--binary", baseHead, "HEAD"])
   if (!patch.ok) return { ok: false, reason: `git diff failed: ${patch.reason}` }
   return {
