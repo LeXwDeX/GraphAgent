@@ -1276,6 +1276,13 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "description": "Optional variable-to-source map, e.g. { resultA: "node-a", count: "node-b.output.count" }. Omit to expose each direct dependency under its node ID",
                             "type": "object",
                           },
+                          "isolation": {
+                            "description": "Run this writer-capable node in a fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Review and verify workers cannot isolate.",
+                            "enum": [
+                              "worktree",
+                            ],
+                            "type": "string",
+                          },
                           "name": {
                             "description": "Human-readable node name",
                             "type": "string",

@@ -148,7 +148,9 @@ describe("reconcileWorkflow", () => {
     const owner = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-wt-owner-"))
     tmpRoots.push(owner)
     await initGitFixture(owner)
-    await $`git -C ${owner} -c user.email=test@example.com -c user.name=Test commit --allow-empty -q -m root`.quiet()
+    await $`git -C ${owner} config user.email test@example.com`.quiet()
+    await $`git -C ${owner} config user.name Test`.quiet()
+    await $`git -C ${owner} commit --allow-empty -q -m root`.quiet()
     const worktree = path.join(os.tmpdir(), `dag-recovery-wt-${Math.random().toString(36).slice(2)}`)
     tmpRoots.push(worktree)
     await $`git -C ${owner} worktree add --detach ${worktree} HEAD`.quiet()
@@ -196,6 +198,7 @@ describe("reconcileWorkflow", () => {
       ).pipe(Effect.provide(Layer.mergeAll(makeDagLayer(nodes, events, undefined, undefined, undefined, workflow), worktreeLayer, instanceStoreLayer))),
     )
 
+    expect(events).toEqual([expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" })])
     const completed = events.find((event) => event.type === "nodeCompleted")
     expect(completed?.worktree?.state).toBe("removed")
     expect(completed?.worktree?.commit).toBeDefined()
