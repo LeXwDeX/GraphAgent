@@ -331,62 +331,97 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeStarted, (event) => {
-      // #949: snapshot the attempt's execution location without a bare
-      // `directory:` key inside `.set(...)`: the DAG-LOC-01 write-once static
-      // contract reserves that spelling for the workflow stamp.
-      const executionLocation = {
-        directory: event.data.worktree?.directory ?? event.data.directory ?? null,
-        base_head: event.data.baseHead ?? null,
-        // #944: a fresh attempt clears the previous completion verdict.
-        target_fingerprint: event.data.targetFingerprint ?? null,
-        stale_target: false,
-        // #946: a started isolated attempt replaces any prior worktree row.
-        worktree_directory: event.data.worktree?.directory ?? null,
-        worktree_branch: event.data.worktree?.branch ?? null,
-        worktree_commit: null,
-        worktree_patch_path: null,
-        worktree_patch_sha256: null,
-        worktree_state: event.data.worktree ? "active" : null,
-        worktree_conflicts_with: event.data.worktree ? [] : null,
-        touched_paths: null,
-      }
-      return db
-        .update(WorkflowNodeTable)
-        .set({
-          status: "running",
-          child_session_id: event.data.childSessionID,
-          ...executionLocation,
-          captured_output: null,
-          captured_output_present: false,
-          captured_snapshot_id: null,
-          started_at: toMillis(event.data.timestamp),
-          deadline_ms: event.data.deadlineMs ?? null,
-          wake_eligible: event.data.wakeEligible ?? false,
-          wake_reported: false,
-          // S3: a fresh execution attempt starts with a fresh extension budget —
-          // restart clears timeout_extensions so the cap is per-attempt, not
-          // lifetime (a restart must not inherit a nearly-exhausted cap). The
-          // new attempt is also not awaiting adjudication.
-          timeout_extensions: 0,
-          escalation_pending: false,
-          seq: event.durable!.seq,
-          time_updated: toMillis(event.data.timestamp),
-        })
-        // Only start nodes in a pre-/in-running status. Prevents a stale or
-        // racing NodeStarted (e.g. a spawn fiber resuming after a concurrent
-        // replan(cancel) terminalized the node to "failed") from resurrecting
-        // an already-terminal node back to "running". The legitimate restart
-        // path goes NodeRestarted (running→pending) → re-spawn → NodeStarted
-        // on the "pending" row, so excluding terminal statuses is safe.
-        .where(and(
-          eq(WorkflowNodeTable.workflow_id, event.data.dagID),
-          eq(WorkflowNodeTable.id, event.data.nodeID),
-          inArray(WorkflowNodeTable.status, [...NodeStatusProjection.started.from]),
-        ))
-        .run()
-        .pipe(Effect.orDie)
-    })
+    yield* events.project(DagEvent.NodeStarted, (event) =>
+      Effect.gen(function* () {
+        const current = yield* db
+          .select()
+          .from(WorkflowNodeTable)
+          .where(and(eq(WorkflowNodeTable.workflow_id, event.data.dagID), eq(WorkflowNodeTable.id, event.data.nodeID)))
+          .get()
+          .pipe(Effect.orDie)
+        // #949: snapshot the attempt's execution location without a bare
+        // `directory:` key inside `.set(...)`: the DAG-LOC-01 write-once static
+        // contract reserves that spelling for the workflow stamp.
+        const executionLocation = {
+          directory: event.data.worktree?.directory ?? event.data.directory ?? null,
+          base_head: event.data.baseHead ?? null,
+          // #944: a fresh attempt clears the previous completion verdict.
+          target_fingerprint: event.data.targetFingerprint ?? null,
+          stale_target: false,
+          // #946: a started isolated attempt replaces any prior worktree row.
+          worktree_directory: event.data.worktree?.directory ?? null,
+          worktree_branch: event.data.worktree?.branch ?? null,
+          worktree_commit: null,
+          worktree_patch_path: null,
+          worktree_patch_sha256: null,
+          worktree_state: event.data.worktree ? "active" : null,
+          worktree_conflicts_with: event.data.worktree ? [] : null,
+          touched_paths: null,
+        }
+        // #946: archive the pointer this replacement overwrites. A restarted
+        // node's prior attempt kept its worktree on disk, and the current row
+        // alone would orphan it from workflow status. Same-directory starts
+        // are not replacements and must not duplicate history.
+        const prior = current?.worktree_directory
+        const priorState: DagEvent.NodeWorktree["state"] =
+          current?.worktree_state === "removed" || current?.worktree_state === "kept"
+            ? current.worktree_state
+            : "active"
+        const worktreeHistory: DagEvent.NodeWorktree[] | null | undefined =
+          prior && prior !== executionLocation.worktree_directory
+            ? [
+                ...(current.worktree_history ?? []),
+                {
+                  directory: prior,
+                  ...(current.worktree_branch ? { branch: current.worktree_branch } : {}),
+                  ...(current.worktree_commit ? { commit: current.worktree_commit } : {}),
+                  ...(current.base_head ? { baseHead: current.base_head } : {}),
+                  ...(current.worktree_patch_path ? { patchPath: current.worktree_patch_path } : {}),
+                  ...(current.worktree_patch_sha256 ? { patchSha256: current.worktree_patch_sha256 } : {}),
+                  touchedPaths: current.touched_paths ?? [],
+                  state: priorState,
+                  conflictsWith: (current.worktree_conflicts_with ?? []).map((id) => DagEvent.NodeID.make(id)),
+                },
+              ]
+            : current?.worktree_history
+        return yield* db
+          .update(WorkflowNodeTable)
+          .set({
+            status: "running",
+            child_session_id: event.data.childSessionID,
+            ...executionLocation,
+            ...(worktreeHistory ? { worktree_history: worktreeHistory } : {}),
+            captured_output: null,
+            captured_output_present: false,
+            captured_snapshot_id: null,
+            started_at: toMillis(event.data.timestamp),
+            deadline_ms: event.data.deadlineMs ?? null,
+            wake_eligible: event.data.wakeEligible ?? false,
+            wake_reported: false,
+            // S3: a fresh execution attempt starts with a fresh extension budget —
+            // restart clears timeout_extensions so the cap is per-attempt, not
+            // lifetime (a restart must not inherit a nearly-exhausted cap). The
+            // new attempt is also not awaiting adjudication.
+            timeout_extensions: 0,
+            escalation_pending: false,
+            seq: event.durable!.seq,
+            time_updated: toMillis(event.data.timestamp),
+          })
+          // Only start nodes in a pre-/in-running status. Prevents a stale or
+          // racing NodeStarted (e.g. a spawn fiber resuming after a concurrent
+          // replan(cancel) terminalized the node to "failed") from resurrecting
+          // an already-terminal node back to "running". The legitimate restart
+          // path goes NodeRestarted (running→pending) → re-spawn → NodeStarted
+          // on the "pending" row, so excluding terminal statuses is safe.
+          .where(and(
+            eq(WorkflowNodeTable.workflow_id, event.data.dagID),
+            eq(WorkflowNodeTable.id, event.data.nodeID),
+            inArray(WorkflowNodeTable.status, [...NodeStatusProjection.started.from]),
+          ))
+          .run()
+          .pipe(Effect.orDie)
+      }),
+    )
 
     yield* events.project(DagEvent.NodeCompleted, (event) =>
       db

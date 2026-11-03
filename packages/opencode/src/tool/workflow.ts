@@ -601,18 +601,34 @@ export const WorkflowTool = Tool.define<
               const unresolvedReviews = config ? DagReviewLifecycle.unresolvedReviewOutcomes(config, nodes) : []
               // #946: workflow-level isolation view. Kept worktrees stay
               // visible until an operator removes them; conflicts are a
-              // report, never an automatic merge.
-              const worktrees = allNodes
-                .filter((node) => node.worktreeDirectory)
-                .map((node) => ({
+              // report, never an automatic merge. Superseded attempts come
+              // from the node's archived history so a replacement NodeStarted
+              // cannot hide a worktree that is still on disk.
+              const worktrees = allNodes.flatMap((node) => [
+                ...(node.worktreeDirectory
+                  ? [
+                      {
+                        node_id: node.id,
+                        directory: node.worktreeDirectory,
+                        ...(node.worktreeBranch ? { branch: node.worktreeBranch } : {}),
+                        ...(node.worktreeCommit ? { commit: node.worktreeCommit } : {}),
+                        ...(node.worktreePatchPath ? { patch_path: node.worktreePatchPath } : {}),
+                        ...(node.worktreePatchSha256 ? { patch_sha256: node.worktreePatchSha256 } : {}),
+                        ...(node.worktreeState ? { state: node.worktreeState } : {}),
+                      },
+                    ]
+                  : []),
+                ...(node.worktreeHistory ?? []).map((worktree) => ({
                   node_id: node.id,
-                  directory: node.worktreeDirectory,
-                  ...(node.worktreeBranch ? { branch: node.worktreeBranch } : {}),
-                  ...(node.worktreeCommit ? { commit: node.worktreeCommit } : {}),
-                  ...(node.worktreePatchPath ? { patch_path: node.worktreePatchPath } : {}),
-                  ...(node.worktreePatchSha256 ? { patch_sha256: node.worktreePatchSha256 } : {}),
-                  ...(node.worktreeState ? { state: node.worktreeState } : {}),
-                }))
+                  directory: worktree.directory,
+                  ...(worktree.branch ? { branch: worktree.branch } : {}),
+                  ...(worktree.commit ? { commit: worktree.commit } : {}),
+                  ...(worktree.patchPath ? { patch_path: worktree.patchPath } : {}),
+                  ...(worktree.patchSha256 ? { patch_sha256: worktree.patchSha256 } : {}),
+                  ...(worktree.state ? { state: worktree.state } : {}),
+                  retired: true,
+                })),
+              ])
               const conflicts = DagIsolation.conflictGroups(
                 nodes.map((node) => ({
                   id: node.id,

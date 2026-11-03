@@ -124,6 +124,10 @@ function parseNameList(text: string): string[] {
   return [...new Set(text.split("\0").filter(Boolean).map(normalizeTouchedPath))].sort()
 }
 
+function mergePaths(a: readonly string[], b: readonly string[]): string[] {
+  return [...new Set([...a, ...b])].sort()
+}
+
 /** Commit everything in an isolated worktree. No changes is a successful
  * no-op; a failed `git add`/`git commit`/`git diff` surfaces the git reason.
  * A clean working tree can still be a committed attempt from a crash before
@@ -157,13 +161,21 @@ export function commitWorktree(directory: string, baseHead: string, message: str
   if (!committed.ok) return { ok: false, reason: `git commit failed: ${committed.reason}` }
   const head = git(directory, ["rev-parse", "HEAD"])
   if (!head.ok) return { ok: false, reason: `git rev-parse failed: ${head.reason}` }
+  // #946: a child may have committed earlier in this attempt. The completion
+  // status only lists what is dirty now, so union the committed range too —
+  // conflict detection must see every path this attempt changed.
+  const names = baseHead
+    ? git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"])
+    : undefined
+  if (names && !names.ok) return { ok: false, reason: `git diff --name-only failed: ${names.reason}` }
+  const touchedPaths = names ? mergePaths(touched, parseNameList(names.text)) : touched
   const patch = git(directory, ["diff", "--binary", baseHead, "HEAD"])
   if (!patch.ok) return { ok: false, reason: `git diff failed: ${patch.reason}` }
   return {
     ok: true,
     change: {
       commit: head.text.trim(),
-      touchedPaths: touched,
+      touchedPaths,
       patch: patch.text,
     },
   }

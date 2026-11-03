@@ -141,6 +141,7 @@ export default {
           \`worktree_patch_sha256\` text,
           \`worktree_state\` text,
           \`worktree_conflicts_with\` text,
+          \`worktree_history\` text,
           \`touched_paths\` text,
           \`output\` text,
           \`error_reason\` text,

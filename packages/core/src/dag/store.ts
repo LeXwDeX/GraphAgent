@@ -82,6 +82,8 @@ export interface NodeRow {
   worktreePatchSha256?: string | null
   worktreeState?: string | null
   worktreeConflictsWith?: string[] | null
+  /** #946: superseded worktree pointers, oldest first. */
+  worktreeHistory?: DagEvent.NodeWorktree[] | null
   touchedPaths?: string[] | null
   /** Projection timestamps. Optional so hand-built rows in tests keep a
    * minimal shape; the database read always projects them. */
@@ -166,6 +168,7 @@ const mapNode = (r: typeof WorkflowNodeTable.$inferSelect): NodeRow => ({
   worktreePatchSha256: r.worktree_patch_sha256,
   worktreeState: r.worktree_state,
   worktreeConflictsWith: r.worktree_conflicts_with,
+  worktreeHistory: r.worktree_history,
   touchedPaths: r.touched_paths,
   output: r.output,
   capturedOutput: r.captured_output,

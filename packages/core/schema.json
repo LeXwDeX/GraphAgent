@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "6830d038-b638-43f5-a13f-635eb5b0676f",
+  "id": "54dd3555-1173-4ebf-a8ca-a0b7a5b16829",
   "prevIds": [
-    "f5f2762e-8f4a-4509-bbf0-e971549e7a80"
+    "6830d038-b638-43f5-a13f-635eb5b0676f"
   ],
   "ddl": [
     {
@@ -1071,6 +1071,16 @@
       "default": null,
       "generated": null,
       "name": "worktree_conflicts_with",
+      "entityType": "columns",
+      "table": "workflow_node"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "worktree_history",
       "entityType": "columns",
       "table": "workflow_node"
     },

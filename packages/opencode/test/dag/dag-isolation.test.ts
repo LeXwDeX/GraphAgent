@@ -120,6 +120,28 @@ describe("DagIsolation worktree commits", () => {
     expect(DagIsolation.commitWorktree(a, base, "dag: a")).toEqual({ ok: true })
   })
 
+  it("includes paths committed before the completion commit in touched paths and conflicts", () => {
+    const root = repo()
+    const a = worktree(root, "a")
+    const base = git(root, ["rev-parse", "HEAD"])
+    writeFileSync(path.join(a, "committed.txt"), "committed\n")
+    git(a, ["add", "-A"])
+    git(a, ["commit", "-m", "child commit"])
+    writeFileSync(path.join(a, "dirty.txt"), "dirty\n")
+
+    const commit = DagIsolation.commitWorktree(a, base, "dag: a")
+    expect(commit.ok).toBe(true)
+    if (!commit.ok || !commit.change) return
+    expect(commit.change.touchedPaths).toEqual(["committed.txt", "dirty.txt"])
+    expect(commit.change.patch).toContain("committed.txt")
+    expect(commit.change.patch).toContain("dirty.txt")
+    expect(
+      DagIsolation.conflictsFor(commit.change.touchedPaths, [
+        { id: "other", touchedPaths: ["committed.txt", "dirty.txt"] },
+      ]),
+    ).toEqual([{ nodeID: "other", paths: ["committed.txt", "dirty.txt"] }])
+  })
+
   it("recovers commits already present in a clean worktree after a crash", () => {
     const root = repo()
     const a = worktree(root, "a")

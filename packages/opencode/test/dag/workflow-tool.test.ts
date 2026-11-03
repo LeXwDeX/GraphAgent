@@ -145,6 +145,17 @@ const mockNodes = (id: string) =>
           worktreeCommit: "fedcba9876543210",
           worktreeState: "removed",
           worktreeConflictsWith: ["node_failed"],
+          // #946: a replaced attempt stays visible after its pointer is
+          // overwritten by the current attempt.
+          worktreeHistory: [
+            {
+              directory: "/repo/.worktrees/status-node-retired",
+              branch: "opencode/dag-status-node-retired",
+              touchedPaths: ["src/retired.ts"],
+              state: "kept" as const,
+              conflictsWith: [],
+            },
+          ],
           touchedPaths: ["src/shared.ts"],
           output: null,
           capturedOutput: null,
@@ -1269,6 +1280,9 @@ describe("workflow tool execution", () => {
       // A cancelled/restarted superseded row still owns an active worktree.
       expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-orphan"')
       expect(result.output).toContain('"state": "active"')
+      // #946: a worktree replaced by a later attempt stays listed as retired.
+      expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-retired"')
+      expect(result.output).toContain('"retired": true')
       expect(result.output).toContain('"conflicts"')
       expect(result.output).toContain('"src/shared.ts"')
     }),

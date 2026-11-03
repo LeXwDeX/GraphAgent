@@ -108,6 +108,11 @@ export const WorkflowNodeTable = sqliteTable(
     worktree_patch_sha256: text(),
     worktree_state: text(),
     worktree_conflicts_with: text({ mode: "json" }).$type<string[]>(),
+    // #946: worktrees a later attempt on this node replaced. NodeStarted
+    // archives the prior pointer here before overwriting it, so status can
+    // still report a kept/active worktree the current row no longer names.
+    // NULL for legacy rows and nodes that never restarted.
+    worktree_history: text({ mode: "json" }).$type<DagEvent.NodeWorktree[]>(),
     // #946: paths this node changed at completion. Non-isolated nodes record
     // them from `git status --porcelain`; isolated nodes mirror the worktree
     // list here too so status can compare every writer uniformly.
