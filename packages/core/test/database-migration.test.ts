@@ -22,6 +22,8 @@ import dropSessionSummaryDiffsMigration from "@opencode-ai/core/database/migrati
 import workflowExecutionDirectoryMigration from "@opencode-ai/core/database/migration/20261101044937_perfect_shaman"
 import workflowNodeExecutionLocationMigration from "@opencode-ai/core/database/migration/20261101033752_workflow_node_execution_location"
 import dagTargetFingerprintMigration from "@opencode-ai/core/database/migration/20261102204403_absent_caretaker"
+import workflowNodeWorktreeIsolationMigration from "@opencode-ai/core/database/migration/20261102230116_spicy_kid_colt"
+import workflowNodeWorktreeHistoryMigration from "@opencode-ai/core/database/migration/20261103002352_workflow_node_worktree_history"
 import { EventV2 } from "@opencode-ai/core/event"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -832,6 +834,98 @@ describe("DatabaseMigration", () => {
             sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('directory', 'base_head') ORDER BY name`,
           ),
         ).toEqual([{ name: "base_head" }, { name: "directory" }])
+      }),
+    )
+  })
+
+  test("adds workflow_node worktree isolation columns on a new database", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [workflowNodeWorktreeIsolationMigration])
+
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN (
+              'worktree_directory', 'worktree_branch', 'worktree_commit',
+              'worktree_patch_path', 'worktree_patch_sha256', 'worktree_state',
+              'worktree_conflicts_with', 'touched_paths'
+            ) ORDER BY name`,
+          ),
+        ).toEqual([
+          { name: "touched_paths" },
+          { name: "worktree_branch" },
+          { name: "worktree_commit" },
+          { name: "worktree_conflicts_with" },
+          { name: "worktree_directory" },
+          { name: "worktree_patch_path" },
+          { name: "worktree_patch_sha256" },
+          { name: "worktree_state" },
+        ])
+      }),
+    )
+  })
+
+  test("upgrades a legacy workflow_node row with worktree isolation columns", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'wf', 'Legacy node', 'running')`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [workflowNodeWorktreeIsolationMigration])
+
+        expect(
+          yield* db.get(
+            sql`SELECT id, worktree_directory AS directory, worktree_state AS state, touched_paths AS touchedPaths FROM workflow_node WHERE workflow_id = 'wf' AND id = 'legacy-node'`,
+          ),
+        ).toEqual({ id: "legacy-node", directory: null, state: null, touchedPaths: null })
+      }),
+    )
+  })
+
+  test("adds the workflow_node worktree history column on a new database", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        expect(
+          yield* db.all(sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name = 'worktree_history'`),
+        ).toEqual([{ name: "worktree_history" }])
+      }),
+    )
+  })
+
+  test("upgrades a legacy workflow_node row with a null worktree history", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'wf', 'Legacy node', 'running')`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [
+          workflowNodeWorktreeIsolationMigration,
+          workflowNodeWorktreeHistoryMigration,
+        ])
+
+        expect(
+          yield* db.get(
+            sql`SELECT id, worktree_history AS worktreeHistory FROM workflow_node WHERE workflow_id = 'wf' AND id = 'legacy-node'`,
+          ),
+        ).toEqual({ id: "legacy-node", worktreeHistory: null })
       }),
     )
   })

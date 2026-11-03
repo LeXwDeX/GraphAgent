@@ -5,6 +5,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { SessionID } from "@opencode-ai/schema/session-id"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionTable } from "@opencode-ai/core/session/sql"
@@ -157,6 +158,52 @@ describe("DagProjector: NodeStarted status guard", () => {
         expect((yield* store.getNode(dagID, nodeID))?.status).toBe("running")
         expect((yield* store.getNode(dagID, nodeID))?.childSessionId).toBe("ses_B")
       }).pipe(Effect.provide(projectorLayer)) as Effect.Effect<never>,
+    )
+  })
+
+  it("archives the replaced worktree when a restarted node starts a new one", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        yield* createWorkflowAndNode()
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+
+        yield* events.publish(DagEvent.NodeStarted, {
+          dagID,
+          nodeID,
+          childSessionID: SessionID.make("ses_A"),
+          worktree: {
+            directory: "/repo/.worktrees/first",
+            touchedPaths: [],
+            state: "active",
+            conflictsWith: [],
+          },
+          timestamp: ts(2),
+        })
+        yield* events.publish(DagEvent.NodeRestarted, {
+          dagID,
+          nodeID,
+          childSessionID: SessionID.make("ses_A"),
+          timestamp: ts(3),
+        })
+        yield* events.publish(DagEvent.NodeStarted, {
+          dagID,
+          nodeID,
+          childSessionID: SessionID.make("ses_B"),
+          worktree: {
+            directory: "/repo/.worktrees/second",
+            touchedPaths: [],
+            state: "active",
+            conflictsWith: [],
+          },
+          timestamp: ts(4),
+        })
+
+        const node = yield* store.getNode(dagID, nodeID)
+        expect(node?.worktreeDirectory).toBe("/repo/.worktrees/second")
+        expect(node?.worktreeHistory?.map((worktree) => worktree.directory)).toEqual(["/repo/.worktrees/first"])
+      }).pipe(Effect.provide(projectorLayer)),
     )
   })
 

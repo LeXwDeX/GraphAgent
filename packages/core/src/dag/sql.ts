@@ -98,6 +98,25 @@ export const WorkflowNodeTable = sqliteTable(
     // True when a completed target-sensitive node saw a different tree than it
     // started with. NULL until evaluated; legacy rows keep NULL and read false.
     stale_target: integer({ mode: "boolean" }),
+    // #946: worktree isolation evidence. NULL for non-isolated and legacy rows.
+    // `worktree_state` is active|removed|kept; kept rows are the ones a failed
+    // node leaves for inspection.
+    worktree_directory: text(),
+    worktree_branch: text(),
+    worktree_commit: text(),
+    worktree_patch_path: text(),
+    worktree_patch_sha256: text(),
+    worktree_state: text(),
+    worktree_conflicts_with: text({ mode: "json" }).$type<string[]>(),
+    // #946: worktrees a later attempt on this node replaced. NodeStarted
+    // archives the prior pointer here before overwriting it, so status can
+    // still report a kept/active worktree the current row no longer names.
+    // NULL for legacy rows and nodes that never restarted.
+    worktree_history: text({ mode: "json" }).$type<DagEvent.NodeWorktree[]>(),
+    // #946: paths this node changed at completion. Non-isolated nodes record
+    // them from `git status --porcelain`; isolated nodes mirror the worktree
+    // list here too so status can compare every writer uniformly.
+    touched_paths: text({ mode: "json" }).$type<string[]>(),
     output: text({ mode: "json" }).$type<unknown>(),
     error_reason: text(),
     error_class: text(), // dag.node.failed trigger (timeout/exec_failed/verdict_fail/push_exhausted) for failure triage

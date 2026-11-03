@@ -62,6 +62,7 @@ export const DIAGNOSTIC_CODES = {
   verdictVocabulary: "prompt.verdict_vocabulary",
   workspaceWorktreeMismatch: "workspace.worktree_mismatch",
   workspaceInvalid: "workspace.invalid",
+  isolationInvalid: "isolation.invalid",
 } as const
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[keyof typeof DIAGNOSTIC_CODES]
@@ -259,6 +260,10 @@ export const NodeSchema = Schema.Struct({
   workspace: Schema.optional(Schema.String).annotate({
     description:
       "Absolute path to a linked worktree of the same project where this node runs. Overrides config.workspace. Omit to run in config.workspace or the session directory.",
+  }),
+  isolation: Schema.optional(Schema.Literal("worktree")).annotate({
+    description:
+      'Run this writer-capable node in a fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Review and verify workers cannot isolate.',
   }),
 })
 
@@ -1463,6 +1468,9 @@ function findCycle(nodes: readonly NodeConfig[]): string[] | null {
 export interface EnvironmentCatalogs {
   /** Known worker types from the Agent catalog; undefined skips the check. */
   worker_types?: ReadonlySet<string>
+  /** #946: worker types whose agent can write files. Worktree isolation is a
+   * write-capable feature; undefined falls back to the static builtin check. */
+  writer_types?: ReadonlySet<string>
   /** Resolves a node's model against this environment (dag.jsonc tiers,
    * worker agent model, parent session). undefined skips the check. */
   resolveModel?: (
@@ -1632,6 +1640,74 @@ export function workspaceDiagnostics(input: {
   })
 }
 
+/** #946: worktree isolation belongs to write-capable workers. Review and
+ * verify workers judge a tree from outside; isolating them would hide the
+ * changes they must inspect. */
+const STATIC_READONLY_WORKERS = new Set(["plan", "explore", "review", "verify", "verification"])
+
+function isReadonlyWorker(name: string): boolean {
+  return STATIC_READONLY_WORKERS.has(name) || /^(?:review|verify|verification)-/.test(name)
+}
+
+/**
+ * #946: side-effect-free isolation rules. Git existence and cleanliness are
+ * environment facts; portable validation checks only source-contained rules.
+ */
+export function isolationDiagnostics(input: {
+  nodes: readonly NodeConfig[]
+  ownerDirectory?: string
+  workspace?: string
+  profile: Profile
+  catalogs?: EnvironmentCatalogs
+}): Diagnostic[] {
+  const target =
+    resolveExecutionDirectory(input.workspace, input.ownerDirectory) ?? input.ownerDirectory
+  return input.nodes
+    .filter((node) => node.isolation !== undefined)
+    .flatMap((node) => {
+      const path = `nodes[${node.id}].isolation`
+      const problems: string[] = []
+      if (node.workspace !== undefined)
+        problems.push(`node "${node.id}" sets both isolation and workspace; they are mutually exclusive`)
+      if (node.review !== undefined) problems.push(`review node "${node.id}" cannot use worktree isolation`)
+      if (node.target_sensitive === true)
+        problems.push(`target-sensitive node "${node.id}" cannot use worktree isolation`)
+      if (isReadonlyWorker(node.worker_type))
+        problems.push(`worker type "${node.worker_type}" is not write-capable and cannot use worktree isolation`)
+      if (
+        input.profile === "environment" &&
+        input.catalogs !== undefined &&
+        input.catalogs.writer_types === undefined
+      )
+        problems.push(
+          `worker type "${node.worker_type}" cannot be verified as write-capable because the writer catalog is unavailable`,
+        )
+      else if (
+        input.profile === "environment" &&
+        input.catalogs?.writer_types !== undefined &&
+        !input.catalogs.writer_types.has(node.worker_type)
+      )
+        problems.push(`worker type "${node.worker_type}" resolves to a read-only agent and cannot use worktree isolation`)
+      if (input.profile === "environment" && target) {
+        if (!DagLocation.isGitWorktree(target))
+          problems.push(`worktree isolation requires a git target, but "${target}" is not a git repository`)
+        else if (!DagLocation.isCleanWorktree(target))
+          problems.push(
+            `worktree isolation requires a clean target; commit or stash changes in "${target}" before starting`,
+          )
+      }
+      return problems.map((message) =>
+        diagnostic({
+          code: DIAGNOSTIC_CODES.isolationInvalid,
+          path,
+          message,
+          hint:
+            "Remove isolation, use a clean git target, and isolate only writer-capable nodes; use workspace for an existing worktree.",
+        }),
+      )
+    })
+}
+
 /** A path mention must start at a path boundary and end at a separator or
  * token boundary, so `/repo/wt-a` never matches `/repo/wt-ab`. */
 function mentionsAbsolutePath(text: string, target: string) {
@@ -1757,6 +1833,13 @@ export function validatePostCompile(input: {
         nodes: input.nodes,
         ownerDirectory: input.directory,
         profile: input.profile,
+      }),
+      ...isolationDiagnostics({
+        nodes: input.nodes,
+        ownerDirectory: input.directory,
+        workspace,
+        profile: input.profile,
+        catalogs: input.catalogs,
       }),
     )
     if (input.profile === "portable") diagnostics.push(...nonportablePromptDiagnostics(input.nodes))

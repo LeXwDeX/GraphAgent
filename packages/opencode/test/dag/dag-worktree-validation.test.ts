@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test"
 import { $ } from "bun"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { DagValidation } from "@/dag/validation"
+import type { NodeConfig } from "@/dag/dag"
 import { tmpdir } from "../fixture/fixture"
 
 function validate(input: { directory: string; objective?: string; instruction: string }) {
@@ -93,5 +94,131 @@ describe("workflow validate: worktree mismatch", () => {
     await using tmp = await tmpdir()
     const result = await validate({ directory: tmp.path, instruction: `Make the change in ${tmp.path}/sub.` })
     expect(mismatchWarnings(result)).toEqual([])
+  })
+})
+
+function isolationNode(overrides: Partial<NodeConfig> = {}): NodeConfig {
+  return {
+    id: "n1",
+    name: "N1",
+    worker_type: "build",
+    depends_on: [],
+    prompt_template: { inline: "do work" },
+    ...overrides,
+  }
+}
+
+function validateNodes(input: {
+  directory: string
+  nodes: NodeConfig[]
+  profile?: "environment" | "portable"
+  workspace?: string
+}) {
+  return Effect.runPromise(
+    DagValidation.validatePostCompile({
+      source: "test",
+      profile: input.profile ?? "environment",
+      config: input.workspace ? { workspace: input.workspace } : {},
+      nodes: input.nodes,
+      directory: input.directory,
+      structural: false,
+    }),
+  )
+}
+
+function isolationErrors(result: Awaited<ReturnType<typeof validateNodes>>) {
+  return result.errors.filter((error) => error.code === DagValidation.DIAGNOSTIC_CODES.isolationInvalid)
+}
+
+describe("workflow validate: isolation", () => {
+  it("accepts a writer in a clean git target", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateNodes({
+      directory: tmp.path,
+      nodes: [isolationNode({ isolation: "worktree" })],
+    })
+    expect(isolationErrors(result)).toEqual([])
+    expect(result.valid).toBe(true)
+  })
+
+  it("rejects isolation combined with workspace", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateNodes({
+      directory: tmp.path,
+      nodes: [isolationNode({ isolation: "worktree", workspace: tmp.path })],
+    })
+    expect(isolationErrors(result).map((error) => error.path)).toEqual(["nodes[n1].isolation"])
+    expect(isolationErrors(result)[0]?.message).toContain("mutually exclusive")
+  })
+
+  it("rejects a review node", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateNodes({
+      directory: tmp.path,
+      nodes: [isolationNode({ isolation: "worktree", review: { phase: "design" } })],
+    })
+    expect(isolationErrors(result)[0]?.message).toContain("review node")
+  })
+
+  it("rejects read-only builtin workers", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateNodes({
+      directory: tmp.path,
+      nodes: [isolationNode({ isolation: "worktree", worker_type: "explore" })],
+    })
+    expect(isolationErrors(result)[0]?.message).toContain("not write-capable")
+  })
+
+  it("rejects a non-git target", async () => {
+    await using tmp = await tmpdir()
+    const result = await validateNodes({
+      directory: tmp.path,
+      nodes: [isolationNode({ isolation: "worktree" })],
+    })
+    expect(isolationErrors(result)[0]?.message).toContain("requires a git target")
+  })
+
+  it("rejects a dirty target", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "dirty.txt"), "dirty")
+    const result = await validateNodes({
+      directory: tmp.path,
+      nodes: [isolationNode({ isolation: "worktree" })],
+    })
+    expect(isolationErrors(result)[0]?.message).toContain("requires a clean target")
+  })
+
+  it("keeps git facts out of the portable profile", async () => {
+    await using tmp = await tmpdir()
+    const result = await validateNodes({
+      directory: tmp.path,
+      profile: "portable",
+      nodes: [isolationNode({ isolation: "worktree" })],
+    })
+    expect(isolationErrors(result)).toEqual([])
+  })
+
+  it("decodes only the literal worktree value", () => {
+    const decode = Schema.decodeUnknownSync(DagValidation.NodeSchema)
+    expect(
+      decode({
+        id: "n1",
+        name: "N1",
+        worker_type: "build",
+        depends_on: [],
+        prompt_template: { inline: "do work" },
+        isolation: "worktree",
+      }).isolation,
+    ).toBe("worktree")
+    expect(() =>
+      decode({
+        id: "n1",
+        name: "N1",
+        worker_type: "build",
+        depends_on: [],
+        prompt_template: { inline: "do work" },
+        isolation: "container",
+      }),
+    ).toThrow()
   })
 })

@@ -64,5 +64,7 @@ export const migrations = (
     import("./migration/20261101033752_workflow_node_execution_location"),
     import("./migration/20261101044937_perfect_shaman"),
     import("./migration/20261102204403_absent_caretaker"),
+    import("./migration/20261102230116_spicy_kid_colt"),
+    import("./migration/20261103002352_workflow_node_worktree_history"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

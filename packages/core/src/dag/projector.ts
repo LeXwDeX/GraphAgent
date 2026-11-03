@@ -17,6 +17,27 @@ const toMillis = (dt: DateTime.Utc) => DateTime.toEpochMillis(dt)
 /** Keep workflow status values typed at the Drizzle boundary. */
 const ws = (s: WorkflowStatus) => s
 
+function archiveWorktree(current: typeof WorkflowNodeTable.$inferSelect | undefined, replacement: string | null) {
+  const prior = current?.worktree_directory
+  if (!prior || prior === replacement) return current?.worktree_history
+  const state: DagEvent.NodeWorktree["state"] =
+    current.worktree_state === "removed" || current.worktree_state === "kept" ? current.worktree_state : "active"
+  return [
+    ...(current.worktree_history ?? []),
+    {
+      directory: prior,
+      ...(current.worktree_branch ? { branch: current.worktree_branch } : {}),
+      ...(current.worktree_commit ? { commit: current.worktree_commit } : {}),
+      ...(current.base_head ? { baseHead: current.base_head } : {}),
+      ...(current.worktree_patch_path ? { patchPath: current.worktree_patch_path } : {}),
+      ...(current.worktree_patch_sha256 ? { patchSha256: current.worktree_patch_sha256 } : {}),
+      touchedPaths: current.touched_paths ?? [],
+      state,
+      conflictsWith: (current.worktree_conflicts_with ?? []).map((id) => DagEvent.NodeID.make(id)),
+    },
+  ]
+}
+
 /**
  * Event → status projection guards — the single source the drift test checks
  * against the declared transition tables in core/types.ts. Every `from` entry
@@ -331,53 +352,76 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeStarted, (event) => {
-      // #949: snapshot the attempt's execution location without a bare
-      // `directory:` key inside `.set(...)`: the DAG-LOC-01 write-once static
-      // contract reserves that spelling for the workflow stamp.
-      const executionLocation = {
-        directory: event.data.directory ?? null,
-        base_head: event.data.baseHead ?? null,
-        // #944: a fresh attempt clears the previous completion verdict.
-        target_fingerprint: event.data.targetFingerprint ?? null,
-        stale_target: false,
-      }
-      return db
-        .update(WorkflowNodeTable)
-        .set({
-          status: "running",
-          child_session_id: event.data.childSessionID,
-          ...executionLocation,
-          captured_output: null,
-          captured_output_present: false,
-          captured_snapshot_id: null,
-          started_at: toMillis(event.data.timestamp),
-          deadline_ms: event.data.deadlineMs ?? null,
-          wake_eligible: event.data.wakeEligible ?? false,
-          wake_reported: false,
-          // S3: a fresh execution attempt starts with a fresh extension budget —
-          // restart clears timeout_extensions so the cap is per-attempt, not
-          // lifetime (a restart must not inherit a nearly-exhausted cap). The
-          // new attempt is also not awaiting adjudication.
-          timeout_extensions: 0,
-          escalation_pending: false,
-          seq: event.durable!.seq,
-          time_updated: toMillis(event.data.timestamp),
-        })
-        // Only start nodes in a pre-/in-running status. Prevents a stale or
-        // racing NodeStarted (e.g. a spawn fiber resuming after a concurrent
-        // replan(cancel) terminalized the node to "failed") from resurrecting
-        // an already-terminal node back to "running". The legitimate restart
-        // path goes NodeRestarted (running→pending) → re-spawn → NodeStarted
-        // on the "pending" row, so excluding terminal statuses is safe.
-        .where(and(
-          eq(WorkflowNodeTable.workflow_id, event.data.dagID),
-          eq(WorkflowNodeTable.id, event.data.nodeID),
-          inArray(WorkflowNodeTable.status, [...NodeStatusProjection.started.from]),
-        ))
-        .run()
-        .pipe(Effect.orDie)
-    })
+    yield* events.project(DagEvent.NodeStarted, (event) =>
+      Effect.gen(function* () {
+        const current = yield* db
+          .select()
+          .from(WorkflowNodeTable)
+          .where(and(eq(WorkflowNodeTable.workflow_id, event.data.dagID), eq(WorkflowNodeTable.id, event.data.nodeID)))
+          .get()
+          .pipe(Effect.orDie)
+        // #949: snapshot the attempt's execution location without a bare
+        // `directory:` key inside `.set(...)`: the DAG-LOC-01 write-once static
+        // contract reserves that spelling for the workflow stamp.
+        const executionLocation = {
+          directory: event.data.worktree?.directory ?? event.data.directory ?? null,
+          base_head: event.data.baseHead ?? null,
+          // #944: a fresh attempt clears the previous completion verdict.
+          target_fingerprint: event.data.targetFingerprint ?? null,
+          stale_target: false,
+          // #946: a started isolated attempt replaces any prior worktree row.
+          worktree_directory: event.data.worktree?.directory ?? null,
+          worktree_branch: event.data.worktree?.branch ?? null,
+          worktree_commit: null,
+          worktree_patch_path: null,
+          worktree_patch_sha256: null,
+          worktree_state: event.data.worktree ? "active" : null,
+          worktree_conflicts_with: event.data.worktree ? [] : null,
+          touched_paths: null,
+        }
+        // #946: archive the pointer this replacement overwrites. A restarted
+        // node's prior attempt kept its worktree on disk, and the current row
+        // alone would orphan it from workflow status. Same-directory starts
+        // are not replacements and must not duplicate history.
+        const worktreeHistory = archiveWorktree(current, executionLocation.worktree_directory)
+        return yield* db
+          .update(WorkflowNodeTable)
+          .set({
+            status: "running",
+            child_session_id: event.data.childSessionID,
+            ...executionLocation,
+            ...(worktreeHistory ? { worktree_history: worktreeHistory } : {}),
+            captured_output: null,
+            captured_output_present: false,
+            captured_snapshot_id: null,
+            started_at: toMillis(event.data.timestamp),
+            deadline_ms: event.data.deadlineMs ?? null,
+            wake_eligible: event.data.wakeEligible ?? false,
+            wake_reported: false,
+            // S3: a fresh execution attempt starts with a fresh extension budget —
+            // restart clears timeout_extensions so the cap is per-attempt, not
+            // lifetime (a restart must not inherit a nearly-exhausted cap). The
+            // new attempt is also not awaiting adjudication.
+            timeout_extensions: 0,
+            escalation_pending: false,
+            seq: event.durable!.seq,
+            time_updated: toMillis(event.data.timestamp),
+          })
+          // Only start nodes in a pre-/in-running status. Prevents a stale or
+          // racing NodeStarted (e.g. a spawn fiber resuming after a concurrent
+          // replan(cancel) terminalized the node to "failed") from resurrecting
+          // an already-terminal node back to "running". The legitimate restart
+          // path goes NodeRestarted (running→pending) → re-spawn → NodeStarted
+          // on the "pending" row, so excluding terminal statuses is safe.
+          .where(and(
+            eq(WorkflowNodeTable.workflow_id, event.data.dagID),
+            eq(WorkflowNodeTable.id, event.data.nodeID),
+            inArray(WorkflowNodeTable.status, [...NodeStatusProjection.started.from]),
+          ))
+          .run()
+          .pipe(Effect.orDie)
+      }),
+    )
 
     yield* events.project(DagEvent.NodeCompleted, (event) =>
       db
@@ -389,6 +433,20 @@ export const layer = Layer.effectDiscard(
           ...(event.data.targetFingerprint !== undefined ? { target_fingerprint: event.data.targetFingerprint } : {}),
           // #944: legacy events omit the flag; completed rows read as not stale.
           stale_target: event.data.staleTarget ?? false,
+          ...(event.data.worktree !== undefined
+            ? {
+                worktree_directory: event.data.worktree.directory,
+                worktree_branch: event.data.worktree.branch ?? null,
+                worktree_commit: event.data.worktree.commit ?? null,
+                worktree_patch_path: event.data.worktree.patchPath ?? null,
+                worktree_patch_sha256: event.data.worktree.patchSha256 ?? null,
+                worktree_state: event.data.worktree.state,
+                worktree_conflicts_with: [...event.data.worktree.conflictsWith],
+              }
+            : {}),
+          ...(event.data.touchedPaths !== undefined || event.data.worktree !== undefined
+            ? { touched_paths: [...(event.data.touchedPaths ?? event.data.worktree?.touchedPaths ?? [])] }
+            : {}),
           completed_at: toMillis(event.data.timestamp),
           // Q1: a terminal node is no longer awaiting adjudication — clear the
           // escalation flag. Its result is delivered via the wake_reported
@@ -417,33 +475,59 @@ export const layer = Layer.effectDiscard(
     )
 
     yield* events.project(DagEvent.NodeFailed, (event) =>
-      db
-        .update(WorkflowNodeTable)
-        .set({
-          status: "failed",
-          error_reason: event.data.reason,
-          error_class: event.data.errorClass ?? event.data.trigger,
-          completed_at: toMillis(event.data.timestamp),
-          // Q1: a terminal node is no longer awaiting adjudication — clear the
-          // escalation flag.
-          escalation_pending: false,
-          // F2b: same re-arm as NodeCompleted — a failure after a reported
-          // escalation (or a crash-recovery failure of an escalated node)
-          // must still reach the main agent.
-          wake_reported: false,
-          seq: event.durable!.seq,
-          time_updated: toMillis(event.data.timestamp),
-        })
-        // P1-7: only fail nodes in non-terminal status. Prevents stale
-        // replan-ceiling events from overwriting completed/skipped nodes.
-        // "queued" is included for the queue-wait timeout path (P0-2).
-        .where(and(
-          eq(WorkflowNodeTable.workflow_id, event.data.dagID),
-          eq(WorkflowNodeTable.id, event.data.nodeID),
-          inArray(WorkflowNodeTable.status, [...NodeStatusProjection.failed.from]),
-        ))
-        .run()
-        .pipe(Effect.orDie),
+      Effect.gen(function* () {
+        const current = event.data.worktree
+          ? yield* db
+              .select()
+              .from(WorkflowNodeTable)
+              .where(and(eq(WorkflowNodeTable.workflow_id, event.data.dagID), eq(WorkflowNodeTable.id, event.data.nodeID)))
+              .get()
+              .pipe(Effect.orDie)
+          : undefined
+        const worktreeHistory = event.data.worktree ? archiveWorktree(current, event.data.worktree.directory) : undefined
+        return yield* db
+          .update(WorkflowNodeTable)
+          .set({
+            status: "failed",
+            error_reason: event.data.reason,
+            error_class: event.data.errorClass ?? event.data.trigger,
+            ...(event.data.worktree !== undefined
+              ? {
+                  worktree_directory: event.data.worktree.directory,
+                  worktree_branch: event.data.worktree.branch ?? null,
+                  worktree_commit: event.data.worktree.commit ?? null,
+                  worktree_patch_path: event.data.worktree.patchPath ?? null,
+                  worktree_patch_sha256: event.data.worktree.patchSha256 ?? null,
+                  worktree_state: event.data.worktree.state,
+                  worktree_conflicts_with: [...event.data.worktree.conflictsWith],
+                  touched_paths: [...event.data.worktree.touchedPaths],
+                  base_head: event.data.worktree.baseHead ??
+                    (current?.worktree_directory === event.data.worktree.directory ? current.base_head : null),
+                  ...(worktreeHistory ? { worktree_history: worktreeHistory } : {}),
+                }
+              : {}),
+            completed_at: toMillis(event.data.timestamp),
+            // Q1: a terminal node is no longer awaiting adjudication — clear the
+            // escalation flag.
+            escalation_pending: false,
+            // F2b: same re-arm as NodeCompleted — a failure after a reported
+            // escalation (or a crash-recovery failure of an escalated node)
+            // must still reach the main agent.
+            wake_reported: false,
+            seq: event.durable!.seq,
+            time_updated: toMillis(event.data.timestamp),
+          })
+          // P1-7: only fail nodes in non-terminal status. Prevents stale
+          // replan-ceiling events from overwriting completed/skipped nodes.
+          // "queued" is included for the queue-wait timeout path (P0-2).
+          .where(and(
+            eq(WorkflowNodeTable.workflow_id, event.data.dagID),
+            eq(WorkflowNodeTable.id, event.data.nodeID),
+            inArray(WorkflowNodeTable.status, [...NodeStatusProjection.failed.from]),
+          ))
+          .run()
+          .pipe(Effect.orDie)
+      }),
     )
 
     yield* events.project(DagEvent.NodeSkipped, (event) =>
@@ -524,6 +608,12 @@ export const layer = Layer.effectDiscard(
           // per-attempt, not lifetime.
           timeout_extensions: 0,
           escalation_pending: false,
+          // #946: keep the previous worktree pointer until the replacement
+          // attempt publishes NodeStarted (which overwrites or clears it).
+          // A restarted node whose replacement never spawns must keep its
+          // kept/active worktree visible; clearing here orphaned it silently.
+          // (worktree_directory/branch/commit/patch/state/conflicts_with and
+          // touched_paths are intentionally not reset.)
           seq: event.durable!.seq,
           time_updated: toMillis(event.data.timestamp),
         })

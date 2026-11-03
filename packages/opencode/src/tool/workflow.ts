@@ -8,6 +8,7 @@ import { Dag } from "@/dag/dag"
 import { DagReviewLifecycle } from "@/dag/review-lifecycle"
 import { DagWorkflows } from "@/dag/workflows"
 import { DagLocation } from "@/dag/location"
+import { DagIsolation } from "@/dag/isolation"
 import { DagValidation, type Diagnostic } from "@/dag/validation"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagEnvironmentCatalogs } from "@/dag/environment-catalogs"
@@ -577,6 +578,11 @@ export const WorkflowTool = Tool.define<
               // the CURRENT graph revision only. Superseded replaced segments
               // stay reachable via the result seam (getNode is unfiltered).
               const nodes = yield* dag.store.getCurrentNodes(params.workflow_id).pipe(Effect.orDie)
+              // #946: a cancelled/restarted superseded row still owns a
+              // worktree on disk. The worktree view reads every row so those
+              // pointers stay visible; the graph views above stay current-rev
+              // only.
+              const allNodes = yield* dag.store.getNodes(params.workflow_id).pipe(Effect.orDie)
               // #948: the failure reason lives on the durable WorkflowFailed
               // event (no new column). Surface it here so a terminal workflow
               // explains itself, including workspace_missing/unstamped.
@@ -593,6 +599,51 @@ export const WorkflowTool = Tool.define<
               // (REJECT checkpoint, issue #294); surface it explicitly instead
               // of burying it in a terminal reason string.
               const unresolvedReviews = config ? DagReviewLifecycle.unresolvedReviewOutcomes(config, nodes) : []
+              // #946: workflow-level isolation view. Kept worktrees stay
+              // visible until an operator removes them; conflicts are a
+              // report, never an automatic merge. Superseded attempts come
+              // from the node's archived history so a replacement NodeStarted
+              // cannot hide a worktree that is still on disk.
+              const worktrees = allNodes.flatMap((node) => [
+                ...(node.worktreeDirectory
+                  ? [
+                      {
+                        node_id: node.id,
+                        directory: node.worktreeDirectory,
+                        ...(node.worktreeBranch ? { branch: node.worktreeBranch } : {}),
+                        ...(node.worktreeCommit ? { commit: node.worktreeCommit } : {}),
+                        ...(node.worktreePatchPath ? { patch_path: node.worktreePatchPath } : {}),
+                        ...(node.worktreePatchSha256 ? { patch_sha256: node.worktreePatchSha256 } : {}),
+                        ...(node.worktreeState ? { state: node.worktreeState } : {}),
+                      },
+                    ]
+                  : []),
+                ...(node.worktreeHistory ?? []).map((worktree) => ({
+                  node_id: node.id,
+                  directory: worktree.directory,
+                  ...(worktree.branch ? { branch: worktree.branch } : {}),
+                  ...(worktree.commit ? { commit: worktree.commit } : {}),
+                  ...(worktree.patchPath ? { patch_path: worktree.patchPath } : {}),
+                  ...(worktree.patchSha256 ? { patch_sha256: worktree.patchSha256 } : {}),
+                  ...(worktree.state ? { state: worktree.state } : {}),
+                  retired: true,
+                })),
+              ])
+              const conflicts = DagIsolation.conflictGroups(
+                nodes.map((node) => ({
+                  id: node.id,
+                  touchedPaths: node.touchedPaths ?? [],
+                  conflictsWith: node.worktreeConflictsWith ?? [],
+                })),
+              )
+              const parallelOverlaps = DagIsolation.parallelOverlaps(
+                nodes.map((node) => ({
+                  id: node.id,
+                  touchedPaths: node.touchedPaths ?? [],
+                  dependsOn: node.dependsOn,
+                  isolated: node.worktreeState != null,
+                })),
+              )
               return {
                 title: `Workflow status: ${workflow.title}`,
                 output: JSON.stringify(
@@ -609,6 +660,9 @@ export const WorkflowTool = Tool.define<
                     session_id: workflow.sessionId,
                     mode: config?.mode ?? "standard",
                     ...(unresolvedReviews.length > 0 ? { unresolved_reviews: unresolvedReviews } : {}),
+                    ...(worktrees.length > 0 ? { worktrees } : {}),
+                    ...(conflicts.length > 0 ? { conflicts } : {}),
+                    ...(parallelOverlaps.length > 0 ? { parallel_overlaps: parallelOverlaps } : {}),
                     ...(config?.admission
                       ? {
                           admission: {
@@ -668,6 +722,7 @@ export const WorkflowTool = Tool.define<
                       node_id: params.node_id,
                       status: node.status,
                       ...resultTargetFields(node),
+                      ...worktreeResultFields(node),
                       ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                       content_ref: node.capturedOutput.content_ref,
                       path: node.capturedOutput.path,
@@ -746,6 +801,7 @@ export const WorkflowTool = Tool.define<
                     node_id: params.node_id,
                     status: node.status,
                     ...resultTargetFields(node),
+                    ...worktreeResultFields(node),
                     ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                     content: content.slice(cursor.value.offset, pageEnd),
                     truncated,
@@ -1076,6 +1132,34 @@ export function resultTargetFields(node: {
     ...(node.targetFingerprint ? { target_fingerprint: node.targetFingerprint } : {}),
     ...(node.staleTarget ? { stale_target: true } : {}),
   }
+}
+
+/** #946: worktree evidence a node result carries back to the orchestrator.
+ * Non-isolated nodes expose only the touched paths. */
+export function worktreeResultFields(node: {
+  readonly worktreeDirectory?: string | null
+  readonly worktreeBranch?: string | null
+  readonly worktreeCommit?: string | null
+  readonly worktreePatchPath?: string | null
+  readonly worktreePatchSha256?: string | null
+  readonly worktreeState?: string | null
+  readonly worktreeConflictsWith?: string[] | null
+  readonly touchedPaths?: string[] | null
+}) {
+  if (node.worktreeDirectory)
+    return {
+      worktree: {
+        directory: node.worktreeDirectory,
+        ...(node.worktreeBranch ? { branch: node.worktreeBranch } : {}),
+        ...(node.worktreeCommit ? { commit: node.worktreeCommit } : {}),
+        ...(node.worktreePatchPath ? { patch_path: node.worktreePatchPath } : {}),
+        ...(node.worktreePatchSha256 ? { patch_sha256: node.worktreePatchSha256 } : {}),
+        ...(node.worktreeState ? { state: node.worktreeState } : {}),
+        ...(node.touchedPaths?.length ? { touched_paths: node.touchedPaths } : {}),
+        ...(node.worktreeConflictsWith?.length ? { conflicts_with: node.worktreeConflictsWith } : {}),
+      },
+    }
+  return node.touchedPaths?.length ? { touched_paths: node.touchedPaths } : {}
 }
 
 function resultPageEnd(content: string, offset: number, limit: number) {

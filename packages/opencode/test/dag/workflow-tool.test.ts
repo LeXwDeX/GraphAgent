@@ -140,6 +140,23 @@ const mockNodes = (id: string) =>
           directory: "/repo/.worktrees/status",
           baseHead: "0123456789abcdef",
           targetFingerprint,
+          worktreeDirectory: "/repo/.worktrees/status-node-running",
+          worktreeBranch: "opencode/dag-status-node-running",
+          worktreeCommit: "fedcba9876543210",
+          worktreeState: "removed",
+          worktreeConflictsWith: ["node_failed"],
+          // #946: a replaced attempt stays visible after its pointer is
+          // overwritten by the current attempt.
+          worktreeHistory: [
+            {
+              directory: "/repo/.worktrees/status-node-retired",
+              branch: "opencode/dag-status-node-retired",
+              touchedPaths: ["src/retired.ts"],
+              state: "kept" as const,
+              conflictsWith: [],
+            },
+          ],
+          touchedPaths: ["src/shared.ts"],
           output: null,
           capturedOutput: null,
           errorReason: null,
@@ -168,6 +185,14 @@ const mockNodes = (id: string) =>
           modelId: null,
           modelProviderId: null,
           childSessionId: "ses_failed_child",
+          worktreeDirectory: "/repo/.worktrees/status-node-failed",
+          worktreeBranch: "opencode/dag-status-node-failed",
+          worktreeCommit: "0123456789abcdef",
+          worktreePatchPath: "/repo/.opencode/workflow-reports/dag_status/node_failed.patch",
+          worktreePatchSha256: "a".repeat(64),
+          worktreeState: "kept",
+          worktreeConflictsWith: ["node_running"],
+          touchedPaths: ["src/shared.ts"],
           output: null,
           capturedOutput: null,
           errorReason: "node exceeded timeout of 600000ms",
@@ -399,7 +424,26 @@ const store = Layer.mock(DagStore.Service, {
                   }
                 : undefined,
     ),
-  getNodes: (id: string) => Effect.succeed(mockNodes(id)),
+  getNodes: (id: string) =>
+    Effect.succeed(
+      id === "dag_status"
+        ? [
+            ...mockNodes(id),
+            makeNodeRow({
+              id: "node_orphan",
+              workflowId: id,
+              name: "Orphaned writer",
+              status: "failed",
+              required: false,
+              superseded: true,
+              worktreeDirectory: "/repo/.worktrees/status-node-orphan",
+              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeState: "active",
+              touchedPaths: ["src/orphan.ts"],
+            }),
+          ]
+        : mockNodes(id),
+    ),
   // Rev-view: status reads the current graph revision; the mock offers the
   // same rows (none superseded) so legacy expectations stay intact.
   getCurrentNodes: (id: string) => Effect.succeed(mockNodes(id)),
@@ -1229,6 +1273,18 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"reason": "tree moved"')
       expect(result.output).toContain('"id": "node_failed"')
       expect(result.output).toContain('"error_class": "timeout"')
+      // #946: worktree evidence and conflict views are part of the status.
+      expect(result.output).toContain('"worktrees"')
+      expect(result.output).toContain('"state": "kept"')
+      expect(result.output).toContain('"branch": "opencode/dag-status-node-failed"')
+      // A cancelled/restarted superseded row still owns an active worktree.
+      expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-orphan"')
+      expect(result.output).toContain('"state": "active"')
+      // #946: a worktree replaced by a later attempt stays listed as retired.
+      expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-retired"')
+      expect(result.output).toContain('"retired": true')
+      expect(result.output).toContain('"conflicts"')
+      expect(result.output).toContain('"src/shared.ts"')
     }),
   )
 

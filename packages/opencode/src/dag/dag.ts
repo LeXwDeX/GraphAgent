@@ -34,6 +34,7 @@ import { unresolvedReviewOutcomes, targetSensitiveNode } from "./review-lifecycl
 import { ReplanDefinition } from "./replan-definition"
 import { DagValidation, StructuralValidationError } from "./validation"
 import { DagLocation } from "./location"
+import { DagIsolation } from "./isolation"
 import { SessionLocation } from "@/session/location"
 import { SessionID } from "@/session/schema"
 import { planRecovery, type RecoveryPlan } from "./recovery-plan"
@@ -150,6 +151,9 @@ export interface NodeConfig {
   fan_out?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
+  /** #946: run this writer-capable node in a fresh worktree of the workflow
+   * target. Mutually exclusive with `workspace`. */
+  isolation?: "worktree"
   /** #944: block compilation marks nodes that judge the current working tree
    * (review lanes, verify, synthesize). Their attempts record a target
    * fingerprint and a stale result cannot settle completion. */
@@ -636,6 +640,8 @@ export interface Interface {
     baseHead?: string,
     /** #944: target fingerprint captured before a target-sensitive node starts. */
     targetFingerprint?: DagEvent.TargetFingerprint,
+    /** #946: the isolated worktree this attempt runs in. */
+    worktree?: DagEvent.NodeWorktree,
   ) => Effect.Effect<void, Error>
   readonly nodeCompleted: (
     dagID: string,
@@ -643,6 +649,10 @@ export interface Interface {
     output: unknown,
     attempt?: NodeExecutionAttempt,
     capturedOutput?: unknown,
+    /** #946: commit/patch evidence for an isolated node. */
+    worktree?: DagEvent.NodeWorktree,
+    /** #946: paths changed by a non-isolated node. */
+    touchedPaths?: readonly string[],
   ) => Effect.Effect<void, Error>
   readonly nodeFailed: (
     dagID: string,
@@ -652,6 +662,8 @@ export interface Interface {
     attempt?: NodeExecutionAttempt,
     /** More specific triage class than trigger (e.g. schema_invalid). */
     errorClass?: string,
+    /** #946: a failed isolated node keeps its worktree for inspection. */
+    worktree?: DagEvent.NodeWorktree,
   ) => Effect.Effect<void, Error>
   readonly nodeSkipped: (
     dagID: string,
@@ -1844,6 +1856,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       directory?: string,
       baseHead?: string,
       targetFingerprint?: DagEvent.TargetFingerprint,
+      worktree?: DagEvent.NodeWorktree,
     ) {
       yield* guardNode(dagID, nodeID, NodeStatus.RUNNING, attempt)
       yield* events.publish(DagEvent.NodeStarted, {
@@ -1855,6 +1868,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
         ...(directory !== undefined ? { directory } : {}),
         ...(baseHead !== undefined ? { baseHead } : {}),
         ...(targetFingerprint !== undefined ? { targetFingerprint } : {}),
+        ...(worktree !== undefined ? { worktree } : {}),
         timestamp: yield* DateTime.now,
       })
     })
@@ -1865,6 +1879,8 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       output: unknown,
       attempt?: NodeExecutionAttempt,
       capturedOutput?: unknown,
+      worktree?: DagEvent.NodeWorktree,
+      touchedPaths?: readonly string[],
     ) {
       const node = yield* guardNode(dagID, nodeID, NodeStatus.COMPLETED, attempt)
       const workflow = yield* store.getWorkflow(dagID)
@@ -1878,6 +1894,35 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       const completionFingerprint =
         startFingerprint && executionDirectory ? DagLocation.fingerprintTarget(executionDirectory) : undefined
       const staleTarget = startFingerprint ? !DagLocation.sameFingerprint(startFingerprint, completionFingerprint) : false
+      // #946: compare an isolated node's touched paths with the completed
+      // isolated nodes already in this workflow. This is a report, never an
+      // auto-merge: integration stays a normal downstream node.
+      const completedNodes = worktree
+        ? yield* Effect.suspend(() => store.getCurrentNodes(dagID)).pipe(
+            Effect.catchCause(() => Effect.succeed([] as DagStore.NodeRow[])),
+          )
+        : []
+      const conflicts = worktree
+        ? DagIsolation.conflictsFor(
+            worktree.touchedPaths,
+            completedNodes
+              .filter(
+                (candidate) =>
+                  candidate.id !== nodeID &&
+                  candidate.status === "completed" &&
+                  candidate.worktreeState !== null &&
+                  candidate.worktreeState !== undefined &&
+                  (candidate.touchedPaths?.length ?? 0) > 0,
+              )
+              .map((candidate) => ({ id: candidate.id, touchedPaths: candidate.touchedPaths ?? [] })),
+          )
+        : []
+      const finalWorktree = worktree
+        ? {
+            ...worktree,
+            conflictsWith: conflicts.map((conflict) => conflict.nodeID),
+          }
+        : undefined
       const messages = mailboxService
       const commit = Effect.gen(function* () {
         yield* guardNode(dagID, nodeID, NodeStatus.COMPLETED, attempt)
@@ -1890,6 +1935,10 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
             ...(capturedOutput !== undefined ? { capturedOutput } : {}),
             ...(completionFingerprint !== undefined ? { targetFingerprint: completionFingerprint } : {}),
             ...(staleTarget ? { staleTarget: true } : {}),
+            ...(finalWorktree !== undefined ? { worktree: finalWorktree } : {}),
+            ...(touchedPaths !== undefined || finalWorktree !== undefined
+              ? { touchedPaths: touchedPaths ?? finalWorktree?.touchedPaths ?? [] }
+              : {}),
             durationMs: 0,
             timestamp: yield* Clock.currentTimeMillis,
           }),
@@ -1932,6 +1981,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       trigger: string,
       attempt?: NodeExecutionAttempt,
       errorClass?: string,
+      worktree?: DagEvent.NodeWorktree,
     ) {
       const node = yield* guardNode(dagID, nodeID, NodeStatus.FAILED, attempt)
       const workflow = yield* store.getWorkflow(dagID)
@@ -1946,6 +1996,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
             reason,
             trigger,
             ...(errorClass ? { errorClass } : {}),
+            ...(worktree !== undefined ? { worktree } : {}),
             timestamp: yield* Clock.currentTimeMillis,
           }),
         )
@@ -2215,7 +2266,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
         ),
       nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
         withWorkflowLock(dagID)((lock) => nodeQueued(lock, dagID, nodeID, deadlineMs, attempt)),
-      nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead, targetFingerprint) =>
+      nodeStarted: (dagID, nodeID, childSessionID, deadlineMs, wakeEligible, attempt, directory, baseHead, targetFingerprint, worktree) =>
         withWorkflowLock(dagID)((lock) =>
           nodeStarted(
             lock,
@@ -2228,12 +2279,17 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
             directory,
             baseHead,
             targetFingerprint,
+            worktree,
           ),
         ),
-      nodeCompleted: (dagID, nodeID, output, attempt, capturedOutput) =>
-        withWorkflowLock(dagID)((lock) => nodeCompleted(lock, dagID, nodeID, output, attempt, capturedOutput)),
-      nodeFailed: (dagID, nodeID, reason, trigger, attempt, errorClass) =>
-        withWorkflowLock(dagID)((lock) => nodeFailed(lock, dagID, nodeID, reason, trigger, attempt, errorClass)),
+      nodeCompleted: (dagID, nodeID, output, attempt, capturedOutput, worktree, touchedPaths) =>
+        withWorkflowLock(dagID)((lock) =>
+          nodeCompleted(lock, dagID, nodeID, output, attempt, capturedOutput, worktree, touchedPaths),
+        ),
+      nodeFailed: (dagID, nodeID, reason, trigger, attempt, errorClass, worktree) =>
+        withWorkflowLock(dagID)((lock) =>
+          nodeFailed(lock, dagID, nodeID, reason, trigger, attempt, errorClass, worktree),
+        ),
       nodeSkipped: (dagID, nodeID, reason, attempt) =>
         withWorkflowLock(dagID)((lock) =>
           withMailbox(dagID, undefined, nodeSkipped(lock, dagID, nodeID, reason, attempt)),

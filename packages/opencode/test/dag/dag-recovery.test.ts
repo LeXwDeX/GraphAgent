@@ -4,6 +4,7 @@
 import { describe, expect, it, afterAll } from "bun:test"
 import { $ } from "bun"
 import { createHash } from "node:crypto"
+import { execFileSync } from "node:child_process"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -16,6 +17,9 @@ import { DagMessages } from "@opencode-ai/core/dag/messages"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 import { WorkflowRuntime, toSchedulingNodes } from "@opencode-ai/core/dag/core/scheduling"
 import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
+import { Worktree } from "@/worktree"
+import { InstanceStore } from "@/project/instance-store"
+import { InstanceRef } from "@/effect/instance-ref"
 import { makeNodeRow } from "./fixtures"
 import { testEffect } from "../lib/effect"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
@@ -43,6 +47,14 @@ type TrackedEvent = {
   output?: unknown
   reason?: string
   trigger?: string
+  worktree?: {
+    directory: string
+    state: string
+    commit?: string
+    patchPath?: string
+    touchedPaths: readonly string[]
+  }
+  touchedPaths?: readonly string[]
 }
 
 const effectIt = testEffect(Layer.empty)
@@ -70,18 +82,40 @@ function makeDagLayer(
           ? Effect.fail(new Error("captured output persistence boom"))
           : Effect.sync(() => capturedWrites?.push({ sid, payload })),
     } as unknown as DagStore.Interface,
-    nodeCompleted: Effect.fn("stub.nodeCompleted")((dagID: string, nodeID: string, output: unknown) =>
-      Effect.sync(() => trackedEvents.push({
-        type: "nodeCompleted",
-        nodeID,
-        ...(output === undefined ? {} : { output }),
-      })),
+    nodeCompleted: Effect.fn("stub.nodeCompleted")(
+      (
+        dagID: string,
+        nodeID: string,
+        output: unknown,
+        _attempt?: unknown,
+        _capturedOutput?: unknown,
+        worktree?: TrackedEvent["worktree"],
+        touchedPaths?: readonly string[],
+      ) =>
+        Effect.sync(() =>
+          trackedEvents.push({
+            type: "nodeCompleted",
+            nodeID,
+            ...(output === undefined ? {} : { output }),
+            ...(worktree ? { worktree } : {}),
+            ...(touchedPaths ? { touchedPaths } : {}),
+          }),
+        ),
     ),
-    nodeFailed: Effect.fn("stub.nodeFailed")((dagID: string, nodeID: string, reason: string, trigger: string) =>
-      Effect.sync(() => {
-        actions?.push(`failed:${trigger}`)
-        trackedEvents.push({ type: "nodeFailed", nodeID, reason, trigger })
-      }),
+    nodeFailed: Effect.fn("stub.nodeFailed")(
+      (
+        dagID: string,
+        nodeID: string,
+        reason: string,
+        trigger: string,
+        _attempt?: unknown,
+        _errorClass?: unknown,
+        worktree?: TrackedEvent["worktree"],
+      ) =>
+        Effect.sync(() => {
+          actions?.push(`failed:${trigger}`)
+          trackedEvents.push({ type: "nodeFailed", nodeID, reason, trigger, ...(worktree ? { worktree } : {}) })
+        }),
     ),
     nodeStarted: Effect.fn("stub.nodeStarted")((dagID: string, nodeID: string) =>
       Effect.sync(() => trackedEvents.push({ type: "nodeStarted", nodeID })),
@@ -108,6 +142,104 @@ describe("reconcileWorkflow", () => {
 
     expect(events).toContainEqual({ type: "nodeCompleted", nodeID: "n1", output: "recovered output" })
     expect(events).not.toContainEqual({ type: "nodeFailed", nodeID: "n1" })
+  })
+
+  it("commits, patches and removes an isolated worktree before completing a recovered node", async () => {
+    const owner = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-wt-owner-"))
+    tmpRoots.push(owner)
+    await initGitFixture(owner)
+    await $`git -C ${owner} config user.email test@example.com`.quiet()
+    await $`git -C ${owner} config user.name Test`.quiet()
+    await $`git -C ${owner} commit --allow-empty -q -m root`.quiet()
+    const worktree = path.join(os.tmpdir(), `dag-recovery-wt-${Math.random().toString(36).slice(2)}`)
+    tmpRoots.push(worktree)
+    await $`git -C ${owner} worktree add --detach ${worktree} HEAD`.quiet()
+    const baseHead = (await $`git -C ${worktree} rev-parse HEAD`.text()).trim()
+    await fs.writeFile(path.join(worktree, "changed.txt"), "changed\n")
+
+    const removals: string[] = []
+    const contexts: string[] = []
+    const worktreeLayer = Layer.mock(Worktree.Service, {
+      remove: (input: { directory: string }) =>
+        Effect.gen(function* () {
+          const current = yield* InstanceRef
+          contexts.push(current?.directory ?? "")
+          execFileSync("git", ["-C", owner, "worktree", "remove", "--force", input.directory])
+          removals.push(input.directory)
+          return true
+        }),
+    })
+    const instanceStoreLayer = Layer.succeed(InstanceStore.Service, {
+      provide: (input: { directory: string }, effect: Effect.Effect<unknown>) =>
+        Effect.provideService(effect, InstanceRef, { directory: input.directory } as never),
+    } as never)
+
+    const events: TrackedEvent[] = []
+    const nodes = [
+      makeNodeRow({
+        id: "n1",
+        status: "running",
+        childSessionId: "ses_1",
+        directory: worktree,
+        baseHead,
+        worktreeDirectory: worktree,
+        worktreeState: "active",
+      }),
+    ]
+    const workflow = { id: "wf-1", projectId: "p", directory: owner } as unknown as DagStore.WorkflowRow
+    await Effect.runPromise(
+      reconcileWorkflow(
+        "wf-1",
+        () => Effect.succeed("completed" as const),
+        undefined,
+        { nodes: [{ id: "n1", workspace: owner }] },
+        () => Effect.succeed("done"),
+        owner,
+      ).pipe(Effect.provide(Layer.mergeAll(makeDagLayer(nodes, events, undefined, undefined, undefined, workflow), worktreeLayer, instanceStoreLayer))),
+    )
+
+    expect(events).toEqual([expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" })])
+    const completed = events.find((event) => event.type === "nodeCompleted")
+    expect(completed?.worktree?.state).toBe("removed")
+    expect(completed?.worktree?.commit).toBeDefined()
+    expect(completed?.worktree?.patchPath).toBeDefined()
+    expect(completed?.touchedPaths).toEqual(["changed.txt"])
+    expect(await fs.readFile(completed?.worktree?.patchPath ?? "", "utf8")).toContain("changed.txt")
+    expect(removals).toEqual([worktree])
+    expect(contexts).toHaveLength(1)
+    expect(await fs.realpath(contexts[0])).toBe(await fs.realpath(owner))
+    expect(await fs.stat(worktree).then(() => false, () => true)).toBe(true)
+  })
+
+  it("keeps an isolated worktree when recovery fails the node", async () => {
+    const owner = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-wt-owner-"))
+    tmpRoots.push(owner)
+    await initGitFixture(owner)
+    await $`git -C ${owner} -c user.email=test@example.com -c user.name=Test commit --allow-empty -q -m root`.quiet()
+    const worktree = path.join(os.tmpdir(), `dag-recovery-wt-${Math.random().toString(36).slice(2)}`)
+    tmpRoots.push(worktree)
+    await $`git -C ${owner} worktree add --detach ${worktree} HEAD`.quiet()
+    const events: TrackedEvent[] = []
+    const nodes = [
+      makeNodeRow({
+        id: "n1",
+        status: "running",
+        childSessionId: "ses_1",
+        directory: worktree,
+        worktreeDirectory: worktree,
+        worktreeState: "active",
+      }),
+    ]
+    await Effect.runPromise(
+      reconcileWorkflow("wf-1", () => Effect.succeed("failed" as const)).pipe(
+        Effect.provide(makeDagLayer(nodes, events)),
+      ),
+    )
+
+    const failed = events.find((event) => event.type === "nodeFailed")
+    expect(failed?.worktree?.state).toBe("kept")
+    expect(failed?.worktree?.directory).toBe(worktree)
+    expect((await fs.stat(worktree)).isDirectory()).toBe(true)
   })
 
   it("publishes NodeFailed for running node with failed child session", async () => {

@@ -149,3 +149,92 @@ describe("DagProjector: node execution location", () => {
     )
   })
 })
+
+describe("node worktree view (#946)", () => {
+  it("renders worktree evidence and falls back to touched paths", () => {
+    expect(
+      DagLocation.nodeLocationView({
+        worktreeDirectory: "/data/worktree/wf/node",
+        worktreeBranch: "opencode/dag-wf-node",
+        worktreeCommit: "abcdef1234567890",
+        worktreePatchPath: "/repo/.opencode/workflow-reports/dag_wf/node.patch",
+        worktreePatchSha256: "a".repeat(64),
+        worktreeState: "kept",
+        worktreeConflictsWith: ["other"],
+        touchedPaths: ["src/a.ts"],
+      }),
+    ).toMatchObject({
+      worktree: {
+        directory: "/data/worktree/wf/node",
+        branch: "opencode/dag-wf-node",
+        commit: "abcdef1234567890",
+        patch_path: "/repo/.opencode/workflow-reports/dag_wf/node.patch",
+        patch_sha256: "a".repeat(64),
+        state: "kept",
+        conflicts_with: ["other"],
+        touched_paths: ["src/a.ts"],
+      },
+    })
+    expect(DagLocation.nodeLocationView({ touchedPaths: ["src/a.ts"] })).toEqual({ touched_paths: ["src/a.ts"] })
+  })
+
+  it("projects started and completed worktree metadata", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setup()
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+
+        yield* events.publish(DagEvent.NodeStarted, {
+          dagID,
+          nodeID,
+          childSessionID: Session.ID.make("ses_first"),
+          directory: "/data/worktree/wf/node",
+          worktree: {
+            directory: "/data/worktree/wf/node",
+            branch: "opencode/dag-wf-node",
+            touchedPaths: [],
+            state: "active",
+            conflictsWith: [],
+          },
+          timestamp: ts(2),
+        })
+        expect(yield* store.getNode(dagID, nodeID)).toMatchObject({
+          directory: "/data/worktree/wf/node",
+          worktreeDirectory: "/data/worktree/wf/node",
+          worktreeBranch: "opencode/dag-wf-node",
+          worktreeState: "active",
+        })
+
+        yield* events.publish(DagEvent.NodeCompleted, {
+          dagID,
+          nodeID,
+          output: "done",
+          durationMs: 1,
+          touchedPaths: ["src/a.ts"],
+          worktree: {
+            directory: "/data/worktree/wf/node",
+            branch: "opencode/dag-wf-node",
+            commit: "abcdef1234567890",
+            baseHead: "0123456789abcdef",
+            patchPath: "/repo/.opencode/workflow-reports/dag_wf/node.patch",
+            patchSha256: "a".repeat(64),
+            touchedPaths: ["src/a.ts"],
+            state: "removed",
+            conflictsWith: [DagEvent.NodeID.make("other")],
+          },
+          timestamp: ts(3),
+        })
+        expect(yield* store.getNode(dagID, nodeID)).toMatchObject({
+          status: "completed",
+          worktreeCommit: "abcdef1234567890",
+          worktreePatchPath: "/repo/.opencode/workflow-reports/dag_wf/node.patch",
+          worktreePatchSha256: "a".repeat(64),
+          worktreeState: "removed",
+          worktreeConflictsWith: ["other"],
+          touchedPaths: ["src/a.ts"],
+        })
+      }).pipe(Effect.provide(projectorLayer), Effect.orDie),
+    )
+  })
+})
