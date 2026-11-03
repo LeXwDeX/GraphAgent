@@ -119,9 +119,45 @@ describe("DagIsolation worktree commits", () => {
     const base = git(root, ["rev-parse", "HEAD"])
     expect(DagIsolation.commitWorktree(a, base, "dag: a")).toEqual({ ok: true })
   })
+
+  it("recovers commits already present in a clean worktree after a crash", () => {
+    const root = repo()
+    const a = worktree(root, "a")
+    const base = git(root, ["rev-parse", "HEAD"])
+    writeFileSync(path.join(a, "committed.txt"), "committed\n")
+    git(a, ["add", "-A"])
+    git(a, ["commit", "-m", "child commit"])
+    const head = git(a, ["rev-parse", "HEAD"])
+    expect(git(a, ["status", "--porcelain"])).toBe("")
+
+    const commit = DagIsolation.commitWorktree(a, base, "dag: a")
+    expect(commit.ok).toBe(true)
+    if (!commit.ok || !commit.change) return
+    expect(commit.change.commit).toBe(head)
+    expect(commit.change.touchedPaths).toEqual(["committed.txt"])
+    expect(commit.change.patch).toContain("committed.txt")
+  })
+})
+
+describe("DagIsolation patch artifacts", () => {
+  it("rejects traversal in durable IDs instead of writing outside the report area", () => {
+    const root = repo()
+    expect(() => DagIsolation.writePatchArtifact(root, "../escape", "node", "x")).toThrow(/workflow ID/)
+    expect(() => DagIsolation.writePatchArtifact(root, "dag_1", "../escape", "x")).toThrow(/node ID/)
+    expect(existsSync(path.join(path.dirname(root), "escape"))).toBe(false)
+  })
 })
 
 describe("DagIsolation conflict views", () => {
+  it("treats ancestor and descendant paths as overlapping", () => {
+    expect(DagIsolation.conflictsFor(["src"], [{ id: "a", touchedPaths: ["src/a.ts"] }])).toEqual([
+      { nodeID: "a", paths: ["src/a.ts"] },
+    ])
+    expect(DagIsolation.conflictsFor(["src/a.ts"], [{ id: "a", touchedPaths: ["src"] }])).toEqual([
+      { nodeID: "a", paths: ["src"] },
+    ])
+  })
+
   it("reports each conflicting pair once with the shared paths", () => {
     expect(
       DagIsolation.conflictGroups([

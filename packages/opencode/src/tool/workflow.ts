@@ -578,6 +578,11 @@ export const WorkflowTool = Tool.define<
               // the CURRENT graph revision only. Superseded replaced segments
               // stay reachable via the result seam (getNode is unfiltered).
               const nodes = yield* dag.store.getCurrentNodes(params.workflow_id).pipe(Effect.orDie)
+              // #946: a cancelled/restarted superseded row still owns a
+              // worktree on disk. The worktree view reads every row so those
+              // pointers stay visible; the graph views above stay current-rev
+              // only.
+              const allNodes = yield* dag.store.getNodes(params.workflow_id).pipe(Effect.orDie)
               // #948: the failure reason lives on the durable WorkflowFailed
               // event (no new column). Surface it here so a terminal workflow
               // explains itself, including workspace_missing/unstamped.
@@ -597,7 +602,7 @@ export const WorkflowTool = Tool.define<
               // #946: workflow-level isolation view. Kept worktrees stay
               // visible until an operator removes them; conflicts are a
               // report, never an automatic merge.
-              const worktrees = nodes
+              const worktrees = allNodes
                 .filter((node) => node.worktreeDirectory)
                 .map((node) => ({
                   node_id: node.id,

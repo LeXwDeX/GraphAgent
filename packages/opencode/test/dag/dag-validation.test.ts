@@ -757,4 +757,22 @@ describe("isolation rules", () => {
       expect(errors([node({ id: "explore", worker_type: "explore" })])[0]?.message).toContain("not write-capable")
     }),
   )
+
+  it.effect("rejects target-sensitive nodes", () =>
+    Effect.sync(() => {
+      expect(errors([node({ target_sensitive: true })])[0]?.message).toContain("target-sensitive")
+    }),
+  )
+
+  it.effect("fails closed when the environment profile has no writer catalog", () =>
+    Effect.sync(() => {
+      const diagnostics = DagValidation.isolationDiagnostics({
+        nodes: [node()],
+        profile: "environment",
+        ownerDirectory: "/repo",
+        catalogs: { writer_types: undefined },
+      })
+      expect(diagnostics.some((diagnostic) => diagnostic.message.includes("writer catalog"))).toBe(true)
+    }),
+  )
 })

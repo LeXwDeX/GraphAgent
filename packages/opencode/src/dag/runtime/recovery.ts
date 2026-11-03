@@ -22,7 +22,7 @@
 
 import { HookLifecycle } from "@/hook/lifecycle"
 import { Effect, Clock, Cause, Exit, Option } from "effect"
-import { Dag, isStaleMessageInput } from "../dag"
+import { Dag, isStaleMessageInput, type NodeExecutionAttempt } from "../dag"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { SessionPrompt } from "@/session/prompt"
@@ -53,6 +53,7 @@ import {
   isManagedOutputFileRef,
   verifyOutputFileRef,
 } from "./output-ref"
+import { recoverIsolatedWorktree, recoverWorktreeMetadata } from "./worktree-completion"
 
 export function reconcileWorkflow(
   dagID: string,
@@ -86,6 +87,73 @@ export function reconcileWorkflow(
     const workflow = Option.isSome(messages) ? yield* dag.store.getWorkflow(dagID) : undefined
     const workflowExecutionDirectory =
       executionDirectory ?? workflow?.executionDirectory ?? workflow?.directory ?? undefined
+    // #946: recovery must finish an isolated attempt exactly like the live
+    // path — commit, patch, touched paths, then remove or keep. The Worktree
+    // service and the instance store are lazy for the same bootstrap-cycle
+    // reason as spawn.ts.
+    const { Worktree } = yield* Effect.promise(() => import("@/worktree"))
+    const worktreeSvc = Option.getOrUndefined(yield* Effect.serviceOption(Worktree.Service))
+    const instance = yield* Effect.serviceOption(InstanceRef)
+    const ambient = Option.isSome(instance) ? instance.value : undefined
+    const ambientReal = ambient?.directory ? DagLocation.canonicalDirectory(ambient.directory) : undefined
+    const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
+    const instanceStore = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
+    const inOwnerInstance = <A, E, R>(
+      directory: string | undefined,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> => {
+      const real = directory ? DagLocation.canonicalDirectory(directory) : undefined
+      return instanceStore && real && real !== ambientReal ? instanceStore.provide({ directory: real }, effect) : effect
+    }
+    const nodeOwnerDirectory = (nodeConfig?: Pick<NodeConfig, "workspace">) =>
+      nodeConfig?.workspace ?? workflowExecutionDirectory
+    const failNode = (
+      node: DagStore.NodeRow,
+      reason: string,
+      trigger: string,
+      attempt?: NodeExecutionAttempt,
+      errorClass?: string,
+    ) => {
+      const metadata = recoverWorktreeMetadata(node)
+      return dag.nodeFailed(
+        dagID,
+        node.id,
+        reason,
+        trigger,
+        attempt,
+        errorClass,
+        metadata ? { ...metadata, state: "kept" as const } : undefined,
+      )
+    }
+    const completeNode = (
+      node: DagStore.NodeRow,
+      nodeConfig: Pick<NodeConfig, "workspace"> | undefined,
+      output: unknown,
+      attempt?: NodeExecutionAttempt,
+      capturedOutput?: unknown,
+    ) =>
+      Effect.gen(function* () {
+        const owner = nodeOwnerDirectory(nodeConfig)
+        const completion = yield* recoverIsolatedWorktree({
+          node,
+          dagID,
+          ownerDirectory: owner,
+          worktreeSvc,
+          remove: (directory) =>
+            worktreeSvc ? inOwnerInstance(owner, worktreeSvc.remove({ directory })) : Effect.succeed(false),
+        })
+        if (!completion.ok)
+          return yield* failNode(node, `worktree completion failed: ${completion.reason}`, "exec_failed", attempt)
+        return yield* dag.nodeCompleted(
+          dagID,
+          node.id,
+          output,
+          attempt,
+          capturedOutput,
+          completion.worktree,
+          completion.worktree ? completion.touchedPaths : undefined,
+        )
+      })
     const nodeExecutionDirectory = (node: DagStore.NodeRow, nodeConfig?: Pick<NodeConfig, "workspace">) =>
       node.directory ?? nodeConfig?.workspace ?? workflowExecutionDirectory
     const sessions = yield* Effect.serviceOption(Session.Service)
@@ -147,13 +215,7 @@ export function reconcileWorkflow(
         // outcome exists, so this is an invented failure like ownership loss.
         const settled = yield* settle(
           node.id,
-          dag.nodeFailed(
-            dagID,
-            node.id,
-            "node was running but had no child session on recovery",
-            "exec_failed",
-            attempt,
-          ),
+          failNode(node, "node was running but had no child session on recovery", "exec_failed", attempt),
         )
         if (settled) {
           ownershipLost++
@@ -190,7 +252,7 @@ export function reconcileWorkflow(
             if (
               yield* settle(
                 node.id,
-                dag.nodeFailed(dagID, node.id, "deadline exceeded before message recovery", "timeout", attempt),
+                failNode(node, "deadline exceeded before message recovery", "timeout", attempt),
               )
             )
               reconciled++
@@ -209,9 +271,8 @@ export function reconcileWorkflow(
         if (workflowConfig === null) {
           const settled = yield* settle(
             node.id,
-            dag.nodeFailed(
-              dagID,
-              node.id,
+            failNode(
+              node,
               "child session completed but the workflow config is unparseable on recovery — cannot settle safely",
               "exec_failed",
               attempt,
@@ -273,11 +334,11 @@ export function reconcileWorkflow(
           const completed = yield* settle(
             node.id,
             settlement.kind === "complete"
-              ? dag.nodeCompleted(dagID, node.id, settlement.output, {
+              ? completeNode(node, nodeConfig, settlement.output, {
                   ...attempt,
                   inputSnapshotID: captured.ok ? captured.snapshotID : undefined,
                 })
-              : dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", {
+              : failNode(node, settlement.reason, "verdict_fail", {
                   ...attempt,
                   inputSnapshotID: snapshotID,
                 }),
@@ -290,8 +351,8 @@ export function reconcileWorkflow(
           const settled = yield* settle(
             node.id,
             settlement.kind === "complete"
-              ? dag.nodeCompleted(dagID, node.id, settlement.output, attempt)
-              : dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", attempt),
+              ? completeNode(node, nodeConfig, settlement.output, attempt)
+              : failNode(node, settlement.reason, "verdict_fail", attempt),
           )
           if (settled) reconciled++
         } else {
@@ -315,13 +376,10 @@ export function reconcileWorkflow(
             if (
               yield* settle(
                 node.id,
-                dag.nodeFailed(
-                  dagID,
-                  node.id,
-                  "recovered final assistant response has no associated input snapshot",
-                  "exec_failed",
-                  { ...attempt, expectedAcceptedRevision: currentInput.value.accepted },
-                ),
+                failNode(node, "recovered final assistant response has no associated input snapshot", "exec_failed", {
+                  ...attempt,
+                  expectedAcceptedRevision: currentInput.value.accepted,
+                }),
               )
             )
               reconciled++
@@ -350,7 +408,7 @@ export function reconcileWorkflow(
           }).pipe(
             Effect.as(true),
             Effect.catch((error) =>
-              settle(node.id, dag.nodeFailed(dagID, node.id, error.message, "exec_failed", attempt)).pipe(
+              settle(node.id, failNode(node, error.message, "exec_failed", attempt)).pipe(
                 Effect.tap((settled) =>
                   Effect.sync(() => {
                     if (settled) reconciled++
@@ -395,13 +453,13 @@ export function reconcileWorkflow(
               if (reportDirectory) yield* ensureReportAreaGitignore(reportDirectory, ref.source_path)
               return yield* settle(
                 node.id,
-                dag.nodeCompleted(dagID, node.id, ref.path, { ...attempt, inputSnapshotID: snapshotID }, ref),
+                completeNode(node, nodeConfig, ref.path, { ...attempt, inputSnapshotID: snapshotID }, ref),
               )
             }).pipe(
               Effect.catchCause((cause) =>
                 Cause.hasInterrupts(cause)
                   ? Effect.interrupt
-                  : settle(node.id, dag.nodeFailed(dagID, node.id, Cause.pretty(cause), "exec_failed", attempt)),
+                  : settle(node.id, failNode(node, Cause.pretty(cause), "exec_failed", attempt)),
               ),
             )
             if (restored) reconciled++
@@ -420,7 +478,7 @@ export function reconcileWorkflow(
             if (
               yield* settle(
                 node.id,
-                dag.nodeFailed(dagID, node.id, settlement.reason, "verdict_fail", {
+                failNode(node, settlement.reason, "verdict_fail", {
                   ...attempt,
                   ...(workflowConfig?.result_protocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
                 }),
@@ -480,9 +538,9 @@ export function reconcileWorkflow(
               }
               return yield* settle(
                 node.id,
-                dag.nodeCompleted(
-                  dagID,
-                  node.id,
+                completeNode(
+                  node,
+                  nodeConfig,
                   fileRef?.path ?? rawText,
                   { ...attempt, inputSnapshotID: snapshotID },
                   fileRef,
@@ -492,7 +550,7 @@ export function reconcileWorkflow(
               Effect.catchCause((cause) =>
                 Cause.hasInterrupts(cause)
                   ? Effect.interrupt
-                  : settle(node.id, dag.nodeFailed(dagID, node.id, Cause.pretty(cause), "exec_failed", attempt)),
+                  : settle(node.id, failNode(node, Cause.pretty(cause), "exec_failed", attempt)),
               ),
             )
             if (completed) reconciled++
@@ -516,7 +574,7 @@ export function reconcileWorkflow(
           "child session failed (recovered)",
           lastMessage?.info.role === "assistant" ? lastMessage.info.error : undefined,
         )
-        if (yield* settle(node.id, dag.nodeFailed(dagID, node.id, reason, "exec_failed", attempt))) reconciled++
+        if (yield* settle(node.id, failNode(node, reason, "exec_failed", attempt))) reconciled++
       } else {
         if (cancelSession) {
           yield* cancelSession(node.childSessionId).pipe(
@@ -540,9 +598,8 @@ export function reconcileWorkflow(
             // "ran out of time after N extensions" from "never escalated".
             const settled = yield* settle(
               node.id,
-              dag.nodeFailed(
-                dagID,
-                node.id,
+              failNode(
+                node,
                 node.timeoutExtensions > 0
                   ? `timeout escalated (${node.timeoutExtensions} extension(s)) node failed on recovery`
                   : "deadline exceeded on recovery",
@@ -559,7 +616,7 @@ export function reconcileWorkflow(
         }
         const settled = yield* settle(
           node.id,
-          dag.nodeFailed(dagID, node.id, "execution ownership lost on recovery", "exec_failed", attempt),
+          failNode(node, "execution ownership lost on recovery", "exec_failed", attempt),
         )
         if (settled) {
           ownershipLost++
@@ -717,18 +774,61 @@ export function continueRecoveredMessageNode(
         DagLocation.canonicalDirectory(boundExecutionDirectory) !== DagLocation.canonicalDirectory(ambientDirectory))
         ? instanceStore.provide({ directory: boundExecutionDirectory }, effect)
         : effect
+    // #946: the continuation resumes an isolated attempt too. The loop enters
+    // the owner execution instance before this helper runs, so the Worktree
+    // service sees the owner context (never the worktree itself).
+    const { Worktree } = yield* Effect.promise(() => import("@/worktree"))
+    const worktreeSvc = Option.getOrUndefined(yield* Effect.serviceOption(Worktree.Service))
+    const failNode = (
+      row: DagStore.NodeRow,
+      reason: string,
+      trigger: string,
+      attempt: NodeExecutionAttempt,
+      errorClass?: string,
+    ) => {
+      const metadata = recoverWorktreeMetadata(row)
+      return dag.nodeFailed(
+        dagID,
+        nodeID,
+        reason,
+        trigger,
+        attempt,
+        errorClass,
+        metadata ? { ...metadata, state: "kept" as const } : undefined,
+      )
+    }
+    const completeNode = (
+      row: DagStore.NodeRow,
+      output: unknown,
+      attempt: NodeExecutionAttempt,
+      capturedOutput?: unknown,
+    ) =>
+      Effect.gen(function* () {
+        const completion = yield* recoverIsolatedWorktree({
+          node: row,
+          dagID,
+          ownerDirectory: boundExecutionDirectory,
+          worktreeSvc,
+          remove: (directory) => (worktreeSvc ? worktreeSvc.remove({ directory }) : Effect.succeed(false)),
+        })
+        if (!completion.ok)
+          return yield* failNode(row, `worktree completion failed: ${completion.reason}`, "exec_failed", attempt)
+        return yield* dag.nodeCompleted(
+          dagID,
+          nodeID,
+          output,
+          attempt,
+          capturedOutput,
+          completion.worktree,
+          completion.worktree ? completion.touchedPaths : undefined,
+        )
+      })
     yield* inExecution(
       Effect.gen(function* () {
         const latest = yield* messages.value.latestSnapshot(caller)
         if (!(yield* dispatchable())) return
         if (latest?.ok && latest.value?.stopReason) {
-          yield* dag.nodeFailed(
-            dagID,
-            nodeID,
-            `message recovery blocked: ${latest.value.stopReason}`,
-            "exec_failed",
-            attempt,
-          )
+          yield* failNode(node, `message recovery blocked: ${latest.value.stopReason}`, "exec_failed", attempt)
           return
         }
         const admit = Effect.gen(function* () {
@@ -746,13 +846,7 @@ export function continueRecoveredMessageNode(
             )
               return false
             if (current.deadlineMs !== null && (yield* Clock.currentTimeMillis) >= current.deadlineMs) {
-              yield* dag.nodeFailed(
-                dagID,
-                nodeID,
-                "node deadline expired before message recovery admission",
-                "timeout",
-                attempt,
-              )
+              yield* failNode(current, "node deadline expired before message recovery admission", "timeout", attempt)
               return false
             }
             if (wf.status !== "paused") return true
@@ -781,9 +875,8 @@ export function continueRecoveredMessageNode(
           )
             return
           if (result.info.role !== "assistant" || result.info.error) {
-            yield* dag.nodeFailed(
-              dagID,
-              nodeID,
+            yield* failNode(
+              current,
               childFailureReason(
                 "recovered model turn stopped without a successful result",
                 result.info.role === "assistant" ? result.info.error : undefined,
@@ -817,9 +910,8 @@ export function continueRecoveredMessageNode(
                 ? recoveredSettlement(nodeConfig, all, captured.output, true)
                 : ({ kind: "fail", reason: captured.reason } as const)
               if (settlement.kind === "fail")
-                return yield* dag.nodeFailed(
-                  dagID,
-                  nodeID,
+                return yield* failNode(
+                  current,
                   settlement.reason,
                   "verdict_fail",
                   {
@@ -828,7 +920,7 @@ export function continueRecoveredMessageNode(
                   },
                   !captured.ok && captured.schemaInvalid ? "schema_invalid" : undefined,
                 )
-              return yield* dag.nodeCompleted(dagID, nodeID, settlement.output, {
+              return yield* completeNode(current, settlement.output, {
                 ...attempt,
                 inputSnapshotID: snapshotID,
               })
@@ -842,8 +934,8 @@ export function continueRecoveredMessageNode(
                 current.capturedOutputPresent,
               )
               if (settlement.kind === "fail")
-                return yield* dag.nodeFailed(dagID, nodeID, settlement.reason, "verdict_fail", attempt)
-              return yield* dag.nodeCompleted(dagID, nodeID, settlement.output, {
+                return yield* failNode(current, settlement.reason, "verdict_fail", attempt)
+              return yield* completeNode(current, settlement.output, {
                 ...attempt,
                 inputSnapshotID: current.capturedSnapshotID ?? undefined,
               })
@@ -851,7 +943,7 @@ export function continueRecoveredMessageNode(
             const final = finalAssistantText(result, true)
             const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
             if (settlement.kind === "fail")
-              return yield* dag.nodeFailed(dagID, nodeID, settlement.reason, "verdict_fail", {
+              return yield* failNode(current, settlement.reason, "verdict_fail", {
                 ...attempt,
                 ...(config?.result_protocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
               })
@@ -887,9 +979,8 @@ export function continueRecoveredMessageNode(
               }
               yield* ensureReportAreaGitignore(boundExecutionDirectory, ref.source_path)
             }
-            return yield* dag.nodeCompleted(
-              dagID,
-              nodeID,
+            return yield* completeNode(
+              current,
               ref?.path ?? settlement.output,
               { ...attempt, inputSnapshotID: snapshotID },
               ref,
@@ -900,9 +991,8 @@ export function continueRecoveredMessageNode(
           )
           if (settled) return
           if (frozen.ok && frozen.value?.stopReason) {
-            yield* dag.nodeFailed(
-              dagID,
-              nodeID,
+            yield* failNode(
+              current,
               `message recovery continuation blocked: ${frozen.value.stopReason}`,
               "exec_failed",
               attempt,
@@ -922,18 +1012,15 @@ export function continueRecoveredMessageNode(
             const claim = yield* messages.value.claimResultNudge(caller, inbox.value.accepted)
             if (!claim.ok && claim.reason === "stale_input") nudge = false
             else if (!claim.ok || !claim.value) {
-              const failed = yield* dag
-                .nodeFailed(
-                  dagID,
-                  nodeID,
-                  `unchanged agent input cannot retry structured result: ${claim.ok ? "resubmission already requested" : claim.reason}`,
-                  "exec_failed",
-                  { ...attempt, ...(claim.ok ? { expectedAcceptedRevision: inbox.value.accepted } : {}) },
-                )
-                .pipe(
-                  Effect.as(true),
-                  Effect.catchIf(isStaleMessageInput, () => Effect.succeed(false)),
-                )
+              const failed = yield* failNode(
+                current,
+                `unchanged agent input cannot retry structured result: ${claim.ok ? "resubmission already requested" : claim.reason}`,
+                "exec_failed",
+                { ...attempt, ...(claim.ok ? { expectedAcceptedRevision: inbox.value.accepted } : {}) },
+              ).pipe(
+                Effect.as(true),
+                Effect.catchIf(isStaleMessageInput, () => Effect.succeed(false)),
+              )
               if (failed) return
               nudge = false
             }

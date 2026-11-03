@@ -15,7 +15,7 @@ export * as DagIsolation from "./isolation"
 
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, normalize, sep } from "node:path"
 
 export type WorktreeState = "active" | "removed" | "kept"
@@ -27,9 +27,9 @@ export interface WorktreeMetadata {
   baseHead?: string
   patchPath?: string
   patchSha256?: string
-  touchedPaths: string[]
+  touchedPaths: readonly string[]
   state: WorktreeState
-  conflictsWith: string[]
+  conflictsWith: readonly string[]
 }
 
 export interface WorktreeCommit {
@@ -120,13 +120,37 @@ export function touchedPaths(directory: string): string[] {
   return status.ok ? parsePorcelain(status.text) : []
 }
 
+function parseNameList(text: string): string[] {
+  return [...new Set(text.split("\0").filter(Boolean).map(normalizeTouchedPath))].sort()
+}
+
 /** Commit everything in an isolated worktree. No changes is a successful
- * no-op; a failed `git add`/`git commit`/`git diff` surfaces the git reason. */
+ * no-op; a failed `git add`/`git commit`/`git diff` surfaces the git reason.
+ * A clean working tree can still be a committed attempt from a crash before
+ * the completion event was persisted; `baseHead..HEAD` then carries the work. */
 export function commitWorktree(directory: string, baseHead: string, message: string): WorktreeCommitResult {
   const status = git(directory, ["status", "--porcelain"])
   if (!status.ok) return { ok: false, reason: `git status failed: ${status.reason}` }
   const touched = parsePorcelain(status.text)
-  if (touched.length === 0) return { ok: true }
+  if (touched.length === 0) {
+    if (!baseHead) return { ok: true }
+    const head = git(directory, ["rev-parse", "HEAD"])
+    if (!head.ok) return { ok: false, reason: `git rev-parse failed: ${head.reason}` }
+    if (head.text.trim() === baseHead) return { ok: true }
+    const patch = git(directory, ["diff", "--binary", baseHead, "HEAD"])
+    if (!patch.ok) return { ok: false, reason: `git diff failed: ${patch.reason}` }
+    if (patch.text.length === 0) return { ok: true }
+    const names = git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"])
+    if (!names.ok) return { ok: false, reason: `git diff --name-only failed: ${names.reason}` }
+    return {
+      ok: true,
+      change: {
+        commit: head.text.trim(),
+        touchedPaths: parseNameList(names.text),
+        patch: patch.text,
+      },
+    }
+  }
   const added = git(directory, ["add", "-A"])
   if (!added.ok) return { ok: false, reason: `git add failed: ${added.reason}` }
   const committed = git(directory, ["commit", "-m", message])
@@ -145,6 +169,15 @@ export function commitWorktree(directory: string, baseHead: string, message: str
   }
 }
 
+/** A path component written by an isolated node's own identifiers. Durable
+ * event IDs are free-form strings, so reject traversal before joining them
+ * into the shared report directory. */
+function safePathComponent(value: string, label: string): string {
+  if (!value || value === "." || value === ".." || /[\\/\0]/.test(value))
+    throw new Error(`invalid ${label} for patch artifact: ${JSON.stringify(value)}`)
+  return value
+}
+
 /** Write an isolated node's patch under the shared report area so it survives
  * the worktree removal. Returns the absolute path and its sha256. */
 export function writePatchArtifact(
@@ -153,20 +186,85 @@ export function writePatchArtifact(
   nodeID: string,
   patch: string,
 ): { path: string; sha256: string } {
-  const directory = join(reportRoot, ".opencode", "workflow-reports", dagID)
+  const directory = join(reportRoot, ".opencode", "workflow-reports", safePathComponent(dagID, "workflow ID"))
   mkdirSync(directory, { recursive: true })
-  const path = join(directory, `${nodeID}.patch`)
+  const path = join(directory, `${safePathComponent(nodeID, "node ID")}.patch`)
   writeFileSync(path, patch)
   return { path, sha256: createHash("sha256").update(patch).digest("hex") }
 }
 
+export interface WorktreeCompletion {
+  worktree: WorktreeMetadata
+  touchedPaths: string[]
+}
+
+export type WorktreeCompletionResult =
+  | { ok: true; completion: WorktreeCompletion }
+  | { ok: false; reason: string }
+
+/** The shared completion step for an isolated node: commit pending work,
+ * persist a patch, and return the metadata the caller records. Removal is the
+ * caller's job because it needs the owner instance context. */
+export function completeWorktree(input: {
+  worktree: WorktreeMetadata
+  reportRoot: string
+  dagID: string
+  nodeID: string
+  message: string
+}): WorktreeCompletionResult {
+  if (!existsSync(input.worktree.directory))
+    return {
+      ok: true,
+      completion: { worktree: { ...input.worktree, state: "removed" }, touchedPaths: [] },
+    }
+  const commit = commitWorktree(input.worktree.directory, input.worktree.baseHead ?? "", input.message)
+  if (!commit.ok) return commit
+  if (!commit.change)
+    return {
+      ok: true,
+      completion: {
+        worktree: { ...input.worktree, touchedPaths: [], state: input.worktree.state },
+        touchedPaths: [],
+      },
+    }
+  try {
+    const artifact = writePatchArtifact(input.reportRoot, input.dagID, input.nodeID, commit.change.patch)
+    return {
+      ok: true,
+      completion: {
+        worktree: {
+          ...input.worktree,
+          commit: commit.change.commit,
+          patchPath: artifact.path,
+          patchSha256: artifact.sha256,
+          touchedPaths: commit.change.touchedPaths,
+          state: input.worktree.state,
+        },
+        touchedPaths: commit.change.touchedPaths,
+      },
+    }
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** True when two touched paths name the same file or one contains the other.
+ * Git status reports files, but a writer may add a path below a directory
+ * another writer touched; treating that as overlap keeps the conflict report
+ * conservative. */
+export function pathOverlaps(a: string, b: string): boolean {
+  const first = normalizeTouchedPath(a)
+  const second = normalizeTouchedPath(b)
+  return first === second || first.startsWith(`${second}/`) || second.startsWith(`${first}/`)
+}
+
 export function conflictsFor(touched: readonly string[], others: readonly TouchedNode[]): ConflictingNode[] {
-  const current = new Set(touched.map(normalizeTouchedPath))
-  if (current.size === 0) return []
+  const current = touched.map(normalizeTouchedPath)
+  if (current.length === 0) return []
   return others.flatMap((node) => {
     const overlap = node.touchedPaths
       .map(normalizeTouchedPath)
-      .filter((path) => current.has(path))
+      .filter((path) => current.some((candidate) => pathOverlaps(candidate, path)))
     if (overlap.length === 0) return []
     return [{ nodeID: node.id, paths: [...new Set(overlap)].sort() }]
   })
@@ -190,8 +288,14 @@ export function conflictGroups(nodes: readonly ConflictNode[]): ConflictGroup[] 
       const key = [node.id, otherID].sort().join("\0")
       if (seen.has(key)) continue
       seen.add(key)
-      const touched = new Set(other.touchedPaths.map(normalizeTouchedPath))
-      const paths = [...new Set(node.touchedPaths.map(normalizeTouchedPath).filter((path) => touched.has(path)))].sort()
+      const touched = other.touchedPaths.map(normalizeTouchedPath)
+      const paths = [
+        ...new Set(
+          node.touchedPaths
+            .map(normalizeTouchedPath)
+            .filter((path) => touched.some((candidate) => pathOverlaps(candidate, path))),
+        ),
+      ].sort()
       groups.push({ nodes: orderedPair(node.id, otherID), paths })
     }
   }
@@ -222,8 +326,14 @@ export function parallelOverlaps(nodes: readonly OverlapNode[]): ParallelOverlap
       const first = writers[a]
       const second = writers[b]
       if (reaches(byID, first.id, second.id) || reaches(byID, second.id, first.id)) continue
-      const touched = new Set(second.touchedPaths.map(normalizeTouchedPath))
-      const paths = [...new Set(first.touchedPaths.map(normalizeTouchedPath).filter((path) => touched.has(path)))].sort()
+      const touched = second.touchedPaths.map(normalizeTouchedPath)
+      const paths = [
+        ...new Set(
+          first.touchedPaths
+            .map(normalizeTouchedPath)
+            .filter((path) => touched.some((candidate) => pathOverlaps(candidate, path))),
+        ),
+      ].sort()
       if (paths.length === 0) continue
       overlaps.push({ nodes: orderedPair(first.id, second.id), paths })
     }

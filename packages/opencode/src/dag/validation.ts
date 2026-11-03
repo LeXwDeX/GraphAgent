@@ -1670,9 +1670,19 @@ export function isolationDiagnostics(input: {
       if (node.workspace !== undefined)
         problems.push(`node "${node.id}" sets both isolation and workspace; they are mutually exclusive`)
       if (node.review !== undefined) problems.push(`review node "${node.id}" cannot use worktree isolation`)
+      if (node.target_sensitive === true)
+        problems.push(`target-sensitive node "${node.id}" cannot use worktree isolation`)
       if (isReadonlyWorker(node.worker_type))
         problems.push(`worker type "${node.worker_type}" is not write-capable and cannot use worktree isolation`)
       if (
+        input.profile === "environment" &&
+        input.catalogs !== undefined &&
+        input.catalogs.writer_types === undefined
+      )
+        problems.push(
+          `worker type "${node.worker_type}" cannot be verified as write-capable because the writer catalog is unavailable`,
+        )
+      else if (
         input.profile === "environment" &&
         input.catalogs?.writer_types !== undefined &&
         !input.catalogs.writer_types.has(node.worker_type)

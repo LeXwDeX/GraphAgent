@@ -17,6 +17,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
+import { and, eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
@@ -174,6 +175,41 @@ describe("Train A rev-view — projector marking", () => {
         // View reads see only the current revision; durable reads see all.
         expect((yield* store.getCurrentNodes("dag_rev")).map((n) => n.id)).toEqual(["n1"])
         expect((yield* store.getNodes("dag_rev")).map((n) => n.id).sort()).toEqual(["n1", "n2", "n3"])
+      }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
+    )
+  })
+
+  test("NodeRestarted preserves the worktree pointer until the replacement starts", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed("running")
+        const { db } = yield* Database.Service
+        yield* db
+          .update(WorkflowNodeTable)
+          .set({
+            status: "running",
+            child_session_id: SessionSchema.ID.create(),
+            worktree_directory: "/repo/.worktrees/wt",
+            worktree_branch: "opencode/wt",
+            worktree_state: "active",
+            touched_paths: ["src/a.ts"],
+          })
+          .where(and(eq(WorkflowNodeTable.workflow_id, "dag_rev"), eq(WorkflowNodeTable.id, "n1")))
+          .run()
+          .pipe(Effect.orDie)
+        const events = yield* EventV2.Service
+        yield* events.publish(DagEvent.NodeRestarted, {
+          dagID: DagEvent.DagID.make("dag_rev"),
+          nodeID: DagEvent.NodeID.make("n1"),
+          childSessionID: SessionSchema.ID.create(),
+          timestamp: yield* DateTime.now,
+        })
+        const node = yield* (yield* DagStore.Service).getNode("dag_rev", "n1")
+        expect(node?.status).toBe("pending")
+        expect(node?.worktreeDirectory).toBe("/repo/.worktrees/wt")
+        expect(node?.worktreeBranch).toBe("opencode/wt")
+        expect(node?.worktreeState).toBe("active")
+        expect(node?.touchedPaths).toEqual(["src/a.ts"])
       }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
     )
   })

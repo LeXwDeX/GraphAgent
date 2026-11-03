@@ -559,16 +559,12 @@ export const layer = Layer.effectDiscard(
           // per-attempt, not lifetime.
           timeout_extensions: 0,
           escalation_pending: false,
-          // #946: the replacement attempt starts without the previous
-          // worktree evidence; NodeStarted records the new worktree, if any.
-          worktree_directory: null,
-          worktree_branch: null,
-          worktree_commit: null,
-          worktree_patch_path: null,
-          worktree_patch_sha256: null,
-          worktree_state: null,
-          worktree_conflicts_with: null,
-          touched_paths: null,
+          // #946: keep the previous worktree pointer until the replacement
+          // attempt publishes NodeStarted (which overwrites or clears it).
+          // A restarted node whose replacement never spawns must keep its
+          // kept/active worktree visible; clearing here orphaned it silently.
+          // (worktree_directory/branch/commit/patch/state/conflicts_with and
+          // touched_paths are intentionally not reset.)
           seq: event.durable!.seq,
           time_updated: toMillis(event.data.timestamp),
         })

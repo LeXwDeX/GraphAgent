@@ -13,8 +13,11 @@ import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { Worktree } from "@/worktree"
+import { InstanceStore } from "@/project/instance-store"
+import { InstanceRef } from "@/effect/instance-ref"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { DagIsolation } from "@/dag/isolation"
+import { TerminalViolationError } from "@opencode-ai/core/dag/core/types"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 
@@ -54,6 +57,7 @@ interface Harness {
   directories: Map<string, string>
   worktrees: string[]
   fail: boolean
+  rejectNodeStarted: boolean
   prompt: (sessionID: string, directory: string) => void
 }
 
@@ -87,6 +91,7 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
     directories: new Map(),
     worktrees: [],
     fail: mode === "failure",
+    rejectNodeStarted: false,
     prompt: () => {},
   }
   const store: Partial<DagStore.Interface> = {
@@ -111,7 +116,11 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
   const dagLayer = Layer.mock(Dag.Service, {
     store: store as DagStore.Interface,
     nodeQueued: Effect.fn("s")(() => Effect.void),
-    nodeStarted: Effect.fn("s")(() => Effect.void),
+    nodeStarted: Effect.fn("s")((): Effect.Effect<void, TerminalViolationError> =>
+      harness.rejectNodeStarted
+        ? Effect.fail(new TerminalViolationError("node-1", "failed", "started"))
+        : Effect.void,
+    ),
     nodeCompleted: Effect.fn("s")(
       (
         _dagID: string,
@@ -189,6 +198,7 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
         harness.prompt(input.sessionID, harness.directories.get(input.sessionID) ?? target)
         return reply(input.sessionID)
       }),
+    cancel: () => Effect.void,
   })
   const worktreeLayer = Layer.mock(Worktree.Service, {
     create: (input?: { name?: string }) =>
@@ -202,14 +212,30 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
         return { name, branch: `opencode/${name}`, directory }
       }),
     remove: (input: { directory: string }) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        // Mirror Worktree.removeLocked: the current instance must never be the
+        // worktree being removed.
+        const current = yield* InstanceRef
+        if (current && path.resolve(current.directory) === path.resolve(input.directory))
+          return yield* Effect.fail(new Worktree.RemoveFailedError({ message: "Cannot remove the primary or current worktree" }))
         execFileSync("git", ["-C", target, "worktree", "remove", "--force", input.directory])
         harness.removals.push(input.directory)
         return true
       }),
     list: () => Effect.succeed([]),
   })
-  harness.layer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer, worktreeLayer) as never
+  const instanceStoreLayer = Layer.succeed(InstanceStore.Service, {
+    provide: (input: { directory: string }, effect: Effect.Effect<unknown>) =>
+      Effect.provideService(effect, InstanceRef, { directory: input.directory } as never),
+  } as never)
+  harness.layer = Layer.mergeAll(
+    dagLayer,
+    agentLayer,
+    sessionLayer,
+    promptLayer,
+    worktreeLayer,
+    instanceStoreLayer,
+  ) as never
   return harness
 }
 
@@ -294,6 +320,23 @@ describe("spawn worktree isolation", () => {
     expect(git(target, ["status", "--porcelain"])).toContain("?? shared.txt")
   })
 
+  it("does not attribute pre-existing edits to a non-isolated writer", async () => {
+    const target = repo()
+    writeFileSync(path.join(target, "preexisting.txt"), "before\n")
+    const harness = makeHarness(target)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness, false))
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toHaveLength(1)
+    expect(harness.completed[0]?.touchedPaths).toEqual(["shared.txt"])
+  })
+
   it("keeps a failed node's worktree for inspection", async () => {
     const target = repo()
     const harness = makeHarness(target, "failure")
@@ -311,5 +354,26 @@ describe("spawn worktree isolation", () => {
     expect(harness.failed[0]?.worktree?.state).toBe("kept")
     expect(harness.removals).toEqual([])
     expect(existsSync(harness.failed[0]?.worktree?.directory ?? "")).toBe(true)
+  })
+
+  it("removes a worktree whose nodeStarted was rejected before any row referenced it", async () => {
+    const target = repo()
+    const harness = makeHarness(target)
+    harness.rejectNodeStarted = true
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    // The node was terminalized by another control op: no settlement event is
+    // published, and the unrecorded worktree must not leak.
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toEqual([])
+    expect(harness.removals).toHaveLength(1)
+    for (const worktree of harness.worktrees) expect(existsSync(worktree)).toBe(false)
   })
 })

@@ -82,6 +82,7 @@ import {
   type ManagedOutputFileRef,
 } from "./output-ref"
 import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
+import { completeIsolatedNode } from "./worktree-completion"
 import { Permission } from "@/permission"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -640,6 +641,10 @@ export function spawnNode(
     // Unsettled creations are removed by the ensuring cleanup.
     let isolatedWorktree: DagEvent.NodeWorktree | undefined
     let worktreeHandled = false
+    // Set only after NodeStarted is durably published. Before that point no
+    // row references the worktree, so every exit path (including a rejected
+    // admission or a terminalized node) must remove it.
+    let started = false
     const hookOrigin = agent.hookOrigin ? `agent:${agent.hookOrigin}` : `agent-config:${agent.name}`
 
     // Forked first so the execution fiber's cleanup closures can capture it.
@@ -872,6 +877,11 @@ export function spawnNode(
             worktreeHandled = false
             nodeDirectory = info.directory
           }
+          // #946: a non-isolated writer shares the checkout, so only paths it
+          // changed after spawn count as its work. Existing edits belong to the
+          // user or an earlier attempt and must not be attributed or warned.
+          const initialTouched =
+            !input.isolation && nodeDirectory ? new Set(DagIsolation.touchedPaths(nodeDirectory)) : undefined
           const nodeExecutionReal = nodeDirectory ? DagLocation.canonicalDirectory(nodeDirectory) : undefined
           const nodeExecution = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
             inInstance(nodeExecutionReal, effect)
@@ -966,6 +976,10 @@ export function spawnNode(
               ),
             )
           if (terminalized) return
+          // The durable row now references this worktree; failures keep it and
+          // completion removes it. Before this point no row does, so cleanup
+          // must remove it.
+          started = true
 
           const settlementAttempt = {
             replanAttempts: input.node.replanAttempts,
@@ -1009,74 +1023,27 @@ export function spawnNode(
               let touchedPaths: string[] = []
               let metadata = isolatedWorktree
               if (metadata) {
-                const commit = yield* Effect.try({
-                  try: () =>
-                    DagIsolation.commitWorktree(
-                      metadata!.directory,
-                      metadata!.baseHead ?? DagLocation.gitHead(metadata!.directory) ?? "",
-                      `dag: ${input.nodeID} (${input.dagID})`,
-                    ),
-                  catch: (error) => (error instanceof Error ? error.message : String(error)),
-                }).pipe(Effect.result)
-                if (commit._tag === "Failure") {
-                  yield* nodeFailure(`worktree commit failed: ${commit.failure}`, "exec_failed", attempt)
+                const completion = yield* completeIsolatedNode({
+                  worktree: metadata,
+                  ownerDirectory: executionDirectory ?? metadata.directory,
+                  dagID: input.dagID,
+                  nodeID: input.nodeID,
+                  message: `dag: ${input.nodeID} (${input.dagID})`,
+                  remove: (directory) =>
+                    worktreeSvc
+                      ? inInstance(executionDirectory, worktreeSvc.remove({ directory }))
+                      : Effect.succeed(false),
+                })
+                if (!completion.ok) {
+                  yield* nodeFailure(`worktree completion failed: ${completion.reason}`, "exec_failed", attempt)
                   return
                 }
-                if (!commit.success.ok) {
-                  yield* nodeFailure(`worktree commit failed: ${commit.success.reason}`, "exec_failed", attempt)
-                  return
-                }
-                const change = commit.success.change
-                if (change) {
-                  const artifact = yield* Effect.try({
-                    try: () =>
-                      DagIsolation.writePatchArtifact(
-                        executionDirectory ?? metadata!.directory,
-                        input.dagID,
-                        input.nodeID,
-                        change.patch,
-                      ),
-                    catch: (error) => (error instanceof Error ? error.message : String(error)),
-                  }).pipe(Effect.result)
-                  if (artifact._tag === "Failure") {
-                    yield* nodeFailure(`worktree patch write failed: ${artifact.failure}`, "exec_failed", attempt)
-                    return
-                  }
-                  metadata = {
-                    ...metadata,
-                    commit: change.commit,
-                    patchPath: artifact.success.path,
-                    patchSha256: artifact.success.sha256,
-                    touchedPaths: change.touchedPaths,
-                    state: "removed",
-                  }
-                  touchedPaths = change.touchedPaths
-                  // Keep the report area out of the shared checkout's status.
-                  yield* ensureReportAreaGitignore(executionDirectory ?? metadata.directory, artifact.success.path)
-                } else {
-                  metadata = { ...metadata, touchedPaths: [], state: "removed" }
-                }
-                // Owner instance performs cleanup; never raw rm -rf.
-                worktreeHandled = true
-                if (worktreeSvc) {
-                  const removed = yield* inInstance(
-                    metadata.directory,
-                    worktreeSvc.remove({ directory: metadata.directory }),
-                  ).pipe(Effect.result)
-                  if (removed._tag === "Failure" || !removed.success) {
-                    metadata = { ...metadata, state: "kept" }
-                    yield* Effect.logWarning("worktree remove failed; keeping it for inspection", {
-                      dagID: input.dagID,
-                      nodeID: input.nodeID,
-                      directory: metadata.directory,
-                    })
-                  }
-                } else {
-                  metadata = { ...metadata, state: "kept" }
-                }
+                metadata = completion.worktree
+                touchedPaths = completion.touchedPaths
                 isolatedWorktree = metadata
+                worktreeHandled = true
               } else if (nodeDirectory) {
-                touchedPaths = yield* Effect.sync(() => DagIsolation.touchedPaths(nodeDirectory))
+                touchedPaths = DagIsolation.touchedPaths(nodeDirectory).filter((path) => !initialTouched?.has(path))
                 yield* warnParallelOverlap(touchedPaths)
               }
               yield* dag.nodeCompleted(
@@ -1772,13 +1739,14 @@ export function spawnNode(
               clearFinalResponseSession(childSessionID)
               if (hooks?.unregisterScoped) yield* hooks.unregisterScoped(childSessionID, hookOrigin)
             }
-            // #946: an attempt that never created a child session (for
-            // example a failed session creation) must not leak its worktree.
-            // Once a child exists, a failure keeps the worktree for
+            // #946: a worktree whose NodeStarted never published has no
+            // durable row and must not leak — including the terminalized
+            // admission return above, which has a child session but no row.
+            // Once NodeStarted published, failure keeps the worktree for
             // inspection and the catchCause below records it as kept.
-            if (isolatedWorktree && !worktreeHandled && !childSessionID && worktreeSvc) {
+            if (isolatedWorktree && !worktreeHandled && !started && worktreeSvc) {
               const directory = isolatedWorktree.directory
-              const removed = yield* inInstance(directory, worktreeSvc.remove({ directory })).pipe(
+              const removed = yield* inInstance(executionDirectory, worktreeSvc.remove({ directory })).pipe(
                 Effect.result,
                 Effect.catchCause((cause) =>
                   Cause.hasInterrupts(cause)
@@ -1815,9 +1783,10 @@ export function spawnNode(
                   reason: childAbort("runtime-interrupt", "runtime-scope"),
                 }),
               )
-            // A started attempt keeps its worktree for inspection; the
-            // unsettled pre-session case is removed by the ensuring cleanup.
-            if (childSessionID && isolatedWorktree) worktreeHandled = true
+            // A started attempt keeps its worktree for inspection; a
+            // pre-NodeStarted attempt was already removed by the ensuring
+            // cleanup above.
+            if (started && isolatedWorktree) worktreeHandled = true
           }),
         ),
         Effect.catchCause((cause) =>

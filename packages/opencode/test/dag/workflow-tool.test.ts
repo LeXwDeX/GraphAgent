@@ -413,7 +413,26 @@ const store = Layer.mock(DagStore.Service, {
                   }
                 : undefined,
     ),
-  getNodes: (id: string) => Effect.succeed(mockNodes(id)),
+  getNodes: (id: string) =>
+    Effect.succeed(
+      id === "dag_status"
+        ? [
+            ...mockNodes(id),
+            makeNodeRow({
+              id: "node_orphan",
+              workflowId: id,
+              name: "Orphaned writer",
+              status: "failed",
+              required: false,
+              superseded: true,
+              worktreeDirectory: "/repo/.worktrees/status-node-orphan",
+              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeState: "active",
+              touchedPaths: ["src/orphan.ts"],
+            }),
+          ]
+        : mockNodes(id),
+    ),
   // Rev-view: status reads the current graph revision; the mock offers the
   // same rows (none superseded) so legacy expectations stay intact.
   getCurrentNodes: (id: string) => Effect.succeed(mockNodes(id)),
@@ -1247,6 +1266,9 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"worktrees"')
       expect(result.output).toContain('"state": "kept"')
       expect(result.output).toContain('"branch": "opencode/dag-status-node-failed"')
+      // A cancelled/restarted superseded row still owns an active worktree.
+      expect(result.output).toContain('"directory": "/repo/.worktrees/status-node-orphan"')
+      expect(result.output).toContain('"state": "active"')
       expect(result.output).toContain('"conflicts"')
       expect(result.output).toContain('"src/shared.ts"')
     }),
