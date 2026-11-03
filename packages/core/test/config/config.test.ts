@@ -373,6 +373,81 @@ describe("Config", () => {
     ),
   )
 
+  it.live("expands environment and file variables before migrating provider configuration", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const name = "GRAPHAGENT_969_TEST_URL"
+          const previous = process.env[name]
+          const envURL = "https://env.example.test/v1"
+          const fileURL = "https://file.example.test/v1"
+          process.env[name] = envURL
+          try {
+            yield* Effect.promise(async () => {
+              await fs.writeFile(path.join(tmp.path, "url.txt"), `  ${fileURL}\n`)
+              await fs.writeFile(path.join(tmp.path, "value.txt"), '  value "with" \\ escapes\nnext line  ')
+              await fs.writeFile(
+                path.join(tmp.path, "config.json"),
+                JSON.stringify({
+                  provider: {
+                    relay: { npm: "@ai-sdk/openai-compatible", options: { baseURL: `{env:${name}}` } },
+                  },
+                }),
+              )
+              await fs.writeFile(
+                path.join(tmp.path, "opencode.jsonc"),
+                `{
+                  // {file:missing-in-comment.txt}
+                  "username": "{file:value.txt}",
+                  "providers": { "local": { "api": { "type": "aisdk", "package": "@ai-sdk/openai-compatible", "url": "{file:url.txt}", "settings": {} } } }
+                }`,
+              )
+            })
+            const entries = yield* Effect.gen(function* () {
+              return yield* (yield* Config.Service).entries()
+            }).pipe(Effect.provide(testLayer(tmp.path)))
+            const migrated = entries.find((entry) => entry.type === "document" && entry.path?.endsWith("config.json"))
+            const current = entries.find((entry) => entry.type === "document" && entry.path?.endsWith("opencode.jsonc"))
+            const envApi = migrated?.type === "document" ? migrated.info.providers?.relay?.api : undefined
+            const fileApi = current?.type === "document" ? current.info.providers?.local?.api : undefined
+            expect(envApi?.type).toBe("aisdk")
+            expect(fileApi?.type).toBe("aisdk")
+            if (envApi?.type !== "aisdk" || fileApi?.type !== "aisdk") throw new Error("provider API missing")
+            expect(new URL(envApi.url ?? "").href).toBe(envURL)
+            expect(new URL(fileApi.url ?? "").href).toBe(fileURL)
+            expect(current?.type === "document" && current.info.username).toBe('value "with" \\ escapes\nnext line')
+          } finally {
+            if (previous === undefined) delete process.env[name]
+            else process.env[name] = previous
+          }
+        }),
+      ),
+    ),
+  )
+
+  it.live("keeps the active config when a file variable is missing during refresh", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const config = yield* Config.Service
+          const previous = yield* config.entries()
+          yield* Effect.promise(() =>
+            fs.writeFile(path.join(tmp.path, "opencode.json"), JSON.stringify({ username: "{file:missing.txt}" })),
+          )
+          const refresh = config.refresh
+          if (!refresh) throw new Error("config refresh unavailable")
+          const result = yield* refresh().pipe(Effect.exit)
+          expect(Exit.isFailure(result)).toBe(true)
+          expect(yield* config.entries()).toEqual(previous)
+        }).pipe(Effect.provide(testLayer(tmp.path))),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("loads JSON and JSONC files from lowest to highest priority", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

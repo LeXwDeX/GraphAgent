@@ -9,6 +9,9 @@ import {
   Model,
   TransportReason,
   InvalidRequestReason,
+  HttpContext,
+  HttpRequestDetails,
+  HttpResponseDetails,
   type LLMClientShape,
   type LLMRequest,
 } from "@opencode-ai/llm"
@@ -31,6 +34,7 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
@@ -57,7 +61,7 @@ import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Logger, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -600,6 +604,91 @@ const verifyPartialFlushOnInterruption = (kind: FragmentKind) =>
   })
 
 describe("SessionRunnerLLM", () => {
+  it.effect("logs bounded failure metadata for the actual default model without prompt or credentials", () =>
+    Effect.gen(function* () {
+      yield* setup
+      requests.length = 0
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          requests.length = 0
+        }),
+      )
+      const session = yield* SessionV2.Service
+      const store = yield* SessionStore.Service
+      const runner = yield* SessionRunner.Service
+      const prompt = "prompt-canary-never-log-this"
+      const credential = "credential-canary-never-log-this"
+      expect((yield* store.get(sessionID))?.model).toBeUndefined()
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: prompt }), resume: false })
+      const failure = new LLMError({
+        module: "test",
+        method: "stream",
+        reason: new TransportReason({
+          message: `provider response: ${prompt} ${credential}`,
+          http: new HttpContext({
+            request: new HttpRequestDetails({
+              method: "POST",
+              url: "https://example.invalid",
+              headers: { authorization: credential },
+            }),
+            response: new HttpResponseDetails({ status: 503, headers: {} }),
+            body: prompt,
+          }),
+        }),
+      })
+      streamFailure = failure
+      const logs: Array<ReturnType<typeof Logger.formatStructured.log>> = []
+      const logger = Logger.map(Logger.formatStructured, (entry) => logs.push(entry))
+      const result = yield* SessionExecutionLocal.drain(sessionID, (onModelResolved) =>
+        runner.run({ sessionID, force: true, onModelResolved }),
+      ).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])), Effect.flip)
+      expect(result).toBe(failure)
+      const diagnostic = logs.find(
+        (entry) => Array.isArray(entry.message) && entry.message[0] === "Failed to drain Session",
+      )
+      expect(diagnostic).toBeDefined()
+      expect(diagnostic?.message).toMatchObject([
+        "Failed to drain Session",
+        {
+          sessionID,
+          providerID: "fake",
+          modelID: "fake-model",
+          errorCategory: "Transport",
+          errorCode: 503,
+          retryable: false,
+          durationMs: expect.any(Number),
+        },
+      ])
+      expect(JSON.stringify(diagnostic)).not.toContain(prompt)
+      expect(JSON.stringify(diagnostic)).not.toContain(credential)
+    }),
+  )
+
+  it.effect("omits defect content and does not log interruption-only exits", () =>
+    Effect.gen(function* () {
+      const logs: Array<ReturnType<typeof Logger.formatStructured.log>> = []
+      const logger = Logger.map(Logger.formatStructured, (entry) => logs.push(entry))
+      const defect = new Error("prompt-and-credential-canary")
+      const exit = yield* SessionExecutionLocal.drain(sessionID, (onModelResolved) =>
+        Effect.sync(() => onModelResolved({ providerID: "fake", modelID: "x".repeat(129) })).pipe(
+          Effect.andThen(Effect.die(defect)),
+        ),
+      ).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])), Effect.exit)
+      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBeTrue()
+      expect(logs).toHaveLength(1)
+      expect(logs[0]?.message).toMatchObject([
+        "Failed to drain Session",
+        { sessionID, providerID: "fake", modelID: undefined, errorCategory: "defect" },
+      ])
+      expect(JSON.stringify(logs)).not.toContain("prompt-and-credential-canary")
+      yield* SessionExecutionLocal.drain(sessionID, () => Effect.interrupt).pipe(
+        Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+        Effect.exit,
+      )
+      expect(logs).toHaveLength(1)
+    }),
+  )
+
   it.effect("advertises and executes a globally attached application tool", () =>
     Effect.gen(function* () {
       yield* setup
@@ -1002,7 +1091,9 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
       expect(requests.map((request) => request.model)).toEqual([model])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([[graphagent, "Initial context"]])
+      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+        [graphagent, "Initial context"],
+      ])
     }),
   )
 

@@ -3433,15 +3433,7 @@ export const layer = Layer.effect(
           valid: () =>
             Effect.sync(() => !stopChain || state.stopRewakeChains.get(`${event}:${sessionID}`) === stopChain),
         })
-        .pipe(
-          Effect.catchDefect((defect) => {
-            log.warn("async hook rewake defect swallowed", {
-              command: commandText(entry).slice(0, 80),
-              error: String(defect),
-            })
-            return Effect.void
-          }),
-        )
+        .pipe(Effect.catchDefect(() => Effect.logError("async hook rewake failed", { sessionID })))
     })
 
     const triggerRun = Effect.fn("SettingsHook.trigger")(function* (payload: HookPayload, ctx: TriggerContext) {

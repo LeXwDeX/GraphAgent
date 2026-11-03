@@ -18,6 +18,7 @@ import {
 } from "@opencode-ai/llm"
 import {
   Cause,
+  Context,
   DateTime,
   Deferred,
   Duration,
@@ -60,7 +61,7 @@ import { SessionStore } from "../store"
 import { SessionTurnHooks } from "../turn-hooks"
 import { Prompt } from "../prompt"
 import { SessionToolBatch } from "../tool-batch"
-import { type RunError, Service } from "./index"
+import { type Interface as RunnerInterface, type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessagesWithBindings } from "./to-llm-message"
@@ -86,6 +87,11 @@ import { contextFoldingDiagnostic } from "../context-folding"
 // is applied separately AFTER the provider turn completes, so a turn lasts at
 // most ~2× the deadline — a hung tool can no longer hang a turn forever.
 const DEFAULT_PROVIDER_TURN_TIMEOUT = Duration.minutes(10)
+
+class ResolvedModelObserver extends Context.Service<
+  ResolvedModelObserver,
+  NonNullable<Parameters<RunnerInterface["run"]>[0]["onModelResolved"]>
+>()("@opencode/v2/SessionRunner/ResolvedModelObserver") {}
 
 const turnTimeoutError = () =>
   new LLMError({
@@ -582,7 +588,10 @@ export const layer = Layer.effect(
       const system =
         initialized ??
         (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent, session.id, loadBatch), session.id))
+      const onModelResolved = Option.getOrUndefined(yield* Effect.serviceOption(ResolvedModelObserver))
+      onModelResolved?.(undefined)
       const model = yield* models.resolve(session)
+      onModelResolved?.({ providerID: model.provider, modelID: model.id })
       if (turnHooks?.beforeRequest) {
         const feedback = yield* turnHooks.beforeRequest({
           sessionID: session.id,
@@ -1149,6 +1158,7 @@ export const layer = Layer.effect(
     const run = Effect.fn("SessionRunner.run")(function* (input: {
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
+      readonly onModelResolved?: (model: { readonly providerID: string; readonly modelID: string } | undefined) => void
     }) {
       // Drain-body wrapped with cursor eviction: the incremental-read cache is
       // only useful while this drain runs, so its entry is dropped on every
@@ -1188,6 +1198,7 @@ export const layer = Layer.effect(
           let step = 1
           while (needsContinuation) {
             const result = yield* runTurn(input.sessionID, promotion, step, runBudget, displayTurnID).pipe(
+              Effect.provideService(ResolvedModelObserver, input.onModelResolved ?? (() => {})),
               Effect.catchCause((cause) =>
                 Effect.gen(function* () {
                   if (turnHooks && !Cause.hasInterrupts(cause)) {

@@ -66,6 +66,137 @@ describe("SessionRunCoordinator", () => {
     ),
   )
 
+  it.effect("reports the tracked wake's drain failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const failure = new Error("wake failed")
+        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Effect.fail(failure) })
+        const finished = yield* coordinator.wakeTracked("session", true)
+        expect(yield* finished.pipe(Effect.flip)).toBe(failure)
+      }),
+    ),
+  )
+
+  it.effect("reports the tracked wake's drain defect", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const defect = new Error("invalid URL")
+        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Effect.die(defect) })
+        const finished = yield* coordinator.wakeTracked("session", true)
+        const exit = yield* finished.pipe(Effect.exit)
+        expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBeTrue()
+      }),
+    ),
+  )
+
+  it.effect("tracks the follow-up instead of the active drain when they race", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const failure = new Error("previous drain failed")
+        let runs = 0
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () =>
+            Effect.sync(() => ++runs).pipe(
+              Effect.flatMap((run) =>
+                run === 1
+                  ? Deferred.succeed(started, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(Effect.fail(failure)),
+                    )
+                  : Effect.void,
+              ),
+            ),
+        })
+        const active = yield* coordinator.run("session").pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        const finished = yield* coordinator.wakeTracked("session", true)
+        yield* Deferred.succeed(release, undefined)
+        expect(yield* Fiber.join(active).pipe(Effect.flip)).toBe(failure)
+        yield* finished
+        expect(runs).toBe(2)
+      }),
+    ),
+  )
+
+  it.effect("reports a coalesced follow-up failure to every tracked wake", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const failure = new Error("follow-up failed")
+        let runs = 0
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () =>
+            Effect.sync(() => ++runs).pipe(
+              Effect.flatMap((run) =>
+                run === 1
+                  ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                  : Effect.fail(failure),
+              ),
+            ),
+        })
+        yield* coordinator.wake("session")
+        yield* Deferred.await(started)
+        const first = yield* coordinator.wakeTracked("session", true)
+        const second = yield* coordinator.wakeTracked("session", true)
+        yield* Deferred.succeed(release, undefined)
+        expect(yield* first.pipe(Effect.flip)).toBe(failure)
+        expect(yield* second.pipe(Effect.flip)).toBe(failure)
+        expect(runs).toBe(2)
+      }),
+    ),
+  )
+
+  it.effect("interrupts a tracked wake cancelled before its drain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+        })
+        yield* coordinator.wake("session")
+        yield* Deferred.await(started)
+        const finished = yield* coordinator.wakeTracked("session", true)
+        yield* coordinator.interrupt("session")
+        const exit = yield* finished.pipe(Effect.exit)
+        expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBeTrue()
+      }),
+    ),
+  )
+
+  it.live("settles a tracked wake when the coordinator scope closes", () =>
+    Effect.gen(function* () {
+      const finished = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>()
+          const coordinator = yield* SessionRunCoordinator.make({
+            drain: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          })
+          yield* coordinator.wake("session")
+          yield* Deferred.await(started)
+          return yield* coordinator.wakeTracked("session", true)
+        }),
+      )
+      const exit = yield* finished.pipe(Effect.exit, Effect.timeout("2 seconds"))
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBeTrue()
+    }),
+  )
+
+  it.live("settles a tracked idle wake when the coordinator scope closes", () =>
+    Effect.gen(function* () {
+      const finished = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* SessionRunCoordinator.make({ drain: () => Effect.never })
+          return yield* coordinator.wakeTracked("session", true)
+        }),
+      )
+      const exit = yield* finished.pipe(Effect.exit, Effect.timeout("2 seconds"))
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBeTrue()
+    }),
+  )
+
   it.effect("coalesces wakes received during active execution", () =>
     Effect.scoped(
       Effect.gen(function* () {
