@@ -22,6 +22,17 @@ Guidance for coding agents in GraphAgent, an opencode fork with a DAG workflow e
 - Keep dependency manifests, the workspace catalog, lockfiles, overrides, and patches consistent. Match native wrappers to their platform packages. Change runtime pins at their declared sources and verify affected CI, containers, and Nix builds. Use real Nix builds to regenerate hashes.
 - Use isolated sessions, temporary data, and task-owned test processes. Preserve the user's active chats, configuration, and running services. Keep credentials out of logs and fixtures. Security audits use model reasoning over business logic and source; do not use external DayBreak tools.
 
+## File permission diagnosis
+
+When a file operation is denied, record the exact action and error before changing anything:
+
+1. Confirm the real path, owning worktree, Git status, owner, origin, and whether the target is a symlink, generated file, dependency, patch, or task-owned working copy.
+2. Inspect the file and parent directory permissions, ACLs, immutable flags, mount state, and any lock and its owner, using the available platform tools. Do not disclose secrets or remove an unknown lock.
+3. Distinguish an OS permission failure or accidental read-only copy from an intentional frozen snapshot, tool input validation, and an agent, approval, or sandbox policy refusal. Do not infer the cause from `PermissionDenied` alone or use a permission change to bypass a refusal.
+4. If a task-owned ordinary working copy is demonstrably read-only by accident, and the intended edit and permission change are allowed, make only the necessary non-recursive permission change. For example, add owner write to a working copy that inherited `0444` from a read-only snapshot. Record the mode and content hash before and after, confirm the content is unchanged, retry the original operation, and verify the result. Preserve the frozen original.
+5. For upstream SDKs, dependency caches, generated files, lockfiles, or patches, identify the owner and use the project's manifest, generator, patch, or upstream workflow. Do not directly edit a managed dependency cache or claim a permanent fix from a local permission change.
+6. If ownership, the cause, or authorization remains unclear, stop the affected action and report the evidence. Do not change another person's files, protected evidence, ACLs, ownership, or system security policy, and do not switch tools or agents to bypass a denied action.
+
 ## Commands (from repo root unless noted)
 
 - Install: `bun install`. Installs are exact-pinned; newly resolved releases must be ≥3 days old unless excluded (root `bunfig.toml`).
