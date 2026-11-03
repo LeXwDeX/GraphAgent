@@ -116,7 +116,7 @@ export function parsePorcelain(text: string): string[] {
 /** The working tree's touched paths at completion. Non-git directories and
  * git failures yield an empty list instead of failing the node. */
 export function touchedPaths(directory: string): string[] {
-  const status = git(directory, ["status", "--porcelain", "--untracked-files=all"])
+  const status = git(directory, ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"])
   return status.ok ? parsePorcelain(status.text) : []
 }
 
@@ -159,7 +159,13 @@ export function commitWorktree(directory: string, baseHead: string, message: str
   if (!added.ok) return { ok: false, reason: `git add failed: ${added.reason}` }
   const committed = git(directory, ["commit", "-m", message])
   if (!committed.ok) return { ok: false, reason: `git commit failed: ${committed.reason}` }
-  const afterCommit = git(directory, ["status", "--porcelain", "--untracked-files=all"])
+  const afterCommit = git(directory, [
+    "-c",
+    "core.quotePath=false",
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+  ])
   if (!afterCommit.ok) return { ok: false, reason: `git status after commit failed: ${afterCommit.reason}` }
   const touchedAfterCommit = mergePaths(touched, parsePorcelain(afterCommit.text))
   if (afterCommit.text.length > 0)

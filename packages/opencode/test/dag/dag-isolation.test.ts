@@ -40,6 +40,14 @@ afterEach(() => {
 })
 
 describe("DagIsolation porcelain parsing", () => {
+  it("returns raw UTF-8 filenames from git status", () => {
+    const root = repo()
+    git(root, ["config", "core.quotePath", "true"])
+    writeFileSync(path.join(root, "中文.txt"), "content\n")
+
+    expect(DagIsolation.touchedPaths(root)).toEqual(["中文.txt"])
+  })
+
   it("normalizes modified, untracked, quoted and renamed paths", () => {
     expect(
       DagIsolation.parsePorcelain(
