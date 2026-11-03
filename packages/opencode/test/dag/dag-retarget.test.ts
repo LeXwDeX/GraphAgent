@@ -210,6 +210,10 @@ describe("recovery context target evidence", () => {
     expect(staleUpstreamNote([])).toBe("")
   })
 
+  it("does not mark legacy evidence without a fingerprint stale", () => {
+    expect(staleUpstreamNodes(context([upstream(), retry(null)]))).toEqual([])
+  })
+
   it("includes reused input-mapping sources in upstream evidence", () => {
     const mapped: WorkflowConfig = {
       name: "recovery-mapped",
@@ -233,9 +237,96 @@ describe("recovery context target evidence", () => {
     expect(staleUpstreamNodes(undefined)).toEqual([])
     expect(staleUpstreamNodes({ upstream: [null, { stale: true }] })).toEqual([])
   })
+
+  it("compares recovered review evidence with the current tree rather than the creation tree", async () => {
+    for (const changedAfterReview of [false, true]) {
+      await using tmp = await tmpdir({ git: true })
+      const worktree = path.join(tmp.path, "linked")
+      await $`git worktree add ${worktree} -b recovery-linked`.cwd(tmp.path).quiet()
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          yield* seed(tmp.path)
+          const dag = yield* Dag.Service
+          const store = yield* DagStore.Service
+          const workflowConfig: WorkflowConfig = {
+            name: "recovery-current-tree",
+            workspace: worktree,
+            nodes: [
+              node("writer"),
+              node("review", "review", { depends_on: ["writer"] }),
+              node("retry", "build", { depends_on: ["review"] }),
+            ],
+          }
+          const id = yield* dag.create({ projectID, sessionID, title: "recover", config: workflowConfig })
+          const initial = DagLocation.fingerprintTarget(worktree)
+          yield* dag.nodeStarted(id, "writer", "ses_writer", undefined, false, undefined, worktree, undefined, initial)
+          writeFileSync(path.join(worktree, "change.txt"), "writer change")
+          yield* dag.nodeCompleted(id, "writer", "written")
+          const reviewed = DagLocation.fingerprintTarget(worktree)
+          expect(DagLocation.sameFingerprint(initial, reviewed)).toBe(false)
+          yield* dag.nodeStarted(id, "review", "ses_review", undefined, false, undefined, worktree, undefined, reviewed)
+          yield* dag.nodeCompleted(id, "review", { verdict: "ACCEPT" })
+          expect((yield* store.getNode(id, "review"))?.staleTarget).toBeFalsy()
+          if (changedAfterReview) writeFileSync(path.join(worktree, "change.txt"), "later change")
+          yield* dag.pause(id)
+          const workflow = (yield* store.getWorkflow(id))!
+          yield* dag.recover(id, { nodeIDs: ["retry"], expectedGraphRev: workflow.graphRev })
+          const updated = Dag.parseWorkflowConfig((yield* store.getWorkflow(id))!.config)!
+          const recovery = updated.nodes.find((item) => item.recovery?.previous_node_id === "retry")!
+            .prompt_template.input!.__workflow_recovery
+          expect(staleUpstreamNodes(recovery)).toEqual(changedAfterReview ? ["review"] : [])
+          expect(recovery).toMatchObject({ upstream: [{ node_id: "review", fingerprint: reviewed, stale: changedAfterReview }] })
+        }).pipe(Effect.provide(retargetLayer()), Effect.scoped),
+      )
+    }
+  })
 })
 
 describe("Dag retarget", () => {
+  it("permits an unchanged target but rejects a changed fingerprint after review", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { dag, dagID, fingerprint } = yield* start(tmp.path)
+        const store = yield* DagStore.Service
+        yield* dag.nodeCompleted(dagID, "review", { verdict: "ACCEPT" })
+        const unchanged = yield* dag.retarget(dagID, { fingerprint: fingerprintArg(fingerprint) })
+        expect(unchanged.nodes).toEqual([])
+        const before = yield* store.getNode(dagID, "review")
+        const workflow = yield* store.getWorkflow(dagID)
+        writeFileSync(path.join(tmp.path, "change.txt"), "changed")
+        const current = DagLocation.fingerprintTarget(tmp.path)
+        const rejected = yield* dag.retarget(dagID, { fingerprint: fingerprintArg(current) }).pipe(Effect.flip)
+        expect(rejected.message).toContain("review")
+        expect(yield* store.getNode(dagID, "review")).toEqual(before)
+        expect(yield* store.getWorkflow(dagID)).toEqual(workflow)
+      }).pipe(Effect.provide(retargetLayer()), Effect.scoped),
+    )
+  })
+
+  it("rejects changing targets with completed target-sensitive evidence", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const worktree = path.join(tmp.path, "linked")
+    await $`git worktree add ${worktree} -b completed-review-linked`.cwd(tmp.path).quiet()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { dag, dagID } = yield* start(tmp.path)
+        const store = yield* DagStore.Service
+        yield* dag.nodeCompleted(dagID, "review", { verdict: "ACCEPT" })
+        const before = yield* store.getNode(dagID, "review")
+        const workflow = yield* store.getWorkflow(dagID)
+        expect(before).toMatchObject({ status: "completed", staleTarget: false })
+        expect((yield* store.getNode(dagID, "build"))?.status).toBe("running")
+        const rejected = yield* dag.retarget(dagID, { workspace: worktree }).pipe(Effect.flip)
+        expect(rejected.message).toContain("review")
+        expect(rejected.message).toMatch(/recover|re-run/i)
+        expect(yield* store.getNode(dagID, "review")).toEqual(before)
+        expect(yield* store.getWorkflow(dagID)).toEqual(workflow)
+        expect(yield* store.getLatestRetarget!(dagID)).toBeUndefined()
+      }).pipe(Effect.provide(retargetLayer()), Effect.scoped),
+    )
+  })
+
   it("restarts only running target-sensitive attempts and updates the target", async () => {
     await using tmp = await tmpdir({ git: true })
     await Effect.runPromise(

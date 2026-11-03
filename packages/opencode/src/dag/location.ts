@@ -216,6 +216,8 @@ export const sameFingerprint = (
   b: DagEvent.TargetFingerprint | null | undefined,
 ): boolean => {
   if (!a || !b) return true
+  if (a.kind === "git" && (a.diff === "unavailable" || a.untracked === "unavailable")) return false
+  if (b.kind === "git" && (b.diff === "unavailable" || b.untracked === "unavailable")) return false
   if (a.kind === "none" && b.kind === "none") return true
   if (a.kind === "none" || b.kind === "none") return false
   return a.value === b.value

@@ -1611,7 +1611,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
             input.nodeIDs,
             workflow.graphRev + 1,
             config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
-            workflow.targetFingerprint,
+            DagLocation.fingerprintTarget(workflow.executionDirectory || workflow.directory || ""),
           ),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
@@ -1756,6 +1756,27 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       if (!config) return yield* Effect.fail(new Error(`Retarget rejected: workflow config is invalid: ${dagID}`))
       const nodes = yield* store.getNodes(dagID)
       const configByID = new Map(config.nodes.map((node) => [node.id, node]))
+      const fromDirectory = workflow.executionDirectory ?? workflow.directory ?? undefined
+      const fromFingerprint = workflow.targetFingerprint ?? undefined
+      const targetChanged =
+        DagLocation.canonicalDirectory(executionDirectory) !== DagLocation.canonicalDirectory(fromDirectory ?? "") ||
+        !fromFingerprint ||
+        !DagLocation.sameFingerprint(fromFingerprint, toFingerprint)
+      const completed = targetChanged
+        ? nodes.filter(
+            (node) =>
+              !node.superseded &&
+              node.status === "completed" &&
+              targetSensitiveNode(configByID.get(node.id), node.workerType),
+          )
+        : []
+      if (completed.length > 0) {
+        return yield* Effect.fail(
+          new Error(
+            `Retarget rejected: completed target-sensitive node(s) ${completed.map((node) => node.id).join(", ")}; recover them before retargeting, then re-run their evidence on the new target`,
+          ),
+        )
+      }
       const sensitive = nodes.filter(
         (node) =>
           node.status === "running" &&
@@ -1777,8 +1798,6 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
         }
         selected = sensitive.filter((node) => requested.has(node.id))
       }
-      const fromDirectory = workflow.executionDirectory ?? workflow.directory ?? undefined
-      const fromFingerprint = workflow.targetFingerprint ?? undefined
       const timestamp = yield* DateTime.now
       const batch: BatchEvent[] = selected.map((node) => ({
         definition: DagEvent.NodeRestarted,
