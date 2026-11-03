@@ -28,11 +28,13 @@ export * as DagLocation from "./location"
 import { eq } from "drizzle-orm"
 import { execFileSync } from "node:child_process"
 import { realpathSync, statSync } from "node:fs"
-import { isAbsolute } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
+import { Hash } from "@opencode-ai/core/util/hash"
 import { isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
 import { WorkflowTable } from "@opencode-ai/core/dag/sql"
+import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { InstanceRef } from "@/effect/instance-ref"
 
 /**
@@ -62,6 +64,8 @@ export const stampDirectory = (): Effect.Effect<string> =>
 export function nodeLocationView(node: {
   directory?: string | null
   baseHead?: string | null
+  targetFingerprint?: DagEvent.TargetFingerprint | null
+  staleTarget?: boolean | null
   timeUpdated?: number
   startedAt?: number | null
   completedAt?: number | null
@@ -70,6 +74,8 @@ export function nodeLocationView(node: {
   return {
     ...(node.directory ? { directory: node.directory } : {}),
     ...(node.baseHead ? { head: node.baseHead.slice(0, 12) } : {}),
+    ...(node.targetFingerprint ? { target_fingerprint: node.targetFingerprint } : {}),
+    ...(node.staleTarget ? { stale_target: true } : {}),
     ...(activity !== undefined && activity !== null ? { last_activity_at: new Date(activity).toISOString() } : {}),
   }
 }
@@ -90,6 +96,105 @@ export const gitHead = (directory: string): string | undefined => {
   } catch {
     return undefined
   }
+}
+
+// #944: fingerprint cost is bounded by these limits. A git diff or an
+// untracked-file hash that exceeds them degrades to a stable marker instead
+// of buffering an unbounded amount of data.
+const FINGERPRINT_GIT_TIMEOUT_MS = 20_000
+const FINGERPRINT_GIT_MAX_BUFFER = 64 * 1024 * 1024
+const FINGERPRINT_UNTRACKED_HASH_FILES = 200
+const FINGERPRINT_UNTRACKED_HASH_BYTES = 32 * 1024 * 1024
+
+const gitOutput = (directory: string, args: string[], input?: string): string | undefined => {
+  try {
+    return execFileSync("git", ["-C", directory, ...args], {
+      encoding: "utf8",
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "ignore"],
+      ...(input !== undefined ? { input } : {}),
+      timeout: FINGERPRINT_GIT_TIMEOUT_MS,
+      maxBuffer: FINGERPRINT_GIT_MAX_BUFFER,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * #944: identity of the untracked file set, respecting ignore rules.
+ * Paths, sizes, and mtimes are always included; content hashes (git
+ * hash-object) are added for a bounded number of files so an editor touch
+ * with unchanged content does not change the value on ordinary trees.
+ */
+function untrackedFingerprint(directory: string): string {
+  const listing = gitOutput(directory, ["ls-files", "-o", "--exclude-standard", "-z"])
+  if (listing === undefined) return "unavailable"
+  const paths = listing
+    .split("\0")
+    .filter((path) => path !== "")
+    .sort()
+  if (paths.length === 0) return "clean"
+  const metadata: string[] = []
+  const hashable: string[] = []
+  let bytes = 0
+  for (const path of paths) {
+    try {
+      const stat = statSync(join(directory, path))
+      metadata.push(`${path}\0${stat.size}\0${stat.mtimeMs}\0${stat.isFile() ? "file" : "other"}`)
+      if (!stat.isFile() || path.includes("\n")) continue
+      if (hashable.length >= FINGERPRINT_UNTRACKED_HASH_FILES || bytes + stat.size > FINGERPRINT_UNTRACKED_HASH_BYTES)
+        continue
+      bytes += stat.size
+      hashable.push(path)
+    } catch {
+      metadata.push(`${path}\0missing`)
+    }
+  }
+  const content =
+    hashable.length === 0
+      ? "metadata-only"
+      : (gitOutput(directory, ["hash-object", "--no-filters", "--stdin-paths"], `${hashable.join("\n")}\n`)?.trim() ??
+        "metadata-only")
+  return Hash.sha256(JSON.stringify([metadata, content]))
+}
+
+/**
+ * #944: the target fingerprint recorded at workflow start and before a
+ * target-sensitive node starts. Computed from git only (never model-reported).
+ * Non-git directories and unborn HEADs get the stable `none` marker. The
+ * computation runs a fixed set of git commands; `git diff --binary` is the
+ * main cost and is bounded by FINGERPRINT_GIT_MAX_BUFFER.
+ */
+export const fingerprintTarget = (directory: string): DagEvent.TargetFingerprint => {
+  if (!directory) return { kind: "none" }
+  if (gitOutput(directory, ["rev-parse", "--is-inside-work-tree"])?.trim() !== "true") return { kind: "none" }
+  const head = gitOutput(directory, ["rev-parse", "--verify", "HEAD"])?.trim()
+  if (!head) return { kind: "none" }
+  const binary = gitOutput(directory, ["diff", "--binary", "HEAD"])
+  const diff = binary === undefined ? "unavailable" : binary.length === 0 ? "clean" : Hash.sha256(binary)
+  const untracked = untrackedFingerprint(directory)
+  return {
+    kind: "git",
+    head,
+    diff,
+    untracked,
+    value: Hash.sha256(JSON.stringify([head, diff, untracked])),
+  }
+}
+
+/**
+ * #944: a missing fingerprint cannot prove a mismatch (legacy rows), and two
+ * `none` markers are the same stable non-git target. Any git/none transition
+ * is a mismatch: the result was judged against a different kind of tree.
+ */
+export const sameFingerprint = (
+  a: DagEvent.TargetFingerprint | null | undefined,
+  b: DagEvent.TargetFingerprint | null | undefined,
+): boolean => {
+  if (!a || !b) return true
+  if (a.kind === "none" && b.kind === "none") return true
+  if (a.kind === "none" || b.kind === "none") return false
+  return a.value === b.value
 }
 
 /**

@@ -96,6 +96,13 @@ function admissionInputFor(verdict: "READY" | "NOT_READY" | "WAIVED") {
 
 const published: Array<{ type: string; data: unknown }> = []
 const resultOutput = `${"a".repeat(1_500)}RESULT_SENTINEL${"b".repeat(200)}`
+const targetFingerprint = {
+  kind: "git" as const,
+  head: "0123456789abcdef",
+  diff: "diff-hash",
+  untracked: "clean",
+  value: "target-value",
+}
 const resultNodes = [
   makeNodeRow({
     id: "node_result",
@@ -103,6 +110,8 @@ const resultNodes = [
     name: "Long result",
     status: "completed",
     output: resultOutput,
+    targetFingerprint,
+    staleTarget: true,
   }),
   makeNodeRow({
     id: "node_other",
@@ -130,6 +139,7 @@ const mockNodes = (id: string) =>
           childSessionId: "ses_child",
           directory: "/repo/.worktrees/status",
           baseHead: "0123456789abcdef",
+          targetFingerprint,
           output: null,
           capturedOutput: null,
           errorReason: null,
@@ -209,7 +219,9 @@ const mockNodes = (id: string) =>
         ]
       : id === "dag_paused"
         ? [makeNodeRow({ id: "retry", workflowId: id, name: "Retry", status: "failed", required: true })]
-        : []
+        : id === "dag_retarget"
+          ? [makeNodeRow({ id: "review", workflowId: id, name: "Review", workerType: "review", status: "running", required: true, childSessionId: "ses_review" })]
+          : []
 
 const mockWorkflowConfig = (id: string) => JSON.stringify({
   name: id,
@@ -226,6 +238,20 @@ const mockWorkflowConfig = (id: string) => JSON.stringify({
 const store = Layer.mock(DagStore.Service, {
   getWorkflowFailureReason: (id: string) =>
     Effect.succeed(id === "dag_workspace_failed" ? "workspace_missing: /gone/worktree" : undefined),
+  getLatestRetarget: (id: string) =>
+    Effect.succeed(
+      id === "dag_status"
+        ? {
+            seq: 9,
+            retarget: {
+              fromFingerprint: targetFingerprint,
+              toFingerprint: targetFingerprint,
+              reason: "tree moved",
+              nodes: [DagEvent.NodeID.make("node_running")],
+            },
+          }
+        : undefined,
+    ),
   getWorkflow: (id: string) =>
     Effect.succeed(
       id === "dag_workspace_failed"
@@ -254,6 +280,7 @@ const store = Layer.mock(DagStore.Service, {
             directory: null,
             status: "running",
             config: mockWorkflowConfig(id),
+            targetFingerprint,
             seq: 1,
             wakeReported: false,
             graphRev: 1,
@@ -296,6 +323,23 @@ const store = Layer.mock(DagStore.Service, {
                 timeCreated: 1,
                 timeUpdated: 2,
               }
+            : id === "dag_retarget"
+              ? {
+                  id,
+                  projectId: projectID,
+                  sessionId: "ses_workflow_parent",
+                  title: "Retarget workflow",
+                  directory: "/repo",
+                  status: "running",
+                  config: mockWorkflowConfig(id),
+                  graphRev: 1,
+                  seq: 1,
+                  wakeReported: false,
+                  startedAt: 1,
+                  completedAt: null,
+                  timeCreated: 1,
+                  timeUpdated: 2,
+                }
             : id === "dag_deep_status"
               ? {
                   id,
@@ -1176,8 +1220,13 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"child_session_id": "ses_child"')
       expect(result.output).toContain('"directory": "/repo/.worktrees/status"')
       expect(result.output).toContain('"head": "0123456789ab"')
+      expect(result.output).toContain('"target_fingerprint"')
+      expect(result.output).toContain('"value": "target-value"')
       expect(result.output).toContain('"last_activity_at": "1970-01-01T00:00:00.002Z"')
       expect(result.output).toContain('"mode": "standard"')
+      expect(result.output).toContain('"latest_retarget"')
+      expect(result.output).toContain('"seq": 9')
+      expect(result.output).toContain('"reason": "tree moved"')
       expect(result.output).toContain('"id": "node_failed"')
       expect(result.output).toContain('"error_class": "timeout"')
     }),
@@ -1250,6 +1299,8 @@ describe("workflow tool execution", () => {
           workflow_id: "dag_result",
           node_id: "node_result",
           status: "completed",
+          target_fingerprint: targetFingerprint,
+          stale_target: true,
           truncated: true,
         }),
       )
@@ -1507,6 +1558,77 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"previous": "retry"')
       expect(published.map((event) => event.type)).toEqual([
         DagEvent.WorkflowReplanned.type, DagEvent.NodeRegistered.type, DagEvent.WorkflowConfigUpdated.type,
+      ])
+    }),
+  )
+
+  runtime.effect("retargets a live workflow and audits the durable event", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      const workflow = yield* (yield* WorkflowTool).init()
+      const result = yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_retarget"),
+            operation: "retarget",
+            fingerprint: "none",
+            reason: "tree moved",
+          },
+        },
+        toolContext(),
+      )
+
+      expect(result.title).toBe("Workflow retargeted: 1 node(s) restarted")
+      expect(JSON.parse(result.output)).toMatchObject({
+        workflow_id: "dag_retarget",
+        action: "retarget",
+        graph_rev: 2,
+        nodes: ["review"],
+        reason: "tree moved",
+        to_fingerprint: { kind: "none" },
+      })
+      expect(published.map((event) => event.type)).toEqual([
+        DagEvent.NodeRestarted.type,
+        DagEvent.WorkflowReplanned.type,
+      ])
+      expect(published[1].data).toMatchObject({
+        restarted: 1,
+        retarget: { reason: "tree moved", nodes: ["review"], toFingerprint: { kind: "none" } },
+      })
+    }),
+  )
+
+  runtime.effect("requests control:retarget permission before changing the target", () =>
+    Effect.gen(function* () {
+      const requests: Array<{ permission: string; patterns: readonly string[] }> = []
+      const workflow = yield* (yield* WorkflowTool).init()
+      const exit = yield* workflow
+        .execute(
+          {
+            params: {
+              action: "control",
+              workflow_id: Dag.ID.make("dag_retarget"),
+              operation: "retarget",
+              fingerprint: "none",
+            },
+          },
+          {
+            ...toolContext(),
+            ask: (request) => {
+              requests.push(request)
+              return Effect.die(new Error("permission denied"))
+            },
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(requests).toEqual([
+        expect.objectContaining({
+          permission: "workflow",
+          patterns: ["control", "control:retarget"],
+        }),
       ])
     }),
   )

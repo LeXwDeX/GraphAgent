@@ -18,6 +18,7 @@ import { SessionID } from "@/session/schema"
 import { createAdmissionRecord } from "@/dag/admission"
 import { isOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
+import type { DagEvent } from "@opencode-ai/schema/dag-event"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -114,6 +115,30 @@ const ControlExtendTimeout = Schema.Struct({
       "Fresh execution timeout in milliseconds applied from now (same semantics as worker_config.timeout_ms); min 1s, max 24h per extension",
   }),
 })
+const ControlRetarget = Schema.Struct({
+  action: Schema.Literal("control"),
+  operation: Schema.Literal("retarget").annotate({
+    description:
+      "Change the workflow target (workspace and/or target fingerprint) and restart running target-sensitive attempts so their old evidence cannot reach the gate",
+  }),
+  workflow_id: Dag.ID.annotate({ description: "Target workflow ID" }),
+  workspace: Schema.optional(Schema.String).annotate({
+    description:
+      "Absolute path to a linked worktree of the same project. Rebinds the workflow execution directory and recomputes the target fingerprint. Omit to keep the current workspace",
+  }),
+  fingerprint: Schema.optional(Schema.String).annotate({
+    description:
+      "Expected target fingerprint value of the selected tree: the computed git value, or 'none' for a non-git directory. The runtime computes the fingerprint itself and rejects a mismatch",
+  }),
+  node_ids: Schema.optional(
+    Schema.Array(Dag.NodeID).check(Schema.isMinLength(1)).annotate({
+      description: "Running target-sensitive nodes to restart. Omit to restart every running target-sensitive node",
+    }),
+  ),
+  reason: Schema.optional(Schema.String).annotate({
+    description: "Short audit reason for the target change",
+  }),
+})
 const Status = Schema.Struct({
   action: Schema.Literal("status").annotate({ description: "Inspect durable workflow and node state" }),
   workflow_id: Dag.ID.annotate({ description: "Target workflow ID" }),
@@ -178,6 +203,7 @@ const ActionParams = Schema.Union([
   ControlOther,
   ControlRecover,
   ControlExtendTimeout,
+  ControlRetarget,
   Status,
   Result,
   List,
@@ -558,6 +584,11 @@ export const WorkflowTool = Tool.define<
                 ? yield* dag.store.getWorkflowFailureReason(workflow.id)
                 : undefined
               const config = Dag.parseWorkflowConfig(workflow.config)
+              // #945: the latest durable retarget is the audit pointer; event
+              // history keeps the full record.
+              const latestRetarget = dag.store.getLatestRetarget
+                ? yield* dag.store.getLatestRetarget(workflow.id)
+                : undefined
               // A completed graph can still carry an unresolved review verdict
               // (REJECT checkpoint, issue #294); surface it explicitly instead
               // of burying it in a terminal reason string.
@@ -570,6 +601,10 @@ export const WorkflowTool = Tool.define<
                     title: workflow.title,
                     status: workflow.status,
                     ...(failureReason ? { failure_reason: failureReason } : {}),
+                    ...(workflow.targetFingerprint ? { target_fingerprint: workflow.targetFingerprint } : {}),
+                    ...(latestRetarget
+                      ? { latest_retarget: { seq: latestRetarget.seq, ...latestRetarget.retarget } }
+                      : {}),
                     graph_rev: workflow.graphRev,
                     session_id: workflow.sessionId,
                     mode: config?.mode ?? "standard",
@@ -632,6 +667,7 @@ export const WorkflowTool = Tool.define<
                       workflow_id: params.workflow_id,
                       node_id: params.node_id,
                       status: node.status,
+                      ...resultTargetFields(node),
                       ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                       content_ref: node.capturedOutput.content_ref,
                       path: node.capturedOutput.path,
@@ -709,6 +745,7 @@ export const WorkflowTool = Tool.define<
                     workflow_id: params.workflow_id,
                     node_id: params.node_id,
                     status: node.status,
+                    ...resultTargetFields(node),
                     ...(node.completedAt ? { completed_at: new Date(node.completedAt).toISOString() } : {}),
                     content: content.slice(cursor.value.offset, pageEnd),
                     truncated,
@@ -867,6 +904,36 @@ export const WorkflowTool = Tool.define<
                   metadata: { workflowId: wfId, graphRev: result.graphRev } as Metadata,
                 }
               }
+              if (params.operation === "retarget") {
+                const result = yield* dag
+                  .retarget(wfId, {
+                    workspace: params.workspace,
+                    fingerprint: params.fingerprint,
+                    nodeIDs: params.node_ids,
+                    reason: params.reason,
+                  })
+                  .pipe(Effect.orDie)
+                return {
+                  title: `Workflow retargeted: ${result.nodes.length} node(s) restarted`,
+                  output: JSON.stringify(
+                    {
+                      workflow_id: wfId,
+                      action: "retarget",
+                      graph_rev: result.graphRev,
+                      nodes: result.nodes,
+                      ...(result.fromDirectory ? { from_directory: result.fromDirectory } : {}),
+                      ...(result.toDirectory ? { to_directory: result.toDirectory } : {}),
+                      ...(result.fromFingerprint ? { from_fingerprint: result.fromFingerprint } : {}),
+                      to_fingerprint: result.toFingerprint,
+                      ...(params.reason ? { reason: params.reason } : {}),
+                      note: "Restarted target-sensitive attempts drop their pre-retarget evidence; inspect workspace changes before repeating side effects.",
+                    },
+                    null,
+                    2,
+                  ),
+                  metadata: { workflowId: wfId, graphRev: result.graphRev, restart: result.nodes } as Metadata,
+                }
+              }
               if (params.operation === "replan") {
                 const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
                 const workflowDefaults = workflowConfig?.node_defaults
@@ -998,6 +1065,18 @@ export const WorkflowTool = Tool.define<
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/** #944: the target identity a result is bound to, shared by both result
+ * branches. Absent for legacy nodes and non-target-sensitive results. */
+export function resultTargetFields(node: {
+  readonly targetFingerprint?: DagEvent.TargetFingerprint | null
+  readonly staleTarget?: boolean | null
+}) {
+  return {
+    ...(node.targetFingerprint ? { target_fingerprint: node.targetFingerprint } : {}),
+    ...(node.staleTarget ? { stale_target: true } : {}),
+  }
+}
 
 function resultPageEnd(content: string, offset: number, limit: number) {
   const end = Math.min(content.length, offset + limit)

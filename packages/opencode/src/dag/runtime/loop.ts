@@ -39,6 +39,7 @@ import {
   isTerminalWorkflowStatusValue,
 } from "@opencode-ai/core/dag/core/types"
 import { Dag, type WorkflowConfig, parseWorkflowConfig, resultProtocol } from "../dag"
+import { staleUpstreamNodes, staleUpstreamNote } from "../recovery-plan"
 import { DagFanOut } from "../fan-out"
 import { projectBriefForNode } from "../admission"
 import {
@@ -46,6 +47,7 @@ import {
   reviewContractForNode,
   validateReviewExecutionInput,
   reviewEvidenceKeys,
+  targetSensitiveNode,
 } from "../review-lifecycle"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -684,9 +686,10 @@ const serviceLayer = Layer.effect(
             promptParts.push({ type: "text", text: resolved.text })
             const recoveryContext = nodeConfig.recovery && nodeConfig.prompt_template?.input?.__workflow_recovery
             if (recoveryContext) {
+              const recovery = sanitizeInput({ recovery: recoveryContext }).recovery
               promptParts.push({
                 type: "text",
-                text: `\n\nRecovery context:\n${JSON.stringify(sanitizeInput({ recovery: recoveryContext }).recovery, null, 2)}`,
+                text: `\n\nRecovery context:\n${JSON.stringify(recovery, null, 2)}${staleUpstreamNote(staleUpstreamNodes(recovery))}`,
               })
             }
 
@@ -766,6 +769,10 @@ const serviceLayer = Layer.effect(
               reviewImplementationFingerprint: nodeConfig
                 ? reviewImplementationFingerprint(nodeConfig, resolvedMapping)
                 : undefined,
+              // #944: nodes that judge the working tree (block-compiled review
+              // lanes, verify, synthesize, or legacy review conventions) record
+              // a target fingerprint so a mid-run change marks them stale.
+              targetSensitive: targetSensitiveNode(nodeConfig, node.workerType),
               verdictEvidence: nodesSnapshot
                 .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
                 .map((source) => ({ nodeID: source.id, output: source.output })),
@@ -1707,6 +1714,9 @@ const serviceLayer = Layer.effect(
                   if (wf) {
                     entry.config = parseWorkflowConfig(wf.config)
                     entry.graphRev = wf.graphRev
+                    // #945: a retarget rebinds the workflow workspace. New
+                    // attempts must spawn in the durable execution directory.
+                    entry.executionDirectory = wf.executionDirectory ?? wf.directory ?? ctx.directory
                   }
                   // Rev-view (v1.0.15 Train A): THE aggregation filter point.
                   // The rebuild input is the CURRENT graph revision only —

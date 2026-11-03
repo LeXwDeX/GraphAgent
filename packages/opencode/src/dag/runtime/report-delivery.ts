@@ -71,7 +71,8 @@ export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagS
       .filter((node) => !node.superseded)
       .toSorted((a, b) => a.id.localeCompare(b.id))
       .map(
-        (node) => `- ${node.name} (${node.status}): workflow result workflow_id="${workflow.id}" node_id="${node.id}"`,
+        (node) =>
+          `- ${node.name} (${node.status})${node.staleTarget ? " [stale target]" : ""}: workflow result workflow_id="${workflow.id}" node_id="${node.id}"`,
       ),
   ].join("\n")
 }
@@ -234,8 +235,11 @@ export function deliverReport(input: {
         return yield* Effect.die(new Error("DAG report artifact does not belong to the completed attempt"))
       artifact = node.capturedOutput
     }
+    const report = node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes)
+    // #944: a delivered result whose target changed mid-run must say so in the
+    // parent wake text, not only in the structured result view.
     const body = yield* boundReport(
-      node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes),
+      node?.staleTarget ? `${report}\n\n[stale target: this result was produced before the target changed]` : report,
       workflow,
       node,
     ).pipe(Effect.orDie)

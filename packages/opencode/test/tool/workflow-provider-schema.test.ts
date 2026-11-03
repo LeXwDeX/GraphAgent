@@ -59,12 +59,12 @@ function record(node: JsonSchemaNode | undefined): Record<string, JsonSchemaNode
 }
 
 describe("workflow provider-facing schema", () => {
-  test("base wire shape is a plain-object root carrying the 13-branch union in params", async () => {
+  test("base wire shape is a plain-object root carrying the 14-branch union in params", async () => {
     const schema = ToolJsonSchema.fromSchema(Parameters as never) as JsonSchemaNode
     expect(schema.type).toBe("object")
     expect(schema.anyOf).toBeUndefined()
     expect(schema.required).toEqual(["params"])
-    expect(branches(schema).length).toBe(13)
+    expect(branches(schema).length).toBe(14)
     const flat = JSON.stringify(schema)
     expect(flat).not.toContain('"session_id"')
     expect(flat).not.toContain('"project_id"')
@@ -117,7 +117,7 @@ describe("workflow provider-facing schema", () => {
       ToolJsonSchema.fromSchema(Parameters as never),
     ) as JsonSchemaNode
     expect(root(transformed).type).toBe("object")
-    expect(branches(transformed).length).toBe(13)
+    expect(branches(transformed).length).toBe(14)
     expect(branchByAction(transformed, "start", "spec_path").length).toBe(1)
     expect(branchByAction(transformed, "validate", "spec_path").length).toBeGreaterThan(0)
   })
@@ -127,7 +127,7 @@ describe("workflow provider-facing schema", () => {
       geminiModel,
       ToolJsonSchema.fromSchema(Parameters as never),
     ) as JsonSchemaNode
-    expect(branches(transformed).length).toBe(13)
+    expect(branches(transformed).length).toBe(14)
     expect(branchByAction(transformed, "start", "spec_path").length).toBe(1)
     expect(branchByAction(transformed, "start", "spec")).toEqual([])
     const resultBranch = branchByAction(transformed, "result")[0]
@@ -142,7 +142,7 @@ describe("workflow provider-facing schema", () => {
         ToolJsonSchema.fromSchema(Parameters as never),
       ) as JsonSchemaNode
       expect(root(transformed).type).toBe("object")
-      expect(branches(transformed)).toHaveLength(13)
+      expect(branches(transformed)).toHaveLength(14)
       expect(branchByAction(transformed, "start", "spec_path")).toHaveLength(1)
     }
   })

@@ -105,6 +105,22 @@ describe("requiredCompletionGaps", () => {
     ])
   })
 
+  it("reports a completed required node whose target changed as a gap", () => {
+    const stale = { ...row("gate", "completed", { verdict: "PASS" }), staleTarget: true }
+    expect(requiredCompletionGaps(config([gateNode]), [stale])).toEqual(["gate (stale target)"])
+    expect(
+      requiredCompletionGaps(config([gateNode]), [
+        { ...row("gate", "completed", { verdict: "PASS" }), staleTarget: false },
+      ]),
+    ).toEqual([])
+    // A non-required stale node never gates completion.
+    expect(
+      requiredCompletionGaps(config([{ ...gateNode, required: false }]), [
+        { ...row("gate", "completed", { verdict: "PASS" }), required: false, staleTarget: true },
+      ]),
+    ).toEqual([])
+  })
+
   it("keeps legacy diff review REJECT decisions out of the verdict gate", () => {
     const review = config([
       {

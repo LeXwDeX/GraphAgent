@@ -632,4 +632,25 @@ describe("workflow blocks", () => {
     })
     expect(extendedInline.indexOf("Workflow objective")).toBeLessThan(extendedInline.indexOf("Block-specific instruction"))
   })
+
+  // #944: review lanes, verification, and synthesis judge the working tree;
+  // compilation must carry that role without relying on worker names or ids.
+  it("marks review lanes, verification, and synthesis target-sensitive", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Judge the working tree",
+      blocks: [
+        { id: "build", kind: "coding" },
+        { id: "check", kind: "verify", depends_on: ["build"] },
+        { id: "gate", kind: "review", depends_on: ["check"] },
+        { id: "final", kind: "synthesize", depends_on: ["gate"] },
+      ],
+    })
+
+    expect(nodes.find((node) => node.id === "build")?.target_sensitive).toBeUndefined()
+    expect(nodes.find((node) => node.id === "check")?.target_sensitive).toBe(true)
+    expect(nodes.find((node) => node.id === "gate--standards")?.target_sensitive).toBe(true)
+    expect(nodes.find((node) => node.id === "gate--intent")?.target_sensitive).toBe(true)
+    expect(nodes.find((node) => node.id === "gate")?.target_sensitive).toBe(true)
+    expect(nodes.find((node) => node.id === "final")?.target_sensitive).toBe(true)
+  })
 })

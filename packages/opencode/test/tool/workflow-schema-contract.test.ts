@@ -52,7 +52,7 @@ describe("workflow tool schema contract", () => {
 
   test("the union survives intact inside the params property", () => {
     const transformed = ToolJsonSchema.fromSchema(Parameters as never) as JsonSchemaNode
-    expect(branches(transformed)).toHaveLength(13)
+    expect(branches(transformed)).toHaveLength(14)
     expect(transformed.properties?.params).toBeDefined()
     expect(transformed.required).toEqual(["params"])
   })
@@ -86,7 +86,12 @@ describe("workflow tool schema contract", () => {
     expect(() => Schema.decodeUnknownSync(Parameters)({ params: { ...params, expected_graph_rev: 1.5 } })).toThrow()
     for (const model of [openaiModel, azureModel, geminiModel, glmModel]) {
       const schema = ProviderTransform.schema(model, ToolJsonSchema.fromSchema(Parameters as never)) as JsonSchemaNode
-      const recovery = branchByAction(schema, "control", "node_ids")
+      const controls = branchByAction(schema, "control", "node_ids")
+      expect(controls).toHaveLength(2)
+      expect(controls.map((branch) => branch.properties?.operation.enum)).toEqual(
+        expect.arrayContaining([["recover"], ["retarget"]]),
+      )
+      const recovery = controls.filter((branch) => branch.properties?.operation.enum?.includes("recover"))
       expect(recovery).toHaveLength(1)
       expect(recovery[0].required).toEqual(
         expect.arrayContaining(["operation", "workflow_id", "node_ids", "expected_graph_rev"]),

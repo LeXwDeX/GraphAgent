@@ -232,6 +232,14 @@ describe("B1: reconcileWorkflow review-contract gap", () => {
     // fix layer is recovery (entry point of unvalidated data); this pin makes
     // the read-side behavior explicit.
     expect(unresolvedReviewOutcomes(config, rows)).toEqual([])
+    // #944: a review whose target changed mid-run is never accepted, even
+    // with an ACCEPT verdict and a completed final gate.
+    expect(
+      unresolvedReviewOutcomes(
+        config,
+        rows.map((row) => (row.id === "review-1" ? { ...row, staleTarget: true } : row)),
+      ),
+    ).toEqual(["review-1"])
   })
 })
 

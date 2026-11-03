@@ -95,6 +95,8 @@ export const layer = Layer.effectDiscard(
           // #943: NULL for legacy events and workflows without a workspace;
           // spawn then keeps executing in the owner directory.
           execution_directory: event.data.executionDirectory ?? null,
+          // #944: NULL for legacy events; absent means no target identity.
+          target_fingerprint: event.data.targetFingerprint ?? null,
           title: event.data.title,
           status: event.data.status,
           config: event.data.config,
@@ -204,6 +206,14 @@ export const layer = Layer.effectDiscard(
           .update(WorkflowTable)
           .set({
             ...(recovery ? { status: ws("running"), wake_reported: false, completed_at: null } : {}),
+            // #945: a retarget also rebinds the execution directory and the
+            // target identity in the same revision bump.
+            ...(event.data.retarget?.toDirectory !== undefined
+              ? { execution_directory: event.data.retarget.toDirectory }
+              : {}),
+            ...(event.data.retarget?.toFingerprint !== undefined
+              ? { target_fingerprint: event.data.retarget.toFingerprint }
+              : {}),
             graph_rev: sql`${WorkflowTable.graph_rev} + 1`,
             seq: event.durable!.seq,
             time_updated: toMillis(event.data.timestamp),
@@ -328,6 +338,9 @@ export const layer = Layer.effectDiscard(
       const executionLocation = {
         directory: event.data.directory ?? null,
         base_head: event.data.baseHead ?? null,
+        // #944: a fresh attempt clears the previous completion verdict.
+        target_fingerprint: event.data.targetFingerprint ?? null,
+        stale_target: false,
       }
       return db
         .update(WorkflowNodeTable)
@@ -373,6 +386,9 @@ export const layer = Layer.effectDiscard(
           status: "completed",
           output: event.data.output,
           ...(event.data.capturedOutput !== undefined ? { captured_output: event.data.capturedOutput, captured_output_present: true } : {}),
+          ...(event.data.targetFingerprint !== undefined ? { target_fingerprint: event.data.targetFingerprint } : {}),
+          // #944: legacy events omit the flag; completed rows read as not stale.
+          stale_target: event.data.staleTarget ?? false,
           completed_at: toMillis(event.data.timestamp),
           // Q1: a terminal node is no longer awaiting adjudication — clear the
           // escalation flag. Its result is delivered via the wake_reported

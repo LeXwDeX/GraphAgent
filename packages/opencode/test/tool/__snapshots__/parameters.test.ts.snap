@@ -891,6 +891,54 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "fingerprint": {
+              "description": "Expected target fingerprint value of the selected tree: the computed git value, or 'none' for a non-git directory. The runtime computes the fingerprint itself and rejects a mismatch",
+              "type": "string",
+            },
+            "node_ids": {
+              "description": "Running target-sensitive nodes to restart. Omit to restart every running target-sensitive node",
+              "items": {
+                "type": "string",
+              },
+              "minItems": 1,
+              "type": "array",
+            },
+            "operation": {
+              "description": "Change the workflow target (workspace and/or target fingerprint) and restart running target-sensitive attempts so their old evidence cannot reach the gate",
+              "enum": [
+                "retarget",
+              ],
+              "type": "string",
+            },
+            "reason": {
+              "description": "Short audit reason for the target change",
+              "type": "string",
+            },
+            "workflow_id": {
+              "description": "Target workflow ID",
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+            "workspace": {
+              "description": "Absolute path to a linked worktree of the same project. Rebinds the workflow execution directory and recomputes the target fingerprint. Omit to keep the current workspace",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
               "description": "Inspect durable workflow and node state",
               "enum": [
                 "status",

@@ -48,7 +48,7 @@ import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
 import type { ResultProtocol } from "../dag"
-import type { VerdictEvidence } from "../review-lifecycle"
+import { isReviewWorker, type VerdictEvidence } from "../review-lifecycle"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
@@ -88,16 +88,28 @@ import { ProviderTransform } from "@/provider/transform"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 type PromptParts = SessionPrompt.PromptInput["parts"]
+type TargetFingerprint = ReturnType<typeof DagLocation.fingerprintTarget>
 
 /** #949: the system context a spawned node receives about its execution
- * location. The value is stable for the attempt: HEAD is snapshotted before
- * the first prompt. */
-export function dagExecutionContext(directory: string | undefined, head: string | undefined) {
+ * location. The value is stable for the attempt: HEAD and the target
+ * fingerprint are snapshotted before the first prompt. */
+export function dagExecutionContext(
+  directory: string | undefined,
+  head: string | undefined,
+  targetFingerprint?: TargetFingerprint,
+) {
   if (!directory) return undefined
   return [
     "<dag-execution-context>",
     `  Execution directory: ${directory}`,
     `  HEAD at start: ${head ?? "unknown (not a git repository, or no commit yet)"}`,
+    ...(targetFingerprint
+      ? [
+          `  Target fingerprint: ${
+            targetFingerprint.kind === "none" ? "none (not a git repository)" : targetFingerprint.value
+          }`,
+        ]
+      : []),
     "</dag-execution-context>",
   ].join("\n")
 }
@@ -126,6 +138,9 @@ export interface NodeSpawnInput {
   timeoutMs?: number
   reportToParent?: boolean
   reviewImplementationFingerprint?: string
+  /** #944: the node judges the working tree (review worker or review block).
+   * Omitted callers fall back to the review-worker check. */
+  targetSensitive?: boolean
   /** Completed direct dependency outputs an ACCEPT verdict must account for. */
   verdictEvidence?: readonly VerdictEvidence[]
   /** dag.jsonc tier default — authoritative unless a persisted legacy node model exists. */
@@ -818,6 +833,12 @@ export function spawnNode(
           // #949: snapshot where this attempt runs and the HEAD it starts from.
           // Both are optional: non-git directories have no HEAD.
           const baseHead = executionDirectory ? DagLocation.gitHead(executionDirectory) : undefined
+          // #944: target-sensitive nodes also snapshot the tree identity before
+          // nodeStarted, so the completion check has a bound reference.
+          const targetFingerprint =
+            (input.targetSensitive ?? isReviewWorker(input.node.workerType)) && executionDirectory
+              ? DagLocation.fingerprintTarget(executionDirectory)
+              : undefined
 
           // A concurrent replan(cancel/restart) may have terminalized the node
           // while it waited for the permit. nodeStarted's guard rejects; cancel
@@ -833,6 +854,7 @@ export function spawnNode(
               executionAttempt,
               executionDirectory,
               baseHead,
+              targetFingerprint,
             )
             .pipe(
               Effect.map(() => false),
@@ -996,7 +1018,7 @@ export function spawnNode(
           // #949: the child must be able to tell where it runs and which HEAD
           // it started from. Only the DAG path injects this; the shared
           // environment prompt keeps its existing content.
-          const executionContext = dagExecutionContext(executionDirectory, baseHead)
+          const executionContext = dagExecutionContext(executionDirectory, baseHead, targetFingerprint)
           let result = yield* inExecution(
             promptSvc.prompt(
               {
