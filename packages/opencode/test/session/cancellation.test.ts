@@ -60,7 +60,12 @@ describe("session cancellation coordinator", () => {
       yield* Effect.addFinalizer(() => Effect.sync(() => later.release()))
       const entered = yield* Deferred.make<void>()
       yield* later.wait.pipe(Effect.andThen(Deferred.succeed(entered, undefined)), Effect.forkChild)
+      expect(SessionCancellation.goalCancelPending("barrier")).toBe(true)
+      first.finishGoalCancel()
+      first.finishGoalCancel()
+      expect(SessionCancellation.goalCancelPending("barrier")).toBe(true)
       second.finish()
+      expect(SessionCancellation.goalCancelPending("barrier")).toBe(false)
       yield* Effect.yieldNow
       expect(yield* Deferred.isDone(entered)).toBe(false)
       first.finish()

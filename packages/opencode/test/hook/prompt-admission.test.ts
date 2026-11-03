@@ -5,7 +5,7 @@ import { HookLifecycle } from "@/hook/lifecycle"
 import { expect, spyOn } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -34,6 +34,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { SessionStatus } from "@/session/status"
+import { SessionAutomationLease } from "@/session/automation-lease"
+import { SessionRunState } from "@/session/run-state"
 
 const mcp = Layer.succeed(
   MCP.Service,
@@ -237,7 +239,14 @@ it.live("resume does not wait on cancellation while holding the admission commit
 )
 
 const goalIt = testEffect(
-  LayerNode.buildLayer(LayerNode.group([root, GoalLoop.node, Goal.node, SessionStatus.node]), {
+  LayerNode.buildLayer(LayerNode.group([
+    root,
+    GoalLoop.node,
+    Goal.node,
+    SessionStatus.node,
+    SessionAutomationLease.node,
+    SessionRunState.node,
+  ]), {
     replacements: [
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
@@ -293,6 +302,345 @@ goalIt.live("cancel decides the goal pause before dispatching owners", () =>
       expect((yield* goal.load(session.id))?.status).toBe("paused")
       expect(yield* Deferred.isDone(dispatched)).toBe(true)
     }),
+  ),
+)
+
+goalIt.live("goal handoff abandons a start invalidated while holding the automation lease", () =>
+  provideTmpdirServer(
+    ({ llm }) =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const lease = yield* SessionAutomationLease.Service
+        const runs = yield* SessionRunState.Service
+        const session = yield* sessions.create({ title: "goal handoff cancellation" })
+        const active = yield* goal.set(session.id, "finish work", 5)
+        yield* goal.markTurnDriven(session.id)
+        const token = Option.getOrThrow(yield* lease.claim(session.id, { kind: "goal", id: active.goal_id ?? "legacy" }))
+        const entered = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const unregistering = yield* Deferred.make<void>()
+        const start = runs.startIfIdle
+        const startSpy = spyOn(runs, "startIfIdle").mockImplementation((...args) =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(start(...args))),
+        )
+        const unregister = lease.unregister
+        const unregisterSpy = spyOn(lease, "unregister").mockImplementation((id, owner) =>
+          Deferred.succeed(unregistering, undefined).pipe(Effect.andThen(unregister(id, owner))),
+        )
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            startSpy.mockRestore()
+            unregisterSpy.mockRestore()
+            yield* Deferred.succeed(release, undefined)
+          }),
+        )
+        const handoff = yield* SessionPrompt.admitIfIdle(prompt, lease, token, {
+          sessionID: session.id,
+          parts: [{ type: "text", text: "continue", synthetic: true }],
+        }).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(entered), "goal handoff did not reach runner startup")
+        const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(unregistering), "goal pause did not reach lease release")
+        yield* Deferred.succeed(release, undefined)
+        expect(Option.isNone(yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle"))).toBe(true)
+        yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancel deadlocked on the handoff")
+        expect((yield* goal.load(session.id))?.status).toBe("paused")
+        expect(yield* llm.calls).toBe(0)
+      }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+goalIt.live("goal handoff releases its lease when a later prompt holds the admission lock", () =>
+  provideTmpdirServer(
+    ({ llm }) =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const lease = yield* SessionAutomationLease.Service
+        const session = yield* sessions.create({ title: "goal handoff blocked admission" })
+        const active = yield* goal.set(session.id, "finish work", 5)
+        yield* goal.markTurnDriven(session.id)
+        const token = Option.getOrThrow(yield* lease.claim(session.id, { kind: "goal", id: active.goal_id ?? "legacy" }))
+        const preparing = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const unregistering = yield* Deferred.make<void>()
+        const laterRequested = Deferred.makeUnsafe<void>()
+        let cancellation: ReturnType<typeof SessionCancellation.begin> | undefined
+        const begin = SessionCancellation.begin
+        const beginSpy = spyOn(SessionCancellation, "begin").mockImplementation((id) => {
+          const result = begin(id)
+          if (id === session.id) cancellation = result
+          return result
+        })
+        const prepare = prompt.prepareIfIdle
+        const prepareSpy = spyOn(prompt, "prepareIfIdle").mockImplementation((...args) =>
+          Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(prepare(...args))),
+        )
+        const unregister = lease.unregister
+        const unregisterSpy = spyOn(lease, "unregister").mockImplementation((id, owner) =>
+          Deferred.succeed(unregistering, undefined).pipe(Effect.andThen(unregister(id, owner))),
+        )
+        const request = SessionCancellation.request
+        let observingLater = false
+        const requestSpy = spyOn(SessionCancellation, "request").mockImplementation((id) => {
+          const result = request(id)
+          if (id === session.id && observingLater) Deferred.doneUnsafe(laterRequested, Effect.void)
+          return result
+        })
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            cancellation?.finish()
+            beginSpy.mockRestore()
+            prepareSpy.mockRestore()
+            unregisterSpy.mockRestore()
+            requestSpy.mockRestore()
+            yield* Deferred.succeed(release, undefined)
+          }),
+        )
+        const handoff = yield* SessionPrompt.admitIfIdle(prompt, lease, token, {
+          sessionID: session.id,
+          parts: [{ type: "text", text: "CANCELLED_GOAL_HANDOFF_971", synthetic: true }],
+        }).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(preparing), "goal handoff did not enter its lease")
+        const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(unregistering), "goal pause did not reach lease release")
+        yield* llm.text("later response")
+        observingLater = true
+        const later = yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "LATER_PROMPT_971" }],
+        }, { skipHookStart: true }).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(laterRequested), "later prompt did not reach cancellation admission")
+        expect(yield* llm.calls).toBe(0)
+        yield* Deferred.succeed(release, undefined)
+        expect(Option.isNone(yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff deadlocked"))).toBe(true)
+        yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancel deadlocked")
+        yield* awaitWithTimeout(Fiber.join(later), "later prompt did not complete")
+        expect(yield* llm.calls).toBe(1)
+        const firstInput = JSON.stringify(yield* llm.inputs)
+        expect(firstInput).toContain("LATER_PROMPT_971")
+        expect(firstInput).not.toContain("CANCELLED_GOAL_HANDOFF_971")
+        yield* llm.text("subsequent response")
+        yield* awaitWithTimeout(prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "subsequent prompt" }],
+        }, { skipHookStart: true }), "subsequent prompt did not complete")
+        expect(yield* llm.calls).toBe(2)
+      }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+goalIt.live("cancel during real goal command startup retains the goal until pause", () =>
+  provideTmpdirServer(
+    ({ llm }) =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const status = yield* SessionStatus.Service
+        const session = yield* sessions.create({
+          title: "goal startup cancellation",
+          model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") },
+        })
+        yield* (yield* GoalLoop.Service).init()
+        const starting = yield* Deferred.make<void>()
+        const deciding = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const locked = yield* Deferred.make<void>()
+        const unlock = yield* Deferred.make<void>()
+        const waiting = yield* Deferred.make<void>()
+        const idle = yield* Deferred.make<void>()
+        const goalLoopIdle = yield* Deferred.make<string | undefined>()
+        const goalAtIdle: Array<string | undefined> = []
+        const ownsSession = Goal.ownsSession
+        const observerSpy = spyOn(Goal, "ownsSession").mockImplementation((id, directory) =>
+          ownsSession(id, directory).pipe(
+            Effect.tap(() =>
+              id === session.id
+                ? goal.load(id).pipe(Effect.flatMap((current) => Deferred.succeed(goalLoopIdle, current?.status)))
+                : Effect.void,
+            ),
+          ),
+        )
+        const set = status.set
+        const statusSpy = spyOn(status, "set").mockImplementation((id, info) =>
+          id === session.id && info.type === "busy"
+            ? Deferred.succeed(starting, undefined).pipe(Effect.andThen(Effect.never))
+            : id === session.id && info.type === "idle"
+              ? Effect.gen(function* () {
+                  goalAtIdle.push((yield* goal.load(id))?.status)
+                  yield* set(id, info)
+                  yield* Deferred.succeed(idle, undefined)
+                })
+            : set(id, info),
+        )
+        const pause = goal.pauseForUserCancel
+        const pauseSpy = spyOn(goal, "pauseForUserCancel").mockImplementation((id, reason) =>
+          Deferred.succeed(deciding, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(pause(id, reason))),
+        )
+        const wait = SessionCancellation.waitForGoalCancels
+        const waitSpy = spyOn(SessionCancellation, "waitForGoalCancels").mockImplementation((id) =>
+          (id === session.id ? Deferred.succeed(waiting, undefined) : Effect.void).pipe(Effect.andThen(wait(id))),
+        )
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            statusSpy.mockRestore()
+            pauseSpy.mockRestore()
+            waitSpy.mockRestore()
+            observerSpy.mockRestore()
+            yield* Deferred.succeed(release, undefined)
+            yield* Deferred.succeed(unlock, undefined)
+          }),
+        )
+        const command = yield* prompt.command({
+          sessionID: session.id,
+          command: "goal",
+          arguments: "finish work",
+          agent: "build",
+        }).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(starting), "goal command did not reach runner startup")
+        const lock = yield* SessionCancellation.publication.withLock(session.id)(
+          Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(unlock))),
+        ).pipe(Effect.forkChild({ startImmediately: true }))
+        yield* awaitWithTimeout(Deferred.await(locked), "publication lock was not acquired")
+        const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(deciding), "goal cancellation did not reach pause while publication was locked")
+        expect(SessionCancellation.goalCancelPending(session.id)).toBe(true)
+        yield* Deferred.succeed(unlock, undefined)
+        yield* Fiber.join(lock)
+        yield* awaitWithTimeout(Fiber.await(command), "cancelled goal startup did not settle")
+        yield* awaitWithTimeout(Deferred.await(waiting), "idle did not wait for goal pause")
+        expect(goalAtIdle).toEqual([])
+        expect(yield* Deferred.isDone(goalLoopIdle)).toBe(false)
+        const drivenBeforePause = yield* goal.isTurnDriven(session.id)
+        yield* Deferred.succeed(release, undefined)
+        yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancellation did not finish")
+        yield* awaitWithTimeout(Deferred.await(idle), "failed startup did not publish idle")
+        expect(yield* awaitWithTimeout(Deferred.await(goalLoopIdle), "GoalLoop did not observe idle")).toBe("paused")
+        const paused = yield* goal.load(session.id)
+        expect(drivenBeforePause).toBe(true)
+        expect(paused?.status).toBe("paused")
+        expect(goalAtIdle).toEqual(["paused"])
+        expect(paused?.paused_reason).toBe("用户中断（ESC）— /goal resume 继续")
+        expect(yield* llm.calls).toBe(0)
+      }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+goalIt.live("cancel invalidates a model switch result before delayed owner dispatch", () =>
+  provideTmpdirServer(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const goal = yield* Goal.Service
+        const settings = yield* SettingsHook.Service
+        const session = yield* sessions.create({
+          title: "model switch cancellation",
+          model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") },
+        })
+        yield* goal.set(session.id, "finish work", 5)
+        yield* goal.markTurnDriven(session.id)
+        const hookStarted = yield* Deferred.make<void>()
+        const hookRelease = yield* Deferred.make<void>()
+        const pauseStarted = yield* Deferred.make<void>()
+        const pauseRelease = yield* Deferred.make<void>()
+        const trigger = settings.trigger
+        const triggerSpy = spyOn(settings, "trigger").mockImplementation((payload, context) =>
+          payload.event === "PostModelSwitch" && context.sessionID === session.id
+            ? Deferred.succeed(hookStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(hookRelease)),
+                Effect.as({ additionalContexts: ["STALE_MODEL_CONTEXT"], systemMessages: ["STALE_MODEL_NOTICE"] }),
+              )
+            : trigger(payload, context),
+        )
+        const isTurnDriven = goal.isTurnDriven
+        const pauseSpy = spyOn(goal, "isTurnDriven").mockImplementation((id) =>
+          Deferred.succeed(pauseStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(pauseRelease)),
+            Effect.andThen(isTurnDriven(id)),
+          ),
+        )
+        const notification = spyOn(HookNotification, "message")
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            triggerSpy.mockRestore()
+            pauseSpy.mockRestore()
+            notification.mockRestore()
+            yield* Deferred.succeed(hookRelease, undefined)
+            yield* Deferred.succeed(pauseRelease, undefined)
+          }),
+        )
+        yield* prompt.restoreModelContext(session.id)
+        yield* awaitWithTimeout(Deferred.await(hookStarted), "model switch hook did not start")
+        const consumer = yield* prompt
+          .takeModelSwitchContext({ sessionID: session.id, apiModelID: "test-model" })
+          .pipe(Effect.forkChild({ startImmediately: true }))
+        const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(pauseStarted), "cancellation did not reach the goal pause")
+        yield* Deferred.succeed(hookRelease, undefined)
+        const context = yield* awaitWithTimeout(Fiber.join(consumer), "model switch consumer did not settle")
+        const notices = notification.mock.calls.filter(
+          ([id, message]) => id === session.id && message === "STALE_MODEL_NOTICE",
+        )
+        yield* Deferred.succeed(pauseRelease, undefined)
+        yield* awaitWithTimeout(Fiber.join(cancelled), "cancellation did not finish")
+        expect(context).toEqual([])
+        expect(notices).toHaveLength(0)
+      }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+goalIt.live("cancel during model switch notice landing drops remaining notices and context", () =>
+  provideTmpdirServer(
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const settings = yield* SettingsHook.Service
+        const session = yield* sessions.create({
+          title: "model switch notice cancellation",
+          model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") },
+        })
+        const landed = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const trigger = settings.trigger
+        const triggerSpy = spyOn(settings, "trigger").mockImplementation((payload, context) =>
+          payload.event === "PostModelSwitch" && context.sessionID === session.id
+            ? Effect.succeed({ additionalContexts: ["STALE_MODEL_CONTEXT"], systemMessages: ["FIRST_NOTICE", "STALE_NOTICE"] })
+            : trigger(payload, context),
+        )
+        const message = HookNotification.message
+        const noticeSpy = spyOn(HookNotification, "message").mockImplementation((id, text) =>
+          id === session.id && text === "FIRST_NOTICE"
+            ? message(id, text).pipe(Effect.andThen(Deferred.succeed(landed, undefined)), Effect.andThen(Deferred.await(release)))
+            : message(id, text),
+        )
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            triggerSpy.mockRestore()
+            noticeSpy.mockRestore()
+            yield* Deferred.succeed(release, undefined)
+          }),
+        )
+        yield* prompt.restoreModelContext(session.id)
+        const consumer = yield* prompt.takeModelSwitchContext({ sessionID: session.id, apiModelID: "test-model" }).pipe(Effect.forkChild)
+        yield* awaitWithTimeout(Deferred.await(landed), "first model switch notice did not land")
+        yield* awaitWithTimeout(prompt.cancel(session.id), "model switch cancellation did not finish")
+        yield* Deferred.succeed(release, undefined)
+        expect(yield* awaitWithTimeout(Fiber.join(consumer), "model switch consumer did not settle")).toEqual([])
+        expect(noticeSpy.mock.calls.filter(([id]) => id === session.id).map(([, text]) => text)).toEqual(["FIRST_NOTICE"])
+      }),
+    { git: true, config: providerCfg },
   ),
 )
 
@@ -1313,6 +1661,7 @@ it.live("a command expanded before a later variant write cannot restore its old 
       expect((yield* sessions.get(session.id)).model?.variant).toBe("xhigh")
       const release = path.join(dir, "release-command-fence")
       const entered = path.join(dir, "command-fence-entered")
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.writeFile(release, "go")).pipe(Effect.ignore))
       const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
       yield* hooks.add(session.id, {
         event: "UserPromptExpansion",
@@ -1339,16 +1688,16 @@ it.live("a command expanded before a later variant write cannot restore its old 
         Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
         "command expansion hook never started",
       )
-      yield* prompt.setModel({
+      yield* awaitWithTimeout(prompt.setModel({
         sessionID: session.id,
         model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
         variant: "high",
         source: "picker",
         hookMode: "interactive",
-      })
+      }), "later model write did not finish", "10 seconds")
       expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
       yield* Effect.promise(() => fs.writeFile(release, "go"))
-      const result = yield* Fiber.join(running)
+      const result = yield* awaitWithTimeout(Fiber.join(running), "expanded command did not finish", "10 seconds")
       expect(result.info.role).toBe("assistant")
       if (result.info.role === "assistant") expect(result.info.variant).toBe("xhigh")
       expect((yield* sessions.get(session.id)).model?.variant).toBe("high")

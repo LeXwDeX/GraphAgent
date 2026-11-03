@@ -240,6 +240,7 @@ export interface Interface {
     input: PromptInput,
     persistAdmission?: Effect.Effect<void>,
     options?: AdmissionOptions,
+    request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
   readonly promptIfIdle: (
     input: PromptInput,
@@ -563,7 +564,7 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         const pending = new Map<
           SessionID,
-          { target: string; fiber: Fiber.Fiber<TriggerResult>; unregister: () => void }
+          { target: string; epoch: number; fiber: Fiber.Fiber<TriggerResult>; unregister: () => void }
         >()
         yield* Effect.acquireRelease(
           events.listen((event) =>
@@ -625,7 +626,7 @@ export const layer = Layer.effect(
           Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
           Effect.forkIn(scope),
         )
-        const entry = { target: payload.toModel, fiber, unregister: () => {} }
+        const entry = { target: payload.toModel, epoch: request.epoch, fiber, unregister: () => {} }
         const unregister = request.register(
           () =>
             InstanceState.withGeneration(
@@ -660,10 +661,15 @@ export const layer = Layer.effect(
       if (!entry || entry.target !== apiModelID) return [] as string[]
       const result = yield* Fiber.join(entry.fiber).pipe(Effect.timeoutOption("5 seconds"))
       if (Option.isNone(result) || pending.get(sessionID) !== entry) return [] as string[]
+      const current = SessionCancellation.epoch(sessionID) === entry.epoch
       pending.delete(sessionID)
       entry.unregister()
-      yield* SettingsHook.landSystemMessages(result.value, { sessionID })
-      return result.value.additionalContexts
+      if (!current) return [] as string[]
+      yield* SettingsHook.landSystemMessages(result.value, {
+        sessionID,
+        shouldLand: () => SessionCancellation.epoch(sessionID) === entry.epoch,
+      })
+      return SessionCancellation.epoch(sessionID) === entry.epoch ? result.value.additionalContexts : []
     })
     const scopedAgents = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, string>()))
     // The loop checks the context limit before it prepares a request, so the system text and tool schemas
@@ -715,6 +721,19 @@ export const layer = Layer.effect(
     })
     const promptLocks = KeyedMutex.makeUnsafe<SessionID>()
     const followupAdmissions = SessionCancellation.admissions
+    const withRunRequest = <A, E, R>(
+      sessionID: SessionID,
+      use: (request: ReturnType<typeof SessionCancellation.request>) => Effect.Effect<A, E, R>,
+      admitted?: ReturnType<typeof SessionCancellation.request>,
+    ): Effect.Effect<A, E, R> =>
+      Effect.suspend(() => {
+        if (admitted) return use(admitted)
+        const request = SessionCancellation.request(sessionID)
+        return request.wait.pipe(
+          Effect.andThen(Effect.suspend(() => use(request))),
+          Effect.ensuring(Effect.sync(() => request.release())),
+        )
+      })
     // App-layer model-write epochs for sessions with a pending command. This is
     // not directory state: one AppLayer shares it across workspaces. Entries
     // exist only while at least one command is pending and are removed on the
@@ -998,7 +1017,7 @@ export const layer = Layer.effect(
       sessionID: SessionID,
       options?: { readonly reason?: SessionAbortReason.Info },
     ) {
-      const cancellation = SessionCancellation.begin(sessionID)
+      const cancellation = yield* Effect.sync(() => SessionCancellation.begin(sessionID))
       const abort = options?.reason
       let transferred = false
       let waiters: Array<Fiber.Fiber<void>> = []
@@ -1029,6 +1048,7 @@ export const layer = Layer.effect(
                         )
                       : pauseGoalForCancel(sessionID)
                   const pauseExit = yield* pause.pipe(Effect.exit)
+                  cancellation.finishGoalCancel()
                   if (Exit.isFailure(pauseExit))
                     yield* Effect.logWarning("session cancel goal pause failed", { sessionID })
                   const local =
@@ -1138,7 +1158,7 @@ export const layer = Layer.effect(
           }),
         ),
       )
-    })
+    }, Effect.uninterruptible)
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
       const ctx = yield* InstanceState.context
@@ -2720,8 +2740,9 @@ export const layer = Layer.effect(
         )
         if (initial) return initial
       }
-      const wait = yield* promptLocks.withLock(input.sessionID)(
-        Effect.gen(function* () {
+      const wait = yield* withRunRequest(input.sessionID, (request) =>
+        promptLocks.withLock(input.sessionID)(Effect.gen(function* () {
+          if (!request.valid()) return Effect.interrupt
           if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
           const admitted = yield* admitPrompt(input, undefined, options, commitAdmission, modelBaseline)
           if (!admitted.run) return Effect.succeed(admitted.message)
@@ -2737,8 +2758,9 @@ export const layer = Layer.effect(
               }
               return yield* runLoop(input.sessionID)
             }),
+            request,
           )
-        }),
+        })),
       )
       return yield* wait
     })
@@ -2764,10 +2786,12 @@ export const layer = Layer.effect(
       input: PromptInput,
       persistAdmission?: Effect.Effect<void>,
       options?: AdmissionOptions,
+      request?: ReturnType<typeof SessionCancellation.request>,
     ) {
-      return yield* promptLocks.withLock(input.sessionID)(
+      return yield* withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
         Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
+            if (!request.valid()) return Option.none<IdleAdmission>()
             const activation = yield* Deferred.make<void>()
             const admission =
               yield* Deferred.make<
@@ -2778,6 +2802,7 @@ export const layer = Layer.effect(
               lastAssistant(input.sessionID),
               Effect.gen(function* () {
                 yield* Deferred.await(activation)
+                if (!request.current()) return yield* Effect.interrupt
                 const admitted = yield* Deferred.await(admission)
                 if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
                 if (!admitted.value.run) return admitted.value.message
@@ -2788,17 +2813,21 @@ export const layer = Layer.effect(
                 }
                 return yield* runLoop(input.sessionID)
               }).pipe(Effect.orDie),
+              request,
             )
             if (Option.isNone(wait)) return Option.none<IdleAdmission>()
 
             const admitted = yield* restore(
-              admitPrompt(input, persistAdmission, options).pipe(
-                Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)),
-              ),
+              admitPrompt(input, persistAdmission, options, (body) =>
+                Effect.suspend(() => request.valid()
+                  ? body
+                  : Effect.interrupt),
+              ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
             ).pipe(Effect.exit)
             yield* Deferred.succeed(admission, admitted)
             if (Exit.isFailure(admitted)) {
               yield* Deferred.succeed(activation, undefined)
+              if (!request.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
               return yield* Effect.failCause(admitted.cause)
             }
             return Option.some({
@@ -2808,7 +2837,7 @@ export const layer = Layer.effect(
             })
           }),
         ),
-      )
+      ), request)
     })
 
     const promptIfIdle: Interface["promptIfIdle"] = Effect.fn("SessionPrompt.promptIfIdle")(
@@ -3870,8 +3899,10 @@ export const layer = Layer.effect(
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      const result = yield* promptLocks.withLock(input.sessionID)(
-        state.ensureRunningHandle(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID)),
+      const result = yield* withRunRequest(input.sessionID, (request) =>
+        promptLocks.withLock(input.sessionID)(
+          state.ensureRunningHandle(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID), request),
+        ),
       )
       return yield* result
     })
@@ -3998,8 +4029,9 @@ export const layer = Layer.effect(
           (
             commit,
           ): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionConversationHooks.Blocked> =>
-            promptLocks.withLock(input.sessionID)(
+            withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
               Effect.gen(function* () {
+                if (!request.valid()) return yield* Effect.interrupt
                 const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
                 const contexts = yield* resumeContexts(target)
                 if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
@@ -4060,22 +4092,16 @@ export const layer = Layer.effect(
                 // Fork the runner under the same commit lock as the owner check:
                 // a cancel cannot land between the check and the fork. Wait outside
                 // the prompt lock; runLoop claims it for its snapshot.
-                const request = SessionCancellation.request(input.sessionID)
-                return yield* request.wait.pipe(
-                  Effect.andThen(
-                    commit(
-                      state.ensureRunningHandle(
-                        input.sessionID,
-                        lastAssistant(input.sessionID),
-                        runLoop(input.sessionID),
-                        request,
-                      ),
-                    ),
+                return yield* commit(
+                  state.ensureRunningHandle(
+                    input.sessionID,
+                    lastAssistant(input.sessionID),
+                    runLoop(input.sessionID),
+                    request,
                   ),
-                  Effect.ensuring(Effect.sync(() => request.release())),
                 )
               }),
-            ),
+            )),
         )
         .pipe(
           Effect.flatten,
@@ -4090,8 +4116,10 @@ export const layer = Layer.effect(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
       const ready = yield* Latch.make()
-      const result = yield* promptLocks.withLock(input.sessionID)(
-        state.startShellHandle(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready),
+      const result = yield* withRunRequest(input.sessionID, (request) =>
+        promptLocks.withLock(input.sessionID)(
+          state.startShellHandle(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready, request),
+        ),
       )
       return yield* result
     })
@@ -4102,12 +4130,14 @@ export const layer = Layer.effect(
     // startIfIdle keeps today's inline semantics while another turn is running
     // (no queueing, no second idle); the in-flight turn re-emits idle itself.
     const commandTurn = Effect.fnUntraced(function* (sessionID: SessionID, work: Effect.Effect<SessionV1.WithParts>) {
-      return yield* promptLocks.withLock(sessionID)(
+      return yield* withRunRequest(sessionID, (request) => promptLocks.withLock(sessionID)(
         Effect.gen(function* () {
-          const handle = yield* state.startIfIdle(sessionID, lastAssistant(sessionID), work)
+          if (!request.valid()) return yield* Effect.interrupt
+          const handle = yield* state.startIfIdle(sessionID, lastAssistant(sessionID), work, request)
+          if (!request.valid()) return yield* Effect.interrupt
           return yield* Option.getOrElse(handle, () => work)
         }),
-      )
+      ))
     })
 
     const commandBody = Effect.fnUntraced(function* (
@@ -4361,8 +4391,9 @@ export const layer = Layer.effect(
         // This branch returns before the normal landing point below, so notices
         // from the hook that stopped the command must be published here.
         if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
-        return yield* promptLocks.withLock(input.sessionID)(
+        return yield* withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
           Effect.gen(function* () {
+            if (!request.valid()) return yield* Effect.interrupt
             // A command cancelled while this blocked notice is being admitted
             // must surface as the normal rejected-command error, not a defect
             // that the HTTP layer reports as 500.
@@ -4391,10 +4422,11 @@ export const layer = Layer.effect(
               input.sessionID,
               lastAssistant(input.sessionID),
               Effect.succeed(message),
+              request,
             )
             return yield* Option.getOrElse(handle, () => Effect.succeed(message))
           }),
-        )
+        ))
       }
 
       const templateCommand = yield* Effect.promise(async () => cmd.template)
@@ -4806,8 +4838,23 @@ export function admitIfIdle(
   token: SessionAutomationLease.Token,
   input: PromptInput,
   options?: AdmissionOptions,
+  persistAdmission?: Effect.Effect<void>,
 ): Effect.Effect<Option.Option<Effect.Effect<SessionV1.WithParts>>, PromptError> {
-  return automation.handoff(token, service.prepareIfIdle(input, undefined, options))
+  return Effect.suspend(() => {
+    const request = SessionCancellation.request(input.sessionID)
+    // Goal cancellation may need this lease, so wait before taking it.
+    return request.wait.pipe(
+      Effect.andThen(
+        automation.handoff(
+          token,
+          Effect.suspend(() =>
+            request.valid() ? service.prepareIfIdle(input, persistAdmission, options, request) : Effect.succeed(Option.none()),
+          ),
+        ),
+      ),
+      Effect.ensuring(Effect.sync(() => request.release())),
+    )
+  })
 }
 
 export * as SessionPrompt from "./prompt"

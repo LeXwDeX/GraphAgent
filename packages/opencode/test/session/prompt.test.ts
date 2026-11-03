@@ -7518,6 +7518,8 @@ unix(
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isFailure(exit)) return
 
+      const actual = toolPart(exit.value.parts)
+      if (actual?.state.status === "error") throw new Error(`interrupted bash failed: ${actual.state.error}`)
       const tool = completedTool(exit.value.parts)
       if (!tool) return
 

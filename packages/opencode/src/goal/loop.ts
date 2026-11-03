@@ -20,6 +20,7 @@ import { GoalPrompts } from "./prompts"
 import { generateText } from "ai"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionAutomationLease } from "@/session/automation-lease"
+import { SessionCancellation } from "@/session/cancellation"
 import { NotFoundError } from "@/storage/storage"
 
 export interface Interface {
@@ -311,55 +312,55 @@ const serviceLayer = Layer.effect(
         // mark is speculative and cleared below when admission is denied or
         // the turn fails/interrupts.
         yield* goal.markTurnDriven(input.sessionID)
-        const admitted = yield* automation
-          .handoff(
+        const admitted = yield* SessionPrompt
+          .admitIfIdle(
+            promptSvc,
+            automation,
             input.lease,
-            promptSvc.prepareIfIdle(
-              {
-                sessionID: input.sessionID,
-                messageID: admissionMessageID,
-                parts: [{ type: "text", text: continuationText, synthetic: true }],
-              },
-              Effect.gen(function* () {
-                // prepareIfIdle already holds the prompt lock and confirmed
-                // idle. Re-read durable identity immediately before the atomic
-                // message commit: a replacement goal or user takeover must
-                // roll back the whole admission, not consume reset budget.
-                const current = yield* goal.load(input.sessionID)
-                if (
-                  !current ||
-                  current.status !== "active" ||
-                  (current.goal_id ?? "legacy") !== expected.goalID ||
-                  (current.revision ?? 0) !== expected.revision
-                ) {
-                  throw new RecoveryFenceLost()
-                }
-                const latestMessages = yield* workMessages(input.sessionID).pipe(
-                  Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])),
-                )
-                if (
-                  shouldPreempt(latestMessages.filter((message) => message.info.id !== admissionMessageID)) ||
-                  workAssistant(latestMessages)?.info.id !== failed
-                ) {
-                  throw new RecoveryFenceLost()
-                }
-                const observed = yield* goal.claimRecovery(input.sessionID, expected, "reset", failed)
-                if (observed.tag !== "allowed") {
-                  claim = observed
-                  throw new RecoveryFenceLost()
-                }
+            {
+              sessionID: input.sessionID,
+              messageID: admissionMessageID,
+              parts: [{ type: "text", text: continuationText, synthetic: true }],
+            },
+            { continueToolBudget: true },
+            Effect.gen(function* () {
+              // prepareIfIdle already holds the prompt lock and confirmed
+              // idle. Re-read durable identity immediately before the atomic
+              // message commit: a replacement goal or user takeover must
+              // roll back the whole admission, not consume reset budget.
+              const current = yield* goal.load(input.sessionID)
+              if (
+                !current ||
+                current.status !== "active" ||
+                (current.goal_id ?? "legacy") !== expected.goalID ||
+                (current.revision ?? 0) !== expected.revision
+              ) {
+                throw new RecoveryFenceLost()
+              }
+              const latestMessages = yield* workMessages(input.sessionID).pipe(
+                Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])),
+              )
+              if (
+                shouldPreempt(latestMessages.filter((message) => message.info.id !== admissionMessageID)) ||
+                workAssistant(latestMessages)?.info.id !== failed
+              ) {
+                throw new RecoveryFenceLost()
+              }
+              const observed = yield* goal.claimRecovery(input.sessionID, expected, "reset", failed)
+              if (observed.tag !== "allowed") {
                 claim = observed
-                const owner = user.info
-                if (owner.role !== "user") throw new RecoveryFenceLost()
-                yield* compaction.create({
-                  sessionID: input.sessionID,
-                  agent: owner.agent,
-                  model: owner.model,
-                  auto: true,
-                })
-              }),
-              { continueToolBudget: true },
-            ),
+                throw new RecoveryFenceLost()
+              }
+              claim = observed
+              const owner = user.info
+              if (owner.role !== "user") throw new RecoveryFenceLost()
+              yield* compaction.create({
+                sessionID: input.sessionID,
+                agent: owner.agent,
+                model: owner.model,
+                auto: true,
+              })
+            }),
           )
           .pipe(
             Effect.catchCause((cause) => {
@@ -645,10 +646,10 @@ const serviceLayer = Layer.effect(
       owner: InFlightEvaluation,
     ) {
       // GOAL-TURN-SCOPE: the goal-driven turn that produced this idle has
-      // ended. Clear the mark up front; the continuation branch below re-marks
-      // when it dispatches the next turn. This also retires a stale mark when
-      // the idle came from an unrelated (non-goal) turn.
+      // ended. Clear the mark unless cancellation still needs it for the pause.
+      // The continuation branch re-marks when it dispatches the next turn.
       yield* goal.clearTurnDriven(sessionID)
+      if (SessionCancellation.goalCancelPending(sessionID)) return
       const goalState = yield* goal.load(sessionID)
       if (!goalState || goalState.status !== "active") return
       // D-4 entry gate (scan path only): the boot snapshot may have gone
@@ -1043,24 +1044,24 @@ const serviceLayer = Layer.effect(
         // The judge continues the same user input; a manual new/resume command
         // admits a new input and owns its fresh budget in SessionPrompt.
         const dispatchExpected = expectedOf(dispatchState)
-        const admitted = yield* automation
-          .handoff(
+        const admitted = yield* SessionPrompt
+          .admitIfIdle(
+            promptSvc,
+            automation,
             continuationLease,
-            promptSvc.prepareIfIdle(
-              { sessionID, parts: [{ type: "text", text: continuationText, synthetic: true }] },
-              Effect.gen(function* () {
-                const current = yield* goal.load(sessionID)
-                if (
-                  !current ||
-                  current.status !== "active" ||
-                  (current.goal_id ?? "legacy") !== dispatchExpected.goalID ||
-                  (current.revision ?? 0) !== dispatchExpected.revision
-                ) {
-                  throw new GoalDispatchFenceLost()
-                }
-              }),
-              { continueToolBudget: true },
-            ),
+            { sessionID, parts: [{ type: "text", text: continuationText, synthetic: true }] },
+            { continueToolBudget: true },
+            Effect.gen(function* () {
+              const current = yield* goal.load(sessionID)
+              if (
+                !current ||
+                current.status !== "active" ||
+                (current.goal_id ?? "legacy") !== dispatchExpected.goalID ||
+                (current.revision ?? 0) !== dispatchExpected.revision
+              ) {
+                throw new GoalDispatchFenceLost()
+              }
+            }),
           )
           .pipe(
             Effect.catchCause((cause) =>

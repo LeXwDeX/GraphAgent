@@ -31,12 +31,14 @@ export interface Interface {
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
+    request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Option.Option<Effect.Effect<SessionV1.WithParts>>>
   readonly startShellHandle: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
     ready?: Latch.Latch,
+    request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Effect.Effect<SessionV1.WithParts, Session.BusyError>>
   readonly startShell: (
     sessionID: SessionID,
@@ -143,46 +145,66 @@ export const layer = Layer.effect(
       Effect.suspend(() => {
         const request = admitted ?? SessionCancellation.request(sessionID)
         return Effect.gen(function* () {
-          yield* request.wait
+          // Callers that supply a request have already waited before taking their locks.
+          if (!admitted) yield* request.wait
           if (!request.valid()) return fallback
           const data = yield* InstanceState.get(state)
+          const retire = (
+            runner: Runner.Runner<SessionV1.WithParts>,
+            snapshot: Runner.State<SessionV1.WithParts, never>,
+          ): Effect.Effect<void> =>
+            SessionCancellation.publication.withLock(sessionID)(
+              Effect.suspend(() => {
+                if (data.runners.get(sessionID) !== runner || runner.state !== snapshot || runner.busy) return Effect.void
+                if (SessionCancellation.goalCancelPending(sessionID)) {
+                  data.owners.get(sessionID)?.()
+                  data.owners.delete(sessionID)
+                  return SessionCancellation.waitForGoalCancels(sessionID).pipe(
+                    Effect.andThen(data.locks.withLock(sessionID)(retire(runner, snapshot))),
+                    Effect.forkIn(data.scope),
+                    Effect.asVoid,
+                  )
+                }
+                data.runners.delete(sessionID)
+                data.owners.get(sessionID)?.()
+                data.owners.delete(sessionID)
+                return setStatus(sessionID, { type: "idle" })
+              }),
+            )
           return yield* data.locks.withLock(sessionID)(
             Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
                 if (!request.valid()) return fallback
                 let next = data.runners.get(sessionID)
-                if (!next) {
+                if (!next || !data.owners.has(sessionID)) {
                   const context = yield* Effect.context()
                   const generation = yield* InstanceState.currentGeneration
                   const directory = yield* InstanceState.directory
                   if (!request.valid()) return fallback
-                  const created = Runner.make<SessionV1.WithParts>(data.scope, {
-                    onIdle: data.locks.withLock(sessionID)(
-                      Effect.suspend(() => {
-                        if (data.runners.get(sessionID) !== created || created.busy) return Effect.void
-                        data.runners.delete(sessionID)
-                        data.owners.get(sessionID)?.()
-                        data.owners.delete(sessionID)
-                        return setStatus(sessionID, { type: "idle" })
-                      }),
-                    ),
-                    onBusy: setStatus(sessionID, { type: "busy" }),
-                    onInterrupt,
-                  })
-                  data.runners.set(sessionID, created)
+                  if (!next) {
+                    const created: Runner.Runner<SessionV1.WithParts> = Runner.make<SessionV1.WithParts>(data.scope, {
+                      onIdle: Effect.suspend(() =>
+                        data.locks.withLock(sessionID)(retire(created, created.state)),
+                      ),
+                      onBusy: setStatus(sessionID, { type: "busy" }),
+                      onInterrupt,
+                    })
+                    data.runners.set(sessionID, created)
+                    next = created
+                  }
+                  const runner = next
                   const unregister = request.register(() => {
-                    const captured = created.cancelSnapshot()
+                    const captured = runner.cancelSnapshot()
                     const pending = data.starting.get(sessionID)
                     const cancel = pending
                       ? Deferred.await(pending).pipe(
-                          Effect.andThen(Effect.suspend(() => created.cancelSnapshot())),
+                          Effect.andThen(Effect.suspend(() => runner.cancelSnapshot())),
                           Effect.andThen(captured),
                         )
                       : captured
                     return InstanceState.withGeneration(generation, cancel).pipe(Effect.provide(context))
                   }, directory)
                   if (unregister) data.owners.set(sessionID, unregister)
-                  next = created
                 }
                 const pending = Deferred.makeUnsafe<void>()
                 data.starting.set(sessionID, pending)
@@ -191,16 +213,13 @@ export const layer = Layer.effect(
                 data.starting.delete(sessionID)
                 Deferred.doneUnsafe(pending, Effect.void)
                 if (Exit.isFailure(result) && data.runners.get(sessionID) === next && !next.busy) {
-                  data.runners.delete(sessionID)
-                  data.owners.get(sessionID)?.()
-                  data.owners.delete(sessionID)
-                  yield* setStatus(sessionID, { type: "idle" })
+                  yield* retire(next, next.state)
                 }
                 return yield* result
               }),
             ),
           )
-        }).pipe(Effect.ensuring(Effect.sync(() => request.release())))
+        }).pipe(Effect.ensuring(Effect.sync(() => { if (!admitted) request.release() })))
       })
 
     const assertNotBusy = Effect.fn("SessionRunState.assertNotBusy")(function* (sessionID: SessionID) {
@@ -254,24 +273,27 @@ export const layer = Layer.effect(
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
+      request?: ReturnType<typeof SessionCancellation.request>,
     ) {
       return yield* start(
         sessionID,
         onInterrupt,
-        Option.some(onInterrupt),
+        request ? Option.none() : Option.some(onInterrupt),
         (runner, guarded) => runner.startIfIdle(guarded),
         work,
+        request,
       )
     })
 
     const startShellHandle: Interface["startShellHandle"] = Effect.fn("SessionRunState.startShellHandle")(
-      function* (sessionID, onInterrupt, work, ready) {
+      function* (sessionID, onInterrupt, work, ready, request) {
         const result = yield* start(
           sessionID,
           onInterrupt,
           onInterrupt,
           (runner, guarded) => runner.startShellHandle(guarded, ready),
           work,
+          request,
         )
         return result.pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
       },

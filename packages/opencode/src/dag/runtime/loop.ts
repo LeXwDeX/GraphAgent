@@ -2528,17 +2528,17 @@ const serviceLayer = Layer.effect(
               const didDeliver = yield* Effect.gen(function* () {
                 let wakeTurn: Effect.Effect<SessionV1.WithParts> | undefined
                 if (!alreadyAdmitted) {
-                  const delivered = yield* automation.handoff(
+                  const delivered = yield* SessionPrompt.admitIfIdle(
+                    promptSvc,
+                    automation,
                     wakeLease,
-                    promptSvc.prepareIfIdle(
-                      {
-                        sessionID: SessionID.make(sessionID),
-                        messageID: wakeIdentity.messageID,
-                        parts: [{ id: wakeIdentity.partID, type: "text", text: summary, synthetic: true }],
-                      },
-                      store.markWakeBatchReported(batch),
-                      { continueToolBudget: true },
-                    ),
+                    {
+                      sessionID: SessionID.make(sessionID),
+                      messageID: wakeIdentity.messageID,
+                      parts: [{ id: wakeIdentity.partID, type: "text", text: summary, synthetic: true }],
+                    },
+                    { continueToolBudget: true },
+                    store.markWakeBatchReported(batch),
                   )
                   if (Option.isNone(delivered)) return false
                   deliveredWakeSummaries.set(sessionID, wakeIdentity.messageID)

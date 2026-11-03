@@ -154,6 +154,69 @@ it.live("a late uninterruptible hook cannot commit after its admission owner was
   }),
 )
 
+it.live("cancellation waits for an active commit without owning the commit lock", () =>
+  Effect.gen(function* () {
+    const admissions = SessionAdmission.make()
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const staleReady = yield* Deferred.make<void>()
+    const staleGo = yield* Deferred.make<void>()
+    const cancelled = yield* Deferred.make<void>()
+    yield* Effect.addFinalizer(() => Effect.all([Deferred.succeed(release, undefined), Deferred.succeed(staleGo, undefined)]).pipe(Effect.asVoid))
+    const active = yield* admissions.run("session", (commit) =>
+      commit(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+    ).pipe(Effect.result, Effect.forkChild)
+    yield* Deferred.await(entered)
+    const stale = yield* admissions.run("session", (commit) =>
+      Effect.uninterruptible(
+        Deferred.succeed(staleReady, undefined).pipe(
+          Effect.andThen(Deferred.await(staleGo)),
+          Effect.andThen(commit(Effect.die("stale commit ran"))),
+        ),
+      ),
+    ).pipe(Effect.result, Effect.forkChild)
+    yield* Deferred.await(staleReady)
+    const cancel = yield* admissions.cancel("session", Deferred.succeed(cancelled, undefined).pipe(Effect.asVoid))
+      .pipe(Effect.forkChild({ startImmediately: true }))
+    expect(yield* Deferred.isDone(cancelled)).toBe(false)
+    yield* Deferred.succeed(staleGo, undefined)
+    expect((yield* Fiber.join(stale))._tag).toBe("Failure")
+    expect(yield* Deferred.isDone(cancelled)).toBe(false)
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.await(active)
+    yield* Fiber.join(cancel)
+    expect(yield* Deferred.isDone(cancelled)).toBe(true)
+    yield* admissions.run("session", (commit) => commit(Effect.void))
+  }),
+)
+
+it.live("cancellation rejects an owner already queued for the commit lock", () =>
+  Effect.gen(function* () {
+    const admissions = SessionAdmission.make()
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const queued = yield* Deferred.make<void>()
+    yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+    const active = yield* admissions.run("session", (commit) =>
+      commit(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+    ).pipe(Effect.result, Effect.forkChild)
+    yield* Deferred.await(entered)
+    const stale = yield* admissions.run("session", (commit) =>
+      Effect.uninterruptible(
+        Deferred.succeed(queued, undefined).pipe(Effect.andThen(commit(Effect.die("stale commit ran")))),
+      ),
+    ).pipe(Effect.result, Effect.forkChild({ startImmediately: true }))
+    yield* Deferred.await(queued)
+    yield* Effect.yieldNow
+    const cancel = yield* admissions.cancel("session", Effect.void).pipe(Effect.forkChild({ startImmediately: true }))
+    const settled = yield* Fiber.join(stale).pipe(Effect.timeoutOption("2 seconds"))
+    expect(Option.isSome(settled) && settled.value._tag === "Failure").toBe(true)
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.await(active)
+    yield* Fiber.join(cancel)
+  }),
+)
+
 it.live("overlapping cancellations run only the owning callback", () =>
   Effect.gen(function* () {
     const admissions = SessionAdmission.make()

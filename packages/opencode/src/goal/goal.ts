@@ -13,6 +13,7 @@ import { GoalPrompts } from "./prompts"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { SessionAutomationLease } from "@/session/automation-lease"
+import { SessionCancellation } from "@/session/cancellation"
 import { SessionLocation } from "@/session/location"
 import { DagLocation } from "@/dag/location"
 
@@ -256,7 +257,7 @@ const serviceLayer = Layer.effect(
     })
 
     const clearTurnDriven = Effect.fnUntraced(function* (sessionID: SessionID) {
-      turnDriven.delete(sessionID)
+      if (!SessionCancellation.goalCancelPending(sessionID)) turnDriven.delete(sessionID)
     })
 
     const isTurnDriven = Effect.fnUntraced(function* (sessionID: SessionID) {
