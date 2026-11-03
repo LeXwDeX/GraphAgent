@@ -4,8 +4,9 @@ import { Effect } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../lib/cli-process"
+import { testProviderConfig } from "../lib/test-provider"
 
-cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user prompt", ({ home, llm, opencode }) =>
+cliIt.live("V2 Stop async exit-2 rewakes with an env-substituted provider URL", ({ home, llm, opencode }) =>
   Effect.gen(function* () {
     const script = path.join(home, "v2-async-stop.ts")
     const audit = path.join(home, "v2-async-stop-audit.jsonl")
@@ -13,21 +14,17 @@ cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user
       await fs.writeFile(
         path.join(home, ".config/opencode/opencode.json"),
         JSON.stringify({
-          providers: {
+          provider: {
             test: {
               name: "Test",
-              api: {
-                type: "aisdk",
-                package: "@ai-sdk/openai-compatible",
-                url: llm.url,
-                settings: { apiKey: "test-key" },
-              },
-              request: { body: { apiKey: "test-key" } },
+              npm: "@ai-sdk/openai-compatible",
+              options: { baseURL: "{env:GRAPHAGENT_969_TEST_URL}", apiKey: "test-key" },
               models: {
                 "test-model": {
                   name: "Test Model",
-                  capabilities: { tools: true, input: ["text"], output: ["text"] },
-                  variants: [{ id: "xhigh" }, { id: "high" }],
+                  tool_call: true,
+                  modalities: { input: ["text"], output: ["text"] },
+                  variants: { xhigh: {}, high: {} },
                   limit: { context: 100_000, output: 10_000 },
                   cost: { input: 0, output: 0 },
                 },
@@ -49,13 +46,16 @@ cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user
     })
     yield* llm.text("FIRST_DONE")
     yield* llm.text("SECOND_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.serve({ env: { GRAPHAGENT_969_TEST_URL: llm.url } })
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const created = yield* Effect.promise(() =>
       fetch(server.url + "/api/session", {
         method: "POST",
         headers,
-        body: JSON.stringify({ location: { directory: home }, model: { providerID: "test", id: "test-model", variant: "xhigh" } }),
+        body: JSON.stringify({
+          location: { directory: home },
+          model: { providerID: "test", id: "test-model", variant: "xhigh" },
+        }),
       }),
     )
     expect(created.status).toBe(200)
@@ -88,11 +88,103 @@ cliIt.live("V2 Stop async exit-2 rewakes its own runner without a synthetic user
     const assistants = messages.filter((message) => message.type === "assistant")
     expect(assistants).toHaveLength(2)
     expect(assistants[1]).toMatchObject({ model: { providerID: "test", id: "test-model", variant: "xhigh" } })
-    const persisted = yield* Effect.promise(() => fetch(server.url + `/api/session/${id}`, { headers }).then((r) => r.json()))
+    const persisted = yield* Effect.promise(() =>
+      fetch(server.url + `/api/session/${id}`, { headers }).then((r) => r.json()),
+    )
     expect(persisted).toMatchObject({ data: { model: { providerID: "test", id: "test-model", variant: "xhigh" } } })
     const inputs = (yield* llm.inputs).filter((input) => !JSON.stringify(input).includes("Generate a title"))
     expect(inputs).toHaveLength(2)
     expect(JSON.stringify(inputs[1])).toContain("ASYNC_REWAKE_CONTEXT")
+  }),
+)
+
+cliIt.live("a failed V2 rewake reports its failure and retains callback context", ({ home, llm, opencode }) =>
+  Effect.gen(function* () {
+    const script = path.join(home, "failed-v2-rewake.ts")
+    const started = path.join(home, "failed-v2-rewake-started")
+    const release = path.join(home, "failed-v2-rewake-release")
+    yield* Effect.promise(async () => {
+      const model = {
+        name: "Test Model",
+        capabilities: { tools: true, input: ["text"], output: ["text"] },
+        limit: { context: 100_000, output: 10_000 },
+        cost: { input: 0, output: 0 },
+      }
+      const provider = (url: string) => ({
+        name: "Test",
+        api: { type: "aisdk", package: "@ai-sdk/openai-compatible", url, settings: { apiKey: "test-key" } },
+        models: { "test-model": model },
+      })
+      await fs.writeFile(
+        path.join(home, ".config/opencode/opencode.json"),
+        JSON.stringify({ providers: { test: provider(llm.url), broken: provider("not-a-url") } }),
+      )
+      await fs.writeFile(
+        script,
+        `await Bun.write(${JSON.stringify(started)},'1');while(!await Bun.file(${JSON.stringify(release)}).exists())await Bun.sleep(20);console.error('FAILED_REWAKE_CONTEXT');process.exit(2)`,
+      )
+      await fs.writeFile(
+        path.join(home, ".config/opencode/hooks.json"),
+        JSON.stringify({
+          Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script], asyncRewake: true }] }],
+        }),
+      )
+    })
+    yield* llm.text("FIRST_DONE")
+    const v1 = testProviderConfig(llm.url)
+    const server = yield* opencode.serve({
+      extraArgs: ["--print-logs"],
+      env: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          ...v1,
+          provider: {
+            ...v1.provider,
+            broken: { ...v1.provider.test, id: "broken", options: { apiKey: "test-key", baseURL: "not-a-url" } },
+          },
+        }),
+      },
+    })
+    const headers = { "content-type": "application/json", "x-opencode-directory": home }
+    const request = (route: string, body: object) =>
+      Effect.promise(() => fetch(server.url + route, { method: "POST", headers, body: JSON.stringify(body) }))
+    const created = yield* request("/api/session", {
+      location: { directory: home },
+      model: { providerID: "test", id: "test-model" },
+    })
+    expect(created.status).toBe(200)
+    const id = decodeV2Session(yield* Effect.promise(() => created.json())).data.id
+    expect((yield* request(`/api/session/${id}/prompt`, { prompt: { text: "start" }, resume: true })).status).toBe(200)
+    yield* Effect.promise(async () => {
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline && !(await Bun.file(started).exists())) await Bun.sleep(20)
+      if (!(await Bun.file(started).exists())) throw new Error(`Stop hook did not start: ${server.stderrTail()}`)
+    })
+    const switched = yield* request(`/api/session/${id}/model`, { model: { providerID: "broken", id: "test-model" } })
+    if (switched.status !== 204) {
+      throw new Error(`model switch failed: ${yield* Effect.promise(() => switched.text())} ${server.stderrTail()}`)
+    }
+    yield* Effect.promise(() => fs.writeFile(release, "1"))
+    const logs = yield* Effect.promise(async () => {
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline) {
+        const output = server.stderrTail()
+        if (output.includes("async hook rewake failed")) return output
+        await Bun.sleep(20)
+      }
+      throw new Error(`rewake failure was not reported: ${server.stderrTail()}`)
+    })
+    const drainLog = logs.split("\n").find((line) => line.includes("Failed to drain Session")) ?? ""
+    expect(drainLog).toContain(id)
+    expect(drainLog).toContain("providerID=broken")
+    expect(drainLog).toContain("modelID=test-model")
+    const context = yield* Effect.promise(() =>
+      fetch(server.url + `/api/session/${id}/context`, { headers }).then((response) => response.json()),
+    )
+    const messages = decodeV2Context(context).data
+    expect(messages).toContainEqual(
+      expect.objectContaining({ type: "synthetic", text: expect.stringContaining("FAILED_REWAKE_CONTEXT") }),
+    )
+    expect(messages.filter((message) => message.type === "assistant")).toHaveLength(1)
   }),
 )
 

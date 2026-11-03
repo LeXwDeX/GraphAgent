@@ -22,6 +22,7 @@ export interface Interface {
   readonly run: (input: {
     readonly sessionID: SessionSchema.ID
     readonly force: boolean
+    readonly onModelResolved?: (model: { readonly providerID: string; readonly modelID: string } | undefined) => void
   }) => Effect.Effect<void, RunError>
 }
 

@@ -22,6 +22,7 @@ import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
+import { ConfigVariable } from "./config/variable"
 import { ToolBudget } from "./session/tool-budget"
 import { ConfigWatcher } from "./config/watcher"
 import { ConfigV1 } from "./v1/config/config"
@@ -162,8 +163,13 @@ export const layer = Layer.effect(
       const text = yield* fs.readFileStringSafe(filepath)
       if (!text) return undefined
 
+      const expanded = yield* Effect.tryPromise({
+        try: () => ConfigVariable.substitute({ type: "path", path: filepath, text }),
+        catch: (cause) => (cause instanceof Error ? cause : new Error(`Invalid configuration: ${filepath}`, { cause })),
+      })
+
       const errors: ParseError[] = []
-      const input: unknown = parse(text, errors, { allowTrailingComma: true })
+      const input: unknown = parse(expanded, errors, { allowTrailingComma: true })
       if (errors.length) {
         if (strict) return yield* Effect.fail(new Error(`Invalid configuration JSON: ${filepath}`))
         return undefined
