@@ -178,13 +178,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: '["self-hosted","Linux","X64","azure-f16"]'
             name: linux
-          - runner: macos-latest
+          - runner: '["macos-latest"]'
             name: macos
-          - runner: windows-latest
+          - runner: '["self-hosted","Windows","X64","azure-win"]'
             name: windows
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 45
     defaults:
       run:
