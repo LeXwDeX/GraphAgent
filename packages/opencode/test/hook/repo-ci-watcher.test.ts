@@ -13,8 +13,8 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "../fixture/fixture"
-import { install } from "../../../../.opencode/hooks/install-ci-watcher"
-import { requestedPR, watch, type Run } from "../../../../.opencode/hooks/watch-ci"
+import { install } from "../../script/ci-watcher/install-ci-watcher"
+import { requestedPR, watch, type Run } from "../../script/ci-watcher/watch-ci"
 
 const url = "https://github.com/example/project/pull/42"
 const head = "a".repeat(40)
@@ -85,7 +85,7 @@ async function fakeCLI(directory: string, scenario = "pass", timeoutMs = 5000) {
   await fs.writeFile(path.join(bin, "gh"), '#!/bin/sh\nexec "$GH_FIXTURE_NODE" "$GH_FIXTURE_SCRIPT" "$@"\n', {
     mode: 0o755,
   })
-  const module = fileURLToPath(new URL("../../../../.opencode/hooks/watch-ci.ts", import.meta.url))
+  const module = fileURLToPath(new URL("../../script/ci-watcher/watch-ci.ts", import.meta.url))
   const wrapper = path.join(directory, "watch.ts")
   const fixtureConfig = path.join(directory, "watch-ci-fixture.json")
   await fs.writeFile(
@@ -140,7 +140,7 @@ describe("repository CI watcher", () => {
     ).toBeUndefined()
     expect(
       requestedPR({
-        ...envelope("/tmp/scratch", "bun .opencode/hooks/watch-ci.ts request 42"),
+        ...envelope("/tmp/scratch", "bun packages/opencode/script/ci-watcher/watch-ci.ts request 42"),
         tool_response: { output: `OPENCODE_CI_WATCH ${url}` },
       })?.url,
     ).toBe(url)
@@ -385,9 +385,11 @@ const hookIt = testEffect(
 const configure = (scenario: string, timeoutMs?: number) => (directory: string) =>
   Effect.promise(async () => {
     const fixture = await fakeCLI(directory, scenario, timeoutMs)
-    await fs.mkdir(path.join(directory, ".opencode", "hooks"), { recursive: true })
-    await fs.copyFile(fixture.wrapper, path.join(directory, ".opencode", "hooks", "watch-ci.ts"))
-    await fs.copyFile(fixture.config, path.join(directory, ".opencode", "hooks", "watch-ci-fixture.json"))
+    // The installed template addresses the tracked tool path relative to the project root.
+    const tool = path.join(directory, "packages", "opencode", "script", "ci-watcher")
+    await fs.mkdir(tool, { recursive: true })
+    await fs.copyFile(fixture.wrapper, path.join(tool, "watch-ci.ts"))
+    await fs.copyFile(fixture.config, path.join(tool, "watch-ci-fixture.json"))
     await install(path.join(directory, ".opencode"))
   })
 for (const [scenario, conclusion] of [
