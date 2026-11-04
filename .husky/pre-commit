@@ -1,4 +1,16 @@
 #!/bin/sh
 set -e
+
+# Enforce the SpecGit checkpoint only in locally initialized checkouts.
+# .specgit.yaml is untracked, so forks and contributors without SpecGit keep
+# the existing lint/typecheck path.
+if [ -f .specgit.yaml ]; then
+  if command -v specgit >/dev/null 2>&1; then
+    specgit guard --stage pre-commit
+  else
+    echo "warning: .specgit.yaml exists but specgit is not on PATH; skipping SpecGit guard" >&2
+  fi
+fi
+
 sh .husky/run-lint
 sh .husky/run-typecheck
