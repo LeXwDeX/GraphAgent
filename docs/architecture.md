@@ -91,15 +91,13 @@ Memory 以主题 YAML 和 manifest generation 文件保存。主 Session 将 Mem
 
 ## 源码与领域文档
 
-按依赖关系阅读时，可先看 core 的数据模型和调度机制，再看 OpenCode 的服务组合及循环，最后看 Session 与客户端边界。下面的领域文档补充行为约定和已记录的架构决策。
+按依赖关系阅读时，可先看 core 的数据模型和调度机制，再看 OpenCode 的服务组合及循环，最后看 Session 与客户端边界。下面的源码入口补充行为约定和已记录的运行时规则。
 
 - [DAG 核心](../packages/core/src/dag)：状态、调度、持久化与投影。
 - [DAG 运行时](../packages/opencode/src/dag)：循环、节点执行、恢复和输出处理。
 - [Goal 运行时](../packages/opencode/src/goal)：单会话目标循环。
 - [Session 运行时](../packages/opencode/src/session)：提示词、上下文、模型交互和工具执行。
-- [Effect 运行时说明](../packages/opencode/specs/effect/migration.md)：服务组合与运行时约定。
-- [DAG 系统评审](./dag-system-review-2026-08-09.md)：DAG 架构观察与缺陷审查记录。
-- [DAG harness](./harness-dag.md)：deep-mode 准入和审查生命周期。
+- [Effect 运行时说明](../packages/opencode/AGENTS.md)：Effect 服务组合、模块形态与运行时约定。
 - [工作流配置仓库](https://github.com/LeXwDeX/opencode-dag-config)：维护 curated workflow YAML、可组合 blocks 与 worker prompts。
 
 MCP（Model Context Protocol）连接外部工具服务。LSP（Language Server Protocol）提供语言服务器能力。PTY 指伪终端。

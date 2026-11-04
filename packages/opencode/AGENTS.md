@@ -87,7 +87,7 @@ evaluate every sibling, which defeats tree-shaking and slows module load.
 
 Use these rules when writing or migrating Effect code.
 
-See `specs/effect/migration.md` for the compact pattern reference and examples.
+Use the patterns below as the compact reference.
 
 ## Core
 
@@ -136,7 +136,7 @@ See `specs/effect/migration.md` for the compact pattern reference and examples.
 
 ## Effect.cached for deduplication
 
-Use `Effect.cached` when multiple concurrent callers should share a single in-flight computation rather than storing `Fiber | undefined` or `Promise | undefined` manually. See `specs/effect/migration.md` for the full pattern.
+Use `Effect.cached` when multiple concurrent callers should share a single in-flight computation rather than storing `Fiber | undefined` or `Promise | undefined` manually. Follow the pattern above.
 
 ## Callback boundaries
 

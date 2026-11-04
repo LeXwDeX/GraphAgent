@@ -6,6 +6,10 @@ node_modules
 .env.local
 .idea
 .vscode
+!.vscode/
+.vscode/*
+!.vscode/launch.example.json
+!.vscode/settings.example.json
 .codex
 *~
 playground
@@ -49,8 +53,8 @@ tsconfig.tsbuildinfo
 # agent files
 .agents
 .claude
-.opencode/commands/
-.opencode/skills
+.opencode/
+.husky/
 .qoder
 .opencode/workflow-reports/
 
@@ -78,3 +82,38 @@ tsconfig.tsbuildinfo
 
 # SpecGit 2.5 declaration: per-checkout local configuration (also excluded by `specgit init`)
 /.specgit.yaml
+
+# Public tree policy: keep project code, current user-facing documentation, and
+# AGENTS.md. Dated audits, evidence, plans, prototypes, and obsolete specs stay
+# local. The negations below are the only top-level docs kept by default.
+/docs/*.md
+!/docs/architecture.md
+!/docs/compaction-retry.md
+!/docs/dag-file-artifacts-and-recovery.md
+!/docs/功能清单.md
+/docs/agents/
+/docs/context-folding/evidence/
+/docs/continuation-2026-09-20/*.md
+/docs/continuation-2026-09-20/s09/*.md
+/docs/continuation-2026-09-20/s09/*.json
+/docs/evidence/
+/docs/examples/*
+!/docs/examples/internal-llm-aggregator.jsonc
+/docs/findings/
+
+# Prototype and implementation specifications
+/specs/
+/packages/opencode/specs/
+/packages/app/create-effect-simplification-spec.md
+/packages/llm/DESIGN.md
+/packages/llm/example/call-sites.md
+/packages/opencode/test/EFFECT_TEST_MIGRATION.md
+/packages/plugin/src/v2/effect/PLAN.md
+
+# Expiring internal workflow, performance, and status records
+/workflows/
+/perf/test-suite.md
+/STATS.md
+/entities.json
+/screenshot-uk.png
+/test-black-screen.sh
