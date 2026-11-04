@@ -1,5 +1,5 @@
-// Full-suite timing harness for the test-speed research in ../../perf/test-suite.md.
-// Use this for periodic sanity checks; use profile-test-files.ts for discovery.
+// Full-suite timing harness for periodic test-speed checks.
+// Use profile-test-files.ts for discovery.
 // Env: BENCH_WARMUPS=0 BENCH_RUNS=1 bun run bench:test
 const warmups = Number(Bun.env.BENCH_WARMUPS ?? 0)
 const runs = Number(Bun.env.BENCH_RUNS ?? 1)

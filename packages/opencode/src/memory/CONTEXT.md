@@ -66,4 +66,4 @@ The domain runs on the existing seams; the elaborate `ProjectMemoryAuthority` re
 - [ADR-0001: Project identity owns Memory](docs/adr/0001-project-owned-memory.md)
 - [ADR-0002: Project Memory commits are versioned and process-safe](docs/adr/0002-project-memory-commit-protocol.md)
 - [ADR-0003: Legacy Memory enters through Project admission](docs/adr/0003-memory-admission.md)
-- [ADR-0004: Project Memory authority owns identity and commits](docs/adr/0004-project-memory-authority.md) — **Rejected (2026-08-12)** in favor of the Occam path recorded in `docs/memory-authority-redo-plan-2026-08-12.md` §10.
+- ADR-0004: Project Memory authority owns identity and commits — **Rejected (2026-08-12)** in favor of the Occam minimal path described under **Authority structure** above.

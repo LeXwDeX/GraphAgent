@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-
-# post-checkout: re-sync codegraph index on branch switch
-# $1 = ref of previous HEAD, $2 = ref of new HEAD, $3 = flag (1=branch, 0=file)
-
-# Only run on branch checkouts, skip file checkouts
-if [ "$3" = "1" ]; then
-  codegraph sync >/dev/null 2>&1 &
-fi

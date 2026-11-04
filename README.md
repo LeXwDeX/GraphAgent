@@ -466,12 +466,10 @@ Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers the DA
 ## Docs
 
 - [`docs/architecture.md`](./docs/architecture.md) — system overview, client/API boundaries, and source map
-- [`docs/reasoning-rewrite-engine-2026-10-08.md`](./docs/reasoning-rewrite-engine-2026-10-08.md) — reasoning shaping design, measurements and acceptance
 - [`packages/opencode/src/memory/CONTEXT.md`](./packages/opencode/src/memory/CONTEXT.md) — Project Memory model and invariants
 - [Hooks guide](./packages/core/src/plugin/skill/configure-hooks.md) — events, schemas and verification
 - [Saved workflow authoring guide](./packages/core/src/plugin/skill/create-dag-workflow.md) — the `create-dag-workflow` skill body
 - [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) — curated workflows, composable blocks and worker prompts
-- [`docs/harness-dag.md`](./docs/harness-dag.md) — deep-mode admission & review lifecycle
 - [`AGENTS.md`](./AGENTS.md) — contribution & development guide
 
 ## Links
