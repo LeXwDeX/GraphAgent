@@ -2,7 +2,7 @@
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
 import { SessionCancellation } from "@/session/cancellation"
-import { Clock, Duration, Effect, Option, Schema, Stream } from "effect"
+import { Clock, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import type { ChildProcessSpawner as Spawner } from "effect/unstable/process/ChildProcessSpawner"
 import type { TaskPromptOps } from "./task"
@@ -499,7 +499,21 @@ export const WatchPrTool = Tool.define(
                     { continueToolBudget: true },
                   )
                 }),
-            }).pipe(Effect.map(renderNotice)),
+            }).pipe(
+              Effect.map(renderNotice),
+              Effect.onExit((exit) =>
+                Exit.isFailure(exit)
+                  ? Effect.gen(function* () {
+                      const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+                      const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+                      if (loops)
+                        yield* Effect.scoped(
+                          loops.wakeAny(ctx.sessionID, `watch_pr job exited without a notice for ${request.url}`),
+                        ).pipe(Effect.ignore)
+                    })
+                  : Effect.void,
+              ),
+            ),
           })
           yield* ctx.metadata({
             title: `watch ${request.url}`,

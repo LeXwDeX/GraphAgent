@@ -1,6 +1,6 @@
 export * as GoalLoop from "./loop"
 
-import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration } from "effect"
+import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration, Schedule } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
@@ -610,6 +610,25 @@ const serviceLayer = Layer.effect(
           ),
           Effect.forkScoped,
         )
+        // Waiting goals have no idle event to check their deadline. Scan the
+        // durable rows so an expired wait becomes a visible pause even when
+        // the session stays silent.
+        yield* Effect.gen(function* () {
+          const waiting = yield* goal.listWaitingSessions(scanDirectoryRef.current!).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("goal wait expiry scan failed", { cause: Cause.pretty(cause) }).pipe(
+                Effect.as([] as ReadonlyArray<SessionID>),
+              ),
+            ),
+          )
+          for (const sessionID of waiting) {
+            yield* goal.expireWait(sessionID).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("goal wait expiry failed", { sessionID, cause: Cause.pretty(cause) }),
+              ),
+            )
+          }
+        }).pipe(Effect.repeat(Schedule.spaced(Duration.seconds(30))), Effect.forkScoped({ startImmediately: true }))
         return {}
       }),
     )

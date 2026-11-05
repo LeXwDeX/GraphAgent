@@ -65,6 +65,7 @@ export interface Interface {
    * decode are skipped with a logged warning, not fatal.
    */
   readonly listActiveSessions: (directory: string) => Effect.Effect<ReadonlyArray<SessionID>, Error>
+  readonly listWaitingSessions: (directory: string) => Effect.Effect<ReadonlyArray<SessionID>, Error>
   readonly lastOutcome: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   readonly set: (sessionID: SessionID, goal: string, maxTurns?: number) => Effect.Effect<GoalState.Info>
   readonly pause: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
@@ -574,6 +575,30 @@ const serviceLayer = Layer.effect(
         if (state.status === "active") active.push(SessionID.make(row.session_id))
       }
       return active
+    })
+
+    const listWaitingSessions = Effect.fn("Goal.listWaitingSessions")(function* (directory: string) {
+      const rows = yield* db
+        .select({ session_id: GoalStateTable.session_id, payload: GoalStateTable.payload })
+        .from(GoalStateTable)
+        .innerJoin(SessionTable, sql`${GoalStateTable.session_id} = ${SessionTable.id}`)
+        .where(eq(SessionTable.directory, directory))
+        .all()
+      const waiting: SessionID[] = []
+      for (const row of rows) {
+        let state: GoalState.Info
+        try {
+          state = Schema.decodeUnknownSync(GoalState.Info)(JSON.parse(row.payload))
+        } catch (error) {
+          yield* Effect.logWarning(
+            `goal wait scan skipped undecodable goal_state row for ${row.session_id}`,
+            { error: String(error) },
+          )
+          continue
+        }
+        if (state.status === "waiting") waiting.push(SessionID.make(row.session_id))
+      }
+      return waiting
     })
 
     const lastOutcome = Effect.fn("Goal.lastOutcome")(function* (sessionID: SessionID) {
@@ -1329,6 +1354,7 @@ const serviceLayer = Layer.effect(
       controlDuringTurn,
       load,
       listActiveSessions,
+      listWaitingSessions,
       lastOutcome,
       set,
       pause,
