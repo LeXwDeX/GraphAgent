@@ -25,8 +25,18 @@ import { NotFoundError } from "@/storage/storage"
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
-  readonly wake: (sessionID: SessionID, waitID: string, payload?: string) => Effect.Effect<boolean, never, Scope.Scope>
-  readonly wakeAny: (sessionID: SessionID, payload?: string) => Effect.Effect<boolean, never, Scope.Scope>
+  /**
+   * Wake a waiting goal registered for exactly this source and identity.
+   * `evaluate: false` only flips durable state; use it when the caller is
+   * about to deliver its own prompt, whose turn-end idle event then drives
+   * the next evaluation. Otherwise the loop evaluates immediately.
+   */
+  readonly wake: (
+    sessionID: SessionID,
+    match: Goal.WakeMatch,
+    payload?: string,
+    options?: { readonly evaluate?: boolean },
+  ) => Effect.Effect<boolean, never, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/GoalLoop") {}
@@ -197,6 +207,23 @@ const serviceLayer = Layer.effect(
       if (!paused) return false
       yield* promptSvc
         .prompt({ sessionID, noReply: true, parts: [{ type: "text", text: `⏸ 目标已暂停 — ${reason}` }] })
+        .pipe(Effect.ignore)
+      return true
+    })
+
+    // An expired wait pauses like any other loop pause: release the goal's
+    // automation registration and tell the user why, instead of only flipping
+    // the durable row.
+    const expireWaiting = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const paused = yield* goal.expireWait(sessionID)
+      if (!paused || paused.status !== "paused") return false
+      yield* automation.unregister(sessionID, { kind: "goal", id: paused.goal_id ?? "legacy" })
+      yield* promptSvc
+        .prompt({
+          sessionID,
+          noReply: true,
+          parts: [{ type: "text", text: `⏸ 目标已暂停 — ${paused.paused_reason ?? "等待结束"}` }],
+        })
         .pipe(Effect.ignore)
       return true
     })
@@ -614,7 +641,7 @@ const serviceLayer = Layer.effect(
         // durable rows so an expired wait becomes a visible pause even when
         // the session stays silent.
         yield* Effect.gen(function* () {
-          const waiting = yield* goal.listWaitingSessions(scanDirectoryRef.current!).pipe(
+          const waiting = yield* goal.listWaitingSessions(scanDirectoryRef.current).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("goal wait expiry scan failed", { cause: Cause.pretty(cause) }).pipe(
                 Effect.as([] as ReadonlyArray<SessionID>),
@@ -622,7 +649,7 @@ const serviceLayer = Layer.effect(
             ),
           )
           for (const sessionID of waiting) {
-            yield* goal.expireWait(sessionID).pipe(
+            yield* expireWaiting(sessionID).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("goal wait expiry failed", { sessionID, cause: Cause.pretty(cause) }),
               ),
@@ -674,7 +701,7 @@ const serviceLayer = Layer.effect(
       const goalState = yield* goal.load(sessionID)
       if (!goalState) return
       if (goalState.status === "waiting") {
-        yield* goal.expireWait(sessionID)
+        yield* expireWaiting(sessionID)
         return
       }
       if (goalState.status !== "active") return
@@ -1199,7 +1226,15 @@ const serviceLayer = Layer.effect(
     const triggerEvaluation = Effect.fnUntraced(function* (sessionID: SessionID, scanResume?: boolean) {
       const scope = yield* Scope.Scope
       const goalState = yield* goal.load(sessionID)
-      if (!goalState || goalState.status !== "active") return
+      if (!goalState) return
+      // A waiting goal has no evaluation to run, but an idle boundary is the
+      // earliest point to notice an expired wait (the periodic scan is only a
+      // fallback for silent sessions).
+      if (goalState.status === "waiting") {
+        yield* expireWaiting(sessionID)
+        return
+      }
+      if (goalState.status !== "active") return
       const messages = yield* workMessages(sessionID).pipe(
         Effect.catchIf(
           (e) => NotFoundError.isInstance(e),
@@ -1351,14 +1386,19 @@ const serviceLayer = Layer.effect(
       }
     })
 
-    const wake = Effect.fn("GoalLoop.wake")(function* (sessionID: SessionID, waitID: string, payload?: string) {
-      if (!(yield* goal.wake(sessionID, waitID, payload))) return false
-      yield* triggerEvaluation(sessionID).pipe(Effect.catchCause(() => Effect.void))
-      return true
-    })
-
-    const wakeAny = Effect.fn("GoalLoop.wakeAny")(function* (sessionID: SessionID, payload?: string) {
-      if (!(yield* goal.wakeAny(sessionID, payload))) return false
+    const wake = Effect.fn("GoalLoop.wake")(function* (
+      sessionID: SessionID,
+      match: Goal.WakeMatch,
+      payload?: string,
+      options?: { readonly evaluate?: boolean },
+    ) {
+      if (!(yield* goal.wake(sessionID, match, payload))) {
+        // A matching event over an exhausted wake budget ends the wait now
+        // rather than at the next expiry scan.
+        yield* expireWaiting(sessionID).pipe(Effect.catchCause(() => Effect.succeed(false)))
+        return false
+      }
+      if (options?.evaluate === false) return true
       yield* triggerEvaluation(sessionID).pipe(Effect.catchCause(() => Effect.void))
       return true
     })
@@ -1372,7 +1412,7 @@ const serviceLayer = Layer.effect(
       yield* InstanceState.get(state)
     })
 
-    return Service.of({ init, wake, wakeAny })
+    return Service.of({ init, wake })
   }),
 )
 

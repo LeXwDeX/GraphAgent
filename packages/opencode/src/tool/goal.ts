@@ -16,13 +16,14 @@ export const Parameters = Schema.Struct({
     description: "Required for intent=await. The wake source to register.",
   }),
   wait_id: Schema.optional(Schema.String).annotate({
-    description: "Required for intent=await. The job, watch, hook, or timer identity that will wake the goal.",
+    description:
+      "Required for intent=await. The exact identity that will wake the goal. For watch_pr use the job ID from its start output or the watched PR/MR URL; an unmatched notice does not wake the goal.",
   }),
   deadline_ms: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))).annotate({
     description: "Optional for intent=await. Milliseconds until the wait expires (default 30 minutes).",
   }),
-  max_wakes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))).annotate({
-    description: "Optional for intent=await. Maximum wake deliveries before the goal pauses (default 1).",
+  max_wakes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))).annotate({
+    description: "Optional for intent=await. Maximum wake deliveries accepted for this wait (default 1).",
   }),
   evidence: Schema.optional(Schema.String).annotate({
     description: "Required for intent=done. The concrete delivery evidence the judge verifies.",
@@ -245,7 +246,7 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
             })
           }
           const state = yield* goal.load(ctx.sessionID)
-          if (!state || state.status !== "active") {
+          if (!state || !Goal.isRunning(state)) {
             return {
               title: "no active goal",
               output:

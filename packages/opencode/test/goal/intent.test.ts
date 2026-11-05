@@ -51,8 +51,10 @@ describe("goal intent and waiting", () => {
       yield* goal.set(id, "wait for the job", 5)
       yield* goal.setIntent(id, awaitIntent())
 
-      expect(yield* goal.wake(id, "other", "ignored")).toBe(false)
-      expect(yield* goal.wake(id, "job_1", "job result")).toBe(true)
+      expect(yield* goal.wake(id, { source: "background_job", ids: ["other"] }, "ignored")).toBe(false)
+      expect(yield* goal.wake(id, { source: "watch_pr", ids: ["job_1"] }, "ignored")).toBe(false)
+      expect((yield* goal.load(id))?.status).toBe("waiting")
+      expect(yield* goal.wake(id, { source: "background_job", ids: ["x", "job_1"] }, "job result")).toBe(true)
 
       const loaded = yield* goal.load(id)
       expect(loaded?.status).toBe("active")
@@ -83,6 +85,111 @@ describe("goal intent and waiting", () => {
 
       const expired = yield* goal.expireWait(id)
       expect(expired?.status).toBe("paused")
+    }),
+  )
+
+  it.effect("does not wake a matching waiter whose wake budget is exhausted", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent({ max_wakes: GoalState.nni(0) }))
+
+      expect(yield* goal.wake(id, { source: "background_job", ids: ["job_1"] })).toBe(false)
+      expect((yield* goal.load(id))?.status).toBe("waiting")
+    }),
+  )
+
+  it.effect("resume clears the intent that paused the goal", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent({ deadline: Date.now() - 1 }))
+      const expired = yield* goal.expireWait(id)
+      expect(expired?.intent?.kind).toBe("blocked")
+
+      const resumed = yield* goal.resume(id)
+      expect(resumed?.status).toBe("active")
+      expect(resumed?.intent).toBeUndefined()
+    }),
+  )
+
+  it.effect("turn-control resume clears a stale blocked intent", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "work", 5)
+      yield* goal.setIntent(id, { kind: "blocked", reason: "needs input" })
+      yield* goal.pause(id, "needs input")
+
+      const result = yield* goal.controlDuringTurn(id, { action: "resume" })
+      expect(result.changed).toBe(true)
+      if (result.changed) expect(result.state.intent).toBeUndefined()
+    }),
+  )
+
+  it.effect("pauses a waiting goal", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent())
+
+      const paused = yield* goal.pause(id, "user-paused")
+      expect(paused?.status).toBe("paused")
+
+      yield* goal.set(id, "wait again", 5)
+      yield* goal.setIntent(id, awaitIntent())
+      const control = yield* goal.controlDuringTurn(id, { action: "pause", reason: "stop waiting" })
+      expect(control.changed).toBe(true)
+      if (control.changed) expect(control.state.status).toBe("paused")
+    }),
+  )
+
+  it.effect("lets a waiting goal re-declare its intent", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent())
+
+      const progress = yield* goal.setIntent(id, { kind: "progress" })
+      expect(progress?.status).toBe("active")
+      expect(progress?.intent?.kind).toBe("progress")
+
+      yield* goal.setIntent(id, awaitIntent({ wait_id: "job_2" }))
+      const replaced = yield* goal.setIntent(id, awaitIntent({ wait_id: "job_3" }))
+      expect(replaced?.status).toBe("waiting")
+      expect(replaced?.intent).toMatchObject({ kind: "await", wait: { wait_id: "job_3" } })
+    }),
+  )
+
+  it.effect("shows a waiting goal in the status line", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent())
+
+      const line = yield* goal.statusLine(id)
+      expect(line).toContain("等待中")
+      expect(line).toContain("background_job:job_1")
+    }),
+  )
+
+  it.instance("does not replace a waiting goal with a new /goal", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent())
+
+      const result = yield* goal.dispatch(id, "a different goal")
+      expect(result.type).toBe("message")
+      const loaded = yield* goal.load(id)
+      expect(loaded?.goal).toBe("wait for the job")
+      expect(loaded?.status).toBe("waiting")
     }),
   )
 })

@@ -6,6 +6,7 @@ const id = "internal:sidebar-goal"
 
 const STATUS_LABEL: Record<string, string> = {
   active: "进行中",
+  waiting: "等待中",
   done: "已达成",
   paused: "已暂停",
 }

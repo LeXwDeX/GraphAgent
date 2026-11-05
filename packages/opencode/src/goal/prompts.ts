@@ -113,6 +113,10 @@ export function renderGoalSystemBlock(state: GoalState.Info): string {
   if (state.status === "paused" && state.paused_reason) {
     lines.push(`Paused because: ${state.paused_reason}`)
   }
+  if (state.status === "waiting" && state.intent?.kind === "await") {
+    const wait = state.intent.wait
+    lines.push(`Waiting for: ${wait.source}:${wait.wait_id} until ${new Date(wait.deadline).toISOString()}`)
+  }
   if (state.last_verdict) {
     lines.push(
       state.last_reason
