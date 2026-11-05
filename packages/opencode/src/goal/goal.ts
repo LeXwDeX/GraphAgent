@@ -38,6 +38,9 @@ export const ownsSession = (sessionID: SessionID, directory: string): Effect.Eff
     return DagLocation.canonicalDirectory(durable.value) === DagLocation.canonicalDirectory(directory)
   })
 
+/** A goal that the user still sees as running: working or waiting for a wake. */
+export const isRunning = (state: GoalState.Info) => state.status === "active" || state.status === "waiting"
+
 export type RemoveSubgoalResult =
   | { tag: "ok"; removed: string; state: GoalState.Info }
   | { tag: "noState" }
@@ -52,6 +55,17 @@ export type TurnControlResult =
   | { readonly changed: true; readonly state: GoalState.Info }
   | { readonly changed: false; readonly reason: string }
 
+/**
+ * Identity of a wake event. A waiting goal wakes only when the event comes
+ * from the registered source and one of its identities equals the registered
+ * wait_id, so an unrelated event (another watch, another job) cannot consume
+ * the wait.
+ */
+export type WakeMatch = {
+  readonly source: GoalState.WaitSource
+  readonly ids: ReadonlyArray<string>
+}
+
 export interface Interface {
   /** Controls issued inside a model turn; never starts or interrupts a prompt. */
   readonly controlDuringTurn: (sessionID: SessionID, input: TurnControl) => Effect.Effect<TurnControlResult>
@@ -65,11 +79,16 @@ export interface Interface {
    * decode are skipped with a logged warning, not fatal.
    */
   readonly listActiveSessions: (directory: string) => Effect.Effect<ReadonlyArray<SessionID>, Error>
+  readonly listWaitingSessions: (directory: string) => Effect.Effect<ReadonlyArray<SessionID>, Error>
   readonly lastOutcome: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   readonly set: (sessionID: SessionID, goal: string, maxTurns?: number) => Effect.Effect<GoalState.Info>
   readonly pause: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
   readonly resume: (sessionID: SessionID, maxTurns?: number) => Effect.Effect<GoalState.Info | undefined>
   readonly clear: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
+  readonly setIntent: (sessionID: SessionID, intent: GoalState.Intent) => Effect.Effect<GoalState.Info | undefined>
+  readonly wake: (sessionID: SessionID, match: WakeMatch, payload?: string) => Effect.Effect<boolean>
+  readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
+  readonly clearIntent: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly markDone: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
@@ -571,6 +590,30 @@ const serviceLayer = Layer.effect(
       return active
     })
 
+    const listWaitingSessions = Effect.fn("Goal.listWaitingSessions")(function* (directory: string) {
+      const rows = yield* db
+        .select({ session_id: GoalStateTable.session_id, payload: GoalStateTable.payload })
+        .from(GoalStateTable)
+        .innerJoin(SessionTable, sql`${GoalStateTable.session_id} = ${SessionTable.id}`)
+        .where(eq(SessionTable.directory, directory))
+        .all()
+      const waiting: SessionID[] = []
+      for (const row of rows) {
+        let state: GoalState.Info
+        try {
+          state = Schema.decodeUnknownSync(GoalState.Info)(JSON.parse(row.payload))
+        } catch (error) {
+          yield* Effect.logWarning(
+            `goal wait scan skipped undecodable goal_state row for ${row.session_id}`,
+            { error: String(error) },
+          )
+          continue
+        }
+        if (state.status === "waiting") waiting.push(SessionID.make(row.session_id))
+      }
+      return waiting
+    })
+
     const lastOutcome = Effect.fn("Goal.lastOutcome")(function* (sessionID: SessionID) {
       const row = yield* db
         .select()
@@ -621,7 +664,9 @@ const serviceLayer = Layer.effect(
 
     const pause = Effect.fn("Goal.pause")(function* (sessionID: SessionID, reason: string) {
       const updated = yield* transition(sessionID, (state) => {
-        if (!state || state.status !== "active") return { tag: "noop", value: undefined }
+        // A waiting goal is still running from the user's point of view: it
+        // must be pausable, otherwise only clear could stop it.
+        if (!state || !isRunning(state)) return { tag: "noop", value: undefined }
         const next = GoalState.advance(state, {
           status: "paused",
           paused_reason: reason,
@@ -709,6 +754,10 @@ const serviceLayer = Layer.effect(
           consecutive_parse_failures: GoalState.nni(0),
           recovery: undefined,
           paused_reason: undefined,
+          // A resume starts a new decision chain. A stale blocked/await intent
+          // from before the pause would otherwise re-pause or re-wait the goal
+          // at the very next idle.
+          intent: undefined,
           last_turn_at: Date.now(),
         })
         return { tag: "save", state: updated, value: updated }
@@ -770,11 +819,12 @@ const serviceLayer = Layer.effect(
                 consecutive_parse_failures: GoalState.nni(0),
                 recovery: undefined,
                 paused_reason: undefined,
+                intent: undefined,
                 last_turn_at: Date.now(),
               })
             } else {
               if (!input.reason.trim()) return reject("reason is required to pause a goal.")
-              if (!current || current.status !== "active") return reject("No active goal to pause.")
+              if (!current || !isRunning(current)) return reject("No active goal to pause.")
               next = GoalState.advance(current, {
                 status: "paused",
                 paused_reason: input.reason.trim(),
@@ -806,6 +856,70 @@ const serviceLayer = Layer.effect(
       yield* clearFiber(sessionID)
       turnDriven.delete(sessionID)
       return cleared
+    })
+
+    const setIntent = Effect.fn("Goal.setIntent")(function* (
+      sessionID: SessionID,
+      intent: GoalState.Intent,
+    ) {
+      return yield* transition(sessionID, (state) => {
+        // A waiting goal may re-declare its intent: a turn driven by the user
+        // or by an unmatched notification must be able to resume progress,
+        // finish, block, or replace the wait instead of sleeping until the
+        // deadline.
+        if (!state || !isRunning(state)) return { tag: "noop", value: undefined }
+        const next = GoalState.advance(state, {
+          status: intent.kind === "await" ? "waiting" : "active",
+          intent,
+        })
+        return { tag: "save", state: next, value: next }
+      })
+    })
+
+    // Wake a waiting goal only for the exact registered source and identity.
+    // An exhausted wake budget is left to expireWait, which owns the visible
+    // pause.
+    const wake = Effect.fn("Goal.wake")(function* (sessionID: SessionID, match: WakeMatch, payload?: string) {
+      return yield* transition<boolean>(sessionID, (state) => {
+        if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
+          return { tag: "noop", value: false }
+        const wait = state.intent.wait
+        if (wait.source !== match.source || !match.ids.includes(wait.wait_id)) return { tag: "noop", value: false }
+        if (wait.wakes >= wait.max_wakes) return { tag: "noop", value: false }
+        const next = GoalState.advance(state, {
+          status: "active",
+          intent: { kind: "progress" },
+          last_reason: payload ?? `wake ${wait.source}:${wait.wait_id}`,
+          last_turn_at: Date.now(),
+        })
+        return { tag: "save", state: next, value: true }
+      })
+    })
+
+    const expireWait = Effect.fn("Goal.expireWait")(function* (sessionID: SessionID, now = Date.now()) {
+      return yield* transition(sessionID, (state) => {
+        if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
+          return { tag: "noop", value: undefined }
+        const wait = state.intent.wait
+        if (now < wait.deadline && wait.wakes < wait.max_wakes) return { tag: "noop", value: undefined }
+        const next = GoalState.advance(state, {
+          status: "paused",
+          paused_reason:
+            now >= wait.deadline
+              ? `等待 ${wait.source}:${wait.wait_id} 超时`
+              : `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`,
+          intent: { kind: "blocked", reason: "wait expired" },
+        })
+        return { tag: "save", state: next, value: next }
+      })
+    })
+
+    const clearIntent = Effect.fn("Goal.clearIntent")(function* (sessionID: SessionID) {
+      return yield* transition(sessionID, (state) => {
+        if (!state || state.status !== "active" || !state.intent) return { tag: "noop", value: undefined }
+        const next = GoalState.advance(state, { intent: undefined })
+        return { tag: "save", state: next, value: next }
+      })
     })
 
     // GOAL-FP-01-05/-16: session-deletion cleanup. `clear` keeps the
@@ -893,6 +1007,13 @@ const serviceLayer = Layer.effect(
             return `⊙ 目标（执行中，${state.turns_used}/${state.max_turns} 轮${sub}）：${state.goal}`
         }
         return `⊙ 目标（进行中，${state.turns_used}/${state.max_turns} 轮${sub}）：${state.goal}`
+      }
+      if (state.status === "waiting") {
+        const wait =
+          state.intent?.kind === "await"
+            ? `，等待 ${state.intent.wait.source}:${state.intent.wait.wait_id} 至 ${new Date(state.intent.wait.deadline).toISOString()}`
+            : ""
+        return `⏳ 目标（等待中，${state.turns_used}/${state.max_turns} 轮${sub}${wait}）：${state.goal}`
       }
       if (state.status === "paused") {
         const reason = state.paused_reason ? ` — ${state.paused_reason}` : ""
@@ -1117,7 +1238,9 @@ const serviceLayer = Layer.effect(
 
       const existing = yield* loadState(sessionID)
       if (existing) {
-        if (existing.status === "active") {
+        // A waiting goal is running; it must not fall through to the
+        // done-leftover cleanup below and be silently replaced.
+        if (isRunning(existing)) {
           return {
             type: "message" as const,
             text: "已有活跃目标。请先 /goal clear 再设定新目标。",
@@ -1228,11 +1351,16 @@ const serviceLayer = Layer.effect(
       controlDuringTurn,
       load,
       listActiveSessions,
+      listWaitingSessions,
       lastOutcome,
       set,
       pause,
       resume,
       clear,
+      setIntent,
+      wake,
+      expireWait,
+      clearIntent,
       purgeSession,
       markDone,
       addSubgoal,

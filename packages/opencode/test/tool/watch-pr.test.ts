@@ -27,6 +27,7 @@ import {
 } from "../../src/tool/watch_pr"
 import { it, testEffect } from "../lib/effect"
 import type { TaskPromptOps } from "../../src/tool/task"
+import { GoalLoop } from "@/goal/loop"
 
 const githubRequest = parseRequest("https://github.com/acme/widgets/pull/42", new Set(["github.com"]))
 const gitlabRequest = parseRequest("https://gitlab.com/acme/widgets/-/merge_requests/7", new Set(["gitlab.com"]))
@@ -651,6 +652,64 @@ describe("watch_pr notice and tool", () => {
       yield* TestClock.adjust(Duration.seconds(5))
       yield* Fiber.join(fiber)
       expect(prompts).toEqual(["plan"])
+    }).pipe(Effect.provide(TestClock.layer())),
+  )
+
+  const events: string[] = []
+  const withGoal = testEffect(
+    Layer.mergeAll(
+      layer,
+      Truncate.defaultLayer,
+      Agent.defaultLayer,
+      sessionLayer,
+      Layer.succeed(
+        GoalLoop.Service,
+        GoalLoop.Service.of({
+          init: () => Effect.void,
+          wake: (_sessionID, match, _payload, options) =>
+            Effect.sync(() => {
+              events.push(`wake ${match.source} ${match.ids.join(",")} evaluate=${options?.evaluate}`)
+              return true
+            }),
+        }),
+      ),
+    ),
+  )
+  withGoal.instance("a notice wakes only this watch's goal wait before the notice prompt", () =>
+    Effect.gen(function* () {
+      started.length = 0
+      events.length = 0
+      const read = yield* Deferred.make<void>()
+      const tool = yield* (yield* WatchPrTool).init()
+      const result = yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+        ...summary,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: () =>
+              Effect.sync(() => {
+                events.push("prompt")
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                return {} as unknown as SessionV1.WithParts
+              }),
+          },
+          watchPrRunner: sequenceRunner(
+            [
+              githubResult(snapshot({ head: "a" })),
+              githubResult(snapshot({ head: "a", checks: { total: 1, pending: 0, failed: 0, passed: 1 } })),
+            ],
+            read,
+          ),
+        },
+      } as Tool.Context)
+      expect(result.output).toContain("wait_id=job_test")
+      const run = started[0]?.run
+      if (!run) throw new Error("expected a started job")
+      const fiber = yield* Effect.forkChild(run)
+      yield* Deferred.await(read)
+      yield* TestClock.adjust(Duration.seconds(5))
+      yield* Fiber.join(fiber)
+      expect(events).toEqual([`wake watch_pr job_test,${githubRequest.url} evaluate=false`, "prompt"])
     }).pipe(Effect.provide(TestClock.layer())),
   )
 

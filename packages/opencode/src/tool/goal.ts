@@ -2,10 +2,31 @@ import { Effect, Option, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION from "./goal.txt"
 import { Goal } from "../goal/goal"
+import { GoalState } from "../goal/state"
 
 export const Parameters = Schema.Struct({
-  action: Schema.Literals(["status", "create", "resume", "pause", "complete"]).annotate({
-    description: "Create, resume, pause, inspect, or complete the current session goal.",
+  action: Schema.Literals(["status", "create", "resume", "pause", "complete", "intent"]).annotate({
+    description: "Create, resume, pause, inspect, complete, or declare the current goal turn's intent.",
+  }),
+  intent: Schema.optional(Schema.Literals(["progress", "await", "done", "blocked"])).annotate({
+    description:
+      "Required for action=intent. progress: more work is ready; await: wait for an external wake; done: let the judge verify evidence; blocked: pause visibly.",
+  }),
+  wait_source: Schema.optional(Schema.Literals(["background_job", "watch_pr", "hook", "timer", "dag"])).annotate({
+    description: "Required for intent=await. The wake source to register.",
+  }),
+  wait_id: Schema.optional(Schema.String).annotate({
+    description:
+      "Required for intent=await. The exact identity that will wake the goal. For watch_pr use the job ID from its start output or the watched PR/MR URL; for background_job use the background task id. An unmatched event does not wake the goal.",
+  }),
+  deadline_ms: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))).annotate({
+    description: "Optional for intent=await. Milliseconds until the wait expires (default 30 minutes).",
+  }),
+  max_wakes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))).annotate({
+    description: "Optional for intent=await. Maximum wake deliveries accepted for this wait (default 1).",
+  }),
+  evidence: Schema.optional(Schema.String).annotate({
+    description: "Required for intent=done. The concrete delivery evidence the judge verifies.",
   }),
   text: Schema.optional(Schema.String).annotate({
     description: "Required for create. The goal to pursue; treated as literal text, not a slash command.",
@@ -24,7 +45,7 @@ export const Parameters = Schema.Struct({
 type Metadata = {
   goal?: {
     text: string
-    status: "active" | "paused" | "done"
+    status: "active" | "waiting" | "paused" | "done"
     turnsUsed: number
     maxTurns: number
     subgoals: ReadonlyArray<string>
@@ -109,6 +130,75 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
             }
           }
 
+          if (params.action === "intent") {
+            if (!params.intent) {
+              throw new Tool.InvalidArgumentsError({
+                tool: "goal",
+                detail: "`intent` is required when action is `intent`.",
+              })
+            }
+            let intent: GoalState.Intent
+            if (params.intent === "await") {
+              if (!params.wait_source || !params.wait_id) {
+                throw new Tool.InvalidArgumentsError({
+                  tool: "goal",
+                  detail: "`wait_source` and `wait_id` are required when intent is `await`.",
+                })
+              }
+              intent = {
+                kind: "await",
+                wait: {
+                  source: params.wait_source,
+                  wait_id: params.wait_id,
+                  deadline: Date.now() + (params.deadline_ms ?? 30 * 60_000),
+                  max_wakes: GoalState.nni(params.max_wakes ?? 1),
+                  wakes: GoalState.nni(0),
+                },
+              }
+            } else if (params.intent === "done") {
+              if (!params.evidence || params.evidence.trim().length === 0) {
+                throw new Tool.InvalidArgumentsError({
+                  tool: "goal",
+                  detail: "`evidence` is required when intent is `done`.",
+                })
+              }
+              intent = { kind: "done", evidence: params.evidence.trim() }
+            } else if (params.intent === "blocked") {
+              intent = { kind: "blocked", reason: params.reason?.trim() || "blocked" }
+            } else {
+              intent = { kind: "progress" }
+            }
+            const state = yield* goal.setIntent(ctx.sessionID, intent)
+            if (!state) {
+              return {
+                title: "no active goal",
+                output: "Cannot set intent: no active goal for this session.",
+                metadata: { goal: null },
+              }
+            }
+            return {
+              title: `goal intent ${state.intent?.kind ?? "none"}`,
+              output: [
+                `Goal: ${state.goal}`,
+                `Status: ${state.status}`,
+                `Intent: ${state.intent?.kind ?? "none"}`,
+                state.status === "waiting" && state.intent?.kind === "await"
+                  ? `Waiting for: ${state.intent.wait.source}:${state.intent.wait.wait_id} until ${new Date(state.intent.wait.deadline).toISOString()}`
+                  : "Finish this turn; the goal loop applies the intent when the session becomes idle.",
+              ].join("\n"),
+              metadata: {
+                goal: {
+                  text: state.goal,
+                  status: state.status,
+                  turnsUsed: state.turns_used,
+                  maxTurns: state.max_turns,
+                  subgoals: state.subgoals ?? [],
+                  pausedReason: state.paused_reason,
+                },
+              },
+            }
+          }
+
           if (params.action === "create" || params.action === "resume" || params.action === "pause") {
             const input: Goal.TurnControl =
               params.action === "create"
@@ -156,7 +246,7 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
             })
           }
           const state = yield* goal.load(ctx.sessionID)
-          if (!state || state.status !== "active") {
+          if (!state || !Goal.isRunning(state)) {
             return {
               title: "no active goal",
               output:

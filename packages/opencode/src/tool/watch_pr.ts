@@ -2,7 +2,7 @@
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
 import { SessionCancellation } from "@/session/cancellation"
-import { Clock, Duration, Effect, Option, Schema, Stream } from "effect"
+import { Clock, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import type { ChildProcessSpawner as Spawner } from "effect/unstable/process/ChildProcessSpawner"
 import type { TaskPromptOps } from "./task"
@@ -470,6 +470,17 @@ export const WatchPrTool = Tool.define(
           const epoch = SessionCancellation.epoch(ctx.sessionID)
           const deadline = (params.deadline_seconds ?? DEFAULT_DEADLINE_SECONDS) * 1000
           const poll = (params.poll_seconds ?? DEFAULT_POLL_SECONDS) * 1000
+          // A goal waiting on this watch registers either the job ID (known
+          // once the job starts) or the watched URL. Wake only that wait.
+          let jobID: string | undefined
+          const wakeGoal = (payload: string, evaluate: boolean): Effect.Effect<void> =>
+            Effect.gen(function* () {
+              const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+              const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+              if (!loops) return
+              const ids = jobID ? [jobID, request.url] : [request.url]
+              yield* Effect.scoped(loops.wake(ctx.sessionID, { source: "watch_pr", ids }, payload, { evaluate }))
+            }).pipe(Effect.ignore)
           const info = yield* background.start({
             type: "watch_pr",
             title: `watch ${request.url}`,
@@ -482,6 +493,10 @@ export const WatchPrTool = Tool.define(
               cancelled: () => SessionCancellation.epoch(ctx.sessionID) !== epoch,
               deliver: (notice) =>
                 Effect.gen(function* () {
+                  // Flip the goal back to active before the notice turn; that
+                  // turn's idle event drives the next goal evaluation, so the
+                  // goal neither races the notice nor runs a turn without it.
+                  yield* wakeGoal(renderNotice(notice), false)
                   // The user may switch agents while the watch runs. Read the
                   // session at delivery time instead of using the captured value.
                   // Omit model and variant so createUserMessage keeps the
@@ -496,8 +511,17 @@ export const WatchPrTool = Tool.define(
                     { continueToolBudget: true },
                   )
                 }),
-            }).pipe(Effect.map(renderNotice)),
+            }).pipe(
+              Effect.map(renderNotice),
+              Effect.onExit((exit) =>
+                // No notice prompt follows a failed job, so evaluate now.
+                Exit.isFailure(exit)
+                  ? wakeGoal(`watch_pr job exited without a notice for ${request.url}`, true)
+                  : Effect.void,
+              ),
+            ),
           })
+          jobID = info.id
           yield* ctx.metadata({
             title: `watch ${request.url}`,
             metadata: { jobId: info.id, provider: request.provider, url: request.url },
@@ -511,6 +535,7 @@ export const WatchPrTool = Tool.define(
               "A notice will report checks settled, a failure, merge/close, a review change, a head change, the deadline, or forge unavailability.",
               `A new head needs a new watch. If no notice arrives by the deadline, run one bounded check: ${inspectCommand(request)}`,
               "The job ID is the start confirmation. A notice is delivery, not evidence: query the current head before reporting or merging.",
+              `If an autonomous goal has nothing else to do until this notice, declare goal intent=await with wait_source=watch_pr and wait_id=${info.id}.`,
             ].join("\n"),
           }
         }).pipe(Effect.orDie),

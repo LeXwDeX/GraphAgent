@@ -1,6 +1,6 @@
 export * as GoalLoop from "./loop"
 
-import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration } from "effect"
+import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration, Schedule } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
@@ -25,6 +25,18 @@ import { NotFoundError } from "@/storage/storage"
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
+  /**
+   * Wake a waiting goal registered for exactly this source and identity.
+   * `evaluate: false` only flips durable state; use it when the caller is
+   * about to deliver its own prompt, whose turn-end idle event then drives
+   * the next evaluation. Otherwise the loop evaluates immediately.
+   */
+  readonly wake: (
+    sessionID: SessionID,
+    match: Goal.WakeMatch,
+    payload?: string,
+    options?: { readonly evaluate?: boolean },
+  ) => Effect.Effect<boolean, never, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/GoalLoop") {}
@@ -195,6 +207,23 @@ const serviceLayer = Layer.effect(
       if (!paused) return false
       yield* promptSvc
         .prompt({ sessionID, noReply: true, parts: [{ type: "text", text: `⏸ 目标已暂停 — ${reason}` }] })
+        .pipe(Effect.ignore)
+      return true
+    })
+
+    // An expired wait pauses like any other loop pause: release the goal's
+    // automation registration and tell the user why, instead of only flipping
+    // the durable row.
+    const expireWaiting = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const paused = yield* goal.expireWait(sessionID)
+      if (!paused || paused.status !== "paused") return false
+      yield* automation.unregister(sessionID, { kind: "goal", id: paused.goal_id ?? "legacy" })
+      yield* promptSvc
+        .prompt({
+          sessionID,
+          noReply: true,
+          parts: [{ type: "text", text: `⏸ 目标已暂停 — ${paused.paused_reason ?? "等待结束"}` }],
+        })
         .pipe(Effect.ignore)
       return true
     })
@@ -608,6 +637,25 @@ const serviceLayer = Layer.effect(
           ),
           Effect.forkScoped,
         )
+        // Waiting goals have no idle event to check their deadline. Scan the
+        // durable rows so an expired wait becomes a visible pause even when
+        // the session stays silent.
+        yield* Effect.gen(function* () {
+          const waiting = yield* goal.listWaitingSessions(scanDirectoryRef.current).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("goal wait expiry scan failed", { cause: Cause.pretty(cause) }).pipe(
+                Effect.as([] as ReadonlyArray<SessionID>),
+              ),
+            ),
+          )
+          for (const sessionID of waiting) {
+            yield* expireWaiting(sessionID).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("goal wait expiry failed", { sessionID, cause: Cause.pretty(cause) }),
+              ),
+            )
+          }
+        }).pipe(Effect.repeat(Schedule.spaced(Duration.seconds(30))), Effect.forkScoped({ startImmediately: true }))
         return {}
       }),
     )
@@ -651,7 +699,12 @@ const serviceLayer = Layer.effect(
       yield* goal.clearTurnDriven(sessionID)
       if (SessionCancellation.goalCancelPending(sessionID)) return
       const goalState = yield* goal.load(sessionID)
-      if (!goalState || goalState.status !== "active") return
+      if (!goalState) return
+      if (goalState.status === "waiting") {
+        yield* expireWaiting(sessionID)
+        return
+      }
+      if (goalState.status !== "active") return
       // D-4 entry gate (scan path only): the boot snapshot may have gone
       // stale between triggerEvaluation's load and this entry load — an idle
       // evaluation could have committed a new revision in between, and this
@@ -773,8 +826,19 @@ const serviceLayer = Layer.effect(
       // to the shared continuation dispatch below. A retryable error recovery
       // also skips the judge: there is no new work output to classify, and
       // the retry must not consume a goal turn.
-      const skipJudge = suppressJudge || typeof errorOutcome === "object"
+      const intent = goalState.intent
+      if (intent?.kind === "blocked") {
+        yield* visiblePause(sessionID, intent.reason, expectedOf(goalState))
+        clearRetryDedupe()
+        return
+      }
+      const skipJudge = suppressJudge || typeof errorOutcome === "object" || intent?.kind === "progress"
       if (!skipJudge) {
+        // An undeclared intent falls back to the legacy prose judge; record it
+        // so the fallback is observable rather than silent.
+        if (!intent) {
+          yield* Effect.logInfo("goal judge fallback: no intent declared", { sessionID })
+        }
         // A user message newer than the judged reply (noReply prompt, a
         // command turn, ESC before any reply, a blocked submit) means the
         // reply is no longer the work boundary: skip the judge and let the
@@ -795,7 +859,7 @@ const serviceLayer = Layer.effect(
         // permanently "active" with no continuation — the agent appeared to
         // stop working on its own.
         const callLLM = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoopJudgeLLM))
-        const judgeText = preempted ? "" : responseText
+        const judgeText = intent?.kind === "done" ? intent.evidence : preempted ? "" : responseText
         const verdict = judgeText
           ? yield* GoalJudge.run(
               goalState.goal,
@@ -1014,6 +1078,8 @@ const serviceLayer = Layer.effect(
       // provenance: Memory must not treat this as human input or expire the
       // current user's retrieved context. Goal events carry visible progress;
       // the full continuation does not need a repeated user-message bubble.
+      const clearedIntent = yield* goal.clearIntent(sessionID)
+      if (clearedIntent) dispatchState = clearedIntent
       const continuationText = GoalPrompts.renderContinuation({
         goal: dispatchState.goal,
         subgoals: dispatchState.subgoals ?? [],
@@ -1160,7 +1226,15 @@ const serviceLayer = Layer.effect(
     const triggerEvaluation = Effect.fnUntraced(function* (sessionID: SessionID, scanResume?: boolean) {
       const scope = yield* Scope.Scope
       const goalState = yield* goal.load(sessionID)
-      if (!goalState || goalState.status !== "active") return
+      if (!goalState) return
+      // A waiting goal has no evaluation to run, but an idle boundary is the
+      // earliest point to notice an expired wait (the periodic scan is only a
+      // fallback for silent sessions).
+      if (goalState.status === "waiting") {
+        yield* expireWaiting(sessionID)
+        return
+      }
+      if (goalState.status !== "active") return
       const messages = yield* workMessages(sessionID).pipe(
         Effect.catchIf(
           (e) => NotFoundError.isInstance(e),
@@ -1312,6 +1386,23 @@ const serviceLayer = Layer.effect(
       }
     })
 
+    const wake = Effect.fn("GoalLoop.wake")(function* (
+      sessionID: SessionID,
+      match: Goal.WakeMatch,
+      payload?: string,
+      options?: { readonly evaluate?: boolean },
+    ) {
+      if (!(yield* goal.wake(sessionID, match, payload))) {
+        // A matching event over an exhausted wake budget ends the wait now
+        // rather than at the next expiry scan.
+        yield* expireWaiting(sessionID).pipe(Effect.catchCause(() => Effect.succeed(false)))
+        return false
+      }
+      if (options?.evaluate === false) return true
+      yield* triggerEvaluation(sessionID).pipe(Effect.catchCause(() => Effect.void))
+      return true
+    })
+
     const init = Effect.fn("GoalLoop.init")(function* () {
       // Resolve the scan's directory scope BEFORE the first state get — the
       // builder (which runs inside that get) reads it from the ref. This
@@ -1321,7 +1412,7 @@ const serviceLayer = Layer.effect(
       yield* InstanceState.get(state)
     })
 
-    return Service.of({ init })
+    return Service.of({ init, wake })
   }),
 )
 

@@ -177,9 +177,11 @@ export const layer = Layer.effect(
         const none = { system: ["No autonomous goal is active for this session."], context: [] }
         if (!goalSvc) return none
         const state = yield* goalSvc.load(sessionID)
-        // Only active/paused goals carry a live-state block. `done` is transient
-        // (auto-cleared) and treated the same as "no goal" here.
-        if (!state || (state.status !== "active" && state.status !== "paused")) return none
+        // Only active/waiting/paused goals carry a live-state block. `done` is
+        // transient (auto-cleared) and treated the same as "no goal" here. A
+        // waiting goal must stay visible: a notice turn may need to re-declare
+        // its intent.
+        if (!state || state.status === "done") return none
         // Active/paused: the trimmed static mechanism + the live-state block.
         // The mechanism is intentionally NOT injected when no goal is active, to
         // avoid prompt bloat (spec: no-active-goal-injected-as-terse-note).
