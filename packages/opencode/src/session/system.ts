@@ -59,11 +59,20 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Sy
 // configure-hooks skill; platform-neutral on purpose.
 const BACKGROUND_WAITS = [
   "### Background waits",
-  "For long waits on external results, listen in the background with an asyncRewake hook instead of sleeping in the foreground; see the configure-hooks skill.",
+  "For GitHub or GitLab PR/MR checks, start the watch_pr tool for the exact URL and continue other work.",
+  "For other long external results, use an asyncRewake watcher from the configure-hooks skill instead of sleeping or polling in the foreground.",
+  "A listed hook is not a running watch: rely on a callback only after confirming a watch started for the exact target and head.",
+  "A callback is delivery, not evidence; query the current head's checks before reporting or merging.",
 ].join("\n")
 
 const BACKGROUND_WAITS_HINT =
-  "Long external waits (CI, reviews, deploys, long builds) can run in an asyncRewake hook instead of sleep-polling; with the user's agreement, set one up through the configure-hooks skill."
+  "For GitHub or GitLab PR/MR waits, start the watch_pr tool for the exact URL. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging."
+
+const STOP_GUARD_POINTER =
+  "For an end-of-turn check of a dirty worktree or unpushed commits, use the configure-hooks skill's stop-guard recipe."
+
+const SCOPE_GUARD_POINTER =
+  "To guard force pushes, destructive resets or recursive deletion outside the worktree, use the configure-hooks skill's scope-guard recipe."
 
 export const layer = Layer.effect(
   Service,
@@ -197,8 +206,11 @@ export const layer = Layer.effect(
           ),
         ]
         if (hooks.length > MAX) lines.push(`… and ${hooks.length - MAX} more (see hooks.json)`)
-        // Only promise a callback when a hook can deliver one; otherwise just point at the pattern.
+        // A listed hook proves loading, not a watch. The entry form names the
+        // start-confirmation rule and the two hook practices; full recipes stay
+        // in the skill.
         lines.push(hooks.some((h) => h.asyncRewake) ? BACKGROUND_WAITS : BACKGROUND_WAITS_HINT)
+        lines.push(STOP_GUARD_POINTER, SCOPE_GUARD_POINTER)
         return [lines.join("\n")]
       }),
 

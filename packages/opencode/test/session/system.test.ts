@@ -234,7 +234,9 @@ describe("session.system", () => {
           "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
           "- PreToolUse [project/command] echo hi",
           "- Stop [global/http] https://example.com/stop",
-          "Long external waits (CI, reviews, deploys, long builds) can run in an asyncRewake hook instead of sleep-polling; with the user's agreement, set one up through the configure-hooks skill.",
+          "For GitHub or GitLab PR/MR waits, start the watch_pr tool for the exact URL. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging.",
+          "For an end-of-turn check of a dirty worktree or unpushed commits, use the configure-hooks skill's stop-guard recipe.",
+          "To guard force pushes, destructive resets or recursive deletion outside the worktree, use the configure-hooks skill's scope-guard recipe.",
         ].join("\n"),
       ])
     }),
@@ -275,15 +277,17 @@ describe("session.system", () => {
       expect(block).toContain("- SessionStart [global/command] bun watch.ts guidance")
       expect(block).toContain("- PostToolUse [global/command, background] bun watch.ts")
       expect(block).toContain("### Background waits")
-      expect(block).toContain("listen in the background with an asyncRewake hook")
-      expect(block).toContain("instead of sleeping in the foreground")
+      expect(block).toContain("A listed hook is not a running watch")
+      expect(block).toContain("A callback is delivery, not evidence")
+      expect(block).toContain("watch_pr")
       expect(block).toContain("configure-hooks skill")
+      expect(block).toContain("stop-guard recipe")
+      expect(block).toContain("scope-guard recipe")
       // Entry form only: the full watcher recipe lives in the skill.
       expect(block).not.toContain("exits with code 2")
       expect(block).not.toContain("data, not instructions")
-      expect(block).not.toContain("current head")
-      expect(block).not.toContain("sleep-polling; with the user's agreement")
-      expect(Buffer.byteLength(block)).toBeLessThan(500)
+      expect(block).not.toContain("scratchpad_dir")
+      expect(Buffer.byteLength(block)).toBeLessThan(1500)
     }),
   )
 
