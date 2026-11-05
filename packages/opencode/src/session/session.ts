@@ -600,7 +600,11 @@ export const layer: Layer.Layer<
         title: input.title ?? (input.parentID ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
         agent: input.agent,
         model: input.model,
-        metadata: { ...input.metadata, hookTitleSource: input.title ? (input.titleSource ?? "custom") : "generated" },
+        metadata: {
+          ...input.metadata,
+          engine: "v1",
+          hookTitleSource: input.title ? (input.titleSource ?? "custom") : "generated",
+        },
         permission: input.permission ? [...input.permission] : undefined,
         cost: 0,
         tokens: EmptyTokens,
@@ -1069,8 +1073,16 @@ export const layer: Layer.Layer<
       // An optional guard runs after any caller-side barrier and immediately
       // before the write, so a stale commit cannot overwrite a newer metadata
       // state it did not observe.
-      if (guard && !guard(yield* get(input.sessionID).pipe(Effect.orDie))) return
-      yield* patch(input.sessionID, { metadata: input.metadata, time: { updated: Date.now() } }).pipe(Effect.orDie)
+      const current = yield* get(input.sessionID).pipe(Effect.orDie)
+      if (guard && !guard(current)) return
+      // `engine` is an internal routing marker, not user metadata. Keep it when
+      // a client replaces metadata, or a message-less V1 session would be
+      // claimed by the V2 executor after a PATCH.
+      const engine = current.metadata?.engine
+      yield* patch(input.sessionID, {
+        metadata: engine === undefined ? input.metadata : { ...input.metadata, engine },
+        time: { updated: Date.now() },
+      }).pipe(Effect.orDie)
     })
 
     const setPermission = Effect.fn("Session.setPermission")(function* (input: {

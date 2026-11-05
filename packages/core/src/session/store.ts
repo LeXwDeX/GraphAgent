@@ -7,11 +7,13 @@ import { SessionHistory } from "./history"
 import { MessageDecodeError } from "./error"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
-import { SessionMessageTable, SessionTable } from "./sql"
+import { MessageTable, SessionMessageTable, SessionTable } from "./sql"
 import { fromRow } from "./info"
 
 export interface Interface {
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info | undefined>
+  /** True when the session belongs to the legacy V1 loop. */
+  readonly hasLegacyMessage: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
   readonly context: (sessionID: SessionSchema.ID) => Effect.Effect<SessionMessage.Message[], MessageDecodeError>
   readonly runnerContext: (
     sessionID: SessionSchema.ID,
@@ -34,6 +36,25 @@ export const layer = Layer.effect(
       get: Effect.fn("SessionStore.get")(function* (sessionID) {
         const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
         return row ? fromRow(row) : undefined
+      }),
+      hasLegacyMessage: Effect.fn("SessionStore.hasLegacyMessage")(function* (sessionID) {
+        const session = yield* db
+          .select({ metadata: SessionTable.metadata })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        if (session?.metadata?.engine === "v1") return true
+        // Sessions created before the engine marker existed fall back to the
+        // legacy message table.
+        const row = yield* db
+          .select({ id: MessageTable.id })
+          .from(MessageTable)
+          .where(eq(MessageTable.session_id, sessionID))
+          .limit(1)
+          .get()
+          .pipe(Effect.orDie)
+        return row !== undefined
       }),
       context: Effect.fn("SessionStore.context")(function* (sessionID) {
         return yield* SessionHistory.load(db, sessionID)

@@ -243,8 +243,8 @@ describe("Session", () => {
         session.remove(info.id).pipe(Effect.ignore),
       )
 
-      expect(saved.metadata).toEqual({ ...meta, hookTitleSource: "custom" })
-      expect(fork.metadata).toEqual({ ...meta, hookTitleSource: "custom" })
+      expect(saved.metadata).toEqual({ ...meta, engine: "v1", hookTitleSource: "custom" })
+      expect(fork.metadata).toEqual({ ...meta, engine: "v1", hookTitleSource: "custom" })
       expect(meta).toEqual({ source: "sdk", trace: { id: "abc" } })
       expect(fork.metadata).not.toBe(meta)
     }),
@@ -258,8 +258,8 @@ describe("Session", () => {
       )
       const saved = yield* session.get(created.id)
 
-      expect(created.metadata).toEqual({ hookTitleSource: "custom" })
-      expect(saved.metadata).toEqual({ hookTitleSource: "custom" })
+      expect(created.metadata).toEqual({ engine: "v1", hookTitleSource: "custom" })
+      expect(saved.metadata).toEqual({ engine: "v1", hookTitleSource: "custom" })
     }),
   )
 })

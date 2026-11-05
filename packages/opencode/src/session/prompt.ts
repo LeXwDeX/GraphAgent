@@ -511,7 +511,13 @@ export const layer = Layer.effect(
             environment: yield* HookTranscript.environment(context.sessionID).pipe(Effect.orDie),
             ...(permissionMode ? { permissionMode } : {}),
           })
-        }).pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(rewake, current))),
+        }).pipe(
+          // The V1 loop's own rewake must win over the ambient HookRewakeLive. That one asks the V2
+          // bridge first, and the V2 store also returns legacy sessions, so a V1 callback would run
+          // as a hidden V2 turn that the V1 transcript (and the TUI) never shows. Context.merge keeps
+          // the second argument on conflict.
+          Effect.updateContext((current: Context.Context<never>) => Context.merge(current, rewake)),
+        ),
     }
     // PostToolBatch for one assistant message's settled tool calls. Returns true when a hook stopped the turn.
     // Feedback is hidden model context attached to the turn's user message as synthetic parts.

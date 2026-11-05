@@ -311,7 +311,7 @@ describe("session.list", () => {
           (item) => item.id === created.id,
         )
 
-        expect(listed?.metadata).toEqual({ ...meta, hookTitleSource: "custom" })
+        expect(listed?.metadata).toEqual({ ...meta, engine: "v1", hookTitleSource: "custom" })
       }),
     { git: true },
   )
