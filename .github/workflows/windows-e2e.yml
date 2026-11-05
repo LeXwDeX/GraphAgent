@@ -40,9 +40,6 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
       - name: Build opencode test dependencies
         run: bun turbo run build --filter='opencode^...'
 
