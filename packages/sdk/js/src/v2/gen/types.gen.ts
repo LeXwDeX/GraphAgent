@@ -755,9 +755,9 @@ export type Goal = {
    */
   goal: string
   /**
-   * Current status: active, paused, achieved
+   * Current status: active, waiting, paused, done
    */
-  status: "active" | "paused" | "done"
+  status: "active" | "waiting" | "paused" | "done"
   turnsUsed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   maxTurns: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   subgoals?: Array<string>
@@ -3223,9 +3223,9 @@ export type Goal1 = {
    */
   goal: string
   /**
-   * Current status: active, paused, achieved
+   * Current status: active, waiting, paused, done
    */
-  status: "active" | "paused" | "done"
+  status: "active" | "waiting" | "paused" | "done"
   /**
    * Turns used so far
    */
