@@ -1,5 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- JSON responses and ctx.extra are untyped boundaries */
 import { BackgroundJob } from "@/background/job"
+import { Session } from "@/session/session"
 import { SessionCancellation } from "@/session/cancellation"
 import { Clock, Duration, Effect, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -443,6 +444,7 @@ export const WatchPrTool = Tool.define(
   "watch_pr",
   Effect.gen(function* () {
     const background = yield* BackgroundJob.Service
+    const sessions = yield* Session.Service
     const spawner = Option.getOrUndefined(yield* Effect.serviceOption(ChildProcessSpawner.ChildProcessSpawner))
     const processRunner = makeProcessRunner(spawner)
     return {
@@ -479,16 +481,21 @@ export const WatchPrTool = Tool.define(
               pollMs: poll,
               cancelled: () => SessionCancellation.epoch(ctx.sessionID) !== epoch,
               deliver: (notice) =>
-                ops
-                  .prompt(
+                Effect.gen(function* () {
+                  // The user may switch agents while the watch runs. Read the
+                  // session at delivery time instead of using the captured value.
+                  // Omit model and variant so createUserMessage keeps the
+                  // session's saved selections.
+                  const current = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
+                  yield* ops.prompt(
                     {
                       sessionID: ctx.sessionID,
-                      agent: ctx.agent,
+                      agent: current.agent ?? ctx.agent,
                       parts: [{ type: "text", synthetic: true, text: renderNotice(notice) }],
                     },
                     { continueToolBudget: true },
                   )
-                  .pipe(Effect.asVoid),
+                }),
             }).pipe(Effect.map(renderNotice)),
           })
           yield* ctx.metadata({

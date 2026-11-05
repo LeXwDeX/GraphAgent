@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { execFileSync, spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -8,7 +8,7 @@ const root = path.resolve(import.meta.dir, "../../src/plugin/skill")
 const skill = readFileSync(path.join(root, "configure-hooks.md"), "utf8")
 const scratch = mkdtempSync(path.join(tmpdir(), "graphagent-skill-scripts-"))
 const stopScript = path.join(scratch, "stop-guard.mjs")
-const scopeScript = path.join(scratch, "scope-guard.mjs")
+const gitScript = path.join(scratch, "git-guard.mjs")
 
 function extract(name: string) {
   const start = `<!-- ${name}:script:start -->`
@@ -23,7 +23,7 @@ function extract(name: string) {
 }
 
 writeFileSync(stopScript, extract("stop-guard"))
-writeFileSync(scopeScript, extract("scope-guard"))
+writeFileSync(gitScript, extract("git-guard"))
 
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true })
@@ -68,8 +68,15 @@ function runStop(cwd: string, payload: Record<string, unknown> = {}) {
   return runScript(stopScript, cwd, { cwd, ...payload })
 }
 
-function runScope(cwd: string, command: string) {
-  return runScript(scopeScript, cwd, { cwd, tool_input: { command } })
+function runGit(cwd: string, command: string) {
+  return runScript(gitScript, cwd, { cwd, tool_input: { command } })
+}
+
+function expectDenied(cwd: string, command: string) {
+  const result = runGit(cwd, command)
+  expect(result.code).toBe(0)
+  expect(result.stderr).toBe("")
+  expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe("deny")
 }
 
 describe("stop-guard recipe script", () => {
@@ -115,67 +122,50 @@ describe("stop-guard recipe script", () => {
   })
 })
 
-describe("scope-guard recipe script", () => {
+describe("git-guard recipe script", () => {
   const dir = repo()
 
-  test("denies force pushes with a safe alternative", () => {
-    const result = runScope(dir, "git push --force origin main")
-    const output = JSON.parse(result.stdout)
-    expect(output.hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(output.hookSpecificOutput.permissionDecisionReason).toContain("Push a new commit")
-  })
+  const denied = [
+    "git push --force origin main",
+    "git push -f",
+    "git push -fu origin main",
+    "git push origin +main",
+    "git push origin +HEAD:main",
+    "git push --force-with-lease=main:abc123 origin main",
+    "git push --mirror",
+    "git -C . push --force",
+    "git -c core.x=y push -f",
+    "LC_ALL=C git push -f",
+    "cd sub && git push --force",
+    "git reset --hard",
+    "git reset HEAD~1 --hard",
+    "git -C . reset --hard",
+  ]
 
-  test("denies destructive resets", () => {
-    expect(JSON.parse(runScope(dir, "git reset --hard HEAD~1").stdout).hookSpecificOutput.permissionDecision).toBe(
-      "deny",
-    )
-  })
+  for (const command of denied) {
+    test(`denies ${command}`, () => expectDenied(dir, command))
+  }
 
-  test("denies recursive deletion outside the worktree", () => {
-    expect(JSON.parse(runScope(dir, "rm -rf /tmp/outside").stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(JSON.parse(runScope(dir, "rm -rf ../outside").stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(JSON.parse(runScope(dir, "rm -r ../outside").stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(JSON.parse(runScope(dir, "rm --recursive ../outside").stdout).hookSpecificOutput.permissionDecision).toBe(
-      "deny",
-    )
-    expect(JSON.parse(runScope(dir, "rm -rf link/../victim").stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(JSON.parse(runScope(dir, 'rm -rf link/".."/victim').stdout).hookSpecificOutput.permissionDecision).toBe(
-      "deny",
-    )
-    expect(
-      JSON.parse(runScope(dir, 'rm -rf "build;cache" ../victim').stdout).hookSpecificOutput.permissionDecision,
-    ).toBe("deny")
-    expect(JSON.parse(runScope(dir, 'rm -rf "unterminated').stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(JSON.parse(runScope(dir, "LC_ALL=C rm -rf ../victim").stdout).hookSpecificOutput.permissionDecision).toBe(
-      "deny",
-    )
-    expect(JSON.parse(runScope(dir, "rm -rf ..\\\n/victim").stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    expect(JSON.parse(runScope(dir, 'rm -rf "..\\\n/victim"').stdout).hookSpecificOutput.permissionDecision).toBe(
-      "deny",
-    )
-  })
+  const allowed = [
+    "git push origin feature",
+    "git push -u origin feature",
+    "git push origin feature; echo --force",
+    'echo "git push --force"',
+    'git commit -m "+1 --force"',
+    "git reset --soft HEAD~1",
+    "git reset HEAD file.txt",
+    "git -C sub status",
+    "ls -la",
+  ]
 
-  test("denies recursive deletion through a symlink that leaves the worktree", () => {
-    if (process.platform === "win32") return
-    const outsideDir = mkdtempSync(path.join(scratch, "outside-"))
-    symlinkSync(outsideDir, path.join(dir, "link"), "dir")
-    expect(JSON.parse(runScope(dir, "rm -rf link/subdir").stdout).hookSpecificOutput.permissionDecision).toBe("deny")
-    symlinkSync(outsideDir, path.join(dir, "bridge\\\n"), "dir")
-    expect(JSON.parse(runScope(dir, "rm -rf 'bridge\\\n/subdir'").stdout).hookSpecificOutput.permissionDecision).toBe(
-      "deny",
-    )
-    expectAllowed(runScope(dir, "rm -rf bridge/subdir"))
-  })
+  for (const command of allowed) {
+    test(`allows ${command}`, () => expectAllowed(runGit(dir, command)))
+  }
 
-  test("allows ordinary pushes, in-worktree deletion and near-misses", () => {
-    expectAllowed(runScope(dir, "git push origin feature"))
-    expectAllowed(runScope(dir, "git push origin feature; echo --force"))
-    expectAllowed(runScope(dir, "rm -rf ./build"))
-    expectAllowed(runScope(dir, "rm -rf ./build-cache"))
-    expectAllowed(runScope(dir, "rm -rf ./build && echo a/../b"))
-    expectAllowed(runScope(dir, "rm -- -r ../file"))
-    expectAllowed(runScope(dir, 'rm -rf ./build && echo "a\\"b"'))
-    expectAllowed(runScope(dir, 'rm -rf "dir\\name"'))
-    expectAllowed(runScope(dir, "ls -la"))
+  test("names a safe alternative for force pushes and hard resets", () => {
+    const push = JSON.parse(runGit(dir, "git push --force origin main").stdout)
+    expect(push.hookSpecificOutput.permissionDecisionReason).toContain("Push a new commit")
+    const reset = JSON.parse(runGit(dir, "git reset --hard").stdout)
+    expect(reset.hookSpecificOutput.permissionDecisionReason).toContain("git stash")
   })
 })

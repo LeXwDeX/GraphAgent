@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test"
 import { Deferred, Duration, Effect, Fiber, Layer, Ref, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import * as TestClock from "effect/testing/TestClock"
+import { ProjectV2 } from "@opencode-ai/core/project"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
+import { Session } from "@/session/session"
 import { SessionCancellation } from "@/session/cancellation"
 import { MessageID, SessionID } from "@/session/schema"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
+import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import {
   classify,
   makeProcessRunner,
@@ -531,6 +534,24 @@ describe("watch_pr notice and tool", () => {
     ask: () => Effect.void,
   }
 
+  let sessionAgent: string | undefined = "build"
+  const sessionInfo = (agent: string | undefined) =>
+    ({
+      id: summary.sessionID,
+      slug: "watch-pr",
+      projectID: ProjectV2.ID.global,
+      directory: "/tmp",
+      title: "watch_pr test",
+      version: "1.0.0",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 0, updated: 0 },
+      agent,
+    }) satisfies Session.Info
+  const sessionLayer = Layer.mock(Session.Service, {
+    get: () => Effect.sync(() => sessionInfo(sessionAgent)),
+  })
+
   const promptOps: TaskPromptOps = {
     cancel: () => Effect.void,
     resolvePromptParts: () => Effect.succeed([]),
@@ -550,7 +571,7 @@ describe("watch_pr notice and tool", () => {
         } satisfies BackgroundJob.Info
       }),
   })
-  const withBackground = testEffect(Layer.mergeAll(layer, Truncate.defaultLayer, Agent.defaultLayer))
+  const withBackground = testEffect(Layer.mergeAll(layer, Truncate.defaultLayer, Agent.defaultLayer, sessionLayer))
 
   const withRealBackground = testEffect(BackgroundJob.defaultLayer)
   withRealBackground.instance("stops a watch job through the session cancellation barrier", () =>
@@ -594,7 +615,87 @@ describe("watch_pr notice and tool", () => {
     }),
   )
 
-  const withRealTool = testEffect(Layer.mergeAll(BackgroundJob.defaultLayer, Truncate.defaultLayer, Agent.defaultLayer))
+  withBackground.instance("delivers with the session's current agent", () =>
+    Effect.gen(function* () {
+      started.length = 0
+      sessionAgent = "build"
+      const prompts: Array<string | undefined> = []
+      const read = yield* Deferred.make<void>()
+      const tool = yield* (yield* WatchPrTool).init()
+      yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+        ...summary,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: (input: Parameters<TaskPromptOps["prompt"]>[0]) =>
+              Effect.sync(() => {
+                prompts.push(input.agent)
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                return {} as unknown as SessionV1.WithParts
+              }),
+          },
+          watchPrRunner: sequenceRunner(
+            [
+              githubResult(snapshot({ head: "a" })),
+              githubResult(snapshot({ head: "a", checks: { total: 1, pending: 0, failed: 0, passed: 1 } })),
+            ],
+            read,
+          ),
+        },
+      } as Tool.Context)
+      const run = started[0]?.run
+      if (!run) throw new Error("expected a started job")
+      const fiber = yield* Effect.forkChild(run)
+      yield* Deferred.await(read)
+      sessionAgent = "plan"
+      yield* TestClock.adjust(Duration.seconds(5))
+      yield* Fiber.join(fiber)
+      expect(prompts).toEqual(["plan"])
+    }).pipe(Effect.provide(TestClock.layer())),
+  )
+
+  withBackground.instance("falls back to the tool context agent when the session has none", () =>
+    Effect.gen(function* () {
+      started.length = 0
+      sessionAgent = undefined
+      const prompts: Array<string | undefined> = []
+      const read = yield* Deferred.make<void>()
+      const tool = yield* (yield* WatchPrTool).init()
+      yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+        ...summary,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: (input: Parameters<TaskPromptOps["prompt"]>[0]) =>
+              Effect.sync(() => {
+                prompts.push(input.agent)
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                return {} as unknown as SessionV1.WithParts
+              }),
+          },
+          watchPrRunner: sequenceRunner(
+            [
+              githubResult(snapshot({ head: "a" })),
+              githubResult(snapshot({ head: "a", checks: { total: 1, pending: 0, failed: 0, passed: 1 } })),
+            ],
+            read,
+          ),
+        },
+      } as Tool.Context)
+      const run = started[0]?.run
+      if (!run) throw new Error("expected a started job")
+      const fiber = yield* Effect.forkChild(run)
+      yield* Deferred.await(read)
+      yield* TestClock.adjust(Duration.seconds(5))
+      yield* Fiber.join(fiber)
+      expect(prompts).toEqual(["build"])
+      sessionAgent = "build"
+    }).pipe(Effect.provide(TestClock.layer())),
+  )
+
+  const withRealTool = testEffect(
+    Layer.mergeAll(BackgroundJob.defaultLayer, Truncate.defaultLayer, Agent.defaultLayer, sessionLayer),
+  )
   withRealTool.instance("cancels a real watch execution without delivering a notice", () =>
     Effect.gen(function* () {
       const tool = yield* (yield* WatchPrTool).init()

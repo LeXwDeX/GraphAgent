@@ -71,8 +71,8 @@ const BACKGROUND_WAITS_HINT =
 const STOP_GUARD_POINTER =
   "For an end-of-turn check of a dirty worktree or unpushed commits, use the configure-hooks skill's stop-guard recipe."
 
-const SCOPE_GUARD_POINTER =
-  "To guard force pushes, destructive resets or recursive deletion outside the worktree, use the configure-hooks skill's scope-guard recipe."
+const GIT_GUARD_POINTER =
+  "To reduce accidental force pushes or hard resets, use the configure-hooks skill's git-guard recipe."
 
 export const layer = Layer.effect(
   Service,
@@ -210,7 +210,7 @@ export const layer = Layer.effect(
         // start-confirmation rule and the two hook practices; full recipes stay
         // in the skill.
         lines.push(hooks.some((h) => h.asyncRewake) ? BACKGROUND_WAITS : BACKGROUND_WAITS_HINT)
-        lines.push(STOP_GUARD_POINTER, SCOPE_GUARD_POINTER)
+        lines.push(STOP_GUARD_POINTER, GIT_GUARD_POINTER)
         return [lines.join("\n")]
       }),
 

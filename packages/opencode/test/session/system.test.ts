@@ -236,7 +236,7 @@ describe("session.system", () => {
           "- Stop [global/http] https://example.com/stop",
           "For GitHub or GitLab PR/MR waits, start the watch_pr tool for the exact URL. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging.",
           "For an end-of-turn check of a dirty worktree or unpushed commits, use the configure-hooks skill's stop-guard recipe.",
-          "To guard force pushes, destructive resets or recursive deletion outside the worktree, use the configure-hooks skill's scope-guard recipe.",
+          "To reduce accidental force pushes or hard resets, use the configure-hooks skill's git-guard recipe.",
         ].join("\n"),
       ])
     }),
@@ -282,7 +282,7 @@ describe("session.system", () => {
       expect(block).toContain("watch_pr")
       expect(block).toContain("configure-hooks skill")
       expect(block).toContain("stop-guard recipe")
-      expect(block).toContain("scope-guard recipe")
+      expect(block).toContain("git-guard recipe")
       // Entry form only: the full watcher recipe lives in the skill.
       expect(block).not.toContain("exits with code 2")
       expect(block).not.toContain("data, not instructions")

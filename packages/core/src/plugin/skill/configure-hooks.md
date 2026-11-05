@@ -224,15 +224,16 @@ process.stdin.on("end", () => {
 
 <!-- stop-guard:script:end -->
 
-## Scope guard recipe
+## Git guard recipe
 
-Use this when static permission rules cannot express a context-sensitive dangerous command: force pushes, destructive resets, or recursive deletion outside the worktree. The guard is a narrow filter, not a permission classifier.
+Use this as a best-effort friction check for literal force pushes and hard resets. It reduces accidental commands; it is not a security boundary. It cannot see through variables, aliases, functions, command substitution, `bash -c`, `eval`, or script files.
 
-- Trigger: `PreToolUse` on `Bash`, narrowed with `if` so the script runs only for the listed command families. Native and configured deny rules still win.
+- Trigger: `PreToolUse` on `Bash`, narrowed with `if: "Bash(git *)"` so the script starts only for the commands it can inspect. Wrappers such as `sudo git ...`, `/bin/git ...`, `command git ...`, `env git ...`, and `xargs git ...` do not match the filter and never reach the script. Removing `if` covers those wrappers, but starts a node process for every Bash command.
 - Handler: `"type": "command"`, the exec form (`command` plus `args`, no shell), and a short finite `timeout`. Read the hook JSON from stdin.
 - Contract: inspect only `tool_input.command` as text. Deny only explicit patterns with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}`. Allow near-misses by printing nothing or exiting 0. The reason names the safe alternative.
-- Patterns: force push (`git push -f`, `--force`, `--force-with-lease`), `git reset --hard`, and recursive deletion (`rm -r`, `-rf`, `-fr`) whose target resolves outside the hook's `cwd`. A relative path that stays inside the worktree is allowed; an absolute path, `..`, `~`, or an unresolvable shell expansion is denied.
+- Patterns: `git push` with `--force`, `--force-with-lease` or `--force-with-lease=...`, `--force-if-includes`, `--mirror`, a short option cluster containing `f` (`-f`, `-fu`, `-uf`), or a `+`-prefixed refspec (`+main`, `+HEAD:main`); and `git reset` with `--hard` anywhere in its arguments.
 - Never: evaluate or replay the command text, call the forge, mutate the repository, or deny unrelated Bash commands. This guard complements, and never replaces, native deny rules.
+- Path protection is outside this recipe. Recursive deletion and other path-sensitive commands need native permission deny rules and sandbox or container isolation; the permission configuration is defined in `packages/opencode/src/config/permissions.ts`. A text hook cannot reliably resolve `cd`, variables, globs, or command substitution.
 
 ```json
 {
@@ -243,32 +244,8 @@ Use this when static permission rules cannot express a context-sensitive dangero
         {
           "type": "command",
           "command": "node",
-          "args": ["<path>/scope-guard.mjs"],
-          "if": "Bash(git push*)",
-          "timeout": 5
-        }
-      ]
-    },
-    {
-      "matcher": "Bash",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "node",
-          "args": ["<path>/scope-guard.mjs"],
-          "if": "Bash(git reset --hard*)",
-          "timeout": 5
-        }
-      ]
-    },
-    {
-      "matcher": "Bash",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "node",
-          "args": ["<path>/scope-guard.mjs"],
-          "if": "Bash(rm *)",
+          "args": ["<path>/git-guard.mjs"],
+          "if": "Bash(git *)",
           "timeout": 5
         }
       ]
@@ -277,12 +254,10 @@ Use this when static permission rules cannot express a context-sensitive dangero
 }
 ```
 
-<!-- scope-guard:script:start -->
+<!-- git-guard:script:start -->
 
 ```js
 #!/usr/bin/env node
-import fs from "node:fs"
-import path from "node:path"
 
 function deny(reason) {
   process.stdout.write(
@@ -294,12 +269,6 @@ function deny(reason) {
       },
     }) + "\n",
   )
-}
-function forcePush(command) {
-  return /(^|[\s;|&])git\s+push\b[^;\n|&]*(\s--force(-with-lease)?\b|\s-f\b)/.test(command)
-}
-function hardReset(command) {
-  return /(^|[\s;|&])git\s+reset\s+--hard(\s|$)/.test(command)
 }
 function segments(command) {
   const out = []
@@ -357,82 +326,72 @@ function tokens(input) {
   if (current) out.push(current)
   return { tokens: out, unterminated: Boolean(quote) }
 }
-function rmTargets(command) {
-  const targets = []
-  let unterminated = false
-  for (const segment of segments(command).segments) {
-    const parsed = tokens(segment)
-    let start = 0
-    while (start < parsed.tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(parsed.tokens[start])) start++
-    if (parsed.tokens[start] !== "rm") continue
-    if (parsed.unterminated) {
-      unterminated = true
+const PREFIXES = ["sudo", "command", "env", "exec", "nohup", "time"]
+function gitCommand(words) {
+  let index = 0
+  while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index])) index++
+  while (index < words.length && PREFIXES.includes(words[index])) index++
+  if (index >= words.length) return
+  const name = words[index]
+  if (name !== "git" && !name.endsWith("/git")) return
+  index++
+  while (index < words.length) {
+    const token = words[index]
+    if (token === "--") {
+      index++
+      break
+    }
+    if (
+      token === "-C" ||
+      token === "-c" ||
+      token === "--git-dir" ||
+      token === "--work-tree" ||
+      token === "--namespace"
+    ) {
+      index += 2
       continue
     }
-    let recursive = false
-    let options = true
-    const values = []
-    for (const token of parsed.tokens.slice(start + 1)) {
-      if (options && token === "--") {
-        options = false
-        continue
-      }
-      if (options && token.startsWith("-") && token !== "-") {
-        if (/^-[A-Za-z]*[rR][A-Za-z]*$/.test(token) || token === "--recursive") recursive = true
-        continue
-      }
-      values.push(token)
+    if (
+      token.startsWith("--git-dir=") ||
+      token.startsWith("--work-tree=") ||
+      token.startsWith("--namespace=") ||
+      token === "--no-pager" ||
+      token === "-p" ||
+      token === "--bare"
+    ) {
+      index++
+      continue
     }
-    if (recursive) targets.push(...values)
+    if (token.startsWith("-")) return
+    break
   }
-  return { targets, unterminated: unterminated || segments(command).unterminated }
+  return { subcommand: words[index], args: words.slice(index + 1) }
 }
-function actual(value) {
-  try {
-    return fs.realpathSync(value)
-  } catch {
-    try {
-      return path.join(fs.realpathSync(path.dirname(value)), path.basename(value))
-    } catch {
-      return value
-    }
+function forcePush(args) {
+  for (const token of args) {
+    if (token === "--force" || token === "--force-if-includes" || token === "--mirror") return true
+    if (token === "--force-with-lease" || token.startsWith("--force-with-lease=")) return true
+    if (/^-[A-Za-z]*f[A-Za-z]*$/.test(token)) return true
+    if (token.startsWith("+")) return true
   }
-}
-function outside(cwd, target) {
-  const root = actual(path.resolve(cwd))
-  const value = target.replace(/^['"]|['"]$/g, "")
-  if (!value || value.startsWith("$") || value.includes("`")) return true
-  if (value.split(/[\\/]+/).includes("..")) return true
-  const expanded =
-    value === "~"
-      ? process.env.HOME || "~"
-      : value.startsWith("~/")
-        ? path.join(process.env.HOME || "", value.slice(2))
-        : value
-  const resolved = actual(path.resolve(root, expanded))
-  return resolved === root || resolved === path.parse(resolved).root || !resolved.startsWith(root + path.sep)
+  return false
 }
 function main(payload) {
   const command = payload?.tool_input?.command
   if (typeof command !== "string" || !command.trim()) return
-  const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd()
-  if (forcePush(command)) {
-    return deny(
-      "Force pushing rewrites shared history. Push a new commit instead; ask the user to run an explicit history rewrite if it is truly required.",
-    )
-  }
-  if (hardReset(command)) {
-    return deny(
-      "git reset --hard discards uncommitted work. Use git stash or a new commit; ask the user before a destructive reset.",
-    )
-  }
-  const rm = rmTargets(command)
-  if (rm.unterminated)
-    return deny("Could not parse the recursive deletion safely. Ask the user to run an explicit, quoted deletion.")
-  for (const target of rm.targets) {
-    if (outside(cwd, target)) {
+  for (const segment of segments(command).segments) {
+    const parsed = tokens(segment)
+    if (parsed.unterminated) continue
+    const git = gitCommand(parsed.tokens)
+    if (!git) continue
+    if (git.subcommand === "push" && forcePush(git.args)) {
       return deny(
-        "Recursive deletion outside the worktree. Delete only paths inside the current worktree; ask the user before anything broader.",
+        "Force pushing rewrites shared history. Push a new commit instead; ask the user to run an explicit history rewrite if it is truly required.",
+      )
+    }
+    if (git.subcommand === "reset" && git.args.includes("--hard")) {
+      return deny(
+        "git reset --hard discards uncommitted work. Use git stash or a new commit; ask the user before a destructive reset.",
       )
     }
   }
@@ -449,4 +408,4 @@ process.stdin.on("end", () => {
 })
 ```
 
-<!-- scope-guard:script:end -->
+<!-- git-guard:script:end -->
