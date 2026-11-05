@@ -7938,10 +7938,10 @@ noLLMServer.instance(
       if (match.info.role !== "user") throw new Error("expected user message")
       expect(match.info.model).toEqual({
         providerID: ProviderV2.ID.make("test"),
-        modelID: ModelV2.ID.make("test-model"),
-        variant: "high",
+        modelID: ModelV2.ID.make("other-test-model"),
+        variant: "default",
       })
-      expect(match.info.model.variant).toBe("high")
+      expect(match.info.model.variant).toBe("default")
 
       const override = yield* prompt.prompt({
         sessionID: session.id,
@@ -8018,7 +8018,7 @@ noLLMServer.instance(
       const changed = yield* prompt.prompt({
         sessionID: session.id,
         agent: "build",
-        model: { providerID: ref.providerID, modelID: ModelV2.ID.make("other-test-model") },
+        model: { providerID: ref.providerID, modelID: ModelV2.ID.make("third-test-model") },
         noReply: true,
         parts: [{ type: "text", text: "change model" }],
       })
@@ -8066,6 +8066,11 @@ noLLMServer.instance(
               ...cfg.provider.test.models["test-model"],
               id: "other-test-model",
               name: "Isolated variant alternative",
+            },
+            "third-test-model": {
+              ...cfg.provider.test.models["test-model"],
+              id: "third-test-model",
+              name: "Third variant alternative",
             },
             "test-model": {
               ...cfg.provider.test.models["test-model"],

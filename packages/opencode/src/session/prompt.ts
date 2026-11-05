@@ -144,6 +144,30 @@ import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { setCaptureSnapshot } from "@/dag/runtime/capture"
 import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
 
+export type PromptModelSelection = {
+  providerID: ProviderV2.ID
+  modelID: ModelV2.ID
+  variant?: string
+}
+
+/**
+ * Explicit callers win, then the model saved on the session, then the agent
+ * default. The provider default remains the caller's final fallback.
+ */
+export function selectPromptModel(input: {
+  requested?: PromptModelSelection
+  saved?: { providerID: string; id: string; variant?: string }
+  agent?: PromptModelSelection
+}): PromptModelSelection | undefined {
+  if (input.requested) return input.requested
+  if (!input.saved) return input.agent
+  const providerID = ProviderV2.ID.make(input.saved.providerID)
+  const modelID = ModelV2.ID.make(input.saved.id)
+  return input.saved.variant === undefined
+    ? { providerID, modelID }
+    : { providerID, modelID, variant: input.saved.variant }
+}
+
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
 
@@ -1966,7 +1990,9 @@ export const layer = Layer.effect(
         .where(eq(SessionTable.id, input.sessionID))
         .get()
         .pipe(Effect.orDie)
-      const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
+      const model =
+        selectPromptModel({ requested: input.model, saved: current?.model ?? undefined, agent: ag.model }) ??
+        (yield* currentModel(input.sessionID))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
       const savedVariant =
         current?.model?.providerID === model.providerID && current.model.id === model.modelID
