@@ -59,6 +59,27 @@ runs:
       run: python3 -m pip install setuptools || pip install setuptools || true
       shell: bash
 
+    # Native install scripts without prebuilds (tree-sitter-powershell via
+    # node-gyp-build) spawn `node-gyp` from PATH. Self-hosted runners do not
+    # guarantee one, so expose the copy bundled with the pinned Node's npm
+    # instead of depending on runner state. No network, no global install.
+    - name: Provide node-gyp from the pinned Node
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        # Derive from the node binary: npm output redacts UUID-like path segments.
+        gyp="$(node -p 'require("path").resolve(process.execPath, "../../lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js")')"
+        if [ ! -f "$gyp" ]; then
+          echo "::error::node-gyp bundled with npm not found at $gyp"
+          exit 1
+        fi
+        dir="$RUNNER_TEMP/node-gyp-bin"
+        mkdir -p "$dir"
+        printf '#!/usr/bin/env bash\nexec node "%s" "$@"\n' "$gyp" > "$dir/node-gyp"
+        chmod +x "$dir/node-gyp"
+        echo "$dir" >> "$GITHUB_PATH"
+        echo "node-gyp $(node "$gyp" --version) from $gyp"
+
     - name: Install dependencies
       run: |
         # Workaround for patched peer variants
