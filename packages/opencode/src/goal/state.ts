@@ -3,12 +3,33 @@ export * as GoalState from "./state"
 import { Effect, Schema } from "effect"
 import { NonNegativeInt } from "@opencode-ai/schema/schema"
 
-export const Status = Schema.Literals(["active", "paused", "done"])
+export const Status = Schema.Literals(["active", "waiting", "paused", "done"])
 export type Status = Schema.Schema.Type<typeof Status>
 
 // `skipped` was a dead enum value with no production write path — removed.
 export const Verdict = Schema.Literals(["done", "continue", "blocked"])
 export type Verdict = Schema.Schema.Type<typeof Verdict>
+
+export const WaitSource = Schema.Literals(["background_job", "watch_pr", "hook", "timer", "dag"])
+export type WaitSource = Schema.Schema.Type<typeof WaitSource>
+
+export const Wait = Schema.Struct({
+  source: WaitSource,
+  wait_id: Schema.String,
+  deadline: Schema.Number,
+  max_wakes: NonNegativeInt,
+  wakes: NonNegativeInt,
+  payload: Schema.optional(Schema.String),
+})
+export type Wait = Schema.Schema.Type<typeof Wait>
+
+export const Intent = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("progress") }),
+  Schema.Struct({ kind: Schema.Literal("await"), wait: Wait }),
+  Schema.Struct({ kind: Schema.Literal("done"), evidence: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("blocked"), reason: Schema.String }),
+])
+export type Intent = Schema.Schema.Type<typeof Intent>
 
 /**
  * #892: durable automatic-recovery budget for one failure chain.
@@ -55,6 +76,7 @@ export class Info extends Schema.Class<Info>("GoalState")({
   last_judged_msg: Schema.optional(Schema.String),
   consecutive_parse_failures: NonNegativeInt,
   recovery: Schema.optional(Recovery),
+  intent: Schema.optional(Intent),
   subgoals: Schema.Array(Schema.String).pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed([] as ReadonlyArray<string>))),
 }) {}
 
@@ -83,6 +105,7 @@ export function advance(state: Info, patch: Partial<Omit<Info, "revision">>) {
     last_judged_msg: state.last_judged_msg,
     consecutive_parse_failures: state.consecutive_parse_failures,
     recovery: state.recovery,
+    intent: state.intent,
     subgoals: state.subgoals,
     ...patch,
   })

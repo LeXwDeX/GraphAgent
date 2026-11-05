@@ -24,7 +24,7 @@ export const Parameters = Schema.Struct({
 type Metadata = {
   goal?: {
     text: string
-    status: "active" | "paused" | "done"
+    status: "active" | "waiting" | "paused" | "done"
     turnsUsed: number
     maxTurns: number
     subgoals: ReadonlyArray<string>

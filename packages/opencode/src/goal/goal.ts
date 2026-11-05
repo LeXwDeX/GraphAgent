@@ -70,6 +70,9 @@ export interface Interface {
   readonly pause: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
   readonly resume: (sessionID: SessionID, maxTurns?: number) => Effect.Effect<GoalState.Info | undefined>
   readonly clear: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
+  readonly setIntent: (sessionID: SessionID, intent: GoalState.Intent) => Effect.Effect<GoalState.Info | undefined>
+  readonly wake: (sessionID: SessionID, waitID: string, payload?: string) => Effect.Effect<boolean>
+  readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly markDone: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
@@ -808,6 +811,67 @@ const serviceLayer = Layer.effect(
       return cleared
     })
 
+    const setIntent = Effect.fn("Goal.setIntent")(function* (
+      sessionID: SessionID,
+      intent: GoalState.Intent,
+    ) {
+      return yield* transition(sessionID, (state) => {
+        if (!state || state.status !== "active") return { tag: "noop", value: undefined }
+        const next = GoalState.advance(state, {
+          status: intent.kind === "await" ? "waiting" : state.status,
+          intent,
+        })
+        return { tag: "save", state: next, value: next }
+      })
+    })
+
+    const wake = Effect.fn("Goal.wake")(function* (
+      sessionID: SessionID,
+      waitID: string,
+      payload?: string,
+    ) {
+      return yield* transition<boolean>(sessionID, (state) => {
+        if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
+          return { tag: "noop", value: false }
+        const wait = state.intent.wait
+        if (wait.wait_id !== waitID) return { tag: "noop", value: false }
+        const wakes = GoalState.nni(wait.wakes + 1)
+        if (wakes > wait.max_wakes) {
+          const next = GoalState.advance(state, {
+            status: "paused",
+            paused_reason: `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`,
+            intent: { kind: "blocked", reason: "wake limit exceeded" },
+          })
+          return { tag: "save", state: next, value: false }
+        }
+        const next = GoalState.advance(state, {
+          status: "active",
+          intent: { kind: "progress" },
+          last_reason: payload ?? `wake ${wait.source}:${wait.wait_id}`,
+          last_turn_at: Date.now(),
+        })
+        return { tag: "save", state: next, value: true }
+      })
+    })
+
+    const expireWait = Effect.fn("Goal.expireWait")(function* (sessionID: SessionID, now = Date.now()) {
+      return yield* transition(sessionID, (state) => {
+        if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
+          return { tag: "noop", value: undefined }
+        const wait = state.intent.wait
+        if (now < wait.deadline && wait.wakes < wait.max_wakes) return { tag: "noop", value: undefined }
+        const next = GoalState.advance(state, {
+          status: "paused",
+          paused_reason:
+            now >= wait.deadline
+              ? `等待 ${wait.source}:${wait.wait_id} 超时`
+              : `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`,
+          intent: { kind: "blocked", reason: "wait expired" },
+        })
+        return { tag: "save", state: next, value: next }
+      })
+    })
+
     // GOAL-FP-01-05/-16: session-deletion cleanup. `clear` keeps the
     // goal_outcome history (lastOutcome readers), but a deleted session has no
     // readers — its outcome rows are garbage and must go in the SAME durable
@@ -1233,6 +1297,9 @@ const serviceLayer = Layer.effect(
       pause,
       resume,
       clear,
+      setIntent,
+      wake,
+      expireWait,
       purgeSession,
       markDone,
       addSubgoal,
