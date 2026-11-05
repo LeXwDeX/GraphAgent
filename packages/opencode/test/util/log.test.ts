@@ -58,4 +58,20 @@ describe("util.log", () => {
     expect(entries[0]?.message).toBe("query completed")
     expect(entries[0]?.meta).toContain("duration_ms=")
   })
+
+  test("redacts credentials from commands, URLs and output", () => {
+    const entries = capture()
+    Log.create({ service: "test.service" }).warn("hook command exited non-zero", {
+      command: 'curl -H "Authorization: Bearer abc123" https://hooks.example.com/run?token=secret-value',
+      url: "https://user:pass@hooks.example.com/run?token=secret-value#frag",
+      stderr: "GITHUB_TOKEN=ghp_abcdefghijklmnopqrst",
+    })
+
+    const meta = entries[0]?.meta ?? ""
+    expect(meta).not.toContain("abc123")
+    expect(meta).not.toContain("secret-value")
+    expect(meta).not.toContain("user:pass")
+    expect(meta).not.toContain("ghp_abcdefghijklmnopqrst")
+    expect(meta).toContain("[redacted]")
+  })
 })

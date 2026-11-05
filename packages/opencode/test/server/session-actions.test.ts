@@ -34,6 +34,7 @@ describe("session action routes", () => {
         expect(session.metadata).toEqual({
           source: "sdk",
           trace: { id: "abc" },
+          engine: "v1",
           hookTitleSource: "custom",
         })
 
@@ -45,7 +46,7 @@ describe("session action routes", () => {
         expect(updated.status).toBe(200)
 
         const next = (yield* updated.json) as SessionNs.Info
-        const updatedMetadata = { source: "sdk", trace: { id: "def" }, tags: ["one"] }
+        const updatedMetadata = { source: "sdk", trace: { id: "def" }, tags: ["one"], engine: "v1" }
         expect(next.metadata).toEqual(updatedMetadata)
 
         const fetched = yield* requestInDirectory(`/session/${session.id}`, test.directory)
@@ -68,7 +69,7 @@ describe("session action routes", () => {
           body: JSON.stringify({ metadata: {} }),
         })
         expect(reset.status).toBe(200)
-        expect(((yield* reset.json) as SessionNs.Info).metadata).toEqual({})
+        expect(((yield* reset.json) as SessionNs.Info).metadata).toEqual({ engine: "v1" })
 
         yield* SessionNs.Service.use((svc) => svc.remove(fork.id).pipe(Effect.ignore))
         yield* SessionNs.Service.use((svc) => svc.remove(session.id).pipe(Effect.ignore))
