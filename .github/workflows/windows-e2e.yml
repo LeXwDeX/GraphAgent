@@ -1,0 +1,62 @@
+name: Windows E2E
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-e2e:
+    name: E2E Tests (windows)
+    runs-on: [self-hosted, Windows, X64, azure-win]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+        with:
+          save-cache: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Build opencode test dependencies
+        run: bun turbo run build --filter='opencode^...'
+
+      - name: Verify DAG artifact storage on Windows
+        working-directory: packages/opencode
+        run: >-
+          bun test --timeout 30000 --only-failures
+          test/dag/dag-output-ref.test.ts
+          test/dag/dag-output-ref-result.test.ts
+          test/dag/dag-input-mapping-runtime.test.ts
+          test/dag/dag-artifact-permissions.test.ts
+
+      - name: Install Playwright chromium
+        working-directory: packages/app
+        run: bunx playwright install chromium
+
+      - name: Run app e2e tests
+        run: bun --cwd packages/app test:e2e:local
+        env:
+          CI: "true"
