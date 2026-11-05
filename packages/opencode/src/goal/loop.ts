@@ -807,6 +807,11 @@ const serviceLayer = Layer.effect(
       }
       const skipJudge = suppressJudge || typeof errorOutcome === "object" || intent?.kind === "progress"
       if (!skipJudge) {
+        // An undeclared intent falls back to the legacy prose judge; record it
+        // so the fallback is observable rather than silent.
+        if (!intent) {
+          yield* Effect.logInfo("goal judge fallback: no intent declared", { sessionID })
+        }
         // A user message newer than the judged reply (noReply prompt, a
         // command turn, ESC before any reply, a blocked submit) means the
         // reply is no longer the work boundary: skip the judge and let the
