@@ -77,10 +77,14 @@ await test("every job runs on the per-minute GitHub-hosted Agents pool", () => {
     const pipeline = read(`.azure-pipelines/${file}`)
     const pools = pipeline.match(/\n\s+pool:\n[^\n]+/g) ?? []
     assert(pools.length > 0, file)
-    // Windows is the one exception: it stays on the free Microsoft-hosted tier
-    // until Windows 8-core images reach the GitHub-hosted Agents pool.
+    // Windows is the one exception: it runs on the shared self-hosted
+    // Windows agent in the Azure Pipelines pool.
     for (const pool of pools)
-      assert.match(pool, /name: GitHub-hosted Agents$|vmImage: (windows-latest|\$\{\{ target\.image \}\})$/, `${file}: ${pool.trim()}`)
+      assert.match(
+        pool,
+        /name: (GitHub-hosted Agents|Azure Pipelines)$|vmImage: (windows-latest|\$\{\{ target\.image \}\})$/,
+        `${file}: ${pool.trim()}`,
+      )
   }
 })
 

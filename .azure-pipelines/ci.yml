@@ -226,11 +226,10 @@ jobs:
   - ${{ each platform in parameters.e2ePlatforms }}:
       - job: e2e_${{ platform }}
         displayName: E2E Tests (${{ platform }})
-        # Windows 8-core images have not reached the GitHub-hosted Agents
-        # pool yet, so Windows uses the free Microsoft-hosted tier.
+        # Windows uses the shared self-hosted Windows agent.
         ${{ if eq(platform, 'windows') }}:
           pool:
-            vmImage: windows-latest
+            name: Azure Pipelines
         ${{ else }}:
           pool:
             name: GitHub-hosted Agents
