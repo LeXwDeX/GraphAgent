@@ -17,7 +17,7 @@ await test("CI keeps the required gate names", () => {
     "displayName: E2E Tests (${{ platform }})\n",
   ])
     assert(ci.includes(name), name)
-  assert.match(ci, /name: e2ePlatforms\n[\s\S]*?default: \[linux, windows\]/)
+  assert.match(ci, /name: e2ePlatforms\n[\s\S]*?default: \[linux\]/)
   assert.match(ci, /name: shards\n[\s\S]*?default: \[1, 2, 3, 4\]/)
 })
 
@@ -60,9 +60,13 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
   assert.match(ci, /bun run test:httpapi:ci\n\s+displayName: [^\n]+\n\s+workingDirectory: [^\n]+\n\s+timeoutInMinutes: \d+/)
 })
 
-await test("Azure Pipelines runs development CI and GitHub Actions keeps only the release", () => {
+await test("Azure Pipelines runs development CI and GitHub Actions runs release and Windows E2E", () => {
   const workflows = new URL("../.github/workflows/", import.meta.url)
-  assert.deepEqual(readdirSync(workflows).sort(), ["release-fork.yml"], ".github/workflows holds only the release")
+  assert.deepEqual(
+    readdirSync(workflows).sort(),
+    ["release-fork.yml", "windows-e2e.yml"],
+    ".github/workflows holds the release and Windows E2E",
+  )
   for (const file of ["ci.yml", "nix-verify.yml", "release.yml", "templates/toolchain.yml"])
     assert(existsSync(new URL(`../.azure-pipelines/${file}`, import.meta.url)), file)
   const release = read(".azure-pipelines/release.yml")
@@ -77,14 +81,8 @@ await test("every job runs on the per-minute GitHub-hosted Agents pool", () => {
     const pipeline = read(`.azure-pipelines/${file}`)
     const pools = pipeline.match(/\n\s+pool:\n[^\n]+/g) ?? []
     assert(pools.length > 0, file)
-    // Windows is the one exception: it runs on the shared self-hosted
-    // Windows agent in the Azure Pipelines pool.
     for (const pool of pools)
-      assert.match(
-        pool,
-        /name: (GitHub-hosted Agents|Azure Pipelines)$|vmImage: (windows-latest|\$\{\{ target\.image \}\})$/,
-        `${file}: ${pool.trim()}`,
-      )
+      assert.match(pool, /name: GitHub-hosted Agents$|vmImage: (windows-latest|\$\{\{ target\.image \}\})$/, `${file}: ${pool.trim()}`)
   }
 })
 

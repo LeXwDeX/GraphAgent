@@ -2,7 +2,7 @@
 # CI (Azure Pipelines)
 # ----------------------------------------------------------------------------
 # Purpose : Lint, typecheck, DAG core gate, unit/HttpAPI/generated-code tests
-#           and Playwright E2E on Linux & Windows
+#           and Playwright E2E on Linux (Windows E2E runs in GitHub Actions)
 # Trigger : Push to `main`, PRs targeting `main`, manual run
 # Jobs    : Typecheck               — lint, typecheck, DAG core gate, oc tests
 #           Unit Tests (workspace)  — workspace tests except opencode, Go,
@@ -11,14 +11,13 @@
 #           Unit Tests (HttpAPI)    — HttpAPI exerciser gates
 #           Unit Tests (linux)      — aggregate; succeeds only when every
 #                                     unit job succeeded
-#           E2E Tests (linux|windows) — Playwright chromium
-# Gate    : Typecheck, Unit Tests (linux) and both E2E jobs are the merge
+#           E2E Tests (linux)      — Playwright chromium
+# Gate    : Typecheck, Unit Tests (linux) and E2E Tests (linux) are the merge
 #           gates. Every PR and every main push runs the full suite; there is
 #           no result reuse. Fork PRs build only after a member comments.
+#           Windows E2E is a GitHub Actions check on the self-hosted runner.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute with
 #           no reserved parallel jobs: ubuntu-24.04-8-core (8 vCPU, 32 GB).
-#           Windows E2E uses the free Microsoft-hosted windows-latest tier
-#           until Windows 8-core images reach that pool.
 # Release : GitHub Actions release-fork.yml; .azure-pipelines/release.yml is
 #           the fallback.
 # ============================================================================
@@ -46,7 +45,7 @@ parameters:
   - name: e2ePlatforms
     displayName: E2E platforms
     type: object
-    default: [linux, windows]
+    default: [linux]
 
 variables:
   GOTOOLCHAIN: local
@@ -226,14 +225,11 @@ jobs:
   - ${{ each platform in parameters.e2ePlatforms }}:
       - job: e2e_${{ platform }}
         displayName: E2E Tests (${{ platform }})
-        # Windows uses the shared self-hosted Windows agent.
-        ${{ if eq(platform, 'windows') }}:
-          pool:
-            name: Azure Pipelines
-        ${{ else }}:
-          pool:
-            name: GitHub-hosted Agents
-            vmImage: ubuntu-24.04-8-core
+        # Windows E2E runs in the GitHub Actions windows-e2e workflow on the
+        # shared self-hosted Windows agent.
+        pool:
+          name: GitHub-hosted Agents
+          vmImage: ubuntu-24.04-8-core
         timeoutInMinutes: 75
         variables:
           PLAYWRIGHT_BROWSERS_PATH: $(Pipeline.Workspace)/.playwright-browsers
