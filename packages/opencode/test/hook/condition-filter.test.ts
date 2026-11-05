@@ -91,6 +91,8 @@ describe("condition-filter evaluate", () => {
       expect(bash(`Bash(${RM} *)`, `echo hi && FOO=1 ${RM} -rf build`)).toBe(true)
       expect(bash("Bash(git *)", "npm test; git push")).toBe(true)
       expect(bash("Bash(git *)", "npm test")).toBe(false)
+      expect(bash("Bash(git *)", "cd sub && git -C . push --force")).toBe(true)
+      expect(bash("Bash(git *)", "ls")).toBe(false)
     })
 
     test("Bash trailing ` *` matches the bare command; legacy `:*` is a prefix", () => {

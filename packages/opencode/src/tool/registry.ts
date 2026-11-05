@@ -17,6 +17,7 @@ import { MemorySearch } from "./memory-search"
 import { SettingsHook } from "@/hook/settings"
 import { HookStartContext } from "@/hook/start-context"
 import { WebFetchTool } from "./webfetch"
+import { WatchPrTool } from "./watch_pr"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
@@ -132,6 +133,7 @@ export const layer = Layer.effect(
     const plan = yield* PlanExitTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
+    const watchPr = yield* WatchPrTool
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -242,6 +244,7 @@ export const layer = Layer.effect(
           write: Tool.init(writetool),
           task: Tool.init(task),
           fetch: Tool.init(webfetch),
+          watchPr: Tool.init(watchPr),
           todo: Tool.init(todo),
           goal: Tool.init(goaltool),
           memorySearch: Tool.init(memorySearch),
@@ -269,6 +272,7 @@ export const layer = Layer.effect(
             tool.write,
             tool.task,
             tool.fetch,
+            tool.watchPr,
             tool.todo,
             tool.goal,
             tool.memorySearch,
