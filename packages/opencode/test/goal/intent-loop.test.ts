@@ -142,6 +142,28 @@ describe("GoalLoop — waits", () => {
     }),
   )
 
+  it.instance("a waiting goal that survives a restart is not dispatched by the startup scan", () =>
+    Effect.gen(function* () {
+      reset()
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      const sid = SessionID.descending()
+      // Durable row written before this process's GoalLoop boots.
+      yield* goal.set(sid, "merge the PR", 10)
+      yield* goal.setIntent(sid, awaitWatch(Date.now() + 60_000))
+
+      yield* loop.init()
+      for (let i = 0; i < 20; i++) yield* Effect.yieldNow
+      yield* Effect.sleep("50 millis")
+
+      const state = yield* goal.load(sid)
+      expect(state?.status).toBe("waiting")
+      expect(Number(state?.turns_used)).toBe(0)
+      expect(promptCalls).toHaveLength(0)
+      expect(judgeCalls).toBe(0)
+    }),
+  )
+
   it.instance("only the registered watch wakes the goal, and a state-only wake defers to the next idle", () =>
     Effect.gen(function* () {
       reset()
