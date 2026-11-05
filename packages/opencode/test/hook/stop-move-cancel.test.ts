@@ -48,16 +48,24 @@ test("abort after a move invalidates the old Stop callback without masking the n
           const release = path.join(a.path, "hook-release")
           const woke = yield* Deferred.make<void>()
           let discarded = false
-          const original = Log.Default.debug.bind(Log.Default)
+          const previousLevel = process.env.OPENCODE_LOG_LEVEL
+          process.env.OPENCODE_LOG_LEVEL = "DEBUG"
           yield* Effect.acquireRelease(
             Effect.sync(() =>
-              spyOn(Log.Default, "debug").mockImplementation((message, meta) => {
-                if (message === "async Stop callback discarded: chain invalidated" && meta?.sessionID === session.id)
+              Log.setSink((entry) => {
+                if (
+                  entry.message === "async Stop callback discarded: chain invalidated" &&
+                  entry.meta?.includes(`sessionID=${session.id}`)
+                )
                   discarded = true
-                original(message, meta)
               }),
             ),
-            (spy) => Effect.sync(() => spy.mockRestore()),
+            (restore) =>
+              Effect.sync(() => {
+                restore()
+                if (previousLevel === undefined) delete process.env.OPENCODE_LOG_LEVEL
+                else process.env.OPENCODE_LOG_LEVEL = previousLevel
+              }),
           )
           const rewake = HookRewake.Service.of({ rewake: () => Deferred.succeed(woke, undefined).pipe(Effect.asVoid) })
           const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"

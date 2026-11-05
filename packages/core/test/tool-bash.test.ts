@@ -104,6 +104,7 @@ const noSession = Layer.succeed(
   SessionStore.Service,
   SessionStore.Service.of({
     get: () => Effect.succeed(undefined),
+    hasLegacyMessage: () => Effect.succeed(false),
     context: () => Effect.die("unused"),
     runnerContext: () => Effect.die("unused"),
     message: () => Effect.die("unused"),
@@ -192,6 +193,7 @@ describe("BashTool", () => {
           SessionStore.Service,
           SessionStore.Service.of({
             get: () => Effect.succeed({ model: { variant: "high" } } as unknown as SessionSchema.Info),
+            hasLegacyMessage: () => Effect.succeed(false),
             context: () => Effect.die("unused"),
             runnerContext: () => Effect.die("unused"),
             message: () => Effect.die("unused"),

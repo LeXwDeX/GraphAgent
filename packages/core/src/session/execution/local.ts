@@ -105,6 +105,11 @@ export const layer = Layer.effect(
               // transitions, before recording anything for model replay.
               const session = yield* store.get(input.sessionID)
               if (!session) return false
+              // V1 and V2 share the session row. V1 sessions carry the engine
+              // marker written at creation or, if created before it existed,
+              // have a V1 message. Decline here and let HookRewakeLive fall
+              // back to the V1 loop instead of hiding the turn in the V2 runner.
+              if (yield* store.hasLegacyMessage(input.sessionID)) return false
               if (!(yield* input.valid())) return true
               yield* events.publish(SessionEvent.Synthetic, {
                 sessionID: input.sessionID,

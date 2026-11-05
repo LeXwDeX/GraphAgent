@@ -1,4 +1,4 @@
-import { describe, expect, spyOn } from "bun:test"
+import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs/promises"
 import os from "os"
@@ -47,17 +47,25 @@ const tmp = (name: string) => path.join(os.tmpdir(), `opencode-test-${name}`)
 const observeDiscardedCallback = (sessionID: string) =>
   Effect.gen(function* () {
     let discarded = false
-    const original = Log.Default.debug.bind(Log.Default)
+    const previousLevel = process.env.OPENCODE_LOG_LEVEL
+    process.env.OPENCODE_LOG_LEVEL = "DEBUG"
     yield* Effect.acquireRelease(
       Effect.sync(() =>
-        spyOn(Log.Default, "debug").mockImplementation((message, meta) => {
-          if (message === "async Stop callback discarded: chain invalidated" && meta?.sessionID === sessionID) {
+        Log.setSink((entry) => {
+          if (
+            entry.message === "async Stop callback discarded: chain invalidated" &&
+            entry.meta?.includes(`sessionID=${sessionID}`)
+          ) {
             discarded = true
           }
-          original(message, meta)
         }),
       ),
-      (spy) => Effect.sync(() => spy.mockRestore()),
+      (restore) =>
+        Effect.sync(() => {
+          restore()
+          if (previousLevel === undefined) delete process.env.OPENCODE_LOG_LEVEL
+          else process.env.OPENCODE_LOG_LEVEL = previousLevel
+        }),
     )
     return pollWithTimeout(
       Effect.sync(() => (discarded ? true : undefined)),

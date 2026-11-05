@@ -600,7 +600,11 @@ export const layer: Layer.Layer<
         title: input.title ?? (input.parentID ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
         agent: input.agent,
         model: input.model,
-        metadata: { ...input.metadata, hookTitleSource: input.title ? (input.titleSource ?? "custom") : "generated" },
+        metadata: {
+          ...input.metadata,
+          engine: "v1",
+          hookTitleSource: input.title ? (input.titleSource ?? "custom") : "generated",
+        },
         permission: input.permission ? [...input.permission] : undefined,
         cost: 0,
         tokens: EmptyTokens,
