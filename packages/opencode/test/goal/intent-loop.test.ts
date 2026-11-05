@@ -176,9 +176,7 @@ describe("GoalLoop — waits", () => {
       yield* goal.setIntent(sid, awaitWatch(Date.now() + 60_000))
       yield* Effect.yieldNow
 
-      expect(yield* Effect.scoped(loop.wake(sid, { source: "watch_pr", ids: ["job_9", "https://x/pr/2"] }))).toBe(
-        false,
-      )
+      expect(yield* Effect.scoped(loop.wake(sid, { source: "watch_pr", ids: ["job_9", "https://x/pr/2"] }))).toBe(false)
       expect(yield* Effect.scoped(loop.wake(sid, { source: "background_job", ids: ["job_1"] }))).toBe(false)
       expect((yield* goal.load(sid))?.status).toBe("waiting")
 
@@ -201,6 +199,63 @@ describe("GoalLoop — waits", () => {
       const state = yield* goal.load(sid)
       expect(state?.status).toBe("active")
       expect(state?.intent).toBeUndefined()
+    }),
+  )
+
+  it.instance("a progress intent spends one turn per continuation and respects the budget", () =>
+    Effect.gen(function* () {
+      reset()
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      const events = yield* EventV2Bridge.Service
+      yield* loop.init()
+      const sid = SessionID.descending()
+      yield* goal.set(sid, "ship it", 1)
+      yield* goal.setIntent(sid, { kind: "progress" })
+      yield* Effect.yieldNow
+
+      yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const state = yield* goal.load(sid)
+          return state && state.status !== "active" ? state : promptCalls.length > 0 ? state : undefined
+        }),
+        "the progress intent never reached a budget decision",
+        "5 seconds",
+      )
+      for (let i = 0; i < 20; i++) yield* Effect.yieldNow
+
+      // Budget 1: the first progress boundary spends the only turn and the
+      // goal pauses visibly instead of dispatching unbounded work.
+      const state = yield* goal.load(sid)
+      expect(judgeCalls).toBe(0)
+      expect(Number(state?.turns_used)).toBe(1)
+      expect(state?.status).toBe("paused")
+      expect(promptCalls.every((call) => call.noReply)).toBe(true)
+    }),
+  )
+
+  it.instance("a wake that evaluates immediately survives the caller's scope", () =>
+    Effect.gen(function* () {
+      reset()
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      yield* loop.init()
+      const sid = SessionID.descending()
+      yield* goal.set(sid, "merge the PR", 10)
+      yield* goal.setIntent(sid, awaitWatch(Date.now() + 60_000))
+      yield* Effect.yieldNow
+
+      // Callers wrap the wake in Effect.scoped; no notice prompt follows.
+      expect(
+        yield* Effect.scoped(loop.wake(sid, { source: "watch_pr", ids: ["job_1"] }, "watch exited without a notice")),
+      ).toBe(true)
+      yield* pollWithTimeout(
+        Effect.sync(() => (promptCalls.some((call) => !call.noReply) ? true : undefined)),
+        "the woken goal was never evaluated",
+        "5 seconds",
+      )
+      expect(Number((yield* goal.load(sid))?.turns_used)).toBe(1)
     }),
   )
 })
