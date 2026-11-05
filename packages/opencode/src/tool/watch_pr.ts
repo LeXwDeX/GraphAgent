@@ -482,6 +482,9 @@ export const WatchPrTool = Tool.define(
               cancelled: () => SessionCancellation.epoch(ctx.sessionID) !== epoch,
               deliver: (notice) =>
                 Effect.gen(function* () {
+                  const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+                  const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+                  if (loops) yield* Effect.scoped(loops.wakeAny(ctx.sessionID, renderNotice(notice))).pipe(Effect.ignore)
                   // The user may switch agents while the watch runs. Read the
                   // session at delivery time instead of using the captured value.
                   // Omit model and variant so createUserMessage keeps the

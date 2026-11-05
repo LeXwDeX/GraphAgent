@@ -72,6 +72,7 @@ export interface Interface {
   readonly clear: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   readonly setIntent: (sessionID: SessionID, intent: GoalState.Intent) => Effect.Effect<GoalState.Info | undefined>
   readonly wake: (sessionID: SessionID, waitID: string, payload?: string) => Effect.Effect<boolean>
+  readonly wakeAny: (sessionID: SessionID, payload?: string) => Effect.Effect<boolean>
   readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
   readonly clearIntent: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
@@ -855,6 +856,33 @@ const serviceLayer = Layer.effect(
       })
     })
 
+    // Wake from an event whose own identity is not known to the agent (for
+    // example a watch_pr job whose id is assigned after delivery is armed).
+    // The first registered await for the session consumes the event.
+    const wakeAny = Effect.fn("Goal.wakeAny")(function* (sessionID: SessionID, payload?: string) {
+      return yield* transition<boolean>(sessionID, (state) => {
+        if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
+          return { tag: "noop", value: false }
+        const wait = state.intent.wait
+        const wakes = GoalState.nni(wait.wakes + 1)
+        if (wakes > wait.max_wakes) {
+          const next = GoalState.advance(state, {
+            status: "paused",
+            paused_reason: `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`,
+            intent: { kind: "blocked", reason: "wake limit exceeded" },
+          })
+          return { tag: "save", state: next, value: false }
+        }
+        const next = GoalState.advance(state, {
+          status: "active",
+          intent: { kind: "progress" },
+          last_reason: payload ?? `wake ${wait.source}:${wait.wait_id}`,
+          last_turn_at: Date.now(),
+        })
+        return { tag: "save", state: next, value: true }
+      })
+    })
+
     const expireWait = Effect.fn("Goal.expireWait")(function* (sessionID: SessionID, now = Date.now()) {
       return yield* transition(sessionID, (state) => {
         if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
@@ -1308,6 +1336,7 @@ const serviceLayer = Layer.effect(
       clear,
       setIntent,
       wake,
+      wakeAny,
       expireWait,
       clearIntent,
       purgeSession,

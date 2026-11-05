@@ -25,6 +25,8 @@ import { NotFoundError } from "@/storage/storage"
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
+  readonly wake: (sessionID: SessionID, waitID: string, payload?: string) => Effect.Effect<boolean, never, Scope.Scope>
+  readonly wakeAny: (sessionID: SessionID, payload?: string) => Effect.Effect<boolean, never, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/GoalLoop") {}
@@ -1325,6 +1327,18 @@ const serviceLayer = Layer.effect(
       }
     })
 
+    const wake = Effect.fn("GoalLoop.wake")(function* (sessionID: SessionID, waitID: string, payload?: string) {
+      if (!(yield* goal.wake(sessionID, waitID, payload))) return false
+      yield* triggerEvaluation(sessionID).pipe(Effect.catchCause(() => Effect.void))
+      return true
+    })
+
+    const wakeAny = Effect.fn("GoalLoop.wakeAny")(function* (sessionID: SessionID, payload?: string) {
+      if (!(yield* goal.wakeAny(sessionID, payload))) return false
+      yield* triggerEvaluation(sessionID).pipe(Effect.catchCause(() => Effect.void))
+      return true
+    })
+
     const init = Effect.fn("GoalLoop.init")(function* () {
       // Resolve the scan's directory scope BEFORE the first state get — the
       // builder (which runs inside that get) reads it from the ref. This
@@ -1334,7 +1348,7 @@ const serviceLayer = Layer.effect(
       yield* InstanceState.get(state)
     })
 
-    return Service.of({ init })
+    return Service.of({ init, wake, wakeAny })
   }),
 )
 
