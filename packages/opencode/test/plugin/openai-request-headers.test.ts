@@ -236,10 +236,13 @@ describe("Request header transport boundary", () => {
         expect(input.bodyUsed).toBe(false)
         expect(input.body?.locked).toBe(false)
         expect(pulls).toBe(kind === "stream" ? 1 : 0)
-        expect(await input.text()).toBe("retained-body")
         if (!outgoing?.body) throw new Error("Missing outgoing body")
+        // Discarding the transport copies must leave the caller's body untouched. Check before the caller
+        // reads it: a consumed body's `locked` state is engine-specific (Bun 1.4.3+ keeps the read lock).
         await Promise.all([outgoing.body.cancel("discarded"), reconstructed?.body?.cancel("discarded")])
+        expect(input.bodyUsed).toBe(false)
         expect(input.body?.locked).toBe(false)
+        expect(await input.text()).toBe("retained-body")
       } finally {
         transport.close()
       }
@@ -500,6 +503,10 @@ describe("Request header transport boundary", () => {
             if (ending === "cancel") {
               // The original Request retains its native copy branch. Finish
               // that caller-owned branch while canceling the transport copy.
+              // Check it before the caller's own read: a consumed body's
+              // `locked` state is engine-specific (Bun 1.4.3+ keeps the lock).
+              expect(input.bodyUsed).toBe(false)
+              expect(input.body?.locked).toBe(false)
               const original = input.text()
               controller?.close()
               await reader.cancel("consumer canceled")
@@ -508,11 +515,12 @@ describe("Request header transport boundary", () => {
             } else if (ending === "error") {
               controller?.error(new Error("source failed"))
               expect(await pending.catch((error) => error)).toMatchObject({ message: "source failed" })
+              expect(input.body?.locked).toBe(false)
             } else {
               controller?.close()
               expect((await pending).done).toBe(true)
+              expect(input.body?.locked).toBe(false)
             }
-            expect(input.body?.locked).toBe(false)
             return new Response("done")
           } finally {
             reader.releaseLock()
