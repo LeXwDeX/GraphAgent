@@ -107,6 +107,41 @@ describe("GoalLoop — waits", () => {
     }),
   )
 
+  it.instance("idle boundaries while waiting never dispatch or spend turns", () =>
+    Effect.gen(function* () {
+      reset()
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      const events = yield* EventV2Bridge.Service
+      yield* loop.init()
+      const sid = SessionID.descending()
+      yield* goal.set(sid, "merge the PR", 10)
+      yield* goal.setIntent(sid, {
+        kind: "await",
+        wait: {
+          source: "background_job",
+          wait_id: "ses_child",
+          deadline: Date.now() + 60_000,
+          max_wakes: GoalState.nni(1),
+          wakes: GoalState.nni(0),
+        },
+      })
+      yield* Effect.yieldNow
+
+      for (let i = 0; i < 5; i++) {
+        yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
+        for (let j = 0; j < 10; j++) yield* Effect.yieldNow
+      }
+      yield* Effect.sleep("50 millis")
+
+      const state = yield* goal.load(sid)
+      expect(state?.status).toBe("waiting")
+      expect(Number(state?.turns_used)).toBe(0)
+      expect(promptCalls).toHaveLength(0)
+      expect(judgeCalls).toBe(0)
+    }),
+  )
+
   it.instance("only the registered watch wakes the goal, and a state-only wake defers to the next idle", () =>
     Effect.gen(function* () {
       reset()

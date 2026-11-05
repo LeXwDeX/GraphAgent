@@ -17,6 +17,8 @@ import { SessionStatus } from "@/session/status"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { WorkflowTool } from "../../src/tool/workflow"
+import { GoalLoop } from "@/goal/loop"
+import type { Goal } from "@/goal/goal"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
@@ -53,6 +55,23 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
 
 const it = testEffect(layer())
 const background = testEffect(layer({ experimentalBackgroundSubagents: true }))
+const goalWakes: { sessionID: string; match: Goal.WakeMatch; payload?: string; evaluate?: boolean }[] = []
+const backgroundWithGoal = testEffect(
+  Layer.mergeAll(
+    layer({ experimentalBackgroundSubagents: true }),
+    Layer.succeed(
+      GoalLoop.Service,
+      GoalLoop.Service.of({
+        init: () => Effect.void,
+        wake: (sessionID, match, payload, options) =>
+          Effect.sync(() => {
+            goalWakes.push({ sessionID, match, payload, evaluate: options?.evaluate })
+            return true
+          }),
+      }),
+    ),
+  ),
+)
 const stopped = testEffect(
   Layer.mergeAll(
     layer(),
@@ -1606,6 +1625,48 @@ describe("tool.task", () => {
       expect(notification.variant).toBe("xhigh")
       expect(notification.parts[0]?.type).toBe("text")
       if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("second done")
+    }),
+  )
+
+  backgroundWithGoal.instance("a finished background task wakes only the goal wait for its task id", () =>
+    Effect.gen(function* () {
+      goalWakes.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text: "background done" }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      expect(waited.info?.status).toBe("completed")
+      for (let i = 0; i < 50 && goalWakes.length === 0; i++) yield* Effect.sleep("10 millis")
+      // The result prompt follows, so the wake only flips goal state.
+      expect(goalWakes).toEqual([
+        {
+          sessionID: chat.id,
+          match: { source: "background_job", ids: [result.metadata.sessionId] },
+          payload: "Background task completed: inspect bug",
+          evaluate: false,
+        },
+      ])
     }),
   )
 

@@ -432,11 +432,39 @@ export const TaskTool = Tool.define(
           .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
       })
 
+      // A goal waiting on this background task registers its task id. Wake
+      // only that wait; see watch_pr for the evaluate semantics.
+      const wakeGoal = (jobID: string, payload: string, evaluate: boolean): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+          const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+          if (!loops) return
+          yield* Effect.scoped(
+            loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate }),
+          )
+        }).pipe(Effect.ignore)
+
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
         yield* background.wait({ id: jobID }).pipe(
           Effect.flatMap((result) =>
             Effect.gen(function* () {
-              if (result.info?.status !== "completed" && result.info?.status !== "error") return undefined
+              if (result.info?.status !== "completed" && result.info?.status !== "error") {
+                // No result prompt follows (cancelled or vanished job): end the
+                // wait now so the goal does not sleep until its deadline.
+                yield* wakeGoal(
+                  jobID,
+                  `Background task ${params.description} ended without a result (${result.info?.status ?? "missing"})`,
+                  true,
+                )
+                return undefined
+              }
+              yield* wakeGoal(
+                jobID,
+                result.info.status === "completed"
+                  ? `Background task completed: ${params.description}`
+                  : `Background task failed: ${params.description}`,
+                false,
+              )
               const { SessionAttention } = yield* Effect.promise(() => import("@/notification/attention"))
               const { Notification } = yield* Effect.promise(() => import("@/notification"))
               const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))

@@ -17,7 +17,7 @@ export const Parameters = Schema.Struct({
   }),
   wait_id: Schema.optional(Schema.String).annotate({
     description:
-      "Required for intent=await. The exact identity that will wake the goal. For watch_pr use the job ID from its start output or the watched PR/MR URL; an unmatched notice does not wake the goal.",
+      "Required for intent=await. The exact identity that will wake the goal. For watch_pr use the job ID from its start output or the watched PR/MR URL; for background_job use the background task id. An unmatched event does not wake the goal.",
   }),
   deadline_ms: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))).annotate({
     description: "Optional for intent=await. Milliseconds until the wait expires (default 30 minutes).",
