@@ -651,7 +651,12 @@ const serviceLayer = Layer.effect(
       yield* goal.clearTurnDriven(sessionID)
       if (SessionCancellation.goalCancelPending(sessionID)) return
       const goalState = yield* goal.load(sessionID)
-      if (!goalState || goalState.status !== "active") return
+      if (!goalState) return
+      if (goalState.status === "waiting") {
+        yield* goal.expireWait(sessionID)
+        return
+      }
+      if (goalState.status !== "active") return
       // D-4 entry gate (scan path only): the boot snapshot may have gone
       // stale between triggerEvaluation's load and this entry load — an idle
       // evaluation could have committed a new revision in between, and this
@@ -773,7 +778,13 @@ const serviceLayer = Layer.effect(
       // to the shared continuation dispatch below. A retryable error recovery
       // also skips the judge: there is no new work output to classify, and
       // the retry must not consume a goal turn.
-      const skipJudge = suppressJudge || typeof errorOutcome === "object"
+      const intent = goalState.intent
+      if (intent?.kind === "blocked") {
+        yield* visiblePause(sessionID, intent.reason, expectedOf(goalState))
+        clearRetryDedupe()
+        return
+      }
+      const skipJudge = suppressJudge || typeof errorOutcome === "object" || intent?.kind === "progress"
       if (!skipJudge) {
         // A user message newer than the judged reply (noReply prompt, a
         // command turn, ESC before any reply, a blocked submit) means the
@@ -795,7 +806,7 @@ const serviceLayer = Layer.effect(
         // permanently "active" with no continuation — the agent appeared to
         // stop working on its own.
         const callLLM = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoopJudgeLLM))
-        const judgeText = preempted ? "" : responseText
+        const judgeText = intent?.kind === "done" ? intent.evidence : preempted ? "" : responseText
         const verdict = judgeText
           ? yield* GoalJudge.run(
               goalState.goal,
@@ -1014,6 +1025,8 @@ const serviceLayer = Layer.effect(
       // provenance: Memory must not treat this as human input or expire the
       // current user's retrieved context. Goal events carry visible progress;
       // the full continuation does not need a repeated user-message bubble.
+      const clearedIntent = yield* goal.clearIntent(sessionID)
+      if (clearedIntent) dispatchState = clearedIntent
       const continuationText = GoalPrompts.renderContinuation({
         goal: dispatchState.goal,
         subgoals: dispatchState.subgoals ?? [],

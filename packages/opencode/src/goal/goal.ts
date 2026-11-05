@@ -73,6 +73,7 @@ export interface Interface {
   readonly setIntent: (sessionID: SessionID, intent: GoalState.Intent) => Effect.Effect<GoalState.Info | undefined>
   readonly wake: (sessionID: SessionID, waitID: string, payload?: string) => Effect.Effect<boolean>
   readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
+  readonly clearIntent: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
   readonly markDone: (sessionID: SessionID, reason: string) => Effect.Effect<GoalState.Info | undefined>
@@ -872,6 +873,14 @@ const serviceLayer = Layer.effect(
       })
     })
 
+    const clearIntent = Effect.fn("Goal.clearIntent")(function* (sessionID: SessionID) {
+      return yield* transition(sessionID, (state) => {
+        if (!state || state.status !== "active" || !state.intent) return { tag: "noop", value: undefined }
+        const next = GoalState.advance(state, { intent: undefined })
+        return { tag: "save", state: next, value: next }
+      })
+    })
+
     // GOAL-FP-01-05/-16: session-deletion cleanup. `clear` keeps the
     // goal_outcome history (lastOutcome readers), but a deleted session has no
     // readers — its outcome rows are garbage and must go in the SAME durable
@@ -1300,6 +1309,7 @@ const serviceLayer = Layer.effect(
       setIntent,
       wake,
       expireWait,
+      clearIntent,
       purgeSession,
       markDone,
       addSubgoal,
