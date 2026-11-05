@@ -593,4 +593,39 @@ describe("watch_pr notice and tool", () => {
       })
     }),
   )
+
+  const withRealTool = testEffect(Layer.mergeAll(BackgroundJob.defaultLayer, Truncate.defaultLayer, Agent.defaultLayer))
+  withRealTool.instance("cancels a real watch execution without delivering a notice", () =>
+    Effect.gen(function* () {
+      const tool = yield* (yield* WatchPrTool).init()
+      const sessionID = SessionID.make("ses_watch_tool_cancel")
+      const started = yield* Deferred.make<void>()
+      let first = true
+      const runner: Runner = () =>
+        Effect.suspend(() => {
+          const result = githubResult(snapshot({ head: "a" }))
+          if (!first) return Effect.succeed(result)
+          first = false
+          return Deferred.succeed(started, undefined).pipe(Effect.as(result))
+        })
+      const result = yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+        ...summary,
+        sessionID,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: () => Effect.die("a cancelled watch must not deliver"),
+          },
+          watchPrRunner: runner,
+        },
+      } as Tool.Context)
+      yield* Deferred.await(started)
+      const cancellation = SessionCancellation.begin(sessionID)
+      yield* Effect.all(cancellation.owners, { discard: true })
+      cancellation.finish()
+      const background = yield* BackgroundJob.Service
+      const waited = yield* background.wait({ id: result.metadata.jobId, timeout: 1_000 })
+      expect(waited.info?.status).toBe("cancelled")
+    }),
+  )
 })
