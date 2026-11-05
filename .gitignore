@@ -34,6 +34,8 @@ target
 opencode-dev
 packages/opencode/script/config.json
 UPCOMING_CHANGELOG.md
+# Test machine / review host addresses (public repo: never track)
+/.env.hosts
 logs/
 *.bun-build
 tsconfig.tsbuildinfo

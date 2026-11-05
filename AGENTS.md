@@ -66,6 +66,17 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 - UI changes: exercise rendering and interaction on every affected client (TUI, app, or direct `run`), including relevant state transitions and terminal cleanup; a backend-only test is insufficient. Use package-local browser/TUI harnesses and isolated configuration.
 - Dependency or toolchain changes: run `bun run toolchain:check`, affected package checks, and relevant toolchain/container/Go tests. Nix acceptance requires builds on a Nix host.
 
+## Development pipeline
+
+Four stages, strictly in order. Do not advance while the previous stage has an open failure or an unreviewed finding.
+
+1. **Self-hosted CI (Linux only).** During development, iterate on the team test machine. The CI container lives in the project's `ci/` directory there (`<project dir>/ci`), outside this repository and untracked. Build its image from the repository pins (base on `packages/containers/bun-node`; the run must pass `bun run toolchain:check`) and mount only the checkout or worktree under test. Run the Linux steps of `.azure-pipelines/ci.yml`: toolchain/pipeline tests, lint, typecheck, DAG-core gate, `oc` boundary test, workspace and opencode unit tests, HttpAPI exerciser, both client generation checks, and Linux E2E. Fix every failure here; Windows, macOS, and Nix are out of scope at this stage. Keep fixtures and fake credentials; no real models, secrets, or user configuration. Keep images, logs, and caches inside the project directory on that machine and remove task containers and temporary files when done.
+2. **GitHub final runner.** Only after self-hosted CI is fully green, push the branch and mark the PR ready. The hosted CI of record (below) is the final gate, including Windows E2E. Do not spend hosted CI minutes iterating on failures reproducible on Linux; reproduce and fix them in self-hosted CI first. Merge per Delivery once required checks pass.
+3. **Human review.** After merge, deploy the build of the merged `main` commit to the review host for human review. Deploy prebuilt artifacts only (built on the test machine, or the `release-fork.yml` `create_release: false` artifacts); the review host never builds or installs dependencies. Deploying, restarting, or changing configuration there requires explicit authorization from the current task. Accept by actual health checks and logs, not exit codes.
+4. **Tag + GitHub release.** Only after the reviewer approves that exact commit, create the stable tag and GitHub release per Releases.
+
+Host addresses, login users, and directories of the test machine and review host are recorded only in the untracked `.env.hosts` at the repository root (mode `0600`, Git-ignored). This repository is public: never write those addresses or credentials into tracked files, commits, Issues, PRs, CI logs, or release notes; refer to the machines by role.
+
 ## CI gates (.azure-pipelines)
 
 - Development CI runs on Azure Pipelines (Azure DevOps org `yc-github`, reported to GitHub by the Azure Pipelines app). GitHub Actions keeps only `release-fork.yml`. Shared toolchain setup lives in `.azure-pipelines/templates/toolchain.yml`.
@@ -100,6 +111,7 @@ Repository-specific mapping; shared pre-push verification requirements live in t
 
 ## Releases
 
+- Publish only a `main` commit that passed hosted CI and was approved in human review (Development pipeline stage 4).
 - `.github/workflows/release-fork.yml` manual `workflow_dispatch` from `main` is the release pipeline. Its default `create_release: false` builds and verifies artifacts. `create_release: true` publishes the stable `X.Y.Z` release and marks it Latest.
 - `.azure-pipelines/release.yml` is the fallback when GitHub Actions cannot run a release (minutes or concurrency exhausted). Run it manually from `main`; `createRelease: true` publishes the same way through the `github.com_LeXwDeX` service connection (no token). Never run both for the same version.
 - Release versions derive from stable `graphagent-vX.Y.Z` tags (`packages/opencode/script/release-version.ts`); package versions and historical `-dev.N` tags do not advance that selection. Notes files must be named `.github/releases/v<derived-version>.md` exactly (fail-closed).
