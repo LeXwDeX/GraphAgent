@@ -12,8 +12,10 @@ export const Parameters = Schema.Struct({
     description:
       "Required for action=intent. progress: more work is ready; await: wait for an external wake; done: let the judge verify evidence; blocked: pause visibly.",
   }),
-  wait_source: Schema.optional(Schema.Literals(["background_job", "watch_pr", "hook", "timer", "dag"])).annotate({
-    description: "Required for intent=await. The wake source to register.",
+  // Only sources with a production wake producer are accepted; the durable
+  // GoalState.WaitSource keeps the wider set for persisted compatibility.
+  wait_source: Schema.optional(Schema.Literals(["background_job", "watch_pr"])).annotate({
+    description: "Required for intent=await. The wake source to register: watch_pr or background_job.",
   }),
   wait_id: Schema.optional(Schema.String).annotate({
     description:

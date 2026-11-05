@@ -479,7 +479,7 @@ export const WatchPrTool = Tool.define(
               const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
               if (!loops) return
               const ids = jobID ? [jobID, request.url] : [request.url]
-              yield* Effect.scoped(loops.wake(ctx.sessionID, { source: "watch_pr", ids }, payload, { evaluate }))
+              yield* loops.wake(ctx.sessionID, { source: "watch_pr", ids }, payload, { evaluate })
             }).pipe(Effect.ignore)
           const info = yield* background.start({
             type: "watch_pr",

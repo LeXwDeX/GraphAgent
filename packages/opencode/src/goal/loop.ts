@@ -36,7 +36,7 @@ export interface Interface {
     match: Goal.WakeMatch,
     payload?: string,
     options?: { readonly evaluate?: boolean },
-  ) => Effect.Effect<boolean, never, Scope.Scope>
+  ) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/GoalLoop") {}
@@ -549,6 +549,10 @@ const serviceLayer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("GoalLoop.state")(function* (ctx) {
+        // Wakes arrive from tool and background-job fibers whose scopes close
+        // right after the wake. Evaluations they start must live as long as
+        // this instance, like the ones started by the idle subscription.
+        const scope = yield* Scope.Scope
         // startImmediately runs the stream through its PubSub subscription
         // before init returns (same contract as EventV2Bridge startup), so an
         // idle published immediately after boot cannot race subscription.
@@ -612,7 +616,7 @@ const serviceLayer = Layer.effect(
         // armed either way, so the event-driven path is unaffected.
         if (!scanDirectoryRef.current) {
           yield* Effect.logError("goal startup scan skipped: instance directory not resolved before state build")
-          return {}
+          return { scope }
         }
         const snapshot = yield* goal.listActiveSessions(scanDirectoryRef.current).pipe(
           Effect.catchCause((cause) => {
@@ -656,7 +660,7 @@ const serviceLayer = Layer.effect(
             )
           }
         }).pipe(Effect.repeat(Schedule.spaced(Duration.seconds(30))), Effect.forkScoped({ startImmediately: true }))
-        return {}
+        return { scope }
       }),
     )
 
@@ -832,7 +836,10 @@ const serviceLayer = Layer.effect(
         clearRetryDedupe()
         return
       }
-      const skipJudge = suppressJudge || typeof errorOutcome === "object" || intent?.kind === "progress"
+      // A declared `progress` intent still goes through the commit below: it
+      // skips only the judge LLM call, so every work boundary spends a turn
+      // and the max_turns budget keeps bounding the loop.
+      const skipJudge = suppressJudge || typeof errorOutcome === "object"
       if (!skipJudge) {
         // An undeclared intent falls back to the legacy prose judge; record it
         // so the fallback is observable rather than silent.
@@ -859,7 +866,9 @@ const serviceLayer = Layer.effect(
         // permanently "active" with no continuation — the agent appeared to
         // stop working on its own.
         const callLLM = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoopJudgeLLM))
-        const judgeText = intent?.kind === "done" ? intent.evidence : preempted ? "" : responseText
+        const declaredProgress = intent?.kind === "progress" && !preempted
+        const judgeText =
+          intent?.kind === "done" ? intent.evidence : preempted || declaredProgress ? "" : responseText
         const verdict = judgeText
           ? yield* GoalJudge.run(
               goalState.goal,
@@ -911,7 +920,9 @@ const serviceLayer = Layer.effect(
             ? undefined
             : {
                 verdict: "continue" as const,
-                reason: "上一轮无文本输出（纯工具调用），跳过判定直接继续",
+                reason: declaredProgress
+                  ? "agent 声明 progress，跳过判定直接继续"
+                  : "上一轮无文本输出（纯工具调用），跳过判定直接继续",
                 parseFailed: false,
               }
 
@@ -1399,7 +1410,8 @@ const serviceLayer = Layer.effect(
         return false
       }
       if (options?.evaluate === false) return true
-      yield* triggerEvaluation(sessionID).pipe(Effect.catchCause(() => Effect.void))
+      const { scope } = yield* InstanceState.get(state)
+      yield* triggerEvaluation(sessionID).pipe(Scope.provide(scope), Effect.catchCause(() => Effect.void))
       return true
     })
 

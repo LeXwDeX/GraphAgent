@@ -1,5 +1,5 @@
-import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { describe, expect, test } from "bun:test"
+import { Effect, Layer, Schema } from "effect"
 import { Goal } from "@/goal/goal"
 import { GoalState } from "@/goal/state"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -7,6 +7,7 @@ import { SessionStatus } from "@/session/status"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
+import { Parameters as GoalToolParameters } from "@/tool/goal"
 
 const testLayer = Goal.layer.pipe(
   Layer.provide(SessionStatus.defaultLayer),
@@ -192,4 +193,14 @@ describe("goal intent and waiting", () => {
       expect(loaded?.status).toBe("waiting")
     }),
   )
+
+  test("the goal tool accepts only wait sources with a wake producer", () => {
+    const decode = Schema.decodeUnknownSync(GoalToolParameters)
+    for (const source of ["watch_pr", "background_job"] as const) {
+      expect(decode({ action: "intent", intent: "await", wait_source: source, wait_id: "x" }).wait_source).toBe(source)
+    }
+    for (const source of ["hook", "timer", "dag"]) {
+      expect(() => decode({ action: "intent", intent: "await", wait_source: source, wait_id: "x" })).toThrow()
+    }
+  })
 })

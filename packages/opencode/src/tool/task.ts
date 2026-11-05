@@ -439,9 +439,7 @@ export const TaskTool = Tool.define(
           const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
           const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
           if (!loops) return
-          yield* Effect.scoped(
-            loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate }),
-          )
+          yield* loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate })
         }).pipe(Effect.ignore)
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
