@@ -681,7 +681,12 @@ export const ShellTool = Tool.define(
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
 
-          if (exit.kind !== "exit") {
+          if (exit.kind === "exit") {
+            // The process can exit before the reader drains stdout. Join it so
+            // the final lines reach the truncation buffer; a child that keeps
+            // the pipe open is bounded by the timeout.
+            yield* Fiber.join(readerFiber).pipe(Effect.catchCause(() => Effect.void), Effect.timeoutOption("5 seconds"))
+          } else {
             // A killed shell can leave a child holding stdout open (for example a
             // sleeping pipeline), so joining the reader may outlive session
             // cleanup and turn this result into a forced abort. Stop the reader
