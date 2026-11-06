@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "54dd3555-1173-4ebf-a8ca-a0b7a5b16829",
+  "id": "7f1d1b7b-3d21-4915-a794-c8321a30e324",
   "prevIds": [
-    "6830d038-b638-43f5-a13f-635eb5b0676f"
+    "54dd3555-1173-4ebf-a8ca-a0b7a5b16829"
   ],
   "ddl": [
     {
@@ -108,10 +108,6 @@
     },
     {
       "name": "todo",
-      "entityType": "tables"
-    },
-    {
-      "name": "session_share",
       "entityType": "tables"
     },
     {
@@ -2295,16 +2291,6 @@
       "table": "session"
     },
     {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "share_url",
-      "entityType": "columns",
-      "table": "session"
-    },
-    {
       "type": "integer",
       "notNull": false,
       "autoincrement": false,
@@ -2555,66 +2541,6 @@
       "table": "todo"
     },
     {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "session_id",
-      "entityType": "columns",
-      "table": "session_share"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "id",
-      "entityType": "columns",
-      "table": "session_share"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "secret",
-      "entityType": "columns",
-      "table": "session_share"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "url",
-      "entityType": "columns",
-      "table": "session_share"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_created",
-      "entityType": "columns",
-      "table": "session_share"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_updated",
-      "entityType": "columns",
-      "table": "session_share"
-    },
-    {
       "columns": [
         "project_id"
       ],
@@ -2856,21 +2782,6 @@
     },
     {
       "columns": [
-        "session_id"
-      ],
-      "tableTo": "session",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "nameExplicit": false,
-      "name": "fk_session_share_session_id_session_id_fk",
-      "entityType": "fks",
-      "table": "session_share"
-    },
-    {
-      "columns": [
         "email",
         "url"
       ],
@@ -3105,15 +3016,6 @@
       "nameExplicit": false,
       "name": "session_pk",
       "table": "session",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "session_id"
-      ],
-      "nameExplicit": false,
-      "name": "session_share_pk",
-      "table": "session_share",
       "entityType": "pks"
     },
     {
