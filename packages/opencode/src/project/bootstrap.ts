@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Plugin } from "../plugin"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 import { Format } from "../format"
 import { LSP } from "@/lsp/lsp"
 import { Snapshot } from "../snapshot"
@@ -36,7 +36,7 @@ export const layer = Layer.effect(
     const dagPublisher = yield* DagSummaryPublisher.Service
     const format = yield* Format.Service
     const lsp = yield* LSP.Service
-    const plugin = yield* Plugin.Service
+    const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
     const project = yield* Project.Service
     const snapshot = yield* Snapshot.Service
     const vcs = yield* Vcs.Service
@@ -47,8 +47,8 @@ export const layer = Layer.effect(
       yield* Effect.logInfo("bootstrapping", { directory: ctx.directory })
       // everything depends on config so eager load it for nice traces
       yield* config.get()
-      // Plugin can mutate config so it has to be initialized before anything else.
-      yield* plugin.init()
+      // Provider adapters own per-instance construction and must initialize before other services.
+      if (adapters._tag === "Some") yield* adapters.value.init()
       // These services own any internal background work; bootstrap awaits their
       // lightweight initialization. MEMORY stays synchronous internally, so
       // bootstrap explicitly schedules it below on the instance scope.
@@ -98,7 +98,6 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
     DagSummaryPublisher.defaultLayer,
     Format.defaultLayer,
     LSP.defaultLayer,
-    Plugin.defaultLayer,
     Project.defaultLayer,
       Snapshot.defaultLayer,
     Vcs.defaultLayer,
@@ -111,7 +110,6 @@ export const node = LayerNode.make(layer, [
   DagSummaryPublisher.node,
   Format.node,
   LSP.node,
-  Plugin.node,
   Project.node,
   Snapshot.node,
   Vcs.node,

@@ -18,6 +18,7 @@ import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 import { Permission } from "@/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -211,6 +212,7 @@ const live: Layer.Layer<
     const config = yield* Config.Service
     const provider = yield* Provider.Service
     const plugin = yield* Plugin.Service
+    const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
     const perm = yield* Permission.Service
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
@@ -244,7 +246,7 @@ const live: Layer.Layer<
         provider: item,
         cfg,
         auth: info,
-        plugin,
+         ...(adapters._tag === "Some" ? { adapters: adapters.value } : {}),
         flags,
         isWorkflow,
       })
@@ -793,6 +795,7 @@ export const node = LayerNode.make(layer, [
   Config.node,
   Provider.node,
   Plugin.node,
+  ProviderAdapters.node,
   Permission.node,
   EventV2Bridge.node,
   llmClient,

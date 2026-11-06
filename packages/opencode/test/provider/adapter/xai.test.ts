@@ -5,8 +5,8 @@ import {
   pollDeviceCodeToken,
   requestDeviceCode,
   XaiAuthPlugin,
-} from "../../src/plugin/xai"
-import { OAUTH_DUMMY_KEY } from "../../src/auth"
+} from "../../../src/plugin/xai"
+import { OAUTH_DUMMY_KEY } from "../../../src/auth"
 
 function makeJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { experimentalWebSocketsEnabled } from "../../src/plugin"
+import { experimentalWebSocketsEnabled } from "../../../src/plugin"
 
 describe("plugin.openai.websocket rollout", () => {
   test("enables websockets by default only on pre-release channels", () => {

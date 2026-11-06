@@ -8,8 +8,8 @@ import {
   extractAccountId,
   renderOAuthError,
   type IdTokenClaims,
-} from "../../src/plugin/openai/codex"
-import { TITLE_HEADER } from "../../src/plugin/openai/ws-pool"
+} from "../../../src/plugin/openai/codex"
+import { TITLE_HEADER } from "../../../src/provider/openai-ws/ws-pool"
 
 function createTestJwt(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")

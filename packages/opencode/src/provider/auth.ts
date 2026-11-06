@@ -1,13 +1,13 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import type { AuthOAuthResult, Hooks } from "@opencode-ai/plugin"
+import type { AuthHook, AuthOAuthResult } from "@/provider/adapter/types"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Option } from "effect"
 import { Auth } from "@/auth"
 import { InstanceState } from "@/effect/instance-state"
 import { optionalOmitUndefined } from "@opencode-ai/core/schema"
-import { Plugin } from "../plugin"
+import { ProviderAdapters } from "./adapter/registry"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { Array as Arr, Effect, Layer, Record, Result, Context, Schema } from "effect"
+import { Effect, Layer, Record, Context, Schema } from "effect"
 
 const When = Schema.Struct({
   key: Schema.String,
@@ -86,7 +86,7 @@ export class ValidationFailed extends Schema.TaggedError<ValidationFailed>()("Pr
 
 export type Error = Auth.AuthError | OauthMissing | OauthCodeMissing | OauthCallbackFailed | ValidationFailed
 
-type Hook = NonNullable<Hooks["auth"]>
+type Hook = AuthHook
 
 export interface Interface {
   readonly methods: () => Effect.Effect<Methods>
@@ -107,22 +107,15 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Pr
 
 export const use = serviceUse(Service)
 
-export const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> = Layer.effect(
+export const layer: Layer.Layer<Service, never, Auth.Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
     const auth = yield* Auth.Service
-    const plugin = yield* Plugin.Service
+    const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
     const state = yield* InstanceState.make<State>(
       Effect.fn("ProviderAuth.state")(function* () {
-        const plugins = yield* plugin.list()
         return {
-          hooks: Record.fromEntries(
-            Arr.filterMap(plugins, (x) =>
-              x.auth?.provider !== undefined
-                ? Result.succeed([ProviderV2.ID.make(x.auth.provider), x.auth] as const)
-                : Result.failVoid,
-            ),
-          ),
+          hooks: adapters._tag === "Some" ? yield* adapters.value.authHooks() : {},
           pending: new Map<ProviderV2.ID, AuthOAuthResult>(),
         }
       }),
@@ -231,9 +224,9 @@ export const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> =
 )
 
 export const defaultLayer = Layer.suspend(() =>
-  layer.pipe(Layer.provide(Auth.defaultLayer), Layer.provide(Plugin.defaultLayer)),
+  layer.pipe(Layer.provide(Auth.defaultLayer)),
 )
 
-export const node = LayerNode.make(layer, [Auth.node, Plugin.node])
+export const node = LayerNode.make(layer, [Auth.node])
 
 export * as ProviderAuth from "./auth"

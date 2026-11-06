@@ -6,7 +6,7 @@ import { Effect, Fiber, Layer, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { LLMNative } from "@/session/llm/native-request"
 import { LLMNativeRuntime } from "@/session/llm/native-runtime"
-import { OpenAIWebSocketPool, TITLE_HEADER } from "@/plugin/openai/ws-pool"
+import { OpenAIWebSocketPool, TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
 import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
 

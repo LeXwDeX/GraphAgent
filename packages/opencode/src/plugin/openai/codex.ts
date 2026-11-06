@@ -4,7 +4,7 @@ import { OAUTH_DUMMY_KEY } from "../../auth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
-import { OpenAIWebSocketPool } from "./ws-pool"
+import { OpenAIWebSocketPool } from "@/provider/openai-ws/ws-pool"
 import { escapeHtml } from "@/util/html"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -455,8 +455,10 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
             }
 
             const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
+            let access = currentAuth.access
+            let accountId = authWithAccount.accountId
 
-            if (!currentAuth.access || currentAuth.expires < Date.now()) {
+            if (!access || currentAuth.expires < Date.now()) {
               if (!refreshPromise) {
                 refreshPromise = refreshAccessToken(currentAuth.refresh, issuer)
                   .then(async (tokens) => {
@@ -482,8 +484,8 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
               }
 
               const refreshed = await refreshPromise
-              currentAuth.access = refreshed.access
-              authWithAccount.accountId = refreshed.accountId
+              access = refreshed.access
+              accountId = refreshed.accountId
             }
 
             const headers = new Headers()
@@ -500,9 +502,9 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
                 }
               }
             }
-            headers.set("authorization", `Bearer ${currentAuth.access}`)
-            if (authWithAccount.accountId) {
-              headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
+            headers.set("authorization", `Bearer ${access}`)
+            if (accountId) {
+              headers.set("ChatGPT-Account-Id", accountId)
             }
 
             const parsed =
