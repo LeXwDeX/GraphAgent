@@ -42,6 +42,7 @@ When a file operation is denied, record the exact action and error before changi
 - Typecheck: `bun run typecheck` uses Turbo to run package scripts. Most use `tsgo --noEmit`; app and desktop use `tsgo -b`. Use the package scripts.
 - Build: `cd packages/opencode && bun run build --single` builds the host CLI. Other packages own their build scripts; the root has no `build` script. A successful build does not replace typechecking.
 - Lint: `bun run lint` = `oxlint` with a `--max-warnings` ratchet. The ratchet only tightens: fix warnings, never raise the cap (contract: `_lint_ratchet_note` in `package.json` and the `.oxlintrc.json` header).
+- Private hosts: `bun run check:hosts` scans tracked files and `bun.lock`; run it before every commit. `bun.lock` may only contain public registry URLs. Use `bun run check:hosts:test` for its unit tests.
 - Tests: do not run bare `bun test` or `bun run test` at the root; both are guarded. Run Bun tests inside a package, preferably through its `test` script. Workspace CI uses `bun turbo test` from the root. The opencode and TUI test scripts pass `--timeout 30000`. App tests use `test:unit` / `test:browser` with the package's happydom preload.
 - macOS browser validation: from `packages/web`, use `bun run test:browser:webkit` for the shared Markdown WebKit regression. Use the installed Playwright SDK and its matching browser revision; install a missing WebKit through that same installed CLI. Do not substitute another cached revision or launch `Playwright.app` directly: the SDK invokes `pw_run.sh` with the bundled frameworks. Do not change system or sandbox security policies to launch it.
 - DAG gate: `cd packages/opencode && bun run test:dag-core` — behavior/coverage gate; run it before merging changes to DAG state-machine or persistence code.
@@ -66,6 +67,7 @@ Host details live only in the maintainer's global agent instructions and the unt
 
 ### Local verification scope before push / PR
 
+- Every change: run `bun run check:hosts` before commit; `bun.lock` may only contain public registry URLs.
 - Behavior changes: run the affected package's typecheck and focused regression tests, then the applicable gates below. Record actual commands and results. For documentation-only changes, check facts, links, formatting, and the diff; runtime tests are unnecessary.
 - Database changes: from `packages/core`, run `bun run migration --check` and the affected migration tests. Include empty-database and existing-database cases.
 - DAG lifecycle or persistence changes: run the DAG gate (Commands), plus affected replay, attempt, cancellation, recovery, and lease tests.

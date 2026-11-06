@@ -760,7 +760,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 // the in-process server, so no external HTTP server is needed.
 export async function runInteractiveLocalMode(input: RunLocalInput, deps?: RunRuntimeDeps): Promise<void> {
   const sdk = createOpencodeClient({
-    baseUrl: "http://opencode.internal",
+    baseUrl: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
     fetch: input.fetch,
     directory: input.directory,
   })

@@ -152,7 +152,7 @@ export {}
 //           provider: {
 //             gitlab: {
 //               options: {
-//                 instanceUrl: "https://gitlab.company.internal",
+//                 instanceUrl: "https://gitlab.company.example.com",
 //                 apiKey: "glpat-internal-token",
 //               },
 //             },
@@ -164,12 +164,12 @@ export {}
 //   await withTestInstance({
 //     directory: tmp.path,
 //     init: async () => {
-//       Env.set("GITLAB_INSTANCE_URL", "https://gitlab.company.internal")
+//       Env.set("GITLAB_INSTANCE_URL", "https://gitlab.company.example.com")
 //     },
 //     fn: async () => {
 //       const providers = await list()
 //       expect(providers[ProviderID.gitlab]).toBeDefined()
-//       expect(providers[ProviderID.gitlab].options?.instanceUrl).toBe("https://gitlab.company.internal")
+//       expect(providers[ProviderID.gitlab].options?.instanceUrl).toBe("https://gitlab.company.example.com")
 //     },
 //   })
 // })

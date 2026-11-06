@@ -1143,7 +1143,7 @@ export const RunCommand = effectCmd({
           { preconnect: globalThis.fetch.preconnect },
         )
         const sdk = createOpencodeClient({
-          baseUrl: "http://opencode.internal",
+          baseUrl: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
           fetch: fetchFn,
           directory,
         })

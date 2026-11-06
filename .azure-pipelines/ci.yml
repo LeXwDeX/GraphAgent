@@ -1,10 +1,12 @@
 # ============================================================================
 # CI (Azure Pipelines)
 # ----------------------------------------------------------------------------
-# Purpose : Lint, typecheck, DAG core gate, unit/HttpAPI/generated-code tests
-#           and Playwright E2E on Linux (Windows E2E runs in GitHub Actions)
+# Purpose : Private-host scan, lint, typecheck, DAG core gate, unit/HttpAPI/
+#           generated-code tests and Playwright E2E on Linux (Windows E2E runs
+#           in GitHub Actions)
 # Trigger : Push to `main`, PRs targeting `main`, manual run
-# Jobs    : Typecheck               — lint, typecheck, DAG core gate, oc tests
+# Jobs    : Typecheck               — private-host scan, its unit test, lint,
+#                                     typecheck, DAG core gate, oc tests
 #           Unit Tests (workspace)  — workspace tests except opencode, Go,
 #                                     VS Code and generated-code checks
 #           Unit Tests (opencode N/4) — opencode tests in parallel shards
@@ -63,6 +65,14 @@ jobs:
       - template: templates/toolchain.yml
       - bash: node --test script/toolchain.test.mjs script/ci-azure.test.mjs && bash script/setup-gh.test.sh
         displayName: Test toolchain pins and pipeline definitions
+      # Rule 3 reads the optional PRIVATE_HOST_PATTERNS secret; an undefined
+      # variable stays literal and the scanner reports rule 3 as skipped.
+      - bash: bun run check:hosts
+        displayName: Check private hosts
+        env:
+          PRIVATE_HOST_PATTERNS: $(PRIVATE_HOST_PATTERNS)
+      - bash: bun run check:hosts:test
+        displayName: Test private host scanner
       - bash: bun run lint
         displayName: Run lint
       - bash: bun typecheck

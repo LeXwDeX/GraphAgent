@@ -103,7 +103,7 @@ describe("RuntimeAsset", () => {
         mirror: () =>
           Effect.fail(
             new RuntimeAsset.CandidateUnavailable({
-              reason: "download failed: https://user:secret@mirror.internal/rg?token=sensitive&file=rg",
+              reason: "download failed: https://user:secret@mirror.example.com/rg?token=sensitive&file=rg",
             }),
           ),
       }),
@@ -112,7 +112,7 @@ describe("RuntimeAsset", () => {
     const result = await Effect.runPromise(runtime.resolve(descriptor(false), { sources: ["mirror"] }))
     const reason = result._tag === "Unavailable" ? result.attempts[0]?.reason : ""
 
-    expect(reason).toContain("mirror.internal/rg")
+    expect(reason).toContain("mirror.example.com/rg")
     expect(reason).toContain("file=rg")
     expect(reason).not.toContain("user")
     expect(reason).not.toContain("secret")

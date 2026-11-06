@@ -3,7 +3,7 @@ const worker = new Worker(new URL("../../../src/cli/tui/worker.ts", import.meta.
 const client = Rpc.client<typeof import("../../../src/cli/tui/worker").rpc>(worker)
 try {
   const response = await client.call("fetch", {
-    url: process.env.LIFECYCLE_V2 === "1" ? "http://opencode.internal/api/session" : "http://opencode.internal/session",
+    url: process.env.LIFECYCLE_V2 === "1" ? "http://opencode.example.com/api/session" : "http://opencode.example.com/session",
     method: "POST",
     headers: { "content-type": "application/json", "x-opencode-directory": process.env.LIFECYCLE_DIRECTORY! },
     body:
@@ -18,7 +18,7 @@ try {
     await (await import("node:fs/promises")).mkdir(destination)
     const session = JSON.parse(response.body)
     const moved = await client.call("fetch", {
-      url: "http://opencode.internal/experimental/control-plane/move-session",
+      url: "http://opencode.example.com/experimental/control-plane/move-session",
       method: "POST",
       headers: { "content-type": "application/json", "x-opencode-directory": directory },
       body: JSON.stringify({ sessionID: session.id, destination: { directory: destination } }),

@@ -271,7 +271,7 @@ export const TuiThreadCommand = cmd({
             events: undefined,
           }
         : {
-            url: "http://opencode.internal",
+            url: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
             fetch: createWorkerFetch(client),
             events: createEventSource(client),
           }

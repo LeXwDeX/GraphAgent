@@ -37,7 +37,9 @@ export const create = Effect.fn("OpenCode.create")(function* () {
       return HttpServerResponse.toClientResponse(response, { request })
     }, Effect.scoped),
   )
-  const client = yield* OpenCode.make({ baseUrl: "http://opencode.local" }).pipe(
+  const client = yield* OpenCode.make({
+    baseUrl: "http://opencode.local", // check-private-hosts: allow in-process dummy base URL
+  }).pipe(
     Effect.provideService(HttpClient.HttpClient, httpClient),
   )
   return {
