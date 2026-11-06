@@ -53,7 +53,7 @@ for (const version of ["v1", "v2"] as const)
         command: `printf '%s:%s' "$HOOK_SESSION_VALUE" "\${HOME-unset}" > '${output}'`,
       })
       yield* llm.text("DONE")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -103,7 +103,7 @@ cliIt.live("explicit shell preserves plugin PATH with no hooks configured", ({ h
         JSON.stringify({ plugin: ["file://" + plugin], shell: "/bin/sh", permission: { bash: "allow" } }),
       )
     })
-    const server = yield* opencode.serve({ env: { OPENCODE_PURE: "0" } })
+    const server = yield* opencode.host({ env: { OPENCODE_PURE: "0" } })
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

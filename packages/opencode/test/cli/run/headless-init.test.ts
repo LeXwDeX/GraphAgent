@@ -107,7 +107,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
     ({ llm, home, opencode }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
-        const server = yield* opencode.serve({ env: { OPENCODE_DB: "" } })
+        const server = yield* opencode.host({ env: { OPENCODE_DB: "" } })
         const client = yield* HttpClient.HttpClient
         const headers = { "x-opencode-directory": encodeURIComponent(home) }
 
@@ -131,7 +131,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
     ({ llm, home, opencode }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
-        const server = yield* opencode.serve({ env: { OPENCODE_DB: "" } })
+        const server = yield* opencode.host({ env: { OPENCODE_DB: "" } })
         const client = yield* HttpClient.HttpClient
         const headers = { "x-opencode-directory": encodeURIComponent(home) }
 

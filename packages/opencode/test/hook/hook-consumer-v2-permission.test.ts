@@ -66,7 +66,7 @@ for (const scenario of ["write", "bash", "write-deny", "bash-deny"] as const) {
           : { command: "printf original >> original.txt" },
       )
       yield* llm.text("V2_DONE")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, method = "GET", body?: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

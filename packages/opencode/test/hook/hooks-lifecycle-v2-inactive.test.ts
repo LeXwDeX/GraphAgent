@@ -28,7 +28,7 @@ cliIt.live("V2 inactive prompt and tool hooks leave the startup transcript untou
         }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body?: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

@@ -89,7 +89,7 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             return true
           }, reply().hang())
         }
-        const server = yield* opencode.serve({ hostname: "127.0.0.1", readyTimeoutMs: 30_000 })
+        const server = yield* opencode.host({ readyTimeoutMs: 30_000 })
         yield* Effect.promise(async () => {
           const request = async (route: string, body?: unknown): Promise<any> => {
             const response = await fetch(server.url + route, {

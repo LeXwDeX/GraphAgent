@@ -46,7 +46,7 @@ cliIt.live("V2 Stop async exit-2 rewakes with an env-substituted provider URL", 
     })
     yield* llm.text("FIRST_DONE")
     yield* llm.text("SECOND_DONE")
-    const server = yield* opencode.serve({ env: { GRAPHAGENT_969_TEST_URL: llm.url } })
+    const server = yield* opencode.host({ env: { GRAPHAGENT_969_TEST_URL: llm.url } })
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const created = yield* Effect.promise(() =>
       fetch(server.url + "/api/session", {
@@ -132,8 +132,7 @@ cliIt.live("a failed V2 rewake reports its failure and retains callback context"
     })
     yield* llm.text("FIRST_DONE")
     const v1 = testProviderConfig(llm.url)
-    const server = yield* opencode.serve({
-      extraArgs: ["--print-logs"],
+    const server = yield* opencode.host({
       env: {
         OPENCODE_CONFIG_CONTENT: JSON.stringify({
           ...v1,
@@ -227,7 +226,7 @@ cliIt.live(
       })
       yield* llm.text("FIRST_DONE")
       yield* llm.text("SECOND_DONE")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const headers = { "content-type": "application/json", "x-opencode-directory": home }
       const created = yield* Effect.promise(() =>
         fetch(server.url + "/api/session", {
@@ -346,7 +345,7 @@ cliIt.live("a new V2 user prompt invalidates the earlier asynchronous Stop callb
     })
     yield* llm.text("FIRST_USER_DONE")
     yield* llm.text("SECOND_USER_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const created = yield* Effect.promise(() =>
       fetch(server.url + "/api/session", {

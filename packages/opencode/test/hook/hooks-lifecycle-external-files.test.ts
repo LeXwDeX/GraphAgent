@@ -25,7 +25,7 @@ cliIt.live(
           JSON.stringify({ SessionStart: [{ hooks: [entry] }], FileChanged: [{ hooks: [entry] }] }),
         )
       })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const create = Effect.promise(async () => {
         const response = await fetch(server.url + "/session", {
           method: "POST",

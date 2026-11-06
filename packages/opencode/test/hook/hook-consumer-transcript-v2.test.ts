@@ -40,7 +40,7 @@ cliIt.live(
       })
       yield* llm.tool("read", { path: "actual-missing-transcript-file.txt" })
       yield* llm.text("READ_ERROR_COMPLETE")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, method = "GET", body?: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

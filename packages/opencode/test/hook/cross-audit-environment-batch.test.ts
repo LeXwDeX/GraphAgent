@@ -51,7 +51,7 @@ cliIt.live("V2 PostToolBatch tool_response is the model-serialized tool result",
     })
     yield* llm.tool("read", { path: source })
     yield* llm.text("BATCH_SERIALIZATION_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body?: object) =>
       fetch(server.url + route, {
         method: body ? "POST" : "GET",

@@ -22,7 +22,7 @@ cliIt.live("V2 HTTP prompt admission runs UserPromptSubmit exactly once per dura
         }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, method: string, body?: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

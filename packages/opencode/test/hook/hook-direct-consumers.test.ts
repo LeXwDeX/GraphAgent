@@ -22,7 +22,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
         JSON.stringify({ PreToolUse: hooks, PermissionRequest: hooks, PostToolUse: hooks }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -86,7 +86,7 @@ cliIt.live("direct shell respects configured deny and never emits auto-only Perm
         }),
       ),
     )
-    const server = yield* opencode.serve({ env: { OPENCODE_PERMISSION: JSON.stringify({ bash: "deny" }) } })
+    const server = yield* opencode.host({ env: { OPENCODE_PERMISSION: JSON.stringify({ bash: "deny" }) } })
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -128,7 +128,7 @@ cliIt.live("direct shell reports a real spawn failure through PostToolUseFailure
         JSON.stringify({ PreToolUse: hooks, PostToolUse: hooks, PostToolUseFailure: hooks }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

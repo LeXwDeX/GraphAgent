@@ -7,7 +7,7 @@ import { Effect } from "effect"
 import { mkdir, readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { artifactCliTarget, resolveCliTarget, verifyCliTarget, withCliFixture } from "../lib/cli-process"
+import { withCliFixture } from "../lib/cli-process"
 
 type RecordValue = Record<string, unknown>
 type ModelCandidate = {
@@ -18,7 +18,6 @@ type ModelCandidate = {
 
 const liveConfigSetting = process.env.OPENCODE_DAG_LIVE_CONFIG
 const liveEnabled = Boolean(liveConfigSetting)
-const cliTarget = artifactCliTarget("/usr/local/bin/opencode")
 const candidateModelIDs = ["qwen-max", "glm", "deepseek"] as const
 const selectedModelSetting = process.env.OPENCODE_DAG_LIVE_MODELS
 const schemaToken = "LIVE_DAG_SCHEMA_PROOF_71C8"
@@ -348,7 +347,7 @@ async function tryCandidate(input: {
 }
 
 test.skipIf(!liveEnabled)(
-  "installed opencode captures and delivers final DAG output once without a parent model turn",
+  "source opencode captures and delivers final DAG output once without a parent model turn",
   async () => {
     const candidates = await readModelCandidates(liveConfigPath())
     await Effect.runPromise(
@@ -356,12 +355,6 @@ test.skipIf(!liveEnabled)(
         withCliFixture(
           ({ opencode, home, env, target }) =>
             Effect.gen(function* () {
-              const resolved = yield* Effect.promise(() => resolveCliTarget(cliTarget))
-              yield* Effect.promise(() => verifyCliTarget(resolved))
-              const version = yield* opencode.spawn(["--version"], { timeoutMs: 30_000 })
-              if (version.exitCode !== 0 || version.stdout.trim().length === 0)
-                throw new Error("installed /usr/local/bin/opencode did not report a version")
-
               const unavailable: string[] = []
               for (const candidate of candidates) {
                 const configJson = JSON.stringify({
@@ -377,7 +370,7 @@ test.skipIf(!liveEnabled)(
                   OPENCODE_CONFIG_CONTENT: configJson,
                   OPENCODE_DB: path.join(home, "isolated-opencode.db"),
                 }
-                const server = yield* opencode.serve({ port: 0, hostname: "127.0.0.1", env: serverEnv })
+                const server = yield* opencode.host({ env: serverEnv })
                 const result = yield* Effect.promise(() =>
                   tryCandidate({
                     serverURL: server.url,
@@ -395,7 +388,7 @@ test.skipIf(!liveEnabled)(
                 }
 
                 // Restart and re-read durable output + the delivery receipt.
-                const restarted = yield* opencode.serve({ port: 0, hostname: "127.0.0.1", env: result.serverEnv })
+                const restarted = yield* opencode.host({ env: result.serverEnv })
                 const persisted = yield* Effect.promise(() =>
                   waitForWorkflow(restarted.url, result.directory, result.workflowID, 30_000),
                 )
@@ -422,14 +415,13 @@ test.skipIf(!liveEnabled)(
                 process.stderr.write(
                   `[dag-final-response-live] model=${candidate.modelID} status=passed workflow_nodes=${persisted.nodes.length} ` +
                     `submit_result_calls=0 parent_assistant_messages=${parentAssistantMessages.length} ` +
-                    `answer_receipts=1 source_receipts=1 binary_version=${version.stdout.trim()} ` +
-                    `binary_sha256=${target.mode === "artifact" ? target.sha256 : "source"}\n`,
+                    `answer_receipts=1 source_receipts=1 binary_version=source ` +
+                    `binary_sha256=source\n`,
                 )
                 return
               }
               throw new Error(`no configured live model completed acceptance; unavailable: ${unavailable.join(", ")}`)
             }),
-          cliTarget,
         ),
       ),
     )

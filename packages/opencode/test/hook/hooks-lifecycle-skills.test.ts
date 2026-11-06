@@ -17,7 +17,7 @@ cliIt.live("SessionStart reloadSkills refreshes an already populated real skill 
         JSON.stringify({ SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })
-    const server = yield* opencode.serve({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "0" } })
+    const server = yield* opencode.host({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "0" } })
     const get = () =>
       Effect.promise(async () => {
         const response = await fetch(server.url + "/skill", { headers: { "x-opencode-directory": home } })

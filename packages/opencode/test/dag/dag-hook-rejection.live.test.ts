@@ -56,9 +56,7 @@ test.skipIf(!setting)(
               compaction: { auto: false },
               reasoningDistillation: { enabled: false },
             }
-            const server = yield* opencode.serve({
-              port: 0,
-              hostname: "127.0.0.1",
+            const server = yield* opencode.host({
               readyTimeoutMs: 30000,
               env: {
                 ...env,

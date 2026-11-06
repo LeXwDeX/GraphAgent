@@ -55,7 +55,7 @@ cliIt.live(
       yield* llm.tool("fixture_pick", {})
       yield* llm.tool("fixture_boom", {})
       yield* llm.text("MCP_AUDIT_DONE")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, method = "GET", body?: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

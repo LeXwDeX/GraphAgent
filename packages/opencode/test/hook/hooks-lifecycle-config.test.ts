@@ -25,7 +25,7 @@ cliIt.live(
           }),
         )
       })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, method: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

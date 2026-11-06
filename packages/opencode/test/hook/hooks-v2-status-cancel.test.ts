@@ -37,7 +37,7 @@ cliIt.live("review V2 interrupt clears client busy status", ({ home, llm, openco
     })
     yield* llm.tool("write", { path: "review-file.txt", content: "fixture" })
     yield* llm.text("DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const request = (route: string, body?: object) =>
       Effect.promise(() =>

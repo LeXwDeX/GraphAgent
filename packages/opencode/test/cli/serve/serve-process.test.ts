@@ -17,7 +17,7 @@ describe("opencode serve (subprocess)", () => {
     "starts, binds a port, and serves /global/health",
     ({ opencode }) =>
       Effect.gen(function* () {
-        const server = yield* opencode.serve()
+        const server = yield* opencode.host()
         expect(server.port).toBeGreaterThan(0)
         expect(server.url).toMatch(/^http:\/\//)
 
@@ -43,7 +43,7 @@ describe("opencode serve (subprocess)", () => {
         // Inner scope so we can observe `.exited` resolving after it closes.
         const exitedPromise = yield* Effect.scoped(
           Effect.gen(function* () {
-            const server = yield* opencode.serve()
+            const server = yield* opencode.host()
             // Capture the Promise, not the resolved value — scope closes after
             // this gen returns, at which point the finalizer kills the child.
             return server.exited

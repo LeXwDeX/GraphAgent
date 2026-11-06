@@ -29,7 +29,7 @@ cliIt.live("V1 SessionStart asyncRewake exit-2 wakes the legacy session", ({ hom
       )
     })
     yield* llm.text("REWAKE_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body?: object) =>
       Effect.promise(async () => {
         const result = await fetch(server.url + route, {

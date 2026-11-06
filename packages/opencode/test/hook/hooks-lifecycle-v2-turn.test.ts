@@ -72,7 +72,7 @@ if(e==="MessageDisplay") process.stdout.write(JSON.stringify({hookSpecificOutput
       yield* llm.tool("read", { path: source })
       yield* llm.text("SECRET first answer")
       yield* llm.text("SECRET final answer")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, method: string, body?: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -191,7 +191,7 @@ cliIt.live(
         )
       })
       yield* llm.error(400, { error: { message: "invalid request shown" } })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const headers = { "content-type": "application/json", "x-opencode-directory": home }
       const created = yield* Effect.promise(() =>
         fetch(server.url + "/api/session", {
@@ -275,7 +275,7 @@ cliIt.live("V2 HTTP loads instruction, skill and agent hooks from their real sou
     yield* llm.text("FIRST_DONE")
     yield* llm.text("SECOND_DONE")
     yield* llm.text("THIRD_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, method: string, body?: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -376,7 +376,7 @@ cliIt.live("V2 rejects defer for a multi-call provider batch and settles both to
     })
     yield* llm.push(reply().toolAt(0, "read", { path: first }).toolAt(1, "read", { path: second }).item())
     yield* llm.text("MULTI_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const created = yield* Effect.promise(() =>
       fetch(server.url + "/api/session", {
@@ -485,7 +485,7 @@ process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolU
           throw new Error(`V2 deferred state ${needle} did not appear`)
         })
       const serveOptions = { env: { OPENCODE_DB: path.join(home, "v2-defer-restart.sqlite") } }
-      const server = yield* opencode.serve(serveOptions)
+      const server = yield* opencode.host(serveOptions)
       const created = yield* request(server.url, "/api/session", "POST", {
         location: { directory: home },
         model: { providerID: "test", id: "test-model" },
@@ -526,7 +526,7 @@ process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolU
         config.agents = { build: { permissions: [{ action: "read", resource: "*", effect: "deny" }] } }
         await fs.writeFile(configPath, JSON.stringify(config))
       })
-      const unavailableServer = yield* opencode.serve(serveOptions)
+      const unavailableServer = yield* opencode.host(serveOptions)
       const unavailable = yield* request(unavailableServer.url, `/api/session/${id}/resume`, "POST")
       expect(unavailable.status).toBe(204)
       const unavailableContext = yield* context(unavailableServer.url, id)
@@ -558,7 +558,7 @@ process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolU
         await writeLocalModel(home, llm.url)
         await fs.writeFile(allow, "yes")
       })
-      const restarted = yield* opencode.serve(serveOptions)
+      const restarted = yield* opencode.host(serveOptions)
       const resumed = yield* request(restarted.url, `/api/session/${id}/resume`, "POST")
       expect(resumed.status).toBe(204)
       const finished = yield* waitFor(restarted.url, id, "AFTER_RESUME")
