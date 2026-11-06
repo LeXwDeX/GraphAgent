@@ -88,11 +88,14 @@ describe("tool parameters", () => {
     })
 
     test("keeps repeated allOf constraints instead of dropping duplicates", () => {
+      // Effect 4.1.2 only serializes a pattern check when its RegExp carries
+      // the `u` flag. The first repeated pattern is hoisted to `pattern`; the
+      // rest stay in `allOf`. Both constraints must survive the wire shape.
       expect(
         toJsonSchema(
-          Schema.Struct({ value: Schema.String.check(Schema.isPattern(/^a/)).check(Schema.isPattern(/z$/)) }),
+          Schema.Struct({ value: Schema.String.check(Schema.isPattern(/^a/u)).check(Schema.isPattern(/z$/u)) }),
         ),
-      ).toMatchObject({ properties: { value: { allOf: [{ pattern: "^a" }, { pattern: "z$" }] } } })
+      ).toMatchObject({ properties: { value: { type: "string", pattern: "^a", allOf: [{ pattern: "z$" }] } } })
     })
 
     test("bounds bare integer fields to safe integer range", () => {
