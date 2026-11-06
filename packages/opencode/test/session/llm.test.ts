@@ -17,6 +17,7 @@ import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Plugin } from "@/plugin"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 
 import { testEffect } from "../lib/effect"
 import type { Agent } from "../../src/agent/agent"
@@ -57,7 +58,13 @@ const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: stri
   }
 }
 
-const it = testEffect(Layer.mergeAll(LLM.defaultLayer, Provider.defaultLayer))
+// The adapter registry currently lives in the app runtime, but LLM only sees
+// it when the layer graph provides it. Production wires it in `AppLayer`, so
+// the test layer must do the same or adapter hooks (OpenAI output-token
+// stripping) silently do not run.
+const it = testEffect(
+  Layer.mergeAll(LLM.defaultLayer.pipe(Layer.provideMerge(ProviderAdapters.defaultLayer)), Provider.defaultLayer),
+)
 
 // LLM.stream returns a Stream, not an Effect, so we can't use the serviceUse proxy.
 const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain))

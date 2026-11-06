@@ -13,6 +13,7 @@ import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 
 import { Filesystem } from "@/util/filesystem"
 import { LLMEvent, LLMResponse } from "@opencode-ai/llm"
@@ -270,12 +271,22 @@ const modelsFixture = Filesystem.readJson<Record<string, ModelsDev.Provider>>(
 
 function recordedNativeLLMLayer(scenario: RecordedScenario) {
   const auth = authLayer(scenario)
+  // Production provides the adapter registry through AppLayer. Rebuild it over
+  // the scenario auth so OAuth providers get the adapter's API-key loader and
+  // request hooks (otherwise the SDK reports a missing API key).
+  const adapters = ProviderAdapters.layer.pipe(
+    Layer.provide(auth),
+    Layer.provide(Config.defaultLayer),
+    Layer.provide(RuntimeFlags.defaultLayer),
+    Layer.provide(EventV2Bridge.defaultLayer),
+  )
   const provider = Provider.layer.pipe(
     Layer.provide(FSUtil.defaultLayer),
     Layer.provide(Env.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(auth),
     Layer.provide(Plugin.defaultLayer),
+    Layer.provide(adapters),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
@@ -310,6 +321,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
       Layer.provide(Config.defaultLayer),
       Layer.provide(provider),
       Layer.provide(Plugin.defaultLayer),
+      Layer.provide(adapters),
       Layer.provide(recordedClient),
       Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
     ),
