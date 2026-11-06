@@ -223,10 +223,8 @@ export const layer: Layer.Layer<Service, never, Auth.Service> = Layer.effect(
   }),
 )
 
-export const defaultLayer = Layer.suspend(() =>
-  layer.pipe(Layer.provide(Auth.defaultLayer)),
-)
+export const defaultLayer = Layer.suspend(() => layer.pipe(Layer.provide(Auth.defaultLayer)))
 
-export const node = LayerNode.make(layer, [Auth.node])
+export const node = LayerNode.make(layer, [Auth.node, ProviderAdapters.node])
 
 export * as ProviderAuth from "./auth"

@@ -1,12 +1,13 @@
 import { describe, expect } from "bun:test"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer } from "effect"
-import path from "path"
+import { ProviderAdapters } from "@/provider/adapter/registry"
+import type { ProviderAdapter } from "@/provider/adapter/types"
+import type { Provider } from "@/provider/provider"
 import { resetDatabase } from "../fixture/db"
 import { TestInstance } from "../fixture/fixture"
-import { markPluginDependenciesReady } from "../fixture/plugin"
 import { testEffect } from "../lib/effect"
-import { httpApiLayer, request } from "./httpapi-layer"
+import { httpApiLayerWith, request } from "./httpapi-layer"
 
 const testStateLayer = Layer.effectDiscard(
   Effect.acquireRelease(
@@ -15,11 +16,96 @@ const testStateLayer = Layer.effectDiscard(
   ),
 )
 
-const it = testEffect(Layer.mergeAll(testStateLayer, FSUtil.defaultLayer, httpApiLayer))
 const projectOptions = { config: { formatter: false, lsp: false } }
 const providerID = "test-oauth-parity"
 const oauthURL = "https://example.com/oauth"
 const oauthInstructions = "Finish OAuth"
+
+const oauthResult = async () => ({
+  url: oauthURL,
+  method: "code" as const,
+  instructions: oauthInstructions,
+  callback: async () => ({ type: "success" as const, key: "token" }),
+})
+
+const zeroCost = (provider: Provider.Info) => {
+  for (const model of Object.values(provider.models ?? {})) {
+    ;(model as { cost: { input: number; output: number; cache: { read: number; write: number } } }).cost = {
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    }
+  }
+}
+
+const authAdapters: ProviderAdapter[] = [
+  {
+    id: "test.oauth-parity",
+    auth: {
+      provider: providerID,
+      methods: [
+        { type: "api", label: "API key" },
+        { type: "oauth", label: "OAuth", authorize: oauthResult },
+      ],
+    },
+  },
+  {
+    id: "test.oauth-validation",
+    auth: {
+      provider: "test-oauth-validation",
+      methods: [
+        {
+          type: "oauth",
+          label: "OAuth",
+          prompts: [
+            {
+              type: "text",
+              key: "token",
+              message: "Token",
+              validate: (value: string) => (value === "ok" ? undefined : "Token must be ok"),
+            },
+          ],
+          authorize: oauthResult,
+        },
+      ],
+    },
+  },
+  {
+    id: "test.google-auth-loader",
+    auth: {
+      provider: "google",
+      loader: async (_getAuth, provider) => {
+        zeroCost(provider)
+        return { apiKey: "", fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init) }
+      },
+      methods: [{ type: "api", label: "API key" }],
+    },
+  },
+  {
+    id: "test.google-models",
+    provider: {
+      id: "google",
+      models: async (provider) => {
+        const models = Object.fromEntries(
+          Object.entries(provider.models ?? {}).map(([id, model]) => [id, { ...model }]),
+        )
+        provider.name = "mutated-provider"
+        provider.options = { ...provider.options, mutatedByPlugin: true }
+        zeroCost(provider)
+        return models
+      },
+    },
+  },
+]
+
+const adaptersLayer = Layer.succeed(
+  ProviderAdapters.Service,
+  ProviderAdapters.createRegistry(Effect.succeed<readonly ProviderAdapter[]>(authAdapters)),
+)
+
+const it = testEffect(
+  Layer.mergeAll(testStateLayer, httpApiLayerWith([LayerNode.replace(ProviderAdapters.node, adaptersLayer)])),
+)
 
 function providerListHasFetch(list: unknown) {
   if (!Array.isArray(list)) return false
@@ -102,148 +188,6 @@ function requestCallback(input: { providerID: string; method: number; headers: H
   })
 }
 
-function writeProviderAuthPlugin(dir: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FSUtil.Service
-    yield* Effect.promise(() => markPluginDependenciesReady(path.join(dir, ".opencode")))
-
-    yield* fs.writeWithDirs(
-      path.join(dir, ".opencode", "plugin", "provider-oauth-parity.ts"),
-      [
-        "export default {",
-        '  id: "test.provider-oauth-parity",',
-        "  server: async () => ({",
-        "    auth: {",
-        `      provider: "${providerID}",`,
-        "      methods: [",
-        '        { type: "api", label: "API key" },',
-        "        {",
-        '          type: "oauth",',
-        '          label: "OAuth",',
-        "          authorize: async () => ({",
-        `            url: "${oauthURL}",`,
-        '            method: "code",',
-        `            instructions: "${oauthInstructions}",`,
-        "            callback: async () => ({ type: 'success', key: 'token' }),",
-        "          }),",
-        "        },",
-        "      ],",
-        "    },",
-        "  }),",
-        "}",
-        "",
-      ].join("\n"),
-    )
-  })
-}
-
-function writeProviderAuthValidationPlugin(dir: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FSUtil.Service
-    yield* Effect.promise(() => markPluginDependenciesReady(path.join(dir, ".opencode")))
-
-    yield* fs.writeWithDirs(
-      path.join(dir, ".opencode", "plugin", "provider-oauth-validation.ts"),
-      [
-        "export default {",
-        '  id: "test.provider-oauth-validation",',
-        "  server: async () => ({",
-        "    auth: {",
-        '      provider: "test-oauth-validation",',
-        "      methods: [",
-        "        {",
-        '          type: "oauth",',
-        '          label: "OAuth",',
-        "          prompts: [",
-        "            {",
-        '              type: "text",',
-        '              key: "token",',
-        '              message: "Token",',
-        "              validate: (value) => value === 'ok' ? undefined : 'Token must be ok',",
-        "            },",
-        "          ],",
-        "          authorize: async () => ({",
-        `            url: "${oauthURL}",`,
-        '            method: "code",',
-        `            instructions: "${oauthInstructions}",`,
-        "            callback: async () => ({ type: 'success', key: 'token' }),",
-        "          }),",
-        "        },",
-        "      ],",
-        "    },",
-        "  }),",
-        "}",
-        "",
-      ].join("\n"),
-    )
-  })
-}
-
-function writeFunctionOptionsPlugin(dir: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FSUtil.Service
-    yield* Effect.promise(() => markPluginDependenciesReady(path.join(dir, ".opencode")))
-
-    yield* fs.writeWithDirs(
-      path.join(dir, ".opencode", "plugin", "provider-function-options.ts"),
-      [
-        "export default {",
-        '  id: "test.provider-function-options",',
-        "  server: async () => ({",
-        "    auth: {",
-        '      provider: "google",',
-        "      loader: async (_getAuth, provider) => {",
-        "        for (const model of Object.values(provider.models ?? {})) {",
-        "          model.cost = { input: 0, output: 0 }",
-        "        }",
-        "        return {",
-        '        apiKey: "",',
-        "        fetch: async (input, init) => fetch(input, init),",
-        "        }",
-        "      },",
-        "      methods: [{ type: 'api', label: 'API key' }],",
-        "    },",
-        "  }),",
-        "}",
-        "",
-      ].join("\n"),
-    )
-  })
-}
-
-function writeProviderModelsMutationPlugin(dir: string) {
-  return Effect.gen(function* () {
-    const fs = yield* FSUtil.Service
-    yield* Effect.promise(() => markPluginDependenciesReady(path.join(dir, ".opencode")))
-
-    yield* fs.writeWithDirs(
-      path.join(dir, ".opencode", "plugin", "provider-models-mutation.ts"),
-      [
-        "export default {",
-        '  id: "test.provider-models-mutation",',
-        "  server: async () => ({",
-        "    provider: {",
-        '      id: "google",',
-        "      models: async (provider) => {",
-        "        const models = Object.fromEntries(",
-        "          Object.entries(provider.models ?? {}).map(([id, model]) => [id, { ...model }]),",
-        "        )",
-        '        provider.name = "mutated-provider"',
-        "        provider.options = { ...provider.options, mutatedByPlugin: true }",
-        "        for (const model of Object.values(provider.models ?? {})) {",
-        "          model.cost = { input: 0, output: 0 }",
-        "        }",
-        "        return models",
-        "      },",
-        "    },",
-        "  }),",
-        "}",
-        "",
-      ].join("\n"),
-    )
-  })
-}
-
 function setEnvScoped(key: string, value: string) {
   return Effect.acquireRelease(
     Effect.sync(() => {
@@ -305,7 +249,7 @@ describe("provider HttpApi", () => {
         instructions: oauthInstructions,
       })
     }),
-    { ...projectOptions, init: writeProviderAuthPlugin },
+    projectOptions,
     30000,
   )
 
@@ -326,7 +270,7 @@ describe("provider HttpApi", () => {
         data: { field: "token", message: "Token must be ok" },
       })
     }),
-    { ...projectOptions, init: writeProviderAuthValidationPlugin },
+    projectOptions,
     30000,
   )
 
@@ -374,7 +318,7 @@ describe("provider HttpApi", () => {
       expect(hasNonZeroModelCost(providerBody, "all", "google")).toBe(true)
       expect(hasNonZeroModelCost(configBody, "providers", "google")).toBe(true)
     }),
-    { ...projectOptions, init: writeFunctionOptionsPlugin },
+    projectOptions,
   )
 
   it.instance(
@@ -395,6 +339,6 @@ describe("provider HttpApi", () => {
       expect(hasProviderMutationMarker(configBody, "providers", "google")).toBe(false)
       expect(hasNonZeroModelCost(providerBody, "all", "google")).toBe(true)
     }),
-    { ...projectOptions, init: writeProviderModelsMutationPlugin },
+    projectOptions,
   )
 })
