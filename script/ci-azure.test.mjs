@@ -42,6 +42,8 @@ await test("the unit aggregate fails unless every unit job succeeded", () => {
 
 await test("CI runs the gates the GitHub workflows used to run", () => {
   for (const command of [
+    "bun run check:hosts",
+    "bun run check:hosts:test",
     "bun run lint",
     "bun typecheck",
     "bun run test:dag-core",
@@ -58,6 +60,10 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
   ])
     assert(ci.includes(command), command)
   assert.match(ci, /bun run test:httpapi:ci\n\s+displayName: [^\n]+\n\s+workingDirectory: [^\n]+\n\s+timeoutInMinutes: \d+/)
+  assert.match(
+    ci,
+    /bun run check:hosts\n\s+displayName: Check private hosts\n\s+env:\n\s+PRIVATE_HOST_PATTERNS: \$\(PRIVATE_HOST_PATTERNS\)/,
+  )
 })
 
 await test("Azure Pipelines runs development CI and GitHub Actions runs release and Windows E2E", () => {

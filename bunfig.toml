@@ -1,4 +1,6 @@
 [install]
+# Pin the public registry so a user-level mirror cannot leak into bun.lock.
+registry = "https://registry.npmjs.org/"
 exact = true
 # Only install newly resolved package versions published at least 3 days ago.
 minimumReleaseAge = 259200

@@ -443,19 +443,19 @@ aggregator.instance(
           providerID: ProviderV2.ID.make("internal-openai"),
           modelID: ModelV2.ID.make("gpt-5"),
           npm: "@ai-sdk/openai",
-          baseURL: "https://llm-api.example.internal/openai/v1",
+          baseURL: "https://llm-api.example.com/openai/v1",
         },
         {
           providerID: ProviderV2.ID.make("internal-anthropic"),
           modelID: ModelV2.ID.make("claude-sonnet-4-20250514"),
           npm: "@ai-sdk/anthropic",
-          baseURL: "https://llm-api.example.internal/anthropic",
+          baseURL: "https://llm-api.example.com/anthropic",
         },
         {
           providerID: ProviderV2.ID.make("internal-gemini"),
           modelID: ModelV2.ID.make("gemini-2.5-pro"),
           npm: "@ai-sdk/google",
-          baseURL: "https://llm-api.example.internal/gemini/v1beta",
+          baseURL: "https://llm-api.example.com/gemini/v1beta",
         },
       ],
       (item) =>

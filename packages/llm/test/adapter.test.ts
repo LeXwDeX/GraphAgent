@@ -73,7 +73,7 @@ const fake = Route.make({
   endpoint: Endpoint.path("/chat"),
   framing: fakeFraming,
 })
-const configuredFake = fake.with({ endpoint: { baseURL: "https://fake.local" } })
+const configuredFake = fake.with({ endpoint: { baseURL: "https://fake.example.com" } })
 
 const gemini = Route.make({
   id: "gemini-fake",
@@ -81,7 +81,7 @@ const gemini = Route.make({
   endpoint: Endpoint.path("/chat"),
   framing: fakeFraming,
 })
-const configuredGemini = gemini.with({ endpoint: { baseURL: "https://fake.local" } })
+const configuredGemini = gemini.with({ endpoint: { baseURL: "https://fake.example.com" } })
 
 const request = LLM.request({
   id: "req_1",
@@ -138,7 +138,7 @@ describe("llm route", () => {
 
   it.effect("builds models from configured routes", () =>
     Effect.gen(function* () {
-      const configured = fake.with({ provider: "fake-provider", endpoint: { baseURL: "https://fake.local" } })
+      const configured = fake.with({ provider: "fake-provider", endpoint: { baseURL: "https://fake.example.com" } })
 
       expect(configured.model({ id: "fake-model" })).toMatchObject({
         provider: "fake-provider",
@@ -157,7 +157,7 @@ describe("llm route", () => {
             from: () => Effect.succeed({ body: "late-default" }),
           },
         }),
-        endpoint: Endpoint.path("/chat", { baseURL: "https://fake.local" }),
+        endpoint: Endpoint.path("/chat", { baseURL: "https://fake.example.com" }),
         framing: fakeFraming,
       })
 

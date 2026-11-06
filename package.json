@@ -21,7 +21,9 @@
     "random": "echo 'Random script'",
     "sso": "aws sso login --sso-session=opencode --no-browser",
     "test": "echo 'do not run tests from root' && exit 1",
-    "toolchain:check": "node script/toolchain.mjs check --go"
+    "toolchain:check": "node script/toolchain.mjs check --go",
+    "check:hosts": "bun script/check-private-hosts.ts",
+    "check:hosts:test": "cd script && bun test check-private-hosts.test.ts"
   },
   "workspaces": {
     "packages": [

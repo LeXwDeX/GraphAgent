@@ -204,7 +204,7 @@ const FakeAdapter = Route.make({
   id: "fake-echo",
   provider: "fake-echo",
   protocol: FakeProtocol,
-  endpoint: Endpoint.path("/v1/echo", { baseURL: "https://fake.local" }),
+  endpoint: Endpoint.path("/v1/echo", { baseURL: "https://fake.example.com" }),
   auth: Auth.passthrough,
   framing: Framing.sse,
 })
