@@ -56,7 +56,12 @@ const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: stri
   }
 }
 
-const it = testEffect(Layer.mergeAll(LLM.defaultLayer, Provider.defaultLayer))
+const it = testEffect(
+  Layer.mergeAll(
+    LLM.defaultLayer.pipe(Layer.provideMerge(ProviderAdapters.defaultLayer)),
+    Provider.defaultLayer,
+  ),
+)
 
 // LLM.stream returns a Stream, not an Effect, so we can't use the serviceUse proxy.
 const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain))
