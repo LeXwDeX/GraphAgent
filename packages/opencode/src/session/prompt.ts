@@ -61,7 +61,6 @@ import { SystemPrompt } from "./system"
 import { RuntimeContext } from "./runtime-context"
 import { ProviderTransform } from "@/provider/transform"
 import { Instruction } from "./instruction"
-import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
@@ -366,7 +365,6 @@ export const layer = Layer.effect(
     const provider = yield* Provider.Service
     const processor = yield* SessionProcessor.Service
     const compaction = yield* SessionCompaction.Service
-    const plugin = yield* Plugin.Service
     const commands = yield* Command.Service
     const config = yield* Config.Service
     const permission = yield* Permission.Service
@@ -1375,7 +1373,6 @@ export const layer = Layer.effect(
             }),
         },
       }).pipe(
-        Effect.provideService(Plugin.Service, plugin),
         Effect.provideService(Permission.Service, permission),
         Effect.provideService(ToolRegistry.Service, registry),
         Effect.provideService(MCP.Service, mcp),
@@ -1627,12 +1624,7 @@ export const layer = Layer.effect(
                     })
                     effectiveCommand = parameters.command
                     args = Shell.args(sh, effectiveCommand, cwd)
-                    const shellEnv = yield* plugin.trigger(
-                      "shell.env",
-                      { cwd, sessionID: input.sessionID, callID: mutablePart.callID },
-                      { env: {} },
-                    )
-                    const baseEnvironment = { ...process.env, ...shellEnv.env }
+                    const baseEnvironment = { ...process.env }
                     const sessionEnvironment = HookTranscript.applyEnvironment(
                       baseEnvironment,
                       yield* HookTranscript.environment(input.sessionID, undefined, baseEnvironment),
@@ -1677,7 +1669,6 @@ export const layer = Layer.effect(
                   completeToolCall: () => Effect.void,
                 },
               }).pipe(
-                Effect.provideService(Plugin.Service, plugin),
                 Effect.provideService(Permission.Service, permission),
                 Effect.provideService(ToolRegistry.Service, registry),
                 Effect.provideService(MCP.Service, mcp),
@@ -2341,18 +2332,6 @@ export const layer = Layer.effect(
 
       const resolvedParts = yield* Effect.forEach(input.parts, resolvePart, { concurrency: "unbounded" }).pipe(
         Effect.map((x) => x.flat().map(assign)),
-      )
-
-      yield* plugin.trigger(
-        "chat.message",
-        {
-          sessionID: input.sessionID,
-          agent: input.agent,
-          model: input.model,
-          messageID: input.messageID,
-          variant: input.variant,
-        },
-        { message: info, parts: resolvedParts },
       )
 
       const parts = yield* Effect.forEach(resolvedParts, (part) =>
@@ -3050,9 +3029,8 @@ export const layer = Layer.effect(
               hooks: settingsHook,
               canDefer: !session.parentID && lastUser.hookMode !== "interactive" ? () => true : undefined,
               sourceLedger: toolSources,
-            }).pipe(
-              Effect.provideService(Plugin.Service, plugin),
-              Effect.provideService(Permission.Service, permission),
+              }).pipe(
+                Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
               Effect.provideService(MCP.Service, mcp),
               Effect.provideService(Truncate.Service, truncate),
@@ -3536,7 +3514,6 @@ export const layer = Layer.effect(
                         : undefined,
                     sourceLedger: toolSources,
                   }).pipe(
-                    Effect.provideService(Plugin.Service, plugin),
                     Effect.provideService(Permission.Service, permission),
                     Effect.provideService(ToolRegistry.Service, registry),
                     Effect.provideService(MCP.Service, mcp),
@@ -3577,9 +3554,7 @@ export const layer = Layer.effect(
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-
-            // Reminder text is computed after plugin transforms and appended by
+            // Reminder text is computed after the persisted user content and appended by
             // the provider adapter after the persisted user content. It never
             // reaches stored messages and only the current turn carries one.
             const todoReminder = yield* Option.match(todoReminders, {
@@ -3599,7 +3574,7 @@ export const layer = Layer.effect(
               disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
               dynamic: foldingConfig?.dynamic,
               prune: foldingConfig?.prune,
-              knownExternalDcp: (yield* plugin.contextFoldingCompatibility()).knownExternalDcp,
+              knownExternalDcp: "unknown",
             })
 
             const transcriptPath =
@@ -4542,12 +4517,6 @@ export const layer = Layer.effect(
           : yield* currentModel(input.sessionID)
         : taskModel
 
-      yield* plugin.trigger(
-        "command.execute.before",
-        { command: input.command, sessionID: input.sessionID, arguments: input.arguments },
-        { parts },
-      )
-
       const result = yield* promptImpl(
         {
           sessionID: input.sessionID,
@@ -4633,7 +4602,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(FSUtil.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
     Layer.provide(Session.defaultLayer),
     Layer.provide(SessionRevert.defaultLayer),
     Layer.provide(SessionSummary.defaultLayer),
@@ -4829,7 +4797,6 @@ export const node = LayerNode.make(layer, [
   Provider.node,
   SessionProcessor.node,
   SessionCompaction.node,
-  Plugin.node,
   Command.node,
   Config.node,
   Permission.node,

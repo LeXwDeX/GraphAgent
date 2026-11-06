@@ -23,7 +23,6 @@ import { Git } from "@/git"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Storage } from "@/storage/storage"
 import { Snapshot } from "@/snapshot"
-import { Plugin } from "@/plugin"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Provider } from "@/provider/provider"
 import { ProviderAdapters } from "@/provider/adapter/registry"
@@ -92,7 +91,6 @@ const BaseAppLayer = Layer.mergeAll(
     Git.defaultLayer,
     Storage.defaultLayer,
     Snapshot.defaultLayer,
-    Plugin.defaultLayer,
     ModelsDev.defaultLayer,
     Provider.defaultLayer,
     ProviderAuth.defaultLayer,

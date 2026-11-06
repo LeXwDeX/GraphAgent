@@ -116,15 +116,6 @@ export const update = Effect.fn("HookPermissions.update")(function* (
         )
       }
       yield* fs.writeWithDirs(file, text + (text.endsWith("\n") ? "" : "\n"))
-      if (file === localFile(directory)) {
-        const ignore = path.join(directory, ".opencode", ".gitignore")
-        const existing = (yield* fs.existsSafe(ignore)) ? yield* fs.readFileString(ignore) : ""
-        if (!existing.split(/\r?\n/).includes("permissions.local.json"))
-          yield* fs.writeWithDirs(
-            ignore,
-            existing + (existing && !existing.endsWith("\n") ? "\n" : "") + "permissions.local.json\n",
-          )
-      }
       return next
     }),
     file,

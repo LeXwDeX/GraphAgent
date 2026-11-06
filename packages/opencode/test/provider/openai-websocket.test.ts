@@ -3,7 +3,7 @@ import { $ } from "bun"
 import { streamText } from "ai"
 import { pathToFileURL } from "node:url"
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk"
-import { ConfigProvider, Effect, Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -17,7 +17,6 @@ import { Provider } from "@/provider/provider"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderError } from "@/provider/error"
 import { Env } from "@/env"
-import { Plugin } from "@/plugin"
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
 import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
@@ -32,7 +31,6 @@ const layer = Layer.mergeAll(
   Provider.defaultLayer,
   ProviderAdapters.emptyLayer,
   Env.defaultLayer,
-  Plugin.defaultLayer,
   Session.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
   RuntimeFlags.defaultLayer,
@@ -40,9 +38,7 @@ const layer = Layer.mergeAll(
 )
 const it = testEffect(layer)
 const plainTransport = testEffect(
-  layer.pipe(
-    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_DISABLE_DEFAULT_PLUGINS: true }))),
-  ),
+  layer,
 )
 
 const events = [
@@ -84,23 +80,12 @@ function providerConfig(
   }
 }
 
-for (const [providerID, disableDefaultPlugins] of [
-  ["relay", false],
-  ["openai", false],
-  ["relay", true],
-  ["openai", true],
-] as const) {
-  const transport = testEffect(
-    layer.pipe(
-      Layer.provide(
-        ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_DISABLE_DEFAULT_PLUGINS: disableDefaultPlugins })),
-      ),
-    ),
-  )
+for (const providerID of ["relay", "openai"] as const) {
+  const transport = it
   for (const configured of [undefined, false, true]) {
     if (providerID === "openai" && configured === undefined) continue
     transport.live(
-      `${providerID} transport with experimentalWebSockets=${configured}, disabled plugins=${disableDefaultPlugins}`,
+      `${providerID} transport with experimentalWebSockets=${configured}`,
       () =>
         Effect.gen(function* () {
           yield* Effect.acquireRelease(
@@ -158,16 +143,13 @@ for (const [providerID, disableDefaultPlugins] of [
           yield* provideTmpdirInstance(
             () =>
               Effect.gen(function* () {
-                const provider = yield* Provider.Service
-                 const plugin = yield* Plugin.Service
+                 const provider = yield* Provider.Service
                  const adapters = yield* ProviderAdapters.Service
                 const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
                 const language = yield* provider.getLanguage(model)
                 const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
                 const session = yield* Session.use.create({})
-                const flags = yield* RuntimeFlags.Service
-                expect(flags.disableDefaultPlugins).toBe(disableDefaultPlugins)
-                if (disableDefaultPlugins) expect(yield* plugin.list()).toHaveLength(0)
+                 const flags = yield* RuntimeFlags.Service
                 for (const title of [false, false, true]) {
                   const agent = title ? "title" : "build"
                   const input = { model, provider: info, sessionID: session.id, agent }

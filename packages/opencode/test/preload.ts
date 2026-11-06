@@ -5,7 +5,6 @@ import path from "path"
 import fs from "fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 import { afterAll } from "bun:test"
-import { markPluginDependenciesReady } from "./fixture/plugin"
 // Capture the real MCP SDK Client before any test file mocks the package.
 import "./fixture/mcp-real-client"
 
@@ -50,23 +49,6 @@ process.env["OPENCODE_TEST_HOME"] = testHome
 // Set test managed config directory to isolate tests from system managed settings
 const testManagedConfigDir = path.join(dir, "managed")
 process.env["OPENCODE_TEST_MANAGED_CONFIG_DIR"] = testManagedConfigDir
-
-// Keep process-global AppRuntime construction in any test from starting a
-// registry install that can hold the shared config dependency lock.
-await markPluginDependenciesReady(path.join(dir, "config", "opencode"))
-
-// Every `.opencode` directory installs the plugin SDK in the background, and custom
-// tools wait for it. Under bun the bundled SDK (next to the executable) is absent, so
-// each install reached the public npm registry and custom-tool tests depended on its
-// latency. Serve a local stub instead. Tests that need the real SDK place it in their
-// own node_modules, which the install uses first.
-const pluginSdkStub = path.join(dir, "plugin-sdk")
-await fs.mkdir(pluginSdkStub, { recursive: true })
-await Bun.write(
-  path.join(pluginSdkStub, "package.json"),
-  JSON.stringify({ name: "@opencode-ai/plugin", version: "0.0.0" }),
-)
-process.env["OPENCODE_PLUGIN_SDK_PATH"] ??= pluginSdkStub
 
 // Write the cache version file to prevent global/index.ts from clearing the cache
 const cacheDir = path.join(dir, "cache", "opencode")

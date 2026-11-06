@@ -16,7 +16,7 @@ import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
-import { Plugin } from "@/plugin"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 
 import { testEffect } from "../lib/effect"
 import type { Agent } from "../../src/agent/agent"
@@ -30,7 +30,6 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderError } from "@/provider/error"
 import { ContextFolding } from "@/session/context-folding"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { logLines } from "effect/testing/TestConsole"
 import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
@@ -85,21 +84,11 @@ function llmLayerWithExecutor(executor: Layer.Layer<RequestExecutor.Service>, fl
     Layer.provide(Auth.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
+    Layer.provide(ProviderAdapters.defaultLayer),
     Layer.provide(LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(executor, WebSocketExecutor.layer)))),
     Layer.provide(RuntimeFlags.layer(flags)),
   )
 }
-
-const nativeFoldingIt = testEffect(
-  Layer.mergeAll(
-    llmLayerWithExecutor(RequestExecutor.defaultLayer, {
-      experimentalNativeLlm: true,
-      outputTokenMax: 8_192,
-    }),
-    Provider.defaultLayer,
-  ),
-)
 
 describe("session.llm.hasToolCalls", () => {
   test("returns false for empty messages array", () => {
@@ -1145,144 +1134,9 @@ const organizeOnce = (prompt: string, signal = new AbortController().signal, onR
     return { organizer, ...result }
   })
 
-const loadedDcpCases = [
-  {
-    name: "active DCP",
-    packageName: "@lexwdex-org/opencode-dcp",
-    options: {},
-    builtInFolding: false,
-    migrationNotice: true,
-  },
-  {
-    name: "DCP with enabled false",
-    packageName: "@lexwdex-org/opencode-dcp",
-    options: { enabled: false },
-    builtInFolding: true,
-    migrationNotice: false,
-  },
-  {
-    name: "DCP with dtc enabled false",
-    packageName: "@lexwdex-org/opencode-dcp",
-    options: { enabled: true, dtc: { enabled: false } },
-    builtInFolding: true,
-    migrationNotice: false,
-  },
-  {
-    name: "failed DCP",
-    packageName: "@lexwdex-org/opencode-dcp",
-    options: { fail: true },
-    builtInFolding: true,
-    migrationNotice: false,
-  },
-  {
-    name: "non-DCP transformer",
-    packageName: "not-@lexwdex-org/opencode-dcp-copy",
-    options: {},
-    builtInFolding: true,
-    migrationNotice: false,
-  },
-] as const
-
-function loadedDcpConfig(testCase: (typeof loadedDcpCases)[number]): Partial<ConfigV1.Info> {
-  return {
-    ...foldingConfig(),
-    compaction: { auto: false, dynamic: true },
-    plugin: [["./dcp-plugin.js", testCase.options]],
-  }
-}
-
-function initLoadedDcp(testCase: (typeof loadedDcpCases)[number]) {
-  return (directory: string) =>
-    Effect.promise(async () => {
-      await Bun.write(
-        path.join(directory, "package.json"),
-        JSON.stringify({ name: testCase.packageName, type: "module" }),
-      )
-      await Bun.write(
-        path.join(directory, "dcp-plugin.js"),
-        [
-          "export default async (_input, options) => {",
-          '  if (options.fail) throw new Error("apply failed")',
-          "  if (options.enabled === false || options.dtc?.enabled === false) return {}",
-          '  return { "experimental.chat.messages.transform": async () => {} }',
-          "}",
-          "",
-        ].join("\n"),
-      )
-    })
-}
-
 describe("session.llm.stream", () => {
   const vivgridFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
   const opencodeFixture = { providerID: "opencode-test", modelID: vivgridFixture.modelID }
-
-  for (const runtime of [
-    { name: "AI SDK", runner: it },
-    { name: "Native", runner: nativeFoldingIt },
-  ] as const) {
-    for (const testCase of loadedDcpCases) {
-      runtime.runner.instance(
-        `${runtime.name} uses actual plugin-loader state for ${testCase.name}`,
-        () =>
-          Effect.gen(function* () {
-            const model = loadFixture(foldingFixture.providerID, foldingFixture.modelID).model
-            const resolved = yield* Provider.use.getModel(
-              ProviderV2.ID.make(foldingFixture.providerID),
-              ModelV2.ID.make(model.id),
-            )
-            const agent = {
-              name: "test",
-              mode: "primary",
-              options: {},
-              permission: [{ permission: "*", pattern: "*", action: "allow" }],
-            } satisfies Agent.Info
-            const send = (suffix: string) => {
-              const sessionID = SessionID.make(`session-test-loaded-dcp-${runtime.name}-${testCase.name}-${suffix}`)
-              return drain({
-                user: {
-                  id: MessageID.make(`msg_user-loaded-dcp-${runtime.name}-${testCase.name}-${suffix}`),
-                  sessionID,
-                  role: "user",
-                  time: { created: Date.now() },
-                  agent: agent.name,
-                  model: { providerID: ProviderV2.ID.make(foldingFixture.providerID), modelID: resolved.id },
-                } satisfies SessionV1.User,
-                sessionID,
-                model: resolved,
-                agent,
-                system: [],
-                messages: foldingMessages(),
-                tools: { read: foldingTool() },
-                purpose: "conversation",
-                contextFolding: foldingSnapshot(),
-              })
-            }
-
-            const firstRequest = waitRequest("/chat/completions", foldingResponse())
-            yield* send("first")
-            const firstWire = JSON.stringify((yield* Effect.promise(() => firstRequest)).body)
-            if (testCase.builtInFolding) {
-              expect(firstWire).toContain("Duplicate tool output folded")
-            } else {
-              expect(firstWire).not.toContain("Duplicate tool output folded")
-              expect(firstWire.match(new RegExp(foldingBody.slice(0, 100), "g"))?.length).toBeGreaterThanOrEqual(2)
-            }
-
-            if (testCase.migrationNotice) {
-              const secondRequest = waitRequest("/chat/completions", foldingResponse())
-              yield* send("second")
-              yield* Effect.promise(() => secondRequest)
-            }
-            const notices = JSON.stringify(yield* logLines).match(/registered active context-folding hooks/g) ?? []
-            expect(notices).toHaveLength(testCase.migrationNotice ? 1 : 0)
-          }),
-        {
-          config: () => loadedDcpConfig(testCase),
-          init: initLoadedDcp(testCase),
-        },
-      )
-    }
-  }
 
   it.instance(
     "sends the parent session header for opencode providers",
@@ -2076,7 +1930,7 @@ describe("session.llm.stream", () => {
             Layer.provide(Auth.defaultLayer),
             Layer.provide(Config.defaultLayer),
             Layer.provide(Provider.defaultLayer),
-            Layer.provide(Plugin.defaultLayer),
+            Layer.provide(ProviderAdapters.defaultLayer),
             Layer.provide(failingNativeClient),
             Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: false })),
           ),

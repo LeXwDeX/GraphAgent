@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdir, unlink } from "fs/promises"
+import { unlink } from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -8,23 +8,20 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Global } from "@opencode-ai/core/global"
 import {
-  disposeAllInstancesEffect,
   provideInstanceEffect,
   testInstanceStoreLayer,
   tmpdirScoped,
 } from "../fixture/fixture"
-import { markPluginDependenciesReady } from "../fixture/plugin"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { ConfigParse } from "@/config/parse"
 import { Env } from "../../src/env"
-import { Plugin } from "../../src/plugin/index"
 import { Provider } from "@/provider/provider"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Filesystem } from "@/util/filesystem"
 import { InstanceLayer } from "@/project/instance-layer"
-import { InstanceState } from "@/effect/instance-state"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -70,7 +67,7 @@ const providerLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
     Layer.provide(Env.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(Auth.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
+    Layer.provide(ProviderAdapters.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.layer(flags)),
     Layer.provide(EventV2Bridge.defaultLayer),
@@ -106,16 +103,16 @@ const aggregatorProviderLayer = Provider.layer.pipe(
   Layer.provide(Env.defaultLayer),
   Layer.provide(Config.defaultLayer),
   Layer.provide(Auth.defaultLayer),
-  Layer.provide(Plugin.defaultLayer),
+  Layer.provide(ProviderAdapters.defaultLayer),
   Layer.provide(emptyModelCatalogLayer),
   Layer.provide(RuntimeFlags.layer({})),
   Layer.provide(EventV2Bridge.defaultLayer),
 )
 const aggregator = testEffect(
-  Layer.mergeAll(aggregatorProviderLayer, Env.defaultLayer, Plugin.defaultLayer, emptyModelCatalogLayer),
+  Layer.mergeAll(aggregatorProviderLayer, Env.defaultLayer, ProviderAdapters.defaultLayer, emptyModelCatalogLayer),
 )
 
-const it = testEffect(Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer))
+const it = testEffect(Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, ProviderAdapters.defaultLayer))
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
 
 const alphaProviderConfig = {
@@ -1444,13 +1441,13 @@ const cataloged = testEffect(
       Layer.provide(Env.defaultLayer),
       Layer.provide(Config.defaultLayer),
       Layer.provide(Auth.defaultLayer),
-      Layer.provide(Plugin.defaultLayer),
+    Layer.provide(ProviderAdapters.defaultLayer),
       Layer.provide(longContextCatalogLayer),
       Layer.provide(RuntimeFlags.layer({})),
       Layer.provide(EventV2Bridge.defaultLayer),
     ),
     Env.defaultLayer,
-    Plugin.defaultLayer,
+    ProviderAdapters.defaultLayer,
     longContextCatalogLayer,
   ),
 )
@@ -2022,73 +2019,6 @@ it.instance(
   },
 )
 
-// Tests that need plugin file setup or multi-instance flows fall back to a
-// scoped tmpdir + provideInstance pattern via it.effect.
-
-const provideMultiInstance = <A, E, R>(eff: Effect.Effect<A, E, R>) =>
-  eff.pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer))
-
-it.effect("plugin config providers persist after instance dispose", () =>
-  Effect.gen(function* () {
-    const dir = yield* tmpdirScoped()
-    const configDir = path.join(dir, ".opencode")
-    const root = path.join(configDir, "plugin")
-    yield* Effect.promise(() => mkdir(root, { recursive: true }))
-    yield* Effect.promise(() => markPluginDependenciesReady(configDir))
-    yield* Effect.promise(() => markPluginDependenciesReady(Global.Path.config))
-    yield* Effect.promise(() =>
-      Bun.write(
-        path.join(root, "demo-provider.ts"),
-        [
-          "export default {",
-          '  id: "demo.plugin-provider",',
-          "  server: async () => ({",
-          "    async config(cfg) {",
-          "      cfg.provider ??= {}",
-          "      cfg.provider.demo = {",
-          '        name: "Demo Provider",',
-          '        npm: "@ai-sdk/openai-compatible",',
-          '        api: "https://example.com/v1",',
-          "        models: {",
-          "          chat: {",
-          '            name: "Demo Chat",',
-          "            tool_call: true,",
-          "            limit: { context: 128000, output: 4096 },",
-          "          },",
-          "        },",
-          "      }",
-          "    },",
-          "  }),",
-          "}",
-          "",
-        ].join("\n"),
-      ),
-    )
-
-    const loadAndList = Effect.gen(function* () {
-      const plugin = yield* Plugin.Service
-      const provider = yield* Provider.Service
-      yield* plugin.init()
-      const providers = yield* provider.list()
-      return {
-        context: yield* InstanceState.context,
-        providers,
-      }
-    }).pipe(provideInstanceEffect(dir))
-
-    const first = yield* loadAndList
-    expect(first.providers[ProviderV2.ID.make("demo")]).toBeDefined()
-    expect(first.providers[ProviderV2.ID.make("demo")].models[ModelV2.ID.make("chat")]).toBeDefined()
-
-    yield* disposeAllInstancesEffect
-
-    const second = yield* loadAndList
-    expect(second.context).not.toBe(first.context)
-    expect(second.providers[ProviderV2.ID.make("demo")]).toBeDefined()
-    expect(second.providers[ProviderV2.ID.make("demo")].models[ModelV2.ID.make("chat")]).toBeDefined()
-  }).pipe(provideMultiInstance),
-)
-
 it.effect("opencode loader keeps paid models when config apiKey is present", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
@@ -2107,7 +2037,7 @@ it.effect("opencode loader keeps paid models when config apiKey is present", () 
 
     expect(none).toBe(0)
     expect(keyedCount).toBeGreaterThan(0)
-  }).pipe(provideMultiInstance),
+  }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
 )
 
 it.effect("opencode loader keeps paid models when auth exists", () =>
@@ -2139,5 +2069,5 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
 
     expect(none).toBe(0)
     expect(keyedCount).toBeGreaterThan(0)
-  }).pipe(provideMultiInstance),
+  }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
 )

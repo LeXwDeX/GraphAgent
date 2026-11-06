@@ -17,7 +17,6 @@ import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
-import { Plugin } from "@/plugin"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import { Permission } from "@/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -200,7 +199,6 @@ const live: Layer.Layer<
   | Auth.Service
   | Config.Service
   | Provider.Service
-  | Plugin.Service
   | Permission.Service
   | EventV2Bridge.Service
   | LLMClientService
@@ -211,7 +209,6 @@ const live: Layer.Layer<
     const auth = yield* Auth.Service
     const config = yield* Config.Service
     const provider = yield* Provider.Service
-    const plugin = yield* Plugin.Service
     const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
     const perm = yield* Permission.Service
     const events = yield* EventV2Bridge.Service
@@ -305,12 +302,11 @@ const live: Layer.Layer<
           }),
         )
       }
-      const compatibility = yield* plugin.contextFoldingCompatibility()
       const dynamicFolding = ConfigCompaction.resolveDynamic({
         disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
         dynamic: cfg.compaction?.dynamic,
         prune: cfg.compaction?.prune,
-        knownExternalDcp: compatibility.knownExternalDcp,
+        knownExternalDcp: "unknown",
       })
       const folding = {
         enabled: dynamicFolding.enabled,
@@ -780,7 +776,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Auth.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
     Layer.provide(
       LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
     ),
@@ -794,7 +789,6 @@ export const node = LayerNode.make(layer, [
   Auth.node,
   Config.node,
   Provider.node,
-  Plugin.node,
   ProviderAdapters.node,
   Permission.node,
   EventV2Bridge.node,

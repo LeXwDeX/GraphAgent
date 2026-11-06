@@ -20,7 +20,6 @@ import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Command } from "../../src/command"
 import { Config } from "@/config/config"
 import { Permission } from "../../src/permission"
-import { Plugin } from "../../src/plugin"
 import { Provider as ProviderSvc } from "@/provider/provider"
 import { Env } from "../../src/env"
 import { Git } from "../../src/git"
@@ -180,7 +179,6 @@ const deps = Layer.mergeAll(
   AgentSvc.defaultLayer,
   Command.defaultLayer,
   Permission.defaultLayer,
-  Plugin.defaultLayer,
   Config.defaultLayer,
   ProviderSvc.defaultLayer,
   lsp,

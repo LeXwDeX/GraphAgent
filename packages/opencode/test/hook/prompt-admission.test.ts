@@ -5,7 +5,7 @@ import { HookLifecycle } from "@/hook/lifecycle"
 import { expect, spyOn } from "bun:test"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -24,7 +24,6 @@ import { MCP } from "@/mcp"
 import { SessionRetry } from "@/session/retry"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { Plugin } from "@/plugin"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { MessageID, SessionID } from "@/session/schema"
@@ -82,40 +81,6 @@ const lsp = Layer.succeed(
   }),
 )
 
-// Plugin mock with per-session "chat.message" parking gates. Tests park a
-// gate for a session; the trigger for that session then signals "entered"
-// once the admission reaches the plugin callback and waits on the gate's
-// promise before returning, letting the test cancel mid-admission
-// deterministically. Sessions without a gate pass straight through.
-interface ChatMessageGate {
-  entered: boolean
-  open: () => void
-}
-const chatMessageGates = new Map<string, ChatMessageGate>()
-const pluginMock = Layer.suspend(() =>
-  Layer.succeed(
-    Plugin.Service,
-    Plugin.Service.of({
-      trigger: ((_name: string, input: { sessionID?: string }, output: unknown) => {
-        const gate = input?.sessionID ? chatMessageGates.get(input.sessionID) : undefined
-        if (!gate) return Effect.succeed(output as never)
-        const wait = new Promise<void>((resolve) => {
-          gate.entered = true
-          gate.open = resolve
-        })
-        return Effect.promise(() => wait.then(() => output as never))
-      }) as Plugin.Interface["trigger"],
-      list: () => Effect.succeed([]),
-      contextFoldingCompatibility: () =>
-        Effect.succeed({
-          knownExternalDcp: "unknown",
-          migrationNotice: "not-applicable",
-        } as const),
-      init: () => Effect.void,
-    }),
-  ),
-)
-
 const root = LayerNode.group([
   SessionPrompt.node,
   SettingsHook.node,
@@ -135,7 +100,6 @@ const it = testEffect(
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
       LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
-      LayerNode.replace(Plugin.node, pluginMock),
     ],
   }),
 )
@@ -195,49 +159,6 @@ it.live("followup admission owners are visible across instances", () =>
   ),
 )
 
-it.live("resume does not wait on cancellation while holding the admission commit lock", () =>
-  provideTmpdirServer(({ llm }) =>
-    Effect.gen(function* () {
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const lifecycle = yield* HookLifecycle.Service
-      const session = yield* sessions.create({ title: "resume cancellation lock ordering" })
-      yield* lifecycle.queueInitial(session.id, "initial")
-      const gate: ChatMessageGate = { entered: false, open: () => {} }
-      chatMessageGates.set(session.id, gate)
-      const requested = Deferred.makeUnsafe<void>()
-      const request = SessionCancellation.request
-      const spy = spyOn(SessionCancellation, "request").mockImplementation((id) => {
-        const result = request(id)
-        if (id === session.id) Deferred.doneUnsafe(requested, Effect.void)
-        return result
-      })
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          gate.open()
-          chatMessageGates.delete(session.id)
-          spy.mockRestore()
-        }),
-      )
-      const resumed = yield* prompt.resume({ sessionID: session.id, hookMode: "noninteractive" }).pipe(Effect.forkChild)
-      yield* pollWithTimeout(
-        Effect.sync(() => (gate.entered ? true : undefined)),
-        "resume did not reach admission",
-      )
-      const abort = SessionCancellation.begin(session.id)
-      yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
-      gate.open()
-      yield* awaitWithTimeout(Deferred.await(requested), "resume did not reach runner admission")
-      const cancelled = yield* SessionCancellation.admissions
-        .cancel(session.id, Effect.sync(abort.finish))
-        .pipe(Effect.forkChild)
-      yield* awaitWithTimeout(Fiber.join(cancelled), "cancel waited on the resume commit lock")
-      expect(Exit.isFailure(yield* Fiber.await(resumed))).toBe(true)
-      expect(yield* llm.calls).toBe(0)
-    }),
-  ),
-)
-
 const goalIt = testEffect(
   LayerNode.buildLayer(LayerNode.group([
     root,
@@ -251,7 +172,6 @@ const goalIt = testEffect(
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
       LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
-      LayerNode.replace(Plugin.node, pluginMock),
     ],
   }).pipe(
     Layer.provideMerge(
@@ -889,82 +809,6 @@ it.live("cancelled session discards a completing async Stop hook callback", () =
       // Give a (wrong) rewake ample time to admit a new turn.
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
       expect(yield* llm.calls).toBe(1)
-    }),
-    { git: true, config: providerCfg },
-  ),
-)
-
-it.live("cancel parked inside chat.message admission strips a stale stop-chain rewake", () =>
-  provideTmpdirServer(
-    Effect.fnUntraced(function* ({ llm, dir }) {
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const hooks = yield* SessionHooks.Service
-      const session = yield* sessions.create({ title: "Fence stale rewake", permission: [] })
-      const release = path.join(dir, "release")
-      const completed = path.join(dir, "completed")
-      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
-      yield* hooks.add(session.id, {
-        event: "Stop",
-        once: true,
-        hooks: [
-          {
-            type: "command",
-            async: true,
-            asyncRewake: true,
-            command: `while [ ! -f ${quote(release)} ]; do sleep 0.01; done; touch ${quote(completed)}; printf '%s' 'stale verdict' >&2; exit 2`,
-          },
-        ],
-      })
-      yield* llm.text("first answer")
-      yield* llm.text("must never be consumed by a stale rewake")
-      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "do work" }] })
-      // The turn is over; the async Stop callback is parked on the release file.
-      expect(yield* llm.calls).toBe(1)
-
-      // Park the rewake admission inside createUserMessage (plugin.trigger
-      // "chat.message") BEFORE commit: the pre-admission chain check has
-      // already passed at this point, so only a post-commit fence can stop it.
-      const gate: ChatMessageGate = { entered: false, open: () => {} }
-      chatMessageGates.set(session.id, gate)
-      try {
-        yield* Effect.promise(() => fs.writeFile(release, "go"))
-        yield* pollWithTimeout(
-          Effect.promise(() =>
-            fs.access(completed).then(
-              () => true,
-              () => undefined,
-            ),
-          ),
-          "async Stop callback never completed",
-        )
-        yield* pollWithTimeout(
-          Effect.sync(() => (gate.entered ? (true as const) : undefined)),
-          "rewake admission never reached chat.message",
-        )
-        // Cancel lands while admission is parked in the plugin callback.
-        yield* prompt.cancel(session.id)
-        gate.open()
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 300)))
-        // The stale rewake must not consume a model call.
-        expect(yield* llm.calls).toBe(1)
-        // Its committed message must be stripped from model input.
-        const messages = yield* sessions.messages({ sessionID: session.id })
-        const rewake = messages.find((message) =>
-          message.parts.some(
-            (part) =>
-              part.type === "text" && part.text.includes("Async hook completed") && message.info.role === "user",
-          ),
-        )
-        expect(rewake).toBeDefined()
-        for (const part of rewake!.parts) {
-          if (part.type !== "text") continue
-          expect(part.ignored).toBe(true)
-        }
-      } finally {
-        chatMessageGates.delete(session.id)
-      }
-      yield* hooks.clear(session.id)
     }),
     { git: true, config: providerCfg },
   ),
@@ -1912,60 +1756,3 @@ for (const scenario of ["no-op", "aba"] as const) {
     ),
   )
 }
-it.live("a blocked command cancelled during notice admission fails as a rejected command", () =>
-  provideTmpdirServer(
-    Effect.fnUntraced(function* () {
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const hooks = yield* SessionHooks.Service
-      const session = yield* sessions.create({ title: "Blocked command admission cancel", permission: [] })
-      yield* hooks.add(session.id, {
-        event: "UserPromptExpansion",
-        hooks: [
-          {
-            type: "command",
-            command: `printf '%s' '{"decision":"block","reason":"blocked-by-admission"}'`,
-          },
-        ],
-      })
-      const gate: ChatMessageGate = { entered: false, open: () => {} }
-      chatMessageGates.set(session.id, gate)
-      try {
-        const running = yield* prompt
-          .command({
-            sessionID: session.id,
-            command: "fixture",
-            arguments: "",
-            agent: "build",
-            variant: "xhigh",
-            hookMode: "interactive",
-          })
-          .pipe(Effect.forkChild)
-        yield* pollWithTimeout(
-          Effect.sync(() => (gate.entered ? (true as const) : undefined)),
-          "blocked command never reached chat.message",
-        )
-        yield* prompt.cancel(session.id)
-        gate.open()
-        const exit = yield* Fiber.await(running)
-        expect(Exit.isFailure(exit)).toBe(true)
-        if (Exit.isFailure(exit)) {
-          const error = Cause.squash(exit.cause)
-          expect(error).toBeInstanceOf(SessionPrompt.ModelSwitchBlocked)
-        }
-        const messages = yield* sessions.messages({ sessionID: session.id })
-        expect(
-          messages.some((message) =>
-            message.parts.some((part) => part.type === "text" && part.text.includes("[Hook stopped]")),
-          ),
-        ).toBe(false)
-      } finally {
-        chatMessageGates.delete(session.id)
-      }
-    }),
-    {
-      git: true,
-      config: (url) => ({ ...providerCfg(url), command: { fixture: { template: "fixture" } } }),
-    },
-  ),
-)

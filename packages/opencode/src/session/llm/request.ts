@@ -38,10 +38,6 @@ type PrepareInput = {
   readonly cfg?: ConfigV1.Info
   readonly auth: Auth.Info | undefined
   readonly adapters?: ProviderAdapters.Interface
-  /** @deprecated Provider hooks are now routed through adapters. */
-  readonly plugin?: {
-    trigger(name: string, input: unknown, output: unknown): Effect.Effect<any>
-  }
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
 }

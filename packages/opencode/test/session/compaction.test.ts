@@ -19,7 +19,6 @@ import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
 import { Token } from "@/util/token"
 import { Permission } from "../../src/permission"
-import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -242,7 +241,6 @@ const deps = Layer.mergeAll(
   wide().layer,
   layer("continue"),
   Agent.defaultLayer,
-  Plugin.defaultLayer,
   EventV2Bridge.defaultLayer,
   Config.defaultLayer,
   SessionStatus.defaultLayer,
@@ -272,7 +270,6 @@ const itCompaction = testEffect(compactionEnv)
 type CompactionProcessOptions = {
   result?: "continue" | "compact"
   llm?: Layer.Layer<LLM.Service>
-  plugin?: Layer.Layer<Plugin.Service>
   provider?: ReturnType<typeof ProviderTest.fake>
   config?: Layer.Layer<Config.Service>
   memory?: Layer.Layer<Memory.Service>
@@ -316,7 +313,6 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     Layer.provide(options?.llm ?? LLM.defaultLayer),
     Layer.provide(Permission.defaultLayer),
     Layer.provide(Agent.defaultLayer),
-    Layer.provide(options?.plugin ?? Plugin.defaultLayer),
     Layer.provide(status),
     Layer.provide(events),
     Layer.provide(options?.config ?? Config.defaultLayer),
@@ -383,34 +379,6 @@ function reply(
       }),
     )
   }
-}
-
-function plugin(ready: Deferred.Deferred<void>) {
-  return Layer.mock(Plugin.Service)({
-    trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
-      if (name !== "experimental.session.compacting") return Effect.succeed(output)
-      return Effect.sync(() => Deferred.doneUnsafe(ready, Effect.void)).pipe(
-        Effect.andThen(Effect.never),
-        Effect.as(output),
-      )
-    },
-    list: () => Effect.succeed([]),
-    init: () => Effect.void,
-  })
-}
-
-function autocontinue(enabled: boolean) {
-  return Layer.mock(Plugin.Service)({
-    trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
-      if (name !== "experimental.compaction.autocontinue") return Effect.succeed(output)
-      return Effect.sync(() => {
-        ;(output as { enabled: boolean }).enabled = enabled
-        return output
-      })
-    },
-    list: () => Effect.succeed([]),
-    init: () => Effect.void,
-  })
 }
 
 const todoLayer = (todos: Todo.Info[]) => Layer.mock(Todo.Service)({ get: () => Effect.succeed(todos) })
@@ -801,7 +769,6 @@ describe("session.compaction.process", () => {
     "runs manual full compaction with dynamic folding disabled and orders hooks",
     () => {
       const order: string[] = []
-      let pluginContext: string[] = []
       const stub = llm()
       stub.push(reply("summary"))
       const memory = Layer.mock(Memory.Service, {
@@ -819,26 +786,6 @@ describe("session.compaction.process", () => {
           }),
         list: () => Effect.succeed([]),
       })
-      const orderedPlugin = Layer.mock(Plugin.Service)({
-        trigger: (name, _input, output) =>
-          Effect.sync(() => {
-            if (
-              name === "experimental.session.compacting" &&
-              typeof output === "object" &&
-              output !== null &&
-              "context" in output &&
-              Array.isArray(output.context) &&
-              output.context.every((value) => typeof value === "string")
-            ) {
-              order.push("plugin")
-              pluginContext = [...output.context]
-            }
-            return output
-          }),
-        list: () => Effect.succeed([]),
-        init: () => Effect.void,
-      })
-
       return Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
@@ -852,9 +799,8 @@ describe("session.compaction.process", () => {
           auto: false,
         })
 
-        expect(order.slice(0, 3)).toEqual(["memory", "precompact", "plugin"])
-        expect(pluginContext).toEqual(["memory-context"])
-      }).pipe(withCompaction({ llm: stub.layer, plugin: orderedPlugin, memory, settingsHook }))
+        expect(order.slice(0, 2)).toEqual(["memory", "precompact"])
+      }).pipe(withCompaction({ llm: stub.layer, memory, settingsHook }))
     },
     { git: true, config: { compaction: { dynamic: false } } },
   )
@@ -1669,38 +1615,6 @@ describe("session.compaction.process", () => {
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
     },
     { git: true },
-  )
-
-  itCompaction.instance(
-    "allows plugins to disable synthetic continue prompt",
-    Effect.gen(function* () {
-      const ssn = yield* SessionNs.Service
-      const session = yield* ssn.create({})
-      const msg = yield* createUserMessage(session.id, "hello")
-      const msgs = yield* ssn.messages({ sessionID: session.id })
-
-      const result = yield* SessionCompaction.use.process({
-        parentID: msg.id,
-        messages: msgs,
-        sessionID: session.id,
-        auto: true,
-      })
-
-      const all = yield* ssn.messages({ sessionID: session.id })
-      const last = all.at(-1)
-
-      expect(result).toBe("continue")
-      expect(last?.info.role).toBe("assistant")
-      expect(
-        all.some(
-          (msg) =>
-            msg.info.role === "user" &&
-            msg.parts.some(
-              (part) => part.type === "text" && part.synthetic && part.text.includes("Continue if you have next steps"),
-            ),
-        ),
-      ).toBe(false)
-    }).pipe(withCompaction({ plugin: autocontinue(false) })),
   )
 
   // SessionStart(source: "compact") — Claude Code parity: contexts returned by the hook
@@ -3095,38 +3009,6 @@ describe("session.compaction.process", () => {
     },
     { git: true },
     { timeout: 10_000 },
-  )
-
-  itCompaction.instance(
-    "does not leave a summary assistant when aborted before processor setup",
-    () =>
-      Effect.gen(function* () {
-        const ready = yield* Deferred.make<void>()
-        return yield* Effect.gen(function* () {
-          const ssn = yield* SessionNs.Service
-          const session = yield* ssn.create({})
-          const msg = yield* createUserMessage(session.id, "hello")
-          const msgs = yield* ssn.messages({ sessionID: session.id })
-          const fiber = yield* SessionCompaction.use
-            .process({
-              parentID: msg.id,
-              messages: msgs,
-              sessionID: session.id,
-              auto: false,
-            })
-            .pipe(Effect.forkChild)
-
-          yield* Deferred.await(ready).pipe(Effect.timeout("1 second"))
-          yield* Fiber.interrupt(fiber)
-          const exit = yield* Fiber.await(fiber).pipe(Effect.timeout("250 millis"))
-          const all = yield* ssn.messages({ sessionID: session.id })
-
-          expect(Exit.isFailure(exit)).toBe(true)
-          if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
-          expect(all.some((msg) => msg.info.role === "assistant" && msg.info.summary)).toBe(false)
-        }).pipe(withCompaction({ plugin: plugin(ready) }))
-      }),
-    { git: true },
   )
 
   itCompaction.instance(

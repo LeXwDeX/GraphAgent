@@ -6,7 +6,6 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
 import { SessionID } from "../../src/session/schema"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
-import { Plugin } from "../../src/plugin"
 import { Provider } from "../../src/provider/provider"
 import { prepare } from "../../src/session/llm/request"
 import { RuntimeContext } from "../../src/session/runtime-context"
@@ -21,14 +20,12 @@ const REMOVED_CATALOG = "## GraphAgent / OpenCode capabilities"
 const it = testEffect(
   Layer.mergeAll(
     RuntimeFlags.layer(),
-    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
   ),
 )
 
 const itOutputOverride = testEffect(
   Layer.mergeAll(
     RuntimeFlags.layer({ outputTokenMax: 64_000 }),
-    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
   ),
 )
 
@@ -89,7 +86,6 @@ const request = (providerName = "deepseek", modelName = "deepseek-chat", npm = "
       messages: [{ role: "user" as const, content: "Does this runtime support hooks?" }],
       tools: {},
       auth: undefined,
-      plugin: yield* Plugin.Service,
       flags: yield* RuntimeFlags.Service,
       isWorkflow: false,
     } satisfies Parameters<typeof prepare>[0]

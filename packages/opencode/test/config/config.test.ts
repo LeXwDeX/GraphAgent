@@ -922,24 +922,6 @@ it.effect("does not try to install dependencies in read-only OPENCODE_CONFIG_DIR
   }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
 )
 
-it.effect("installs dependencies in writable OPENCODE_CONFIG_DIR", () =>
-  Effect.gen(function* () {
-    const dir = yield* tmpdirScoped()
-    const configDir = path.join(dir, "configdir")
-    yield* FSUtil.use.ensureDir(configDir)
-
-    yield* withProcessEnv(
-      "OPENCODE_CONFIG_DIR",
-      configDir,
-      Config.Service.use((svc) => svc.get().pipe(Effect.andThen(svc.waitForDependencies()))).pipe(
-        provideInstanceEffect(dir),
-      ),
-    )
-
-    expect(yield* FSUtil.use.readFileString(path.join(configDir, ".gitignore"))).toContain("package-lock.json")
-  }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
-)
-
 // Note: deduplication and serialization of npm installs is now handled by the
 // core Npm.Service (via EffectFlock). Those behaviors are tested in the core
 // package's npm tests, not here.

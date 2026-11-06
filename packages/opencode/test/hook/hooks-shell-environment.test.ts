@@ -88,38 +88,3 @@ for (const version of ["v1", "v2"] as const)
       expect(JSON.parse(yield* Effect.promise(() => fs.readFile(audit, "utf8")))).toEqual({ value: "from-session" })
     }),
   )
-
-cliIt.live("explicit shell preserves plugin PATH with no hooks configured", ({ home, opencode }) =>
-  Effect.gen(function* () {
-    const plugin = path.join(home, "shell-plugin.ts"),
-      output = path.join(home, "plugin-path")
-    yield* Effect.promise(async () => {
-      await fs.writeFile(
-        plugin,
-        `export default async () => ({"shell.env": async (_input, output) => {output.env.PATH="/task-plugin/bin:"+process.env.PATH}})`,
-      )
-      await fs.writeFile(
-        path.join(home, ".config/opencode/opencode.json"),
-        JSON.stringify({ plugin: ["file://" + plugin], shell: "/bin/sh", permission: { bash: "allow" } }),
-      )
-    })
-    const server = yield* opencode.host({ env: { OPENCODE_PURE: "0" } })
-    const post = (route: string, body: object) =>
-      Effect.promise(() =>
-        fetch(server.url + route, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
-          body: JSON.stringify(body),
-        }),
-      )
-    const created = yield* post("/session", {})
-    const session = yield* Effect.promise(() => created.json())
-    const response = yield* post(`/session/${session.id}/shell`, {
-      agent: "build",
-      model: { providerID: "test", modelID: "test-model" },
-      command: `printf '%s' "$PATH" > '${output}'`,
-    })
-    expect(response.status).toBe(200)
-    expect(yield* Effect.promise(() => fs.readFile(output, "utf8"))).toStartWith("/task-plugin/bin:")
-  }),
-)

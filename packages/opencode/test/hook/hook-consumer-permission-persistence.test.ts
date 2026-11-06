@@ -79,9 +79,6 @@ describe("permission updates through real AppLayer and command hooks", () => {
           expect(yield* Effect.promise(() => fs.readFile(projectFile, "utf8"))).toContain(
             "retain this unrelated comment",
           )
-          expect(
-            yield* Effect.promise(() => fs.readFile(path.join(instance.directory, ".opencode", ".gitignore"), "utf8")),
-          ).toContain("permissions.local.json")
           yield* permissions.ask({
             sessionID: id,
             permission: "fixture_session",

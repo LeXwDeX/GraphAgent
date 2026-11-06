@@ -16,7 +16,6 @@ import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { MemorySearch } from "@/tool/memory-search"
 import { Truncate } from "@/tool/truncate"
 
-import { Plugin } from "@/plugin"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { HookTranscript } from "@/hook/transcript"
@@ -156,7 +155,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
 ) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
-  const plugin = yield* Plugin.Service
   const permission = yield* Permission.Service
   const agentService = Option.getOrUndefined(yield* Effect.serviceOption(Agent.Service))
   const registry = yield* ToolRegistry.Service
@@ -420,11 +418,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               let ctx = context(args, options, false, originalArgs, item.id)
               let hookConfirmed = false
               let hookAllowed = false
-              yield* plugin.trigger(
-                "tool.execute.before",
-                { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
-                { args },
-              )
               // SettingsHook PreToolUse
               let dynamicInstructions = false
               if (settingsHook) {
@@ -591,13 +584,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               // PreToolUse feedback is attached after PostToolUse has seen and possibly replaced the
               // native result, so Post hooks never receive earlier hook text and a replacement keeps it.
               const preLines = preContexts.filter((line): line is string => Boolean(line))
-              const beforePlugin = outputFingerprint(output)
-              yield* plugin.trigger(
-                "tool.execute.after",
-                { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID, args },
-                output,
-              )
-              dynamicInstructions ||= beforePlugin === undefined || beforePlugin !== outputFingerprint(output)
               // SettingsHook PostToolUse; a completed failure (nonzero shell
               // exit) fires the reference's PostToolUseFailure instead while
               // keeping the same model-facing result and feedback handling.
@@ -789,11 +775,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               },
               output: truncated.content,
             }
-            yield* plugin.trigger(
-              "tool.execute.after",
-              { tool: MCP_RESOURCE_TOOLS.list, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
-              output,
-            )
             yield* recordSettlement(MCP_RESOURCE_TOOLS.list, opts.toolCallId, {
               sourceKind: "mcp",
               registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.list}`,
@@ -871,11 +852,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               },
               output: truncated.content,
             }
-            yield* plugin.trigger(
-              "tool.execute.after",
-              { tool: MCP_RESOURCE_TOOLS.listTemplates, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
-              output,
-            )
             yield* recordSettlement(MCP_RESOURCE_TOOLS.listTemplates, opts.toolCallId, {
               sourceKind: "mcp",
               registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.listTemplates}`,
@@ -952,11 +928,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
                 messageID: input.processor.message.id,
               })),
             }
-            yield* plugin.trigger(
-              "tool.execute.after",
-              { tool: MCP_RESOURCE_TOOLS.read, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
-              output,
-            )
             yield* recordSettlement(MCP_RESOURCE_TOOLS.read, opts.toolCallId, {
               sourceKind: "mcp",
               registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.read}`,
@@ -990,11 +961,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           let confirmed = false
           let allowed = false
           let pre: TriggerResult = { additionalContexts: [], systemMessages: [] }
-          yield* plugin.trigger(
-            "tool.execute.before",
-            { tool: name, sessionID: input.session.id, callID: opts.toolCallId },
-            { args },
-          )
           if (settingsHook) {
             pre = yield* settingsHook
               .trigger(
@@ -1200,11 +1166,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           let hookConfirmed = false
           let hookAllowed = false
           let ctx = context(args, opts, false, originalArgs, key)
-          yield* plugin.trigger(
-            "tool.execute.before",
-            { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId },
-            { args },
-          )
           // SettingsHook PreToolUse
           if (settingsHook) {
             let preResult = yield* settingsHook
@@ -1349,12 +1310,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
           )
           executionPending = false
           if (opts.abortSignal?.aborted) yield* reportInterrupt(key, args, opts.toolCallId).pipe(Effect.uninterruptible)
-          yield* plugin.trigger(
-            "tool.execute.after",
-            { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
-            result,
-          )
-
           let postResult: TriggerResult | undefined
           if (settingsHook) {
             postResult = yield* settingsHook

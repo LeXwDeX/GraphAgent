@@ -8,7 +8,6 @@ import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
-import { Plugin } from "@/plugin"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -58,7 +57,6 @@ const recordedInputs: unknown[] = []
 const it = testEffect(
   Layer.mergeAll(
     Permission.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provideMerge(hookLayer)),
-    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(Truncate.Service, {}),
     Layer.mock(ToolRegistry.Service, {

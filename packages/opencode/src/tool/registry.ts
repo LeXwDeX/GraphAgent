@@ -32,7 +32,6 @@ import { type ToolContext as PluginToolContext, type ToolDefinition } from "@ope
 import type { JSONSchema7, JSONSchema7Definition } from "@ai-sdk/provider"
 import { Schema } from "effect"
 import z from "zod"
-import { Plugin } from "../plugin"
 import { Provider } from "@/provider/provider"
 
 import { WebSearchTool } from "./websearch"
@@ -117,7 +116,6 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const plugin = yield* Plugin.Service
     const agents = yield* Agent.Service
     const truncate = yield* Truncate.Service
     const flags = yield* RuntimeFlags.Service
@@ -221,13 +219,6 @@ export const layer = Layer.effect(
           for (const [id, def] of Object.entries(mod)) {
             if (!isPluginTool(def)) continue
             custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
-          }
-        }
-
-        const plugins = yield* plugin.list()
-        for (const p of plugins) {
-          for (const [id, def] of Object.entries(p.tool ?? {})) {
-            custom.push(fromPlugin(id, def))
           }
         }
 
@@ -347,22 +338,13 @@ export const layer = Layer.effect(
         filtered,
         Effect.fnUntraced(function* (registration) {
           const tool = registration.definition
-          const output = {
-            description: tool.description,
-            parameters: tool.parameters,
-            jsonSchema: tool.jsonSchema,
-          }
-          yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
-          const jsonSchema =
-            output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
-              ? output.jsonSchema
-              : undefined
+          const jsonSchema = tool.jsonSchema
           return {
             ...registration,
             definition: {
               id: tool.id,
               description: [
-                output.description,
+                tool.description,
                 tool.id === TaskTool.id
                   ? yield* describeAgents(input.agent, {
                       heading: "Available agent types:",
@@ -381,7 +363,7 @@ export const layer = Layer.effect(
               ]
                 .filter(Boolean)
                 .join("\n"),
-              parameters: output.parameters,
+              parameters: tool.parameters,
               jsonSchema,
               execute: tool.execute,
               formatValidationError: tool.formatValidationError,
@@ -409,7 +391,6 @@ export const defaultLayer = Layer.suspend(() =>
   layer
     .pipe(
       Layer.provide(Config.defaultLayer),
-      Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),
       Layer.provide(Skill.defaultLayer),
@@ -514,7 +495,6 @@ function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
 
 export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer)), [
   Config.node,
-  Plugin.node,
   Question.node,
   Todo.node,
   Agent.node,

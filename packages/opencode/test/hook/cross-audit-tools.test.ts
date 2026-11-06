@@ -9,7 +9,6 @@ import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
-import { Plugin } from "@/plugin"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -51,14 +50,9 @@ let extraDefinitions: any[] = []
 let mcpTools: Record<string, any> = {}
 let mcpClients: Record<string, unknown> = {}
 let resourceLoader: MCP.Interface["resources"] = () => Effect.succeed({})
-let afterPluginDefect = false
 let askResult: Effect.Effect<void, PermissionV1.RejectedError> = Effect.void
 const layers = Layer.mergeAll(
   hookLayer,
-  Layer.mock(Plugin.Service, {
-    trigger: (name, _input, output) =>
-      name === "tool.execute.after" && afterPluginDefect ? Effect.die("AFTER_PLUGIN_DEFECT") : Effect.succeed(output),
-  }),
   Layer.mock(Permission.Service, {
     ask: () => askResult,
     hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
@@ -824,37 +818,4 @@ describe("tool failure event boundaries", () => {
       }),
     )
   }
-
-  it.instance("a plugin defect after successful execution does not become a tool failure", () =>
-    Effect.gen(function* () {
-      const instance = yield* TestInstance
-      const store = yield* SessionHooks.Service
-      const id = SessionID.descending()
-      const capture = path.join(instance.directory, "unexpected-failure.txt")
-      afterPluginDefect = true
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          afterPluginDefect = false
-        }),
-      )
-      yield* store.add(id, {
-        event: "PostToolUseFailure",
-        hooks: [{ type: "command", command: hookCommand(`await Bun.write(${JSON.stringify(capture)},"failure")`) }],
-      })
-      const tools = yield* resolve(id, instance.directory)
-      const rejected = yield* Effect.promise(() =>
-        Promise.resolve(
-          tools.write.execute!(
-            { filePath: path.join(instance.directory, "written.txt"), content: "ok" },
-            options("plugin-defect"),
-          ),
-        ).then(
-          () => false,
-          () => true,
-        ),
-      )
-      expect(rejected).toBe(true)
-      expect(yield* Effect.promise(() => Bun.file(capture).exists())).toBe(false)
-    }),
-  )
 })

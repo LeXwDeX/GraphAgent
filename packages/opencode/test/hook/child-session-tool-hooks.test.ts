@@ -5,7 +5,6 @@ import path from "node:path"
 import { SessionTools } from "@/session/tools"
 import { SettingsHook, type HookPayload, type TriggerContext, type TriggerResult } from "@/hook/settings"
 import { ToolRegistry } from "@/tool/registry"
-import { Plugin } from "@/plugin"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -46,7 +45,6 @@ const writeDefinition = {
 const it = testEffect(
   Layer.mergeAll(
     recorder,
-    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
     Layer.mock(Permission.Service, {
       ask: () => Effect.void,
       hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),

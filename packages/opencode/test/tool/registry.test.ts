@@ -10,7 +10,6 @@ import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import { Config } from "@/config/config"
-import { Plugin } from "@/plugin"
 import { Agent } from "@/agent/agent"
 import { InstanceState } from "@/effect/instance-state"
 
@@ -26,32 +25,6 @@ import { SessionReminders } from "@/session/reminders"
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".opencode")])),
 })
-const trigger: Plugin.Interface["trigger"] = (_name, _input, output) => Effect.succeed(output)
-
-// Fake Plugin.Service that returns a single plugin whose `tool` map contains
-// one definition with `args: undefined`. Used to exercise the plugin entry
-// point of `fromPlugin` for the #27451 / #27630 regression.
-const brokenPluginLayer = Layer.succeed(
-  Plugin.Service,
-  Plugin.Service.of({
-    init: () => Effect.void,
-    trigger,
-    contextFoldingCompatibility: () =>
-      Effect.succeed({ knownExternalDcp: "unknown", migrationNotice: "not-applicable" }),
-    list: () =>
-      Effect.succeed([
-        {
-          tool: {
-            broken_plugin_tool: {
-              description: "plugin tool with missing args",
-              args: undefined as unknown as Record<string, never>,
-              execute: async () => "ok",
-            },
-          },
-        },
-      ]),
-  }),
-)
 
 const root = LayerNode.group([ToolRegistry.node, Agent.node])
 const replacements = [
@@ -60,11 +33,6 @@ const replacements = [
 ]
 
 const it = testEffect(LayerNode.buildLayer(root, { replacements }))
-const withBrokenPlugin = testEffect(
-  LayerNode.buildLayer(root, {
-    replacements: [...replacements, LayerNode.replace(Plugin.node, brokenPluginLayer)],
-  }),
-)
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -273,20 +241,6 @@ describe("tool.registry", () => {
     }),
   )
 
-  // Same regression, plugin entry point. The original reports (#27451, #27630)
-  // came in through `plugin.list()` — `oh-my-opencode` was registering a tool
-  // with `args: undefined` and crashing every message submit. The file-scan
-  // and plugin-list loops both funnel through `fromPlugin`, but covering both
-  // entry points means a future refactor that splits them won't silently lose
-  // protection.
-  withBrokenPlugin.instance("tolerates a plugin tool registered with null/undefined args", () =>
-    Effect.gen(function* () {
-      const registry = yield* ToolRegistry.Service
-      const ids = yield* registry.ids()
-      expect(ids).toContain("read")
-      expect(ids).toContain("broken_plugin_tool")
-    }),
-  )
 
   it.instance("loads tools from .opencode/tools (plural)", () =>
     Effect.gen(function* () {
