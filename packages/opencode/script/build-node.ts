@@ -29,9 +29,6 @@ await Bun.build({
     OPENCODE_CHANNEL: `'${Script.channel}'`,
     ...NODE_SCHEMA_WORKER_DEFINES,
   },
-  files: {
-    "opencode-web-ui.gen.ts": "",
-  },
 })
 
 console.log("Build complete")
