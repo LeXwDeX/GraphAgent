@@ -232,6 +232,16 @@ function collapseDuplicateComponents(spec: OpenApiSpec) {
 function normalizeComponentNames(spec: OpenApiSpec) {
   const schemas = spec.components?.schemas
   if (!schemas) return
+  // Effect 4.1.2 names the encoded side of a schema `<Identifier>Encoded`
+  // (repeated encoded candidates get an `Encoded_<n>` suffix). The public
+  // surface keeps the pre-4.1.2 component names, so encoded components are
+  // renamed first; collisions with an existing plain component resolve to a
+  // numeric suffix (`UnknownError` + `UnknownError1`).
+  for (const name of Object.keys(schemas)
+    .filter((name) => /Encoded(?:_\d+)?$/.test(name))
+    .sort()) {
+    renameComponent(spec, name, componentTypeName(name))
+  }
   for (const name of Object.keys(schemas)) {
     const next = componentTypeName(name)
     if (next === name) continue
@@ -248,10 +258,28 @@ function normalizeComponentNames(spec: OpenApiSpec) {
   }
 }
 
+function renameComponent(spec: OpenApiSpec, name: string, target: string) {
+  const schemas = spec.components?.schemas
+  if (!schemas || target === name || !schemas[name]) return
+  let candidate = target
+  for (let index = 1; schemas[candidate]; index++) {
+    if (equivalentSchemas(schemas[name], schemas[candidate], schemas)) {
+      rewriteRefs(spec, name, candidate)
+      delete schemas[name]
+      return
+    }
+    candidate = `${target}${index}`
+  }
+  schemas[candidate] = schemas[name]
+  rewriteRefs(spec, name, candidate)
+  delete schemas[name]
+}
+
 function componentTypeName(name: string) {
-  if (!name.includes(".")) return name
-  return name
-    .split(".")
+  const base = name.replace(/Encoded(?:_\d+)?$/, "")
+  if (!base.includes(".") && !base.includes("_")) return base
+  return base
+    .split(/[._]/)
     .filter((part) => !/^\d+$/.test(part))
     .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
     .join("")

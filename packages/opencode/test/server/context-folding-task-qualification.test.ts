@@ -184,22 +184,10 @@ async function drain(stream: ReadableStream<Uint8Array>, chunks: string[], onTex
 function startHost(home: string, config: Partial<ConfigV1.Info>, arm: Arm) {
   return Effect.acquireRelease(
     Effect.promise(async () => {
-      const root = path.resolve(import.meta.dir, "../..")
+      // `opencode serve` was removed with the remote server surface; the
+      // maintained source host entrypoint starts the same HttpApi app.
       const child = Bun.spawn(
-        [
-          process.execPath,
-          "run",
-          "--conditions=browser",
-          path.join(root, "src/index.ts"),
-          "serve",
-          "--hostname",
-          "127.0.0.1",
-          "--port",
-          "0",
-          "--print-logs",
-          "--log-level",
-          "INFO",
-        ],
+        [process.execPath, "run", "--conditions=browser", path.join(import.meta.dir, "../lib/server-host.ts")],
         {
           cwd: home,
           env: isolatedEnv(home, config, arm),

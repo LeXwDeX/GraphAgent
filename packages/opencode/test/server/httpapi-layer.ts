@@ -2,21 +2,27 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { Config, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
 import { layerWebSocketConstructorGlobal } from "effect/socket/Socket"
+import type { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 
-const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
-  HttpApiApp.routes,
-  {
-    disableListenLog: true,
-    disableLogger: true,
-  },
-)
+/** Builds the served app with app-graph node replacements (e.g. a fake ProviderAdapters). */
+export function httpApiLayerWith(replacements: readonly LayerNode.Replacement[]) {
+  const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
+    HttpApiApp.createRoutes({ replacements }),
+    {
+      disableListenLog: true,
+      disableLogger: true,
+    },
+  )
 
-export const httpApiLayer = servedRoutes.pipe(
-  Layer.provide(layerWebSocketConstructorGlobal),
-  Layer.provideMerge(NodeHttpServer.layerTest),
-  Layer.provideMerge(NodeServices.layer),
-)
+  return servedRoutes.pipe(
+    Layer.provide(layerWebSocketConstructorGlobal),
+    Layer.provideMerge(NodeHttpServer.layerTest),
+    Layer.provideMerge(NodeServices.layer),
+  )
+}
+
+export const httpApiLayer = httpApiLayerWith([])
 
 export function request(path: string, init?: RequestInit) {
   const url = new URL(path, "http://localhost")

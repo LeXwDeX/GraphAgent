@@ -660,8 +660,9 @@ export const RunCommand = effectCmd({
                 const props = event.properties
                 if (props.sessionID !== sessionID || !props.error) continue
                 let err = String(props.error.name)
-                if ("data" in props.error && props.error.data && "message" in props.error.data) {
-                  err = String(props.error.data.message)
+                const data: unknown = props.error.data
+                if (typeof data === "object" && data !== null && "message" in data) {
+                  err = String(data.message)
                 }
                 error = error ? error + EOL + err : err
                 if (emit("error", { error: props.error })) continue
@@ -922,7 +923,7 @@ export const RunCommand = effectCmd({
               fetch: fetchFn,
               resolveAgent: localAgent,
               session,
-                  createSession: createFreshSession,
+              createSession: createFreshSession,
               agent: args.agent,
               model,
               variant: args.variant,

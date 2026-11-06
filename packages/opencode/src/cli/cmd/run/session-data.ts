@@ -168,15 +168,10 @@ function formatUsage(
   return text
 }
 
-export function formatError(error: {
-  name?: string
-  message?: string
-  data?: {
-    message?: string
-  }
-}): string {
-  if (error.data?.message) {
-    return error.data.message
+export function formatError(error: { name?: string; message?: string; data?: unknown }): string {
+  if (typeof error.data === "object" && error.data !== null && "message" in error.data) {
+    const message = error.data.message
+    if (typeof message === "string" && message) return message
   }
 
   if (error.message) {

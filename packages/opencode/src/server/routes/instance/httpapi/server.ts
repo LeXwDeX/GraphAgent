@@ -335,10 +335,12 @@ export const app = LayerNode.group([
   EventResidueSweep.node,
 ])
 
-export function createRoutes(): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
+export function createRoutes(options?: {
+  readonly replacements?: readonly LayerNode.Replacement[]
+}): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, serverRoutes).pipe(
     Layer.provide([errorLayer, compressionLayer, fenceLayer, MoveSession.defaultLayer, HttpServer.layerServices]),
-    Layer.provide(LayerNode.buildLayer(app)),
+    Layer.provide(LayerNode.buildLayer(app, options)),
     Layer.provideMerge(Observability.layer),
     // tsgo (native TS preview) widens the merged error channel to `unknown` after the
     // provide/provideMerge chain, while the declared return type is ConfigError. The
