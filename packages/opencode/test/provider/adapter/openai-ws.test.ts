@@ -4,9 +4,9 @@ import { createServer, type IncomingMessage, type Server as HttpServer, type Ser
 import net, { type AddressInfo, type Socket } from "node:net"
 import WebSocket, { WebSocketServer } from "ws"
 import { APICallError } from "ai"
-import { ProviderError } from "../../src/provider/error"
-import { OpenAIWebSocket } from "../../src/plugin/openai/ws"
-import { OpenAIWebSocketPool, TITLE_HEADER } from "../../src/plugin/openai/ws-pool"
+import { ProviderError } from "../../../src/provider/error"
+import { OpenAIWebSocket } from "../../../src/provider/openai-ws/ws"
+import { OpenAIWebSocketPool, TITLE_HEADER } from "../../../src/provider/openai-ws/ws-pool"
 
 function fakeWebSocket() {
   return new (class extends EventEmitter {

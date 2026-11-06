@@ -398,4 +398,3 @@ test("detects PDF input support when vision and media type are advertised", asyn
   expect(model.capabilities.input.pdf).toBe(true)
   expect(models["vision-only-model"].capabilities.input.pdf).toBe(false)
 })
-

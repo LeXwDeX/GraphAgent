@@ -7,7 +7,7 @@ import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
 import { NoSuchModelError, type Provider as SDK } from "ai"
 import { Npm } from "@opencode-ai/core/npm"
 import { Hash } from "@opencode-ai/core/util/hash"
-import { Plugin } from "../plugin"
+import { ProviderAdapters } from "./adapter/registry"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { type LanguageModelV3 } from "@ai-sdk/provider"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -31,7 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
-import { OpenAIWebSocketPool } from "@/plugin/openai/ws-pool"
+import { OpenAIWebSocketPool } from "./openai-ws/ws-pool"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
@@ -1347,7 +1347,7 @@ export const layer = Layer.effect(
     const config = yield* Config.Service
     const auth = yield* Auth.Service
     const env = yield* Env.Service
-    const plugin = yield* Plugin.Service
+    const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
     const modelsDevSvc = yield* ModelsDev.Service
     const runtimeFlags = yield* RuntimeFlags.Service
     const events = yield* EventV2Bridge.Service
@@ -1397,7 +1397,7 @@ export const layer = Layer.effect(
         }
 
         // load plugins first so config() hook runs before reading cfg.provider
-        const plugins = yield* plugin.list()
+        const adaptersList = adapters._tag === "Some" ? yield* adapters.value.list() : []
 
         // now read config providers - includes any modifications from plugin config() hook
         const configProviders = Object.entries(cfg.provider ?? {})
@@ -1410,8 +1410,8 @@ export const layer = Layer.effect(
           return true
         }
 
-        for (const hook of plugins) {
-          const p = hook.provider
+        for (const adapter of adaptersList) {
+          const p = adapter.provider
           const models = p?.models
           if (!p || !models) continue
 
@@ -1420,10 +1420,10 @@ export const layer = Layer.effect(
 
           const provider = database[providerID]
           if (!provider) continue
-          const pluginAuth = yield* auth.get(providerID).pipe(Effect.orDie)
+          const adapterAuth = yield* auth.get(providerID).pipe(Effect.orDie)
 
           provider.models = yield* Effect.promise(async () => {
-            const next = await models(toPublicInfo(provider), { auth: pluginAuth })
+            const next = await models(toPublicInfo(provider), { auth: adapterAuth })
             return Object.fromEntries(
               Object.entries(next).map(([id, model]) => [
                 id,
@@ -1564,19 +1564,19 @@ export const layer = Layer.effect(
         }
 
         // plugin auth loader - database now has entries for config providers
-        for (const plugin of plugins) {
-          if (!plugin.auth) continue
-          const providerID = ProviderV2.ID.make(plugin.auth.provider)
+        for (const adapter of adaptersList) {
+          if (!adapter.auth) continue
+          const providerID = ProviderV2.ID.make(adapter.auth.provider)
           if (disabled.has(providerID)) continue
 
           const stored = yield* auth.get(providerID).pipe(Effect.orDie)
           if (!stored) continue
-          if (!plugin.auth.loader) continue
+          if (!adapter.auth.loader) continue
 
           const options = yield* Effect.promise(() =>
-            plugin.auth!.loader!(
+            adapter.auth!.loader!(
               () => bridge.promise(auth.get(providerID).pipe(Effect.orDie)) as any,
-              toPublicInfo(database[plugin.auth!.provider]),
+              toPublicInfo(database[adapter.auth!.provider]),
             ),
           )
           const opts = options ?? {}
@@ -1966,16 +1966,13 @@ export const layer = Layer.effect(
       const provider = s.providers[providerID]
       if (!provider) return undefined
 
-      const experimental = yield* plugin.trigger<"experimental.provider.small_model">(
-        "experimental.provider.small_model",
-        { provider: toPublicInfo(provider) },
-        { model: undefined },
-      )
-      if (experimental.model) {
+      const experimental =
+        adapters._tag === "Some" ? yield* adapters.value.smallModel({ provider: toPublicInfo(provider) }) : undefined
+      if (experimental) {
         return {
-          ...experimental.model,
-          id: ModelV2.ID.make(experimental.model.id),
-          providerID: ProviderV2.ID.make(experimental.model.providerID),
+          ...experimental,
+          id: ModelV2.ID.make(experimental.id),
+          providerID: ProviderV2.ID.make(experimental.providerID),
         }
       }
 
@@ -2066,7 +2063,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Env.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(Auth.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
@@ -2096,7 +2092,7 @@ export const node = LayerNode.make(layer, [
   Config.node,
   Auth.node,
   Env.node,
-  Plugin.node,
+  ProviderAdapters.node,
   ModelsDev.node,
   RuntimeFlags.node,
   EventV2Bridge.node,

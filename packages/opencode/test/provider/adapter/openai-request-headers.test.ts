@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { $ } from "bun"
 import { createOpencodeClient } from "@opencode-ai/sdk"
-import { CodexAuthPlugin } from "../../src/plugin/openai/codex"
-import { OpenAIWebSocketPool, TITLE_HEADER } from "../../src/plugin/openai/ws-pool"
+import { CodexAuthPlugin } from "../../../src/plugin/openai/codex"
+import { OpenAIWebSocketPool, TITLE_HEADER } from "../../../src/provider/openai-ws/ws-pool"
 
 const originalHeaders = {
   authorization: "Bearer synthetic-original",

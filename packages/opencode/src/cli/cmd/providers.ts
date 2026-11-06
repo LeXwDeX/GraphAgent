@@ -11,14 +11,14 @@ import path from "path"
 import os from "os"
 import { Config } from "@/config/config"
 import { Global } from "@opencode-ai/core/global"
-import { Plugin } from "../../plugin"
-import type { Hooks } from "@opencode-ai/plugin"
+import { ProviderAdapters } from "@/provider/adapter/registry"
+import type { AuthHook } from "@/provider/adapter/types"
 import { Process } from "@/util/process"
 import { errorMessage } from "@/util/error"
 import { text } from "node:stream/consumers"
 import { Effect, Option } from "effect"
 
-type PluginAuth = NonNullable<Hooks["auth"]>
+type PluginAuth = AuthHook
 
 const promptValue = <Value>(value: Option.Option<Value>) => {
   if (Option.isNone(value)) return Effect.die(new UI.CancelledError())
@@ -210,7 +210,7 @@ const handlePluginAuth = Effect.fn("Cli.providers.pluginAuth")(function* (
 })
 
 export function resolvePluginProviders(input: {
-  hooks: Hooks[]
+  hooks: Array<AuthHook | { auth?: AuthHook }>
   existingProviders: Record<string, unknown>
   disabled: Set<string>
   enabled?: Set<string>
@@ -220,8 +220,9 @@ export function resolvePluginProviders(input: {
   const result: Array<{ id: string; name: string }> = []
 
   for (const hook of input.hooks) {
-    if (!hook.auth) continue
-    const id = hook.auth.provider
+    const auth = "provider" in hook ? hook : hook.auth
+    if (!auth) continue
+    const id = auth.provider
     if (seen.has(id)) continue
     seen.add(id)
     if (Object.hasOwn(input.existingProviders, id)) continue
@@ -352,7 +353,7 @@ export const ProvidersLoginCommand = effectCmd({
     }
 
     const cfgSvc = yield* Config.Service
-    const pluginSvc = yield* Plugin.Service
+    const adapters = yield* ProviderAdapters.Service
     const modelsDev = yield* ModelsDev.Service
     yield* Effect.ignore(modelsDev.refresh(true))
 
@@ -366,7 +367,8 @@ export const ProvidersLoginCommand = effectCmd({
     for (const [key, value] of Object.entries(allProviders)) {
       if ((enabled ? enabled.has(key) : true) && !disabled.has(key)) providers[key] = value
     }
-    const hooks = yield* pluginSvc.list()
+    const authHooks = yield* adapters.authHooks()
+    const hooks = Object.values(authHooks)
 
     const priority: Record<string, number> = {
       opencode: 0,
@@ -404,7 +406,7 @@ export const ProvidersLoginCommand = effectCmd({
       ...pluginProviders.map((x) => ({
         label: x.name,
         value: x.id,
-        hint: "plugin",
+         hint: "built-in",
       })),
     ]
 
@@ -428,9 +430,9 @@ export const ProvidersLoginCommand = effectCmd({
       )
     }
 
-    const plugin = hooks.findLast((x) => x.auth?.provider === provider)
-    if (plugin && plugin.auth) {
-      const handled = yield* handlePluginAuth({ auth: plugin.auth! }, provider, args.method)
+    const authHook = authHooks[provider]
+    if (authHook) {
+      const handled = yield* handlePluginAuth({ auth: authHook }, provider, args.method)
       if (handled) return
     }
 
@@ -442,9 +444,9 @@ export const ProvidersLoginCommand = effectCmd({
         }),
       )).replace(/^@ai-sdk\//, "")
 
-      const customPlugin = hooks.findLast((x) => x.auth?.provider === provider)
-      if (customPlugin && customPlugin.auth) {
-        const handled = yield* handlePluginAuth({ auth: customPlugin.auth! }, provider, args.method)
+      const customAuth = authHooks[provider]
+      if (customAuth) {
+        const handled = yield* handlePluginAuth({ auth: customAuth }, provider, args.method)
         if (handled) return
       }
 

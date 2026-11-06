@@ -26,6 +26,7 @@ import { Snapshot } from "@/snapshot"
 import { Plugin } from "@/plugin"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Provider } from "@/provider/provider"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderAuth } from "@/provider/auth"
 import { Agent } from "@/agent/agent"
 import { Skill } from "@/skill"
@@ -149,6 +150,9 @@ const BaseAppLayer = Layer.mergeAll(
   Layer.provideMerge(Ripgrep.defaultLayer),
   Layer.provideMerge(InstanceLayer.layer),
   Layer.provideMerge(Observability.layer),
+  // Provider adapters read Session.Service for Copilot request attribution.
+  // Provide them after the instance/session group is assembled.
+  Layer.provideMerge(ProviderAdapters.defaultLayer),
   // GoalLoop + SettingsHook go in provideMerge (NOT mergeAll) because they need
   // services from BOTH group1 and group2. mergeAll siblings cannot see each
   // other's outputs, but provideMerge gives the layer access to the full

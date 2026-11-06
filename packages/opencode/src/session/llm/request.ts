@@ -7,6 +7,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
 import type { Provider } from "@/provider/provider"
+import type { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
 import { RuntimeContext } from "../runtime-context"
@@ -14,8 +15,8 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
-import type { Plugin } from "@/plugin"
-import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
+import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
+import type { ChatParams } from "@/provider/adapter/types"
 import { mergeDeep } from "remeda"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
@@ -36,7 +37,11 @@ type PrepareInput = {
   readonly provider: Provider.Info
   readonly cfg?: ConfigV1.Info
   readonly auth: Auth.Info | undefined
-  readonly plugin: Plugin.Interface
+  readonly adapters?: ProviderAdapters.Interface
+  /** @deprecated Provider hooks are now routed through adapters. */
+  readonly plugin?: {
+    trigger(name: string, input: unknown, output: unknown): Effect.Effect<any>
+  }
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
 }
@@ -60,6 +65,12 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
   mergeDeep(target, source ?? {}) as Record<string, any>
 
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
+  const adapters =
+    input.adapters ??
+    ({
+      chatParams: (_hookInput: unknown, output: ChatParams) => Effect.succeed(output),
+      chatHeaders: (_hookInput: unknown, output: { headers: Record<string, string> }) => Effect.succeed(output.headers),
+    } satisfies Pick<ProviderAdapters.Interface, "chatParams" | "chatHeaders">)
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const tools = resolveTools(input)
   // GitLab workflow models take their goal from the last user message and read state only from the system text.
@@ -81,11 +92,6 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   ]
 
   const header = system[0]
-  yield* input.plugin.trigger(
-    "experimental.chat.system.transform",
-    { sessionID: input.sessionID, model: input.model },
-    { system },
-  )
   if (system.length > 2 && system[0] === header) {
     const rest = system.slice(1)
     system.length = 0
@@ -125,8 +131,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
           ...input.messages,
         ]
 
-  const params = yield* input.plugin.trigger(
-    "chat.params",
+  const params = yield* adapters.chatParams(
     {
       sessionID: input.sessionID,
       agent: input.agent.name,
@@ -149,8 +154,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     },
   )
 
-  const { headers }: { headers: Record<string, string> } = yield* input.plugin.trigger(
-    "chat.headers",
+  const headers = yield* adapters.chatHeaders(
     {
       sessionID: input.sessionID,
       agent: input.agent.name,

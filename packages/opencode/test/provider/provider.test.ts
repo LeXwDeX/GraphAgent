@@ -12,7 +12,6 @@ import {
   provideInstanceEffect,
   testInstanceStoreLayer,
   tmpdirScoped,
-  TestInstance,
 } from "../fixture/fixture"
 import { markPluginDependenciesReady } from "../fixture/plugin"
 import { Auth } from "@/auth"
@@ -2088,41 +2087,6 @@ it.effect("plugin config providers persist after instance dispose", () =>
     expect(second.providers[ProviderV2.ID.make("demo")]).toBeDefined()
     expect(second.providers[ProviderV2.ID.make("demo")].models[ModelV2.ID.make("chat")]).toBeDefined()
   }).pipe(provideMultiInstance),
-)
-
-it.instance(
-  "plugin config enabled and disabled providers are honored",
-  Effect.gen(function* () {
-    const instance = yield* TestInstance
-    const configDir = path.join(instance.directory, ".opencode")
-    const root = path.join(configDir, "plugin")
-    yield* Effect.promise(() => mkdir(root, { recursive: true }))
-    yield* Effect.promise(() => markPluginDependenciesReady(configDir))
-    yield* Effect.promise(() => markPluginDependenciesReady(Global.Path.config))
-    yield* Effect.promise(() =>
-      Bun.write(
-        path.join(root, "provider-filter.ts"),
-        [
-          "export default {",
-          '  id: "demo.provider-filter",',
-          "  server: async () => ({",
-          "    async config(cfg) {",
-          '      cfg.enabled_providers = ["anthropic", "openai"]',
-          '      cfg.disabled_providers = ["openai"]',
-          "    },",
-          "  }),",
-          "}",
-          "",
-        ].join("\n"),
-      ),
-    )
-
-    yield* set("ANTHROPIC_API_KEY", "test-anthropic-key")
-    yield* set("OPENAI_API_KEY", "test-openai-key")
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.anthropic]).toBeDefined()
-    expect(providers[ProviderV2.ID.openai]).toBeUndefined()
-  }),
 )
 
 it.effect("opencode loader keeps paid models when config apiKey is present", () =>

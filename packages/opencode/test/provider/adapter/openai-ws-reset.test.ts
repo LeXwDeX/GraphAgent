@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createServer, type Server as HttpServer, type ServerResponse } from "node:http"
 import WebSocket, { WebSocketServer } from "ws"
-import { createWebSocketFetch } from "../../src/plugin/openai/ws-pool"
+import { createWebSocketFetch } from "../../../src/provider/openai-ws/ws-pool"
 
 test("reset drops idle sockets, ignores unknown sessions, and leaves other sessions connected", async () => {
   let upgrades = 0

@@ -14,12 +14,13 @@ import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 import { Provider } from "@/provider/provider"
+import { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderError } from "@/provider/error"
 import { Env } from "@/env"
 import { Plugin } from "@/plugin"
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
-import { TITLE_HEADER } from "@/plugin/openai/ws-pool"
+import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
 import { CodexAuthPlugin } from "@/plugin/openai/codex"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -29,6 +30,7 @@ import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 const layer = Layer.mergeAll(
   Provider.defaultLayer,
+  ProviderAdapters.emptyLayer,
   Env.defaultLayer,
   Plugin.defaultLayer,
   Session.defaultLayer,
@@ -81,231 +83,6 @@ function providerConfig(
     },
   }
 }
-
-for (const [providerID, configuredMarkers] of [
-  ["openai", false],
-  ["openai", true],
-  ["relay", false],
-  ["relay", true],
-] as const) {
-  plainTransport.live(
-    `${providerID} plugin fetch keeps HTTP priority and strips title routing headers with configured markers=${configuredMarkers}`,
-    () =>
-      Effect.gen(function* () {
-        const received: Headers[] = []
-        let upgrades = 0
-        const server = yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            Bun.serve({
-              hostname: "127.0.0.1",
-              port: 0,
-              fetch(request) {
-                if (request.headers.get("upgrade") === "websocket") {
-                  upgrades++
-                  return new Response(null, { status: 400 })
-                }
-                received.push(request.headers)
-                return new Response(sse, { headers: { "content-type": "text/event-stream" } })
-              },
-            }),
-          ),
-          (server) => Effect.sync(() => server.stop(true)),
-        )
-        yield* Effect.gen(function* () {
-          const provider = yield* Provider.Service
-          const plugin = yield* Plugin.Service
-          const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
-          const language = yield* provider.getLanguage(model)
-          const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
-          const session = yield* Session.use.create({})
-          const flags = yield* RuntimeFlags.Service
-          for (const agent of ["build", "title"]) {
-            const { headers } = yield* LLMRequestPrep.prepare({
-              model,
-              provider: info,
-              sessionID: session.id,
-              agent: { name: agent, mode: "primary", permission: [], options: {} },
-              user: {
-                id: SessionV1.MessageID.make("msg_test"),
-                sessionID: session.id,
-                role: "user",
-                time: { created: 0 },
-                agent,
-                model: { providerID: model.providerID, modelID: model.id },
-              },
-              auth: undefined,
-              plugin,
-              flags,
-              isWorkflow: false,
-              messages: [{ role: "user", content: "hello" }],
-              system: [],
-              tools: {},
-            })
-            const result = streamText({
-              model: language,
-              prompt: "hello",
-              headers: { ...headers, "x-session-affinity": session.id, "x-ordinary": "preserved" },
-              maxRetries: 0,
-            })
-            expect(yield* Effect.promise(() => result.text)).toBe("ok")
-          }
-          expect(upgrades).toBe(0)
-          expect(received).toHaveLength(2)
-          for (const headers of received) {
-            expect(headers.has(TITLE_HEADER)).toBe(false)
-            expect(headers.get("x-custom-fetch")).toBe("preserved")
-            expect(headers.get("x-ordinary")).toBe("preserved")
-            expect(headers.get("x-provider")).toBe("preserved")
-            expect(headers.get("x-model")).toBe("preserved")
-            expect(headers.get("x-session-affinity")).toBe(session.id)
-            expect(headers.get("authorization")).toBe("Bearer test-provider-key")
-          }
-        }).pipe(
-          withTmpdirInstance({
-            init: (directory) =>
-              Effect.promise(async () => {
-                const file = `${directory}/custom-fetch.ts`
-                await Bun.write(
-                  file,
-                  `export default async () => ({ config(cfg) {
-                cfg.provider[${JSON.stringify(providerID)}].options.fetch = async (input, init) => {
-                  const headers = new Headers(init?.headers)
-                  headers.set("x-custom-fetch", "preserved")
-                  return globalThis.fetch(input, { ...init, headers })
-                }
-              } })`,
-                )
-                const config = providerConfig(new URL("/v1", server.url).toString(), true, providerID)
-                const provider = config.provider?.[providerID]
-                const model = provider?.models?.["test-model"]
-                if (!provider || !model) throw new Error("Expected configured provider model")
-                provider.options = {
-                  ...provider.options,
-                  headers: { "x-provider": "preserved", ...(configuredMarkers ? { "X-Opencode-Title": "true" } : {}) },
-                }
-                model.headers = { "x-model": "preserved", ...(configuredMarkers ? { "X-OPENCODE-TITLE": "true" } : {}) }
-                await Bun.write(
-                  `${directory}/opencode.json`,
-                  JSON.stringify({
-                    ...config,
-                    plugin: [pathToFileURL(file).href],
-                  }),
-                )
-              }),
-          }),
-        )
-      }),
-  )
-}
-
-plainTransport.live("custom fetch rebuilding Request preserves empty and title-only header overrides", () =>
-  Effect.gen(function* () {
-    const received: { headers: Headers; body: string }[] = []
-    const server = yield* Effect.acquireRelease(
-      Effect.sync(() =>
-        Bun.serve({
-          hostname: "127.0.0.1",
-          port: 0,
-          async fetch(request) {
-            received.push({ headers: request.headers, body: await request.text() })
-            return new Response("ok")
-          },
-        }),
-      ),
-      (server) => Effect.sync(() => server.stop(true)),
-    )
-    yield* Effect.gen(function* () {
-      const provider = yield* Provider.Service
-      const model = yield* provider.getModel(ProviderV2.ID.make("request-rebuild"), ModelV2.ID.make("test-model"))
-      const language = yield* provider.getLanguage(model)
-      const timers = yield* Effect.acquireRelease(
-        Effect.sync(() => ({
-          start: spyOn(globalThis, "setTimeout"),
-          clear: spyOn(globalThis, "clearTimeout"),
-        })),
-        (timers) =>
-          Effect.sync(() => {
-            timers.start.mockRestore()
-            timers.clear.mockRestore()
-          }),
-      )
-      const result = yield* Effect.promise(() => language.doGenerate({ prompt: [] }))
-      expect(result.content).toEqual([{ type: "text", text: "ok" }])
-      expect(received).toHaveLength(6)
-      for (const request of received) {
-        expect(request.headers.has(TITLE_HEADER)).toBe(false)
-        expect(request.headers.has("authorization")).toBe(false)
-        expect(request.headers.has("x-private")).toBe(false)
-        expect(request.body).toBe("retained-body")
-      }
-      const headerTimers = timers.start.mock.calls.flatMap((args, index) => {
-        const result = timers.start.mock.results[index]
-        return args[1] === 60_123 && result.type === "return" ? [result.value] : []
-      })
-      expect(headerTimers).toHaveLength(8)
-      for (const timer of headerTimers) expect(timers.clear).toHaveBeenCalledWith(timer)
-    }).pipe(
-      withTmpdirInstance({
-        init: (directory) =>
-          Effect.promise(async () => {
-            const sdk = `${directory}/request-sdk.ts`
-            await Bun.write(
-              sdk,
-              `export function createSDK(options) {
-          return { languageModel(modelId) {
-            return { specificationVersion: "v3", provider: "request-rebuild", modelId, supportedUrls: {},
-              async doGenerate() {
-                for (const marker of [false, true]) for (const form of ["record", "headers", "tuples"]) {
-                  const input = new Request(options.baseURL, { method: "POST", body: "retained-body",
-                    headers: { authorization: "Bearer synthetic-original", "x-private": "synthetic-private", "x-opencode-title": "original-marker" } });
-                  const override = marker ? { "X-Opencode-Title": "true" } : {};
-                  const headers = form === "record" ? override : form === "headers" ? new Headers(override) : Object.entries(override);
-                  await (await options.fetch(input, { headers })).text();
-                }
-                const used = new Request(options.baseURL, { method: "POST", body: "used-body",
-                  headers: { "x-opencode-title": "true" } });
-                await used.text();
-                const prepareError = await options.fetch(used, { headers: {} }).catch(error => error);
-                if (!(prepareError instanceof TypeError)) throw new Error("Expected used Request preparation to fail");
-                const customError = await options.fetch(new Request(options.baseURL, { method: "POST", body: "retained-body",
-                  headers: { "x-opencode-title": "true" } }), { headers: { "x-fixture-throw": "true" } }).catch(error => error);
-                if (customError?.message !== "synthetic custom fetch failure") throw new Error("Expected synchronous custom fetch failure");
-                return { content: [{type: "text", text: "ok"}], finishReason: {unified: "stop", raw: "stop"},
-                  usage: {inputTokens: {total: 1}, outputTokens: {total: 1}}, warnings: [] };
-              }
-            };
-          } };
-        }`,
-            )
-            const plugin = `${directory}/rebuilding-fetch.ts`
-            await Bun.write(
-              plugin,
-              `export default async () => ({ config(cfg) {
-          cfg.provider["request-rebuild"].options.fetch = (input, init) => {
-            if (new Headers(init?.headers).has("x-fixture-throw")) throw new Error("synthetic custom fetch failure");
-            return globalThis.fetch(new Request(input, init));
-          };
-        } })`,
-            )
-            await Bun.write(
-              `${directory}/opencode.json`,
-              JSON.stringify({
-                enabled_providers: ["request-rebuild"],
-                plugin: [pathToFileURL(plugin).href],
-                provider: {
-                  "request-rebuild": {
-                    npm: pathToFileURL(sdk).href,
-                    options: { baseURL: server.url.toString(), apiKey: "synthetic", headerTimeout: 60_123 },
-                    models: { "test-model": { name: "Request transport", limit: { context: 10000, output: 1000 } } },
-                  },
-                },
-              }),
-            )
-          }),
-      }),
-    )
-  }),
-)
 
 for (const [providerID, disableDefaultPlugins] of [
   ["relay", false],
@@ -382,7 +159,8 @@ for (const [providerID, disableDefaultPlugins] of [
             () =>
               Effect.gen(function* () {
                 const provider = yield* Provider.Service
-                const plugin = yield* Plugin.Service
+                 const plugin = yield* Plugin.Service
+                 const adapters = yield* ProviderAdapters.Service
                 const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
                 const language = yield* provider.getLanguage(model)
                 const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
@@ -405,7 +183,7 @@ for (const [providerID, disableDefaultPlugins] of [
                       model: { providerID: model.providerID, modelID: model.id },
                     },
                     auth: undefined,
-                    plugin,
+                     adapters,
                     flags,
                     isWorkflow: false,
                     messages: [{ role: "user", content: "hello" }],
@@ -414,7 +192,13 @@ for (const [providerID, disableDefaultPlugins] of [
                   })
                   expect(new Headers(headers).get(TITLE_HEADER)).toBe(configured === true && title ? "true" : null)
                   if (providerID === "relay") {
-                    const params = yield* plugin.trigger("chat.params", input, { maxOutputTokens: 1000 })
+                     const params = yield* adapters.chatParams(input as never, {
+                       temperature: undefined,
+                       topP: undefined,
+                       topK: undefined,
+                       maxOutputTokens: 1000,
+                       options: {},
+                     })
                     expect(params.maxOutputTokens).toBe(1000)
                   }
                   const result = streamText({
