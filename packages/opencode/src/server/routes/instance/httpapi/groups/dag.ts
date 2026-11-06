@@ -5,7 +5,6 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { DagSummary } from "@opencode-ai/schema/dag-summary"
 import { NonNegativeInt } from "@opencode-ai/schema/schema"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { ApiNotFoundError, ConflictError } from "../errors"
@@ -199,5 +198,4 @@ export const DagApi = HttpApi.make("dag").add(
     .annotateMerge(OpenApi.annotations({ title: "dag", description: "DAG workflow inspector + control routes" }))
     .middleware(InstanceContextMiddleware)
     .middleware(WorkspaceRoutingMiddleware)
-    .middleware(Authorization),
 )

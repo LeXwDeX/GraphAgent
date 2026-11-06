@@ -14,17 +14,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
 For SSE endpoints, stay in `HttpApiBuilder.group(...)` and return `HttpServerResponse.stream(...)` from the handler. Annotate the endpoint success schema with `HttpApiSchema.asText({ contentType: "text/event-stream" })` so OpenAPI documents the stream content type.
 
-Use `HttpApiBuilder.group(...)` with `handleRaw(...)` for declared endpoints that need the raw request or response, including WebSocket upgrade routes. This keeps endpoint middleware, routing context, and OpenAPI metadata on one typed route tree.
-
-```ts
-export const ptyConnectHandlers = HttpApiBuilder.group(PtyConnectApi, "pty-connect", (handlers) =>
-  Effect.gen(function* () {
-    const pty = yield* Pty.Service
-
-    return handlers.handleRaw("connect", (ctx) => connectPty(ctx.request, pty))
-  }),
-)
-```
+Use `HttpApiBuilder.group(...)` with `handleRaw(...)` for declared endpoints that need the raw request or response. This keeps endpoint middleware, routing context, and OpenAPI metadata on one typed route tree.
 
 Use raw `HttpRouter.use(...)` only for routes outside the declared API surface, such as a catch-all UI fallback.
 

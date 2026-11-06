@@ -9,7 +9,6 @@ import type {
 import { Config } from "@/config/config"
 import { snapshotAgentHooks, recordPluginAgentHooks } from "@/config/agent-hooks"
 import { createOpencodeClient } from "@opencode-ai/sdk"
-import { ServerAuth } from "@/server/auth"
 import { CodexAuthPlugin } from "./openai/codex"
 import { Session } from "@/session/session"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -184,12 +183,10 @@ export const layer = Layer.effect(
 
         const { Server } = yield* Effect.promise(() => import("../server/server"))
 
-        const serverUrl = Server.url
         const client = createOpencodeClient({
-          baseUrl: serverUrl?.toString() ?? "http://localhost:4096",
+          baseUrl: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
           directory: ctx.directory,
-          headers: ServerAuth.headers(),
-          ...(serverUrl ? {} : { fetch: async (...args) => Server.Default().app.fetch(...args) }),
+          fetch: async (...args) => Server.Default().app.fetch(...args),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {
@@ -203,7 +200,7 @@ export const layer = Layer.effect(
             },
           },
           get serverUrl(): URL {
-            return Server.url ?? new URL("http://localhost:4096")
+            return new URL("http://localhost:4096")
           },
           // @ts-expect-error
           $: typeof Bun === "undefined" ? undefined : Bun.$,

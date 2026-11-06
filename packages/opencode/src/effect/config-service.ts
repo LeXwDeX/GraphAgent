@@ -27,16 +27,16 @@ export type ServiceClass<Self, Id extends string, Service> = Context.ServiceClas
  * layers.
  *
  * ```ts
- * class ServerAuthConfig extends ConfigService.Service<ServerAuthConfig>()(
- *   "@opencode/ServerAuthConfig",
+ * class ExampleConfig extends ConfigService.Service<ExampleConfig>()(
+ *   "@opencode/ExampleConfig",
  *   {
- *     password: Config.String("OPENCODE_SERVER_PASSWORD").pipe(Config.option),
- *     username: Config.String("OPENCODE_SERVER_USERNAME").pipe(Config.withDefault("opencode")),
+ *     endpoint: Config.String("OPENCODE_EXAMPLE_ENDPOINT").pipe(Config.option),
+ *     retries: Config.int("OPENCODE_EXAMPLE_RETRIES").pipe(Config.withDefault(3)),
  *   },
  * ) {}
  *
- * const live = ServerAuthConfig.defaultLayer
- * const test = ServerAuthConfig.layer({ password: Option.some("secret"), username: "kit" })
+ * const live = ExampleConfig.defaultLayer
+ * const test = ExampleConfig.layer({ endpoint: Option.some("https://example.com"), retries: 1 })
  * ```
  */
 export const Service =

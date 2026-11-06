@@ -3,7 +3,6 @@ import { QuestionID } from "@/question/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
 import { QuestionNotFoundError } from "../errors"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -75,7 +74,6 @@ export const QuestionApi = HttpApi.make("question")
       )
       .middleware(InstanceContextMiddleware)
       .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
   )
   .annotateMerge(
     OpenApi.annotations({

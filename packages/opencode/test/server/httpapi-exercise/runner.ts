@@ -43,8 +43,6 @@ export function runScenario(options: Options) {
 }
 
 function runActive(options: Options, scenario: ActiveScenario) {
-  if (options.mode === "auth") return runAuth(scenario)
-
   return withContext(options, scenario, "shared", (ctx) =>
     Effect.gen(function* () {
       yield* trace(options, scenario, "request start")
@@ -55,21 +53,6 @@ function runActive(options: Options, scenario: ActiveScenario) {
       yield* trace(options, scenario, "expect done")
     }),
   )
-}
-
-function runAuth(scenario: ActiveScenario) {
-  return Effect.gen(function* () {
-    const result = yield* callAuthProbe(scenario, "missing")
-    if (scenario.auth === "protected") {
-      if (result.status !== 401) throw new Error(`auth expected 401, got ${result.status}`)
-      const authed = yield* callAuthProbe(scenario, "valid")
-      if (authed.status === 401) throw new Error("auth rejected valid credentials")
-      return
-    }
-
-    if (result.status === 401) throw new Error("auth expected public access, got 401")
-    if (result.timedOut) throw new Error("auth expected public access, probe timed out")
-  })
 }
 
 function withContext<A, E>(
@@ -213,7 +196,6 @@ function withContext<A, E>(
             run(modules.Worktree.Service.use((svc) => svc.remove({ directory })).pipe(Effect.ignore)),
           llmText: (value) => Effect.suspend(() => llm().text(value)),
           llmWait: (count) => Effect.suspend(() => llm().wait(count)),
-          tuiRequest: (request) => Effect.sync(() => modules.Tui.submitTuiRequest(request)),
           dag: (input) => run(createDagFixture(input.sessionID, input.title, input.nodes)),
           dagFailNode: (dagID, nodeID, reason, errorClass) =>
             run(failDagNodeFixture(dagID, nodeID, reason, errorClass)),

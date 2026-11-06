@@ -4,7 +4,6 @@ import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { ApiVcsApplyError } from "./instance"
 import { ApiNotFoundError } from "../errors"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -130,7 +129,6 @@ export const WorkspaceApi = HttpApi.make("workspace")
       .annotateMerge(OpenApi.annotations({ title: "workspace", description: "Experimental HttpApi workspace routes." }))
       .middleware(InstanceContextMiddleware)
       .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
   )
   .annotateMerge(
     OpenApi.annotations({

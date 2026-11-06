@@ -6,7 +6,6 @@ import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
 import { errorMessage } from "@opencode-ai/tui/util/error"
 import { withTimeout } from "@/util/timeout"
-import { withNetworkOptions, resolveNetworkOptionsNoConfig } from "@/cli/network"
 import { Filesystem } from "@/util/filesystem"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import type { EventSource } from "@opencode-ai/tui/context/sdk"
@@ -85,7 +84,7 @@ export const TuiThreadCommand = cmd({
   command: "$0 [project]",
   describe: "start opencode tui",
   builder: (yargs) =>
-    withNetworkOptions(yargs)
+    yargs
       .positional("project", {
         type: "string",
         describe: "path to start opencode in",
@@ -147,15 +146,6 @@ export const TuiThreadCommand = cmd({
     const noReplay = args.replay === false || args.noReplay === true
 
     if (args.mini) {
-      const network = ["--port", "--hostname", "--mdns", "--no-mdns", "--mdns-domain", "--cors"].find((option) =>
-        process.argv.some((arg) => arg === option || arg.startsWith(option + "=")),
-      )
-      if (network) {
-        UI.error(`${network} cannot be used with --mini`)
-        process.exitCode = 1
-        return
-      }
-
       const { runMini } = await import("./run")
       await runMini({
         directory: resolveThreadDirectory(args.project),
@@ -255,26 +245,11 @@ export const TuiThreadCommand = cmd({
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
 
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external =
-        process.argv.includes("--port") ||
-        process.argv.includes("--hostname") ||
-        process.argv.includes("--mdns") ||
-        network.mdns ||
-        network.port !== 0 ||
-        network.hostname !== "127.0.0.1"
-
-      const transport = external
-        ? {
-            url: (await client.call("server", network)).url,
-            fetch: undefined,
-            events: undefined,
-          }
-        : {
-            url: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
-          }
+      const transport = {
+        url: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
+        fetch: createWorkerFetch(client),
+        events: createEventSource(client),
+      }
 
       try {
         await validateSession({

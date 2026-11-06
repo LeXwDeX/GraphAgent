@@ -12,37 +12,6 @@
       ],
       "description": "Log level"
     },
-    "ServerConfig": {
-      "type": "object",
-      "properties": {
-        "port": {
-          "type": "integer",
-          "maximum": 9007199254740991,
-          "exclusiveMinimum": 0,
-          "description": "Port to listen on"
-        },
-        "hostname": {
-          "type": "string",
-          "description": "Hostname to listen on"
-        },
-        "mdns": {
-          "type": "boolean",
-          "description": "Enable mDNS service discovery"
-        },
-        "mdnsDomain": {
-          "type": "string",
-          "description": "Custom domain name for mDNS service (default: opencode.local)"
-        },
-        "cors": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Additional domains to allow for CORS"
-        }
-      },
-      "additionalProperties": true
-    },
     "ConfigV2.Reference.GitEncoded": {
       "type": "object",
       "properties": {
@@ -907,10 +876,6 @@
         "logLevel": {
           "$ref": "#/$defs/LogLevel",
           "description": "Log level"
-        },
-        "server": {
-          "$ref": "#/$defs/ServerConfig",
-          "description": "Server configuration for opencode serve and web commands"
         },
         "command": {
           "type": "object",
