@@ -1,6 +1,6 @@
 # Anthropic GA structured-output patch
 
-Issue: [#767](https://github.com/LeXwDeX/OpenCode-GraphAgent/issues/767)
+Issue: [#767](https://github.com/LeXwDeX/GraphAgent/issues/767)
 
 `@ai-sdk/anthropic@3.0.134` already sends JSON schemas as `output_config.format`.
 Its function-tool preparation still adds `structured-outputs-2025-11-13`

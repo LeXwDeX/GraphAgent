@@ -15,8 +15,8 @@ Images
 Build
 
 ```
-REGISTRY=ghcr.io/anomalyco TAG=24.04 bun ./packages/containers/script/build.ts
-REGISTRY=ghcr.io/anomalyco TAG=24.04 bun ./packages/containers/script/build.ts --push
+REGISTRY=ghcr.io/lexwdex TAG=24.04 bun ./packages/containers/script/build.ts
+REGISTRY=ghcr.io/lexwdex TAG=24.04 bun ./packages/containers/script/build.ts --push
 ```
 
 The build script reads the central pins and passes them as Docker build arguments.
@@ -37,7 +37,7 @@ jobs:
   build-cli:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/anomalyco/build/bun-node:24.04
+      image: ghcr.io/lexwdex/build/bun-node:24.04
 ```
 
 Notes

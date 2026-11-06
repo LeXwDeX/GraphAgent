@@ -60,7 +60,7 @@ async function withTemplatesDir(
       }
       await fs.writeFile(
         path.join(templates, "runtime-compat.json"),
-        JSON.stringify({ runtime_repo: "LeXwDeX/OpenCode-GraphAgent", runtime_commit: "0".repeat(40) }),
+        JSON.stringify({ runtime_repo: "LeXwDeX/GraphAgent", runtime_commit: "0".repeat(40) }),
       )
       await fs.writeFile(path.join(dir, "models-snapshot.json"), "{}")
     },

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LeXwDeX/OpenCode-GraphAgent/config_assistant/internal/models"
+	"github.com/LeXwDeX/GraphAgent/config_assistant/internal/models"
 )
 
 // WriteTarget 是生成配置的写入目标。

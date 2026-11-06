@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/LeXwDeX/opencode-graph-agent/blob/main/LICENSE-SCOPE.schema.json",
-  "title": "OpenCode-GraphAgent license scope manifest",
+  "$id": "https://github.com/LeXwDeX/GraphAgent/blob/main/LICENSE-SCOPE.schema.json",
+  "title": "GraphAgent license scope manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "defaultLicense", "scopes"],

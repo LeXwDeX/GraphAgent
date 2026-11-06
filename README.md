@@ -8,7 +8,7 @@
 > An opencode fork for long, multi-step coding work: durable DAG workflows of child agents, reasoning shaping, project memory, autonomous goals, and Claude Code–compatible hooks — all inspectable and controllable from the terminal.
 
 GraphAgent is the product name for this project; the repository is published as
-**OpenCode-GraphAgent**, a fork of the MIT-licensed
+**GraphAgent**, a fork of the MIT-licensed
 [opencode](https://github.com/anomalyco/opencode) terminal AI agent that adds
 the DAG workflow engine and the features listed below. **Not affiliated with or endorsed by the OpenCode
 team.**
@@ -16,7 +16,7 @@ team.**
 > [!IMPORTANT]
 > **GraphAgent v1 is in focused maintenance.** Maintenance is limited to DAG
 > configuration, curated workflow templates, and reproducible defects reported
-> through [GitHub Issues](https://github.com/LeXwDeX/OpenCode-GraphAgent/issues).
+> through [GitHub Issues](https://github.com/LeXwDeX/GraphAgent/issues).
 > Architecture defects that affect stability, data integrity, or the core DAG
 > experience will receive narrowly scoped compatibility patches; v1 will not
 > take new platform features or large foundational refactors. A successor
@@ -423,7 +423,7 @@ All upstream capabilities (multi-provider, built-in LSP, client/server architect
 
 ## Install
 
-Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
+Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
 
 Built-in application updating is disabled across CLI, TUI, web, and Desktop. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `opencode upgrade` and `POST /global/upgrade` report that updates are disabled.
 
@@ -474,5 +474,5 @@ Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers the DA
 
 ## Links
 
-- [GitHub](https://github.com/LeXwDeX/OpenCode-GraphAgent) · [Issues](https://github.com/LeXwDeX/OpenCode-GraphAgent/issues)
+- [GitHub](https://github.com/LeXwDeX/GraphAgent) · [Issues](https://github.com/LeXwDeX/GraphAgent/issues)
 - [Upstream opencode](https://opencode.ai)

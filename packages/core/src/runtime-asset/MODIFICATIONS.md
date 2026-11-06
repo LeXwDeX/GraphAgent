@@ -3,7 +3,7 @@
 
 # RuntimeAsset modifications
 
-This module is self-developed for the OpenCode-GraphAgent fork and is licensed
+This module is self-developed for the GraphAgent fork and is licensed
 under AGPL-3.0-or-later. Its full license text is in `LICENSE`.
 
 Every TypeScript source file in this directory starts with the two lines from

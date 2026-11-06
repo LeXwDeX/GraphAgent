@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/LeXwDeX/OpenCode-GraphAgent/config_assistant/internal/config"
+	"github.com/LeXwDeX/GraphAgent/config_assistant/internal/config"
 )
 
 func (a *app) updateStep1(msg tea.Msg) (tea.Model, tea.Cmd) {

@@ -56,7 +56,7 @@ export async function createCorrespondingSource(input: CorrespondingSourceInput)
       {
         schemaVersion: 1,
         artifactKind: "agpl-corresponding-source",
-        project: "OpenCode-GraphAgent",
+        project: "GraphAgent",
         version: input.version,
         commit,
         generatedAt: new Date(sourceDateEpoch * 1000).toISOString(),
