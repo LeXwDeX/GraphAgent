@@ -1,4 +1,4 @@
-import { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue } from "@opencode-ai/llm"
+import { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, type ToolResultValue as ToolResultValueType } from "@opencode-ai/llm"
 import { Effect, Schema } from "effect"
 import { InvalidResponseDataError, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
@@ -304,7 +304,8 @@ export function toLLMEvents(
           LLMEvent.toolResult({
             id: event.toolCallId,
             name,
-            result: ToolResultValue.make(event.output),
+            // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Schema.Type on the ToolResultValue union resolves to unknown after the lockfile re-resolve; the runtime guard in make() returns a valid union member
+            result: ToolResultValue.make(event.output) as ToolResultValueType,
             providerExecuted: "providerExecuted" in event ? event.providerExecuted : undefined,
             providerMetadata: providerMetadata(event.providerMetadata),
           }),
