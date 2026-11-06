@@ -3,7 +3,7 @@
 
 import { Option, Schema } from "effect"
 
-const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 // One Markdown code fence around the whole output. Two backticks are accepted
 // too: the prompt sanitizer rewrites ``` to `` in mapped dependency outputs.
 const CODE_FENCE = /^`{2,}[\w-]*[ \t]*\r?\n([\s\S]*?)\r?\n?`{2,}$/

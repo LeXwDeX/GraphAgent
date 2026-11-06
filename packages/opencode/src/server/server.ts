@@ -2,8 +2,8 @@ import "./init-projectors"
 
 import { NodeHttpServer } from "@effect/platform-node"
 import { ConfigProvider, Context, Effect, Exit, Layer, Scope } from "effect"
-import { HttpRouter, HttpServer } from "effect/unstable/http"
-import { OpenApi } from "effect/unstable/httpapi"
+import { HttpRouter, HttpServer } from "effect/http"
+import { OpenApi } from "effect/http-api"
 import { createServer } from "node:http"
 import { MDNS } from "./mdns"
 import { HttpApiApp } from "./routes/instance/httpapi/server"
@@ -35,7 +35,7 @@ type ListenOptions = CorsOptions & {
   mdnsDomain?: string
 }
 type ListenerState = {
-  scope: Scope.Scope
+  scope: Scope.Closeable
   server: Context.Service.Shape<typeof HttpServer.HttpServer>
   http: ListenerServer
   websockets: WebSocketTracker.Interface
@@ -104,7 +104,7 @@ function listenerLayer(opts: ListenOptions, port: number) {
   }).pipe(
     Layer.provideMerge(WebSocketTracker.layer),
     Layer.provideMerge(serverLayer({ port, hostname: opts.hostname })),
-    // Install a fresh `ConfigProvider` per listener so `Config.string(...)`
+    // Install a fresh `ConfigProvider` per listener so `Config.String(...)`
     // reads reflect the current `process.env`. Effect's default
     // `ConfigProvider` snapshots `process.env` on first read and caches the
     // result on a module-singleton Reference; without overriding it here,
@@ -138,7 +138,8 @@ function startListener(opts: ListenOptions, port: number) {
 
 function tcpAddress(state: ListenerState) {
   return Effect.gen(function* () {
-    if (state.server.address._tag === "TcpAddress") return state.server.address
+    if (state.server.address._tag === "InetAddressV4" || state.server.address._tag === "InetAddressV6")
+      return state.server.address
     yield* Scope.close(state.scope, Exit.void).pipe(Effect.ignore)
     return yield* Effect.die(new Error(`Unexpected HttpServer address tag: ${state.server.address._tag}`))
   })

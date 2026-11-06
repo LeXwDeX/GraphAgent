@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect"
-import * as Command from "effect/unstable/cli/Command"
+import * as Command from "effect/cli/Command"
 import { Spec } from "./spec"
 import { Daemon } from "../services/daemon"
 

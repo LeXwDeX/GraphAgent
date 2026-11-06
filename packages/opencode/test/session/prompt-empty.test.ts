@@ -1,6 +1,6 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { Database } from "@opencode-ai/core/database/database"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import { expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Session } from "@/session/session"

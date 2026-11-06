@@ -3,7 +3,7 @@ export * as WebSearchTool from "./websearch"
 
 import { ToolFailure } from "@opencode-ai/llm"
 import { Context, Duration, Effect, Layer, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest } from "effect/http"
 import { truthy } from "../flag/flag"
 import { InstallationVersion } from "../installation/version"
 import { PositiveInt } from "../schema"

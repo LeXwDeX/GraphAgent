@@ -40,7 +40,7 @@ export type SerializedEvent = {
   readonly data: Record<string, unknown>
 }
 
-export class InvalidDurableEventError extends Schema.TaggedErrorClass<InvalidDurableEventError>()(
+export class InvalidDurableEventError extends Schema.TaggedError<InvalidDurableEventError>()(
   "EventV2.InvalidDurableEvent",
   {
     type: Schema.String,

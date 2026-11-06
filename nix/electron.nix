@@ -1,6 +1,6 @@
 # Official prebuilt Electron matching the desktop workspace pin. Archive SHA256s
 # were checked against downloaded bytes, SHASUMS256.txt and release API digests.
-{ lib, stdenvNoCC, fetchurl, unzip, makeWrapper, electron_42-bin ? null }:
+{ lib, stdenvNoCC, fetchurl, unzip, makeWrapper, electron_45-bin ? null }:
 let
   sources = builtins.fromJSON (builtins.readFile ./electron-sources.json);
   workspace = builtins.fromJSON (builtins.readFile ../packages/desktop/package.json);
@@ -36,7 +36,7 @@ if stdenvNoCC.hostPlatform.isDarwin then stdenvNoCC.mkDerivation (finalAttrs: {
     platforms = [ "x86_64-darwin" "aarch64-darwin" ];
     sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
   };
-}) else assert lib.assertMsg (electron_42-bin != null) "nixpkgs must provide the Electron 42 Linux binary wrapper"; electron_42-bin.overrideAttrs (finalAttrs: old: {
+}) else assert lib.assertMsg (electron_45-bin != null) "nixpkgs must provide the Electron 45 Linux binary wrapper"; electron_45-bin.overrideAttrs (finalAttrs: old: {
   inherit version src;
   # Keep nixpkgs' Linux library paths, interpreter and graphics patching.
   passthru = old.passthru // {

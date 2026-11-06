@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Effect, Layer } from "effect"
-import { HttpClientResponse } from "effect/unstable/http"
+import { HttpClientResponse } from "effect/http"
 import { Session as SessionNs } from "@/session/session"
 
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"

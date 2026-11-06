@@ -1,7 +1,7 @@
 import { MCP } from "@/mcp"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
 import { McpServerNotFoundError } from "../errors"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
@@ -24,7 +24,7 @@ export const AuthCallbackPayload = Schema.Struct({
 export const AuthRemoveResponse = Schema.Struct({
   success: Schema.Literal(true),
 })
-export class UnsupportedOAuthError extends Schema.ErrorClass<UnsupportedOAuthError>("McpUnsupportedOAuthError")(
+export class UnsupportedOAuthError extends Schema.Error<UnsupportedOAuthError>("McpUnsupportedOAuthError")(
   { error: Schema.String },
   { httpApiStatus: 400 },
 ) {}

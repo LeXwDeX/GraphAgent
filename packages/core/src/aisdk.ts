@@ -120,7 +120,7 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
   return options
 }
 
-export class InitError extends Schema.TaggedErrorClass<InitError>()("AISDK.InitError", {
+export class InitError extends Schema.TaggedError<InitError>()("AISDK.InitError", {
   providerID: ProviderV2.ID,
   cause: Schema.Defect(),
 }) {}

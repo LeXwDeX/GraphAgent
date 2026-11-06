@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { DagSummary } from "@opencode-ai/schema/dag-summary"
 import { NonNegativeInt } from "@opencode-ai/schema/schema"
 import { Authorization } from "../middleware/authorization"

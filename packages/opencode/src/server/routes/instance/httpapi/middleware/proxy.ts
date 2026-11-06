@@ -1,8 +1,9 @@
 import { ProxyUtil } from "@/server/proxy-util"
 import { Effect, Stream } from "effect"
-import { HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import * as Socket from "effect/unstable/socket/Socket"
+import { HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/http"
+import * as Socket from "effect/socket/Socket"
 import { WebSocketTracker } from "../websocket-tracker"
+import { runRaw } from "../socket-run"
 
 function requestBody(request: HttpServerRequest.HttpServerRequest) {
   if (request.method === "GET" || request.method === "HEAD") return HttpBody.empty
@@ -21,18 +22,16 @@ export function websocket(
       const outbound = yield* Socket.makeWebSocket(ProxyUtil.websocketTargetURL(target), {
         protocols: ProxyUtil.websocketProtocols(request.headers),
       })
-      const writeInbound = yield* inbound.writer
-      const writeOutbound = yield* outbound.writer
+      const writeInbound = (yield* inbound.writer).write
+      const writeOutbound = (yield* outbound.writer).write
       const closeSocket = (socket: Socket.Socket, write: (event: Socket.CloseEvent) => Effect.Effect<void, unknown>) =>
-        socket
-          .runRaw(() => Effect.void, {
-            onOpen: write(WebSocketTracker.SERVER_CLOSING_EVENT()).pipe(Effect.catch(() => Effect.void)),
-          })
-          .pipe(
-            Effect.timeout("1 second"),
-            Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
-            Effect.catch(() => Effect.void),
-          )
+        runRaw(socket, () => Effect.void, {
+          onOpen: write(WebSocketTracker.SERVER_CLOSING_EVENT()).pipe(Effect.catch(() => Effect.void)),
+        }).pipe(
+          Effect.timeout("1 second"),
+          Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
+          Effect.catch(() => Effect.void),
+        )
       const closeAccepted = Effect.all([closeSocket(inbound, writeInbound), closeSocket(outbound, writeOutbound)], {
         concurrency: "unbounded",
         discard: true,
@@ -51,33 +50,29 @@ export function websocket(
         return HttpServerResponse.empty()
       }
 
-      yield* outbound
-        .runRaw((message) => writeInbound(message))
-        .pipe(
-          Effect.catchReason("SocketError", "SocketCloseError", (reason) =>
-            writeInbound(new Socket.CloseEvent(reason.code, reason.closeReason)).pipe(Effect.catch(() => Effect.void)),
-          ),
-          Effect.catch(() =>
-            writeInbound(new Socket.CloseEvent(1011, "proxy error")).pipe(Effect.catch(() => Effect.void)),
-          ),
-          Effect.forkScoped,
-        )
+      yield* runRaw(outbound, (message) => writeInbound(message)).pipe(
+        Effect.catchReason("SocketError", "SocketCloseError", (reason) =>
+          writeInbound(new Socket.CloseEvent(reason.code, reason.closeReason)).pipe(Effect.catch(() => Effect.void)),
+        ),
+        Effect.catch(() =>
+          writeInbound(new Socket.CloseEvent(1011, "proxy error")).pipe(Effect.catch(() => Effect.void)),
+        ),
+        Effect.forkScoped,
+      )
 
-      yield* inbound
-        .runRaw((message) => {
-          return writeOutbound(typeof message === "string" ? message : message.slice())
-        })
-        .pipe(
-          Effect.catch(() => Effect.void),
-          Effect.ensuring(writeOutbound(new Socket.CloseEvent()).pipe(Effect.catch(() => Effect.void))),
-        )
+      yield* runRaw(inbound, (message) => {
+        return writeOutbound(typeof message === "string" ? message : message.slice())
+      }).pipe(
+        Effect.catch(() => Effect.void),
+        Effect.ensuring(writeOutbound(new Socket.CloseEvent()).pipe(Effect.catch(() => Effect.void))),
+      )
       return HttpServerResponse.empty()
     }).pipe(Effect.orDie),
   )
 }
 
 function statusText(response: unknown) {
-  return (response as { source?: Response }).source?.statusText
+  return (response as unknown as { source?: Response }).source?.statusText
 }
 
 export function http(
@@ -88,7 +83,7 @@ export function http(
 ): Effect.Effect<HttpServerResponse.HttpServerResponse> {
   return Effect.gen(function* () {
     const response = yield* client.execute(
-      HttpClientRequest.make(request.method as never)(url, {
+      HttpClientRequest.make(request.method as unknown as never)(url, {
         headers: ProxyUtil.headers(request.headers as HeadersInit, extra),
         body: requestBody(request),
       }),

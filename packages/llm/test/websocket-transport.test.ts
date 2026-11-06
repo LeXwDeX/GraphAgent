@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Stream } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Headers } from "effect/http"
 import { fromWebSocket } from "../src/route/transport/websocket"
 import { it } from "./lib/effect"
 

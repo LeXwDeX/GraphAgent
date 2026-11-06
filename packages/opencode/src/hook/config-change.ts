@@ -12,7 +12,7 @@ export interface Decision {
   /** Number of registered session listeners that were asked (only reported by `checkInstance`). */
   readonly checked?: number
 }
-export class ConfigChangeBlocked extends Schema.TaggedErrorClass<ConfigChangeBlocked>()("ConfigChangeBlocked", {
+export class ConfigChangeBlocked extends Schema.TaggedError<ConfigChangeBlocked>()("ConfigChangeBlocked", {
   message: Schema.String,
 }) {}
 export interface Interface {

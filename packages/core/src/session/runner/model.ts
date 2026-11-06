@@ -14,7 +14,7 @@ import { ModelV2 } from "../../model"
 import { ProviderV2 } from "../../provider"
 import { SessionSchema } from "../schema"
 
-export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelectedError>()(
+export class ModelNotSelectedError extends Schema.TaggedError<ModelNotSelectedError>()(
   "SessionRunnerModel.ModelNotSelectedError",
   {
     sessionID: SessionSchema.ID,
@@ -25,7 +25,7 @@ export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelec
   }
 }
 
-export class ModelUnavailableError extends Schema.TaggedErrorClass<ModelUnavailableError>()(
+export class ModelUnavailableError extends Schema.TaggedError<ModelUnavailableError>()(
   "SessionRunnerModel.ModelUnavailableError",
   {
     providerID: ProviderV2.ID,
@@ -37,7 +37,7 @@ export class ModelUnavailableError extends Schema.TaggedErrorClass<ModelUnavaila
   }
 }
 
-export class VariantUnavailableError extends Schema.TaggedErrorClass<VariantUnavailableError>()(
+export class VariantUnavailableError extends Schema.TaggedError<VariantUnavailableError>()(
   "SessionRunnerModel.VariantUnavailableError",
   {
     providerID: ProviderV2.ID,
@@ -50,7 +50,7 @@ export class VariantUnavailableError extends Schema.TaggedErrorClass<VariantUnav
   }
 }
 
-export class UnsupportedApiError extends Schema.TaggedErrorClass<UnsupportedApiError>()(
+export class UnsupportedApiError extends Schema.TaggedError<UnsupportedApiError>()(
   "SessionRunnerModel.UnsupportedApiError",
   {
     providerID: ProviderV2.ID,

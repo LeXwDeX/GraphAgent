@@ -1,6 +1,7 @@
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect, Stream } from "effect"
-import { HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/http"
+import type { HttpMethod } from "effect/http/HttpMethod"
 import { createHash } from "node:crypto"
 import { ProxyUtil } from "../proxy-util"
 
@@ -45,7 +46,10 @@ export function embeddedUI(disableEmbeddedWebUi: boolean) {
   if (disableEmbeddedWebUi) return Promise.resolve(null)
   return (embeddedUIPromise ??=
     // @ts-expect-error - generated file at build time
-    import("opencode-web-ui.gen.ts").then((module) => module.default as Record<string, string>).catch(() => null))
+    import("opencode-web-ui.gen.ts")
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the generated UI module is untyped at its dynamic import boundary
+      .then((module) => module.default as Record<string, string>)
+      .catch(() => null))
 }
 
 function notFound() {
@@ -86,7 +90,9 @@ export function serveUIEffect(
     if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, services.fs, embeddedWebUI)
 
     const response = yield* services.client.execute(
-      HttpClientRequest.make(request.method)(upstreamURL(path), {
+      // request.method comes from Node's HTTP parser, which only accepts valid method tokens.
+      // oxlint-disable-next-line typescript-eslint(no-unsafe-type-assertion -- Effect's HttpMethod union does not include extension methods
+      HttpClientRequest.make(request.method as HttpMethod)(upstreamURL(path), {
         headers: ProxyUtil.headers(request.headers, { host: UI_UPSTREAM.host }),
         body: requestBody(request),
       }),

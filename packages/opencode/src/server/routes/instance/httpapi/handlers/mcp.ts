@@ -1,6 +1,6 @@
 import { MCP } from "@/mcp"
 import { Effect, Schema } from "effect"
-import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiError } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { McpServerNotFoundError } from "../errors"
 import { AddPayload, AuthCallbackPayload, StatusMap, UnsupportedOAuthError } from "../groups/mcp"

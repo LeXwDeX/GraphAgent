@@ -25,8 +25,8 @@ export function attach<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A
   const workspace = WorkspaceContext.workspaceID
   const fiber = Fiber.getCurrent()
   return attachWith(effect, {
-    instance: fiber ? Context.getReferenceUnsafe(fiber.context, InstanceRef) : undefined,
-    workspace: workspace ?? (fiber ? Context.getReferenceUnsafe(fiber.context, WorkspaceRef) : undefined),
+    instance: fiber ? Context.getUnsafe(fiber.context, InstanceRef) : undefined,
+    workspace: workspace ?? (fiber ? Context.getUnsafe(fiber.context, WorkspaceRef) : undefined),
   })
 }
 

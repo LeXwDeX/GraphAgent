@@ -20,7 +20,7 @@ export const ResolveInput = Schema.Struct({
 })
 export type ResolveInput = typeof ResolveInput.Type
 
-export class PathError extends Schema.TaggedErrorClass<PathError>()("LocationMutation.PathError", {
+export class PathError extends Schema.TaggedError<PathError>()("LocationMutation.PathError", {
   path: Schema.String,
   reason: Schema.Literals(["relative_escape", "location_escape", "non_directory_ancestor"]),
 }) {}

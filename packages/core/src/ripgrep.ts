@@ -1,7 +1,7 @@
 export * as Ripgrep from "./ripgrep"
 
 import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
-import { ChildProcess } from "effect/unstable/process"
+import { ChildProcess } from "effect/process"
 import { Entry, Match } from "@opencode-ai/schema/filesystem"
 import { LayerNode } from "./effect/layer-node"
 import { AppProcess, collectStream, waitForAbort } from "./process"
@@ -63,12 +63,12 @@ type RawRow = Omit<(typeof RawEventPayload)["Type"], "path" | "lines"> & {
   kind: "match" | "context"
 }
 
-export class Error extends Schema.TaggedErrorClass<Error>()("Ripgrep.Error", {
+export class Error extends Schema.TaggedError<Error>()("Ripgrep.Error", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class InvalidPatternError extends Schema.TaggedErrorClass<InvalidPatternError>()("Ripgrep.InvalidPatternError", {
+export class InvalidPatternError extends Schema.TaggedError<InvalidPatternError>()("Ripgrep.InvalidPatternError", {
   pattern: Schema.String,
   message: Schema.String,
 }) {}

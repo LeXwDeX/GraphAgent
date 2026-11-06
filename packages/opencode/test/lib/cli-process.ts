@@ -21,8 +21,8 @@ import { test, type TestOptions } from "bun:test"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AppProcess } from "@opencode-ai/core/process"
 import { Deferred, Duration, Effect, Layer, Queue, Schedule, Scope, Stream } from "effect"
-import { FetchHttpClient, HttpClient } from "effect/unstable/http"
-import { ChildProcess } from "effect/unstable/process"
+import { FetchHttpClient, HttpClient } from "effect/http"
+import { ChildProcess } from "effect/process"
 import { createHash } from "node:crypto"
 import { constants } from "node:fs"
 import { access, readFile, realpath, stat } from "node:fs/promises"
@@ -290,7 +290,7 @@ export function withCliFixture<A, E>(
     yield* Effect.addFinalizer(() =>
       fs
         .remove(home, { recursive: true })
-        .pipe(Effect.retry(Schedule.spaced("50 millis").pipe(Schedule.both(Schedule.recurs(20)))), Effect.ignore),
+        .pipe(Effect.retry(Schedule.max([Schedule.spaced("50 millis"), Schedule.recurs(20)])), Effect.ignore),
     )
 
     const configJson = JSON.stringify(testProviderConfig(llm.url))

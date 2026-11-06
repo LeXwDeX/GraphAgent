@@ -3,7 +3,7 @@ export * as Git from "./git"
 import path from "path"
 import { randomUUID } from "crypto"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
-import { ChildProcess } from "effect/unstable/process"
+import { ChildProcess } from "effect/process"
 import { AbsolutePath, RelativePath } from "./schema"
 import { FSUtil } from "./fs-util"
 import { AppProcess } from "./process"
@@ -23,7 +23,7 @@ export type ChangeSet = typeof ChangeSet.Type
 export const TreeID = Schema.String.pipe(Schema.brand("Git.TreeID"))
 export type TreeID = typeof TreeID.Type
 
-export class OperationError extends Schema.TaggedErrorClass<OperationError>()("Git.OperationError", {
+export class OperationError extends Schema.TaggedError<OperationError>()("Git.OperationError", {
   operation: Schema.Literals([
     "clone",
     "fetch",
@@ -46,7 +46,7 @@ export class Worktree extends Schema.Class<Worktree>("Git.Worktree")({
   kind: Schema.Literals(["main", "linked"]),
 }) {}
 
-export class WorktreeError extends Schema.TaggedErrorClass<WorktreeError>()("Git.WorktreeError", {
+export class WorktreeError extends Schema.TaggedError<WorktreeError>()("Git.WorktreeError", {
   operation: Schema.Literals(["create", "remove", "list"]),
   message: Schema.String,
   directory: Schema.optional(AbsolutePath),
@@ -54,7 +54,7 @@ export class WorktreeError extends Schema.TaggedErrorClass<WorktreeError>()("Git
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class PatchError extends Schema.TaggedErrorClass<PatchError>()("Git.PatchError", {
+export class PatchError extends Schema.TaggedError<PatchError>()("Git.PatchError", {
   operation: Schema.Literals(["capture", "apply", "reset"]),
   directory: AbsolutePath,
   message: Schema.String,

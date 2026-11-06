@@ -1,8 +1,8 @@
 /** Read-only tools for model-driven hooks. Every operation observes the hook abort signal. */
 import path from "path"
 import { Effect, Stream } from "effect"
-import { ChildProcess } from "effect/unstable/process"
-import type { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcess } from "effect/process"
+import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { type Tool, tool, jsonSchema } from "ai"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { HookEvaluatorOutputSchema, type HookEvaluatorOutput } from "./schema"

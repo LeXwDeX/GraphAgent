@@ -2,7 +2,7 @@ import { Schema } from "effect"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 
-export class MessageDecodeError extends Schema.TaggedErrorClass<MessageDecodeError>()("Session.MessageDecodeError", {
+export class MessageDecodeError extends Schema.TaggedError<MessageDecodeError>()("Session.MessageDecodeError", {
   sessionID: SessionSchema.ID,
   messageID: SessionMessage.ID,
 }) {
@@ -11,7 +11,7 @@ export class MessageDecodeError extends Schema.TaggedErrorClass<MessageDecodeErr
   }
 }
 
-export class ContextSnapshotDecodeError extends Schema.TaggedErrorClass<ContextSnapshotDecodeError>()(
+export class ContextSnapshotDecodeError extends Schema.TaggedError<ContextSnapshotDecodeError>()(
   "Session.ContextSnapshotDecodeError",
   {
     sessionID: SessionSchema.ID,

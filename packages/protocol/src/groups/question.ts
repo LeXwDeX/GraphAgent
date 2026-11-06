@@ -2,7 +2,7 @@ import { Question } from "@opencode-ai/schema/question"
 import { Location } from "@opencode-ai/schema/location"
 import { Session } from "@opencode-ai/schema/session"
 import { Context, Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/http-api"
 import { QuestionNotFoundError, SessionNotFoundError } from "../errors"
 import { LocationQuery, locationQueryOpenApi } from "./location"
 

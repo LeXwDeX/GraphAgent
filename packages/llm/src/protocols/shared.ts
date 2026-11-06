@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer"
 import { Effect, Schema, Stream } from "effect"
-import * as Sse from "effect/unstable/encoding/Sse"
-import { Headers, HttpClientRequest } from "effect/unstable/http"
+import * as Sse from "effect/encoding/Sse"
+import { Headers, HttpClientRequest } from "effect/http"
 import {
   InvalidProviderOutputReason,
   InvalidRequestReason,
@@ -244,6 +244,7 @@ export const sseFraming = (bytes: Stream.Stream<Uint8Array, LLMError>): Stream.S
     Stream.decodeText(),
     Stream.pipeThroughChannel(Sse.decode()),
     Stream.catchTag("Retry", () => Stream.empty),
+    Stream.mapError((error) => eventError("sse", "Failed to decode SSE stream", errorText(error))),
     Stream.filter((event) => event.data.length > 0 && event.data !== "[DONE]"),
     Stream.map((event) => event.data),
   )

@@ -2,7 +2,7 @@ import { Location } from "@opencode-ai/core/location"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { Git } from "@opencode-ai/core/git"
 import { Effect } from "effect"
-import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
 import { Api } from "../api"
 import { ProjectCopyError } from "@opencode-ai/protocol/groups/project-copy"
 

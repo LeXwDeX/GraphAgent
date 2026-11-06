@@ -1,5 +1,5 @@
 import { Effect, Schema, Stream } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest } from "effect/http"
 import { Parser } from "htmlparser2"
 import * as Tool from "./tool"
 import TurndownService from "turndown"

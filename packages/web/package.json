@@ -43,7 +43,7 @@
     "opencode": "workspace:*",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
-    "@astrojs/check": "0.9.10",
+    "@astrojs/check": "0.9.12",
     "typescript": "catalog:",
     "@opencode-ai/sdk": "workspace:*"
   }

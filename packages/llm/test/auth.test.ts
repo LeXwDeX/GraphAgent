@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { ConfigProvider, Effect } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Headers } from "effect/http"
 import { LLM } from "../src"
 import { Auth } from "../src/route/auth"
 import * as OpenAIChat from "../src/protocols/openai-chat"

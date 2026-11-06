@@ -1,11 +1,11 @@
-import { Context, Duration, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { Context, Duration, Effect, Fiber, Layer, Redacted, Schema, Stream } from "effect"
 import type { PlatformError } from "effect/PlatformError"
-import { ChildProcess } from "effect/unstable/process"
-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { ChildProcess } from "effect/process"
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "./cross-spawn-spawner"
 import { LayerNode } from "./effect/layer-node"
 
-export class AppProcessError extends Schema.TaggedErrorClass<AppProcessError>()("AppProcessError", {
+export class AppProcessError extends Schema.TaggedError<AppProcessError>()("AppProcessError", {
   command: Schema.String,
   exitCode: Schema.optional(Schema.Number),
   stderr: Schema.optional(Schema.String),
@@ -79,7 +79,9 @@ export const requireExitIn =
 
 const describeCommand = (command: ChildProcess.Command): string => {
   if (command._tag === "StandardCommand") {
-    return command.args.length ? `${command.command} ${command.args.join(" ")}` : command.command
+    return command.args.length
+      ? `${command.command} ${command.args.map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))).join(" ")}`
+      : command.command
   }
   return `${describeCommand(command.left)} | ${describeCommand(command.right)}`
 }

@@ -52,7 +52,7 @@ export class ProjectSnapshot extends Schema.Class<ProjectSnapshot>("MemoryAdmiss
  * acquisition. The import is abandoned: writing would re-create the retired
  * Home and destroy the only remaining copy of the legacy content.
  */
-export class IdentityRetiredError extends Schema.TaggedErrorClass<IdentityRetiredError>()(
+export class IdentityRetiredError extends Schema.TaggedError<IdentityRetiredError>()(
   "MemoryAdmission.IdentityRetired",
   { project_id: Schema.String },
 ) {}

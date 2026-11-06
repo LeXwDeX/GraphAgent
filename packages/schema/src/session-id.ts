@@ -2,7 +2,7 @@ import { Schema } from "effect"
 import { descending } from "./identifier"
 import { withStatics } from "./schema"
 
-export const SessionID = Schema.String.check(Schema.isStartsWith("ses")).pipe(
+export const SessionID = Schema.String.check(Schema.isStartingWith("ses")).pipe(
   Schema.brand("SessionID"),
   withStatics((schema) => {
     const create = () => schema.make("ses_" + descending())

@@ -177,7 +177,10 @@ export const layer = Layer.effect(
 
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)
-          ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
+          ? decodeV1Info(input).pipe(
+              Option.map((info) => ConfigMigrateV1.migrate(info, input)),
+              Option.flatMap(decodeInfo),
+            )
           : decodeInfo(input),
       )
       if (!info) {

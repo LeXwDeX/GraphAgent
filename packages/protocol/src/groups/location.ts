@@ -1,6 +1,6 @@
 import { Location } from "@opencode-ai/schema/location"
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 
 export const LocationQuery = Schema.Struct({
   location: Schema.optional(

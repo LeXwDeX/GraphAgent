@@ -18,7 +18,7 @@ import type { ConsoleState } from "@opencode-ai/core/v1/config/console-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
 import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -212,7 +212,7 @@ export const layer = Layer.effect(
     ) {
       const cached = yield* RemoteLkg.read({ url, role })
       if (cached.status !== "available") return undefined
-      const parsed = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)(cached.body)
+      const parsed = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(cached.body)
       if (Option.isNone(parsed)) {
         yield* Effect.logWarning("remote config LKG unavailable", {
           digest: cached.digest,
@@ -280,7 +280,7 @@ export const layer = Layer.effect(
       if (contentType.includes("html") || /^\s*<!doctype|^\s*<html/i.test(body)) {
         return yield* Effect.die(new RemoteAuthError({ url: loginOrigin, remote: url }))
       }
-      const parsed = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)(body)
+      const parsed = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(body)
       if (Option.isNone(parsed)) return yield* fallbackRemoteJson(url, schema, role, "json-syntax")
       const data = yield* Schema.decodeUnknownEffect(schema)(parsed.value).pipe(
         Effect.catch(() =>

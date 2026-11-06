@@ -2,7 +2,7 @@
   lib,
   stdenv,
   bun,
-  nodejs_24,
+  nodejs_26,
   darwin,
   callPackage,
   fetchurl,
@@ -37,7 +37,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   nativeBuildInputs = [
     (toolchain.requireVersion "bun" bun)
-    (toolchain.requireVersion "node" nodejs_24)
+    (toolchain.requireVersion "node" nodejs_26)
     makeWrapper
     writableTmpDirAsHomeHook
   ] ++ lib.optionals stdenv.hostPlatform.isLinux [

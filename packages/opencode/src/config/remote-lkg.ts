@@ -57,7 +57,7 @@ export function read(input: ReadInput): Effect.Effect<ReadResult> {
     if (typeof content !== "string") return content
     if (!content.length) return yield* unavailable(input.role, key, "empty-file")
 
-    const parsed = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)(content)
+    const parsed = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(content)
     if (Option.isNone(parsed) || !isRecord(parsed.value)) {
       return yield* unavailable(input.role, key, "invalid-envelope")
     }

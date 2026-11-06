@@ -81,7 +81,7 @@ export type Diagnostic = typeof DiagnosticSchema.Type
 
 /** Structural validation errors carry the shared diagnostics so callers can
  * compare validate/start/replan rejections code by code (spec: one authority). */
-export class StructuralValidationError extends Schema.TaggedErrorClass<StructuralValidationError>()(
+export class StructuralValidationError extends Schema.TaggedError<StructuralValidationError>()(
   "StructuralValidationError",
   { diagnostics: Schema.mutable(Schema.Array(DiagnosticSchema)) },
 ) {

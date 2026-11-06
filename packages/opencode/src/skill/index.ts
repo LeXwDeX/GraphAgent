@@ -84,19 +84,19 @@ function isSkillFrontmatter(data: unknown): data is { name: string; description?
   )
 }
 
-export class InvalidError extends Schema.TaggedErrorClass<InvalidError>()("SkillInvalidError", {
+export class InvalidError extends Schema.TaggedError<InvalidError>()("SkillInvalidError", {
   path: Schema.String,
   message: Schema.optional(Schema.String),
   issues: Schema.optional(Schema.Array(Issue)),
 }) {}
 
-export class NameMismatchError extends Schema.TaggedErrorClass<NameMismatchError>()("SkillNameMismatchError", {
+export class NameMismatchError extends Schema.TaggedError<NameMismatchError>()("SkillNameMismatchError", {
   path: Schema.String,
   expected: Schema.String,
   actual: Schema.String,
 }) {}
 
-export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Skill.NotFoundError", {
+export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Skill.NotFoundError", {
   name: Schema.String,
   available: Schema.Array(Schema.String),
 }) {

@@ -35,7 +35,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export type SessionHookCommand = HookCommand
 
-export class InvalidHookError extends Schema.TaggedErrorClass<InvalidHookError>()("InvalidHookError", {
+export class InvalidHookError extends Schema.TaggedError<InvalidHookError>()("InvalidHookError", {
   message: Schema.String,
 }) {}
 

@@ -3,7 +3,7 @@
   stdenvNoCC,
   callPackage,
   bun,
-  nodejs_24,
+  nodejs_26,
   sysctl,
   makeBinaryWrapper,
   models-dev,
@@ -23,7 +23,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   nativeBuildInputs = [
     (toolchain.requireVersion "bun" bun)
-    (toolchain.requireVersion "node" nodejs_24) # for patchShebangs node_modules
+    (toolchain.requireVersion "node" nodejs_26) # for patchShebangs node_modules
     installShellFiles
     makeBinaryWrapper
     models-dev

@@ -13,13 +13,13 @@ import { makeRuntime } from "./effect/runtime"
 import { NpmConfig } from "./npm-config"
 import { PluginSdk } from "./plugin-sdk"
 
-export class InstallFailedError extends Schema.TaggedErrorClass<InstallFailedError>()("NpmInstallFailedError", {
+export class InstallFailedError extends Schema.TaggedError<InstallFailedError>()("NpmInstallFailedError", {
   add: Schema.Array(Schema.String).pipe(Schema.optional),
   dir: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class BundledPackageUnavailableError extends Schema.TaggedErrorClass<BundledPackageUnavailableError>()(
+export class BundledPackageUnavailableError extends Schema.TaggedError<BundledPackageUnavailableError>()(
   "NpmBundledPackageUnavailableError",
   {
     name: Schema.String,

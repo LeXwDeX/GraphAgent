@@ -17,7 +17,7 @@ export interface Change {
 export interface Decision {
   readonly blocked?: { readonly reason: string }
 }
-export class Blocked extends Schema.TaggedErrorClass<Blocked>()("TodoHookBlocked", { message: Schema.String }) {}
+export class Blocked extends Schema.TaggedError<Blocked>()("TodoHookBlocked", { message: Schema.String }) {}
 export interface Interface {
   readonly check: (change: Change) => Effect.Effect<Decision>
 }

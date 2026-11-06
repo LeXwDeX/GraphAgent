@@ -88,11 +88,11 @@ type CompactInput = {
   prompt?: Prompt
 }
 
-export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Session.NotFoundError", {
+export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Session.NotFoundError", {
   sessionID: SessionSchema.ID,
 }) {}
 
-export class OperationUnavailableError extends Schema.TaggedErrorClass<OperationUnavailableError>()(
+export class OperationUnavailableError extends Schema.TaggedError<OperationUnavailableError>()(
   "Session.OperationUnavailableError",
   {
     operation: Schema.Literals(["move", "shell", "skill", "switchAgent", "compact", "wait"]),
@@ -101,7 +101,7 @@ export class OperationUnavailableError extends Schema.TaggedErrorClass<Operation
 
 export { ContextSnapshotDecodeError, MessageDecodeError } from "./session/error"
 
-export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictError>()("Session.PromptConflictError", {
+export class PromptConflictError extends Schema.TaggedError<PromptConflictError>()("Session.PromptConflictError", {
   sessionID: SessionSchema.ID,
   messageID: SessionMessage.ID,
 }) {}

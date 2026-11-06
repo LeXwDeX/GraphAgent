@@ -6,12 +6,11 @@ import { SessionID } from "@/session/schema"
 import { Worktree } from "@/worktree"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import {
   WorkspaceRoutingMiddleware,
-  WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -70,7 +69,7 @@ const WorktreeErrorName = Schema.Union([
   Schema.Literal("WorktreeResetFailedError"),
   Schema.Literal("WorktreeListFailedError"),
 ])
-export class WorktreeApiError extends Schema.ErrorClass<WorktreeApiError>("WorktreeError")(
+export class WorktreeApiError extends Schema.Error<WorktreeApiError>("WorktreeError")(
   {
     name: WorktreeErrorName,
     data: Schema.Struct({ message: Schema.String }),
@@ -106,7 +105,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
     HttpApiGroup.make("experimental")
       .add(
         HttpApiEndpoint.get("capabilities", ExperimentalPaths.capabilities, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(CapabilitiesResponse, "Experimental capabilities"),
         }).annotateMerge(
           OpenApi.annotations({
@@ -116,7 +115,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.get("console", ExperimentalPaths.console, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(ConsoleStateResponse, "Active Console provider metadata"),
           error: HttpApiError.InternalServerError,
         }).annotateMerge(
@@ -127,7 +126,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.get("consoleOrgs", ExperimentalPaths.consoleOrgs, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(ConsoleOrgList, "Switchable Console orgs"),
           error: HttpApiError.InternalServerError,
         }).annotateMerge(
@@ -138,7 +137,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.post("consoleSwitch", ExperimentalPaths.consoleSwitch, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           payload: ConsoleSwitchPayload,
           success: described(Schema.Boolean, "Switch success"),
           error: HttpApiError.BadRequest,
@@ -162,7 +161,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.get("toolIDs", ExperimentalPaths.toolIDs, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(ToolIDs, "Tool IDs"),
           error: HttpApiError.BadRequest,
         }).annotateMerge(
@@ -174,7 +173,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.get("worktree", ExperimentalPaths.worktree, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(WorktreeList, "List of worktree directories"),
           error: WorktreeApiError,
         }).annotateMerge(
@@ -186,7 +185,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
         ),
         HttpApiEndpoint.post("worktreeCreate", ExperimentalPaths.worktree, {
           disableCodecs: true,
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           payload: [HttpApiSchema.NoContent, Worktree.CreateInput],
           success: described(Worktree.Info, "Worktree created"),
           error: WorktreeApiError,
@@ -198,7 +197,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.delete("worktreeRemove", ExperimentalPaths.worktree, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           payload: Worktree.RemoveInput,
           success: described(Schema.Boolean, "Worktree removed"),
           error: WorktreeApiError,
@@ -210,7 +209,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.post("worktreeReset", ExperimentalPaths.worktreeReset, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           payload: Worktree.ResetInput,
           success: described(Schema.Boolean, "Worktree reset"),
           error: WorktreeApiError,
@@ -234,7 +233,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
         ),
         HttpApiEndpoint.post("sessionBackground", ExperimentalPaths.sessionBackground, {
           params: { sessionID: SessionID },
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(Schema.Boolean, "Backgrounded subagents"),
           error: HttpApiError.BadRequest,
         }).annotateMerge(
@@ -246,7 +245,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {
-          query: WorkspaceRoutingQuery,
+          query: WorkspaceRoutingQueryFields,
           success: described(Schema.Record(Schema.String, MCP.Resource), "MCP resources"),
         }).annotateMerge(
           OpenApi.annotations({

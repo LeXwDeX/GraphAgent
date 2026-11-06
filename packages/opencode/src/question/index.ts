@@ -29,19 +29,19 @@ export const Replied = QuestionV1.Replied
 export const Rejected = QuestionV1.Rejected
 export const Event = QuestionV1.Event
 
-export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("QuestionRejectedError", {}) {
+export class RejectedError extends Schema.TaggedError<RejectedError>()("QuestionRejectedError", {}) {
   override get message() {
     return "The user dismissed this question"
   }
 }
 
-export class TimedOutError extends Schema.TaggedErrorClass<TimedOutError>()("QuestionTimedOutError", {}) {
+export class TimedOutError extends Schema.TaggedError<TimedOutError>()("QuestionTimedOutError", {}) {
   override get message() {
     return "The user is temporarily away"
   }
 }
 
-export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Question.NotFoundError", {
+export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Question.NotFoundError", {
   requestID: QuestionID,
 }) {}
 

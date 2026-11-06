@@ -7,9 +7,10 @@ import { Session } from "@/session/session"
 import { HookTranscript } from "@/hook/transcript"
 import { TestInstance } from "../fixture/fixture"
 import { describe, expect } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer, Predicate } from "effect"
-import type { Client as ClientType } from "@modelcontextprotocol/client"
+import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { Server, InMemoryTransport } from "@modelcontextprotocol/server"
+// The real SDK Client, captured by test/preload.ts before sibling tests mock the package.
+import { RealClient as Client } from "../fixture/mcp-real-client"
 import { AppLayer } from "@/effect/app-runtime"
 import { EffectBridge } from "@/effect/bridge"
 import { SessionContext } from "@/effect/session-context"
@@ -22,18 +23,6 @@ import { registerElicitationHandler } from "@/mcp/elicitation"
 import { HookPermissionInterrupt } from "@/permission/hook-control"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import type { Tool } from "ai"
-
-const clientModule = await import(`@modelcontextprotocol/client?hook-binding=${Date.now()}`)
-function isClientConstructor(value: unknown): value is typeof ClientType {
-  return (
-    typeof value === "function" &&
-    Predicate.isObject(value.prototype) &&
-    typeof value.prototype.callTool === "function" &&
-    typeof value.prototype.connect === "function"
-  )
-}
-const Client: unknown = clientModule.Client
-if (!isClientConstructor(Client)) throw new Error("Invalid isolated MCP Client constructor")
 
 const it = testEffect(AppLayer.pipe(Layer.provideMerge(SessionHooks.defaultLayer)))
 const definition = { name: "pick", inputSchema: { type: "object" as const, properties: { label: { type: "string" } } } }

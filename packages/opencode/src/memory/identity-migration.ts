@@ -27,11 +27,11 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryIdentityMigration") {}
 
-export class ConflictError extends Schema.TaggedErrorClass<ConflictError>()("MemoryIdentityMigration.Conflict", {
+export class ConflictError extends Schema.TaggedError<ConflictError>()("MemoryIdentityMigration.Conflict", {
   topic_ids: Schema.Array(Schema.String),
 }) {}
 
-export class InvalidHomeError extends Schema.TaggedErrorClass<InvalidHomeError>()(
+export class InvalidHomeError extends Schema.TaggedError<InvalidHomeError>()(
   "MemoryIdentityMigration.InvalidHome",
   {
     paths: Schema.Array(Schema.String),
@@ -43,7 +43,7 @@ export class InvalidHomeError extends Schema.TaggedErrorClass<InvalidHomeError>(
  * (a process still running under the old identity committed). Nothing was
  * removed; the migration is safe to retry and converges.
  */
-export class SourceChangedError extends Schema.TaggedErrorClass<SourceChangedError>()(
+export class SourceChangedError extends Schema.TaggedError<SourceChangedError>()(
   "MemoryIdentityMigration.SourceChanged",
   {
     project_id: Schema.String,

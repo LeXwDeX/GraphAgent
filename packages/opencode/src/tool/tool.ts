@@ -21,7 +21,7 @@ export type DynamicDescription = (agent: Agent.Info) => Effect.Effect<string>
  * error class makes it matchable upstream, and its `message` getter produces
  * the model-facing prose that the AI SDK feeds back as the tool result.
  */
-export class InvalidArgumentsError extends Schema.TaggedErrorClass<InvalidArgumentsError>()(
+export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsError>()(
   "ToolInvalidArgumentsError",
   {
     tool: Schema.String,
@@ -73,8 +73,7 @@ export interface Def<
    * dropping them. */
   parseOptions?: {
     errors?: "first" | "all"
-    onExcessProperty?: "ignore" | "error" | "preserve"
-    propertyOrder?: "none" | "original"
+    onExcessProperty?: "ignore" | "error"
   }
   /**
    * Top-level fields whose stringified JSON container should be repaired before
@@ -142,7 +141,8 @@ function assertObjectRootedParameters(
   id: string,
   toolInfo: DefWithoutID<never, never> | { parameters: unknown; jsonSchema?: unknown },
 ): JSONSchema7 {
-  const root = toolInfo.jsonSchema ?? ToolJsonSchema.fromSchema(toolInfo.parameters as Schema.Top)
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the tool API accepts a schema or a precomputed JSON schema
+  const root = toolInfo.jsonSchema ?? ToolJsonSchema.fromSchema(toolInfo.parameters as unknown as Schema.Top)
   if (!isPlainObjectRoot(root)) {
     return yieldOrDieRootCombinator(id, root)
   }
@@ -162,7 +162,7 @@ function isPlainObjectRoot(root: unknown): root is JSONSchema7 {
 }
 
 function yieldOrDieRootCombinator(id: string, root: unknown): never {
-  const combinator = ["anyOf", "oneOf", "allOf"].find((key) => Array.isArray((root as Record<string, unknown>)?.[key]))
+  const combinator = ["anyOf", "oneOf", "allOf"].find((key) => Array.isArray((root as unknown as Record<string, unknown>)?.[key]))
   throw new Error(
     `Tool "${id}" parameters must serialize to a plain object root (type: "object" with properties); found a root-level ${combinator ?? "non-object"} combinator. Nest the union under a property, e.g. Schema.Struct({ params: <union> }). Root-level combinators violate the OpenAI tools contract: DeepSeek rejects them and GLM answers with empty tool arguments.`,
   )
@@ -220,8 +220,9 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
                 yield* Effect.logInfo("tool arguments repaired", { "tool.name": id, "repair.changes": changes })
             }
             decoded = yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
+          // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
           }
-          const result = yield* execute(decoded as Schema.Schema.Type<Parameters>, ctx)
+          const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, ctx)
           if (result.metadata.truncated !== undefined) {
             return result
           }

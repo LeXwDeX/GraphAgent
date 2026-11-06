@@ -66,20 +66,20 @@ export const CallbackInput = Schema.Struct({
 })
 export type CallbackInput = Schema.Schema.Type<typeof CallbackInput>
 
-export class OauthMissing extends Schema.TaggedErrorClass<OauthMissing>()("ProviderAuthOauthMissing", {
+export class OauthMissing extends Schema.TaggedError<OauthMissing>()("ProviderAuthOauthMissing", {
   providerID: ProviderV2.ID,
 }) {}
 
-export class OauthCodeMissing extends Schema.TaggedErrorClass<OauthCodeMissing>()("ProviderAuthOauthCodeMissing", {
+export class OauthCodeMissing extends Schema.TaggedError<OauthCodeMissing>()("ProviderAuthOauthCodeMissing", {
   providerID: ProviderV2.ID,
 }) {}
 
-export class OauthCallbackFailed extends Schema.TaggedErrorClass<OauthCallbackFailed>()(
+export class OauthCallbackFailed extends Schema.TaggedError<OauthCallbackFailed>()(
   "ProviderAuthOauthCallbackFailed",
   {},
 ) {}
 
-export class ValidationFailed extends Schema.TaggedErrorClass<ValidationFailed>()("ProviderAuthValidationFailed", {
+export class ValidationFailed extends Schema.TaggedError<ValidationFailed>()("ProviderAuthValidationFailed", {
   field: Schema.String,
   message: Schema.String,
 }) {}

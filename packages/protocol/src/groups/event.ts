@@ -3,7 +3,7 @@ import { EventManifest } from "@opencode-ai/schema/event-manifest"
 import { Location } from "@opencode-ai/schema/location"
 import type { Definition } from "@opencode-ai/schema/event"
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 
 const fields = {
   id: Event.ID,

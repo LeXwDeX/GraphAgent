@@ -128,10 +128,14 @@ void test("Nix's copied source includes every shared policy input and the GitHub
     encoding: "utf8",
   }).trim()
   assert.equal(actual, readToolchain(root).node)
+  const nodeMajor = readToolchain(root).node.split(".")[0]
   for (const path of ["nix/node_modules.nix", "nix/opencode.nix", "nix/desktop.nix"]) {
     const derivation = read(path)
     assert.match(derivation, /toolchain\.requireVersion "bun" bun/)
-    assert.match(derivation, /toolchain\.requireVersion "node" nodejs_24/)
+    assert.ok(
+      derivation.includes(`toolchain.requireVersion "node" nodejs_${nodeMajor}`),
+      `${path} must require the pinned Node major (nodejs_${nodeMajor})`,
+    )
     assert.match(derivation, /node script\/toolchain\.mjs check/)
     assert.doesNotMatch(derivation, /Relax Bun version|expectedBunVersionRange/)
   }

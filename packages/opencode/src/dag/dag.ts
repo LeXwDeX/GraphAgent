@@ -67,7 +67,7 @@ export interface NodeExecutionAttempt {
   readonly expectedAcceptedRevision?: number
 }
 
-export class StaleMessageInputError extends Schema.TaggedErrorClass<StaleMessageInputError>()(
+export class StaleMessageInputError extends Schema.TaggedError<StaleMessageInputError>()(
   "StaleMessageInputError",
   {
     dagID: Schema.String,
@@ -516,7 +516,7 @@ function reconcileDeliveryNode(config: WorkflowConfig, previous: WorkflowConfig)
   return rest
 }
 
-const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
 export function parseWorkflowConfig(raw: string): WorkflowConfig | undefined {
   const parsed = parseJsonOption(raw)

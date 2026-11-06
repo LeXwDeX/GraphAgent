@@ -26,7 +26,7 @@ export interface BoundResult {
   readonly outputPaths: ReadonlyArray<string>
 }
 
-export class StorageError extends Schema.TaggedErrorClass<StorageError>()("ToolOutputStore.StorageError", {
+export class StorageError extends Schema.TaggedError<StorageError>()("ToolOutputStore.StorageError", {
   operation: Schema.Literals(["encode", "write"]),
   cause: Schema.Defect(),
 }) {

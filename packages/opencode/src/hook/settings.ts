@@ -46,8 +46,8 @@ import { spawn } from "child_process"
 import { createHash } from "crypto"
 import { Effect, Layer, Context, Option, Scope, Exit, Fiber, Cause } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import {
   HookCommandSchema,
   HookOutputSchema,

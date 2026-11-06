@@ -56,6 +56,7 @@ import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { Location } from "@opencode-ai/core/location"
 import {
+  ByteSize,
   Cause,
   DateTime,
   Deferred,
@@ -256,14 +257,14 @@ const directoryInfo: FileSystem.File.Info = {
   mtime: Option.none(),
   atime: Option.none(),
   birthtime: Option.none(),
-  dev: 0,
+  dev: 0n,
   ino: Option.none(),
   mode: 0,
   nlink: Option.none(),
   uid: Option.none(),
   gid: Option.none(),
   rdev: Option.none(),
-  size: FileSystem.Size(0),
+  size: ByteSize.bytes(0),
   blksize: Option.none(),
   blocks: Option.none(),
 }

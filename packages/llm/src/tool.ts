@@ -229,10 +229,43 @@ export const toDefinitions = (tools: Tools): ReadonlyArray<ToolDefinitionClass> 
       }),
   )
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isNonFinite = (value: unknown) => value === "NaN" || value === "Infinity" || value === "-Infinity"
+
+const normalizeJsonSchema = (value: unknown): unknown => {
+  if (!isRecord(value)) return value
+  const schema = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      key === "properties" && isRecord(item)
+        ? Object.fromEntries(Object.entries(item).map(([name, property]) => [name, normalizeJsonSchema(property)]))
+        : normalizeJsonSchema(item),
+    ]),
+  )
+  if (schema.type === "object" && schema.additionalProperties === true) {
+    return { ...schema, additionalProperties: false }
+  }
+  if (Array.isArray(schema.anyOf)) {
+    const number = schema.anyOf.find((item) => isRecord(item) && item.type === "number")
+    const nonFinite = schema.anyOf.filter(
+      (item) => isRecord(item) && Array.isArray(item.enum) && item.enum.every(isNonFinite),
+    )
+    if (isRecord(number) && nonFinite.length === schema.anyOf.length - 1) {
+      const { anyOf: _, ...rest } = schema
+      return normalizeJsonSchema({ ...number, ...rest })
+    }
+  }
+  return schema
+}
+
 const toJsonSchema = (schema: Schema.Top): JsonSchema.JsonSchema => {
   const document = Schema.toJsonSchemaDocument(schema)
-  if (Object.keys(document.definitions).length === 0) return document.schema
-  return { ...document.schema, $defs: document.definitions }
+  const normalized = normalizeJsonSchema(document.schema)
+  const output = isRecord(normalized) ? normalized : document.schema
+  if (Object.keys(document.definitions).length === 0) return output
+  return { ...output, $defs: document.definitions }
 }
 
 const project = (

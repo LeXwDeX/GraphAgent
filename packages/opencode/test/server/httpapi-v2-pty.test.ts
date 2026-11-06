@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Context, Config as EffectConfig, Effect, Layer, Queue, Schema } from "effect"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
-import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
-import * as Socket from "effect/unstable/socket/Socket"
+import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
+import * as Socket from "effect/socket/Socket"
 import path from "path"
 import { pathToFileURL } from "url"
 import { mkdir } from "fs/promises"
@@ -13,8 +13,10 @@ import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { runRaw } from "@/server/routes/instance/httpapi/socket-run"
 
-const context = Context.empty() as Context.Context<unknown>
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the empty context is the base for test requests
+const context = Context.empty() as unknown as Context.Context<unknown>
 const testPty = process.platform === "win32" ? test.skip : test
 
 function request(route: string, directory: string, init: RequestInit = {}) {
@@ -195,16 +197,14 @@ describe("v2 pty HttpApi", () => {
 
         const socket = yield* Socket.makeWebSocket(
           `${(yield* serverUrl()).replace(/^http/, "ws")}/api/pty/${info.id}/connect?cursor=-1&location[directory]=${encodeURIComponent(dir)}`,
-          { closeCodeIsError: () => false },
         )
         const messages = yield* Queue.unbounded<string>()
-        yield* socket
-          .runRaw((message) =>
-            Queue.offer(messages, typeof message === "string" ? message : new TextDecoder().decode(message)),
-          )
+        yield* runRaw(socket, (message) =>
+          Queue.offer(messages, typeof message === "string" ? message : new TextDecoder().decode(message)),
+        )
           .pipe(Effect.catch(() => Effect.void))
           .pipe(Effect.forkScoped)
-        const write = yield* socket.writer
+        const write = (yield* socket.writer).write
 
         const takeUntil = (expected: string, seen = ""): Effect.Effect<string, unknown> =>
           Effect.gen(function* () {
@@ -273,18 +273,15 @@ describe("v2 pty HttpApi", () => {
 
         const socket = yield* Socket.makeWebSocket(
           `${(yield* serverUrl()).replace(/^http/, "ws")}/api/pty/${info.id}/connect?cursor=0&location[directory]=${encodeURIComponent(dir)}`,
-          { closeCodeIsError: () => false },
         )
         const messages = yield* Queue.unbounded<string>()
-        yield* socket
-          .runRaw((message) =>
-            Queue.offer(messages, typeof message === "string" ? message : new TextDecoder().decode(message)),
-          )
-          .pipe(
-            Effect.catch(() => Effect.void),
-            Effect.forkScoped,
-          )
-        const write = yield* socket.writer
+        yield* runRaw(socket, (message) =>
+          Queue.offer(messages, typeof message === "string" ? message : new TextDecoder().decode(message)),
+        ).pipe(
+          Effect.catch(() => Effect.void),
+          Effect.forkScoped,
+        )
+        const write = (yield* socket.writer).write
 
         const takeUntil = (expected: string, seen = ""): Effect.Effect<string, unknown> =>
           Effect.gen(function* () {

@@ -58,17 +58,17 @@ export type AskResult = typeof AskResult.Type
 
 export const Event = Permission.Event
 
-export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("PermissionV2.RejectedError", {}) {}
+export class RejectedError extends Schema.TaggedError<RejectedError>()("PermissionV2.RejectedError", {}) {}
 
-export class CorrectedError extends Schema.TaggedErrorClass<CorrectedError>()("PermissionV2.CorrectedError", {
+export class CorrectedError extends Schema.TaggedError<CorrectedError>()("PermissionV2.CorrectedError", {
   feedback: Schema.String,
 }) {}
 
-export class DeniedError extends Schema.TaggedErrorClass<DeniedError>()("PermissionV2.DeniedError", {
+export class DeniedError extends Schema.TaggedError<DeniedError>()("PermissionV2.DeniedError", {
   rules: Permission.Ruleset,
 }) {}
 
-export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("PermissionV2.NotFoundError", {
+export class NotFoundError extends Schema.TaggedError<NotFoundError>()("PermissionV2.NotFoundError", {
   requestID: ID,
 }) {}
 

@@ -2,8 +2,8 @@ import fs from "fs/promises"
 import { realpathSync } from "node:fs"
 import path from "path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
-import { ChildProcess } from "effect/unstable/process"
+import { Effect, Layer, Redacted } from "effect"
+import { ChildProcess } from "effect/process"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Config } from "@opencode-ai/core/config"
 import { Location } from "@opencode-ai/core/location"
@@ -70,7 +70,14 @@ const appProcess = Layer.succeed(
           command: command.command,
           cwd: command.options.cwd,
           shell: command.options.shell,
-          env: command.options.env,
+          env: command.options.env
+            ? Object.fromEntries(
+                Object.entries(command.options.env).map(([key, value]) => [
+                  key,
+                  value === undefined ? undefined : Redacted.isRedacted(value) ? Redacted.value(value) : value,
+                ]),
+              )
+            : undefined,
           options,
         })
         return runFailure ? Effect.fail(runFailure) : Effect.succeed(result)

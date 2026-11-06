@@ -442,7 +442,7 @@ export const getUsage = (input: { model: Provider.Model; usage: Usage; metadata?
   }
 }
 
-export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusyError", {
+export class BusyError extends Schema.TaggedError<BusyError>()("SessionBusyError", {
   sessionID: SessionID,
 }) {}
 

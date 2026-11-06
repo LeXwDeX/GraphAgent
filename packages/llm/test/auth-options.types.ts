@@ -26,7 +26,7 @@ type Model = {
 declare const auth: Auth
 declare const optionalAuthModel: ModelFactory<BaseOptions, "optional", Model>
 declare const requiredAuthModel: ModelFactory<BaseOptions, "required", Model>
-const configApiKey = Config.redacted("OPENAI_API_KEY")
+const configApiKey = Config.Redacted("OPENAI_API_KEY")
 
 OpenAIChat.route.model({ id: "gpt-4.1-mini" })
 

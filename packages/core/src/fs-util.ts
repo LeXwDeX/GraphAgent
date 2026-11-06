@@ -4,14 +4,14 @@ import { realpathSync } from "fs"
 import * as NFS from "fs/promises"
 import { lookup } from "mime-types"
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
-import type { PlatformError } from "effect/PlatformError"
+import * as PlatformError from "effect/PlatformError"
 import { Glob } from "./util/glob"
 import { serviceUse } from "./effect/service-use"
 import { LayerNode } from "./effect/layer-node"
 import { filesystem } from "./effect/layer-node-platform"
 
 export namespace FSUtil {
-  export class FileSystemError extends Schema.TaggedErrorClass<FileSystemError>()("FileSystemError", {
+  export class FileSystemError extends Schema.TaggedError<FileSystemError>()("FileSystemError", {
     method: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   }) {
@@ -21,14 +21,14 @@ export namespace FSUtil {
     }
   }
 
-  export type Error = PlatformError | FileSystemError
+  export type Error = PlatformError.PlatformError | FileSystemError
 
   export interface DirEntry {
     readonly name: string
     readonly type: "file" | "directory" | "symlink" | "other"
   }
 
-  export interface Interface extends FileSystem.FileSystem {
+  export interface Interface extends Omit<FileSystem.FileSystem, "readDirectoryEntries"> {
     readonly isDir: (path: string) => Effect.Effect<boolean>
     readonly isFile: (path: string) => Effect.Effect<boolean>
     readonly existsSafe: (path: string) => Effect.Effect<boolean>
@@ -41,7 +41,7 @@ export namespace FSUtil {
     readonly findUp: (target: string, start: string, stop?: string) => Effect.Effect<string[], Error>
     readonly up: (options: { targets: string[]; start: string; stop?: string }) => Effect.Effect<string[], Error>
     readonly globUp: (pattern: string, start: string, stop?: string) => Effect.Effect<string[], Error>
-    readonly glob: (pattern: string, options?: Glob.Options) => Effect.Effect<string[], Error>
+    readonly glob: (pattern: string, options?: Glob.Options) => Effect.Effect<string[], PlatformError.PlatformError>
     readonly globMatch: (pattern: string, filepath: string) => boolean
   }
 
@@ -137,7 +137,14 @@ export namespace FSUtil {
       const glob = Effect.fn("FileSystem.glob")(function* (pattern: string, options?: Glob.Options) {
         return yield* Effect.tryPromise({
           try: () => Glob.scan(pattern, options),
-          catch: (cause) => new FileSystemError({ method: "glob", cause }),
+          catch: (cause) =>
+            PlatformError.systemError({
+              _tag: "Unknown",
+              module: "FileSystem",
+              method: "glob",
+              pathOrDescriptor: pattern,
+              cause,
+            }),
         })
       })
 

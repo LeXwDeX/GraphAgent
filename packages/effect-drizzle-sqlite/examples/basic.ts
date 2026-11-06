@@ -23,7 +23,7 @@ class Database extends Context.Service<Database, DatabaseShape>()("@opencode/exa
   static layer = Layer.effect(Database, makeDatabase).pipe(Layer.provide(sqliteLayer))
 }
 
-class UserStoreError extends Schema.TaggedErrorClass<UserStoreError>()("UserStoreError", {
+class UserStoreError extends Schema.TaggedError<UserStoreError>()("UserStoreError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

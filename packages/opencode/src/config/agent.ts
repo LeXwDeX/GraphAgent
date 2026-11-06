@@ -49,7 +49,7 @@ export async function loadMode(dir: string) {
       prompt: md.content.trim(),
       hookOrigin: item,
     }
-    const parsed = Schema.decodeUnknownExit(ConfigAgentV1.Info)(config, { errors: "all", propertyOrder: "original" })
+    const parsed = Schema.decodeUnknownExit(ConfigAgentV1.Info)(config, { errors: "all" })
     if (Exit.isSuccess(parsed)) {
       result[config.name] = {
         ...parsed.value,

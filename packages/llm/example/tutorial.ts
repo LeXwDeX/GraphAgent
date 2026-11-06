@@ -14,7 +14,7 @@ import { OpenAI } from "@opencode-ai/llm/providers"
  * hover imports and local values to see how the public API is typed.
  */
 
-const apiKey = Config.redacted("OPENAI_API_KEY")
+const apiKey = Config.Redacted("OPENAI_API_KEY")
 
 // 1. Pick a model. The provider helper records provider identity, protocol
 // choice, capabilities, deployment options, authentication, and defaults.

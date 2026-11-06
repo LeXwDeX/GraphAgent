@@ -1,5 +1,5 @@
 import { Duration, Effect, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest } from "effect/http"
 
 export const EXA_URL = "https://mcp.exa.ai/mcp"
 // Hosted MCP officially supports x-api-key; resolve it for each request, never in the URL.

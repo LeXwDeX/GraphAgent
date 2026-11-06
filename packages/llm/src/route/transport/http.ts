@@ -1,5 +1,5 @@
 import { Cause, Duration, Effect, Stream } from "effect"
-import { Headers, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http"
+import { Headers, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import { Auth } from "../auth"
 import { render as renderEndpoint } from "../endpoint"
 import { Framing, type Framing as FramingDef } from "../framing"
@@ -78,18 +78,11 @@ const timeoutError = (provider: string, timeout: Duration.Duration) =>
     }),
   })
 
-const readStream = <Frame>(prepared: HttpPrepared<Frame>, provider: string) => (response: HttpClientResponse.HttpClientResponse) =>
-  prepared.framing.frame(
-    response.stream.pipe(
-      Stream.mapError((error) =>
-        ProviderShared.eventError(
-          provider,
-          `Failed to read ${provider} stream`,
-          ProviderShared.errorText(error),
-        ),
-      ),
-    ),
-  )
+const readStream = <Frame>(prepared: HttpPrepared<Frame>, provider: string) => (response: HttpClientResponse.HttpClientResponse) => {
+  const wrap = (error: unknown) =>
+    ProviderShared.eventError(provider, `Failed to read ${provider} stream`, ProviderShared.errorText(error))
+  return prepared.framing.frame(response.stream.pipe(Stream.mapError(wrap))).pipe(Stream.mapError(wrap))
+}
 
 export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJsonTransport<Body, Frame> => ({
   id: "http-json",

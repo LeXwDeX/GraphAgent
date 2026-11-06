@@ -6,8 +6,9 @@ import { Session } from "@opencode-ai/schema/session"
 import { Project } from "@opencode-ai/schema/project"
 import { AbsolutePath, PositiveInt, RelativePath, withStatics } from "@opencode-ai/schema/schema"
 import { Workspace } from "@opencode-ai/schema/workspace"
-import { Context, Encoding, Result, Schema, Struct } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
+import { Context, Result, Schema, Struct } from "effect"
+import { Base64Url } from "effect/encoding"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/http-api"
 import {
   ConflictError,
   InvalidCursorError,
@@ -66,8 +67,8 @@ export const SessionsCursor = Schema.String.pipe(
   withStatics((schema) => {
     const make = schema.make.bind(schema)
     return {
-      make: (input: typeof SessionsCursorInput.Type) => make(Encoding.encodeBase64Url(encodeSessionsCursor(input))),
-      parse: (input: string) => decodeSessionsCursor(Result.getOrThrow(Encoding.decodeBase64UrlString(input))),
+      make: (input: typeof SessionsCursorInput.Type) => make(Base64Url.encode(encodeSessionsCursor(input))),
+      parse: (input: string) => decodeSessionsCursor(Result.getOrThrow(Base64Url.decodeString(input))),
     }
   }),
 )

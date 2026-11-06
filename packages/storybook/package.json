@@ -23,7 +23,7 @@
     "react": "catalog:",
     "solid-js": "catalog:",
     "storybook": "10.6.1",
-    "storybook-solidjs-vite": "10.7.2",
+    "storybook-solidjs-vite": "10.7.4",
     "typescript": "catalog:",
     "vite": "catalog:"
   }

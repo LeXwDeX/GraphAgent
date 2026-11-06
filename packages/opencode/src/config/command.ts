@@ -28,7 +28,7 @@ export async function load(dir: string) {
       ...md.data,
       template: md.content.trim(),
     }
-    const parsed = decodeInfo(config, { errors: "all", propertyOrder: "original" })
+    const parsed = decodeInfo(config, { errors: "all" })
     if (Exit.isSuccess(parsed)) {
       result[config.name] = parsed.value
       continue

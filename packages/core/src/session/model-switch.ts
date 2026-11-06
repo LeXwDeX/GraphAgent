@@ -7,7 +7,7 @@ export interface Interface {
   readonly switchModel: (input: { sessionID: SessionSchema.ID; model: ModelV2.Ref }) => Effect.Effect<void, Blocked>
 }
 
-export class Blocked extends Schema.TaggedErrorClass<Blocked>()("SessionModelSwitchBlocked", {
+export class Blocked extends Schema.TaggedError<Blocked>()("SessionModelSwitchBlocked", {
   reason: Schema.String,
 }) {}
 

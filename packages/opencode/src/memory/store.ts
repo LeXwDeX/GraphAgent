@@ -146,11 +146,11 @@ export interface Interface {
   >
 }
 
-export class StoreError extends Schema.TaggedErrorClass<StoreError>()("MemoryStore.Error", {
+export class StoreError extends Schema.TaggedError<StoreError>()("MemoryStore.Error", {
   message: Schema.String,
 }) {}
 
-export class CommitConflictError extends Schema.TaggedErrorClass<CommitConflictError>()("MemoryStore.CommitConflict", {
+export class CommitConflictError extends Schema.TaggedError<CommitConflictError>()("MemoryStore.CommitConflict", {
   expected_revision: Schema.Number,
   actual_revision: Schema.Number,
 }) {}

@@ -3,7 +3,7 @@ export * as WebFetchTool from "./webfetch"
 
 import { ToolFailure } from "@opencode-ai/llm"
 import { Duration, Effect, Layer, Schema } from "effect"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { Parser } from "htmlparser2"
 import TurndownService from "turndown"
 import { PermissionV2 } from "../permission"

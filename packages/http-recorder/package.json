@@ -52,9 +52,9 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@effect/platform-node-shared": "4.0.0-beta.83"
+    "@effect/platform-node-shared": "4.1.2"
   },
   "peerDependencies": {
-    "effect": "4.0.0-beta.83"
+    "effect": "4.1.2"
   }
 }

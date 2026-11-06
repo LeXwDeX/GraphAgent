@@ -4,7 +4,7 @@ import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
 import { Deferred, Duration, Effect, Fiber, Layer, Stream } from "effect"
-import { HttpClient, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientResponse } from "effect/http"
 import {
   declaresNoReasoning,
   engineOrganizerCall,

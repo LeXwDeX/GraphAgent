@@ -9,9 +9,9 @@ import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute, workspaceProxyURL } 
 import { NotFoundError } from "@/storage/storage"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Context, Data, Effect, Layer, Option, Schema } from "effect"
-import { HttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
-import * as Socket from "effect/unstable/socket/Socket"
+import { HttpClient, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { HttpApiMiddleware } from "effect/http-api"
+import * as Socket from "effect/socket/Socket"
 import { InvalidRequestError } from "../errors"
 
 // Query fields this middleware reads from the URL. Spread into every

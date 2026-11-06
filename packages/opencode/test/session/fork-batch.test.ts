@@ -7,11 +7,11 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Context, Effect, Exit, Fiber, Layer, Scope, Semaphore, Stream } from "effect"
-import * as Client from "effect/unstable/sql/SqlClient"
-import type { Connection } from "effect/unstable/sql/SqlConnection"
-import { SqlError, classifySqliteError } from "effect/unstable/sql/SqlError"
-import * as Statement from "effect/unstable/sql/Statement"
-import * as Reactivity from "effect/unstable/reactivity/Reactivity"
+import * as Client from "effect/sql/SqlClient"
+import type { Connection } from "effect/sql/SqlConnection"
+import { SqlError, classifySqliteError } from "effect/sql/SqlError"
+import * as Statement from "effect/sql/Statement"
+import * as Reactivity from "effect/reactivity/Reactivity"
 import { eq, sql } from "drizzle-orm"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
@@ -110,6 +110,9 @@ const countingClientLayer = Layer.effect(
       executeValues(query, params) {
         return runValues(query, params)
       },
+      executeValuesUnprepared(query, params) {
+        return runValues(query, params)
+      },
       executeUnprepared(query, params, transformRows) {
         return this.execute(query, params, transformRows)
       },
@@ -130,6 +133,7 @@ const countingClientLayer = Layer.effect(
     return yield* Client.make({
       acquirer,
       compiler,
+      driver: "sqlite-bun",
       transactionAcquirer,
       spanAttributes: [["db.system.name", "sqlite"]],
     })
@@ -168,7 +172,8 @@ const userInfo = (sessionID: string, id: string) =>
     time: { created: Date.now() },
     agent: "user",
     model: { providerID: "test", modelID: "test" },
-  }) as SessionV1.Info
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+  }) as unknown as SessionV1.Info
 
 const assistantInfo = (sessionID: string, id: string, parentID: string) =>
   ({
@@ -184,7 +189,8 @@ const assistantInfo = (sessionID: string, id: string, parentID: string) =>
     path: { cwd: "/", root: "/" },
     cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-  }) as SessionV1.Info
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+  }) as unknown as SessionV1.Info
 
 const textPart = (sessionID: string, messageID: string, text: string) =>
   ({
@@ -193,7 +199,8 @@ const textPart = (sessionID: string, messageID: string, text: string) =>
     messageID,
     type: "text",
     text,
-  }) as SessionV1.Part
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+  }) as unknown as SessionV1.Part
 
 describe("Session.fork", () => {
   it.instance("fork result is equivalent: message/part counts, parentID chain, compaction tail_start_id", () =>
@@ -233,11 +240,14 @@ describe("Session.fork", () => {
       const [f1, f2, f3] = target
       expect(f1.info.id).not.toBe(m1)
       expect(f1.parts.map((p) => p.type)).toEqual(["text"])
-      expect((f1.parts[0] as SessionV1.TextPart).text).toBe("hello")
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+      expect((f1.parts[0] as unknown as SessionV1.TextPart).text).toBe("hello")
       // parentID chain maps through the idMap
-      expect((f2.info as SessionV1.Assistant).parentID).toBe(f1.info.id)
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+      expect((f2.info as unknown as SessionV1.Assistant).parentID).toBe(f1.info.id)
       expect(f2.parts.map((p) => p.type)).toEqual(["text"])
-      expect((f2.parts[0] as SessionV1.TextPart).text).toBe("world")
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+      expect((f2.parts[0] as unknown as SessionV1.TextPart).text).toBe("world")
       // compaction tail_start_id maps to the forked message id
       const compaction = f3.parts.find((p) => p.type === "compaction")
       expect(compaction?.type).toBe("compaction")

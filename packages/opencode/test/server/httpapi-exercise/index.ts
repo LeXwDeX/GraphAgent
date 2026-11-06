@@ -18,7 +18,7 @@
  * - `.mutating()` tells the runner to reset isolated state after destructive routes.
  */
 import { Effect } from "effect"
-import { OpenApi } from "effect/unstable/httpapi"
+import { OpenApi } from "effect/http-api"
 import { TestLLMServer } from "../../lib/llm-server"
 import path from "path"
 import { array, boolean, check, isRecord, message, object, stable } from "./assertions"

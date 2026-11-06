@@ -11,11 +11,16 @@ export type GlobalEvent = {
 class GlobalBusEmitter extends EventEmitter<{
   event: [GlobalEvent]
 }> {
-  override emit(eventName: "event", event: GlobalEvent): boolean {
-    if (event.payload && typeof event.payload === "object" && !("id" in event.payload)) {
+  // @types/node 26 types EventEmitter.emit generically; the second overload keeps
+  // this override assignable to it while callers still see the typed "event" form.
+  override emit(eventName: "event", event: GlobalEvent): boolean
+  override emit(eventName: string | symbol, ...args: any[]): boolean
+  override emit(eventName: string | symbol, ...args: any[]): boolean {
+    const event: GlobalEvent | undefined = args[0]
+    if (eventName === "event" && event?.payload && typeof event.payload === "object" && !("id" in event.payload)) {
       event.payload.id = event.payload.syncEvent?.id ?? Identifier.create("evt", "ascending")
     }
-    return super.emit(eventName, event)
+    return super.emit(eventName, ...args)
   }
 }
 

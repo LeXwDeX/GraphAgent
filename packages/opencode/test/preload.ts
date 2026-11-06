@@ -6,6 +6,8 @@ import fs from "fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 import { afterAll } from "bun:test"
 import { markPluginDependenciesReady } from "./fixture/plugin"
+// Capture the real MCP SDK Client before any test file mocks the package.
+import "./fixture/mcp-real-client"
 
 // Set XDG env vars FIRST, before any src/ imports
 const dir = path.join(os.tmpdir(), "opencode-test-data-" + process.pid)

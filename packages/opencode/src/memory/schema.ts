@@ -12,11 +12,11 @@ export const MAX_INJECTION_TOKENS = 1_200
 
 const StableID = Schema.String.check(
   Schema.isTrimmed(),
-  Schema.isLengthBetween(1, 80),
+  Schema.isBetweenLength(1, 80),
   Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
 )
-const ShortText = Schema.String.check(Schema.isTrimmed(), Schema.isLengthBetween(1, 300))
-const ItemText = Schema.String.check(Schema.isTrimmed(), Schema.isLengthBetween(1, 1_000))
+const ShortText = Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(1, 300))
+const ItemText = Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(1, 1_000))
 const Timestamp = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/))
 const NonNegativeInteger = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
 const PositiveInteger = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))
@@ -32,7 +32,7 @@ export class Injection extends Schema.Class<Injection>("MemoryInjection")({
 export class Config extends Schema.Class<Config>("MemoryConfig")({
   schema_version: Schema.Literal(SCHEMA_VERSION),
   enabled: Schema.Boolean,
-  model: Schema.String.check(Schema.isTrimmed(), Schema.isLengthBetween(3, 240), Schema.isPattern(/^[^/\s]+\/.+$/)),
+  model: Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(3, 240), Schema.isPattern(/^[^/\s]+\/.+$/)),
   topic_limit: Schema.Number.check(
     Schema.isInt(),
     Schema.isBetween({ minimum: MIN_TOPIC_LIMIT, maximum: MAX_TOPIC_LIMIT }),
@@ -67,7 +67,7 @@ export class TopicItem extends Schema.Class<TopicItem>("MemoryTopicItem")({
 }) {}
 
 export class TopicMetadata extends Schema.Class<TopicMetadata>("MemoryTopicMetadata")({
-  categories: Schema.Array(Kind).check(Schema.isLengthBetween(1, 3)),
+  categories: Schema.Array(Kind).check(Schema.isBetweenLength(1, 3)),
   status: Schema.Literal("active"),
   importance: Schema.Literal("core"),
   keywords: Schema.Array(ShortText).check(Schema.isMaxLength(20)),
@@ -114,7 +114,7 @@ class CreateTopic extends Schema.Class<CreateTopic>("MemoryCreateTopic")({
   type: Schema.Literal("create_topic"),
   name: ShortText,
   summary: ShortText,
-  categories: Schema.Array(Kind).check(Schema.isLengthBetween(1, 3)),
+  categories: Schema.Array(Kind).check(Schema.isBetweenLength(1, 3)),
   keywords: Schema.Array(ShortText).check(Schema.isMaxLength(20)),
   related_topics: Schema.Array(StableID).check(Schema.isMaxLength(20)),
   item: SemanticItem,
@@ -138,7 +138,7 @@ class UpdateTopic extends Schema.Class<UpdateTopic>("MemoryUpdateTopic")({
   topic_id: StableID,
   name: Schema.optional(ShortText),
   summary: Schema.optional(ShortText),
-  categories: Schema.optional(Schema.Array(Kind).check(Schema.isLengthBetween(1, 3))),
+  categories: Schema.optional(Schema.Array(Kind).check(Schema.isBetweenLength(1, 3))),
   keywords: Schema.optional(Schema.Array(ShortText).check(Schema.isMaxLength(20))),
   related_topics: Schema.optional(Schema.Array(StableID).check(Schema.isMaxLength(20))),
 }) {}
