@@ -246,7 +246,9 @@ describe("opencode run (non-interactive subprocess)", () => {
             description: "Print deterministic output",
           }),
         )
-        yield* llm.fail("provider failed")
+        // A clean SSE end without a finish reason is the SDK's unknown-finish
+        // path; a hard stream error instead surfaces as a retryable API error.
+        yield* llm.push(reply())
         yield* llm.text("recovered json")
         const result = yield* opencode.run("fail after output", {
           format: "json",
