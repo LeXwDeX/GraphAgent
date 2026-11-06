@@ -159,7 +159,6 @@ describe("Request header transport boundary", () => {
                 project: { id: "request-headers", worktree: "", time: { created: 0 } },
                 directory: "",
                 worktree: "",
-                experimental_workspace: { register() {} },
                 serverUrl: server.url,
                 $,
               })
