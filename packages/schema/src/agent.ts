@@ -10,7 +10,7 @@ export const ID = Schema.String.pipe(Schema.brand("AgentV2.ID"))
 export type ID = typeof ID.Type
 
 export const Color = Schema.Union([
-  Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/)),
+  Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/u)),
   Schema.Literals(["primary", "secondary", "accent", "success", "warning", "error", "info"]),
 ])
 export type Color = typeof Color.Type

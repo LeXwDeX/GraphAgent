@@ -13,11 +13,11 @@ export const MAX_INJECTION_TOKENS = 1_200
 const StableID = Schema.String.check(
   Schema.isTrimmed(),
   Schema.isBetweenLength(1, 80),
-  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
 )
 const ShortText = Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(1, 300))
 const ItemText = Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(1, 1_000))
-const Timestamp = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/))
+const Timestamp = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u))
 const NonNegativeInteger = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
 const PositiveInteger = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))
 
@@ -32,7 +32,7 @@ export class Injection extends Schema.Class<Injection>("MemoryInjection")({
 export class Config extends Schema.Class<Config>("MemoryConfig")({
   schema_version: Schema.Literal(SCHEMA_VERSION),
   enabled: Schema.Boolean,
-  model: Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(3, 240), Schema.isPattern(/^[^/\s]+\/.+$/)),
+  model: Schema.String.check(Schema.isTrimmed(), Schema.isBetweenLength(3, 240), Schema.isPattern(/^[^/\s]+\/.+$/u)),
   topic_limit: Schema.Number.check(
     Schema.isInt(),
     Schema.isBetween({ minimum: MIN_TOPIC_LIMIT, maximum: MAX_TOPIC_LIMIT }),

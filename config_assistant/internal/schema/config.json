@@ -4,16 +4,21 @@
   "$defs": {
     "LogLevel": {
       "type": "string",
-      "enum": ["DEBUG", "INFO", "WARN", "ERROR"],
+      "enum": [
+        "DEBUG",
+        "INFO",
+        "WARN",
+        "ERROR"
+      ],
       "description": "Log level"
     },
     "ServerConfig": {
       "type": "object",
       "properties": {
         "port": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Port to listen on"
         },
         "hostname": {
@@ -36,9 +41,9 @@
           "description": "Additional domains to allow for CORS"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
-    "ConfigV2.Reference.Git": {
+    "ConfigV2.Reference.GitEncoded": {
       "type": "object",
       "properties": {
         "repository": {
@@ -54,10 +59,12 @@
           "type": "boolean"
         }
       },
-      "required": ["repository"],
-      "additionalProperties": false
+      "required": [
+        "repository"
+      ],
+      "additionalProperties": true
     },
-    "ConfigV2.Reference.Local": {
+    "ConfigV2.Reference.LocalEncoded": {
       "type": "object",
       "properties": {
         "path": {
@@ -70,12 +77,18 @@
           "type": "boolean"
         }
       },
-      "required": ["path"],
-      "additionalProperties": false
+      "required": [
+        "path"
+      ],
+      "additionalProperties": true
     },
     "PermissionActionConfig": {
       "type": "string",
-      "enum": ["ask", "allow", "deny"]
+      "enum": [
+        "ask",
+        "allow",
+        "deny"
+      ]
     },
     "PermissionObjectConfig": {
       "type": "object",
@@ -93,68 +106,22 @@
         }
       ]
     },
-    "PermissionConfig": {
+    "PermissionConfigEncoded": {
       "anyOf": [
         {
           "$ref": "#/$defs/PermissionActionConfig"
         },
         {
           "type": "object",
-          "properties": {
-            "read": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "edit": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "glob": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "grep": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "list": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "bash": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "task": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "external_directory": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "todowrite": {
-              "$ref": "#/$defs/PermissionActionConfig"
-            },
-            "question": {
-              "$ref": "#/$defs/PermissionActionConfig"
-            },
-            "webfetch": {
-              "$ref": "#/$defs/PermissionActionConfig"
-            },
-            "websearch": {
-              "$ref": "#/$defs/PermissionActionConfig"
-            },
-            "lsp": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            },
-            "doom_loop": {
-              "$ref": "#/$defs/PermissionActionConfig"
-            },
-            "skill": {
-              "$ref": "#/$defs/PermissionRuleConfig"
-            }
-          },
           "additionalProperties": {
             "$ref": "#/$defs/PermissionRuleConfig"
           }
         }
       ]
     },
-    "AgentConfig": {
+    "AgentConfigEncoded": {
       "type": "object",
+      "additionalProperties": {},
       "properties": {
         "model": {
           "type": "string",
@@ -192,7 +159,11 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["subagent", "primary", "all"]
+          "enum": [
+            "subagent",
+            "primary",
+            "all"
+          ]
         },
         "hidden": {
           "type": "boolean",
@@ -202,43 +173,51 @@
           "type": "object"
         },
         "color": {
+          "description": "Hex color code (e.g., #FF5733) or theme color (e.g., primary)",
           "anyOf": [
             {
-              "pattern": "^#[0-9a-fA-F]{6}$",
-              "type": "string"
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$"
             },
             {
               "type": "string",
-              "enum": ["primary", "secondary", "accent", "success", "warning", "error", "info"]
+              "enum": [
+                "primary",
+                "secondary",
+                "accent",
+                "success",
+                "warning",
+                "error",
+                "info"
+              ]
             }
-          ],
-          "description": "Hex color code (e.g., #FF5733) or theme color (e.g., primary)"
+          ]
         },
         "steps": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Maximum number of agentic iterations before forcing text-only response"
         },
         "maxSteps": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "@deprecated Use 'steps' field instead."
         },
         "permission": {
-          "$ref": "#/$defs/PermissionConfig"
+          "$ref": "#/$defs/PermissionConfigEncoded"
         }
       }
     },
-    "ConfigV2.Model.ReasoningDistillation": {
+    "ConfigV2.Model.ReasoningDistillationEncoded": {
       "type": "object",
       "properties": {
         "enabled": {
           "type": "boolean"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
     "ProviderConfig": {
       "type": "object",
@@ -275,6 +254,7 @@
         },
         "options": {
           "type": "object",
+          "additionalProperties": {},
           "properties": {
             "apiKey": {
               "type": "string"
@@ -297,13 +277,15 @@
             "timeout": {
               "anyOf": [
                 {
-                  "exclusiveMinimum": 0,
                   "type": "integer",
-                  "maximum": 9007199254740991
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0
                 },
                 {
                   "type": "boolean",
-                  "enum": [false]
+                  "enum": [
+                    false
+                  ]
                 }
               ],
               "description": "Timeout in milliseconds for full requests to this provider. Set to false to disable timeout."
@@ -311,21 +293,23 @@
             "headerTimeout": {
               "anyOf": [
                 {
-                  "exclusiveMinimum": 0,
                   "type": "integer",
-                  "maximum": 9007199254740991
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0
                 },
                 {
                   "type": "boolean",
-                  "enum": [false]
+                  "enum": [
+                    false
+                  ]
                 }
               ],
               "description": "Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout."
             },
             "chunkTimeout": {
-              "exclusiveMinimum": 0,
               "type": "integer",
               "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
               "description": "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted."
             }
           }
@@ -363,18 +347,26 @@
                 "anyOf": [
                   {
                     "type": "boolean",
-                    "enum": [true]
+                    "enum": [
+                      true
+                    ]
                   },
                   {
                     "type": "object",
                     "properties": {
                       "field": {
                         "type": "string",
-                        "enum": ["reasoning", "reasoning_content", "reasoning_details"]
+                        "enum": [
+                          "reasoning",
+                          "reasoning_content",
+                          "reasoning_details"
+                        ]
                       }
                     },
-                    "required": ["field"],
-                    "additionalProperties": false
+                    "required": [
+                      "field"
+                    ],
+                    "additionalProperties": true
                   }
                 ]
               },
@@ -415,20 +407,29 @@
                           "properties": {
                             "type": {
                               "type": "string",
-                              "enum": ["context"]
+                              "enum": [
+                                "context"
+                              ]
                             },
                             "size": {
-                              "exclusiveMinimum": 0,
                               "type": "integer",
-                              "maximum": 9007199254740991
+                              "maximum": 9007199254740991,
+                              "exclusiveMinimum": 0
                             }
                           },
-                          "required": ["type", "size"],
-                          "additionalProperties": false
+                          "required": [
+                            "type",
+                            "size"
+                          ],
+                          "additionalProperties": true
                         }
                       },
-                      "required": ["input", "output", "tier"],
-                      "additionalProperties": false
+                      "required": [
+                        "input",
+                        "output",
+                        "tier"
+                      ],
+                      "additionalProperties": true
                     }
                   },
                   "context_over_200k": {
@@ -447,12 +448,18 @@
                         "type": "number"
                       }
                     },
-                    "required": ["input", "output"],
-                    "additionalProperties": false
+                    "required": [
+                      "input",
+                      "output"
+                    ],
+                    "additionalProperties": true
                   }
                 },
-                "required": ["input", "output"],
-                "additionalProperties": false
+                "required": [
+                  "input",
+                  "output"
+                ],
+                "additionalProperties": true
               },
               "limit": {
                 "type": "object",
@@ -467,8 +474,11 @@
                     "type": "number"
                   }
                 },
-                "required": ["context", "output"],
-                "additionalProperties": false
+                "required": [
+                  "context",
+                  "output"
+                ],
+                "additionalProperties": true
               },
               "modalities": {
                 "type": "object",
@@ -477,28 +487,45 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": ["text", "audio", "image", "video", "pdf"]
+                      "enum": [
+                        "text",
+                        "audio",
+                        "image",
+                        "video",
+                        "pdf"
+                      ]
                     }
                   },
                   "output": {
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": ["text", "audio", "image", "video", "pdf"]
+                      "enum": [
+                        "text",
+                        "audio",
+                        "image",
+                        "video",
+                        "pdf"
+                      ]
                     }
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": true
               },
               "experimental": {
                 "type": "boolean"
               },
               "status": {
                 "type": "string",
-                "enum": ["alpha", "beta", "deprecated", "active"]
+                "enum": [
+                  "alpha",
+                  "beta",
+                  "deprecated",
+                  "active"
+                ]
               },
               "reasoningDistillation": {
-                "$ref": "#/$defs/ConfigV2.Model.ReasoningDistillation"
+                "$ref": "#/$defs/ConfigV2.Model.ReasoningDistillationEncoded"
               },
               "provider": {
                 "type": "object",
@@ -510,7 +537,7 @@
                     "type": "string"
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": true
               },
               "options": {
                 "type": "object"
@@ -525,6 +552,7 @@
                 "type": "object",
                 "additionalProperties": {
                   "type": "object",
+                  "additionalProperties": {},
                   "properties": {
                     "disabled": {
                       "type": "boolean",
@@ -535,18 +563,20 @@
                 "description": "Variant-specific configuration"
               }
             },
-            "additionalProperties": false
+            "additionalProperties": true
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
     "McpLocalConfig": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["local"],
+          "enum": [
+            "local"
+          ],
           "description": "Type of MCP server connection"
         },
         "command": {
@@ -572,19 +602,26 @@
           "description": "Enable or disable the MCP server on startup"
         },
         "timeout": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."
         },
         "protocol": {
           "type": "string",
-          "enum": ["auto", "legacy", "modern"],
+          "enum": [
+            "auto",
+            "legacy",
+            "modern"
+          ],
           "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
         }
       },
-      "required": ["type", "command"],
-      "additionalProperties": false
+      "required": [
+        "type",
+        "command"
+      ],
+      "additionalProperties": true
     },
     "McpOAuthConfig": {
       "type": "object",
@@ -602,9 +639,9 @@
           "description": "OAuth scopes to request during authorization"
         },
         "callbackPort": {
+          "type": "integer",
           "minimum": 1,
           "maximum": 65535,
-          "type": "integer",
           "description": "Port for the local OAuth callback server (default: 19876). Shorthand for redirectUri when only the port needs changing. Ignored if redirectUri is set."
         },
         "redirectUri": {
@@ -612,14 +649,16 @@
           "description": "OAuth redirect URI (default: http://127.0.0.1:19876/mcp/oauth/callback)."
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
     "McpRemoteConfig": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["remote"],
+          "enum": [
+            "remote"
+          ],
           "description": "Type of MCP server connection"
         },
         "url": {
@@ -638,39 +677,55 @@
           "description": "Headers to send with the request"
         },
         "oauth": {
+          "description": "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection.",
           "anyOf": [
             {
               "$ref": "#/$defs/McpOAuthConfig"
             },
             {
               "type": "boolean",
-              "enum": [false]
+              "enum": [
+                false
+              ]
             }
-          ],
-          "description": "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection."
+          ]
         },
         "timeout": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."
         },
         "protocol": {
           "type": "string",
-          "enum": ["auto", "legacy", "modern"],
+          "enum": [
+            "auto",
+            "legacy",
+            "modern"
+          ],
           "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
         }
       },
-      "required": ["type", "url"],
-      "additionalProperties": false
+      "required": [
+        "type",
+        "url"
+      ],
+      "additionalProperties": true
     },
     "LayoutConfig": {
       "type": "string",
-      "enum": ["auto", "stretch"]
+      "enum": [
+        "auto",
+        "stretch"
+      ]
     },
     "PermissionV2.Effect": {
       "type": "string",
-      "enum": ["allow", "deny", "ask"]
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ]
     },
     "PermissionV2.Rule": {
       "type": "object",
@@ -685,8 +740,12 @@
           "$ref": "#/$defs/PermissionV2.Effect"
         }
       },
-      "required": ["action", "resource", "effect"],
-      "additionalProperties": false
+      "required": [
+        "action",
+        "resource",
+        "effect"
+      ],
+      "additionalProperties": true
     },
     "PermissionV2.Ruleset": {
       "type": "array",
@@ -702,25 +761,25 @@
           "description": "Resize images before sending them to the model when they exceed configured limits (default: true)"
         },
         "max_width": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Maximum image width before resizing or rejecting the attachment (default: 2000)"
         },
         "max_height": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Maximum image height before resizing or rejecting the attachment (default: 2000)"
         },
         "max_base64_bytes": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Maximum base64 payload bytes for an image attachment (default: 5242880)"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
     "AttachmentConfig": {
       "type": "object",
@@ -730,9 +789,9 @@
           "description": "Image attachment configuration"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
-    "ConfigV2.ReasoningDistillationCompatibility": {
+    "ConfigV2.ReasoningDistillationCompatibilityEncoded": {
       "type": "object",
       "properties": {
         "runtime": {
@@ -770,9 +829,9 @@
         "transportVerified",
         "upstreamVerified"
       ],
-      "additionalProperties": false
+      "additionalProperties": true
     },
-    "ConfigV2.ReasoningDistillation": {
+    "ConfigV2.ReasoningDistillationEncoded": {
       "type": "object",
       "properties": {
         "enabled": {
@@ -780,32 +839,36 @@
         },
         "language": {
           "type": "string",
-          "enum": ["zh", "en"]
+          "enum": [
+            "zh",
+            "en"
+          ]
         },
         "compatibility": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/ConfigV2.ReasoningDistillationCompatibility"
+            "$ref": "#/$defs/ConfigV2.ReasoningDistillationCompatibilityEncoded"
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
     "Policy.Effect": {
       "type": "string",
-      "enum": ["allow", "deny"]
+      "enum": [
+        "allow",
+        "deny"
+      ]
     },
-    "ConfigV2.Experimental.Policy": {
+    "ConfigV2.Experimental.PolicyEncoded": {
       "type": "object",
       "properties": {
         "action": {
           "anyOf": [
             {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "enum": ["provider.use"]
-                }
+              "type": "string",
+              "enum": [
+                "provider.use"
               ]
             }
           ]
@@ -817,8 +880,12 @@
           "type": "string"
         }
       },
-      "required": ["action", "effect", "resource"],
-      "additionalProperties": false
+      "required": [
+        "action",
+        "effect",
+        "resource"
+      ],
+      "additionalProperties": true
     },
     "Config": {
       "type": "object",
@@ -829,16 +896,9 @@
         },
         "maxToolCalls": {
           "type": "integer",
-          "allOf": [
-            {
-              "minimum": 0
-            },
-            {
-              "maximum": 9007199254740991,
-              "description": "Maximum tool execution attempts per input-driven model run; 0 means unlimited (default); each parallel tool call counts separately"
-            }
-          ],
-          "maximum": 9007199254740991
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Maximum tool execution attempts per input-driven model run; 0 means unlimited (default); each parallel tool call counts separately"
         },
         "shell": {
           "type": "string",
@@ -877,8 +937,10 @@
                 "type": "boolean"
               }
             },
-            "required": ["template"],
-            "additionalProperties": false
+            "required": [
+              "template"
+            ],
+            "additionalProperties": true
           },
           "description": "Command configuration, see https://opencode.ai/docs/commands"
         },
@@ -900,7 +962,7 @@
               "description": "URLs to fetch skills from (e.g., https://example.com/.well-known/skills/)"
             }
           },
-          "additionalProperties": false,
+          "additionalProperties": true,
           "description": "Additional skill folder paths"
         },
         "references": {
@@ -911,10 +973,10 @@
                 "type": "string"
               },
               {
-                "$ref": "#/$defs/ConfigV2.Reference.Git"
+                "$ref": "#/$defs/ConfigV2.Reference.GitEncoded"
               },
               {
-                "$ref": "#/$defs/ConfigV2.Reference.Local"
+                "$ref": "#/$defs/ConfigV2.Reference.LocalEncoded"
               }
             ]
           },
@@ -928,10 +990,10 @@
                 "type": "string"
               },
               {
-                "$ref": "#/$defs/ConfigV2.Reference.Git"
+                "$ref": "#/$defs/ConfigV2.Reference.GitEncoded"
               },
               {
-                "$ref": "#/$defs/ConfigV2.Reference.Local"
+                "$ref": "#/$defs/ConfigV2.Reference.LocalEncoded"
               }
             ]
           },
@@ -947,7 +1009,7 @@
               }
             }
           },
-          "additionalProperties": false
+          "additionalProperties": true
         },
         "snapshot": {
           "type": "boolean",
@@ -978,7 +1040,11 @@
         },
         "share": {
           "type": "string",
-          "enum": ["manual", "auto", "disabled"],
+          "enum": [
+            "manual",
+            "auto",
+            "disabled"
+          ],
           "description": "Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing"
         },
         "autoshare": {
@@ -986,16 +1052,18 @@
           "description": "@deprecated Use 'share' field instead. Share newly created sessions automatically"
         },
         "autoupdate": {
+          "description": "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored",
           "anyOf": [
             {
               "type": "boolean"
             },
             {
               "type": "string",
-              "enum": ["notify"]
+              "enum": [
+                "notify"
+              ]
             }
-          ],
-          "description": "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored"
+          ]
         },
         "disabled_providers": {
           "type": "array",
@@ -1026,9 +1094,9 @@
           "description": "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid."
         },
         "question_timeout": {
-          "exclusiveMinimum": 0,
           "type": "integer",
           "maximum": 9007199254740991,
+          "exclusiveMinimum": 0,
           "description": "Seconds to wait for a question response before the agent continues independently (default: 60)"
         },
         "username": {
@@ -1037,46 +1105,46 @@
         },
         "mode": {
           "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AgentConfigEncoded"
+          },
           "properties": {
             "build": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "plan": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             }
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/AgentConfig"
           },
           "description": "@deprecated Use `agent` field instead."
         },
         "agent": {
           "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AgentConfigEncoded"
+          },
           "properties": {
             "plan": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "build": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "general": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "explore": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "title": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "summary": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             },
             "compaction": {
-              "$ref": "#/$defs/AgentConfig"
+              "$ref": "#/$defs/AgentConfigEncoded"
             }
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/AgentConfig"
           },
           "description": "Agent configuration, see https://opencode.ai/docs/agents"
         },
@@ -1092,14 +1160,10 @@
           "additionalProperties": {
             "anyOf": [
               {
-                "anyOf": [
-                  {
-                    "$ref": "#/$defs/McpLocalConfig"
-                  },
-                  {
-                    "$ref": "#/$defs/McpRemoteConfig"
-                  }
-                ]
+                "$ref": "#/$defs/McpLocalConfig"
+              },
+              {
+                "$ref": "#/$defs/McpRemoteConfig"
               },
               {
                 "type": "object",
@@ -1108,14 +1172,17 @@
                     "type": "boolean"
                   }
                 },
-                "required": ["enabled"],
-                "additionalProperties": false
+                "required": [
+                  "enabled"
+                ],
+                "additionalProperties": true
               }
             ]
           },
           "description": "MCP (Model Context Protocol) server configurations"
         },
         "formatter": {
+          "description": "Enable or configure formatters. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
           "anyOf": [
             {
               "type": "boolean"
@@ -1147,13 +1214,13 @@
                     }
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": true
               }
             }
-          ],
-          "description": "Enable or configure formatters. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides."
+          ]
         },
         "lsp": {
+          "description": "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
           "anyOf": [
             {
               "type": "boolean"
@@ -1167,11 +1234,15 @@
                     "properties": {
                       "disabled": {
                         "type": "boolean",
-                        "enum": [true]
+                        "enum": [
+                          true
+                        ]
                       }
                     },
-                    "required": ["disabled"],
-                    "additionalProperties": false
+                    "required": [
+                      "disabled"
+                    ],
+                    "additionalProperties": true
                   },
                   {
                     "type": "object",
@@ -1201,14 +1272,15 @@
                         "type": "object"
                       }
                     },
-                    "required": ["command"],
-                    "additionalProperties": false
+                    "required": [
+                      "command"
+                    ],
+                    "additionalProperties": true
                   }
                 ]
               }
             }
-          ],
-          "description": "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides."
+          ]
         },
         "instructions": {
           "type": "array",
@@ -1222,7 +1294,7 @@
           "description": "@deprecated Always uses stretch layout."
         },
         "permission": {
-          "$ref": "#/$defs/PermissionConfig"
+          "$ref": "#/$defs/PermissionConfigEncoded"
         },
         "permissions": {
           "$ref": "#/$defs/PermissionV2.Ruleset",
@@ -1233,7 +1305,13 @@
           "properties": {
             "mode": {
               "type": "string",
-              "enum": ["default", "manual", "acceptEdits", "dontAsk", "plan"]
+              "enum": [
+                "default",
+                "manual",
+                "acceptEdits",
+                "dontAsk",
+                "plan"
+              ]
             },
             "directories": {
               "type": "array",
@@ -1242,7 +1320,7 @@
               }
             }
           },
-          "additionalProperties": false,
+          "additionalProperties": true,
           "description": "OpenCode-owned permission hook mode and additional directory grants"
         },
         "tools": {
@@ -1263,25 +1341,25 @@
               "description": "Enterprise URL"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": true
         },
         "tool_output": {
           "type": "object",
           "properties": {
             "max_lines": {
-              "exclusiveMinimum": 0,
               "type": "integer",
               "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
               "description": "Maximum lines of generic tool output before it is truncated and saved to disk (default: 2000); read, grep, glob and shell use their own line budgets"
             },
             "max_bytes": {
-              "exclusiveMinimum": 0,
               "type": "integer",
               "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
               "description": "Maximum bytes of generic tool output before it is truncated and saved to disk (default: 51200); shell's inline tail and saved-file threshold also use this byte budget"
             }
           },
-          "additionalProperties": false,
+          "additionalProperties": true,
           "description": "Thresholds for truncating generic tool output. When output exceeds either limit, the full text is written to the truncation directory and a preview is returned. read, grep and glob use fixed per-tool budgets instead, while shell shares max_bytes and keeps its own 20-line tail."
         },
         "compaction": {
@@ -1300,28 +1378,28 @@
               "description": "@deprecated Ignored. Context folding is off by default; set 'dynamic' to true to enable the legacy behavior."
             },
             "tail_turns": {
-              "minimum": 0,
               "type": "integer",
+              "minimum": 0,
               "maximum": 9007199254740991,
               "description": "Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)"
             },
             "preserve_recent_tokens": {
-              "minimum": 0,
               "type": "integer",
+              "minimum": 0,
               "maximum": 9007199254740991,
               "description": "Maximum number of tokens from recent turns to preserve verbatim after compaction"
             },
             "reserved": {
-              "minimum": 0,
               "type": "integer",
+              "minimum": 0,
               "maximum": 9007199254740991,
               "description": "Token buffer for compaction. Leaves enough window to avoid overflow during compaction."
             }
           },
-          "additionalProperties": false
+          "additionalProperties": true
         },
         "reasoningDistillation": {
-          "$ref": "#/$defs/ConfigV2.ReasoningDistillation"
+          "$ref": "#/$defs/ConfigV2.ReasoningDistillationEncoded"
         },
         "experimental": {
           "type": "object",
@@ -1349,23 +1427,23 @@
               "description": "Continue the agent loop when a tool call is denied"
             },
             "mcp_timeout": {
-              "exclusiveMinimum": 0,
               "type": "integer",
               "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
               "description": "Timeout in milliseconds for model context protocol (MCP) requests"
             },
             "policies": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/ConfigV2.Experimental.Policy"
+                "$ref": "#/$defs/ConfigV2.Experimental.PolicyEncoded"
               },
               "description": "Policy statements applied to supported resources, such as provider access"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": true
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     }
   },
   "allowComments": true,

@@ -6,7 +6,7 @@ import { ConfigProvider } from "./provider"
 import { NonNegativeInt, PositiveInt } from "../schema"
 
 export const Color = Schema.Union([
-  Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/)),
+  Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/u)),
   Schema.Literals(["primary", "secondary", "accent", "success", "warning", "error", "info"]),
 ])
 

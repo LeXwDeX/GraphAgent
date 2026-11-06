@@ -19,8 +19,13 @@ export const optionalOmitUndefined = <S extends Schema.Top>(schema: S) =>
 
 export const withStatics =
   <S extends object, M extends Record<string, unknown>>(methods: (schema: S) => M) =>
-  (schema: S): S & M =>
-    Object.assign(schema, methods(schema))
+  (schema: S): S & M => {
+    const copy = Object.create(schema)
+    for (const [key, value] of Object.entries(methods(schema))) {
+      Object.defineProperty(copy, key, { value, writable: true, configurable: true, enumerable: true })
+    }
+    return copy
+  }
 
 export const DateTimeUtcFromMillis = Schema.Finite.pipe(
   Schema.decodeTo(Schema.DateTimeUtc, {
