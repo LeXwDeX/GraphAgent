@@ -174,17 +174,29 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     }
 
     const closeEntryScope = (entry: Entry) =>
-      Scope.close(entry.scope, Exit.void).pipe(
-        Effect.timeoutOption("1 second"),
-        Effect.tap((result) =>
-          Option.isNone(result)
-            ? Effect.logWarning("instance entry scope close timed out", { directory: entry.directory })
-            : Effect.void,
-        ),
+      Effect.gen(function* () {
+        // Scope.close waits for every child, including uninterruptible ones.
+        // Under Effect 4 that wait cannot be interrupted, so a timeout around
+        // the close itself never fires. Fork the close and bound only the wait:
+        // cleanup returns, and the scope settles once its children finish.
+        const closing = yield* Scope.close(entry.scope, Exit.void).pipe(
+          Effect.forkIn(cleanupScope, { startImmediately: true }),
+        )
+        const result = yield* Fiber.await(closing).pipe(Effect.timeoutOption("1 second"))
+        if (Option.isNone(result)) {
+          yield* Effect.logWarning("instance entry scope close timed out", { directory: entry.directory })
+          return
+        }
+        if (Exit.isFailure(result.value)) {
+          yield* Effect.logWarning("instance entry scope close failed", {
+            directory: entry.directory,
+            cause: result.value.cause,
+          })
+        }
+      }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("instance entry scope close failed", { directory: entry.directory, cause }),
         ),
-        Effect.asVoid,
       )
 
     const beginUse = (entry: Entry) => {
