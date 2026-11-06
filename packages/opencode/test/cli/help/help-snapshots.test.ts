@@ -55,7 +55,6 @@ const TOP_LEVEL = [
   "import",
   "pr",
   "session",
-  "plugin",
   "db",
 ] as const
 
