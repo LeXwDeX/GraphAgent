@@ -63,7 +63,6 @@ export type Event =
   | EventReferenceUpdated
   | EventPermissionV2Asked
   | EventPermissionV2Replied
-  | EventPluginAdded
   | EventProjectDirectoriesUpdated
   | EventFileWatcherUpdated
   | EventQuestionV2Asked
@@ -782,7 +781,6 @@ export type V2Event =
   | V2EventReferenceUpdated
   | V2EventPermissionV2Asked
   | V2EventPermissionV2Replied
-  | V2EventPluginAdded
   | V2EventProjectDirectoriesUpdated
   | V2EventFileWatcherUpdated
   | V2EventQuestionV2Asked
@@ -1506,15 +1504,6 @@ export type Config = {
     ignore?: Array<string>
   }
   snapshot?: boolean
-  plugin?: Array<
-    | string
-    | [
-        string,
-        {
-          [key: string]: unknown
-        },
-      ]
-  >
   /**
    * Deprecated compatibility setting; built-in application updates are disabled and this value is ignored
    */
@@ -2264,13 +2253,6 @@ export type GlobalEvent = {
           sessionID: string
           requestID: string
           reply: PermissionV2Reply
-        }
-      }
-    | {
-        id: string
-        type: "plugin.added"
-        properties: {
-          id: string
         }
       }
     | {
@@ -3522,14 +3504,6 @@ export type EventProjectDirectoriesUpdated = {
   type: "project.directories.updated"
   properties: {
     projectID: string
-  }
-}
-
-export type EventPluginAdded = {
-  id: string
-  type: "plugin.added"
-  properties: {
-    id: string
   }
 }
 
@@ -5044,23 +5018,6 @@ export type V2EventProjectDirectoriesUpdated = {
   type: "project.directories.updated"
   data: {
     projectID: string
-  }
-}
-
-export type V2EventPluginAdded = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "plugin.added"
-  data: {
-    id: string
   }
 }
 
