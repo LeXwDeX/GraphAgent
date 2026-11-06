@@ -6,6 +6,7 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
+import { NotFoundError } from "@/storage/storage"
 import { SessionCancellation } from "@/session/cancellation"
 import { MessageID, SessionID } from "@/session/schema"
 import { Tool } from "@/tool/tool"
@@ -366,7 +367,6 @@ describe("watch_pr watch loop", () => {
         runner,
         deadlineMs: 10_000,
         pollMs: 1_000,
-        cancelled: () => false,
         deliver: collect(delivered),
       }).pipe(Effect.forkChild)
       yield* Deferred.await(started)
@@ -386,7 +386,6 @@ describe("watch_pr watch loop", () => {
         runner: sequenceRunner([githubResult(snapshot({ head: "a" }))], started),
         deadlineMs: 5_000,
         pollMs: 1_000,
-        cancelled: () => false,
         deliver: collect(delivered),
       }).pipe(Effect.forkChild)
       yield* Deferred.await(started)
@@ -404,7 +403,6 @@ describe("watch_pr watch loop", () => {
         runner: () => Effect.never,
         deadlineMs: 5_000,
         pollMs: 1_000,
-        cancelled: () => false,
         deliver: collect(delivered),
       }).pipe(Effect.forkChild)
       yield* TestClock.adjust(Duration.seconds(6))
@@ -425,7 +423,6 @@ describe("watch_pr watch loop", () => {
         runner: sequenceRunner([githubResult(snapshot({ head: "a" })), githubResult(snapshot({ head: "b" }))], started),
         deadlineMs: 10_000,
         pollMs: 1_000,
-        cancelled: () => false,
         deliver: collect(delivered),
       }).pipe(Effect.forkChild)
       yield* Deferred.await(started)
@@ -445,7 +442,6 @@ describe("watch_pr watch loop", () => {
         runner: () => Effect.succeed({ code: 127, stdout: "", stderr: "not found" }),
         deadlineMs: 10_000,
         pollMs: 1_000,
-        cancelled: () => false,
         deliver: collect(delivered),
       })
       expect(notice).toMatchObject({ outcome: "unavailable", detail: "gh unavailable (exit 127)" })
@@ -462,7 +458,6 @@ describe("watch_pr watch loop", () => {
         runner: sequenceRunner([githubResult(snapshot({ head: "a" }))], started),
         deadlineMs: 10_000,
         pollMs: 1_000,
-        cancelled: () => false,
         deliver: collect(delivered),
       }).pipe(Effect.forkChild)
       yield* Deferred.await(started)
@@ -549,8 +544,18 @@ describe("watch_pr notice and tool", () => {
       time: { created: 0, updated: 0 },
       agent,
     }) satisfies Session.Info
+  let sessionMessages: Array<{
+    info: { role: "user" | "assistant"; time: { created: number }; error?: { name: string } }
+    parts: []
+  }> = []
+  let sessionMissing = false
   const sessionLayer = Layer.mock(Session.Service, {
-    get: () => Effect.sync(() => sessionInfo(sessionAgent)),
+    get: () =>
+      sessionMissing
+        ? Effect.fail(new NotFoundError({ message: "session not found" }))
+        : Effect.sync(() => sessionInfo(sessionAgent)),
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- test fixture narrows message history to the fields the watch reads
+    messages: () => Effect.sync(() => sessionMessages as never),
   })
 
   const promptOps: TaskPromptOps = {
@@ -560,40 +565,32 @@ describe("watch_pr notice and tool", () => {
   }
 
   const started: BackgroundJob.StartInput[] = []
+  const running: BackgroundJob.Info[] = []
   const layer = Layer.mock(BackgroundJob.Service, {
+    list: () => Effect.sync(() => running),
     start: (input) =>
       Effect.sync(() => {
         started.push(input)
-        return {
+        const info = {
           id: "job_test",
           type: input.type,
           status: "running",
           started_at: 0,
+          metadata: input.metadata,
         } satisfies BackgroundJob.Info
+        running.push(info)
+        return info
       }),
   })
+  const reset = () => {
+    started.length = 0
+    running.length = 0
+    sessionMessages = []
+    sessionMissing = false
+  }
   const withBackground = testEffect(Layer.mergeAll(layer, Truncate.defaultLayer, Agent.defaultLayer, sessionLayer))
 
   const withRealBackground = testEffect(BackgroundJob.defaultLayer)
-  withRealBackground.instance("stops a watch job through the session cancellation barrier", () =>
-    Effect.gen(function* () {
-      const background = yield* BackgroundJob.Service
-      const sessionID = SessionID.make("ses_watch_cancel")
-      const started = yield* Deferred.make<void>()
-      const info = yield* background.start({
-        type: "watch_pr",
-        metadata: { sessionId: sessionID },
-        run: Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never), Effect.as("settled")),
-      })
-      yield* Deferred.await(started)
-      const cancellation = SessionCancellation.begin(sessionID)
-      yield* Effect.all(cancellation.owners, { discard: true })
-      cancellation.finish()
-      const waited = yield* background.wait({ id: info.id, timeout: 1_000 })
-      expect(waited.info?.status).toBe("cancelled")
-    }),
-  )
-
   withBackground.instance("returns a job ID without waiting for the watch", () =>
     Effect.gen(function* () {
       const tool = yield* (yield* WatchPrTool).init()
@@ -612,13 +609,143 @@ describe("watch_pr notice and tool", () => {
         sessionId: "ses_watch_pr",
         url: "https://github.com/acme/widgets/pull/42",
         provider: "github",
+        survivesSessionCancel: true,
       })
     }),
   )
 
+  withBackground.instance("reuses a running watch for the same session and URL", () =>
+    Effect.gen(function* () {
+      reset()
+      running.push({
+        id: "job_existing",
+        type: "watch_pr",
+        status: "running",
+        started_at: 0,
+        metadata: { sessionId: summary.sessionID, url: githubRequest.url, provider: "github" },
+      })
+      const tool = yield* (yield* WatchPrTool).init()
+      const result = yield* tool.execute({ url: githubRequest.url }, {
+        ...summary,
+        extra: { promptOps },
+      } as Tool.Context)
+      expect(result.metadata).toMatchObject({ jobId: "job_existing" })
+      expect(result.output).toContain("Already watching")
+      expect(started).toHaveLength(0)
+    }),
+  )
+
+  withBackground.instance("delivers a stopped notice when the job defects", () =>
+    Effect.gen(function* () {
+      reset()
+      const prompts: string[] = []
+      const tool = yield* (yield* WatchPrTool).init()
+      yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+        ...summary,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: (input: Parameters<TaskPromptOps["prompt"]>[0]) =>
+              Effect.sync(() => {
+                prompts.push(input.parts?.[0]?.type === "text" ? input.parts[0].text : "")
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                return {} as unknown as SessionV1.WithParts
+              }),
+          },
+          watchPrRunner: (() => Effect.die("boom")) as Runner,
+        },
+      } as Tool.Context)
+      const run = started[0]?.run
+      if (!run) throw new Error("expected a started job")
+      yield* run.pipe(Effect.catchCause(() => Effect.void))
+      expect(prompts.some((text) => text.includes("watch_pr stopped"))).toBe(true)
+    }),
+  )
+
+  withBackground.instance("marks an aborted-turn notice noReply until a newer user message", () =>
+    Effect.gen(function* () {
+      const calls: Array<boolean | undefined> = []
+      const tool = yield* (yield* WatchPrTool).init()
+      const runWith = (messages: typeof sessionMessages) =>
+        Effect.gen(function* () {
+          reset()
+          sessionMessages = messages
+          const read = yield* Deferred.make<void>()
+          yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+            ...summary,
+            extra: {
+              promptOps: {
+                ...promptOps,
+                prompt: (input: Parameters<TaskPromptOps["prompt"]>[0]) =>
+                  Effect.sync(() => {
+                    calls.push(input.noReply)
+                    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                    return {} as unknown as SessionV1.WithParts
+                  }),
+              },
+              watchPrRunner: sequenceRunner(
+                [
+                  githubResult(snapshot({ head: "a" })),
+                  githubResult(snapshot({ head: "a", checks: { total: 1, pending: 0, failed: 0, passed: 1 } })),
+                ],
+                read,
+              ),
+            },
+          } as Tool.Context)
+          const run = started[0]?.run
+          if (!run) throw new Error("expected a started job")
+          const fiber = yield* Effect.forkChild(run)
+          yield* Deferred.await(read)
+          yield* TestClock.adjust(Duration.seconds(5))
+          yield* Fiber.join(fiber)
+        }).pipe(Effect.provide(TestClock.layer()))
+      yield* runWith([
+        { info: { role: "assistant", time: { created: 1 }, error: { name: "MessageAbortedError" } }, parts: [] },
+      ])
+      yield* runWith([
+        { info: { role: "assistant", time: { created: 1 }, error: { name: "MessageAbortedError" } }, parts: [] },
+        { info: { role: "user", time: { created: 2 } }, parts: [] },
+      ])
+      expect(calls).toEqual([true, false])
+    }),
+  )
+
+  withBackground.instance("does not deliver to a deleted session", () =>
+    Effect.gen(function* () {
+      reset()
+      sessionMissing = true
+      const prompts: string[] = []
+      const tool = yield* (yield* WatchPrTool).init()
+      yield* tool.execute({ url: githubRequest.url, deadline_seconds: 60, poll_seconds: 5 }, {
+        ...summary,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: (input: Parameters<TaskPromptOps["prompt"]>[0]) =>
+              Effect.sync(() => {
+                prompts.push(input.sessionID)
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                return {} as unknown as SessionV1.WithParts
+              }),
+          },
+          watchPrRunner: sequenceRunner([
+            githubResult(snapshot({ head: "a" })),
+            githubResult(snapshot({ head: "a", checks: { total: 1, pending: 0, failed: 0, passed: 1 } })),
+          ]),
+        },
+      } as Tool.Context)
+      const run = started[0]?.run
+      if (!run) throw new Error("expected a started job")
+      const fiber = yield* Effect.forkChild(run)
+      yield* TestClock.adjust(Duration.seconds(5))
+      yield* Fiber.join(fiber)
+      expect(prompts).toHaveLength(0)
+    }).pipe(Effect.provide(TestClock.layer())),
+  )
+
   withBackground.instance("delivers with the session's current agent", () =>
     Effect.gen(function* () {
-      started.length = 0
+      reset()
       sessionAgent = "build"
       const prompts: Array<string | undefined> = []
       const read = yield* Deferred.make<void>()
@@ -677,7 +804,7 @@ describe("watch_pr notice and tool", () => {
   )
   withGoal.instance("a notice wakes only this watch's goal wait before the notice prompt", () =>
     Effect.gen(function* () {
-      started.length = 0
+      reset()
       events.length = 0
       const read = yield* Deferred.make<void>()
       const tool = yield* (yield* WatchPrTool).init()
@@ -715,7 +842,7 @@ describe("watch_pr notice and tool", () => {
 
   withBackground.instance("falls back to the tool context agent when the session has none", () =>
     Effect.gen(function* () {
-      started.length = 0
+      reset()
       sessionAgent = undefined
       const prompts: Array<string | undefined> = []
       const read = yield* Deferred.make<void>()
