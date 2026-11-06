@@ -12,6 +12,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { SessionShare } from "@/share/session"
+import { SessionLifecycle } from "@/session/lifecycle"
 import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
@@ -89,6 +90,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
   Effect.gen(function* () {
     const session = yield* Session.Service
     const shareSvc = yield* SessionShare.Service
+    const lifecycle = yield* SessionLifecycle.Service
     const promptSvc = yield* SessionPrompt.Service
     const commands = yield* Command.Service
     const revertSvc = yield* SessionRevert.Service
@@ -213,7 +215,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
-      return yield* shareSvc.create(ctx.payload)
+      return yield* lifecycle.create(ctx.payload)
     })
 
     const createRaw = Effect.fn("SessionHttpApi.createRaw")(function* (ctx: {

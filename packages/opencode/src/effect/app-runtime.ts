@@ -59,6 +59,7 @@ import { Worktree } from "@/worktree"
 import { Installation } from "@/installation"
 import { ShareNext } from "@/share/share-next"
 import { SessionShare } from "@/share/session"
+import { SessionLifecycle } from "@/session/lifecycle"
 import { Npm } from "@opencode-ai/core/npm"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
@@ -139,6 +140,7 @@ const BaseAppLayer = Layer.mergeAll(
     Installation.defaultLayer,
     ShareNext.defaultLayer,
     SessionShare.defaultLayer,
+    SessionLifecycle.defaultLayer,
     HookStartContext.defaultLayer,
   ),
 ).pipe(

@@ -2525,7 +2525,7 @@ export const layer = Layer.effect(
     })
 
     // SessionStart(source: "resume"): fires once, on the first prompt admission of a top-level
-    // session this instance did not create (SessionShare.create marks created sessions as
+    // session this instance did not create (SessionLifecycle.create marks created sessions as
     // started) that already has earlier messages — e.g. a session reopened after a restart.
     // Empty sessions and child sessions never fire. Returns the contexts to inject; hook failures
     // never fail the prompt. No hook configured → trigger short-circuits, so cost is one Set lookup
