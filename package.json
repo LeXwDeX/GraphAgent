@@ -57,7 +57,7 @@
       "@tsconfig/node22": "22.0.6",
       "@tsconfig/bun": "1.0.11",
       "@cloudflare/workers-types": "4.20260702.1",
-      "@openauthjs/openauth": "0.0.0-20250322224806",
+      "@openauthjs/openauth": "0.4.3",
       "@pierre/diffs": "1.2.12",
       "opentui-spinner": "0.0.7",
       "@solid-primitives/storage": "4.4.0",

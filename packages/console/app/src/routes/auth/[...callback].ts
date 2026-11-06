@@ -1,9 +1,20 @@
 import { redirect } from "@solidjs/router"
 import type { APIEvent } from "@solidjs/start/server"
+import { createSubjects } from "@openauthjs/openauth/subject"
+import { z } from "zod"
 import { AuthClient } from "~/context/auth"
 import { useAuthSession } from "~/context/auth"
 import { i18n } from "~/i18n"
 import { localeFromRequest, route } from "~/lib/language"
+
+// Must match the issuer's subjects in packages/console/function/src/auth.ts.
+const subjects = createSubjects({
+  account: z.object({
+    accountID: z.string(),
+    email: z.string(),
+    newAccount: z.boolean().optional(),
+  }),
+})
 
 export async function GET(input: APIEvent) {
   const url = new URL(input.request.url)
@@ -15,7 +26,7 @@ export async function GET(input: APIEvent) {
     if (!code) throw new Error(dict["auth.callback.error.codeMissing"])
     const result = await AuthClient.exchange(code, `${url.origin}${url.pathname}`)
     if (result.err) throw new Error(result.err.message)
-    const decoded = AuthClient.decode(result.tokens.access, {} as any)
+    const decoded = await AuthClient.verify(subjects, result.tokens.access)
     if (decoded.err) throw new Error(decoded.err.message)
     const session = await useAuthSession()
     const id = decoded.subject.properties.accountID
