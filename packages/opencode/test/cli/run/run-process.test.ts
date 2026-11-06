@@ -256,14 +256,15 @@ describe("opencode run (non-interactive subprocess)", () => {
 
         const events = opencode.parseJsonEvents(result.stdout)
         expect(result.exitCode).toBe(0)
-        // The failed request surfaces as a retryable provider error and emits
-        // no step parts, so the recovered attempt follows the completed tool
-        // step directly.
+        // The failed request surfaces as a retryable provider error after its
+        // step-start part, so only the step-finish is missing; the recovered
+        // attempt then continues after the completed tool step.
         expect(events.map((event) => event.type)).toEqual([
           "step_start",
           "text",
           "tool_use",
           "step_finish",
+          "step_start",
           "step_start",
           "text",
           "step_finish",
@@ -273,7 +274,7 @@ describe("opencode run (non-interactive subprocess)", () => {
           expect.objectContaining({ type: "tool", state: expect.objectContaining({ status: "completed" }) }),
         )
         expect(events[3]?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "tool-calls" }))
-        expect(events[5]?.part).toEqual(expect.objectContaining({ type: "text", text: "recovered json" }))
+        expect(events[6]?.part).toEqual(expect.objectContaining({ type: "text", text: "recovered json" }))
         expect(events.at(-1)?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "stop" }))
         expectRetriedToolContinuation(yield* llm.inputs, "partial json")
         expect(yield* Effect.promise(() => Bun.file(`${home}/tool-count`).text())).toBe("x")
