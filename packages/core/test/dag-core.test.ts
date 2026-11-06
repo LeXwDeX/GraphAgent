@@ -125,6 +125,89 @@ describe("DependencyGraph", () => {
     expect(g2.getDependencies("b")).toEqual(["a"])
     expect(g2.hasEdge("b", "a")).toBe(true)
   })
+
+  it("counts nodes/edges and computes stats", () => {
+    const g = new DependencyGraph()
+    for (const id of ["a", "b", "c"]) g.addNode(id)
+    g.addEdge("b", "a")
+    g.addEdge("c", "b")
+    expect(g.getNodeCount()).toBe(3)
+    expect(g.getEdgeCount()).toBe(2)
+    const stats = g.getStats()
+    expect(stats).toMatchObject({ nodeCount: 3, edgeCount: 2, maxDepth: 2, hasCycle: false })
+    expect(stats.averageDegree).toBeCloseTo(2 / 3)
+  })
+
+  it("getStats handles an empty graph", () => {
+    expect(new DependencyGraph().getStats()).toEqual({
+      nodeCount: 0,
+      edgeCount: 0,
+      averageDegree: 0,
+      maxDepth: 0,
+      hasCycle: false,
+    })
+  })
+
+  it("getStats reports -1 maxDepth for a cyclic graph", () => {
+    const g = new DependencyGraph()
+    g.addNode("a")
+    g.addNode("b")
+    ;(g as unknown as { deps: Map<string, Set<string>> }).deps.get("a")!.add("b")
+    ;(g as unknown as { deps: Map<string, Set<string>> }).deps.get("b")!.add("a")
+    expect(g.getStats()).toMatchObject({ maxDepth: -1, hasCycle: true })
+  })
+
+  it("collects transitive dependencies and dependents", () => {
+    const g = new DependencyGraph()
+    for (const id of ["a", "b", "c", "d"]) g.addNode(id)
+    g.addEdge("b", "a")
+    g.addEdge("c", "b")
+    g.addEdge("d", "c")
+    expect(g.getAllDependencies("d").sort()).toEqual(["a", "b", "c"])
+    expect(g.getAllDependents("a").sort()).toEqual(["b", "c", "d"])
+    expect(() => g.getAllDependencies("missing")).toThrow(NodeNotFoundError)
+    expect(() => g.getAllDependents("missing")).toThrow(NodeNotFoundError)
+  })
+
+  it("removes edges and nodes while keeping both directions consistent", () => {
+    const g = new DependencyGraph()
+    for (const id of ["a", "b", "c"]) g.addNode(id)
+    g.addEdge("b", "a")
+    g.addEdge("c", "b")
+    g.removeEdge("b", "a")
+    expect(g.hasEdge("b", "a")).toBe(false)
+    expect(g.getDependents("a")).toEqual([])
+    expect(() => g.removeEdge("missing", "a")).toThrow(NodeNotFoundError)
+    g.removeNode("b")
+    expect(g.hasNode("b")).toBe(false)
+    expect(g.getDependencies("c")).toEqual([])
+    expect(() => g.removeNode("missing")).toThrow(NodeNotFoundError)
+  })
+
+  it("finds and validates cycles, then clones and clears", () => {
+    const g = new DependencyGraph()
+    for (const id of ["a", "b", "c", "d"]) g.addNode(id)
+    g.addEdge("a", "b")
+    // Drive the acyclic branch first, then a cycle discovered later: exercises
+    // the DFS backtracking path in findCycleFrom.
+    ;(g as unknown as { deps: Map<string, Set<string>> }).deps.get("c")!.add("d")
+    ;(g as unknown as { deps: Map<string, Set<string>> }).deps.get("d")!.add("c")
+    expect(g.findCycles()).toEqual([["c", "d"]])
+    expect(g.validate()).toEqual(["Graph contains cycle(s)"])
+
+    const cloned = g.clone()
+    expect(cloned.getEdgeCount()).toBe(3)
+    cloned.clear()
+    expect(cloned.getNodeCount()).toBe(0)
+    expect(g.getNodeCount()).toBe(4)
+  })
+
+  it("validate returns true and findCycles is empty for acyclic graphs", () => {
+    const g = new DependencyGraph()
+    g.addNode("a")
+    expect(g.validate()).toBe(true)
+    expect(g.findCycles()).toEqual([])
+  })
 })
 
 describe("iron laws (transition tables)", () => {
@@ -161,7 +244,13 @@ describe("iron laws (transition tables)", () => {
 
   it("getValidNextWorkflowStatuses: RUNNING → PAUSED/STEPPING/COMPLETED/FAILED/CANCELLED", () => {
     expect(getValidNextWorkflowStatuses(WorkflowStatus.RUNNING).sort()).toEqual(
-      [WorkflowStatus.PAUSED, WorkflowStatus.STEPPING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED].sort(),
+      [
+        WorkflowStatus.PAUSED,
+        WorkflowStatus.STEPPING,
+        WorkflowStatus.COMPLETED,
+        WorkflowStatus.FAILED,
+        WorkflowStatus.CANCELLED,
+      ].sort(),
     )
   })
 
@@ -170,8 +259,21 @@ describe("iron laws (transition tables)", () => {
       [NodeStatus.PENDING, [NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.SKIPPED, NodeStatus.FAILED]],
       // P0-2: QUEUED→QUEUED idempotent re-admission, →PENDING replan reset,
       // →FAILED queue-wait timeout.
-      [NodeStatus.QUEUED, [NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.PENDING, NodeStatus.SKIPPED, NodeStatus.FAILED]],
-      [NodeStatus.RUNNING, [NodeStatus.COMPLETED, NodeStatus.FAILED, NodeStatus.ABORTED, NodeStatus.PAUSED, NodeStatus.PENDING, NodeStatus.SKIPPED]],
+      [
+        NodeStatus.QUEUED,
+        [NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.PENDING, NodeStatus.SKIPPED, NodeStatus.FAILED],
+      ],
+      [
+        NodeStatus.RUNNING,
+        [
+          NodeStatus.COMPLETED,
+          NodeStatus.FAILED,
+          NodeStatus.ABORTED,
+          NodeStatus.PAUSED,
+          NodeStatus.PENDING,
+          NodeStatus.SKIPPED,
+        ],
+      ],
       [NodeStatus.PAUSED, [NodeStatus.RUNNING, NodeStatus.ABORTED, NodeStatus.SKIPPED, NodeStatus.FAILED]],
       [NodeStatus.COMPLETED, []],
       [NodeStatus.FAILED, []],
@@ -187,8 +289,27 @@ describe("iron laws (transition tables)", () => {
   it("covers the complete workflow transition matrix", () => {
     const transitions = [
       [WorkflowStatus.PENDING, [WorkflowStatus.RUNNING]],
-      [WorkflowStatus.RUNNING, [WorkflowStatus.PAUSED, WorkflowStatus.STEPPING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED]],
-      [WorkflowStatus.STEPPING, [WorkflowStatus.RUNNING, WorkflowStatus.PAUSED, WorkflowStatus.STEPPING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED]],
+      [
+        WorkflowStatus.RUNNING,
+        [
+          WorkflowStatus.PAUSED,
+          WorkflowStatus.STEPPING,
+          WorkflowStatus.COMPLETED,
+          WorkflowStatus.FAILED,
+          WorkflowStatus.CANCELLED,
+        ],
+      ],
+      [
+        WorkflowStatus.STEPPING,
+        [
+          WorkflowStatus.RUNNING,
+          WorkflowStatus.PAUSED,
+          WorkflowStatus.STEPPING,
+          WorkflowStatus.COMPLETED,
+          WorkflowStatus.FAILED,
+          WorkflowStatus.CANCELLED,
+        ],
+      ],
       [WorkflowStatus.PAUSED, [WorkflowStatus.RUNNING, WorkflowStatus.CANCELLED]],
       [WorkflowStatus.COMPLETED, [WorkflowStatus.ARCHIVED]],
       [WorkflowStatus.FAILED, [WorkflowStatus.ARCHIVED]],
@@ -328,9 +449,7 @@ describe("transitions (event mappings + aggregation)", () => {
   })
 
   it("aggregateBranchStatus: any FAILED → FAILED", () => {
-    expect(
-      aggregateBranchStatus([NodeStatus.COMPLETED, NodeStatus.FAILED, NodeStatus.RUNNING]),
-    ).toBe(NodeStatus.FAILED)
+    expect(aggregateBranchStatus([NodeStatus.COMPLETED, NodeStatus.FAILED, NodeStatus.RUNNING])).toBe(NodeStatus.FAILED)
   })
 
   it("aggregateBranchStatus: all COMPLETED → COMPLETED", () => {
@@ -339,6 +458,16 @@ describe("transitions (event mappings + aggregation)", () => {
 
   it("aggregateBranchStatus: empty → PENDING", () => {
     expect(aggregateBranchStatus([])).toBe(NodeStatus.PENDING)
+  })
+
+  it("aggregateBranchStatus: uniform SKIPPED/ABORTED and mixed terminal states", () => {
+    expect(aggregateBranchStatus([NodeStatus.SKIPPED, NodeStatus.SKIPPED])).toBe(NodeStatus.SKIPPED)
+    expect(aggregateBranchStatus([NodeStatus.ABORTED, NodeStatus.ABORTED])).toBe(NodeStatus.ABORTED)
+    expect(aggregateBranchStatus([NodeStatus.COMPLETED, NodeStatus.SKIPPED])).toBe(NodeStatus.PENDING)
+  })
+
+  it("transitionToNodeEvent: unexpected RUNNING source emits no event", () => {
+    expect(transitionToNodeEvent(NodeStatus.COMPLETED, NodeStatus.RUNNING)).toBeNull()
   })
 
   it("DEFAULT_FALLBACK_TRIGGER is EXEC_FAILED", () => {
@@ -405,7 +534,12 @@ describe("planReplan (D11 simplified model)", () => {
     it(`preserves a ${status} node and its dependency when included in the fragment`, () => {
       const plan = planReplan(
         { nodes: [{ id: "old", status, depends_on: [] }] },
-        { nodes: [{ id: "old", depends_on: [] }, { id: "new", depends_on: ["old"] }] },
+        {
+          nodes: [
+            { id: "old", depends_on: [] },
+            { id: "new", depends_on: ["old"] },
+          ],
+        },
       )
       expect(plan.errors).toEqual([])
       expect(plan.cancel).toEqual([])
@@ -501,10 +635,7 @@ describe("planReplan (D11 simplified model)", () => {
   })
 
   it("keeps running-not-in-fragment unchanged (not in any bucket)", () => {
-    const plan = planReplan(
-      { nodes: [{ id: "r", status: NodeStatus.RUNNING, depends_on: [] }] },
-      { nodes: [] },
-    )
+    const plan = planReplan({ nodes: [{ id: "r", status: NodeStatus.RUNNING, depends_on: [] }] }, { nodes: [] })
     expect(plan.cancel).not.toContain("r")
     expect(plan.restart).not.toContain("r")
     expect(plan.replace).not.toContain("r")
@@ -520,7 +651,12 @@ describe("planReplan (D11 simplified model)", () => {
           { id: "b", status: NodeStatus.PENDING, depends_on: ["a"] },
         ],
       },
-      { nodes: [{ id: "b", depends_on: ["a"] }, { id: "a", depends_on: ["b"] }] },
+      {
+        nodes: [
+          { id: "b", depends_on: ["a"] },
+          { id: "a", depends_on: ["b"] },
+        ],
+      },
     )
     // 'a' is COMPLETED (terminal) so the fragment's a→b edge is ignored; no cycle.
     // To actually test cycle rejection we need a non-terminal example:
@@ -544,7 +680,12 @@ describe("planReplan (D11 simplified model)", () => {
   it("mergedGraph is acyclic for a valid plan", () => {
     const plan = planReplan(
       { nodes: [{ id: "a", status: NodeStatus.COMPLETED, depends_on: [] }] },
-      { nodes: [{ id: "b", depends_on: ["a"] }, { id: "c", depends_on: ["b"] }] },
+      {
+        nodes: [
+          { id: "b", depends_on: ["a"] },
+          { id: "c", depends_on: ["b"] },
+        ],
+      },
     )
     expect(plan.errors).toEqual([])
     expect(plan.mergedGraph.hasCycle()).toBe(false)
@@ -564,9 +705,7 @@ describe("buildGraph", () => {
   })
 
   it("ignores dependency edges to unknown nodes", () => {
-    const nodes: SchedulingNode[] = [
-      { id: "a", dependsOn: ["ghost"], status: "pending", required: false },
-    ]
+    const nodes: SchedulingNode[] = [{ id: "a", dependsOn: ["ghost"], status: "pending", required: false }]
     const g = buildGraph(nodes)
     expect(g.hasNode("a")).toBe(true)
     expect(g.getDependencies("a")).toEqual([])
@@ -591,7 +730,7 @@ describe("WorkflowRuntime", () => {
 
   it("required markUnsatisfied blocks dependents", () => {
     const rt = new WorkflowRuntime(
-      linearNodes().map((node) => node.id === "a" ? { ...node, required: true } : node),
+      linearNodes().map((node) => (node.id === "a" ? { ...node, required: true } : node)),
       4,
     )
     expect(rt.getReadyNodes()).toEqual(["a"])
@@ -657,9 +796,7 @@ describe("WorkflowRuntime", () => {
   })
 
   it("hasRequiredFailure is false when non-required node fails", () => {
-    const nodes: SchedulingNode[] = [
-      { id: "a", dependsOn: [], status: "pending", required: false },
-    ]
+    const nodes: SchedulingNode[] = [{ id: "a", dependsOn: [], status: "pending", required: false }]
     const rt = new WorkflowRuntime(nodes, 4)
     rt.markUnsatisfied("a")
     expect(rt.hasRequiredFailure()).toBe(false)
@@ -731,7 +868,7 @@ describe("WorkflowRuntime", () => {
 
   it("markUnsatisfied cascades to transitive dependents", () => {
     const rt = new WorkflowRuntime(
-      linearNodes().map((node) => node.id === "a" ? { ...node, required: true } : node),
+      linearNodes().map((node) => (node.id === "a" ? { ...node, required: true } : node)),
       4,
     )
     rt.markUnsatisfied("a")
@@ -749,6 +886,40 @@ describe("WorkflowRuntime", () => {
     rt.markSatisfied("c")
     rt.markUnsatisfied("a")
     expect(rt.isComplete()).toBe(true)
+  })
+
+  it("tracks running nodes with and without a predicate", () => {
+    const rt = new WorkflowRuntime(linearNodes(), 4)
+    expect(rt.hasRunning()).toBe(false)
+    rt.markRunning("a")
+    expect(rt.hasRunning()).toBe(true)
+    expect(rt.hasRunningMatching((id) => id === "b")).toBe(false)
+    expect(rt.hasRunningMatching((id) => id === "a")).toBe(true)
+  })
+
+  it("getRequiredFailures names required unsatisfied nodes in sorted order", () => {
+    const nodes: SchedulingNode[] = [
+      { id: "a", dependsOn: [], status: "pending", required: true },
+      { id: "b", dependsOn: [], status: "pending", required: false },
+      { id: "c", dependsOn: [], status: "pending", required: true },
+    ]
+    const rt = new WorkflowRuntime(nodes, 4)
+    rt.markUnsatisfied("b")
+    rt.markUnsatisfied("c")
+    rt.markUnsatisfied("a")
+    expect(rt.getRequiredFailures()).toEqual(["a", "c"])
+  })
+
+  it("step mode releases one sorted ready node per call", () => {
+    const nodes: SchedulingNode[] = [
+      { id: "b", dependsOn: [], status: "pending", required: false },
+      { id: "a", dependsOn: [], status: "pending", required: false },
+    ]
+    const rt = new WorkflowRuntime(nodes, 4)
+    expect(rt.isStepMode()).toBe(false)
+    rt.setStepMode(true)
+    expect(rt.isStepMode()).toBe(true)
+    expect(rt.getReadyNodes()).toEqual(["a"])
   })
 })
 
@@ -860,7 +1031,12 @@ describe("planReplan fragment validation additions", () => {
   it("rejects duplicate ids within the fragment", () => {
     const plan = planReplan(
       { nodes: [] },
-      { nodes: [{ id: "x", depends_on: [] }, { id: "x", depends_on: [] }] },
+      {
+        nodes: [
+          { id: "x", depends_on: [] },
+          { id: "x", depends_on: [] },
+        ],
+      },
     )
     expect(plan.errors.join(" ")).toContain('duplicate node id "x"')
   })

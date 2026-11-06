@@ -9,6 +9,24 @@ export function fromSchema(schema: Schema.Top): JSONSchema7 {
   const cached = cache.get(schema)
   if (cached) return cached
 
+  // Effect 4.1.2 serializes an empty Struct as `{ not: { type: "null" } }`,
+  // which accepts any non-null JSON value. Tool parameters must stay
+  // object-rooted (OpenAI tools contract), so an empty parameter struct is
+  // emitted as an empty object schema instead.
+  if (
+    schema.ast._tag === "Objects" &&
+    schema.ast.propertySignatures.length === 0 &&
+    schema.ast.indexSignatures.length === 0
+  ) {
+    const empty: JSONSchema7 = {
+      $schema: JsonSchema.META_SCHEMA_URI_DRAFT_2020_12,
+      type: "object",
+      properties: {},
+    }
+    cache.set(schema, empty)
+    return empty
+  }
+
   const document = Schema.toJsonSchemaDocument(schema)
   const result = normalize({
     $schema: JsonSchema.META_SCHEMA_URI_DRAFT_2020_12,
