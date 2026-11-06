@@ -207,7 +207,18 @@ const streamGenerate = (input: {
             model: input.language,
             system,
             prompt: input.prompt,
-            schema: Object.assign(Schema.toStandardSchemaV1(input.schema), Schema.toStandardJSONSchemaV1(input.schema)),
+            schema: (() => {
+              const standard = Schema.toStandardSchemaV1(input.schema)
+              const json = Schema.toStandardJSONSchemaV1(input.schema)
+              return {
+                ...json,
+                ...standard,
+                "~standard": {
+                  ...json["~standard"],
+                  ...standard["~standard"],
+                },
+              }
+            })(),
             temperature: input.temperature,
             maxOutputTokens: input.maxOutputTokens,
             abortSignal: controller.signal,
