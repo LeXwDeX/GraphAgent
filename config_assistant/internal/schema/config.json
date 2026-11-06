@@ -980,29 +980,6 @@
           "type": "boolean",
           "description": "Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true."
         },
-        "plugin": {
-          "type": "array",
-          "items": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "array",
-                "prefixItems": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "object"
-                  }
-                ],
-                "maxItems": 2,
-                "minItems": 2
-              }
-            ]
-          }
-        },
         "autoupdate": {
           "description": "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored",
           "anyOf": [
