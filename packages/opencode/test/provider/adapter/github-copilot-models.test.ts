@@ -1,6 +1,9 @@
 import { afterEach, expect, mock, test } from "bun:test"
-import { CopilotModels } from "@/plugin/github-copilot/models"
-import { CopilotAuthPlugin } from "@/plugin/github-copilot/copilot"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { CopilotModels } from "@/provider/adapter/copilot/models"
+import { CopilotAdapter } from "@/provider/adapter/copilot/copilot"
+import type { AdapterContext } from "@/provider/adapter/types"
 
 const originalFetch = globalThis.fetch
 
@@ -62,8 +65,8 @@ test("preserves temperature support from existing provider models", async () => 
     {},
     {
       "gpt-4o": {
-        id: "gpt-4o",
-        providerID: "github-copilot",
+        id: ModelV2.ID.make("gpt-4o"),
+        providerID: ProviderV2.ID.make("github-copilot"),
         api: {
           id: "gpt-4o",
           url: "https://api.githubcopilot.com",
@@ -225,8 +228,8 @@ test("clears existing variants so refreshed models calculate provider-specific v
     {},
     {
       "claude-opus-4.7": {
-        id: "claude-opus-4.7",
-        providerID: "github-copilot",
+        id: ModelV2.ID.make("claude-opus-4.7"),
+        providerID: ProviderV2.ID.make("github-copilot"),
         api: {
           id: "claude-opus-4.7",
           url: "https://api.githubcopilot.com",
@@ -289,16 +292,9 @@ test("clears existing variants so refreshed models calculate provider-specific v
 test("remaps fallback oauth model urls to the enterprise host", async () => {
   globalThis.fetch = mock(() => Promise.reject(new Error("timeout"))) as unknown as typeof fetch
 
-  const hooks = await CopilotAuthPlugin({
-    client: {} as never,
-    project: {} as never,
-    directory: "",
-    worktree: "",
-    serverUrl: new URL("https://example.com"),
-    $: {} as never,
-  })
+  const adapter = CopilotAdapter({} as AdapterContext)
 
-  const models = await hooks.provider!.models!(
+  const models = await adapter.provider!.models!(
     {
       id: "github-copilot",
       models: {

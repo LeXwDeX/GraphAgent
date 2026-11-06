@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { classifyRequest } from "../../../src/plugin/github-copilot/copilot"
+import { classifyRequest } from "../../../src/provider/adapter/copilot/copilot"
 
 const runtime = "<runtime_context>\n\nmemory\n\n</runtime_context>"
 

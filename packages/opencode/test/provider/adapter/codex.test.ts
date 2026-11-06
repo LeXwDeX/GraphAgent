@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { $ } from "bun"
-import { createOpencodeClient } from "@opencode-ai/sdk"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import {
-  CodexAuthPlugin,
+  CodexAdapter,
   parseJwtClaims,
   extractAccountIdFromClaims,
   extractAccountId,
   renderOAuthError,
   type IdTokenClaims,
-} from "../../../src/plugin/openai/codex"
+} from "../../../src/provider/adapter/codex"
 import { TITLE_HEADER } from "../../../src/provider/openai-ws/ws-pool"
 
 function createTestJwt(payload: object): string {
@@ -135,8 +134,8 @@ describe("plugin.codex", () => {
   })
 
   test("installs websocket transport only when experimental websockets are enabled", async () => {
-    const disabled = await CodexAuthPlugin({} as never)
-    const enabled = await CodexAuthPlugin({} as never, { experimentalWebSockets: true })
+    const disabled = CodexAdapter({} as never)
+    const enabled = CodexAdapter({} as never, { experimentalWebSockets: true })
 
     const disabledOptions = await disabled.auth!.loader!(
       async () => ({ type: "api", key: "sk-test" }) as never,
@@ -197,34 +196,32 @@ describe("plugin.codex", () => {
       },
     })
 
-    const hooks = await CodexAuthPlugin(
+    const adapter = CodexAdapter(
       {
-        client: {
-          auth: {
-            async set(input: { body: { refresh: string; access: string; expires: number; accountId?: string } }) {
-              authUpdates.push(input)
-              auth = {
-                type: "oauth",
-                refresh: input.body.refresh,
-                access: input.body.access,
-                expires: input.body.expires,
-                ...(input.body.accountId && { accountId: input.body.accountId }),
-              }
-            },
+        auth: {
+          async set(_providerID: string, body: any) {
+            authUpdates.push({ body })
+            auth = {
+              type: "oauth",
+              refresh: body.refresh,
+              access: body.access,
+              expires: body.expires,
+              ...(body.accountId && { accountId: body.accountId }),
+            }
           },
-        } as never,
+        },
         project: {} as never,
         directory: "",
         worktree: "",
-        serverUrl: new URL("https://example.com"),
-        $: {} as never,
+        sessions: {} as never,
+        experimentalWebSockets: false,
       },
       {
         issuer: server.url.origin,
         codexApiEndpoint: new URL("/backend-api/codex/responses", server.url).toString(),
       },
     )
-    const loaded = await hooks.auth!.loader!(async () => auth as never, {} as never)
+    const loaded = await adapter.auth!.loader!(async () => auth as never, {} as never)
 
     const first = loaded.fetch!("https://api.openai.com/v1/responses")
     const second = loaded.fetch!("https://api.openai.com/v1/responses")
@@ -260,23 +257,13 @@ describe("plugin.codex", () => {
         },
       })
       let oauth = true
-      const hooks = await CodexAuthPlugin(
-        {
-          client: createOpencodeClient({ baseUrl: server.url.origin }),
-          project: { id: "title-marker-test", worktree: "", time: { created: 0 } },
-          directory: "",
-          worktree: "",
-          serverUrl: server.url,
-          $,
-        },
-        { experimentalWebSockets: false },
-      )
-      const loaded = await hooks.auth!.loader!(
+      const adapter = CodexAdapter({} as never, { experimentalWebSockets: false })
+      const loaded = await adapter.auth!.loader!(
         async () =>
           oauth
             ? { type: "oauth", refresh: "test", access: "test", expires: Date.now() + 60_000 }
             : { type: "api", key: "test" },
-        { id: "openai", name: "OpenAI", source: "api", env: [], options: {}, models: {} },
+        { id: ProviderV2.ID.make("openai"), name: "OpenAI", source: "api", env: [], options: {}, models: {} },
       )
       oauth = false
       const headers = { "X-Opencode-Title": "true", "x-ordinary": "preserved", "x-session-affinity": "session-1" }
@@ -301,7 +288,7 @@ describe("plugin.codex", () => {
       expect(received[0]?.get("x-ordinary")).toBe(form === "request override" ? "overridden" : "preserved")
       expect(received[0]?.get("x-session-affinity")).toBe(form === "request override" ? "session-2" : "session-1")
       expect(bodies).toEqual(["{}"])
-      await hooks.dispose?.()
+      await adapter.dispose?.()
     })
   }
 })

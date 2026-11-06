@@ -4,8 +4,8 @@ import {
   buildAuthorizeUrl,
   pollDeviceCodeToken,
   requestDeviceCode,
-  XaiAuthPlugin,
-} from "../../../src/plugin/xai"
+  XaiAdapter,
+} from "../../../src/provider/adapter/xai"
 import { OAUTH_DUMMY_KEY } from "../../../src/auth"
 
 function makeJwt(payload: object): string {
@@ -18,12 +18,10 @@ function makeInput(opts?: { failSet?: boolean }) {
   const setCalls: Array<Record<string, unknown>> = []
   return {
     input: {
-      client: {
-        auth: {
-          set: async (req: Record<string, unknown>) => {
-            setCalls.push(req)
-            if (opts?.failSet) throw new Error("auth.set boom")
-          },
+      auth: {
+        set: async (_provider: string, next: Record<string, unknown>) => {
+          setCalls.push({ body: next })
+          if (opts?.failSet) throw new Error("auth.set boom")
         },
       },
     } as any,
@@ -104,7 +102,7 @@ describe("plugin.xai", () => {
 
   describe("loader", () => {
     test("returns no options unless stored auth is OAuth and exposes methods in order", async () => {
-      const hooks = await XaiAuthPlugin({} as any)
+      const hooks = await XaiAdapter({} as any)
       expect(await hooks.auth!.loader!(async () => ({ type: "api", key: "sk-test" }), {} as any)).toEqual({})
       expect(
         await hooks.auth!.loader!(async () => ({ type: "wellknown", key: "k", token: "t" }) as any, {} as any),
@@ -123,7 +121,7 @@ describe("plugin.xai", () => {
         captured.push(request.headers)
         return new Response("{}", { status: 200 })
       })
-      const hooks = await XaiAuthPlugin(input)
+      const hooks = await XaiAdapter(input)
       const opts = await hooks.auth!.loader!(
         async () => ({ type: "oauth", access: "live-token", refresh: "rt", expires: Date.now() + 3600_000 }),
         {} as any,
@@ -148,7 +146,7 @@ describe("plugin.xai", () => {
         return new Response("{}", { status: 200 })
       })
       const opts = await (
-        await XaiAuthPlugin(input)
+        await XaiAdapter(input)
       ).auth!.loader!(
         async () => ({ type: "oauth", access: "tok", refresh: "rt", expires: Date.now() + 3600_000 }),
         {} as any,
@@ -189,7 +187,7 @@ describe("plugin.xai", () => {
         return new Response("{}", { status: 200 })
       })
       const opts = await (
-        await XaiAuthPlugin(input)
+        await XaiAdapter(input)
       ).auth!.loader!(
         async () => ({ type: "oauth", access: "tok", refresh: "rt", expires: Date.now() + 3600_000 }),
         {} as any,
@@ -221,7 +219,7 @@ describe("plugin.xai", () => {
       })
       let firstCall = true
       const opts = await (
-        await XaiAuthPlugin(input)
+        await XaiAdapter(input)
       ).auth!.loader!(async () => {
         if (firstCall) {
           firstCall = false
@@ -252,7 +250,7 @@ describe("plugin.xai", () => {
         return new Response("{}", { status: 200 })
       })
       const opts = await (
-        await XaiAuthPlugin(input, serverOptions(server))
+        await XaiAdapter(input, serverOptions(server))
       ).auth!.loader!(async () => ({ type: "oauth" as const, access: "old", refresh: "rt-old", expires: 0 }), {} as any)
 
       await Promise.all([
@@ -287,7 +285,7 @@ describe("plugin.xai", () => {
         apiRequests.push(request.headers.get("authorization")!)
         return new Response("{}", { status: 200 })
       })
-      const hooks = await XaiAuthPlugin(input, serverOptions(server))
+      const hooks = await XaiAdapter(input, serverOptions(server))
       const first = await hooks.auth!.loader!(
         async () => ({ type: "oauth", access: "old-a", refresh: "rt-a", expires: 0 }),
         {} as any,
@@ -322,7 +320,7 @@ describe("plugin.xai", () => {
         return new Response("{}", { status: 200 })
       })
       const opts = await (
-        await XaiAuthPlugin(input, serverOptions(server))
+        await XaiAdapter(input, serverOptions(server))
       ).auth!.loader!(async () => ({ type: "oauth", access: "old", refresh: "rt-old", expires: 0 }), {} as any)
 
       await opts.fetch!(new URL("/chat/completions", server.url), { headers: {} })
@@ -342,7 +340,7 @@ describe("plugin.xai", () => {
         return new Response("{}", { status: 200 })
       })
       const opts = await (
-        await XaiAuthPlugin(input, serverOptions(server))
+        await XaiAdapter(input, serverOptions(server))
       ).auth!.loader!(async () => ({ type: "oauth", access: "old", refresh: "rt-old", expires: 0 }), {} as any)
 
       const resp = await opts.fetch!(new URL("/chat/completions", server.url), { headers: {} })
@@ -362,7 +360,7 @@ describe("plugin.xai", () => {
         return new Response("{}", { status: 200 })
       })
       const fresh = await (
-        await XaiAuthPlugin(input, serverOptions(server))
+        await XaiAdapter(input, serverOptions(server))
       ).auth!.loader!(
         async () => ({
           type: "oauth",
@@ -376,7 +374,7 @@ describe("plugin.xai", () => {
       expect(tokenRequests).toBe(0)
 
       const jwtExpiring = await (
-        await XaiAuthPlugin(input, serverOptions(server))
+        await XaiAdapter(input, serverOptions(server))
       ).auth!.loader!(
         async () => ({
           type: "oauth",
@@ -387,7 +385,7 @@ describe("plugin.xai", () => {
         {} as any,
       )
       const missingExpires = await (
-        await XaiAuthPlugin(input, serverOptions(server))
+        await XaiAdapter(input, serverOptions(server))
       ).auth!.loader!(async () => ({ type: "oauth", access: "opaque-token", refresh: "rt", expires: 0 }), {} as any)
       await jwtExpiring.fetch!(new URL("/chat/completions", server.url), { headers: {} })
       await missingExpires.fetch!(new URL("/chat/completions", server.url), { headers: {} })
@@ -398,7 +396,7 @@ describe("plugin.xai", () => {
     test("network failure during refresh surfaces the underlying fetch error", async () => {
       const { input } = makeInput()
       const opts = await (
-        await XaiAuthPlugin(input, { tokenUrl: "http://127.0.0.1:9/oauth2/token" })
+        await XaiAdapter(input, { tokenUrl: "http://127.0.0.1:9/oauth2/token" })
       ).auth!.loader!(async () => ({ type: "oauth", access: "old", refresh: "rt", expires: 0 }), {} as any)
 
       await expect(opts.fetch!("https://api.x.ai/v1/chat/completions", { headers: {} })).rejects.toThrow()
@@ -423,7 +421,7 @@ describe("plugin.xai", () => {
         }
         return new Response("unexpected request", { status: 500 })
       })
-      const hooks = await XaiAuthPlugin({} as any, serverOptions(server))
+      const hooks = await XaiAdapter({} as any, serverOptions(server))
       const headless = hooks.auth!.methods.find(
         (m): m is Extract<typeof m, { type: "oauth" }> =>
           m.type === "oauth" && m.label === "xAI Grok OAuth (Headless / Remote / VPS)",
@@ -448,7 +446,7 @@ describe("plugin.xai", () => {
         }
         return new Response("unexpected request", { status: 500 })
       })
-      const headless = (await XaiAuthPlugin({} as any, serverOptions(server))).auth!.methods.find(
+      const headless = (await XaiAdapter({} as any, serverOptions(server))).auth!.methods.find(
         (m): m is Extract<typeof m, { type: "oauth" }> =>
           m.type === "oauth" && m.label === "xAI Grok OAuth (Headless / Remote / VPS)",
       )!
@@ -610,7 +608,7 @@ describe("plugin.xai", () => {
         }
         return Response.json({ error: "access_denied" }, { status: 400 })
       })
-      const headless = (await XaiAuthPlugin({} as any, serverOptions(server))).auth!.methods.find(
+      const headless = (await XaiAdapter({} as any, serverOptions(server))).auth!.methods.find(
         (m): m is Extract<typeof m, { type: "oauth" }> =>
           m.type === "oauth" && m.label === "xAI Grok OAuth (Headless / Remote / VPS)",
       )!

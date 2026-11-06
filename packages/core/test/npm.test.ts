@@ -6,7 +6,6 @@ import { Effect, Layer, Option } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Npm } from "@opencode-ai/core/npm"
-import { PluginSdk } from "@opencode-ai/core/plugin-sdk"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { tmpdir } from "./fixture/tmpdir"
 
@@ -17,6 +16,7 @@ import { tmpdir } from "./fixture/tmpdir"
 process.env.npm_config_audit = "false"
 
 const win = process.platform === "win32"
+const FIXTURE_DEP = "fixture-plugin-dep"
 
 const writePackage = (dir: string, pkg: Record<string, unknown>) =>
   Bun.write(
@@ -87,14 +87,14 @@ const install = (dir: string, cache: string, add: AddSpec[] = []) =>
     yield* npm.install(dir, add.length ? { add } : undefined)
   }).pipe(Effect.scoped, Effect.provide(npmLayer(cache)), Effect.runPromise)
 
-// Seeds a project whose plugin dependency resolves from an existing local copy
+// Seeds a project whose fixture dependency resolves from an existing local copy
 // (declared via a file: spec so the initial reify stays offline), then builds a
 // real package-lock.json through the genuine forcing path: one install with a
 // missing file: dependency reaches reify and writes the lock arborist owns.
-const seedPluginProject = async (dir: string) => {
+const seedFixtureProject = async (dir: string) => {
   const localPlugin = path.join(dir, "local-plugin")
   await fs.mkdir(localPlugin, { recursive: true })
-  await writePackage(localPlugin, { name: PluginSdk.packageName, main: "index.js" })
+  await writePackage(localPlugin, { name: FIXTURE_DEP, main: "index.js" })
   await Bun.write(path.join(localPlugin, "index.js"), "export const plugin = true\n")
 
   const helper = path.join(dir, "helper-dep")
@@ -105,7 +105,7 @@ const seedPluginProject = async (dir: string) => {
   await writePackage(dir, {
     name: "fixture",
     dependencies: {
-      [PluginSdk.packageName]: "file:./local-plugin",
+      [FIXTURE_DEP]: "file:./local-plugin",
       "fixture-helper-dep": "file:./helper-dep",
     },
   })
@@ -138,63 +138,26 @@ describe("Npm.install", () => {
     await expect(fs.stat(path.join(tmp.path, "node_modules", "dev-pkg"))).rejects.toThrow()
   })
 
-  test("preserves package-lock across consecutive installs when plugin dependency already exists locally", async () => {
+  test("preserves package-lock across consecutive installs when a dependency already exists locally", async () => {
     await using tmp = await tmpdir()
-    await seedPluginProject(tmp.path)
+    await seedFixtureProject(tmp.path)
 
     const lockPath = path.join(tmp.path, "package-lock.json")
     const bootstrapped = await lockSnapshot(lockPath)
 
-    await install(tmp.path, path.join(tmp.path, "cache"), [
-      { name: PluginSdk.packageName, version: "1.17.11-main.3" },
-    ])
+    await install(tmp.path, path.join(tmp.path, "cache"), [{ name: FIXTURE_DEP, version: "1.17.11-main.3" }])
     const afterFirst = await lockSnapshot(lockPath)
 
-    await install(tmp.path, path.join(tmp.path, "cache"), [
-      { name: PluginSdk.packageName, version: "1.17.11-main.3" },
-    ])
+    await install(tmp.path, path.join(tmp.path, "cache"), [{ name: FIXTURE_DEP, version: "1.17.11-main.3" }])
     const afterSecond = await lockSnapshot(lockPath)
 
     expect(afterFirst).toEqual(bootstrapped)
     expect(afterSecond).toEqual(afterFirst)
   })
 
-  test("copies bundled plugin dependency before registry fallback and preserves package-lock on re-install", async () => {
+  test("still reifies package-lock when a local dependency install is mixed with a missing dependency", async () => {
     await using tmp = await tmpdir()
-    await seedPluginProject(tmp.path)
-    const bundled = path.join(tmp.path, "bundled-plugin-sdk")
-    const previous = process.env.OPENCODE_PLUGIN_SDK_PATH
-    process.env.OPENCODE_PLUGIN_SDK_PATH = bundled
-    await fs.mkdir(path.join(bundled, "src"), { recursive: true })
-    await writePackage(bundled, { name: PluginSdk.packageName, exports: { ".": "./src/index.ts", "./tui": "./src/tui.ts" } })
-    await Bun.write(path.join(bundled, "src", "index.ts"), "export const plugin = true\n")
-    await Bun.write(path.join(bundled, "src", "tui.ts"), "export const tui = true\n")
-
-    try {
-      await fs.rm(path.join(tmp.path, "node_modules"), { recursive: true, force: true })
-      const lockPath = path.join(tmp.path, "package-lock.json")
-      const bootstrapped = await lockSnapshot(lockPath)
-
-      await install(tmp.path, path.join(tmp.path, "cache"), [{ name: PluginSdk.packageName }])
-      await expect(
-        fs.stat(path.join(tmp.path, "node_modules", PluginSdk.packageName, "src", "tui.ts")),
-      ).resolves.toBeDefined()
-      const afterFirst = await lockSnapshot(lockPath)
-
-      await install(tmp.path, path.join(tmp.path, "cache"), [{ name: PluginSdk.packageName }])
-      const afterSecond = await lockSnapshot(lockPath)
-
-      expect(afterFirst).toEqual(bootstrapped)
-      expect(afterSecond).toEqual(afterFirst)
-    } finally {
-      if (previous === undefined) delete process.env.OPENCODE_PLUGIN_SDK_PATH
-      else process.env.OPENCODE_PLUGIN_SDK_PATH = previous
-    }
-  })
-
-  test("still reifies package-lock when a local plugin install is mixed with a missing dependency", async () => {
-    await using tmp = await tmpdir()
-    await seedPluginProject(tmp.path)
+    await seedFixtureProject(tmp.path)
 
     const extra = path.join(tmp.path, "extra-dep")
     await fs.mkdir(extra, { recursive: true })
@@ -202,7 +165,7 @@ describe("Npm.install", () => {
     await Bun.write(path.join(extra, "index.js"), "export const extra = true\n")
 
     await install(tmp.path, path.join(tmp.path, "cache"), [
-      { name: PluginSdk.packageName, version: "1.17.11-main.3" },
+      { name: FIXTURE_DEP, version: "file:./local-plugin" },
       { name: "fixture-extra-dep", version: "file:./extra-dep" },
     ])
 
@@ -216,7 +179,7 @@ describe("Npm.install", () => {
 
   test("reifies package-lock when package.json drifts from the lock", async () => {
     await using tmp = await tmpdir()
-    await seedPluginProject(tmp.path)
+    await seedFixtureProject(tmp.path)
 
     const drift = path.join(tmp.path, "drift-dep")
     await fs.mkdir(drift, { recursive: true })

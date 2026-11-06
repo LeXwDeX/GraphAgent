@@ -5,7 +5,6 @@
     "": {
       "name": "opencode",
       "dependencies": {
-        "@opencode-ai/plugin": "workspace:*",
         "@opencode-ai/script": "workspace:*",
         "@opencode-ai/sdk": "workspace:*",
         "heap-snapshot-toolkit": "1.1.3",
@@ -63,7 +62,6 @@
         "@npmcli/config": "11.2.0",
         "@opencode-ai/effect-drizzle-sqlite": "workspace:*",
         "@opencode-ai/llm": "workspace:*",
-        "@opencode-ai/plugin": "workspace:*",
         "@opencode-ai/schema": "workspace:*",
         "@openrouter/ai-sdk-provider": "catalog:",
         "@opentelemetry/api": "catalog:",
@@ -305,31 +303,14 @@
       "name": "@opencode-ai/plugin",
       "version": "1.17.11",
       "dependencies": {
-        "@ai-sdk/provider": "catalog:",
-        "@opencode-ai/sdk": "workspace:*",
-        "effect": "catalog:",
         "zod": "catalog:",
       },
       "devDependencies": {
-        "@opentui/core": "catalog:",
-        "@opentui/keymap": "catalog:",
-        "@opentui/solid": "catalog:",
         "@tsconfig/node22": "catalog:",
         "@types/node": "catalog:",
         "@typescript/native-preview": "catalog:",
-        "solid-js": "catalog:",
         "typescript": "catalog:",
       },
-      "peerDependencies": {
-        "@opentui/core": ">=0.4.2",
-        "@opentui/keymap": ">=0.4.2",
-        "@opentui/solid": ">=0.4.2",
-      },
-      "optionalPeers": [
-        "@opentui/core",
-        "@opentui/keymap",
-        "@opentui/solid",
-      ],
     },
     "packages/protocol": {
       "name": "@opencode-ai/protocol",

@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { $ } from "bun"
-import { createOpencodeClient } from "@opencode-ai/sdk"
-import { CodexAuthPlugin } from "../../../src/plugin/openai/codex"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { CodexAdapter } from "../../../src/provider/adapter/codex"
 import { OpenAIWebSocketPool, TITLE_HEADER } from "../../../src/provider/openai-ws/ws-pool"
 
 const originalHeaders = {
@@ -152,26 +151,16 @@ describe("Request header transport boundary", () => {
         })
         const pool = route === "pool HTTP" ? createHTTPTransport({ httpFetch: rebuildingFetch }) : undefined
         let oauth = true
-        const hooks =
-          route === "OAuth to API HTTP"
-            ? await CodexAuthPlugin({
-                client: createOpencodeClient({ baseUrl: server.url.origin }),
-                project: { id: "request-headers", worktree: "", time: { created: 0 } },
-                directory: "",
-                worktree: "",
-                serverUrl: server.url,
-                $,
-              })
-            : undefined
-        const loaded = await hooks?.auth?.loader?.(
+        const adapter = route === "OAuth to API HTTP" ? CodexAdapter({} as never) : undefined
+        const loaded = await adapter?.auth?.loader?.(
           async () =>
             oauth
               ? { type: "oauth", refresh: "synthetic", access: "synthetic", expires: Date.now() + 60_000 }
               : { type: "api", key: "synthetic" },
-          { id: "openai", name: "OpenAI", source: "api", env: [], options: {}, models: {} },
+          { id: ProviderV2.ID.make("openai"), name: "OpenAI", source: "api", env: [], options: {}, models: {} },
         )
         oauth = false
-        if (hooks) globalThis.fetch = rebuildingFetch
+        if (adapter) globalThis.fetch = rebuildingFetch
         try {
           const init =
             name === "inherited title only" || name === "inherited ordinary" || name === "inherited clean"
@@ -193,9 +182,9 @@ describe("Request header transport boundary", () => {
           expect(Object.fromEntries(input.headers)).toEqual(original)
           expect(caller.signal.aborted).toBe(false)
         } finally {
-          if (hooks) globalThis.fetch = underlying
+          if (adapter) globalThis.fetch = underlying
           pool?.close()
-          await hooks?.dispose?.()
+          await adapter?.dispose?.()
         }
       })
     }

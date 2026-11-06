@@ -1134,7 +1134,7 @@ export type Agent = {
   description?: string
   hooks?: unknown
   hookOrigin?: string
-  hookSource?: "project" | "user" | "plugin" | "builtin"
+  hookSource?: "project" | "user" | "builtin"
   mode: "subagent" | "primary" | "all"
   native?: boolean
   hidden?: boolean
@@ -8701,7 +8701,7 @@ export type AppSkillsResponses = {
     content: string
     hooks?: unknown
     hookOrigin?: string
-    hookSource?: "project" | "user" | "plugin" | "builtin"
+    hookSource?: "project" | "user" | "builtin"
   }>
 }
 
