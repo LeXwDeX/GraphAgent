@@ -57,8 +57,6 @@ import { Vcs } from "@/project/vcs"
 import { Workspace } from "@/control-plane/workspace"
 import { Worktree } from "@/worktree"
 import { Installation } from "@/installation"
-import { ShareNext } from "@/share/share-next"
-import { SessionShare } from "@/share/session"
 import { SessionLifecycle } from "@/session/lifecycle"
 import { Npm } from "@opencode-ai/core/npm"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
@@ -138,8 +136,6 @@ const BaseAppLayer = Layer.mergeAll(
     Workspace.defaultLayer,
     Worktree.appLayer,
     Installation.defaultLayer,
-    ShareNext.defaultLayer,
-    SessionShare.defaultLayer,
     SessionLifecycle.defaultLayer,
     HookStartContext.defaultLayer,
   ),

@@ -720,10 +720,6 @@ export const layer = Layer.effect(
           }
         }
 
-        if (result.autoshare === true && !result.share) {
-          result.share = "auto"
-        }
-
         if (Flag.OPENCODE_DISABLE_AUTOCOMPACT) {
           result.compaction = { ...result.compaction, auto: false }
         }

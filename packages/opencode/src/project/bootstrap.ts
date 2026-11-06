@@ -6,7 +6,6 @@ import { Snapshot } from "../snapshot"
 import * as Project from "./project"
 import * as Vcs from "./vcs"
 import { InstanceState } from "@/effect/instance-state"
-import { ShareNext } from "@/share/share-next"
 import { Effect, Layer, Scope } from "effect"
 import { Config } from "@/config/config"
 import { GoalLoop } from "@/goal/loop"
@@ -39,7 +38,6 @@ export const layer = Layer.effect(
     const lsp = yield* LSP.Service
     const plugin = yield* Plugin.Service
     const project = yield* Project.Service
-    const shareNext = yield* ShareNext.Service
     const snapshot = yield* Snapshot.Service
     const vcs = yield* Vcs.Service
     const scope = yield* Scope.Scope
@@ -56,7 +54,6 @@ export const layer = Layer.effect(
       // bootstrap explicitly schedules it below on the instance scope.
       const initTargets: { init: () => Effect.Effect<void, unknown> }[] = [
         lsp,
-        shareNext,
         format,
         vcs,
         snapshot,
@@ -103,8 +100,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
     LSP.defaultLayer,
     Plugin.defaultLayer,
     Project.defaultLayer,
-    ShareNext.defaultLayer,
-    Snapshot.defaultLayer,
+      Snapshot.defaultLayer,
     Vcs.defaultLayer,
   ]),
 )
@@ -117,7 +113,6 @@ export const node = LayerNode.make(layer, [
   LSP.node,
   Plugin.node,
   Project.node,
-  ShareNext.node,
   Snapshot.node,
   Vcs.node,
   Memory.node,

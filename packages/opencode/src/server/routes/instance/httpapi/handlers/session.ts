@@ -11,7 +11,6 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
-import { SessionShare } from "@/share/session"
 import { SessionLifecycle } from "@/session/lifecycle"
 import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
@@ -89,7 +88,6 @@ function parseCommandPayload(payload: typeof PromptPayload.Type) {
 export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
-    const shareSvc = yield* SessionShare.Service
     const lifecycle = yield* SessionLifecycle.Service
     const promptSvc = yield* SessionPrompt.Service
     const commands = yield* Command.Service
@@ -322,25 +320,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
         .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
       return true
-    })
-
-    // share/unshare errors aren't all client-induced — storage and network
-    // failures from SessionShare are real possibilities. Map to a typed 500
-    // (matches the legacy route behavior which routed any failure through
-    // ErrorMiddleware → NamedError.Unknown 500) instead of blanket-mapping
-    // every failure to a 400 BadRequest.
-    const share = Effect.fn("SessionHttpApi.share")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* requireSession(ctx.params.sessionID)
-      yield* shareSvc.share(ctx.params.sessionID).pipe(Effect.mapError(() => new HttpApiError.InternalServerError({})))
-      return yield* requireSession(ctx.params.sessionID)
-    })
-
-    const unshare = Effect.fn("SessionHttpApi.unshare")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* requireSession(ctx.params.sessionID)
-      yield* shareSvc
-        .unshare(ctx.params.sessionID)
-        .pipe(Effect.mapError(() => new HttpApiError.InternalServerError({})))
-      return yield* requireSession(ctx.params.sessionID)
     })
 
     const summarize = Effect.fn("SessionHttpApi.summarize")(function* (ctx: {
@@ -641,8 +620,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handleRaw("fork", forkRaw)
       .handle("abort", abort)
       .handle("init", init)
-      .handle("share", share)
-      .handle("unshare", unshare)
       .handle("summarize", summarize)
       .handle("setModel", setModel)
       .handle("resume", resume)
