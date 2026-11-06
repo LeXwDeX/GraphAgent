@@ -11,27 +11,33 @@ export const log = {
   success: (msg: string) => Effect.sync(() => prompts.log.success(msg)),
 }
 
-const optional = <Value>(result: Value | symbol) => {
-  if (prompts.isCancel(result)) return Option.none<Value>()
+const optional = <Value>(result: Value | symbol): Option.Option<Value> => {
+  // Clack returns its cancel symbol for Ctrl-C; no prompt value is a symbol.
+  if (typeof result === "symbol") return Option.none<Value>()
   return Option.some(result)
 }
 
-export const select = <Value>(opts: Parameters<typeof prompts.select<Value>>[0]) =>
-  Effect.promise(() => prompts.select(opts)).pipe(Effect.map((result) => optional(result)))
+export const select = <Value>(opts: prompts.SelectOptions<Value>): Effect.Effect<Option.Option<Value>> =>
+  Effect.promise(() => prompts.select(opts)).pipe(Effect.map((result) => optional<Value>(result)))
 
-export const autocomplete = <Value>(opts: Parameters<typeof prompts.autocomplete<Value>>[0]) =>
-  Effect.promise(() => prompts.autocomplete(opts)).pipe(Effect.map((result) => optional(result)))
+export const autocomplete = <Value>(
+  opts: prompts.AutocompleteOptions<Value>,
+): Effect.Effect<Option.Option<Value>> => Effect.promise(() => prompts.autocomplete(opts)).pipe(Effect.map((result) => optional<Value>(result)))
 
-export const text = (opts: Parameters<typeof prompts.text>[0]) =>
-  Effect.promise(() => prompts.text(opts)).pipe(Effect.map((result) => optional(result)))
+export const text = (opts: prompts.TextOptions): Effect.Effect<Option.Option<string>> =>
+  Effect.promise(() => prompts.text(opts)).pipe(Effect.map((result) => optional<string>(result)))
 
-export const password = (opts: Parameters<typeof prompts.password>[0]) =>
-  Effect.promise(() => prompts.password(opts)).pipe(Effect.map((result) => optional(result)))
+export const password = (opts: prompts.PasswordOptions): Effect.Effect<Option.Option<string>> =>
+  Effect.promise(() => prompts.password(opts)).pipe(Effect.map((result) => optional<string>(result)))
 
 export const spinner = () => {
   const s = prompts.spinner()
   return {
     start: (msg: string) => Effect.sync(() => s.start(msg)),
-    stop: (msg: string, code?: number) => Effect.sync(() => s.stop(msg, code)),
+    stop: (msg: string, code?: number) =>
+      Effect.sync(() => {
+        if (code && code !== 0) return s.error(msg)
+        return s.stop(msg)
+      }),
   }
 }

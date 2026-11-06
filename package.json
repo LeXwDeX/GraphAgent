@@ -106,7 +106,7 @@
       "@smithy/util-utf8": "4.5.2",
       "@parcel/watcher": "2.6.0",
       "aws4fetch": "1.0.20",
-      "@clack/prompts": "1.0.0-alpha.1",
+      "@clack/prompts": "1.8.1",
       "@types/mime-types": "3.0.1",
       "glob": "13.0.6",
       "prettier": "3.9.10",
