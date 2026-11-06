@@ -394,7 +394,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
 
   it("B-p4(d) ignores a subdirectory session's report through the repository-root area", async () => {
     const projectDir = await gitTmpRoot("dag-ref-repo-")
-    const subdir = path.join(projectDir, "packages", "app")
+    const subdir = path.join(projectDir, "packages", "pkg-a")
     await fs.mkdir(subdir, { recursive: true })
     const reportArea = path.join(projectDir, ".opencode", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
@@ -413,7 +413,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
 
   it("B-p4(d2) keeps legacy subdirectory report refs ignored with a repository-relative entry", async () => {
     const projectDir = await gitTmpRoot("dag-ref-legacy-")
-    const subdir = path.join(projectDir, "packages", "app")
+    const subdir = path.join(projectDir, "packages", "pkg-a")
     const reportArea = path.join(subdir, ".opencode", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "old.md")
