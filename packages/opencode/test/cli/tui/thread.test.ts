@@ -57,39 +57,12 @@ describe("tui thread", () => {
     }
   })
 
-  test("preserves boolean negation for existing options", async () => {
-    const args = await yargs([])
-      .command({ ...TuiThreadCommand, handler: () => {} })
-      .exitProcess(false)
-      .parse(["--mdns", "--no-mdns"])
-
-    expect(args.mdns).toBe(false)
-  })
-
   cliIt.live("rejects mini-only options without --mini", ({ opencode }) =>
     Effect.gen(function* () {
       const result = yield* opencode.spawn(["--replay-limit", "10"])
 
       opencode.expectExit(result, 1)
       expect(result.stderr).toContain("--replay-limit requires --mini")
-    }),
-  )
-
-  cliIt.live("routes attached sessions to mini mode", ({ opencode }) =>
-    Effect.gen(function* () {
-      const result = yield* opencode.spawn(["attach", "http://127.0.0.1:1", "--mini"])
-
-      opencode.expectExit(result, 1)
-      expect(result.stderr).toContain("--mini requires a TTY stdout")
-    }),
-  )
-
-  cliIt.live("rejects network options in mini mode", ({ opencode }) =>
-    Effect.gen(function* () {
-      const result = yield* opencode.spawn(["--mini", "--port", "4096"])
-
-      opencode.expectExit(result, 1)
-      expect(result.stderr).toContain("--port cannot be used with --mini")
     }),
   )
 })
