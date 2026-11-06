@@ -4,7 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionSummary } from "@/session/summary"
-import { SessionShare } from "@/share/session"
+import { SessionLifecycle } from "@/session/lifecycle"
 import { SettingsHook } from "@/hook/settings"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -19,7 +19,7 @@ import { MessageID, PartID, type SessionID } from "@/session/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
-// SessionStart source coverage at the prompt-admission boundary: `startup` (SessionShare.create),
+// SessionStart source coverage at the prompt-admission boundary: `startup` (SessionLifecycle.create),
 // `resume` (first admission of a pre-existing top-level session in this instance). SettingsHook is
 // replaced with a recorder so each source can return a distinct additionalContext.
 
@@ -115,7 +115,7 @@ const settingsHook = Layer.succeed(
 
 const root = LayerNode.group([
   SessionPrompt.node,
-  SessionShare.node,
+  SessionLifecycle.node,
   Session.node,
   SessionProjector.node,
   SessionSummary.node,
@@ -222,12 +222,12 @@ it.live("resume does not fire for child sessions", () =>
   ),
 )
 
-it.live("startup still fires from SessionShare.create and no resume follows on its first admission", () =>
+it.live("startup still fires from SessionLifecycle.create and no resume follows on its first admission", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
-      const share = yield* SessionShare.Service
+      const share = yield* SessionLifecycle.Service
       const session = yield* share.create({ title: "Fresh", permission: [] })
       // Even with earlier history, a session created in this instance already had its startup.
       yield* seedHistory(sessions, session.id)
@@ -244,11 +244,11 @@ it.live("startup still fires from SessionShare.create and no resume follows on i
   ),
 )
 
-it.live("SessionShare.create does not fire SessionStart for child sessions", () =>
+it.live("SessionLifecycle.create does not fire SessionStart for child sessions", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* () {
       const sessions = yield* Session.Service
-      const share = yield* SessionShare.Service
+      const share = yield* SessionLifecycle.Service
       const parent = yield* sessions.create({ title: "Parent", permission: [] })
       const child = yield* share.create({ parentID: parent.id, title: "Child", permission: [] })
       expect(forSession(child.id)).toEqual([])

@@ -10,7 +10,7 @@ export interface Interface {
   readonly consume: (sessionID: SessionID) => Effect.Effect<readonly string[]>
   /**
    * Record that SessionStart already fired for this session in this instance (startup, via
-   * SessionShare.create), so its first prompt admission is not mistaken for a resume.
+   * SessionLifecycle.create), so its first prompt admission is not mistaken for a resume.
    */
   readonly markStarted: (sessionID: SessionID) => Effect.Effect<void>
   /**

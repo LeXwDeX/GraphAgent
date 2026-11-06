@@ -4,7 +4,7 @@ import { HookStartContext } from "@/hook/start-context"
 import { SettingsHook } from "@/hook/settings"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionCompaction } from "@/session/compaction"
-import { SessionShare } from "@/share/session"
+import { SessionLifecycle } from "@/session/lifecycle"
 import { ToolRegistry } from "@/tool/registry"
 import { Session } from "@/session/session"
 import { disposeAllInstances } from "../fixture/fixture"
@@ -13,7 +13,7 @@ import { testEffect } from "../lib/effect"
 // AppLayer wiring (src/effect/app-runtime.ts) lists HookStartContext.defaultLayer only as a
 // sibling inside a Layer.mergeAll group. Siblings cannot see each other at build time, so every
 // producer that resolves HookStartContext with Effect.serviceOption (task.ts SubagentStart via
-// ToolRegistry, SessionCompaction SessionStart(compact), SessionShare SessionStart(startup)) must
+// ToolRegistry, SessionCompaction SessionStart(compact), SessionLifecycle SessionStart(startup)) must
 // provide HookStartContext.defaultLayer itself. The runtime shares one memoMap, so providing the
 // SAME layer reference yields the SAME instance that SessionPrompt drains at admission.
 // The HTTP server graph (LayerNode.buildLayer) shares by node identity instead: each producer
@@ -51,7 +51,7 @@ describe("HookStartContext production wiring", () => {
   for (const [name, producer] of [
     ["ToolRegistry.defaultLayer (task.ts SubagentStart)", ToolRegistry.defaultLayer],
     ["SessionCompaction.defaultLayer (SessionStart compact)", SessionCompaction.defaultLayer],
-    ["SessionShare.defaultLayer (SessionStart startup)", SessionShare.defaultLayer],
+    ["SessionLifecycle.defaultLayer (SessionStart startup)", SessionLifecycle.defaultLayer],
   ] as const) {
     test(`${name} provides the shared HookStartContext layer`, async () => {
       expect(await Effect.runPromise(Effect.scoped(wiredIntoChain(producer)))).toBe(true)
@@ -62,7 +62,7 @@ describe("HookStartContext production wiring", () => {
 
 // Behavioural check in a production-shaped composition: producer + HookStartContext as siblings of
 // one mergeAll (as in app-runtime), SettingsHook ambient via provideMerge. A context appended by
-// SessionShare must be visible through the sibling-exposed service the prompt layer would drain.
+// SessionLifecycle must be visible through the sibling-exposed service the prompt layer would drain.
 const hook = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
@@ -75,15 +75,15 @@ const hook = Layer.succeed(
   }),
 )
 const it = testEffect(
-  Layer.mergeAll(SessionShare.defaultLayer, HookStartContext.defaultLayer, Session.defaultLayer).pipe(
+  Layer.mergeAll(SessionLifecycle.defaultLayer, HookStartContext.defaultLayer, Session.defaultLayer).pipe(
     Layer.provideMerge(hook),
   ),
 )
 
 describe("HookStartContext shared instance", () => {
-  it.instance("SessionShare.create queues SessionStart(startup) context into the exposed service", () =>
+  it.instance("SessionLifecycle.create queues SessionStart(startup) context into the exposed service", () =>
     Effect.gen(function* () {
-      const share = yield* SessionShare.Service
+      const share = yield* SessionLifecycle.Service
       const startCtx = yield* HookStartContext.Service
       const created = yield* share.create({ title: "wired" })
       expect(yield* startCtx.consume(created.id)).toEqual(["STARTUP_CTX"])
