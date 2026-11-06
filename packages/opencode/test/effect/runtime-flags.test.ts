@@ -14,7 +14,6 @@ describe("RuntimeFlags", () => {
       const flags = yield* readFlags.pipe(
         Effect.provide(
           fromConfig({
-            OPENCODE_PURE: "true",
             OPENCODE_DISABLE_EMBEDDED_WEB_UI: "true",
             OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
             OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
@@ -28,7 +27,6 @@ describe("RuntimeFlags", () => {
         ),
       )
 
-      expect(flags.pure).toBe(true)
       expect(flags.disableEmbeddedWebUi).toBe(true)
       expect(flags.disableExternalSkills).toBe(true)
       expect(flags.disableLspDownload).toBe(true)
@@ -88,11 +86,8 @@ describe("RuntimeFlags", () => {
 
   it.effect("layer accepts partial test overrides and fills defaults from Config definitions", () =>
     Effect.gen(function* () {
-      const flags = yield* readFlags.pipe(
-        Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 1_000 })),
-      )
+      const flags = yield* readFlags.pipe(Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 1_000 })))
 
-      expect(flags.pure).toBe(false)
       expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
       expect(flags.disableLspDownload).toBe(false)
@@ -333,7 +328,6 @@ describe("RuntimeFlags", () => {
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
-              OPENCODE_PURE: "true",
               OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
               OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
               OPENCODE_EXPERIMENTAL: "true",
@@ -345,7 +339,6 @@ describe("RuntimeFlags", () => {
         ),
       )
 
-      expect(flags.pure).toBe(false)
       expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
       expect(flags.disableLspDownload).toBe(false)

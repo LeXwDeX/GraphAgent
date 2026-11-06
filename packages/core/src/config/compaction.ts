@@ -16,15 +16,12 @@ export class Info extends Schema.Class<Info>("ConfigV2.Compaction")({
 }) {}
 
 export type DynamicSource = "environment" | "dynamic" | "prune" | "default"
-export type KnownExternalDcp = "unknown" | "loaded"
-export type DynamicSkipReason = "disabled" | "external-dcp"
+export type DynamicSkipReason = "disabled"
 
 export type DynamicInput = {
   readonly disabledByEnvironment: boolean
   readonly dynamic?: boolean
   readonly prune?: boolean
-  /** S07 supplies `loaded` only after the runtime has positively identified a supported external DCP package. */
-  readonly knownExternalDcp: KnownExternalDcp
 }
 
 export type DynamicResolution = {
@@ -32,7 +29,6 @@ export type DynamicResolution = {
   readonly enabled: boolean
   readonly source: DynamicSource
   readonly deprecatedPrune: boolean
-  readonly externalDcp: KnownExternalDcp
   readonly skipped?: DynamicSkipReason
 }
 
@@ -58,13 +54,11 @@ export function resolveDynamic(input: DynamicInput): DynamicResolution {
     source = "default"
   }
 
-  const external = input.knownExternalDcp === "loaded"
   return {
     configured,
-    enabled: configured && !external,
+    enabled: configured,
     source,
     deprecatedPrune,
-    externalDcp: input.knownExternalDcp,
-    skipped: configured ? (external ? "external-dcp" : undefined) : "disabled",
+    skipped: configured ? undefined : "disabled",
   }
 }

@@ -1,7 +1,7 @@
 export * as PluginHost from "./host"
 
 import { SourceProvenance } from "../session/source-provenance"
-import type { PluginContext as Interface } from "@opencode-ai/plugin/v2/effect"
+import type { PluginContext as Interface } from "./context"
 import { Effect, Schema } from "effect"
 import { AgentV2 } from "../agent"
 import { AISDK } from "../aisdk"
@@ -10,12 +10,11 @@ import { CommandV2 } from "../command"
 import { Credential } from "../credential"
 import { Integration } from "../integration"
 import { ModelV2 } from "../model"
-import { PluginV2 } from "../plugin"
 import { ProviderV2 } from "../provider"
 import { Reference } from "../reference"
 import { SkillV2 } from "../skill"
 
-export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Interface) {
+export const make = Effect.fn("PluginHost.make")(function* () {
   const agents = yield* AgentV2.Service
   const aisdk = yield* AISDK.Service
   const catalog = yield* Catalog.Service
@@ -201,10 +200,6 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: PluginV2.Int
             },
           }),
         ),
-    },
-    plugin: {
-      add: (input) => plugin.add(PluginV2.ID.make(input.id), input.effect),
-      remove: (id) => plugin.remove(PluginV2.ID.make(id)),
     },
     reference: {
       reload: reference.reload,

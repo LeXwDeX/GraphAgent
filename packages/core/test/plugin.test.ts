@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Fiber } from "effect"
-import { define } from "@opencode-ai/plugin/v2/effect"
+import { define } from "@opencode-ai/core/plugin/context/index"
 import { SkillV2 } from "@opencode-ai/core/skill"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SourceProvenance } from "@opencode-ai/core/session/source-provenance"

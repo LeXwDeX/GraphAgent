@@ -1,5 +1,5 @@
 import type { AgentV2Info } from "@opencode-ai/sdk/v2/types"
-import type { Hooks } from "./registration.js"
+import type { Hooks } from "./registration"
 
 export interface AgentDraft {
   list(): readonly AgentV2Info[]

@@ -1,4 +1,4 @@
-import type { PluginContext } from "@opencode-ai/plugin/v2/effect"
+import type { PluginContext } from "@opencode-ai/core/plugin/context/index"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { Credential } from "@opencode-ai/core/credential"
@@ -36,10 +36,6 @@ export function host(overrides: Overrides = {}): PluginContext {
         active: () => Effect.die("unused integration.connection.active"),
         resolve: () => Effect.die("unused integration.connection.resolve"),
       },
-    },
-    plugin: overrides.plugin ?? {
-      add: () => Effect.die("unused plugin.add"),
-      remove: () => Effect.die("unused plugin.remove"),
     },
     reference: overrides.reference ?? {
       transform: () => Effect.die("unused reference.transform"),

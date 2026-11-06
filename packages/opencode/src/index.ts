@@ -22,7 +22,6 @@ import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
-import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 
 const args = hideBin(process.argv)
@@ -54,16 +53,9 @@ const cli = yargs(args)
     type: "string",
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
-  .option("pure", {
-    describe: "run without external plugins",
-    type: "boolean",
-  })
   .middleware(async (opts) => {
     if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
-    if (opts.pure) {
-      process.env.OPENCODE_PURE = "1"
-    }
 
     Heap.start()
 
@@ -89,7 +81,6 @@ const cli = yargs(args)
   .command(ImportCommand)
   .command(PrCommand)
   .command(SessionCommand)
-  .command(PluginCommand)
   .command(DbCommand)
   .fail((msg, err) => {
     if (

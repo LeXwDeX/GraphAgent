@@ -2752,26 +2752,28 @@ export const layer = Layer.effect(
         if (initial) return initial
       }
       const wait = yield* withRunRequest(input.sessionID, (request) =>
-        promptLocks.withLock(input.sessionID)(Effect.gen(function* () {
-          if (!request.valid()) return Effect.interrupt
-          if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
-          const admitted = yield* admitPrompt(input, undefined, options, commitAdmission, modelBaseline)
-          if (!admitted.run) return Effect.succeed(admitted.message)
-          // The runner registers before this fence runs: a cancel landing
-          // after a passing fence interrupts the registered runner instead of
-          // racing a finished check, so a stale rewake can never start a turn.
-          return yield* state.ensureRunningHandle(
-            input.sessionID,
-            lastAssistant(input.sessionID),
-            Effect.gen(function* () {
-              if (!(yield* fenceStopRewake(input.sessionID, options, admitted.message))) {
-                return admitted.message
-              }
-              return yield* runLoop(input.sessionID)
-            }),
-            request,
-          )
-        })),
+        promptLocks.withLock(input.sessionID)(
+          Effect.gen(function* () {
+            if (!request.valid()) return Effect.interrupt
+            if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
+            const admitted = yield* admitPrompt(input, undefined, options, commitAdmission, modelBaseline)
+            if (!admitted.run) return Effect.succeed(admitted.message)
+            // The runner registers before this fence runs: a cancel landing
+            // after a passing fence interrupts the registered runner instead of
+            // racing a finished check, so a stale rewake can never start a turn.
+            return yield* state.ensureRunningHandle(
+              input.sessionID,
+              lastAssistant(input.sessionID),
+              Effect.gen(function* () {
+                if (!(yield* fenceStopRewake(input.sessionID, options, admitted.message))) {
+                  return admitted.message
+                }
+                return yield* runLoop(input.sessionID)
+              }),
+              request,
+            )
+          }),
+        ),
       )
       return yield* wait
     })
@@ -2799,56 +2801,59 @@ export const layer = Layer.effect(
       options?: AdmissionOptions,
       request?: ReturnType<typeof SessionCancellation.request>,
     ) {
-      return yield* withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
-        Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            if (!request.valid()) return Option.none<IdleAdmission>()
-            const activation = yield* Deferred.make<void>()
-            const admission =
-              yield* Deferred.make<
-                Exit.Exit<{ readonly message: SessionV1.WithParts; readonly run: boolean }, PromptError>
-              >()
-            const wait = yield* state.startIfIdle(
-              input.sessionID,
-              lastAssistant(input.sessionID),
+      return yield* withRunRequest(
+        input.sessionID,
+        (request) =>
+          promptLocks.withLock(input.sessionID)(
+            Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
-                yield* Deferred.await(activation)
-                if (!request.current()) return yield* Effect.interrupt
-                const admitted = yield* Deferred.await(admission)
-                if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
-                if (!admitted.value.run) return admitted.value.message
-                // Same runner-first ordering as prompt(): a cancel landing
-                // after a passing fence interrupts the registered runner.
-                if (!(yield* fenceStopRewake(input.sessionID, options, admitted.value.message))) {
-                  return admitted.value.message
-                }
-                return yield* runLoop(input.sessionID)
-              }).pipe(Effect.orDie),
-              request,
-            )
-            if (Option.isNone(wait)) return Option.none<IdleAdmission>()
+                if (!request.valid()) return Option.none<IdleAdmission>()
+                const activation = yield* Deferred.make<void>()
+                const admission =
+                  yield* Deferred.make<
+                    Exit.Exit<{ readonly message: SessionV1.WithParts; readonly run: boolean }, PromptError>
+                  >()
+                const wait = yield* state.startIfIdle(
+                  input.sessionID,
+                  lastAssistant(input.sessionID),
+                  Effect.gen(function* () {
+                    yield* Deferred.await(activation)
+                    if (!request.current()) return yield* Effect.interrupt
+                    const admitted = yield* Deferred.await(admission)
+                    if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
+                    if (!admitted.value.run) return admitted.value.message
+                    // Same runner-first ordering as prompt(): a cancel landing
+                    // after a passing fence interrupts the registered runner.
+                    if (!(yield* fenceStopRewake(input.sessionID, options, admitted.value.message))) {
+                      return admitted.value.message
+                    }
+                    return yield* runLoop(input.sessionID)
+                  }).pipe(Effect.orDie),
+                  request,
+                )
+                if (Option.isNone(wait)) return Option.none<IdleAdmission>()
 
-            const admitted = yield* restore(
-              admitPrompt(input, persistAdmission, options, (body) =>
-                Effect.suspend(() => request.valid()
-                  ? body
-                  : Effect.interrupt),
-              ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
-            ).pipe(Effect.exit)
-            yield* Deferred.succeed(admission, admitted)
-            if (Exit.isFailure(admitted)) {
-              yield* Deferred.succeed(activation, undefined)
-              if (!request.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
-              return yield* Effect.failCause(admitted.cause)
-            }
-            return Option.some({
-              activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
-              result: wait.value,
-              abort: state.cancel(input.sessionID),
-            })
-          }),
-        ),
-      ), request)
+                const admitted = yield* restore(
+                  admitPrompt(input, persistAdmission, options, (body) =>
+                    Effect.suspend(() => (request.valid() ? body : Effect.interrupt)),
+                  ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
+                ).pipe(Effect.exit)
+                yield* Deferred.succeed(admission, admitted)
+                if (Exit.isFailure(admitted)) {
+                  yield* Deferred.succeed(activation, undefined)
+                  if (!request.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
+                  return yield* Effect.failCause(admitted.cause)
+                }
+                return Option.some({
+                  activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
+                  result: wait.value,
+                  abort: state.cancel(input.sessionID),
+                })
+              }),
+            ),
+          ),
+        request,
+      )
     })
 
     const promptIfIdle: Interface["promptIfIdle"] = Effect.fn("SessionPrompt.promptIfIdle")(
@@ -3574,7 +3579,6 @@ export const layer = Layer.effect(
               disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
               dynamic: foldingConfig?.dynamic,
               prune: foldingConfig?.prune,
-              knownExternalDcp: "unknown",
             })
 
             const transcriptPath =
@@ -4036,79 +4040,81 @@ export const layer = Layer.effect(
           (
             commit,
           ): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionConversationHooks.Blocked> =>
-            withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
-              Effect.gen(function* () {
-                if (!request.valid()) return yield* Effect.interrupt
-                const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-                const contexts = yield* resumeContexts(target)
-                if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
-                const initial =
-                  input.hookMode !== "interactive" && hookLifecycle
-                    ? yield* hookLifecycle.consumeInitial(input.sessionID)
-                    : undefined
-                const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-                const initialTurn = initial && !history.some((message) => message.info.role === "user")
-                const latest = history.findLast((message) => message.info.role === "assistant")
-                const deferred = latest?.parts.some(
-                  (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
-                )
-                const saved = yield* pendingInput(target.metadata)
-                if (!initialTurn && !deferred && !saved) {
-                  if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
-                  return yield* new NoPendingHookInput({
-                    message: "No initial hook message or deferred tool call is pending",
-                  })
-                }
-                if (input.followup) {
-                  if (saved)
+            withRunRequest(input.sessionID, (request) =>
+              promptLocks.withLock(input.sessionID)(
+                Effect.gen(function* () {
+                  if (!request.valid()) return yield* Effect.interrupt
+                  const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+                  const contexts = yield* resumeContexts(target)
+                  if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
+                  const initial =
+                    input.hookMode !== "interactive" && hookLifecycle
+                      ? yield* hookLifecycle.consumeInitial(input.sessionID)
+                      : undefined
+                  const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+                  const initialTurn = initial && !history.some((message) => message.info.role === "user")
+                  const latest = history.findLast((message) => message.info.role === "assistant")
+                  const deferred = latest?.parts.some(
+                    (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
+                  )
+                  const saved = yield* pendingInput(target.metadata)
+                  if (!initialTurn && !deferred && !saved) {
+                    if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
                     return yield* new NoPendingHookInput({
-                      message: "A supplied followup is already saved for this session",
+                      message: "No initial hook message or deferred tool call is pending",
                     })
-                  yield* commit(
-                    writePendingInput(
-                      input.sessionID,
+                  }
+                  if (input.followup) {
+                    if (saved)
+                      return yield* new NoPendingHookInput({
+                        message: "A supplied followup is already saved for this session",
+                      })
+                    yield* commit(
+                      writePendingInput(
+                        input.sessionID,
+                        {
+                          version: 1,
+                          messageID: input.followup.messageID ?? MessageID.ascending(),
+                          phase: "pending",
+                          input: input.followup,
+                          ...(options?.internalDelegation ? { internalDelegation: true } : {}),
+                        },
+                        (current) =>
+                          cancelEpoch(input.sessionID) === epoch && pendingMessageID(current.metadata) === undefined,
+                      ),
+                    )
+                  }
+                  if (initialTurn) {
+                    const admitted = yield* admitPrompt(
                       {
-                        version: 1,
-                        messageID: input.followup.messageID ?? MessageID.ascending(),
-                        phase: "pending",
-                        input: input.followup,
-                        ...(options?.internalDelegation ? { internalDelegation: true } : {}),
+                        ...input,
+                        parts: [{ type: "text", text: initial }],
+                        hookMode: input.hookMode ?? "noninteractive",
                       },
-                      (current) =>
-                        cancelEpoch(input.sessionID) === epoch && pendingMessageID(current.metadata) === undefined,
+                      undefined,
+                      options?.internalDelegation ? { internalDelegation: true } : undefined,
+                    ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
+                    if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
+                  } else if (input.hookMode) {
+                    const user = history.findLast((message) => message.info.role === "user")?.info
+                    if (user?.role === "user" && user.hookMode !== input.hookMode)
+                      yield* sessions.updateMessage({ ...user, hookMode: input.hookMode })
+                  }
+                  if (!initialTurn && !deferred) return lastAssistant(input.sessionID)
+                  // Fork the runner under the same commit lock as the owner check:
+                  // a cancel cannot land between the check and the fork. Wait outside
+                  // the prompt lock; runLoop claims it for its snapshot.
+                  return yield* commit(
+                    state.ensureRunningHandle(
+                      input.sessionID,
+                      lastAssistant(input.sessionID),
+                      runLoop(input.sessionID),
+                      request,
                     ),
                   )
-                }
-                if (initialTurn) {
-                  const admitted = yield* admitPrompt(
-                    {
-                      ...input,
-                      parts: [{ type: "text", text: initial }],
-                      hookMode: input.hookMode ?? "noninteractive",
-                    },
-                    undefined,
-                    options?.internalDelegation ? { internalDelegation: true } : undefined,
-                  ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
-                  if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
-                } else if (input.hookMode) {
-                  const user = history.findLast((message) => message.info.role === "user")?.info
-                  if (user?.role === "user" && user.hookMode !== input.hookMode)
-                    yield* sessions.updateMessage({ ...user, hookMode: input.hookMode })
-                }
-                if (!initialTurn && !deferred) return lastAssistant(input.sessionID)
-                // Fork the runner under the same commit lock as the owner check:
-                // a cancel cannot land between the check and the fork. Wait outside
-                // the prompt lock; runLoop claims it for its snapshot.
-                return yield* commit(
-                  state.ensureRunningHandle(
-                    input.sessionID,
-                    lastAssistant(input.sessionID),
-                    runLoop(input.sessionID),
-                    request,
-                  ),
-                )
-              }),
-            )),
+                }),
+              ),
+            ),
         )
         .pipe(
           Effect.flatten,
@@ -4125,7 +4131,13 @@ export const layer = Layer.effect(
       const ready = yield* Latch.make()
       const result = yield* withRunRequest(input.sessionID, (request) =>
         promptLocks.withLock(input.sessionID)(
-          state.startShellHandle(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready, request),
+          state.startShellHandle(
+            input.sessionID,
+            lastAssistant(input.sessionID),
+            shellImpl(input, ready),
+            ready,
+            request,
+          ),
         ),
       )
       return yield* result
@@ -4137,14 +4149,16 @@ export const layer = Layer.effect(
     // startIfIdle keeps today's inline semantics while another turn is running
     // (no queueing, no second idle); the in-flight turn re-emits idle itself.
     const commandTurn = Effect.fnUntraced(function* (sessionID: SessionID, work: Effect.Effect<SessionV1.WithParts>) {
-      return yield* withRunRequest(sessionID, (request) => promptLocks.withLock(sessionID)(
-        Effect.gen(function* () {
-          if (!request.valid()) return yield* Effect.interrupt
-          const handle = yield* state.startIfIdle(sessionID, lastAssistant(sessionID), work, request)
-          if (!request.valid()) return yield* Effect.interrupt
-          return yield* Option.getOrElse(handle, () => work)
-        }),
-      ))
+      return yield* withRunRequest(sessionID, (request) =>
+        promptLocks.withLock(sessionID)(
+          Effect.gen(function* () {
+            if (!request.valid()) return yield* Effect.interrupt
+            const handle = yield* state.startIfIdle(sessionID, lastAssistant(sessionID), work, request)
+            if (!request.valid()) return yield* Effect.interrupt
+            return yield* Option.getOrElse(handle, () => work)
+          }),
+        ),
+      )
     })
 
     const commandBody = Effect.fnUntraced(function* (
@@ -4398,42 +4412,44 @@ export const layer = Layer.effect(
         // This branch returns before the normal landing point below, so notices
         // from the hook that stopped the command must be published here.
         if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
-        return yield* withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
-          Effect.gen(function* () {
-            if (!request.valid()) return yield* Effect.interrupt
-            // A command cancelled while this blocked notice is being admitted
-            // must surface as the normal rejected-command error, not a defect
-            // that the HTTP layer reports as 500.
-            const message = yield* createUserMessage(
-              {
-                sessionID: input.sessionID,
-                messageID: input.messageID,
-                agent: input.agent,
-                parts: [
-                  {
-                    type: "text",
-                    text: `[Hook stopped] ${expansion.stopReason ?? expansion.blocked?.reason ?? "Command expansion blocked"}`,
-                    ignored: true,
-                  },
-                ],
-              },
-              undefined,
-              commitAdmission,
-              modelBaseline,
-            ).pipe(
-              Effect.catchTag("SessionConversationHookBlocked", (error) =>
-                Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
-              ),
-            )
-            const handle = yield* state.startIfIdle(
-              input.sessionID,
-              lastAssistant(input.sessionID),
-              Effect.succeed(message),
-              request,
-            )
-            return yield* Option.getOrElse(handle, () => Effect.succeed(message))
-          }),
-        ))
+        return yield* withRunRequest(input.sessionID, (request) =>
+          promptLocks.withLock(input.sessionID)(
+            Effect.gen(function* () {
+              if (!request.valid()) return yield* Effect.interrupt
+              // A command cancelled while this blocked notice is being admitted
+              // must surface as the normal rejected-command error, not a defect
+              // that the HTTP layer reports as 500.
+              const message = yield* createUserMessage(
+                {
+                  sessionID: input.sessionID,
+                  messageID: input.messageID,
+                  agent: input.agent,
+                  parts: [
+                    {
+                      type: "text",
+                      text: `[Hook stopped] ${expansion.stopReason ?? expansion.blocked?.reason ?? "Command expansion blocked"}`,
+                      ignored: true,
+                    },
+                  ],
+                },
+                undefined,
+                commitAdmission,
+                modelBaseline,
+              ).pipe(
+                Effect.catchTag("SessionConversationHookBlocked", (error) =>
+                  Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
+                ),
+              )
+              const handle = yield* state.startIfIdle(
+                input.sessionID,
+                lastAssistant(input.sessionID),
+                Effect.succeed(message),
+                request,
+              )
+              return yield* Option.getOrElse(handle, () => Effect.succeed(message))
+            }),
+          ),
+        )
       }
 
       const templateCommand = yield* Effect.promise(async () => cmd.template)
@@ -4847,7 +4863,9 @@ export function admitIfIdle(
         automation.handoff(
           token,
           Effect.suspend(() =>
-            request.valid() ? service.prepareIfIdle(input, persistAdmission, options, request) : Effect.succeed(Option.none()),
+            request.valid()
+              ? service.prepareIfIdle(input, persistAdmission, options, request)
+              : Effect.succeed(Option.none()),
           ),
         ),
       ),

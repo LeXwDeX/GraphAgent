@@ -1,14 +1,12 @@
 export * as PluginV2 from "./plugin"
 
 import { SourceProvenance } from "./session/source-provenance"
-import { Context, Deferred, Effect, Exit, Layer, Scope } from "effect"
-import type { Plugin } from "@opencode-ai/plugin/v2/effect"
-import { PluginEvent, PluginID } from "@opencode-ai/schema/plugin"
+import { Context, Deferred, Effect, Exit, Layer, Schema, Scope } from "effect"
+import type { Plugin } from "./plugin/context/plugin"
 import { AgentV2 } from "./agent"
 import { AISDK } from "./aisdk"
 import { Catalog } from "./catalog"
 import { CommandV2 } from "./command"
-import { EventV2 } from "./event"
 import { Integration } from "./integration"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { PluginHost } from "./plugin/host"
@@ -16,10 +14,8 @@ import { Reference } from "./reference"
 import { SkillV2 } from "./skill"
 import { State } from "./state"
 
-export const ID = PluginID
+export const ID = Schema.String.pipe(Schema.brand("Plugin.ID"))
 export type ID = typeof ID.Type
-
-export const Event = PluginEvent
 
 export interface Interface {
   readonly add: (id: ID, effect: Plugin["effect"]) => Effect.Effect<void>
@@ -32,7 +28,6 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const events = yield* EventV2.Service
     const locks = KeyedMutex.makeUnsafe<ID>()
     const scope = yield* Scope.make()
     const active = new Map<ID, Scope.Closeable>()
@@ -63,7 +58,6 @@ export const layer = Layer.effect(
                   Effect.withSpan("Plugin.load", { attributes: { "plugin.id": id } }),
                   Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(child, exit) : Effect.void)),
                 )
-                yield* events.publish(Event.Added, { id })
                 active.set(id, child)
                 yield* Effect.forEach(waiters.get(id) ?? [], (waiter) => Deferred.succeed(waiter, undefined), {
                   discard: true,
@@ -139,7 +133,7 @@ export const layer = Layer.effect(
       remove,
       wait,
     })
-    host = yield* PluginHost.make(service)
+    host = yield* PluginHost.make()
     return service
   }),
 )

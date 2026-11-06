@@ -1,5 +1,5 @@
 import type { CommandV2Info } from "@opencode-ai/sdk/v2/types"
-import type { Hooks } from "./registration.js"
+import type { Hooks } from "./registration"
 
 export interface CommandDraft {
   list(): readonly CommandV2Info[]

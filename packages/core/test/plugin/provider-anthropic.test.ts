@@ -3,7 +3,6 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { AnthropicPlugin } from "@opencode-ai/core/plugin/provider/anthropic"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -13,9 +12,8 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* AnthropicPlugin.effect(host)
 })
 
@@ -60,7 +58,6 @@ describe("AnthropicPlugin", () => {
 
   it.effect("creates Anthropic SDKs with the model provider ID as the SDK name", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -77,7 +74,6 @@ describe("AnthropicPlugin", () => {
 
   it.effect("uses the Anthropic provider ID as the SDK name for the bundled Anthropic provider", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({

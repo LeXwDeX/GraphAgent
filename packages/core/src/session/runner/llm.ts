@@ -207,7 +207,6 @@ export const layer = Layer.effect(
         dynamic,
         prune,
         // Core owns no server-plugin loader. Unknown is explicit and must never be promoted to loaded by inference.
-        knownExternalDcp: "unknown",
       })
     })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
