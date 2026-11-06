@@ -98,8 +98,11 @@ function normalize(value: unknown, options: { stripNull?: boolean } = {}): unkno
     return normalize({ ...Object.assign({}, ...allOf), ...rest })
   }
 
-  if (schema.type === "integer" && schema.maximum === undefined) {
-    return { minimum: Number.MIN_SAFE_INTEGER, ...schema, maximum: Number.MAX_SAFE_INTEGER }
+  if (schema.type === "integer") {
+    // Effect bounds bare integers to the safe range itself, but a constrained
+    // integer (for example `isGreaterThan(0)`) can omit one side. Keep both
+    // bounds on the wire so every provider sees the same safe-integer range.
+    return { minimum: Number.MIN_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER, ...schema }
   }
 
   return schema
