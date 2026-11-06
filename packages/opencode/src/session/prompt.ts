@@ -3029,8 +3029,8 @@ export const layer = Layer.effect(
               hooks: settingsHook,
               canDefer: !session.parentID && lastUser.hookMode !== "interactive" ? () => true : undefined,
               sourceLedger: toolSources,
-              }).pipe(
-                Effect.provideService(Permission.Service, permission),
+            }).pipe(
+              Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
               Effect.provideService(MCP.Service, mcp),
               Effect.provideService(Truncate.Service, truncate),
