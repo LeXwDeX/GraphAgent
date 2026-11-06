@@ -307,6 +307,7 @@ describe("tool.write", () => {
   describe("error handling", () => {
     it.instance("throws error when OS denies write access", () =>
       Effect.gen(function* () {
+        if (process.getuid?.() === 0) return // skip when running as root
         const test = yield* TestInstance
         const readonlyPath = path.join(test.directory, "readonly.txt")
         yield* Effect.promise(() => fs.writeFile(readonlyPath, "test", "utf-8"))
