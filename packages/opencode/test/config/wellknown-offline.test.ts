@@ -6,7 +6,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
-import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http"
 import { readdir } from "fs/promises"
 import path from "path"
 
@@ -459,8 +459,8 @@ safetyIt.live(
 
     const wellKnownContent = yield* Effect.promise(() => Bun.file(lkgFile(digests[0])).text())
     const remoteContent = yield* Effect.promise(() => Bun.file(lkgFile(digests[1])).text())
-    const wellKnownUnknown = Schema.decodeUnknownSync(Schema.UnknownFromJsonString)(wellKnownContent)
-    const remoteUnknown = Schema.decodeUnknownSync(Schema.UnknownFromJsonString)(remoteContent)
+    const wellKnownUnknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(wellKnownContent)
+    const remoteUnknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(remoteContent)
     if (typeof wellKnownUnknown !== "object" || wellKnownUnknown === null || Array.isArray(wellKnownUnknown)) {
       throw new Error("well-known LKG is not an object")
     }

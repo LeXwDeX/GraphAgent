@@ -1,12 +1,12 @@
 import { ProjectCopy } from "@opencode-ai/schema/project-copy"
 import { Project } from "@opencode-ai/schema/project"
 import { Schema, Struct } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { LocationQuery, locationQueryOpenApi } from "./location"
 
 const root = "/experimental/project/:projectID/copy"
 
-export class ProjectCopyError extends Schema.ErrorClass<ProjectCopyError>("ProjectCopyError")(
+export class ProjectCopyError extends Schema.Error<ProjectCopyError>("ProjectCopyError")(
   {
     name: Schema.Literal("ProjectCopyError"),
     data: Schema.Struct({

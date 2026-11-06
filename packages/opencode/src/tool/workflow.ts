@@ -1238,7 +1238,7 @@ function blockedMetadata(diagnostics: Diagnostic[]): Metadata {
 const DRAFT_DIRECTORY = path.join(".opencode", "workflow-drafts")
 const DRAFT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_]*$/
 
-class DraftWriteError extends Schema.TaggedErrorClass<DraftWriteError>()("WorkflowDraftWriteError", {
+class DraftWriteError extends Schema.TaggedError<DraftWriteError>()("WorkflowDraftWriteError", {
   path: Schema.String,
   detail: Schema.String,
 }) {

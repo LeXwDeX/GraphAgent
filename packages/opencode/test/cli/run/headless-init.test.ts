@@ -25,7 +25,7 @@ import { Database } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { Effect, Schema } from "effect"
-import { HttpBody, HttpClient } from "effect/unstable/http"
+import { HttpBody, HttpClient } from "effect/http"
 import { cliIt } from "../../lib/cli-process"
 import { pollWithTimeout } from "../../lib/effect"
 

@@ -3,7 +3,7 @@ export * as PermissionHookScope from "./hook-scope"
 import { Context, Effect, Schema } from "effect"
 import type { Permission } from "@opencode-ai/schema/permission"
 
-export class Failure extends Schema.TaggedErrorClass<Failure>()("PermissionHookFailure", { message: Schema.String }) {}
+export class Failure extends Schema.TaggedError<Failure>()("PermissionHookFailure", { message: Schema.String }) {}
 export interface Decision {
   behavior?: "allow" | "deny"
   updatedInput?: Record<string, unknown>

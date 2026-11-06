@@ -28,11 +28,11 @@ export interface RemoveInput {
   readonly target: Target
 }
 
-export class StaleContentError extends Schema.TaggedErrorClass<StaleContentError>()("FileMutation.StaleContentError", {
+export class StaleContentError extends Schema.TaggedError<StaleContentError>()("FileMutation.StaleContentError", {
   path: Schema.String,
 }) {}
 
-export class TargetExistsError extends Schema.TaggedErrorClass<TargetExistsError>()("FileMutation.TargetExistsError", {
+export class TargetExistsError extends Schema.TaggedError<TargetExistsError>()("FileMutation.TargetExistsError", {
   path: Schema.String,
 }) {}
 

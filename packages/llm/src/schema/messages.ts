@@ -14,13 +14,23 @@ export type SystemPart = Schema.Schema.Type<typeof systemPartSchema>
 
 const makeSystemPart = (text: string): SystemPart => ({ type: "text", text })
 
-export const SystemPart = Object.assign(systemPartSchema, {
-  make: makeSystemPart,
+const systemPartWithContent = Object.assign(systemPartSchema, {
   content: (input?: string | SystemPart | ReadonlyArray<SystemPart>) => {
     if (input === undefined) return []
     return typeof input === "string" ? [makeSystemPart(input)] : Array.isArray(input) ? [...input] : [input]
   },
 })
+Object.defineProperty(systemPartWithContent, "make", {
+  value: makeSystemPart,
+  configurable: true,
+  writable: true,
+  enumerable: true,
+})
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- schema helpers are attached at runtime
+export const SystemPart = systemPartWithContent as typeof systemPartSchema & {
+  make: typeof makeSystemPart
+  content: (input?: string | SystemPart | ReadonlyArray<SystemPart>) => SystemPart[]
+}
 
 export const TextPart = Schema.Struct({
   type: Schema.Literal("text"),
@@ -47,7 +57,7 @@ const isToolResultValue = (value: unknown): value is ToolResultValue =>
   (value.type === "text" || value.type === "json" || value.type === "error" || value.type === "content") &&
   "value" in value
 
-export const ToolResultValue = Object.assign(
+const toolResultValueWithHelpers = Object.assign(
   Schema.Union([
     Schema.Struct({
       type: Schema.Literal("json"),
@@ -68,27 +78,39 @@ export const ToolResultValue = Object.assign(
   ]).annotate({ identifier: "LLM.ToolResult" }),
   {
     is: isToolResultValue,
-    make: (value: unknown, type: ToolResultValue["type"] = "json"): ToolResultValue => {
-      if (isToolResultValue(value)) return value
-      if (type === "content") return { type, value: Array.isArray(value) ? value : [] }
-      return { type, value }
-    },
   },
 )
-export type ToolResultValue = Schema.Schema.Type<typeof ToolResultValue>
+const makeToolResultValue = (
+  value: unknown,
+  type: Schema.Schema.Type<typeof toolResultValueWithHelpers>["type"] = "json",
+): Schema.Schema.Type<typeof toolResultValueWithHelpers> => {
+  if (isToolResultValue(value)) return value
+  if (type === "content") return { type, value: Array.isArray(value) ? value : [] }
+  return { type, value }
+}
+Object.defineProperty(toolResultValueWithHelpers, "make", {
+  value: makeToolResultValue,
+  configurable: true,
+  writable: true,
+  enumerable: true,
+})
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- schema helpers are attached at runtime
+export const ToolResultValue = toolResultValueWithHelpers as typeof toolResultValueWithHelpers & {
+  make: typeof makeToolResultValue
+}
+export type ToolResultValue = Schema.Schema.Type<typeof toolResultValueWithHelpers>
 
 export interface ToolOutput {
   readonly structured: unknown
   readonly content: ReadonlyArray<ToolContent>
 }
 
-export const ToolOutput = Object.assign(
+const toolOutputWithHelpers = Object.assign(
   Schema.Struct({
     structured: Schema.Unknown,
     content: Schema.Array(ToolContent),
   }).annotate({ identifier: "LLM.ToolOutput" }),
   {
-    make: (structured: unknown, content: ReadonlyArray<ToolContent> = []): ToolOutput => ({ structured, content }),
     fromResultValue: (result: ToolResultValue): ToolOutput | undefined => {
       switch (result.type) {
         case "json":
@@ -109,6 +131,18 @@ export const ToolOutput = Object.assign(
     },
   },
 )
+const makeToolOutput = (structured: unknown, content: ReadonlyArray<ToolContent> = []): ToolOutput => ({
+  structured,
+  content,
+})
+Object.defineProperty(toolOutputWithHelpers, "make", {
+  value: makeToolOutput,
+  configurable: true,
+  writable: true,
+  enumerable: true,
+})
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- schema helpers are attached at runtime
+export const ToolOutput = toolOutputWithHelpers as typeof toolOutputWithHelpers & { make: typeof makeToolOutput }
 
 const toolResultText = (value: unknown) => {
   if (typeof value === "string") return value
@@ -119,52 +153,62 @@ const toolResultText = (value: unknown) => {
   }
 }
 
-export const ToolCallPart = Object.assign(
-  Schema.Struct({
-    type: Schema.Literal("tool-call"),
-    id: Schema.String,
-    name: Schema.String,
-    input: Schema.Unknown,
-    providerExecuted: Schema.optional(Schema.Boolean),
-    metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-    providerMetadata: Schema.optional(ProviderMetadata),
-  }).annotate({ identifier: "LLM.Content.ToolCall" }),
-  {
-    make: (input: Omit<ToolCallPart, "type">): ToolCallPart => ({ type: "tool-call", ...input }),
-  },
-)
-export type ToolCallPart = Schema.Schema.Type<typeof ToolCallPart>
+const toolCallPartSchema = Schema.Struct({
+  type: Schema.Literal("tool-call"),
+  id: Schema.String,
+  name: Schema.String,
+  input: Schema.Unknown,
+  providerExecuted: Schema.optional(Schema.Boolean),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  providerMetadata: Schema.optional(ProviderMetadata),
+}).annotate({ identifier: "LLM.Content.ToolCall" })
+const makeToolCallPart = (
+  input: Omit<Schema.Schema.Type<typeof toolCallPartSchema>, "type">,
+): Schema.Schema.Type<typeof toolCallPartSchema> => ({ type: "tool-call", ...input })
+Object.defineProperty(toolCallPartSchema, "make", {
+  value: makeToolCallPart,
+  configurable: true,
+  writable: true,
+  enumerable: true,
+})
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- schema helpers are attached at runtime
+export const ToolCallPart = toolCallPartSchema as typeof toolCallPartSchema & { make: typeof makeToolCallPart }
+export type ToolCallPart = Schema.Schema.Type<typeof toolCallPartSchema>
 
-export const ToolResultPart = Object.assign(
-  Schema.Struct({
-    type: Schema.Literal("tool-result"),
-    id: Schema.String,
-    name: Schema.String,
-    result: ToolResultValue,
-    providerExecuted: Schema.optional(Schema.Boolean),
-    cache: Schema.optional(CacheHint),
-    metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-    providerMetadata: Schema.optional(ProviderMetadata),
-  }).annotate({ identifier: "LLM.Content.ToolResult" }),
-  {
-    make: (
-      input: Omit<ToolResultPart, "type" | "result"> & {
-        readonly result: unknown
-        readonly resultType?: ToolResultValue["type"]
-      },
-    ): ToolResultPart => ({
-      type: "tool-result",
-      id: input.id,
-      name: input.name,
-      result: ToolResultValue.make(input.result, input.resultType),
-      providerExecuted: input.providerExecuted,
-      cache: input.cache,
-      metadata: input.metadata,
-      providerMetadata: input.providerMetadata,
-    }),
+const toolResultPartSchema = Schema.Struct({
+  type: Schema.Literal("tool-result"),
+  id: Schema.String,
+  name: Schema.String,
+  result: ToolResultValue,
+  providerExecuted: Schema.optional(Schema.Boolean),
+  cache: Schema.optional(CacheHint),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  providerMetadata: Schema.optional(ProviderMetadata),
+}).annotate({ identifier: "LLM.Content.ToolResult" })
+const makeToolResultPart = (
+  input: Omit<Schema.Schema.Type<typeof toolResultPartSchema>, "type" | "result"> & {
+    readonly result: unknown
+    readonly resultType?: Schema.Schema.Type<typeof toolResultValueWithHelpers>["type"]
   },
-)
-export type ToolResultPart = Schema.Schema.Type<typeof ToolResultPart>
+): Schema.Schema.Type<typeof toolResultPartSchema> => ({
+  type: "tool-result",
+  id: input.id,
+  name: input.name,
+  result: ToolResultValue.make(input.result, input.resultType),
+  providerExecuted: input.providerExecuted,
+  cache: input.cache,
+  metadata: input.metadata,
+  providerMetadata: input.providerMetadata,
+})
+Object.defineProperty(toolResultPartSchema, "make", {
+  value: makeToolResultPart,
+  configurable: true,
+  writable: true,
+  enumerable: true,
+})
+// oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- schema helpers are attached at runtime
+export const ToolResultPart = toolResultPartSchema as typeof toolResultPartSchema & { make: typeof makeToolResultPart }
+export type ToolResultPart = Schema.Schema.Type<typeof toolResultPartSchema>
 
 export const ReasoningPart = Schema.Struct({
   type: Schema.Literal("reasoning"),

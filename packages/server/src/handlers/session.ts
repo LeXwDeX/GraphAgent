@@ -1,7 +1,7 @@
 import { SessionAttentionHost } from "@opencode-ai/core/session/attention"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { Cause, DateTime, Effect, Option } from "effect"
-import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
 import { Api } from "../api"
 import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
 import {

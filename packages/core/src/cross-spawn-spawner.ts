@@ -9,18 +9,19 @@ import * as Layer from "effect/Layer"
 import * as Path from "effect/Path"
 import * as PlatformError from "effect/PlatformError"
 import * as Predicate from "effect/Predicate"
+import * as Redacted from "effect/Redacted"
 import type * as Scope from "effect/Scope"
 import * as Sink from "effect/Sink"
 import * as Stream from "effect/Stream"
-import * as ChildProcess from "effect/unstable/process/ChildProcess"
-import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
+import * as ChildProcess from "effect/process/ChildProcess"
+import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner"
 import {
   ChildProcessSpawner,
   ExitCode,
   make as makeSpawner,
   makeHandle,
   ProcessId,
-} from "effect/unstable/process/ChildProcessSpawner"
+} from "effect/process/ChildProcessSpawner"
 import * as NodeChildProcess from "node:child_process"
 import { PassThrough } from "node:stream"
 import launch from "cross-spawn"
@@ -82,7 +83,9 @@ const toPlatformError = (
   command: ChildProcess.Command,
 ): PlatformError.PlatformError => {
   const cmd = flatten(command)
-    .commands.map((x) => `${x.command} ${x.args.join(" ")}`)
+    .commands.map(
+      (x) => `${x.command} ${x.args.map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))).join(" ")}`,
+    )
     .join(" | ")
   return PlatformError.systemError({
     _tag: toTag(err),
@@ -106,8 +109,18 @@ export const make = Effect.gen(function* () {
     return path.resolve(opts.cwd)
   })
 
+  const plainEnv = (env: ChildProcess.CommandOptions["env"]) =>
+    env
+      ? Object.fromEntries(
+          Object.entries(env).map(([key, value]) => [
+            key,
+            value === undefined ? undefined : Redacted.isRedacted(value) ? Redacted.value(value) : value,
+          ]),
+        )
+      : undefined
+
   const env = (opts: ChildProcess.CommandOptions) =>
-    opts.extendEnv ? { ...globalThis.process.env, ...opts.env } : opts.env
+    opts.extendEnv ? { ...globalThis.process.env, ...plainEnv(opts.env) } : plainEnv(opts.env)
 
   const input = (x: ChildProcess.CommandInput | undefined): NodeChildProcess.IOType | undefined =>
     Stream.isStream(x) ? "pipe" : x
@@ -267,7 +280,11 @@ export const make = Effect.gen(function* () {
   const spawn = (command: ChildProcess.StandardCommand, opts: NodeChildProcess.SpawnOptions) =>
     Effect.callback<readonly [NodeChildProcess.ChildProcess, ExitSignal], PlatformError.PlatformError>((resume) => {
       const signal = Deferred.makeUnsafe<readonly [code: number | null, signal: NodeJS.Signals | null]>()
-      const proc = launch(command.command, command.args, opts)
+      const proc = launch(
+        command.command,
+        command.args.map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))),
+        opts,
+      )
       let end = false
       let exit: readonly [code: number | null, signal: NodeJS.Signals | null] | undefined
       proc.on("error", (err) => {

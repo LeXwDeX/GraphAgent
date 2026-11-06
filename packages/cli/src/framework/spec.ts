@@ -1,4 +1,4 @@
-import * as Command from "effect/unstable/cli/Command"
+import * as Command from "effect/cli/Command"
 
 type Options<Config extends Command.Command.Config, Commands extends ReadonlyArray<Any>> = {
   readonly description?: string

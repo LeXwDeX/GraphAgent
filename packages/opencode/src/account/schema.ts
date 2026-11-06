@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import type * as HttpClientError from "effect/unstable/http/HttpClientError"
+import type * as HttpClientError from "effect/http/HttpClientError"
 
 export const AccountID = Schema.String.pipe(Schema.brand("AccountID"))
 export type AccountID = Schema.Schema.Type<typeof AccountID>
@@ -31,17 +31,17 @@ export class Org extends Schema.Class<Org>("Org")({
   name: Schema.String,
 }) {}
 
-export class AccountRepoError extends Schema.TaggedErrorClass<AccountRepoError>()("AccountRepoError", {
+export class AccountRepoError extends Schema.TaggedError<AccountRepoError>()("AccountRepoError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class AccountServiceError extends Schema.TaggedErrorClass<AccountServiceError>()("AccountServiceError", {
+export class AccountServiceError extends Schema.TaggedError<AccountServiceError>()("AccountServiceError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class AccountTransportError extends Schema.TaggedErrorClass<AccountTransportError>()("AccountTransportError", {
+export class AccountTransportError extends Schema.TaggedError<AccountTransportError>()("AccountTransportError", {
   method: Schema.String,
   url: Schema.String,
   description: Schema.optional(Schema.String),

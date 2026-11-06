@@ -1109,7 +1109,7 @@ export function defaultModelIDs<T extends { models: Record<string, { id: string 
   return mapValues(providers, (item) => sort(Object.values(item.models))[0].id)
 }
 
-export class ModelNotFoundError extends Schema.TaggedErrorClass<ModelNotFoundError>()("ProviderModelNotFoundError", {
+export class ModelNotFoundError extends Schema.TaggedError<ModelNotFoundError>()("ProviderModelNotFoundError", {
   providerID: ProviderV2.ID,
   modelID: ModelV2.ID,
   suggestions: Schema.optional(Schema.Array(Schema.String)),
@@ -1125,7 +1125,7 @@ export class ModelNotFoundError extends Schema.TaggedErrorClass<ModelNotFoundErr
   }
 }
 
-export class InitError extends Schema.TaggedErrorClass<InitError>()("ProviderInitError", {
+export class InitError extends Schema.TaggedError<InitError>()("ProviderInitError", {
   providerID: ProviderV2.ID,
   cause: Schema.optional(Schema.Defect()),
 }) {
@@ -1138,7 +1138,7 @@ export class InitError extends Schema.TaggedErrorClass<InitError>()("ProviderIni
   }
 }
 
-export class NoProvidersError extends Schema.TaggedErrorClass<NoProvidersError>()("ProviderNoProvidersError", {}) {
+export class NoProvidersError extends Schema.TaggedError<NoProvidersError>()("ProviderNoProvidersError", {}) {
   override get message() {
     return "No providers are available. Configure a provider or restore network access to load the model catalog."
   }
@@ -1148,7 +1148,7 @@ export class NoProvidersError extends Schema.TaggedErrorClass<NoProvidersError>(
   }
 }
 
-export class NoModelsError extends Schema.TaggedErrorClass<NoModelsError>()("ProviderNoModelsError", {
+export class NoModelsError extends Schema.TaggedError<NoModelsError>()("ProviderNoModelsError", {
   providerID: ProviderV2.ID,
 }) {
   override get message() {

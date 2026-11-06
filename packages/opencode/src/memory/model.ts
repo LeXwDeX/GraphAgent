@@ -29,7 +29,7 @@ export interface Interface {
   readonly generate: (input: Request) => Effect.Effect<unknown, ModelError>
 }
 
-export class TimeoutError extends Schema.TaggedErrorClass<TimeoutError>()("MemoryModel.TimeoutError", {}) {
+export class TimeoutError extends Schema.TaggedError<TimeoutError>()("MemoryModel.TimeoutError", {}) {
   override get message() {
     return "MEMORY model call timed out"
   }
@@ -49,7 +49,7 @@ function defectMessage(value: unknown, seen = new Set<object>(), depth = 0): str
   return String(value)
 }
 
-export class GenerateError extends Schema.TaggedErrorClass<GenerateError>()("MemoryModel.GenerateError", {
+export class GenerateError extends Schema.TaggedError<GenerateError>()("MemoryModel.GenerateError", {
   cause: Schema.Defect(),
 }) {
   override get message() {

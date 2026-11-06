@@ -3,8 +3,8 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { Effect, Layer } from "effect"
-import { HttpServerRequest } from "effect/unstable/http"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
+import { HttpServerRequest } from "effect/http"
+import { HttpApiMiddleware } from "effect/http-api"
 
 export type LocationServices = Layer.Success<ReturnType<(typeof LocationServiceMap)["get"]>>
 

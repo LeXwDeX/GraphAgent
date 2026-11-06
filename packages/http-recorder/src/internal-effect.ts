@@ -9,7 +9,7 @@ import {
   HttpClientRequest,
   HttpClientResponse,
   UrlParams,
-} from "effect/unstable/http"
+} from "effect/http"
 import * as CassetteService from "./cassette.js"
 import { defaultMatcher, selectSequential } from "./matching.js"
 import { makeReplayState, resolveAutoMode } from "./recorder.js"

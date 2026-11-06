@@ -52,7 +52,7 @@ export interface Interface {
   }) => Effect.Effect<{ replacement?: unknown; hasReplacement?: boolean; feedback?: string; stopped?: string }, Blocked>
 }
 
-export class Blocked extends Schema.TaggedErrorClass<Blocked>()("SessionConversationHookBlocked", {
+export class Blocked extends Schema.TaggedError<Blocked>()("SessionConversationHookBlocked", {
   reason: Schema.String,
 }) {}
 

@@ -10,7 +10,7 @@ import {
   HttpServerError,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http"
+} from "effect/http"
 
 export const create = Effect.fn("OpenCode.create")(function* () {
   const applicationTools = ApplicationTools.layer

@@ -1,12 +1,12 @@
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { described } from "./metadata"
 
 const root = "/experimental/control-plane"
 export const MoveSessionPayload = Schema.Struct({ ...MoveSession.Input.fields })
 
-export class ApiMoveSessionError extends Schema.ErrorClass<ApiMoveSessionError>("MoveSessionError")(
+export class ApiMoveSessionError extends Schema.Error<ApiMoveSessionError>("MoveSessionError")(
   {
     name: Schema.Literal("MoveSessionError"),
     data: Schema.Struct({

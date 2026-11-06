@@ -96,7 +96,8 @@ function makeStubServer(): Server {
     })
     return {
       content: [{ type: "text", text: `elicit ${result.action}: ${JSON.stringify(result.content)}` }],
-    } as never
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the SDK result is structurally typed at this boundary
+    } as unknown as never
   })
   return server
 }
@@ -115,7 +116,8 @@ const awaitValue = <A, E>(fiber: Fiber.Fiber<A, E>) =>
 const describeFiber = <A, E>(fiber: Fiber.Fiber<A, E>): string => {
   const exit = fiber.pollUnsafe()
   if (exit === undefined) return "pending (tool call still in flight)"
-  if (Exit.isSuccess(exit)) return `resolved: ${JSON.stringify((exit.value as { content?: unknown })?.content)}`
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the SDK result is structurally typed at this boundary
+  if (Exit.isSuccess(exit)) return `resolved: ${JSON.stringify((exit.value as unknown as { content?: unknown })?.content)}`
   return `failed: ${Cause.pretty(exit.cause)}`
 }
 
@@ -191,7 +193,8 @@ describe("mcp elicitation — real transport round-trip (5.4)", () => {
 
       // Reply "green" → adapter validates, accepts, returns content to the server.
       yield* question.reply({ requestID: pending[0].id, answers: [["green"]] })
-      const callResult = (yield* awaitValue(callFiber)) as { content?: Array<{ type: string; text?: string }> }
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the SDK result is structurally typed at this boundary
+      const callResult = (yield* awaitValue(callFiber)) as unknown as { content?: Array<{ type: string; text?: string }> }
 
       // The server's tool received the elicited content and returned it.
       const text = callResult.content?.[0]?.text ?? ""

@@ -1,6 +1,6 @@
 import { QuestionV2 } from "@opencode-ai/core/question"
 import { Effect } from "effect"
-import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
+import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
 import { Api } from "../api"
 import { QuestionNotFoundError } from "@opencode-ai/protocol/errors"
 import { response } from "../location"

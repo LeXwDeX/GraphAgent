@@ -4,12 +4,12 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { Config } from "./config"
 import { FileSystem } from "./filesystem"
 
-export class ResizerUnavailableError extends Schema.TaggedErrorClass<ResizerUnavailableError>()(
+export class ResizerUnavailableError extends Schema.TaggedError<ResizerUnavailableError>()(
   "Image.ResizerUnavailableError",
   {},
 ) {}
 
-export class DecodeError extends Schema.TaggedErrorClass<DecodeError>()("Image.DecodeError", {
+export class DecodeError extends Schema.TaggedError<DecodeError>()("Image.DecodeError", {
   resource: Schema.String,
 }) {
   override get message() {
@@ -17,7 +17,7 @@ export class DecodeError extends Schema.TaggedErrorClass<DecodeError>()("Image.D
   }
 }
 
-export class SizeError extends Schema.TaggedErrorClass<SizeError>()("Image.SizeError", {
+export class SizeError extends Schema.TaggedError<SizeError>()("Image.SizeError", {
   resource: Schema.String,
   width: Schema.Number,
   height: Schema.Number,

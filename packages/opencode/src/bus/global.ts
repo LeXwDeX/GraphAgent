@@ -16,7 +16,7 @@ class GlobalBusEmitter extends EventEmitter<{
   override emit(eventName: "event", event: GlobalEvent): boolean
   override emit(eventName: string | symbol, ...args: any[]): boolean
   override emit(eventName: string | symbol, ...args: any[]): boolean {
-    const event = args[0] as GlobalEvent | undefined
+    const event: GlobalEvent | undefined = args[0]
     if (eventName === "event" && event?.payload && typeof event.payload === "object" && !("id" in event.payload)) {
       event.payload.id = event.payload.syncEvent?.id ?? Identifier.create("evt", "ascending")
     }

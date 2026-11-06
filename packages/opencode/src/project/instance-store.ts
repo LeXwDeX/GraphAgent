@@ -43,7 +43,7 @@ export const use = serviceUse(Service)
 interface Entry {
   readonly directory: string
   readonly generation: object
-  readonly scope: Scope.Scope
+  readonly scope: Scope.Closeable
   readonly deferred: Deferred.Deferred<InstanceContext>
   // Short use gate: provideIfLoaded holds it until the effect has entered the
   // target instance. Longer cancellation work is tracked by active/idle.

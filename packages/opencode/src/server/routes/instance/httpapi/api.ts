@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApi } from "effect/unstable/httpapi"
+import { HttpApi } from "effect/http-api"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventManifest } from "@/event-manifest"
 import { Credential } from "@opencode-ai/core/credential"

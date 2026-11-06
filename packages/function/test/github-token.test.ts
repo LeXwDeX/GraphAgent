@@ -26,7 +26,7 @@ test("Octokit sends a repository restriction in the installation token request",
   })
   const auth = createAppAuth({
     appId: 1,
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }),
     request: client.request,
   })
   const token = await repositoryToken(auth, 123, "authorized-repo")

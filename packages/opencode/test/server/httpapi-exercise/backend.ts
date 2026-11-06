@@ -1,5 +1,5 @@
 import { ConfigProvider, Context, Effect, Exit, Layer, Scope } from "effect"
-import { HttpEffect, HttpRouter } from "effect/unstable/http"
+import { HttpEffect, HttpRouter } from "effect/http"
 import { parse } from "./assertions"
 import { exerciseWorkingDirectory } from "./environment"
 import { runtime, type Runtime } from "./runtime"

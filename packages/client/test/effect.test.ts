@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { DateTime, Effect } from "effect"
-import { HttpClient, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientResponse } from "effect/http"
 import { AbsolutePath, Agent, Location, Model, OpenCode, Prompt, Session } from "../src/effect"
 
 test("sessions.get returns the decoded Effect projection", async () => {

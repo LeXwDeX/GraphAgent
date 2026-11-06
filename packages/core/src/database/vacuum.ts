@@ -16,7 +16,7 @@ export interface ConvertResult {
   readonly autoVacuum: number
 }
 
-export class Refused extends Schema.TaggedErrorClass<Refused>()("VacuumRefused", {
+export class Refused extends Schema.TaggedError<Refused>()("VacuumRefused", {
   filename: Schema.String,
   reason: Schema.String,
 }) {
@@ -25,7 +25,7 @@ export class Refused extends Schema.TaggedErrorClass<Refused>()("VacuumRefused",
   }
 }
 
-export class NotFull extends Schema.TaggedErrorClass<NotFull>()("VacuumNotFull", {
+export class NotFull extends Schema.TaggedError<NotFull>()("VacuumNotFull", {
   filename: Schema.String,
   // -1 encodes an unreadable readback (the pragma returned no row).
   autoVacuum: Schema.Number,

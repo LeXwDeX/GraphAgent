@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Deferred, Duration, Effect, Fiber, Layer, Ref, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import * as TestClock from "effect/testing/TestClock"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { Agent } from "@/agent/agent"

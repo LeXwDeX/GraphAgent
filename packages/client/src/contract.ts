@@ -1,6 +1,6 @@
 import { makeDefaultApi } from "@opencode-ai/protocol/api"
 import { InvalidRequestError, SessionNotFoundError } from "@opencode-ai/protocol/errors"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
+import { HttpApiMiddleware } from "effect/http-api"
 
 class LocationMiddleware extends HttpApiMiddleware.Service<LocationMiddleware>()(
   "@opencode-ai/client/LocationMiddleware",

@@ -1,5 +1,5 @@
 import { Schedule } from "effect"
-import { HttpClient } from "effect/unstable/http"
+import { HttpClient } from "effect/http"
 
 export const withTransientReadRetry = <E, R>(client: HttpClient.HttpClient.With<E, R>) =>
   client.pipe(

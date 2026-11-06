@@ -1,6 +1,6 @@
 /* oxlint-disable */
 import * as Effect from "effect/Effect"
-import type { SqlError } from "effect/unstable/sql/SqlError"
+import type { SqlError } from "effect/sql/SqlError"
 import { EffectDrizzleError } from "drizzle-orm/effect-core/errors"
 import type { QueryEffectHKTBase } from "drizzle-orm/effect-core/query-effect"
 import type { MigrationMeta } from "drizzle-orm/migrator"

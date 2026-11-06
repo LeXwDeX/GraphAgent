@@ -1,5 +1,5 @@
 import { Config, Effect, Redacted } from "effect"
-import { Headers } from "effect/unstable/http"
+import { Headers } from "effect/http"
 import { AuthenticationReason, InvalidRequestReason, LLMError, type LLMRequest } from "../schema"
 
 export class MissingCredentialError extends Error {
@@ -89,7 +89,7 @@ export const optional = (secret: Secret | undefined, source = "optional value") 
     ? credential(Effect.fail(new MissingCredentialError(source)))
     : credentialFromSecret(secret, source)
 
-export const config = (name: string) => credentialFromSecret(Config.redacted(name), name)
+export const config = (name: string) => credentialFromSecret(Config.Redacted(name), name)
 
 export const effect = (load: Effect.Effect<Redacted.Redacted, CredentialError>) => credential(load)
 

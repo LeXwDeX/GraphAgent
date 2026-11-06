@@ -22,8 +22,8 @@ export const verifyPackage = async (archive: string) => {
       `import { HttpRecorder } from "@opencode-ai/http-recorder"
 import { NodeSocket } from "@effect/platform-node"
 import { Layer } from "effect"
-import { HttpClient } from "effect/unstable/http"
-import { Socket } from "effect/unstable/socket"
+import { HttpClient } from "effect/http"
+import { Socket } from "effect/socket"
 
 const options: HttpRecorder.RecorderOptions = { redact: { jsonFields: ["access_token"] } }
 HttpRecorder.http("consumer", options) satisfies Layer.Layer<HttpClient.HttpClient>

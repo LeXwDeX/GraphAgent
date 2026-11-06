@@ -1,6 +1,6 @@
 import { Cause, Effect, Schema } from "effect"
 
-export class HookPermissionInterrupt extends Schema.TaggedErrorClass<HookPermissionInterrupt>()(
+export class HookPermissionInterrupt extends Schema.TaggedError<HookPermissionInterrupt>()(
   "HookPermissionInterrupt",
   { message: Schema.String },
 ) {}

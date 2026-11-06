@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 
 export const HealthGroup = HttpApiGroup.make("server.health").add(
   HttpApiEndpoint.get("health.get", "/api/health", {

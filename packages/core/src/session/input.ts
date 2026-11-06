@@ -50,7 +50,7 @@ export const currentHookMode = Effect.fn("SessionInput.currentHookMode")(functio
   return row?.prompt.hookMode ?? "noninteractive"
 })
 
-export class LifecycleConflict extends Schema.TaggedErrorClass<LifecycleConflict>()("SessionInput.LifecycleConflict", {
+export class LifecycleConflict extends Schema.TaggedError<LifecycleConflict>()("SessionInput.LifecycleConflict", {
   id: SessionMessage.ID,
 }) {}
 

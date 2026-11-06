@@ -6,7 +6,7 @@ import { ascending } from "./identifier"
 import { NonNegativeInt, PositiveInt } from "./schema"
 import { withStatics } from "./schema"
 
-const IDSchema = Schema.String.check(Schema.isStartsWith("pty")).pipe(Schema.brand("PtyID"))
+const IDSchema = Schema.String.check(Schema.isStartingWith("pty")).pipe(Schema.brand("PtyID"))
 
 export const ID = IDSchema.pipe(
   withStatics((schema: typeof IDSchema) => ({

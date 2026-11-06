@@ -1,6 +1,6 @@
 import { Duration, Effect, Schema, Stream } from "effect"
 
-export class CompactionTimeoutError extends Schema.TaggedErrorClass<CompactionTimeoutError>()(
+export class CompactionTimeoutError extends Schema.TaggedError<CompactionTimeoutError>()(
   "CompactionTimeoutError",
   { message: Schema.String },
 ) {}

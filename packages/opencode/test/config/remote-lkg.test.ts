@@ -48,7 +48,7 @@ it.live(
     expect(yield* RemoteLkg.write({ url, role: "remote-config", body })).toBe(true)
 
     const content = yield* Effect.promise(() => Bun.file(file(url)).text())
-    const unknown = Schema.decodeUnknownSync(Schema.UnknownFromJsonString)(content)
+    const unknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(content)
     if (typeof unknown !== "object" || unknown === null || Array.isArray(unknown)) {
       throw new Error("LKG envelope is not an object")
     }

@@ -25,7 +25,7 @@ export const Input = Schema.Struct({
 }).annotate({ identifier: "MoveSession.Input" })
 export type Input = typeof Input.Type
 
-export class DestinationProjectMismatchError extends Schema.TaggedErrorClass<DestinationProjectMismatchError>()(
+export class DestinationProjectMismatchError extends Schema.TaggedError<DestinationProjectMismatchError>()(
   "MoveSession.DestinationProjectMismatchError",
   {
     expected: ProjectV2.ID,
@@ -33,18 +33,18 @@ export class DestinationProjectMismatchError extends Schema.TaggedErrorClass<Des
   },
 ) {}
 
-export class ApplyChangesError extends Schema.TaggedErrorClass<ApplyChangesError>()("MoveSession.ApplyChangesError", {
+export class ApplyChangesError extends Schema.TaggedError<ApplyChangesError>()("MoveSession.ApplyChangesError", {
   message: Schema.String,
 }) {}
 
-export class CaptureChangesError extends Schema.TaggedErrorClass<CaptureChangesError>()(
+export class CaptureChangesError extends Schema.TaggedError<CaptureChangesError>()(
   "MoveSession.CaptureChangesError",
   {
     message: Schema.String,
   },
 ) {}
 
-export class ResetSourceChangesError extends Schema.TaggedErrorClass<ResetSourceChangesError>()(
+export class ResetSourceChangesError extends Schema.TaggedError<ResetSourceChangesError>()(
   "MoveSession.ResetSourceChangesError",
   {
     directory: AbsolutePath,

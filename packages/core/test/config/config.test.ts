@@ -1,8 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema, Exit } from "effect"
-import { FastCheck } from "effect/testing"
+import { Arbitrary, Effect, Layer, Schema, Exit } from "effect"
 import { Config } from "@opencode-ai/core/config"
 import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
@@ -243,14 +242,19 @@ describe("Config", () => {
   )
 
   it.effect("migrates arbitrary v1 configuration into valid v2 configuration", () =>
-    Effect.sync(() => {
-      FastCheck.assert(
-        FastCheck.property(Schema.toArbitrary(ConfigV1.Info), (info) => {
-          Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(info), { errors: "all" })
-        }),
-        { numRuns: 100 },
-      )
-    }),
+    Arbitrary.checkEffect(
+      Arbitrary.schema(ConfigV1.Info),
+      (info) => {
+        Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(info), { errors: "all" })
+        return true
+      },
+      { runs: 100 },
+    ).pipe(
+      Effect.map((result) => {
+        const failure = Arbitrary.formatCheckFailure(result)
+        if (failure) throw new Error(failure)
+      }),
+    ),
   )
 
   it.effect("preserves explicit dynamic compaction intent without inventing a default", () =>

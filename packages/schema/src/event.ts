@@ -5,7 +5,7 @@ import { ascending } from "./identifier"
 import { Location } from "./location"
 import { withStatics } from "./schema"
 
-export const ID = Schema.String.check(Schema.isStartsWith("evt_")).pipe(
+export const ID = Schema.String.check(Schema.isStartingWith("evt_")).pipe(
   Schema.brand("Event.ID"),
   withStatics((schema) => ({ create: () => schema.make("evt_" + ascending()) })),
 )

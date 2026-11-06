@@ -1,8 +1,8 @@
 import { NodeHttpServer, NodeHttpServerRequest } from "@effect/platform-node"
 import * as Http from "node:http"
 import { Deferred, Effect, Layer, Context, Stream } from "effect"
-import * as HttpServer from "effect/unstable/http/HttpServer"
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import * as HttpServer from "effect/http/HttpServer"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 export type Usage = { input: number; output: number }
 
@@ -458,6 +458,7 @@ function send(item: Sse) {
 const reset = Effect.fn("TestLLMServer.reset")(function* (item: Sse) {
   const req = yield* HttpServerRequest.HttpServerRequest
   const res = NodeHttpServerRequest.toServerResponse(req)
+  if (!(res instanceof Http.ServerResponse)) return yield* Effect.die(new Error("expected HTTP/1 server response"))
   yield* Effect.sync(() => {
     res.writeHead(200, { "content-type": "text/event-stream" })
     for (const part of item.head) res.write(line(part))
@@ -644,7 +645,7 @@ function item(input: Item | Reply) {
 function hit(url: string, body: unknown) {
   return {
     url: new URL(url, "http://localhost"),
-    body: body && typeof body === "object" ? (body as Record<string, unknown>) : {},
+    body: body && typeof body === "object" ? (body as unknown as Record<string, unknown>) : {},
   } satisfies Hit
 }
 
@@ -755,9 +756,9 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
 
       return TestLLMServer.of({
         url:
-          server.address._tag === "TcpAddress"
-            ? `http://127.0.0.1:${server.address.port}/v1`
-            : `unix://${server.address.path}/v1`,
+          server.address._tag === "UnixPathAddress"
+            ? `unix://${server.address.path}/v1`
+            : `http://127.0.0.1:${server.address.port}/v1`,
         push: Effect.fn("TestLLMServer.push")(function* (...input: (Item | Reply)[]) {
           queue(...input)
         }),

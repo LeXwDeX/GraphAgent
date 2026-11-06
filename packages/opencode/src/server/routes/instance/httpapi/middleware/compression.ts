@@ -1,6 +1,6 @@
 import { deflateSync, gzipSync } from "node:zlib"
 import { Effect } from "effect"
-import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 // Keep the server's compressible content-type set stable across HTTP backend changes.
 const COMPRESSIBLE_CONTENT_TYPE_REGEX =

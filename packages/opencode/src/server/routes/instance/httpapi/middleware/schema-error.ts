@@ -1,6 +1,6 @@
 import { Effect } from "effect"
-import { HttpServerResponse } from "effect/unstable/http"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
+import { HttpServerResponse } from "effect/http"
+import { HttpApiMiddleware } from "effect/http-api"
 import { InvalidRequestError } from "../errors"
 
 // Effect's Issue formatter recursively dumps the rejected `actual` value with

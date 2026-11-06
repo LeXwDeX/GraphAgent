@@ -35,9 +35,9 @@
       "github"
     ],
     "catalog": {
-      "@effect/opentelemetry": "4.0.0-beta.83",
-      "@effect/platform-node": "4.0.0-beta.83",
-      "@effect/sql-sqlite-bun": "4.0.0-beta.83",
+      "@effect/opentelemetry": "4.1.2",
+      "@effect/platform-node": "4.1.2",
+      "@effect/sql-sqlite-bun": "4.1.2",
       "@npmcli/arborist": "9.4.0",
       "@types/bun": "1.4.4",
       "@types/cross-spawn": "6.0.6",
@@ -66,7 +66,7 @@
       "dompurify": "3.4.17",
       "drizzle-kit": "1.0.0-rc.2",
       "drizzle-orm": "1.0.0-rc.2",
-      "effect": "4.0.0-beta.83",
+      "effect": "4.1.2",
       "ai": "6.0.311",
       "cross-spawn": "7.0.6",
       "hono": "4.13.11",
@@ -270,6 +270,7 @@
     "@pierre/trees@1.0.0-beta.4": "patches/@pierre%2Ftrees@1.0.0-beta.4.patch",
     "@tanstack/virtual-core@3.17.0": "patches/@tanstack%2Fvirtual-core@3.17.0.patch",
     "bun-pty@0.4.8": "patches/bun-pty@0.4.8.patch",
-    "@ff-labs/fff-bun@0.9.6": "patches/@ff-labs%2Ffff-bun@0.9.6.patch"
+    "@ff-labs/fff-bun@0.9.6": "patches/@ff-labs%2Ffff-bun@0.9.6.patch",
+    "drizzle-orm@1.0.0-rc.2": "patches/drizzle-orm@1.0.0-rc.2.patch"
   }
 }

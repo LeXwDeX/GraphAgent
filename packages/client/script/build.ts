@@ -2,7 +2,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { compile, emitEffectImported, emitPromise, write } from "@opencode-ai/httpapi-codegen"
 import { Api } from "@opencode-ai/server/api"
 import { Effect } from "effect"
-import { HttpApi } from "effect/unstable/httpapi"
+import { HttpApi } from "effect/http-api"
 import { fileURLToPath } from "url"
 
 const contract = compile(HttpApi.make("opencode-client").add(Api.groups["server.session"]), {

@@ -71,7 +71,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Memory") {}
 
-export class ControllerError extends Schema.TaggedErrorClass<ControllerError>()("Memory.ControllerError", {
+export class ControllerError extends Schema.TaggedError<ControllerError>()("Memory.ControllerError", {
   message: Schema.String,
 }) {}
 

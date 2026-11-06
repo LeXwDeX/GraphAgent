@@ -1,7 +1,7 @@
 import { describe, expect, mock } from "bun:test"
-import { Effect, Layer, Stream } from "effect"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { Effect, Layer, Redacted, Stream } from "effect"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Installation } from "../../src/installation"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { AppProcess } from "@opencode-ai/core/process"
@@ -20,7 +20,10 @@ function mockSpawner(
 ) {
   const spawner = ChildProcessSpawner.make((command) => {
     const std = ChildProcess.isStandardCommand(command) ? command : undefined
-    const result = handler(std?.command ?? "", std?.args ?? [])
+    const result = handler(
+      std?.command ?? "",
+      (std?.args ?? []).map((arg) => (typeof arg === "string" ? arg : Redacted.value(arg))),
+    )
     const output = typeof result === "string" ? { code: 0, stdout: result, stderr: "" } : result
     return Effect.succeed(
       ChildProcessSpawner.makeHandle({
@@ -28,11 +31,13 @@ function mockSpawner(
         exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(output.code)),
         isRunning: Effect.succeed(false),
         kill: () => Effect.void,
-        stdin: { [Symbol.for("effect/Sink/TypeId")]: Symbol.for("effect/Sink/TypeId") } as any,
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the mock handle only implements the members used here
+        stdin: { [Symbol.for("effect/Sink/TypeId")]: Symbol.for("effect/Sink/TypeId") } as unknown as never,
         stdout: output.stdout ? Stream.make(encoder.encode(output.stdout)) : Stream.empty,
         stderr: output.stderr ? Stream.make(encoder.encode(output.stderr)) : Stream.empty,
         all: Stream.empty,
-        getInputFd: () => ({ [Symbol.for("effect/Sink/TypeId")]: Symbol.for("effect/Sink/TypeId") }) as any,
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the mock handle only implements the members used here
+        getInputFd: () => ({ [Symbol.for("effect/Sink/TypeId")]: Symbol.for("effect/Sink/TypeId") }) as unknown as never,
         getOutputFd: () => Stream.empty,
         unref: Effect.succeed(Effect.void),
       }),

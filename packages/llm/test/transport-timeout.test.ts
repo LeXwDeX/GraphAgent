@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Option, Stream } from "effect"
-import { FetchHttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/http"
 import * as TestClock from "effect/testing/TestClock"
 import { LLM, LLMError, LLMEvent } from "../src"
 import * as OpenAIChat from "../src/protocols/openai-chat"
@@ -130,6 +130,8 @@ describe("http transport timeout", () => {
     () =>
       Effect.gen(function* () {
         const fiber = yield* LLMClient.stream(request(1000)).pipe(Stream.runCollect, Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust(1)
         yield* TestClock.adjust(2000)
         expectTimeoutExit(yield* Fiber.join(fiber).pipe(Effect.exit))
       }),

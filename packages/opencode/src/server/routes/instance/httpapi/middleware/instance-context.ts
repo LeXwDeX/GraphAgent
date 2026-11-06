@@ -1,8 +1,8 @@
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { Effect, Layer } from "effect"
-import { HttpServerResponse } from "effect/unstable/http"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
+import { HttpServerResponse } from "effect/http"
+import { HttpApiMiddleware } from "effect/http-api"
 import { WorkspaceRouteContext } from "./workspace-routing"
 
 export class InstanceContextMiddleware extends HttpApiMiddleware.Service<

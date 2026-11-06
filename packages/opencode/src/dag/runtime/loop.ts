@@ -80,7 +80,7 @@ import { HookLifecycle } from "@/hook/lifecycle"
 import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-delivery"
 import { Logging } from "@opencode-ai/core/observability/logging"
 
-const parseJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
+const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
 /** State the schema's enum values at the end of the output contract so the
  * runtime answer wins over conflicting verdict wording in the instruction. */

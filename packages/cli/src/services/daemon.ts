@@ -3,7 +3,8 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
 import { ServerAuth } from "@opencode-ai/server/auth"
 import { Context, Effect, FileSystem, Layer, Option, Schedule, Schema, Scope } from "effect"
-import { HttpServer } from "effect/unstable/http"
+import { HttpServer } from "effect/http"
+import * as NetAddress from "effect/net/NetAddress"
 import { randomBytes, randomUUID } from "crypto"
 import { spawn } from "node:child_process"
 import path from "path"
@@ -15,7 +16,7 @@ export interface Interface {
   readonly status: () => Effect.Effect<string | undefined>
   readonly stop: () => Effect.Effect<void, unknown>
   readonly password: (value?: string) => Effect.Effect<string, unknown>
-  readonly register: (address: HttpServer.Address) => Effect.Effect<void, unknown, Scope.Scope>
+  readonly register: (address: NetAddress.SocketAddress) => Effect.Effect<void, unknown, Scope.Scope>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/cli/Daemon") {}
@@ -94,7 +95,7 @@ export const layer = Layer.effect(
 
       yield* signal(info.pid, "SIGTERM")
       const stopped = yield* awaitStopped(info.pid).pipe(
-        Effect.retry(Schedule.spaced("50 millis").pipe(Schedule.both(Schedule.recurs(100)))),
+        Effect.retry(Schedule.max([Schedule.spaced("50 millis"), Schedule.recurs(100)])),
         Effect.option,
       )
       if (Option.isSome(stopped)) return
@@ -103,7 +104,7 @@ export const layer = Layer.effect(
       if (Option.isNone(latest) || !sameRegistration(latest.value, info)) return
       yield* signal(info.pid, "SIGKILL")
       yield* awaitStopped(info.pid).pipe(
-        Effect.retry(Schedule.spaced("50 millis").pipe(Schedule.both(Schedule.recurs(100)))),
+        Effect.retry(Schedule.max([Schedule.spaced("50 millis"), Schedule.recurs(100)])),
       )
     })
 
@@ -128,7 +129,7 @@ export const layer = Layer.effect(
       })
 
       return yield* compatible().pipe(
-        Effect.retry(Schedule.spaced("50 millis").pipe(Schedule.both(Schedule.recurs(100)))),
+        Effect.retry(Schedule.max([Schedule.spaced("50 millis"), Schedule.recurs(100)])),
         Effect.map((info) => info.url),
         Effect.mapError(() => new Error("Failed to start server")),
       )
@@ -161,7 +162,7 @@ export const layer = Layer.effect(
       yield* fs.remove(file).pipe(Effect.ignore)
     })
 
-    const register = Effect.fn("cli.daemon.register")(function* (address: HttpServer.Address) {
+    const register = Effect.fn("cli.daemon.register")(function* (address: NetAddress.SocketAddress) {
       const id = randomUUID()
       const temp = file + "." + id + ".tmp"
       yield* fs.makeDirectory(directory, { recursive: true })

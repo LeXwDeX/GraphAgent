@@ -31,7 +31,7 @@ export function isV1(input: unknown) {
   return Object.keys(input).some((key) => keys.has(key))
 }
 
-export function migrate(info: typeof ConfigV1.Info.Type) {
+export function migrate(info: typeof ConfigV1.Info.Type, source?: unknown) {
   return {
     $schema: info.$schema,
     shell: info.shell,
@@ -44,7 +44,7 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
     share: info.share ?? (info.autoshare ? "auto" : undefined),
     enterprise: info.enterprise,
     username: info.username,
-    permissions: info.permissions ?? permissions(info.permission, info.tools),
+    permissions: info.permissions ?? permissions(info.permission, info.tools, permissionOrder(source)),
     agents: agents(info),
     snapshots: info.snapshot,
     watcher: info.watcher,
@@ -75,7 +75,18 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
   }
 }
 
-function permissions(info?: ConfigPermissionV1.Info, tools?: Readonly<Record<string, boolean>>) {
+function permissionOrder(source: unknown): ReadonlyArray<string> | undefined {
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return undefined
+  const permission = (source as { permission?: unknown }).permission
+  if (typeof permission !== "object" || permission === null || Array.isArray(permission)) return undefined
+  return Object.keys(permission)
+}
+
+function permissions(
+  info?: ConfigPermissionV1.Info,
+  tools?: Readonly<Record<string, boolean>>,
+  order?: ReadonlyArray<string>,
+) {
   const rules: Array<{ action: string; resource: string; effect: ConfigPermissionV1.Action }> = Object.entries(
     tools ?? {},
   ).map(([action, enabled]) => ({
@@ -83,7 +94,17 @@ function permissions(info?: ConfigPermissionV1.Info, tools?: Readonly<Record<str
     resource: "*",
     effect: enabled ? ("allow" as const) : ("deny" as const),
   }))
-  for (const [action, rule] of Object.entries(info ?? {})) {
+  const entries = Object.entries(info ?? {})
+  const ordered = order
+    ? [
+        ...order.flatMap((key) => {
+          const rule = (info as Record<string, ConfigPermissionV1.Info[keyof ConfigPermissionV1.Info]> | undefined)?.[key]
+          return rule === undefined ? [] : [[key, rule] as const]
+        }),
+        ...entries.filter(([key]) => !order.includes(key)),
+      ]
+    : entries
+  for (const [action, rule] of ordered) {
     if (!rule) continue
     if (typeof rule === "string") {
       rules.push({ action, resource: "*", effect: rule })

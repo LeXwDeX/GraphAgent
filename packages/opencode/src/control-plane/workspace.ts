@@ -2,7 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
 import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
+import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
 import { Database } from "@opencode-ai/core/database/database"
 import { asc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
@@ -74,13 +74,13 @@ export const SessionWarpInput = Schema.Struct({
 })
 export type SessionWarpInput = Schema.Schema.Type<typeof SessionWarpInput>
 
-export class SyncHttpError extends Schema.TaggedErrorClass<SyncHttpError>()("WorkspaceSyncHttpError", {
+export class SyncHttpError extends Schema.TaggedError<SyncHttpError>()("WorkspaceSyncHttpError", {
   message: Schema.String,
   status: Schema.Number,
   body: Schema.optional(Schema.String),
 }) {}
 
-export class WorkspaceNotFoundError extends Schema.TaggedErrorClass<WorkspaceNotFoundError>()(
+export class WorkspaceNotFoundError extends Schema.TaggedError<WorkspaceNotFoundError>()(
   "WorkspaceNotFoundError",
   {
     message: Schema.String,
@@ -88,7 +88,7 @@ export class WorkspaceNotFoundError extends Schema.TaggedErrorClass<WorkspaceNot
   },
 ) {}
 
-export class SessionEventsNotFoundError extends Schema.TaggedErrorClass<SessionEventsNotFoundError>()(
+export class SessionEventsNotFoundError extends Schema.TaggedError<SessionEventsNotFoundError>()(
   "WorkspaceSessionEventsNotFoundError",
   {
     message: Schema.String,
@@ -96,7 +96,7 @@ export class SessionEventsNotFoundError extends Schema.TaggedErrorClass<SessionE
   },
 ) {}
 
-export class SessionWarpHttpError extends Schema.TaggedErrorClass<SessionWarpHttpError>()(
+export class SessionWarpHttpError extends Schema.TaggedError<SessionWarpHttpError>()(
   "WorkspaceSessionWarpHttpError",
   {
     message: Schema.String,
@@ -107,12 +107,12 @@ export class SessionWarpHttpError extends Schema.TaggedErrorClass<SessionWarpHtt
   },
 ) {}
 
-export class SyncTimeoutError extends Schema.TaggedErrorClass<SyncTimeoutError>()("WorkspaceSyncTimeoutError", {
+export class SyncTimeoutError extends Schema.TaggedError<SyncTimeoutError>()("WorkspaceSyncTimeoutError", {
   message: Schema.String,
   state: Schema.Record(Schema.String, Schema.Number),
 }) {}
 
-export class SyncAbortedError extends Schema.TaggedErrorClass<SyncAbortedError>()("WorkspaceSyncAbortedError", {
+export class SyncAbortedError extends Schema.TaggedError<SyncAbortedError>()("WorkspaceSyncAbortedError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

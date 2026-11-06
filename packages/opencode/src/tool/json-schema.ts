@@ -9,7 +9,7 @@ export function fromSchema(schema: Schema.Top): JSONSchema7 {
   const cached = cache.get(schema)
   if (cached) return cached
 
-  const document = Schema.toJsonSchemaDocument(schema, { additionalProperties: true })
+  const document = Schema.toJsonSchemaDocument(schema)
   const result = normalize({
     $schema: JsonSchema.META_SCHEMA_URI_DRAFT_2020_12,
     ...document.schema,

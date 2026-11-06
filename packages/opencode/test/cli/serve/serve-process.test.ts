@@ -7,7 +7,7 @@
 // parsed off the "listening on http://..." line.
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import { HttpClient } from "effect/unstable/http"
+import { HttpClient } from "effect/http"
 import { cliIt } from "../../lib/cli-process"
 
 describe("opencode serve (subprocess)", () => {
