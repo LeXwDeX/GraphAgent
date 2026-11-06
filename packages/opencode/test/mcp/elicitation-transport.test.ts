@@ -1,27 +1,13 @@
-// Bypass Bun's process-global mock registry AND module cache. Sibling MCP
-// tests register `mock.module("@modelcontextprotocol/client", ...)`
-// with reduced MockClient implementations (no transport, no `callTool`);
-// `mock.restore()` clears the registry, but Bun's module cache is keyed by
-// specifier and retains the previously-resolved *mock instance* for that path.
-// We therefore pull types from the public path via a type-only import, but at
-// runtime load Client from a cache-busted specifier — a different specifier →
-// a different cache entry → the real SDK Client with full callTool support.
+// Sibling MCP tests register `mock.module("@modelcontextprotocol/client", ...)`
+// with reduced MockClient implementations (no transport, no `callTool`), and
+// Bun keeps those mocks for the rest of the process. Use the real SDK Client
+// that test/preload.ts captured before any mock (see fixture/mcp-real-client).
 import { afterEach, beforeEach, describe, expect, mock } from "bun:test"
 import { Cause, Effect, Fiber, Layer, Exit } from "effect"
-import type { Client as ClientType } from "@modelcontextprotocol/client"
 import { Server, InMemoryTransport } from "@modelcontextprotocol/server"
+import { RealClient as Client } from "../fixture/mcp-real-client"
 
 mock.restore()
-// Cache-bust the import: add a unique query string to force Bun to load a fresh
-// module instance. Turbo runs tests from multiple packages in parallel, and
-// other packages' `mock.module` calls can pollute the global module cache even
-// after `mock.restore()`. A unique query string per import ensures we bypass
-// any cached (mocked) module instances and get the real SDK Client with full
-// `callTool` support.
-const cacheBuster = `?bust=${Date.now()}`
-const { Client } = (await import(`@modelcontextprotocol/client${cacheBuster}`)) as unknown as {
-  Client: typeof ClientType
-}
 import { convertTool } from "@/mcp/catalog"
 import { SessionContext } from "@/effect/session-context"
 import { Question } from "@/question"
