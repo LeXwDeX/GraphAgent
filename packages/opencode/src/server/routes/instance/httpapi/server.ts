@@ -9,7 +9,6 @@ import { HttpRouter, HttpServer } from "effect/http"
 import * as Socket from "effect/socket/Socket"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Observability from "@opencode-ai/core/observability"
-import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
@@ -182,7 +181,6 @@ export const app = LayerNode.group([
   FSUtil.node,
   Database.node,
   Auth.node,
-  Account.node,
   Config.node,
   Env.node,
   Git.node,

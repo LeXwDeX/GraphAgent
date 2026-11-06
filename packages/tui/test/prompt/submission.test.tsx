@@ -380,28 +380,6 @@ test("submission snapshots the draft before delayed session creation and preserv
   }
 })
 
-test("console state does not block core bootstrap readiness", async () => {
-  let release!: () => void
-  const gate = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  const mounting = mountRoute("prompt", [], false, async (url) => {
-    if (url.pathname !== "/experimental/console") return undefined
-    await gate
-    return json({ consoleManagedProviders: [], switchableOrgCount: 0 })
-  })
-  let route: Awaited<ReturnType<typeof mountRoute>> | undefined
-  try {
-    // mountRoute waits for full sync readiness, exercising the actual provider.
-    route = await mounting
-    expect(route.sync.ready).toBe(true)
-  } finally {
-    release()
-    route ??= await mounting
-    await route.dispose()
-  }
-})
-
 test("session core hydrates while ancillary requests wait and live events win", async () => {
   let release!: () => void
   const gate = new Promise<void>((resolve) => {

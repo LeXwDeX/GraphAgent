@@ -149,10 +149,10 @@ When a test only needs to override one or two methods of a service, prefer `Laye
 
 ```typescript
 import { Effect, Layer } from "effect"
-import { Account } from "@/account/account"
+import { Format } from "@/format"
 
-const failingAccountLayer = Layer.mock(Account.Service, {
-  orgsByAccount: () => Effect.fail(new Account.AccountServiceError({ message: "simulated upstream failure" })),
+const failingFormatLayer = Layer.mock(Format.Service, {
+  file: () => Effect.fail(new Error("simulated formatter failure")),
 })
 ```
 

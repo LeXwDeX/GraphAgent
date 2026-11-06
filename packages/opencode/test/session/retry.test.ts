@@ -303,8 +303,7 @@ describe("session.retry.delay", () => {
           Math.ceil(SessionRetry.RETRY_INITIAL_DELAY * (1 + SessionRetry.RETRY_JITTER_FACTOR)),
         )
       }
-    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
-  )
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
 
   test("policy retries a 401 once through the auth branch and then stops", () =>
     Effect.gen(function* () {
@@ -342,8 +341,7 @@ describe("session.retry.delay", () => {
         maxRetries: 1,
         aborted: false,
       })
-    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
-  )
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
 
   test("policy hands a 413 and a context overflow to compaction without resending", () =>
     Effect.gen(function* () {
@@ -377,8 +375,7 @@ describe("session.retry.delay", () => {
         expect(waits).toStrictEqual([])
         expect(SessionRetry.classify(error, "test")).toMatchObject({ branch: "compaction", maxRetries: 0 })
       }
-    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
-  )
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
 
   test("policy reconnects unrecognised failures up to three times", () =>
     Effect.gen(function* () {
@@ -407,8 +404,7 @@ describe("session.retry.delay", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       expect(calls).toBe(SessionRetry.FALLBACK_MAX_RETRIES + 1)
       expect(waits).toStrictEqual([3000, 6000, 6000])
-    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise),
-  )
+    }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise))
 
   test("keeps terminal failures out of the fallback", () => {
     const terminal = [
@@ -722,97 +718,6 @@ describe("session.retry.retryable", () => {
     const retryable = SessionRetry.retryable(error, retryProvider)
     expect(retryable).toBeDefined()
     expect(retryable).toEqual({ message: "Response decompression failed" })
-  })
-
-  test("maps free limits to Go upsell action", () => {
-    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
-      new SessionV1.APIError({
-        message: "Free usage exceeded",
-        isRetryable: true,
-        statusCode: 429,
-        responseBody: JSON.stringify({
-          type: "error",
-          error: { type: "FreeUsageLimitError", message: "Free usage exceeded" },
-        }),
-      }).toObject(),
-    )
-
-    expect(SessionRetry.retryable(error, "opencode")).toEqual({
-      message: SessionRetry.GO_UPSELL_MESSAGE,
-      action: {
-        reason: "free_tier_limit",
-        provider: "opencode",
-        title: "Free limit reached",
-        message: "Subscribe to OpenCode Go for reliable access to the best open-source models, starting at $5/month.",
-        label: "subscribe",
-        link: SessionRetry.GO_UPSELL_URL,
-      },
-    })
-  })
-
-  test("maps Go subscription limits to workspace PAYG upsell", () => {
-    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
-      new SessionV1.APIError({
-        message: "Subscription quota exceeded. You can continue using free models.",
-        isRetryable: true,
-        statusCode: 429,
-        responseHeaders: {
-          "retry-after": "19380",
-        },
-        responseBody: JSON.stringify({
-          type: "error",
-          error: {
-            type: "GoUsageLimitError",
-            message: "Subscription quota exceeded. You can continue using free models.",
-          },
-          metadata: {
-            workspace: "wrk_01K6XGM22R6FM8JVABE9XDQXGH",
-            limitName: "5 hour",
-          },
-        }),
-      }).toObject(),
-    )
-
-    expect(SessionRetry.retryable(error, "opencode-go")).toEqual({
-      message:
-        "5 hour usage limit reached. It will reset in 5 hours 23 minutes. To continue using this model now, enable usage from your available balance - https://opencode.ai/workspace/wrk_01K6XGM22R6FM8JVABE9XDQXGH/go",
-      action: {
-        reason: "account_rate_limit",
-        provider: "opencode-go",
-        title: "Go limit reached",
-        message:
-          "5 hour usage limit reached. It will reset in 5 hours 23 minutes. To continue using this model now, enable usage from your available balance",
-        label: "open settings",
-        link: "https://opencode.ai/workspace/wrk_01K6XGM22R6FM8JVABE9XDQXGH/go",
-      },
-    })
-  })
-
-  test("maps Go subscription limits without limit metadata", () => {
-    const error = Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
-      new SessionV1.APIError({
-        message: "Subscription quota exceeded. You can continue using free models.",
-        isRetryable: true,
-        statusCode: 429,
-        responseHeaders: {
-          "retry-after": "900",
-        },
-        responseBody: JSON.stringify({
-          type: "error",
-          error: {
-            type: "GoUsageLimitError",
-            message: "Subscription quota exceeded. You can continue using free models.",
-          },
-          metadata: {
-            workspace: "wrk_01K6XGM22R6FM8JVABE9XDQXGH",
-          },
-        }),
-      }).toObject(),
-    )
-
-    expect(SessionRetry.retryable(error, "opencode-go")?.action?.message).toBe(
-      "Usage limit reached. It will reset in 15 minutes. To continue using this model now, enable usage from your available balance",
-    )
   })
 })
 

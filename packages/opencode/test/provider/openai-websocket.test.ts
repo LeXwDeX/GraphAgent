@@ -163,7 +163,6 @@ for (const providerID of ["relay", "openai"] as const) {
                   auth: undefined,
                   adapters,
                   flags,
-                  isWorkflow: false,
                   messages: [{ role: "user", content: "hello" }],
                   system: [],
                   tools: {},
@@ -183,7 +182,6 @@ for (const providerID of ["relay", "openai"] as const) {
                   model: language,
                   messages: [{ role: "user", content: "hello" }],
                   headers: {
-                    "x-session-affinity": session.id,
                     ...headers,
                   },
                   maxRetries: 0,

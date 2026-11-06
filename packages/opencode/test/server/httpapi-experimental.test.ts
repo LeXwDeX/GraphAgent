@@ -7,8 +7,6 @@ import { ExperimentalPaths } from "../../src/server/routes/instance/httpapi/grou
 import { Session } from "@/session/session"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
-import { AccountV2 } from "@opencode-ai/core/account"
-import { AccountTable } from "@opencode-ai/core/account/sql"
 import { Worktree } from "../../src/worktree"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
@@ -50,36 +48,6 @@ function waitReady(input: { directory?: string; name?: string }) {
       }),
     )
   })
-}
-
-function insertAccount() {
-  return Effect.acquireRelease(
-    Effect.gen(function* () {
-      const { db } = yield* Database.Service
-      yield* db
-        .insert(AccountTable)
-        .values({
-          id: AccountV2.ID.make("account-test"),
-          email: "test@example.com",
-          url: "https://console.example.com",
-          access_token: AccountV2.AccessToken.make("access"),
-          refresh_token: AccountV2.RefreshToken.make("refresh"),
-          time_created: Date.now(),
-          time_updated: Date.now(),
-        })
-        .run()
-        .pipe(Effect.orDie)
-      return "account-test"
-    }),
-    (id) =>
-      Database.Service.use(({ db }) =>
-        db
-          .delete(AccountTable)
-          .where(eq(AccountTable.id, AccountV2.ID.make(id)))
-          .run()
-          .pipe(Effect.orDie),
-      ),
-  )
 }
 
 function setSessionUpdated(session: Session.Info, updated: number) {
@@ -142,10 +110,8 @@ describe("experimental HttpApi", () => {
       Effect.gen(function* () {
         const tmp = yield* TestInstance
         const directory = tmp.directory
-        const [consoleState, consoleOrgs, toolList, toolIDs, worktrees, resources] = yield* Effect.all(
+        const [toolList, toolIDs, worktrees, resources] = yield* Effect.all(
           [
-            request(ExperimentalPaths.console, directory),
-            request(ExperimentalPaths.consoleOrgs, directory),
             request(`${ExperimentalPaths.tool}?provider=opencode&model=gpt-5`, directory),
             request(ExperimentalPaths.toolIDs, directory),
             request(ExperimentalPaths.worktree, directory),
@@ -153,15 +119,6 @@ describe("experimental HttpApi", () => {
           ],
           { concurrency: "unbounded" },
         )
-
-        expect(consoleState.status).toBe(200)
-        expect(yield* json(consoleState)).toEqual({
-          consoleManagedProviders: [],
-          switchableOrgCount: 0,
-        })
-
-        expect(consoleOrgs.status).toBe(200)
-        expect(yield* json(consoleOrgs)).toEqual({ orgs: [] })
 
         expect(toolList.status).toBe(200)
         expect(yield* json<unknown[]>(toolList)).toContainEqual(
@@ -211,24 +168,6 @@ describe("experimental HttpApi", () => {
         data: { message: "Worktrees are only supported for git projects" },
       })
     }),
-  )
-
-  it.instance(
-    "serves Console org switch through the default server app",
-    () =>
-      Effect.gen(function* () {
-        const tmp = yield* TestInstance
-        const accountID = yield* insertAccount()
-        const switched = yield* request(ExperimentalPaths.consoleSwitch, tmp.directory, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ accountID, orgID: "org-test" }),
-        })
-
-        expect(switched.status).toBe(200)
-        expect(yield* json(switched)).toBe(true)
-      }),
-    { config: { formatter: false, lsp: false } },
   )
 
   it.instance(

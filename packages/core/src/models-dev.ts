@@ -17,6 +17,14 @@ export type CatalogModelStatus = typeof CatalogModelStatus.Type
 
 const USER_AGENT = `opencode/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
 
+const EXCLUDED_PROVIDERS = new Set(["opencode", "opencode-go"])
+
+const withoutExcluded = (providers: Record<string, Provider>) =>
+  Object.fromEntries(Object.entries(providers).filter(([id]) => !EXCLUDED_PROVIDERS.has(id))) as Record<
+    string,
+    Provider
+  >
+
 const CostTier = Schema.Struct({
   input: Schema.Finite,
   output: Schema.Finite,
@@ -229,7 +237,7 @@ export const layer = Layer.effect(
         return {}
       }
       return JSON.parse(text) as Record<string, Provider>
-    }).pipe(Effect.withSpan("ModelsDev.populate"), Effect.orDie)
+    }).pipe(Effect.map(withoutExcluded), Effect.withSpan("ModelsDev.populate"), Effect.orDie)
 
     const [cachedGet, invalidate] = yield* Effect.cachedInvalidateWithTTL(populate, Duration.infinity)
 

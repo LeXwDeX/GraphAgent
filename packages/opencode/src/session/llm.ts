@@ -13,16 +13,10 @@ import { InvalidToolInputError, streamText, wrapLanguageModel, type ModelMessage
 import { type LLMEvent } from "@opencode-ai/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
-import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import { ProviderAdapters } from "@/provider/adapter/registry"
-import { Permission } from "@/permission"
-import { EventV2Bridge } from "@/event-v2-bridge"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Wildcard } from "@/util/wildcard"
-import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -196,13 +190,7 @@ export const use = serviceUse(Service)
 const live: Layer.Layer<
   Service,
   never,
-  | Auth.Service
-  | Config.Service
-  | Provider.Service
-  | Permission.Service
-  | EventV2Bridge.Service
-  | LLMClientService
-  | RuntimeFlags.Service
+  Auth.Service | Config.Service | Provider.Service | LLMClientService | RuntimeFlags.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -210,8 +198,6 @@ const live: Layer.Layer<
     const config = yield* Config.Service
     const provider = yield* Provider.Service
     const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
-    const perm = yield* Permission.Service
-    const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
@@ -234,7 +220,6 @@ const live: Layer.Layer<
         { concurrency: "unbounded" },
       )
 
-      const isWorkflow = language instanceof GitLabWorkflowLanguageModel
       const toolBudget = input.toolBudget ?? ToolBudget.create(cfg.maxToolCalls)
       const toolChoice = toolBudget.exhausted ? "none" : input.toolChoice
       const prepared = yield* LLMRequestPrep.prepare({
@@ -245,7 +230,6 @@ const live: Layer.Layer<
         auth: info,
         ...(adapters._tag === "Some" ? { adapters: adapters.value } : {}),
         flags,
-        isWorkflow,
       })
       const admissions = new Map<string, { allowed: boolean; executed: boolean }>()
       const admitToolCall = (id: string) => {
@@ -317,98 +301,6 @@ const live: Layer.Layer<
             : ({ kind: "instructions", value: prepared.params.options.instructions } as const),
       }
       const bridge = yield* EffectBridge.make()
-
-      // Wire up toolExecutor for DWS workflow models so that tool calls
-      // from the workflow service are executed via opencode's tool system
-      // and results sent back over the WebSocket.
-      if (language instanceof GitLabWorkflowLanguageModel) {
-        const workflowModel = language as GitLabWorkflowLanguageModel & {
-          sessionID?: string
-          sessionPreapprovedTools?: string[]
-          approvalHandler?: (approvalTools: { name: string; args: string }[]) => Promise<{ approved: boolean }>
-        }
-        workflowModel.sessionID = input.sessionID
-        workflowModel.systemPrompt = prepared.system.join("\n")
-        workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
-          const t = prepared.tools[toolName]
-          if (!t || !t.execute) {
-            return { result: "", error: `Unknown tool: ${toolName}` }
-          }
-          try {
-            const result = await t.execute(JSON.parse(argsJson), {
-              toolCallId: _requestID,
-              messages: input.messages,
-              abortSignal: input.abort,
-            })
-            const output = typeof result === "string" ? result : (result?.output ?? JSON.stringify(result))
-            return {
-              result: output,
-              metadata: typeof result === "object" ? result?.metadata : undefined,
-              title: typeof result === "object" ? result?.title : undefined,
-            }
-          } catch (e: any) {
-            return { result: "", error: e.message ?? String(e) }
-          }
-        }
-
-        const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
-        workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools).filter((name) => {
-          const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
-          return !match || match.action !== "ask"
-        })
-
-        const approvedToolsForSession = new Set<string>()
-        workflowModel.approvalHandler = bridge.bind(async (approvalTools) => {
-          const uniqueNames = [...new Set(approvalTools.map((t: { name: string }) => t.name))] as string[]
-          // Auto-approve tools that were already approved in this session
-          // (prevents infinite approval loops for server-side MCP tools)
-          if (uniqueNames.every((name) => approvedToolsForSession.has(name))) {
-            return { approved: true }
-          }
-
-          const id = PermissionV1.ID.ascending()
-          let unsub: EventV2.Unsubscribe | undefined
-          try {
-            unsub = await bridge.promise(
-              events.listen((event) => {
-                if (event.type !== Permission.Event.Replied.type) return Effect.void
-                const data = event.data as EventV2.Data<typeof Permission.Event.Replied>
-                if (data.requestID !== id) return Effect.void
-                void data.reply
-                return Effect.void
-              }),
-            )
-            const toolPatterns = approvalTools.map((t: { name: string; args: string }) => {
-              try {
-                const parsed = JSON.parse(t.args) as Record<string, unknown>
-                const title = (parsed?.title ?? parsed?.name ?? "") as string
-                return title ? `${t.name}: ${title}` : t.name
-              } catch {
-                return t.name
-              }
-            })
-            const uniquePatterns = [...new Set(toolPatterns)] as string[]
-            await bridge.promise(
-              perm.ask({
-                id,
-                sessionID: SessionID.make(input.sessionID),
-                permission: "workflow_tool_approval",
-                patterns: uniquePatterns,
-                metadata: { tools: approvalTools },
-                always: uniquePatterns,
-                ruleset: [],
-              }),
-            )
-            for (const name of uniqueNames) approvedToolsForSession.add(name)
-            workflowModel.sessionPreapprovedTools = [...(workflowModel.sessionPreapprovedTools ?? []), ...uniqueNames]
-            return { approved: true }
-          } catch {
-            return { approved: false }
-          } finally {
-            if (unsub) await bridge.promise(unsub)
-          }
-        })
-      }
 
       const tracer = cfg.experimental?.openTelemetry
         ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
@@ -768,7 +660,7 @@ const live: Layer.Layer<
   }),
 )
 
-export const layer = live.pipe(Layer.provide(Permission.defaultLayer), Layer.provide(EventV2Bridge.defaultLayer))
+export const layer = live
 
 export const defaultLayer = Layer.suspend(() =>
   layer.pipe(
@@ -789,8 +681,6 @@ export const node = LayerNode.make(layer, [
   Config.node,
   Provider.node,
   ProviderAdapters.node,
-  Permission.node,
-  EventV2Bridge.node,
   llmClient,
   RuntimeFlags.node,
 ])

@@ -11,14 +11,11 @@ import { TextAttributes } from "@opentui/core"
 import type { ProviderAuthAuthorization, ProviderAuthMethod } from "@opencode-ai/sdk/v2"
 import { DialogModel } from "./dialog-model"
 import { useToast } from "../ui/toast"
-import { isConsoleManagedProvider } from "../util/provider-origin"
 import { useConnected } from "./use-connected"
 import { useBindings } from "../keymap"
 import { useClipboard } from "../context/clipboard"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
-  opencode: 0,
-  "opencode-go": 1,
   openai: 2,
   "github-copilot": 3,
   anthropic: 4,
@@ -59,10 +56,8 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
         value: provider.id,
         providerID: provider.id,
         description: {
-          opencode: "(Recommended)",
           anthropic: "(API key)",
           openai: "(ChatGPT Plus/Pro or API key)",
-          "opencode-go": "Low cost subscription for everyone",
         }[provider.id],
         category: provider.id in PROVIDER_PRIORITY ? "Popular" : "Providers",
       })),
@@ -132,19 +127,15 @@ export function createDialogProviderOptions() {
         }
 
         const providerID = provider.providerID
-        const consoleManaged = isConsoleManagedProvider(sync.data.console_state.consoleManagedProviders, providerID)
         const connected = sync.data.provider_next.connected.includes(providerID)
 
         return {
           title: provider.title,
           value: provider.value,
           description: provider.description,
-          footer: consoleManaged ? sync.data.console_state.activeOrgName : undefined,
           category: provider.category,
           gutter: connected && onboarded() ? () => <text fg={theme.success}>✓</text> : undefined,
           async onSelect() {
-            if (consoleManaged) return
-
             const methods = sync.data.provider_auth[providerID] ?? [
               {
                 type: "api",
@@ -366,32 +357,6 @@ function ApiMethod(props: ApiMethodProps) {
     <DialogPrompt
       title={props.title}
       placeholder="API key"
-      description={() =>
-        ({
-          opencode: (
-            <box gap={1}>
-              <text fg={theme.textMuted}>
-                OpenCode Zen gives you access to all the best coding models at the cheapest prices with a single API
-                key.
-              </text>
-              <text fg={theme.text}>
-                Go to <span style={{ fg: theme.primary }}>https://opencode.ai/zen</span> to get a key
-              </text>
-            </box>
-          ),
-          "opencode-go": (
-            <box gap={1}>
-              <text fg={theme.textMuted}>
-                OpenCode Go is a $10 per month subscription that provides reliable access to popular open coding models
-                with generous usage limits.
-              </text>
-              <text fg={theme.text}>
-                Go to <span style={{ fg: theme.primary }}>https://opencode.ai/go</span> and enable OpenCode Go
-              </text>
-            </box>
-          ),
-        }[props.providerID] ?? undefined)
-      }
       onConfirm={async (value) => {
         if (!value) return
         await sdk.client.auth.set({

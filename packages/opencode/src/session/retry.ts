@@ -1,14 +1,11 @@
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Cause, Clock, Duration, Effect, Schedule, Schema } from "effect"
-import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
 import { REASONING_STATE_MESSAGE } from "@/provider/error"
 
 export type Err = ReturnType<NamedError["toObject"]>
 
-export const GO_UPSELL_MESSAGE = "Free usage exceeded, subscribe to Go"
-export const GO_UPSELL_URL = "https://opencode.ai/go"
 export type RetryReason = "free_tier_limit" | "account_rate_limit" | (string & {})
 
 /**
@@ -55,14 +52,7 @@ export type Retryable = {
 }
 
 export type RetryBranch =
-  | "rate_limit"
-  | "auth"
-  | "compaction"
-  | "http"
-  | "network"
-  | "protocol"
-  | "fallback"
-  | "terminal"
+  "rate_limit" | "auth" | "compaction" | "http" | "network" | "protocol" | "fallback" | "terminal"
 
 /**
  * One row of the retry dispatch table. `maxRetries` counts retries after the
@@ -176,56 +166,6 @@ function overloaded(message: string) {
   return message.includes("Overloaded") ? "Provider is overloaded" : message
 }
 
-function usageLimit(error: SessionV1.APIError, provider: string): Retryable | undefined {
-  if (error.data.responseBody?.includes("FreeUsageLimitError")) {
-    return {
-      message: GO_UPSELL_MESSAGE,
-      action: {
-        reason: "free_tier_limit",
-        provider,
-        title: "Free limit reached",
-        message: "Subscribe to OpenCode Go for reliable access to the best open-source models, starting at $5/month.",
-        label: "subscribe",
-        link: GO_UPSELL_URL,
-      },
-    }
-  }
-  if (error.data.responseBody?.includes("GoUsageLimitError")) {
-    const body = parseJSON(error.data.responseBody)
-    const workspace = str(body?.metadata?.workspace)
-    const limitName = str(body?.metadata?.limitName)
-    const retryAfter = num(error.data.responseHeaders?.["retry-after"])
-    const resetIn = iife(() => {
-      if (retryAfter === undefined) return ""
-      const seconds = Math.max(0, Math.ceil(retryAfter))
-      const days = Math.floor(seconds / 86_400)
-      const hours = Math.floor((seconds % 86_400) / 3_600)
-      const minutes = Math.ceil((seconds % 3_600) / 60)
-      const unit = (value: number, name: string) => `${value} ${name}${value === 1 ? "" : "s"}`
-
-      if (days > 0) return hours > 0 ? `${unit(days, "day")} ${unit(hours, "hour")}` : unit(days, "day")
-      if (hours > 0) return minutes > 0 ? `${unit(hours, "hour")} ${unit(minutes, "minute")}` : unit(hours, "hour")
-      return minutes > 0 ? unit(minutes, "minute") : "less than a minute"
-    })
-
-    const message = `${limitName ? `${limitName} usage limit` : "Usage limit"} reached. It will reset in ${resetIn}. To continue using this model now, enable usage from your available balance`
-
-    const link = `https://opencode.ai/workspace/${workspace}/go`
-    return {
-      message: `${message} - ${link}`,
-      action: {
-        reason: "account_rate_limit",
-        provider,
-        title: "Go limit reached",
-        message,
-        label: "open settings",
-        link,
-      },
-    }
-  }
-  return undefined
-}
-
 /**
  * The single dispatch table for retryable failures. Every HTTP 400–599
  * `APIError` and every network failure enters here first; the branch then
@@ -256,14 +196,15 @@ export function classify(error: Err, provider: string): RetryDecision {
     // resend the same oversized request unchanged.
     if (status === 413) return terminal("compaction", message, status)
 
-    const limit = usageLimit(error, provider)
-    if (limit) return retry("rate_limit", limit.message, { status, action: limit.action })
-
     if (status !== undefined && status >= 400 && status < 600) {
       return retry(status === 429 || status === 503 ? "rate_limit" : "http", overloaded(message), { status })
     }
 
-    if (error.data.isRetryable || matchesRetryableMessage(message) || matchesRetryableMessage(error.data.responseBody)) {
+    if (
+      error.data.isRetryable ||
+      matchesRetryableMessage(message) ||
+      matchesRetryableMessage(error.data.responseBody)
+    ) {
       return retry("network", overloaded(message), { status })
     }
   }
@@ -272,7 +213,8 @@ export function classify(error: Err, provider: string): RetryDecision {
   if (typeof message === "string") {
     const lower = message.toLowerCase()
     if (lower.includes("too_many_requests")) return retry("rate_limit", "Too Many Requests")
-    if (lower.includes("exhausted") || lower.includes("unavailable")) return retry("rate_limit", "Provider is overloaded")
+    if (lower.includes("exhausted") || lower.includes("unavailable"))
+      return retry("rate_limit", "Provider is overloaded")
     if (matchesRetryableMessage(message)) return retry("network", message)
   }
   return {
@@ -328,28 +270,6 @@ export function isCompactionFailure(error: Err) {
 
 function matchesRetryableMessage(value: unknown) {
   return typeof value === "string" && RETRYABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(value))
-}
-
-function str(value: unknown) {
-  if (value === undefined || value === null) return ""
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : ""
-}
-
-function num(value: unknown) {
-  const parsed = Number.parseFloat(str(value))
-  if (Number.isNaN(parsed)) return undefined
-  return parsed
-}
-
-function parseJSON(value: unknown) {
-  return iife(() => {
-    try {
-      if (typeof value !== "string") return undefined
-      return JSON.parse(value)
-    } catch {
-      return undefined
-    }
-  })
 }
 
 export function policy(opts: {

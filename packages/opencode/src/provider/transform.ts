@@ -782,7 +782,7 @@ export function topP(model: Provider.Model) {
   }
   if (
     ["deepseek-v4-flash-0731", "deepseek-v4-flash:0731"].some((name) => id.includes(name)) ||
-    (id.includes("deepseek-v4-flash") && (model.providerID === "deepseek" || model.providerID.startsWith("opencode")))
+    (id.includes("deepseek-v4-flash") && model.providerID === "deepseek")
   ) {
     return 0.95
   }
@@ -1410,10 +1410,7 @@ export function options(input: {
     }
   }
 
-  if (
-    input.model.providerID === "baseten" ||
-    (input.model.providerID === "opencode" && ["kimi-k2-thinking", "glm-4.6"].includes(input.model.api.id))
-  ) {
+  if (input.model.providerID === "baseten") {
     result["chat_template_args"] = { enable_thinking: true }
   }
 
@@ -1512,12 +1509,6 @@ export function options(input: {
       if (input.model.api.npm === "@ai-sdk/openai" || input.model.api.npm === "@ai-sdk/amazon-bedrock/mantle") {
         result["include"] = INCLUDE_ENCRYPTED_REASONING
       }
-    }
-
-    if (input.model.providerID.startsWith("opencode") && input.providerOptions?.setCacheKey !== false) {
-      result["promptCacheKey"] = input.sessionID
-      result["include"] = INCLUDE_ENCRYPTED_REASONING
-      result["reasoningSummary"] = "auto"
     }
   }
 

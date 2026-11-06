@@ -1,12 +1,10 @@
 import { Config } from "@/config/config"
-import { emptyConsoleState } from "@opencode-ai/core/v1/config/console-state"
 import { Effect, Layer } from "effect"
 
 export function make(overrides: Partial<Config.Interface> = {}) {
   return Config.Service.of({
     get: () => Effect.succeed({}),
     getGlobal: () => Effect.succeed({}),
-    getConsoleState: () => Effect.succeed(emptyConsoleState),
     update: () => Effect.void,
     updateHookPermissions: () => Effect.succeed({}),
     updateGlobal: (config) => Effect.succeed({ info: config, changed: false }),

@@ -32,8 +32,6 @@ const FIXTURES_DIR = path.join(import.meta.dir, "../fixtures/recordings")
 // Recordings used the 32k default output budget.
 const RECORDED_OUTPUT_TOKEN_MAX = 32_000
 
-const zenURL = (connection: string) => `https://console.opencode.ai/proxy/connections/${connection}/v1`
-
 const replayOpenAIOAuth = {
   type: "oauth",
   refresh: "fixture-refresh-token",
@@ -168,29 +166,6 @@ const RECORDED_SCENARIOS = [
       }),
   },
   {
-    id: "opencode-proxy",
-    name: "OpenCode proxy",
-    providerID: ProviderV2.ID.opencode,
-    modelID: "gpt-5.2-codex",
-    cassette: "session/native-zen-tool-loop",
-    protocol: "openai-responses",
-    tags: ["opencode", "zen", "native", "tool-loop"],
-    canRecord: () => Boolean(process.env.OPENCODE_RECORD_CONSOLE_TOKEN && process.env.OPENCODE_RECORD_ZEN_ORG_ID),
-    config: (model) =>
-      providerConfig({
-        providerID: ProviderV2.ID.opencode,
-        name: "OpenCode Zen",
-        env: ["OPENCODE_CONSOLE_TOKEN"],
-        npm: "@ai-sdk/openai-compatible",
-        api: zenURL(process.env.OPENCODE_RECORD_ZEN_CONNECTION ?? "fixture"),
-        model,
-        options: {
-          apiKey: process.env.OPENCODE_RECORD_CONSOLE_TOKEN ?? "fixture-console-token",
-          headers: { "x-org-id": process.env.OPENCODE_RECORD_ZEN_ORG_ID ?? "fixture-org" },
-        },
-      }),
-  },
-  {
     id: "anthropic-api-key",
     name: "Anthropic API key",
     providerID: ProviderV2.ID.anthropic,
@@ -288,7 +263,6 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
     tags: scenario.tags,
   }
   const redact = {
-    url: (url: string) => url.replace(/\/proxy\/connections\/[^/]+\/v1/, "/proxy/connections/{connection}/v1"),
     body: redactRecordedBody,
   }
   const recordedHttp = shouldRecord

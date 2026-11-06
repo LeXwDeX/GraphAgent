@@ -8,7 +8,6 @@ import { SessionID } from "../../src/session/schema"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Provider } from "../../src/provider/provider"
 import { prepare } from "../../src/session/llm/request"
-import { RuntimeContext } from "../../src/session/runtime-context"
 import { testEffect } from "../lib/effect"
 import { jsonSchema, streamText, tool, wrapLanguageModel, type ModelMessage } from "ai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
@@ -17,17 +16,9 @@ import { Permission } from "@/permission"
 const PROMPT_IDENTITY = "You are graphagent, a coding agent working in the user's workspace."
 const REMOVED_CATALOG = "## GraphAgent / OpenCode capabilities"
 
-const it = testEffect(
-  Layer.mergeAll(
-    RuntimeFlags.layer(),
-  ),
-)
+const it = testEffect(Layer.mergeAll(RuntimeFlags.layer()))
 
-const itOutputOverride = testEffect(
-  Layer.mergeAll(
-    RuntimeFlags.layer({ outputTokenMax: 64_000 }),
-  ),
-)
+const itOutputOverride = testEffect(Layer.mergeAll(RuntimeFlags.layer({ outputTokenMax: 64_000 })))
 
 function fixture(providerName: string, modelName: string, npm: string) {
   const providerID = ProviderV2.ID.make(providerName)
@@ -87,7 +78,6 @@ const request = (providerName = "deepseek", modelName = "deepseek-chat", npm = "
       tools: {},
       auth: undefined,
       flags: yield* RuntimeFlags.Service,
-      isWorkflow: false,
     } satisfies Parameters<typeof prepare>[0]
   })
 
@@ -192,32 +182,6 @@ describe("runtime capabilities in model requests", () => {
       expect(prepared.params.options.instructions).toContain(PROMPT_IDENTITY)
       expect(prepared.params.options.instructions).not.toContain(REMOVED_CATALOG)
       expect(prepared.params.options.instructions).toContain(DEFAULT_WRITING_STYLE)
-      expect(prepared.messages).toEqual(input.messages)
-    }),
-  )
-
-  it.instance("workflow requests move runtime context into their system field", () =>
-    Effect.gen(function* () {
-      const input = yield* request()
-      const placed = RuntimeContext.place({
-        ledger: [],
-        messages: input.messages,
-        state: [{ key: "memory", parts: ["workflow-memory-probe"], cleared: "none" }],
-        events: [],
-      })
-      const prepared = yield* prepare({ ...input, isWorkflow: true, messages: placed.messages })
-      expect(prepared.system.join("\n")).toContain("workflow-memory-probe")
-      expect(prepared.messages).toEqual(input.messages)
-    }),
-  )
-
-  it.instance("workflow requests keep the unified prompt in their separate system field", () =>
-    Effect.gen(function* () {
-      const input = yield* request()
-      const prepared = yield* prepare({ ...input, isWorkflow: true })
-      expect(prepared.system.join("\n")).toContain(PROMPT_IDENTITY)
-      expect(prepared.system.join("\n")).not.toContain(REMOVED_CATALOG)
-      expect(prepared.system.join("\n")).toContain(DEFAULT_WRITING_STYLE)
       expect(prepared.messages).toEqual(input.messages)
     }),
   )

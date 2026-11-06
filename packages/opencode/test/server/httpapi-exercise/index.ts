@@ -537,16 +537,6 @@ const scenarios: Scenario[] = [
     .mutating()
     .at((ctx) => ({ path: route("/mcp/{name}/disconnect", { name: "httpapi-missing" }), headers: ctx.headers() }))
     .json(404, object, "status"),
-  http.protected.get("/experimental/console", "experimental.console.get").json(),
-  http.protected.get("/experimental/console/orgs", "experimental.console.listOrgs").json(),
-  http.protected
-    .post("/experimental/console/switch", "experimental.console.switchOrg")
-    .at((ctx) => ({
-      path: "/experimental/console/switch",
-      headers: ctx.headers(),
-      body: { accountID: "httpapi-account", orgID: "httpapi-org" },
-    }))
-    .status(400, undefined, "none"),
   http.protected.get("/experimental/workspace/adapter", "experimental.workspace.adapter.list").json(200, array),
   http.protected.get("/experimental/workspace", "experimental.workspace.list").json(200, array),
   http.protected.get("/experimental/workspace/status", "experimental.workspace.status").json(200, array),

@@ -417,7 +417,6 @@
     "test/mcp/elicitation-unit.test.ts": 1,
     "test/memory/config.test.ts": 1,
     "test/plugin/openai-rollout.test.ts": 1,
-    "test/provider/gitlab-duo.test.ts": 1,
     "test/provider/model-status.test.ts": 1,
     "test/server/httpapi-cors-vary.test.ts": 1,
     "test/server/workspace-routing.test.ts": 1,

@@ -61,8 +61,6 @@ export function createFetch(override?: FetchHandler) {
         return json({})
       case "/config/providers":
         return json({ providers: {}, default: {} })
-      case "/experimental/console":
-        return json({ consoleManagedProviders: [], switchableOrgCount: 0 })
       case "/path":
         return json({ home: "", state: "", config: "", worktree, directory })
       case "/project/current":
