@@ -1050,7 +1050,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (
               args = next
               resourceHookState.set(opts, { confirmed, allowed, name, original: toRecord(original) })
               // The three resource executors ask read permission before any MCP request.
-              // Plugin-before runs once above, outside the permission restart boundary.
+              // The PreToolUse hook runs once above, outside the permission restart boundary.
               return Effect.promise(() => Promise.resolve(execute(next, opts)))
             },
             {

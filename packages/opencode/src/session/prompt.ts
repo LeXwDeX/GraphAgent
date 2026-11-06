@@ -2470,7 +2470,7 @@ export const layer = Layer.effect(
 
         if (persistAdmission) yield* persistAdmission
       })
-      // Preparation, plugin callbacks and hooks stay outside the write reservation.
+      // Preparation and hook callbacks stay outside the write reservation.
       // Internal wakes commit their transcript receipt and reporting mark together.
       const reserved = () =>
         persistAdmission || modelBaseline
@@ -2570,7 +2570,7 @@ export const layer = Layer.effect(
       const isRewake = promptText.startsWith(HOOK_REWAKE_SENTINEL)
       // Refuse a stale stop-chain rewake before anything is committed. Cancel
       // stays lock-free; the post-commit fence below covers cancels that land
-      // while admission is suspended inside plugin callbacks.
+      // while admission is suspended inside hook callbacks.
       if (settingsHook?.validateStopRewakeChain && isRewake && options?.stopChainToken !== undefined) {
         const chainValid = yield* settingsHook.validateStopRewakeChain(input.sessionID, options.stopChainToken)
         if (!chainValid) {
@@ -2664,7 +2664,7 @@ export const layer = Layer.effect(
       yield* sessions.touch(input.sessionID)
 
       // The chain was validated before admission, but cancel can land while
-      // the plugin callbacks above suspend. A committed stale rewake is
+      // the hook callbacks above suspend. A committed stale rewake is
       // stripped from model input (parts ignored) and never starts a run.
       if (isRewake && options?.stopChainToken !== undefined) {
         if (!(yield* fenceStopRewake(input.sessionID, options, message))) {
