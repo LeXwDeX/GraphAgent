@@ -1038,19 +1038,6 @@
             ]
           }
         },
-        "share": {
-          "type": "string",
-          "enum": [
-            "manual",
-            "auto",
-            "disabled"
-          ],
-          "description": "Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing"
-        },
-        "autoshare": {
-          "type": "boolean",
-          "description": "@deprecated Use 'share' field instead. Share newly created sessions automatically"
-        },
         "autoupdate": {
           "description": "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored",
           "anyOf": [

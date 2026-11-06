@@ -48,9 +48,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
-import { SessionShare } from "@/share/session"
 import { SessionLifecycle } from "@/session/lifecycle"
-import { ShareNext } from "@/share/share-next"
 import { Skill } from "@/skill"
 import { Discovery } from "@/skill/discovery"
 import { Snapshot } from "@/snapshot"
@@ -286,8 +284,6 @@ export const app = LayerNode.group([
   Workspace.node,
   Worktree.node,
   Installation.node,
-  ShareNext.node,
-  SessionShare.node,
   SessionLifecycle.node,
   InstanceStore.node,
   httpClient,

@@ -12,7 +12,6 @@ import { http } from "./dsl"
 // process settings immediately, as other test files share this process.
 const keys = [
   "OPENCODE_DB",
-  "OPENCODE_DISABLE_SHARE",
   "XDG_DATA_HOME",
   "XDG_CONFIG_HOME",
   "XDG_STATE_HOME",

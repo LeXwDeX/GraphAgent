@@ -10,7 +10,6 @@ import * as SessionError from "./session-errors"
 
 const commandAliases = {
   session_new: "session.new",
-  session_share: "session.share",
   session_interrupt: "session.interrupt",
   session_compact: "session.compact",
   messages_page_up: "session.page.up",

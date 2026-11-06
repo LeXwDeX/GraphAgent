@@ -533,10 +533,6 @@ const SessionTokens = Schema.Struct({
   }),
 })
 
-const SessionShare = Schema.Struct({
-  url: Schema.String,
-})
-
 const SessionRevert = Schema.Struct({
   messageID: MessageID,
   partID: optionalOmitUndefined(PartID),
@@ -561,7 +557,6 @@ export const SessionInfo = Schema.Struct({
   summary: optionalOmitUndefined(SessionSummary),
   cost: optionalOmitUndefined(Schema.Finite),
   tokens: optionalOmitUndefined(SessionTokens),
-  share: optionalOmitUndefined(SessionShare),
   title: Schema.String,
   agent: optionalOmitUndefined(Schema.String),
   model: optionalOmitUndefined(SessionModel),

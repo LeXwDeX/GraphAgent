@@ -51,7 +51,6 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               mode="single_winner"
               session_id={props.sessionID}
               title={session()!.title}
-              share_url={session()!.share?.url}
             >
               <box paddingRight={1}>
                 <text fg={theme.text}>

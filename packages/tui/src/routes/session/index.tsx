@@ -126,12 +126,10 @@ function goUpsellKeys(action: RetryAction) {
 }
 
 const sessionBindingCommands = [
-  "session.share",
   "session.rename",
   "session.timeline",
   "session.fork",
   "session.compact",
-  "session.unshare",
   "session.undo",
   "session.redo",
   "session.sidebar.toggle",
@@ -547,7 +545,6 @@ export function Session() {
   const sessionCommandList = createMemo(() => [
     {
       title: session()?.share?.url ? "Copy share link" : "Share session",
-      value: "session.share",
       suggested: route.type === "session",
       category: "Session",
       enabled: sync.data.config.share !== "disabled",
@@ -668,7 +665,6 @@ export function Session() {
     },
     {
       title: "Unshare session",
-      value: "session.unshare",
       category: "Session",
       enabled: !!session()?.share?.url,
       slash: {

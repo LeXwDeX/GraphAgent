@@ -275,7 +275,6 @@ test("local mini creates attention only after ensureSession, switches on /new, a
         await sessionReady.promise
         return { id: "ses_first" }
       },
-      share: async () => {},
       createSession: async () => ({ id: "ses_second" }),
       agent: "build",
       model: undefined,
@@ -372,8 +371,7 @@ for (const ignoresSignal of [false, true]) {
         fetch: localFetch,
         resolveAgent: async () => "build",
         session: async () => ({ id: "ses_stalled_runtime" }),
-        share: async () => {},
-        agent: "build",
+          agent: "build",
         model: undefined,
         variant: undefined,
         files: [],
