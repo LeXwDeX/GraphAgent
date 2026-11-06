@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { stat } from "node:fs/promises"
 import { basename } from "node:path"
-import { BrowserWindow, Notification, clipboard, dialog, ipcMain, shell } from "electron"
+import { BrowserWindow, Notification, clipboard, dialog, ipcMain, nativeImage, shell } from "electron"
 import type { IpcMainEvent, IpcMainInvokeEvent } from "electron"
 import type { DesktopMenuAction } from "@opencode-ai/app/desktop-menu"
 
@@ -155,8 +155,13 @@ export function registerIpcHandlers(deps: Deps) {
     })
   })
 
-  ipcMain.handle("read-clipboard-image", () => {
-    const image = clipboard.readImage()
+  ipcMain.handle("read-clipboard-image", async () => {
+    // Electron 45 replaced the synchronous readImage() with the W3C-style read().
+    const items = await clipboard.read()
+    const item = items.find((entry) => entry.types.includes("image/png"))
+    if (!item) return null
+    const blob = await item.getType("image/png")
+    const image = nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer()))
     if (image.isEmpty()) return null
     const buffer = image.toPNG().buffer
     const size = image.getSize()

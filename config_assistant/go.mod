@@ -1,6 +1,6 @@
 module github.com/LeXwDeX/OpenCode-GraphAgent/config_assistant
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10

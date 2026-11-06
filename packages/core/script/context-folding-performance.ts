@@ -625,7 +625,7 @@ const runRssProbe = async (sizeClass: SizeClass) => {
       }
     })
     worker.on("error", (error) => {
-      fail(error)
+      fail(error instanceof Error ? error : new Error(String(error)))
     })
     worker.on("exit", (code) => {
       if (!settled) fail(new Error(`${sizeClass}: RSS worker exited ${code} before sending a result`))
