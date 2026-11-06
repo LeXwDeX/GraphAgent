@@ -1,0 +1,340 @@
+{
+  "schemaVersion": 1,
+  "baseline": "f21cabe7f",
+  "commit": "03900920a20f149b7b072059544e2def28e76fe6",
+  "generatedAt": "2026-11-06T13:51:53.484Z",
+  "opentuiVersion": "0.5.12",
+  "bun": "1.4.4",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro",
+    "cpuCount": 14
+  },
+  "calibration": {
+    "fixedLoopMs": 0.79,
+    "fixedLoopValue": 240,
+    "fixedLayoutMsMedian": 26.93
+  },
+  "repeats": 5,
+  "scenarios": {
+    "S": {
+      "P1": {
+        "id": "P1",
+        "size": "S",
+        "p50Ms": 0.42,
+        "p95Ms": 0.65,
+        "p99Ms": 0.98
+      },
+      "P3": {
+        "id": "P3",
+        "size": "S",
+        "registerLayer": 500
+      },
+      "P4": {
+        "id": "P4",
+        "size": "S",
+        "selectorEvaluations": 7950,
+        "selectorEvaluationsPerKey": 159
+      },
+      "P5": {
+        "id": "P5",
+        "size": "S",
+        "openP95Ms": 0.85,
+        "maxFrame": 5,
+        "sequenceP95Ms": 3.68
+      },
+      "P6": {
+        "id": "P6",
+        "size": "S",
+        "filterP95Ms": 3.68,
+        "escapeP95Ms": 0.12
+      },
+      "P7": {
+        "id": "P7",
+        "size": "S",
+        "registerLayer": 43
+      },
+      "P5'": {
+        "id": "P5'",
+        "size": "S",
+        "openP95Ms": 0,
+        "sequenceP95Ms": 0,
+        "maxFrame": 0
+      },
+      "P8": {
+        "id": "P8",
+        "size": "S",
+        "p99Ms": 0.06,
+        "maxMs": 0.06
+      },
+      "P8'": {
+        "id": "P8'",
+        "size": "S",
+        "p99Ms": 0.11,
+        "maxMs": 0.11
+      },
+      "P9": {
+        "id": "P9",
+        "size": "S",
+        "p99Ms": 0.08
+      },
+      "P10": {
+        "id": "P10",
+        "size": "S",
+        "mountedNodes": 202
+      },
+      "P12": {
+        "id": "P12",
+        "size": "S",
+        "p95Ms": 0.6
+      },
+      "P13": {
+        "id": "P13",
+        "size": "S",
+        "messageWritesPerFrame": 0,
+        "partWritesPerFrame": 1
+      },
+      "P14": {
+        "id": "P14",
+        "size": "S",
+        "p95Ms": 0.38,
+        "relativeIncrease": -0.21,
+        "nonCurrentMessageWrites": 0,
+        "nonCurrentPartWrites": 0
+      },
+      "P15": {
+        "id": "P15",
+        "size": "S",
+        "frames": 1
+      },
+      "P16": {
+        "id": "P16",
+        "size": "S",
+        "frames": 1
+      },
+      "P19": {
+        "id": "P19",
+        "size": "S",
+        "frames": 200
+      },
+      "P2": {
+        "id": "P2",
+        "size": "S",
+        "p95Scale": 1
+      }
+    },
+    "M": {
+      "P1": {
+        "id": "P1",
+        "size": "M",
+        "p50Ms": 0.85,
+        "p95Ms": 1.49,
+        "p99Ms": 4.7
+      },
+      "P3": {
+        "id": "P3",
+        "size": "M",
+        "registerLayer": 500
+      },
+      "P4": {
+        "id": "P4",
+        "size": "M",
+        "selectorEvaluations": 30450,
+        "selectorEvaluationsPerKey": 609
+      },
+      "P5": {
+        "id": "P5",
+        "size": "M",
+        "openP95Ms": 1.47,
+        "maxFrame": 5,
+        "sequenceP95Ms": 1.47
+      },
+      "P6": {
+        "id": "P6",
+        "size": "M",
+        "filterP95Ms": 1.44,
+        "escapeP95Ms": 0.11
+      },
+      "P7": {
+        "id": "P7",
+        "size": "M",
+        "registerLayer": 43
+      },
+      "P5'": {
+        "id": "P5'",
+        "size": "M",
+        "openP95Ms": 1.68,
+        "sequenceP95Ms": 1.68,
+        "maxFrame": 5
+      },
+      "P8": {
+        "id": "P8",
+        "size": "M",
+        "p99Ms": 0.23,
+        "maxMs": 0.27
+      },
+      "P8'": {
+        "id": "P8'",
+        "size": "M",
+        "p99Ms": 0.06,
+        "maxMs": 0.06
+      },
+      "P9": {
+        "id": "P9",
+        "size": "M",
+        "p99Ms": 0.1
+      },
+      "P10": {
+        "id": "P10",
+        "size": "M",
+        "mountedNodes": 593
+      },
+      "P12": {
+        "id": "P12",
+        "size": "M",
+        "p95Ms": 1.28
+      },
+      "P13": {
+        "id": "P13",
+        "size": "M",
+        "messageWritesPerFrame": 0,
+        "partWritesPerFrame": 1
+      },
+      "P14": {
+        "id": "P14",
+        "size": "M",
+        "p95Ms": 0.88,
+        "relativeIncrease": -0.21,
+        "nonCurrentMessageWrites": 0,
+        "nonCurrentPartWrites": 64
+      },
+      "P15": {
+        "id": "P15",
+        "size": "M",
+        "frames": 1
+      },
+      "P16": {
+        "id": "P16",
+        "size": "M",
+        "frames": 1
+      },
+      "P19": {
+        "id": "P19",
+        "size": "M",
+        "frames": 200
+      },
+      "P2": {
+        "id": "P2",
+        "size": "M",
+        "p95Scale": 2.29
+      }
+    },
+    "L": {
+      "P1": {
+        "id": "P1",
+        "size": "L",
+        "p50Ms": 0.83,
+        "p95Ms": 1.42,
+        "p99Ms": 4.12
+      },
+      "P3": {
+        "id": "P3",
+        "size": "L",
+        "registerLayer": 500
+      },
+      "P4": {
+        "id": "P4",
+        "size": "L",
+        "selectorEvaluations": 30450,
+        "selectorEvaluationsPerKey": 609
+      },
+      "P5": {
+        "id": "P5",
+        "size": "L",
+        "openP95Ms": 1.39,
+        "maxFrame": 5,
+        "sequenceP95Ms": 1.39
+      },
+      "P6": {
+        "id": "P6",
+        "size": "L",
+        "filterP95Ms": 1.23,
+        "escapeP95Ms": 0.11
+      },
+      "P7": {
+        "id": "P7",
+        "size": "L",
+        "registerLayer": 43
+      },
+      "P5'": {
+        "id": "P5'",
+        "size": "L",
+        "openP95Ms": 0,
+        "sequenceP95Ms": 0,
+        "maxFrame": 0
+      },
+      "P8": {
+        "id": "P8",
+        "size": "L",
+        "p99Ms": 0.44,
+        "maxMs": 0.59
+      },
+      "P8'": {
+        "id": "P8'",
+        "size": "L",
+        "p99Ms": 0.06,
+        "maxMs": 0.06
+      },
+      "P9": {
+        "id": "P9",
+        "size": "L",
+        "p99Ms": 0.1
+      },
+      "P10": {
+        "id": "P10",
+        "size": "L",
+        "mountedNodes": 597
+      },
+      "P12": {
+        "id": "P12",
+        "size": "L",
+        "p95Ms": 1.26
+      },
+      "P13": {
+        "id": "P13",
+        "size": "L",
+        "messageWritesPerFrame": 0,
+        "partWritesPerFrame": 1
+      },
+      "P14": {
+        "id": "P14",
+        "size": "L",
+        "p95Ms": 0.81,
+        "relativeIncrease": -0.21,
+        "nonCurrentMessageWrites": 0,
+        "nonCurrentPartWrites": 0
+      },
+      "P15": {
+        "id": "P15",
+        "size": "L",
+        "frames": 1
+      },
+      "P16": {
+        "id": "P16",
+        "size": "L",
+        "frames": 1
+      },
+      "P19": {
+        "id": "P19",
+        "size": "L",
+        "frames": 200
+      },
+      "P2": {
+        "id": "P2",
+        "size": "L",
+        "p95Scale": 2.18
+      }
+    }
+  }
+}

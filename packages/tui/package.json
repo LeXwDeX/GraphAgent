@@ -6,6 +6,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
+    "bench:tui": "bun test/perf/run.ts",
+    "bench:tui:pty": "bun test/perf/pty.ts",
     "test": "bun test --timeout 30000 --only-failures",
     "typecheck": "tsgo --noEmit"
   },
