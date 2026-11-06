@@ -5,7 +5,7 @@ Guidance for coding agents in GraphAgent, an opencode fork with a DAG workflow e
 ## Scope and layout
 
 - GraphAgent v1 is in focused maintenance, as described in `README.md`: DAG configuration, curated workflow templates, and reproducible defect fixes. Stability and data-integrity defects may receive narrow compatibility patches. Keep changes within this scope.
-- Bun workspace + Turbo. Runtime pins have one source each: Bun in `package.json` (`packageManager`), Node in `.node-version`, Go in `config_assistant/go.mod`. CI and container builds read the same pins. Electron owns its embedded Node runtime; VSCode extension host types retain their own compatibility major.
+- Bun workspace + Turbo. Runtime pins have one source each: Bun in `package.json` (`packageManager`), Node in `.node-version`, Go in `config_assistant/go.mod`. CI and container builds read the same pins.
 - `packages/core`: DAG engine primitives (`src/dag/` — store/projector/sql, exported as `./dag/core/*` and `./dag/*`) plus DB schema/migrations ownership.
 - `packages/opencode`: agent runtime. Services compose in `AppLayer` (`src/effect/app-runtime.ts`). Effect v4 (beta) rules, `makeRuntime`/`InstanceState`, tool-schema, and module-shape contracts are owned by `packages/opencode/AGENTS.md`.
 - Curated workflow YAML, composable blocks, and reusable worker prompts live in `LeXwDeX/opencode-dag-config`. Release builds embed its snapshot through `DAG_TEMPLATES_DIR` (`packages/opencode/script/generate.ts`). Local builds without that variable omit builtin templates and use project/global libraries. Curated configuration-only changes belong in the configuration repo; runtime routing and policy prompts still live here.
@@ -37,14 +37,12 @@ When a file operation is denied, record the exact action and error before changi
 
 - Install: `bun install`. Installs are exact-pinned; newly resolved releases must be ≥3 days old unless excluded (root `bunfig.toml`).
 - Toolchain: `bun run toolchain:check` checks installed Bun, Node, and Go before runtime validation and rejects any differing runtime patch; an optional local pre-push hook may run the same check. CLI build scripts import the shared `Script` module, which checks Bun and Node. Go CI sets `GOTOOLCHAIN=local`. Rust containers read `packages/containers/rust-toolchain.toml` and verify the compiler version.
-- Nix: runtime assertions reject mismatched packages. `nix/README.md` records the reviewed inputs and exact Electron/ripgrep sources. Native package acceptance still requires measured node_modules hashes and successful CLI and desktop builds on each supported platform. Evaluation or source archive verification alone does not certify those builds.
-- Dev: `bun run dev` (opencode CLI — starts the interactive TUI; use the tmux pattern from `packages/opencode/AGENTS.md`, never a blocking foreground run), `bun run dev:web`, `bun run dev:desktop`.
-- Typecheck: `bun run typecheck` uses Turbo to run package scripts. Most use `tsgo --noEmit`; app and desktop use `tsgo -b`. Use the package scripts.
+- Dev: `bun run dev` (opencode CLI — starts the interactive TUI; use the tmux pattern from `packages/opencode/AGENTS.md`, never a blocking foreground run).
+- Typecheck: `bun run typecheck` uses Turbo to run package scripts. Most use `tsgo --noEmit`. Use the package scripts.
 - Build: `cd packages/opencode && bun run build --single` builds the host CLI. Other packages own their build scripts; the root has no `build` script. A successful build does not replace typechecking.
 - Lint: `bun run lint` = `oxlint` with a `--max-warnings` ratchet. The ratchet only tightens: fix warnings, never raise the cap (contract: `_lint_ratchet_note` in `package.json` and the `.oxlintrc.json` header).
 - Private hosts: `bun run check:hosts` scans tracked files and `bun.lock`; run it before every commit. `bun.lock` may only contain public registry URLs. Use `bun run check:hosts:test` for its unit tests.
-- Tests: do not run bare `bun test` or `bun run test` at the root; both are guarded. Run Bun tests inside a package, preferably through its `test` script. Workspace CI uses `bun turbo test` from the root. The opencode and TUI test scripts pass `--timeout 30000`. App tests use `test:unit` / `test:browser` with the package's happydom preload.
-- macOS browser validation: from `packages/web`, use `bun run test:browser:webkit` for the shared Markdown WebKit regression. Use the installed Playwright SDK and its matching browser revision; install a missing WebKit through that same installed CLI. Do not substitute another cached revision or launch `Playwright.app` directly: the SDK invokes `pw_run.sh` with the bundled frameworks. Do not change system or sandbox security policies to launch it.
+- Tests: do not run bare `bun test` or `bun run test` at the root; both are guarded. Run Bun tests inside a package, preferably through its `test` script. Workspace CI uses `bun turbo test` from the root. The opencode and TUI test scripts pass `--timeout 30000`.
 - DAG gate: `cd packages/opencode && bun run test:dag-core` — behavior/coverage gate; run it before merging changes to DAG state-machine or persistence code.
 - Format: Prettier `semi: false`, `printWidth: 120`.
 
@@ -72,9 +70,9 @@ Host details live only in the maintainer's global agent instructions and the unt
 - Database changes: from `packages/core`, run `bun run migration --check` and the affected migration tests. Include empty-database and existing-database cases.
 - DAG lifecycle or persistence changes: run the DAG gate (Commands), plus affected replay, attempt, cancellation, recovery, and lease tests.
 - Public event changes: run both `packages/schema/test/event-manifest.test.ts` and `packages/opencode/test/event-manifest.test.ts` from their respective packages, plus affected event consumers. Check inventories, fixed-count assertions and generated event types together; the DAG gate does not include every runtime manifest test.
-- HTTP contract changes: follow Generated code below, verify both client generators are idempotent, and run `bun run test:httpapi` from `packages/opencode` with the updated scenarios. Generated-file checks compare against Git, so distinguish intended uncommitted output from unexpected regeneration drift.
+- HTTP contract changes: follow Generated code below, verify the SDK generator is idempotent, and run `bun run test:httpapi` from `packages/opencode` with the updated scenarios. Generated-file checks compare against Git, so distinguish intended uncommitted output from unexpected regeneration drift.
 - Runtime configuration changes: verify loading through `AppLayer` (`packages/opencode/src/effect/app-runtime.ts`), following the Effect and runtime contracts in `packages/opencode/AGENTS.md`.
-- UI changes: exercise rendering and interaction on every affected client (TUI, app, or direct `run`), including relevant state transitions and terminal cleanup; a backend-only test is insufficient. Use package-local browser/TUI harnesses and isolated configuration.
+- UI changes: exercise rendering and interaction on every affected client (TUI or direct `run`), including relevant state transitions and terminal cleanup; a backend-only test is insufficient. Use package-local TUI harnesses and isolated configuration.
 - Dependency or toolchain changes: run `bun run toolchain:check`, affected package checks, and relevant toolchain/container/Go tests.
 
 ### Release pipeline
@@ -85,7 +83,7 @@ Host details live only in the maintainer's global agent instructions and the unt
 
 ## Generated code
 
-- After changing HTTP API routes, regenerate both clients — CI fails on stale output: `packages/client` (`bun run generate`) and `packages/sdk/js` (`bun run build` regenerates `src/v2/gen`).
+- After changing HTTP API routes, regenerate `packages/sdk/js` (`bun run build` regenerates `src/v2/gen`); CI fails on stale output.
 - Changing a route's request/response shape also requires updating its scenario in `packages/opencode/test/server/httpapi-exercise/index.ts`; `test:httpapi` fails on missing/skipped scenarios.
 
 ## DAG product invariants

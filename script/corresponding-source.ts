@@ -12,8 +12,6 @@ export const requiredSourceFiles = [
   "bun.lock",
   "script/corresponding-source.ts",
   "packages/opencode/script/build.ts",
-  "packages/desktop/scripts/prebuild.ts",
-  "packages/desktop/electron-builder.config.ts",
 ] as const
 
 export type CorrespondingSourceInput = {

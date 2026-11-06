@@ -394,7 +394,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
 
   it("B-p4(d) ignores a subdirectory session's report through the repository-root area", async () => {
     const projectDir = await gitTmpRoot("dag-ref-repo-")
-    const subdir = path.join(projectDir, "packages", "app")
+    const subdir = path.join(projectDir, "packages", "pkg-a")
     await fs.mkdir(subdir, { recursive: true })
     const reportArea = path.join(projectDir, ".opencode", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
@@ -406,20 +406,20 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
     const exclude = await Bun.file(excludePath(projectDir)).text()
     expect(exclude).toContain(".opencode/workflow-reports/")
-    expect(exclude).not.toContain("packages/app/")
+    expect(exclude).not.toContain("packages/pkg-a/")
     expect(await isIgnored(projectDir, reportPath)).toBe(true)
     expect(await $`git -C ${projectDir} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
   })
 
   it("B-p4(d2) keeps legacy subdirectory report refs ignored with a repository-relative entry", async () => {
     const projectDir = await gitTmpRoot("dag-ref-legacy-")
-    const subdir = path.join(projectDir, "packages", "app")
+    const subdir = path.join(projectDir, "packages", "pkg-a")
     const reportArea = path.join(subdir, ".opencode", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "old.md")
     await Bun.write(reportPath, "# legacy report\n")
     await Effect.runPromise(ensureReportAreaGitignore(subdir, reportPath))
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain("packages/app/.opencode/workflow-reports/")
+    expect(await Bun.file(excludePath(projectDir)).text()).toContain("packages/pkg-a/.opencode/workflow-reports/")
     expect(await isIgnored(projectDir, reportPath)).toBe(true)
     expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
   })

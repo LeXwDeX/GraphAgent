@@ -315,24 +315,23 @@ export const app = LayerNode.group([
   // InstanceBootstrap's `serviceOption(GoalLoop.Service).init()` (idle-event
   // subscription + startup goal scan), which runs in the request fiber's
   // ambient context. GoalLoop.node was listed only in AppLayer
-  // (app-runtime.ts provideMerge), so headless serve/web, the desktop
+  // (app-runtime.ts provideMerge), so headless serve, the
   // sidecar, and non-CWD TUI directories never armed goal continuation or
   // the crash-recovery scan: standing goals stalled after their first turn.
   GoalLoop.node,
   // DagSupervisionSweep: host-level deadline supervision (2026-08-18
   // orphaned-nodes incident) was constructed only in AppLayer, but the
-  // desktop sidecar (packages/desktop/src/main/sidecar.ts) calls
-  // Server.listen without effectCmd, so AppLayer never existed there and
-  // the sweep never ran on the desktop default path (issue #341). Listing
+  // sidecar calls Server.listen without effectCmd, so AppLayer never existed
+  // there and the sweep never ran on that path (issue #341). Listing
   // it here makes every serving process build it with the listener scope.
-  // Processes that also build AppLayer (serve/web via AppRuntime) get a
+  // Processes that also build AppLayer (serve via AppRuntime) get a
   // second instance; settle is convergent (withWorkflowLock + guardNode +
   // conditional projector UPDATE), so the duplicate is safe — see the sweep
   // header's multi-host convergence notes.
   DagSupervisionSweep.node,
   // EventResidueSweep (#524): default-on startup residue sweep for crash/
   // in-flight zombie event aggregates. Same app-graph-level placement
-  // rationale as DagSupervisionSweep above — the desktop sidecar and headless
+  // rationale as DagSupervisionSweep above — the sidecar and headless
   // serving processes build this node graph without AppLayer, and the sweep
   // is idempotent (a second pass in AppLayer processes removes nothing).
   EventResidueSweep.node,

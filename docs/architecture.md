@@ -10,7 +10,7 @@
 
 ```mermaid
 flowchart LR
-  clients["客户端<br/>CLI / TUI · Web · Electron · SDK"]
+  clients["客户端<br/>CLI / TUI · SDK"]
 
   subgraph host["OpenCode 服务进程"]
     api["HTTP 路由与事件出口"]
@@ -53,7 +53,7 @@ SSE 是服务端事件流。DAG 是有向无环图。Session（会话）保存�
 
 | 边界            | 职责                                                                                                                      | 主要源码                                                                                                                                                                                                                                |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 客户端          | CLI/TUI、浏览器应用、Electron 桌面端和 SDK 调用方呈现或调用会话能力。                                                     | [`packages/tui`](../packages/tui)、[`packages/app`](../packages/app)、[`packages/desktop`](../packages/desktop)、[`packages/sdk/js`](../packages/sdk/js)                                                                                |
+| 客户端          | CLI/TUI 和 SDK 调用方呈现或调用会话能力。                                                                                 | [`packages/tui`](../packages/tui)、[`packages/sdk/js`](../packages/sdk/js)                                                                                                                                                              |
 | HTTP 与事件 API | 路由接收客户端请求，调用应用服务并返回响应；事件端点发送实时更新。                                                        | [`packages/opencode/src/server/routes`](../packages/opencode/src/server/routes)、[`packages/protocol`](../packages/protocol)                                                                                                            |
 | AppLayer        | 组合服务依赖并管理资源生命周期，包括 DAG 存储、消息服务、DAG 服务和 Goal 服务。                                           | [`app-runtime.ts`](../packages/opencode/src/effect/app-runtime.ts#L68)、[`ManagedRuntime`](../packages/opencode/src/effect/app-runtime.ts#L154)                                                                                         |
 | Session         | 整理提示词和上下文，运行模型交互、工具调用及会话状态更新。                                                                | [`packages/opencode/src/session`](../packages/opencode/src/session)                                                                                                                                                                     |
@@ -63,13 +63,11 @@ SSE 是服务端事件流。DAG 是有向无环图。Session（会话）保存�
 
 ## 客户端与协议
 
-TUI 和 Web 应用都使用 HTTP SDK 访问服务。TUI 在 [`context/sdk.tsx`](../packages/tui/src/context/sdk.tsx#L37) 以服务 URL 创建客户端，并在 [`context/sdk.tsx`](../packages/tui/src/context/sdk.tsx#L107) 订阅事件流。Web 应用按服务连接创建 SDK，并可为不同服务或目录建立独立上下文：[`utils/server.ts`](../packages/app/src/utils/server.ts#L20)、[`context/server-sdk.tsx`](../packages/app/src/context/server-sdk.tsx#L57)。
-
-Electron 桌面端可启动本地 sidecar 服务，再通过本机 HTTP 与它通信；也支持连接 HTTP 服务或经 SSH 暴露的 HTTP 代理。sidecar 由 Electron utility process 启动：[`server.ts`](../packages/desktop/src/main/server.ts#L55)、[`server.ts`](../packages/desktop/src/main/server.ts#L142)、[`server.ts`](../packages/app/src/context/server.tsx#L147)。
+TUI 使用 HTTP SDK 访问服务，在 [`context/sdk.tsx`](../packages/tui/src/context/sdk.tsx#L37) 以服务 URL 创建客户端，并在 [`context/sdk.tsx`](../packages/tui/src/context/sdk.tsx#L107) 订阅事件流。
 
 `packages/protocol` 使用 Effect HttpApi 定义选定 API 组和中间件边界：[`api.ts`](../packages/protocol/src/api.ts#L25)。事件组声明 `/api/event` 及其事件 schema：[`event.ts`](../packages/protocol/src/groups/event.ts#L35)。运行时还提供更广的 HTTP API 表面；OpenAPI 与 SDK 生成入口可从 [`public.ts`](../packages/opencode/src/server/routes/instance/httpapi/public.ts#L1) 和 [`packages/opencode/script`](../packages/opencode/script) 查起。
 
-两个生成客户端面向不同用途。`packages/client` 从服务端的 session API 组生成 Promise 客户端和 Effect 客户端：[`build.ts`](../packages/client/script/build.ts#L8)。公开的 JavaScript SDK 从运行时生成的 OpenAPI 文档生成 v2 客户端：[`build.ts`](../packages/sdk/js/script/build.ts#L12)。
+公开的 JavaScript SDK 从运行时生成的 OpenAPI 文档生成 v2 客户端：[`build.ts`](../packages/sdk/js/script/build.ts#L12)。
 
 ## DAG、Goal 与模型调用
 

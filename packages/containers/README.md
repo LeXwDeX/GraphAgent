@@ -9,7 +9,6 @@ Images
 - `base`: Ubuntu 24.04 with common build tools and utilities
 - `bun-node`: `base` plus the exact Bun (`packageManager`) and Node.js (`.node-version`) pins
 - `rust`: `bun-node` plus the stable Rust pin in `rust-toolchain.toml` (minimal profile)
-- `tauri-linux`: `rust` plus Tauri Linux build dependencies
 - `publish`: `bun-node` plus Docker CLI and AUR tooling
 
 Build
@@ -21,14 +20,7 @@ REGISTRY=ghcr.io/lexwdex TAG=24.04 bun ./packages/containers/script/build.ts --p
 
 The build script reads the central pins and passes them as Docker build arguments.
 The image checks its installed versions against those same files. Rebuild it after
-changing any runtime pin. Rust is an auxiliary container toolchain; these images
-do not control Electron's embedded Node runtime.
-
-For the stats server image, build from the repository root with the pinned Bun:
-
-```
-docker build --build-arg BUN_VERSION="$(node script/toolchain.mjs get bun)" -f packages/stats/server/Dockerfile -t opencode-stats .
-```
+changing any runtime pin. Rust is an auxiliary container toolchain.
 
 Workflow usage
 

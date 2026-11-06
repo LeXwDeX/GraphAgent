@@ -1,6 +1,12 @@
 import base64
 import copy
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+import verify_build
 from verify_build import output_hash, reviewed_inputs
 
 
@@ -51,6 +57,29 @@ class HashEvidenceTest(unittest.TestCase):
         for log in [self.log.replace(self.fake, self.actual), self.log + self.log]:
             with self.assertRaises(RuntimeError):
                 output_hash(log, self.drv)
+
+
+class BuildTest(unittest.TestCase):
+    def test_builds_only_cli(self):
+        system = "x86_64-linux"
+        measured = json.loads(Path("nix/hashes.json").read_text())["nodeModules"][system]
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            if command[1] == "eval" and "builtins.currentSystem" in command:
+                return SimpleNamespace(returncode=0, stdout=system, stderr="")
+            if command[1:3] == ["build", ".#node_modules_updater"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="mismatch")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as evidence, \
+             patch("sys.argv", ["verify_build.py", "--system", system, "--evidence", evidence]), \
+             patch("verify_build.subprocess.run", side_effect=run), \
+             patch("verify_build.output_hash", return_value=measured):
+            verify_build.main()
+
+        self.assertEqual(commands[-1], ["nix", "build", ".#opencode", "--no-link", "--print-build-logs", "--json"])
 
 
 if __name__ == "__main__":

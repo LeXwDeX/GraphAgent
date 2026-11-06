@@ -2,22 +2,20 @@
 # CI (Azure Pipelines)
 # ----------------------------------------------------------------------------
 # Purpose : Private-host scan, lint, typecheck, DAG core gate, unit/HttpAPI/
-#           generated-code tests and Playwright E2E on Linux (Windows E2E runs
-#           in GitHub Actions)
+#           generated-code tests on Linux (Windows DAG tests run in GitHub Actions)
 # Trigger : Push to `main`, PRs targeting `main`, manual run
 # Jobs    : Typecheck               — private-host scan, its unit test, lint,
 #                                     typecheck, DAG core gate, oc tests
 #           Unit Tests (workspace)  — workspace tests except opencode, Go,
-#                                     VS Code and generated-code checks
+#                                     and generated-code checks
 #           Unit Tests (opencode N/4) — opencode tests in parallel shards
 #           Unit Tests (HttpAPI)    — HttpAPI exerciser gates
 #           Unit Tests (linux)      — aggregate; succeeds only when every
 #                                     unit job succeeded
-#           E2E Tests (linux)      — Playwright chromium
-# Gate    : Typecheck, Unit Tests (linux) and E2E Tests (linux) are the merge
+# Gate    : Typecheck and Unit Tests (linux) are the merge
 #           gates. Every PR and every main push runs the full suite; there is
 #           no result reuse. Fork PRs build only after a member comments.
-#           Windows E2E is a GitHub Actions check on the self-hosted runner.
+#           Windows DAG tests are a GitHub Actions check on the self-hosted runner.
 # Agents  : Azure DevOps "GitHub-hosted Agents" pool, billed per minute with
 #           no reserved parallel jobs: ubuntu-24.04-8-core (8 vCPU, 32 GB).
 # Release : GitHub Actions release-fork.yml; .azure-pipelines/release.yml is
@@ -44,10 +42,6 @@ parameters:
     displayName: opencode unit test shards
     type: object
     default: [1, 2, 3, 4]
-  - name: e2ePlatforms
-    displayName: E2E platforms
-    type: object
-    default: [linux]
 
 variables:
   GOTOOLCHAIN: local
@@ -119,16 +113,6 @@ jobs:
       - bash: go test ./...
         displayName: Run config assistant tests
         workingDirectory: config_assistant
-      - bash: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          bun run test:unit
-        displayName: Run VS Code connection tests
-        workingDirectory: sdks/vscode
-        timeoutInMinutes: 5
-      - bash: bun run check:generated
-        displayName: Check generated client
-        workingDirectory: packages/client
       - bash: bun run check:generated
         displayName: Check generated SDK
         workingDirectory: packages/sdk/js
@@ -231,67 +215,3 @@ jobs:
           fi
           echo "All unit gates passed."
         displayName: Require every unit gate
-
-  - ${{ each platform in parameters.e2ePlatforms }}:
-      - job: e2e_${{ platform }}
-        displayName: E2E Tests (${{ platform }})
-        # Windows E2E runs in the GitHub Actions windows-e2e workflow on the
-        # shared self-hosted Windows agent.
-        pool:
-          name: GitHub-hosted Agents
-          vmImage: ubuntu-24.04-8-core
-        timeoutInMinutes: 75
-        variables:
-          PLAYWRIGHT_BROWSERS_PATH: $(Pipeline.Workspace)/.playwright-browsers
-        steps:
-          - checkout: self
-            fetchDepth: 1
-          - template: templates/toolchain.yml
-          - bash: |
-              set -euo pipefail
-              version=$(node -e 'console.log(require("./package.json").workspaces.catalog["@playwright/test"])')
-              echo "##vso[task.setvariable variable=PLAYWRIGHT_VERSION]$version"
-            displayName: Read Playwright version
-          - task: Cache@2
-            displayName: Cache Playwright browsers
-            inputs:
-              key: 'playwright | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "$(PLAYWRIGHT_VERSION)" | chromium'
-              path: $(PLAYWRIGHT_BROWSERS_PATH)
-              cacheHitVar: PLAYWRIGHT_CACHE_HIT
-          - ${{ if eq(platform, 'linux') }}:
-              - bash: bunx playwright install-deps chromium
-                displayName: Install Playwright system dependencies
-                workingDirectory: packages/app
-          - bash: bunx playwright install chromium
-            displayName: Install Playwright browsers
-            condition: and(succeeded(), ne(variables.PLAYWRIGHT_CACHE_HIT, 'true'))
-            workingDirectory: packages/app
-          - ${{ if eq(platform, 'windows') }}:
-              - bash: bun test --timeout 30000 --only-failures test/dag/dag-output-ref.test.ts test/dag/dag-output-ref-result.test.ts test/dag/dag-input-mapping-runtime.test.ts test/dag/dag-artifact-permissions.test.ts
-                displayName: Verify DAG artifact storage on Windows
-                workingDirectory: packages/opencode
-                timeoutInMinutes: 5
-          - bash: bun test test/sanitize-markdown.test.ts --timeout 30000 --only-failures
-            displayName: Verify shared Markdown in Chromium
-            workingDirectory: packages/web
-            timeoutInMinutes: 3
-            env:
-              OPENCODE_TEST_BROWSER: "1"
-          - bash: bun --cwd packages/app test:e2e:local
-            displayName: Run app e2e tests
-            timeoutInMinutes: 30
-            env:
-              CI: "true"
-          - bash: |
-              set -euo pipefail
-              out="$BUILD_ARTIFACTSTAGINGDIRECTORY/playwright"
-              mkdir -p "$out"
-              for dir in packages/app/e2e/test-results packages/app/e2e/playwright-report; do
-                if [ -d "$dir" ]; then cp -R "$dir" "$out/"; fi
-              done
-            displayName: Collect Playwright artifacts
-            condition: always()
-          - publish: $(Build.ArtifactStagingDirectory)/playwright
-            artifact: playwright-${{ platform }}-$(System.JobAttempt)
-            displayName: Upload Playwright artifacts
-            condition: always()

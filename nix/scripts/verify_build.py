@@ -87,9 +87,9 @@ def main():
         Path("nix/hashes.json").write_text(json.dumps(candidate, indent=2) + "\n")
     elif hashes["nodeModules"].get(args.system) != measured:
         raise RuntimeError("Committed hash is stale; measured native candidate is in the evidence artifact")
-    builds = run("packages", ["nix", "build", ".#opencode", ".#opencode-desktop", "--no-link", "--print-build-logs", "--json"])
+    builds = run("packages", ["nix", "build", ".#opencode", "--no-link", "--print-build-logs", "--json"])
     if builds.returncode:
-        raise RuntimeError("Normal CLI/desktop derivations did not both build")
+        raise RuntimeError("Normal CLI derivation did not build")
     (evidence / "packages.json").write_text(builds.stdout)
 
 
