@@ -200,11 +200,3 @@ export function route(template: string, params: Record<string, string>) {
     template,
   )
 }
-
-export function controlledPtyInput(title: string | undefined) {
-  return {
-    command: "/bin/sh",
-    args: ["-c", "sleep 30"],
-    ...(title ? { title } : {}),
-  }
-}

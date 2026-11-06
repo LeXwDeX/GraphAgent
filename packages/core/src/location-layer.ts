@@ -29,7 +29,6 @@ import { FileMutation } from "./file-mutation"
 import { Reference } from "./reference"
 import { ReferenceGuidance } from "./reference/guidance"
 import { RepositoryCache } from "./repository-cache"
-import { Pty } from "./pty"
 import { SkillV2 } from "./skill"
 import { SkillGuidance } from "./skill/guidance"
 import { BuiltInTools } from "./tool/builtins"
@@ -70,7 +69,6 @@ export class LocationServiceMap extends LayerMap.Service<LocationServiceMap>()("
       ProjectCopy.locationLayer,
       FileSystem.locationLayer,
       Watcher.locationLayer,
-      Pty.locationLayer,
       SkillV2.locationLayer,
       systemContext,
       LocationMutation.locationLayer.pipe(Layer.orDie),

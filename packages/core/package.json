@@ -8,7 +8,6 @@
   "scripts": {
     "db": "bun drizzle-kit",
     "migration": "bun run script/migration.ts",
-    "fix-node-pty": "bun run script/fix-node-pty.ts",
     "test": "bun test --only-failures",
     "typecheck": "tsgo --noEmit"
   },
@@ -31,11 +30,6 @@
       "bun": "./src/database/sqlite.bun.ts",
       "node": "./src/database/sqlite.node.ts",
       "default": "./src/database/sqlite.bun.ts"
-    },
-    "#pty": {
-      "bun": "./src/pty/pty.bun.ts",
-      "node": "./src/pty/pty.node.ts",
-      "default": "./src/pty/pty.bun.ts"
     },
     "#fff": {
       "bun": "./src/filesystem/fff.bun.ts",
@@ -89,7 +83,6 @@
     "@effect/opentelemetry": "catalog:",
     "@effect/platform-node": "catalog:",
     "@effect/sql-sqlite-bun": "catalog:",
-    "@lydell/node-pty": "catalog:",
     "@ff-labs/fff-bun": "catalog:",
     "@npmcli/arborist": "catalog:",
     "@npmcli/config": "11.2.0",
@@ -106,7 +99,6 @@
     "@silvia-odwyer/photon-node": "catalog:",
     "@openrouter/ai-sdk-provider": "catalog:",
     "ai-gateway-provider": "catalog:",
-    "bun-pty": "0.4.8",
     "cross-spawn": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",

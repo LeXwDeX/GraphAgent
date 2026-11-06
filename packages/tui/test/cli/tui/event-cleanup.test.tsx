@@ -356,24 +356,6 @@ describe("real route component event cleanup", () => {
       await route.dispose()
     }
   })
-
-  test("Prompt returns the event bus to its baseline listener count after unmount", async () => {
-    const route = await mountRoute("prompt")
-
-    try {
-      route.mount()
-      await wait(() => route.counter() > route.baseline)
-      route.unmount()
-      expect(route.counter()).toBe(route.baseline)
-
-      route.mount()
-      await wait(() => route.counter() > route.baseline)
-      route.unmount()
-      expect(route.counter()).toBe(route.baseline)
-    } finally {
-      await route.dispose()
-    }
-  })
 })
 
 describe("workflow failure rendering in the real session route", () => {

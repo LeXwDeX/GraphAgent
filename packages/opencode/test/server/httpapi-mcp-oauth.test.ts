@@ -5,7 +5,6 @@ import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http"
 import { HttpApi, HttpApiBuilder } from "effect/http-api"
 import { McpApi, McpPaths } from "../../src/server/routes/instance/httpapi/groups/mcp"
-import { Authorization } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { InstanceContextMiddleware } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
 import {
   WorkspaceRouteContext,
@@ -31,11 +30,6 @@ const testMcpHandlers = HttpApiBuilder.group(TestHttpApi, "mcp", (handlers) =>
   ),
 )
 
-const passthroughAuthorization = Layer.succeed(
-  Authorization,
-  Authorization.of((effect) => effect),
-)
-
 const passthroughInstanceContext = Layer.succeed(
   InstanceContextMiddleware,
   InstanceContextMiddleware.of((effect) => effect),
@@ -52,7 +46,7 @@ const it = testEffect(
   HttpRouter.serve(
     HttpApiBuilder.layer(TestHttpApi).pipe(
       Layer.provide(testMcpHandlers),
-      Layer.provide([passthroughAuthorization, passthroughInstanceContext, testWorkspaceRouting, fakeSession]),
+      Layer.provide([passthroughInstanceContext, testWorkspaceRouting, fakeSession]),
     ),
     { disableListenLog: true, disableLogger: true },
   ).pipe(Layer.provideMerge(NodeHttpServer.layerTest)),

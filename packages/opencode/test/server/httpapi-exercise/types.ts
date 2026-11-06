@@ -9,7 +9,7 @@ export const Methods = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const
 
 export type Method = (typeof Methods)[number]
 export type OpenApiMethod = (typeof OpenApiMethods)[number]
-export type Mode = "effect" | "coverage" | "auth"
+export type Mode = "effect" | "coverage"
 export type Comparison = "none" | "status" | "json"
 export type CaptureMode = "full" | "stream"
 export type AuthPolicy = "protected" | "public" | "public-bypass" | "ticket-bypass"
@@ -68,7 +68,6 @@ export type ScenarioContext = {
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>
   llmWait: (count: number) => Effect.Effect<void>
-  tuiRequest: (request: { path: string; body: unknown }) => Effect.Effect<void>
   /** Create a DAG workflow owned by sessionID with the given node configs. Returns the dagID. */
   dag: (input: { sessionID: SessionID; title?: string; nodes: DagNodeSeed[] }) => Effect.Effect<DagWorkflowInfo>
   /** Fail a seeded DAG node through the Dag service (projects error_class on the wire). */

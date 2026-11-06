@@ -3,7 +3,6 @@ import { Permission } from "@/permission"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
 import { PermissionNotFoundError } from "../errors"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -50,7 +49,6 @@ export const PermissionApi = HttpApi.make("permission")
       )
       .middleware(InstanceContextMiddleware)
       .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
   )
   .annotateMerge(
     OpenApi.annotations({

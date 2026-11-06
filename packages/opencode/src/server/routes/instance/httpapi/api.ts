@@ -19,18 +19,15 @@ import { PermissionApi } from "./groups/permission"
 import { ProjectApi } from "./groups/project"
 import { ProjectCopyApi } from "./groups/project-copy"
 import { ProviderApi } from "./groups/provider"
-import { PtyApi, PtyConnectApi } from "./groups/pty"
 import { QuestionApi } from "./groups/question"
 import { SessionApi } from "./groups/session"
 import { SyncApi } from "./groups/sync"
-import { TuiApi } from "./groups/tui"
 import { DagApi } from "./groups/dag"
 import { WorkspaceApi } from "./groups/workspace"
 import { makeApi } from "@opencode-ai/protocol/api"
 import { LocationMiddleware } from "@opencode-ai/server/location"
 import { SessionLocationMiddleware } from "@opencode-ai/server/middleware/session-location"
 import { GlobalApi } from "./groups/global"
-import { Authorization } from "./middleware/authorization"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
 const EventSchema = Schema.Union([
@@ -57,7 +54,6 @@ export const RootHttpApi = HttpApi.make("opencode-root")
   .addHttpApi(ControlPlaneApi)
   .addHttpApi(GlobalApi)
   .middleware(SchemaErrorMiddleware)
-  .middleware(Authorization)
 
 export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(ConfigApi)
@@ -67,13 +63,11 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(McpApi)
   .addHttpApi(ProjectApi)
   .addHttpApi(ProjectCopyApi)
-  .addHttpApi(PtyApi)
   .addHttpApi(QuestionApi)
   .addHttpApi(PermissionApi)
   .addHttpApi(ProviderApi)
   .addHttpApi(SessionApi)
   .addHttpApi(SyncApi)
-  .addHttpApi(TuiApi)
   .addHttpApi(DagApi)
   .addHttpApi(WorkspaceApi)
   .middleware(SchemaErrorMiddleware)
@@ -83,7 +77,6 @@ export const OpenCodeHttpApi = HttpApi.make("opencode")
   .addHttpApi(EventApi)
   .addHttpApi(InstanceHttpApi)
   .addHttpApi(ServerApi)
-  .addHttpApi(PtyConnectApi)
   .annotate(HttpApi.AdditionalSchemas, [
     EventSchema,
     Question.Replied,

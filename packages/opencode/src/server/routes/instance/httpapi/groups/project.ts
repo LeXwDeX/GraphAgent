@@ -3,7 +3,6 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
 import { ProjectNotFoundError } from "../errors"
-import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -82,7 +81,6 @@ export const ProjectApi = HttpApi.make("project")
       )
       .middleware(InstanceContextMiddleware)
       .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
   )
   .annotateMerge(
     OpenApi.annotations({

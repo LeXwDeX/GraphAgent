@@ -25,7 +25,6 @@ import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
-import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
 import { useExit } from "../../context/exit"
@@ -267,22 +266,6 @@ export function Prompt(props: PromptProps) {
   const agentStyleId = syntax().getStyleId("extmark.agent")!
   const pasteStyleId = syntax().getStyleId("extmark.paste")!
   let promptPartTypeId = 0
-  const event = useEvent()
-
-  onCleanup(
-    event.on("tui.prompt.append", (evt, { workspace }) => {
-      if (workspace !== project.workspace.current()) return
-      if (!input || input.isDestroyed) return
-      input.insertText(evt.properties.text)
-      setTimeout(() => {
-        // setTimeout is a workaround and needs to be addressed properly
-        if (!input || input.isDestroyed) return
-        input.getLayoutNode().markDirty()
-        input.gotoBufferEnd()
-        renderer.requestRender()
-      }, 0)
-    }),
-  )
 
   createEffect(() => {
     if (!input || input.isDestroyed) return

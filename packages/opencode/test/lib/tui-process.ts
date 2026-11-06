@@ -1,4 +1,4 @@
-import { spawn } from "@opencode-ai/core/pty/pty.bun"
+import { spawn } from "./pty.bun"
 import { Ghostty } from "ghostty-web"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"

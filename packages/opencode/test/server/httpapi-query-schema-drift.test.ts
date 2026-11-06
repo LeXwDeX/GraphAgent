@@ -23,7 +23,6 @@ import {
   MessagesQuery,
   SessionPaths,
 } from "../../src/server/routes/instance/httpapi/groups/session"
-import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { SessionMessagesQuery } from "@opencode-ai/protocol/groups/message"
 import { QueryBoolean, QueryBooleanOpenApi } from "../../src/server/routes/instance/httpapi/groups/query"
 import { resetDatabase } from "../fixture/db"
@@ -90,7 +89,6 @@ const pathParamPatterns = [
   { method: "post", path: SessionPaths.permissions, name: "permissionID", pattern: "^per" },
   { method: "post", path: "/permission/:requestID/reply", name: "requestID", pattern: "^per" },
   { method: "post", path: "/question/:requestID/reply", name: "requestID", pattern: "^que" },
-  { method: "put", path: PtyPaths.update, name: "ptyID", pattern: "^pty" },
   { method: "delete", path: WorkspacePaths.remove, name: "id", pattern: "^wrk" },
 ] satisfies Array<{ method: Method; path: string; name: string; pattern: string }>
 

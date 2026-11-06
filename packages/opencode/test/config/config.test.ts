@@ -2054,26 +2054,6 @@ test("parseManagedPlist strips MDM metadata keys", async () => {
   expect((config as any)._manualProfile).toBeUndefined()
 })
 
-test("parseManagedPlist parses server settings", async () => {
-  const config = ConfigParse.schema(
-    ConfigV1.Info,
-    ConfigParse.jsonc(
-      await ConfigManaged.parseManagedPlist(
-        JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
-          server: { hostname: "127.0.0.1", mdns: false },
-          autoupdate: true,
-        }),
-      ),
-      "test:mobileconfig",
-    ),
-    "test:mobileconfig",
-  )
-  expect(config.server?.hostname).toBe("127.0.0.1")
-  expect(config.server?.mdns).toBe(false)
-  expect(config.autoupdate).toBe(true)
-})
-
 test("parseManagedPlist parses permission rules", async () => {
   const config = ConfigParse.schema(
     ConfigV1.Info,

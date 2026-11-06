@@ -9,7 +9,6 @@ import { ServerAuth } from "./auth"
 import { handlers } from "./handlers"
 import { authorizationLayer } from "./middleware/authorization"
 import { schemaErrorLayer } from "./middleware/schema-error"
-import { PtyEnvironment } from "./pty-environment"
 
 export function createRoutes(password?: string) {
   return makeRoutes(
@@ -26,7 +25,6 @@ export function createEmbeddedRoutes() {
 function makeRoutes<AuthError, AuthServices>(auth: Layer.Layer<ServerAuth.Config, AuthError, AuthServices>) {
   return HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(handlers),
-    Layer.provide(PtyEnvironment.defaultLayer),
     Layer.provide(authorizationLayer),
     Layer.provide(schemaErrorLayer),
     Layer.provide(auth),

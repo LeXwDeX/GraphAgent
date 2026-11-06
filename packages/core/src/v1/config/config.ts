@@ -16,7 +16,6 @@ import { ConfigMCPV1 } from "./mcp"
 import { ConfigPermissionV1 } from "./permission"
 import { ConfigPluginV1 } from "./plugin"
 import { ConfigProviderV1 } from "./provider"
-import { ConfigServerV1 } from "./server"
 import { ConfigSkillsV1 } from "./skills"
 import { ToolBudget } from "../../session/tool-budget"
 
@@ -39,9 +38,6 @@ export const Info = Schema.Struct({
   maxToolCalls: Schema.optional(ToolBudget.MaxToolCalls),
   shell: Schema.optional(Schema.String).annotate({ description: "Default shell to use for terminal and bash tool" }),
   logLevel: Schema.optional(LogLevelRef).annotate({ description: "Log level" }),
-  server: Schema.optional(ConfigServerV1.Server).annotate({
-    description: "Server configuration for opencode serve and web commands",
-  }),
   command: Schema.optional(Schema.Record(Schema.String, ConfigCommandV1.Info)).annotate({
     description: "Command configuration, see https://opencode.ai/docs/commands",
   }),

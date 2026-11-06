@@ -3,7 +3,6 @@ import { LocalPermissionStartup } from "@/permission/local-startup"
 import { AppRuntime } from "@/effect/app-runtime"
 import { HookClientLifecycle } from "@/hook/client-lifecycle"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { FSUtil } from "@opencode-ai/core/fs-util"
 // CLI entry point for `opencode run` and `opencode --mini`.
 //
 // Handles three modes:
@@ -11,8 +10,6 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 //      stdout, and exits when the session goes idle.
 //   2. Interactive local (`opencode --mini`): boots the split-footer direct mode
 //      with an in-process server (no external HTTP).
-//   3. Interactive attach (`opencode --mini --attach`): connects to a running
-//      opencode server and runs interactive mode against it.
 //
 // Also supports `--command` for slash-command execution, `--format json` for
 // raw event streaming, `--continue` / `--session` for session resumption,
@@ -20,7 +17,6 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import type { Argv } from "yargs"
 import path from "path"
 import { pathToFileURL } from "url"
-import { open } from "node:fs/promises"
 import { Effect, Option } from "effect"
 import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
@@ -61,8 +57,6 @@ type FilePart = {
   filename: string
   mime: string
 }
-
-const ATTACH_FILE_MAX_BYTES = 10 * 1024 * 1024
 
 type Inline = {
   icon: string
@@ -132,12 +126,9 @@ async function toolError(part: ToolPart) {
 export const RunCommand = effectCmd({
   command: "run [message..]",
   describe: "run opencode with a message",
-  // --attach connects to a remote server (no local instance needed); the
-  // default path runs an in-process server and needs the project instance.
-  instance: (args) => !args.attach,
-  // For --dir without --attach, load instance for the resolved target dir.
+  // For --dir, load instance for the resolved target dir.
   // The handler also chdirs (preserving the legacy order: chdir → file resolution).
-  directory: (args) => (args.dir && !args.attach ? path.resolve(process.cwd(), args.dir) : process.cwd()),
+  directory: (args) => (args.dir ? path.resolve(process.cwd(), args.dir) : process.cwd()),
   builder: (yargs: Argv) =>
     yargs
       .positional("message", {
@@ -189,27 +180,9 @@ export const RunCommand = effectCmd({
         type: "string",
         describe: "title for the session (uses truncated prompt if no value provided)",
       })
-      .option("attach", {
-        type: "string",
-        describe: "attach to a running opencode server (e.g., http://localhost:4096)",
-      })
-      .option("password", {
-        alias: ["p"],
-        type: "string",
-        describe: "basic auth password (defaults to OPENCODE_SERVER_PASSWORD)",
-      })
-      .option("username", {
-        alias: ["u"],
-        type: "string",
-        describe: "basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')",
-      })
       .option("dir", {
         type: "string",
-        describe: "directory to run in, path on remote server if attaching",
-      })
-      .option("port", {
-        type: "number",
-        describe: "port for the local server (defaults to random port if no value provided)",
+        describe: "directory to run in",
       })
       .option("variant", {
         type: "string",
@@ -265,7 +238,6 @@ export const RunCommand = effectCmd({
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
     const { RuntimeFlags } = yield* Effect.promise(() => import("@/effect/runtime-flags"))
     const { InstanceRef } = yield* Effect.promise(() => import("@/effect/instance-ref"))
-    const { ServerAuth } = yield* Effect.promise(() => import("@/server/auth"))
     const agentSvc = yield* Agent.Service
     const flags = yield* RuntimeFlags.Service
     const localInstance = yield* InstanceRef
@@ -305,10 +277,6 @@ export const RunCommand = effectCmd({
 
       if (args.init && args.maintenance) {
         die("--init and --maintenance are mutually exclusive")
-      }
-
-      if (args.attach && (args.init || args.maintenance || args["init-only"])) {
-        die("--init, --maintenance and --init-only cannot be used with --attach")
       }
 
       if (interactive && (args.init || args.maintenance || args["init-only"])) {
@@ -351,8 +319,7 @@ export const RunCommand = effectCmd({
       const localSessionIDs = new Set<string>()
       const root = Filesystem.resolve(process.env.PWD ?? process.cwd())
       const directory = (() => {
-        if (!args.dir) return args.attach ? undefined : root
-        if (args.attach) return args.dir
+        if (!args.dir) return root
 
         try {
           process.chdir(path.isAbsolute(args.dir) ? args.dir : path.join(root, args.dir))
@@ -362,23 +329,13 @@ export const RunCommand = effectCmd({
           process.exit(1)
         }
       })()
-      const attachHeaders = args.attach
-        ? ServerAuth.headers({ password: args.password, username: args.username })
-        : undefined
-      const attachSDK = (dir?: string) => {
-        return createOpencodeClient({
-          baseUrl: args.attach!,
-          directory: dir,
-          headers: attachHeaders,
-        })
-      }
 
       const files: FilePart[] = []
       if (args.file) {
         const list = Array.isArray(args.file) ? args.file : [args.file]
 
         for (const filePath of list) {
-          const resolvedPath = path.resolve(args.attach ? root : (directory ?? root), filePath)
+          const resolvedPath = path.resolve(directory ?? root, filePath)
           if (!(await Filesystem.exists(resolvedPath))) {
             UI.error(`File not found: ${filePath}`)
             process.exit(1)
@@ -386,48 +343,11 @@ export const RunCommand = effectCmd({
 
           const stat = Filesystem.stat(resolvedPath)
           const isDirectory = stat?.isDirectory() ?? false
-          if (args.attach && isDirectory) {
-            UI.error(`Cannot attach local directory without a shared filesystem: ${filePath}`)
-            process.exit(1)
-          }
-
-          const content = await (async () => {
-            if (!args.attach) return
-            const handle = await open(resolvedPath, "r")
-            try {
-              const opened = await handle.stat()
-              if (!opened.isFile() || Number(opened.size) > ATTACH_FILE_MAX_BYTES) {
-                UI.error(`Cannot attach local file larger than 10 MiB or a special file: ${filePath}`)
-                process.exit(1)
-              }
-              if (opened.size === 0) return Buffer.alloc(0)
-              const buffer = Buffer.alloc(Number(opened.size))
-              let offset = 0
-              while (offset < buffer.length) {
-                const read = await handle.read(buffer, offset, buffer.length - offset, offset)
-                if (read.bytesRead === 0) break
-                offset += read.bytesRead
-              }
-              return buffer.subarray(0, offset)
-            } finally {
-              await handle.close()
-            }
-          })()
-          const detected = FSUtil.mimeType(resolvedPath)
-          const text = content?.toString("utf8")
-          const mime = !args.attach
-            ? isDirectory
-              ? "application/x-directory"
-              : "text/plain"
-            : content && text !== undefined && Buffer.from(text, "utf8").equals(content)
-              ? "text/plain"
-              : detected
-
           files.push({
             type: "file",
-            url: content ? `data:${mime};base64,${content.toString("base64")}` : pathToFileURL(resolvedPath).href,
+            url: pathToFileURL(resolvedPath).href,
             filename: path.basename(resolvedPath),
-            mime,
+            mime: isDirectory ? "application/x-directory" : "text/plain",
           })
         }
       }
@@ -567,28 +487,11 @@ export const RunCommand = effectCmd({
           throw new Error("Failed to create session")
         }
 
-        if (!args.attach) localSessionIDs.add(id)
+        localSessionIDs.add(id)
         return {
           id,
           title: result.data?.title,
         }
-      }
-
-      async function current(sdk: OpencodeClient): Promise<string> {
-        if (!args.attach) {
-          return directory ?? root
-        }
-
-        const next = await sdk.path
-          .get()
-          .then((x) => x.data?.directory)
-          .catch(() => undefined)
-        if (next) {
-          return next
-        }
-
-        UI.error("Failed to resolve remote directory")
-        process.exit(1)
       }
 
       async function localAgent() {
@@ -617,64 +520,19 @@ export const RunCommand = effectCmd({
         return name
       }
 
-      async function attachAgent(sdk: OpencodeClient) {
-        if (!args.agent) return undefined
-        const name = args.agent
-
-        const modes = await sdk.app
-          .agents(undefined, { throwOnError: true })
-          .then((x) => x.data ?? [])
-          .catch(() => undefined)
-
-        if (!modes) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `failed to list agents from ${args.attach}. Falling back to default agent`,
-          )
-          return undefined
-        }
-
-        const agent = modes.find((a) => a.name === name)
-        if (!agent) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" not found. Falling back to default agent`,
-          )
-          return undefined
-        }
-
-        if (agent.mode === "subagent") {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
-          )
-          return undefined
-        }
-
-        return name
-      }
-
-      async function pickAgent(sdk: OpencodeClient) {
-        if (!args.agent) return undefined
-        if (args.attach) {
-          return attachAgent(sdk)
-        }
-
+      async function pickAgent() {
         return localAgent()
       }
 
       async function execute(sdk: OpencodeClient) {
-        const localSelectedAgent = args.attach ? undefined : await pickAgent(sdk)
+        const localSelectedAgent = await pickAgent()
         const sess = await session(sdk, localSelectedAgent)
         if (!sess?.id) {
           UI.error("Session not found")
           process.exit(1)
         }
         const sessionID = sess.id
-        if (!args.attach) localSessionIDs.add(sessionID)
+        localSessionIDs.add(sessionID)
         let dagHold: DagHold.DagHold | undefined
 
         function emit(type: string, data: Record<string, unknown>) {
@@ -709,9 +567,7 @@ export const RunCommand = effectCmd({
         }
 
         // Consume one subscribed event stream for the active session and mirror it
-        // to stdout/UI. `client` is passed explicitly because attach mode may
-        // rebind the SDK to the session's directory after the subscription is
-        // created, and replies issued from inside the loop must use that client.
+        // to stdout/UI.
         async function loop(
           client: OpencodeClient,
           events: Awaited<ReturnType<typeof sdk.event.subscribe>>,
@@ -722,8 +578,7 @@ export const RunCommand = effectCmd({
           let error: string | undefined
           // Issue 614: consumer-only DAG hold. Poll dag.bySession on the
           // busy/idle transitions of the target session and keep consuming
-          // events while a session workflow may still owe a wake turn. Attach
-          // mode keeps today's break-on-first-idle exit.
+          // events while a session workflow may still owe a wake turn.
 
           try {
             for await (const event of dagHold || keepAlive
@@ -848,11 +703,9 @@ export const RunCommand = effectCmd({
           }
           return error
         }
-        const cwd = args.attach ? (directory ?? sess.directory ?? (await current(sdk))) : (directory ?? root)
-        const client = args.attach ? attachSDK(cwd) : sdk
-
-        // Validate agent if specified
-        const agent = args.attach ? await pickAgent(client) : localSelectedAgent
+        const cwd = directory ?? root
+        const client = sdk
+        const agent = localSelectedAgent
 
         if (!interactive) {
           if (args.init || args.maintenance || args["init-only"]) {
@@ -882,10 +735,8 @@ export const RunCommand = effectCmd({
           async function begin() {
             subscription = new AbortController()
             const events = await client.event.subscribe(undefined, { signal: subscription.signal })
-            requestedMessageID = args.attach || !hasInput ? undefined : MessageID.ascending()
-            dagHold = args.attach
-              ? undefined
-              : await DagHold.createDagRunHold(client, sessionID, requestedMessageID, renderText)
+            requestedMessageID = !hasInput ? undefined : MessageID.ascending()
+            dagHold = await DagHold.createDagRunHold(client, sessionID, requestedMessageID, renderText)
             completed = loop(
               client,
               events,
@@ -899,7 +750,6 @@ export const RunCommand = effectCmd({
             })
           }
           async function finish() {
-            if (args.attach) return
             if (await completed) process.exitCode = 1
           }
           function fail(error: unknown) {
@@ -1047,17 +897,14 @@ export const RunCommand = effectCmd({
       }
 
       try {
-        if (interactive && !args.attach && !args.session && !args.continue) {
+        if (interactive && !args.session && !args.continue) {
           const model = pick(args.model)
           const { runInteractiveLocalMode } = await import("./run/runtime")
           const fetchFn = Object.assign(
             async (input: RequestInfo | URL, init?: RequestInit) => {
               const { Server } = await import("@/server/server")
               const request = new Request(input, init)
-              const headers = new Headers(request.headers)
-              const auth = ServerAuth.header()
-              if (auth) headers.set("Authorization", auth)
-              const localRequest = new Request(request, { headers })
+              const localRequest = new Request(request)
               if (
                 args["dangerously-skip-permissions"] &&
                 localRequest.method === "POST" &&
@@ -1092,19 +939,11 @@ export const RunCommand = effectCmd({
           }
         }
 
-        if (args.attach) {
-          const sdk = attachSDK(directory)
-          return await execute(sdk)
-        }
-
         const fetchFn = Object.assign(
           async (input: RequestInfo | URL, init?: RequestInit) => {
             const { Server } = await import("@/server/server")
             const request = new Request(input, init)
-            const headers = new Headers(request.headers)
-            const auth = ServerAuth.header()
-            if (auth) headers.set("Authorization", auth)
-            const localRequest = new Request(request, { headers })
+            const localRequest = new Request(request)
             if (args["dangerously-skip-permissions"] && localRequest.method === "POST") {
               const pathname = new URL(localRequest.url).pathname
               if (pathname === "/session") LocalPermissionStartup.mark(localRequest)
@@ -1141,9 +980,6 @@ export const RunCommand = effectCmd({
 
 type MiniCommandInput = {
   directory?: string
-  attach?: string
-  password?: string
-  username?: string
   continue?: boolean
   session?: string
   fork?: boolean
@@ -1170,11 +1006,7 @@ export async function runMini(input: MiniCommandInput) {
     format: "default",
     file: undefined,
     title: undefined,
-    attach: input.attach,
-    password: input.password,
-    username: input.username,
     dir: input.directory,
-    port: undefined,
     variant: undefined,
     thinking: undefined,
     mini: true,

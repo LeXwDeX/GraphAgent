@@ -939,11 +939,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     bindings: tuiConfig.keybinds.gather("app_exit", ["app.exit"]),
   }))
 
-  event.on("tui.command.execute", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    keymap.dispatchCommand(evt.properties.command)
-  })
-
   event.on("tui.toast.show", (evt, { workspace }) => {
     if (workspace !== project.workspace.current()) return
     toast.show({
@@ -951,14 +946,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       message: evt.properties.message,
       variant: evt.properties.variant,
       duration: evt.properties.duration,
-    })
-  })
-
-  event.on("tui.session.select", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    route.navigate({
-      type: "session",
-      sessionID: evt.properties.sessionID,
     })
   })
 

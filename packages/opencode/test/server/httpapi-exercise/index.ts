@@ -22,7 +22,7 @@ import { OpenApi } from "effect/http-api"
 import { TestLLMServer } from "../../lib/llm-server"
 import path from "path"
 import { array, boolean, check, isRecord, message, object, stable } from "./assertions"
-import { controlledPtyInput, http, route } from "./dsl"
+import { http, route } from "./dsl"
 import {
   enterExerciseWorkingDirectory,
   exerciseConfigDirectory,
@@ -537,69 +537,6 @@ const scenarios: Scenario[] = [
     .mutating()
     .at((ctx) => ({ path: route("/mcp/{name}/disconnect", { name: "httpapi-missing" }), headers: ctx.headers() }))
     .json(404, object, "status"),
-  http.protected.get("/pty/shells", "pty.shells").json(200, array),
-  http.protected.get("/pty", "pty.list").json(200, array),
-  http.protected
-    .post("/pty", "pty.create")
-    .mutating()
-    .at((ctx) => ({ path: "/pty", headers: ctx.headers(), body: controlledPtyInput("HTTP API PTY") }))
-    .json(
-      200,
-      (body, ctx) => {
-        object(body)
-        check(body.title === "HTTP API PTY", "PTY create should return requested title")
-        check(body.command === "/bin/sh", "PTY create should use controlled shell command")
-        check(body.cwd === ctx.directory, "PTY create should default cwd to scenario directory")
-      },
-      "status",
-    ),
-  http.protected
-    .post("/pty", "pty.create.invalid")
-    .at((ctx) => ({ path: "/pty", headers: ctx.headers(), body: { command: 1 } }))
-    .status(400),
-  http.protected
-    .post("/pty/{ptyID}/connect-token", "pty.connectToken.invalid")
-    .at((ctx) => ({
-      path: route("/pty/{ptyID}/connect-token", { ptyID: "pty_httpapi_missing" }),
-      headers: ctx.headers(),
-    }))
-    .status(403, undefined, "status"),
-  http.protected
-    .get("/pty/{ptyID}", "pty.get")
-    .at((ctx) => ({ path: route("/pty/{ptyID}", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
-    .status(404),
-  http.protected
-    .put("/pty/{ptyID}", "pty.update")
-    .mutating()
-    .at((ctx) => ({
-      path: route("/pty/{ptyID}", { ptyID: "pty_httpapi_missing" }),
-      headers: ctx.headers(),
-      body: { size: { rows: 0, cols: 0 } },
-    }))
-    .status(400),
-  http.protected
-    .delete("/pty/{ptyID}", "pty.remove")
-    .mutating()
-    .at((ctx) => ({ path: route("/pty/{ptyID}", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
-    .json(404, object, "status"),
-  http.protected
-    .get("/pty/{ptyID}/connect", "pty.connect")
-    .at((ctx) => ({ path: route("/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
-    .status(404, undefined, "none"),
-  http.protected
-    .get("/pty/{ptyID}/connect", "pty.connect.preflight")
-    .at((ctx) => ({
-      path: route("/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }) + "?ticket=invalid",
-      headers: ctx.headers(),
-    }))
-    .status(403, undefined, "none"),
-  http.protected
-    .get("/api/pty/{ptyID}/connect", "v2.pty.connect.preflight")
-    .at((ctx) => ({
-      path: route("/api/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }) + "?ticket=invalid",
-      headers: ctx.headers(),
-    }))
-    .status(403, undefined, "none"),
   http.protected.get("/experimental/console", "experimental.console.get").json(),
   http.protected.get("/experimental/console/orgs", "experimental.console.listOrgs").json(),
   http.protected
@@ -881,44 +818,6 @@ const scenarios: Scenario[] = [
     .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
     .at((ctx) => ({ path: "/api/fs/find?query=hello&type=file", headers: ctx.headers() }))
     .json(200, locationData(array)),
-  http.protected.get("/api/pty", "v2.pty.list").json(200, locationData(array)),
-  http.protected
-    .post("/api/pty", "v2.pty.create")
-    .mutating()
-    .at((ctx) => ({ path: "/api/pty", headers: ctx.headers(), body: controlledPtyInput("HTTP API V2 PTY") }))
-    .json(200, locationData(object)),
-  http.protected
-    .get("/api/pty/{ptyID}", "v2.pty.get")
-    .at((ctx) => ({ path: route("/api/pty/{ptyID}", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
-    .json(404, object, "status"),
-  http.protected
-    .put("/api/pty/{ptyID}", "v2.pty.update")
-    .mutating()
-    .at((ctx) => ({
-      path: route("/api/pty/{ptyID}", { ptyID: "pty_httpapi_missing" }),
-      headers: ctx.headers(),
-      body: { title: "missing" },
-    }))
-    .json(404, object, "status"),
-  http.protected
-    .delete("/api/pty/{ptyID}", "v2.pty.remove")
-    .mutating()
-    .at((ctx) => ({ path: route("/api/pty/{ptyID}", { ptyID: "pty_httpapi_missing" }), headers: ctx.headers() }))
-    .json(404, object, "status"),
-  http.protected
-    .post("/api/pty/{ptyID}/connect-token", "v2.pty.connectToken")
-    .at((ctx) => ({
-      path: route("/api/pty/{ptyID}/connect-token", { ptyID: "pty_httpapi_missing" }),
-      headers: { ...ctx.headers(), "x-opencode-ticket": "1" },
-    }))
-    .json(404, object, "status"),
-  http.protected
-    .get("/api/pty/{ptyID}/connect", "v2.pty.connect")
-    .at((ctx) => ({
-      path: route("/api/pty/{ptyID}/connect", { ptyID: "pty_httpapi_missing" }),
-      headers: ctx.headers(),
-    }))
-    .status(404, undefined, "none"),
   http.protected.get("/api/reference", "v2.reference.list").json(200, object),
   http.protected
     .get("/api/provider/{providerID}", "v2.provider.get")
@@ -1977,63 +1876,6 @@ const scenarios: Scenario[] = [
       body: { response: "once" },
     }))
     .json(404, object, "status"),
-  http.protected
-    .post("/tui/append-prompt", "tui.appendPrompt")
-    .at((ctx) => ({ path: "/tui/append-prompt", headers: ctx.headers(), body: { text: "hello" } }))
-    .json(200, boolean, "status"),
-  http.protected
-    .post("/tui/select-session", "tui.selectSession.invalid")
-    .at((ctx) => ({ path: "/tui/select-session", headers: ctx.headers(), body: { sessionID: "invalid" } }))
-    .status(400),
-  http.protected.post("/tui/open-help", "tui.openHelp").json(200, boolean, "status"),
-  http.protected.post("/tui/open-sessions", "tui.openSessions").json(200, boolean, "status"),
-  http.protected.post("/tui/open-themes", "tui.openThemes").json(200, boolean, "status"),
-  http.protected.post("/tui/open-models", "tui.openModels").json(200, boolean, "status"),
-  http.protected.post("/tui/submit-prompt", "tui.submitPrompt").json(200, boolean, "status"),
-  http.protected.post("/tui/clear-prompt", "tui.clearPrompt").json(200, boolean, "status"),
-  http.protected
-    .post("/tui/execute-command", "tui.executeCommand")
-    .at((ctx) => ({ path: "/tui/execute-command", headers: ctx.headers(), body: { command: "agent_cycle" } }))
-    .json(200, boolean, "status"),
-  http.protected
-    .post("/tui/show-toast", "tui.showToast")
-    .at((ctx) => ({
-      path: "/tui/show-toast",
-      headers: ctx.headers(),
-      body: { title: "Exercise", message: "covered", variant: "info", duration: 1000 },
-    }))
-    .json(200, boolean, "status"),
-  http.protected
-    .post("/tui/publish", "tui.publish")
-    .at((ctx) => ({
-      path: "/tui/publish",
-      headers: ctx.headers(),
-      body: { type: "tui.prompt.append", properties: { text: "published" } },
-    }))
-    .json(200, boolean, "status"),
-  http.protected
-    .post("/tui/select-session", "tui.selectSession")
-    .seeded((ctx) => ctx.session({ title: "TUI select" }))
-    .at((ctx) => ({ path: "/tui/select-session", headers: ctx.headers(), body: { sessionID: ctx.state.id } }))
-    .json(200, boolean, "status"),
-  http.protected
-    .post("/tui/control/response", "tui.control.response")
-    .at((ctx) => ({ path: "/tui/control/response", headers: ctx.headers(), body: { ok: true } }))
-    .json(200, boolean, "status"),
-  http.protected
-    .get("/tui/control/next", "tui.control.next")
-    .mutating()
-    .seeded((ctx) => ctx.tuiRequest({ path: "/tui/exercise", body: { text: "queued" } }))
-    .json(
-      200,
-      (body) => {
-        object(body)
-        check(body.path === "/tui/exercise", "control next should return queued path")
-        object(body.body)
-        check(body.body.text === "queued", "control next should return queued body")
-      },
-      "status",
-    ),
   http.protected
     .post("/global/upgrade", "global.upgrade")
     .global()
