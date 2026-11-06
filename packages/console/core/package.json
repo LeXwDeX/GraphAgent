@@ -46,7 +46,7 @@
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "drizzle-kit": "catalog:",
-    "mysql2": "3.24.5",
+    "mysql2": "3.24.6",
     "typescript": "catalog:",
     "@typescript/native-preview": "catalog:"
   }
