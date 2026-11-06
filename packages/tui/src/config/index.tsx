@@ -15,9 +15,6 @@ export const AttentionSoundName = Schema.Literals([
 ])
 export type AttentionSoundName = Schema.Schema.Type<typeof AttentionSoundName>
 
-export const PluginOptions = Schema.Record(Schema.String, Schema.Unknown)
-export const PluginSpec = Schema.Union([Schema.String, Schema.mutable(Schema.Tuple([Schema.String, PluginOptions]))])
-
 export const LeaderTimeoutDefault = 2000
 export const LeaderTimeout = Schema.Int.check(Schema.isGreaterThan(0)).annotate({
   description: "Leader key timeout in milliseconds",
@@ -54,8 +51,6 @@ export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String),
   theme: Schema.optional(Schema.String),
   keybinds: Schema.optional(TuiKeybind.KeybindOverrides),
-  plugin: Schema.optional(Schema.Array(PluginSpec)),
-  plugin_enabled: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   leader_timeout: Schema.optional(LeaderTimeout),
   attention: Schema.optional(Attention),
   prompt: Schema.optional(Prompt),

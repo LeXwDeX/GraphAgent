@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiPluginApi } from "@opencode-ai/tui/plugin-api"
 import type { DagNode, DagWorkflowSummary } from "@opencode-ai/sdk/v2"
 import dagPanelPlugin from "../../src/feature-plugins/sidebar/dag-panel"
 import { createTuiPluginApi } from "../fixture/tui-plugin"
@@ -107,13 +107,24 @@ describe("DagPanel expanded sidebar", () => {
   test("shows completed and skipped counts at narrow width without implying all nodes succeeded", async () => {
     const panel = await renderDagPanel({
       width: 44,
-      workflows: [wfSummary({ id: "wf-1", title: "Gated workflow", status: "paused", nodeCount: 8,
-        completedNodes: 1, skippedNodes: 7, runningNodes: 0 })],
+      workflows: [
+        wfSummary({
+          id: "wf-1",
+          title: "Gated workflow",
+          status: "paused",
+          nodeCount: 8,
+          completedNodes: 1,
+          skippedNodes: 7,
+          runningNodes: 0,
+        }),
+      ],
       nodes: [],
     })
     try {
-      await panel.app.waitForFrame((frame) =>
-        frame.includes("Gated workflow") && frame.includes("8/8") && frame.includes("✓1") && frame.includes("⊘7"))
+      await panel.app.waitForFrame(
+        (frame) =>
+          frame.includes("Gated workflow") && frame.includes("8/8") && frame.includes("✓1") && frame.includes("⊘7"),
+      )
     } finally {
       panel.app.renderer.destroy()
     }

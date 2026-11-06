@@ -400,7 +400,6 @@
       "version": "1.17.11",
       "dependencies": {
         "@opencode-ai/core": "workspace:*",
-        "@opencode-ai/plugin": "workspace:*",
         "@opencode-ai/sdk": "workspace:*",
         "@opentui/core": "catalog:",
         "@opentui/keymap": "catalog:",

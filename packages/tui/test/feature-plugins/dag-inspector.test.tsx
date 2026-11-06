@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { TuiPluginApi, TuiRouteCurrent, TuiRouteDefinition } from "@opencode-ai/plugin/tui"
+import type { TuiPluginApi, TuiRouteCurrent, TuiRouteDefinition } from "@opencode-ai/tui/plugin-api"
 import type { DagNode, DagWorkflow, DagWorkflowSummary } from "@opencode-ai/sdk/v2"
 import { KVProvider } from "../../src/context/kv"
 import { ThemeProvider } from "../../src/context/theme"
@@ -268,12 +268,15 @@ describe("DagInspector", () => {
     })
     const viewer = await renderDagInspector({ workflows: [wfSummary()], nodes: [current] })
     try {
-      await viewer.app.waitForFrame((frame) =>
-        frame.includes("attempt attempt-1 · input 3 · snapshot 1") &&
-        frame.includes("messages 2 queued · 1 delivered · 0 undeliverable"),
+      await viewer.app.waitForFrame(
+        (frame) =>
+          frame.includes("attempt attempt-1 · input 3 · snapshot 1") &&
+          frame.includes("messages 2 queued · 1 delivered · 0 undeliverable"),
       )
       const initialCalls = viewer.nodesCalls().length
-      viewer.setNodes([{ ...current, snapshot_revision: 3, agent_messages: { queued: 0, delivered: 2, undeliverable: 1 } }])
+      viewer.setNodes([
+        { ...current, snapshot_revision: 3, agent_messages: { queued: 0, delivered: 2, undeliverable: 1 } },
+      ])
       await waitForCondition(() => viewer.nodesCalls().length > initialCalls, 4_000)
       await viewer.app.waitForFrame((frame) => frame.includes("messages 0 queued · 2 delivered · 1 undeliverable"))
       runCommand(viewer.commands, "dag.close")
@@ -778,13 +781,23 @@ describe("DagInspector", () => {
   test("shows one completed and seven skipped nodes in narrow workflow navigation", async () => {
     const viewer = await renderDagInspector({
       width: 70,
-      workflows: [wfSummary({ id: "wf-1", title: "Gated workflow", status: "completed", nodeCount: 8,
-        completedNodes: 1, skippedNodes: 7 })],
+      workflows: [
+        wfSummary({
+          id: "wf-1",
+          title: "Gated workflow",
+          status: "completed",
+          nodeCount: 8,
+          completedNodes: 1,
+          skippedNodes: 7,
+        }),
+      ],
       nodes: [dagNode({ id: "gate", name: "gate", status: "completed" })],
     })
     try {
-      await viewer.app.waitForFrame((frame) =>
-        frame.includes("Gated workflow") && frame.includes("8/8") && frame.includes("✓1") && frame.includes("⊘7"))
+      await viewer.app.waitForFrame(
+        (frame) =>
+          frame.includes("Gated workflow") && frame.includes("8/8") && frame.includes("✓1") && frame.includes("⊘7"),
+      )
     } finally {
       viewer.app.renderer.destroy()
     }
@@ -799,10 +812,7 @@ describe("DagInspector", () => {
       ],
       summary: (sessionID) =>
         Promise.resolve({
-          data:
-            sessionID === "ses_a"
-              ? [wfSummary({ id: "wf-p1", title: "Orphan discovery", status: "running" })]
-              : [],
+          data: sessionID === "ses_a" ? [wfSummary({ id: "wf-p1", title: "Orphan discovery", status: "running" })] : [],
         }),
     })
     try {

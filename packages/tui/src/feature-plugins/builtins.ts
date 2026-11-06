@@ -1,4 +1,4 @@
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/tui/plugin-api"
 import HomeFooter from "./home/footer"
 import HomeTips from "./home/tips"
 import SidebarContext from "./sidebar/context"
@@ -13,7 +13,6 @@ import SidebarDagPanel from "./sidebar/dag-panel"
 import DiffViewer from "./system/diff-viewer"
 import DagInspector from "./system/dag-inspector"
 import Notifications from "./system/notifications"
-import PluginManager from "./system/plugins"
 import WhichKey from "./system/which-key"
 
 export type BuiltinTuiPlugin = Omit<TuiPluginModule, "id"> & {
@@ -36,7 +35,6 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
     SidebarDagPanel,
     SidebarFooter,
     Notifications,
-    PluginManager,
     WhichKey,
     DiffViewer,
     DagInspector,
