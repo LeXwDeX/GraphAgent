@@ -7,7 +7,7 @@ import { checkToolchain, readToolchain } from "../../../script/toolchain.mjs"
 const rootDir = fileURLToPath(new URL("../../..", import.meta.url))
 process.chdir(rootDir)
 
-const reg = process.env.REGISTRY ?? "ghcr.io/anomalyco"
+const reg = process.env.REGISTRY ?? "ghcr.io/lexwdex"
 const tag = process.env.TAG ?? "24.04"
 const push = process.argv.includes("--push") || process.env.PUSH === "1"
 

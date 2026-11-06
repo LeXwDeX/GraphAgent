@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # oc — opencode (LeXwDeX fork) version manager TUI
-# 升级渠道：https://github.com/LeXwDeX/OpenCode-GraphAgent/releases
+# 升级渠道：https://github.com/LeXwDeX/GraphAgent/releases
 # 依赖：bash, curl, tar/unzip, fzf（必需）；gh（可选，无 token 走 curl）
 
 set -euo pipefail
 
-REPO="LeXwDeX/OpenCode-GraphAgent"
+REPO="LeXwDeX/GraphAgent"
 RELEASES_URL="https://github.com/${REPO}/releases"
 INSTALL_NAME="${OC_OPENCODE_NAME:-opencode}"
 OC_VERSION="1.4.1"

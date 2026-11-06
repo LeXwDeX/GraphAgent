@@ -3,8 +3,8 @@ package tui
 import (
 	"encoding/json"
 
-	"github.com/LeXwDeX/OpenCode-GraphAgent/config_assistant/internal/config"
-	"github.com/LeXwDeX/OpenCode-GraphAgent/config_assistant/internal/models"
+	"github.com/LeXwDeX/GraphAgent/config_assistant/internal/config"
+	"github.com/LeXwDeX/GraphAgent/config_assistant/internal/models"
 )
 
 // generatePreview 用当前选中的模型 + provider 选项 + 目标映射构建预览产物。

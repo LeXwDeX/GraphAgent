@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/LeXwDeX/OpenCode-GraphAgent/config_assistant/internal/tui"
+	"github.com/LeXwDeX/GraphAgent/config_assistant/internal/tui"
 )
 
 const banner = `配置助手 — opencode 配置管理工具

@@ -107,7 +107,7 @@ function configRepoScoped(templates: Record<string, string>) {
           // runtime-compat.json travels with the config repo and is read by the CLI.
           await fs.writeFile(
             path.join(directory, "runtime-compat.json"),
-            JSON.stringify({ runtime_repo: "LeXwDeX/OpenCode-GraphAgent", runtime_commit: "0".repeat(40) }),
+            JSON.stringify({ runtime_repo: "LeXwDeX/GraphAgent", runtime_commit: "0".repeat(40) }),
           )
           await fs.mkdir(path.join(directory, "third_party", "mattpocock-skills"), { recursive: true })
           await fs.writeFile(path.join(directory, "THIRD_PARTY_NOTICES.md"), "# Third-party notices\n")

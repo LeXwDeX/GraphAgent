@@ -1,4 +1,4 @@
-ARG REGISTRY=ghcr.io/anomalyco
+ARG REGISTRY=ghcr.io/lexwdex
 FROM ${REGISTRY}/build/bun-node:24.04
 
 ARG RUST_TOOLCHAIN

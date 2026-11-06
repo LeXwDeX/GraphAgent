@@ -1,6 +1,6 @@
 # Corresponding source
 
-Every OpenCode-GraphAgent binary release that contains AGPL-covered code is
+Every GraphAgent binary release that contains AGPL-covered code is
 paired with a source archive generated from the same Git commit by:
 
 ```sh

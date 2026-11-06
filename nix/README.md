@@ -56,7 +56,7 @@ and network fetches disabled.
 The committed workspace hashes and both normal CLI and desktop derivations
 passed native verification for all four platforms at commit
 `67ce58b7badea7d0a4dab7106c6c6699041e46ef` in
-[workflow run 37085826496](https://github.com/LeXwDeX/OpenCode-GraphAgent/actions/runs/37085826496).
+[workflow run 37085826496](https://github.com/LeXwDeX/GraphAgent/actions/runs/37085826496).
 This historical result does not certify later source or dependency changes.
 Each affected revision still requires its own native measurements and builds.
 

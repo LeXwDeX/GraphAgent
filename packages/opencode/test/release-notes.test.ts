@@ -16,7 +16,7 @@ const input = {
   branch: "main",
   tag: "graphagent-v1.0.10",
   previousTag: "graphagent-v1.0.9",
-  repo: "LeXwDeX/OpenCode-GraphAgent",
+  repo: "LeXwDeX/GraphAgent",
 } as const
 
 const devInput = {

@@ -7,12 +7,12 @@
 
 > 面向长程、多步骤编码工作的 opencode fork：可持久化的子智能体 DAG 工作流、思考自动塑形、项目 Memory、自主目标和兼容 Claude Code 的 hooks，全部能在终端里查看和控制。
 
-GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** 发布，是 MIT 许可的
+GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，是 MIT 许可的
 [opencode](https://github.com/anomalyco/opencode) 终端 AI 智能体的 fork，在其之上加了 DAG 工作流引擎和下文列出的功能。**与 OpenCode 团队无任何隶属或背书关系。**
 
 > [!IMPORTANT]
 > **GraphAgent v1 现进入聚焦维护阶段。**维护范围限定为 DAG 配置、精选工作流模板，以及通过
-> [GitHub Issues](https://github.com/LeXwDeX/OpenCode-GraphAgent/issues) 提交的可复现缺陷。
+> [GitHub Issues](https://github.com/LeXwDeX/GraphAgent/issues) 提交的可复现缺陷。
 > 影响稳定性、数据完整性或 DAG 核心体验的架构问题，将采用范围可控的兼容性补丁修复；v1
 > 不再新增底层平台能力，也不再进行大规模架构重构。下一代项目将独立启动，在不继续扩大 v1
 > 兼容性约束的前提下重新设计运行时。
@@ -337,7 +337,7 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 
 ## 安装
 
-预构建 CLI 二进制（Linux / macOS / Windows，附 SHA256SUMS）发布在 [releases 页面](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases)。正式版从 `main` 构建；`oc` 安装器负责选择并安装版本。
+预构建 CLI 二进制（Linux / macOS / Windows，附 SHA256SUMS）发布在 [releases 页面](https://github.com/LeXwDeX/GraphAgent/releases)。正式版从 `main` 构建；`oc` 安装器负责选择并安装版本。
 
 CLI、TUI、网页和 Desktop 均已停用内置应用更新。请通过安装器或 release 产物手动安装新版本。旧的 `autoupdate` 配置仍可读取，但不再生效；`opencode upgrade` 和 `POST /global/upgrade` 会明确返回更新已停用。
 
@@ -389,5 +389,5 @@ bun dev serve        # headless API 服务（端口 4096）
 
 ## 链接
 
-- [GitHub](https://github.com/LeXwDeX/OpenCode-GraphAgent) · [Issues](https://github.com/LeXwDeX/OpenCode-GraphAgent/issues)
+- [GitHub](https://github.com/LeXwDeX/GraphAgent) · [Issues](https://github.com/LeXwDeX/GraphAgent/issues)
 - [上游 opencode](https://opencode.ai)
