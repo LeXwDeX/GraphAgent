@@ -119,7 +119,7 @@
     "ai": "catalog:",
     "ai-gateway-provider": "catalog:",
     "bonjour-service": "1.4.4",
-    "chokidar": "4.0.3",
+    "chokidar": "6.0.0",
     "cross-spawn": "catalog:",
     "decimal.js": "10.6.0",
     "diff": "catalog:",
