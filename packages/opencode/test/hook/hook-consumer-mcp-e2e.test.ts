@@ -46,7 +46,7 @@ for (const { event, action } of [
         })
         yield* llm.tool("fixture_pick", {})
         yield* llm.text("MCP_SYNTHETIC_DONE")
-        const server = yield* opencode.serve()
+        const server = yield* opencode.host()
         const request = (route: string, method = "GET", body?: object) =>
           Effect.promise(() =>
             fetch(server.url + route, {

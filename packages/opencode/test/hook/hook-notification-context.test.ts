@@ -38,7 +38,7 @@ cliIt.live(
           JSON.stringify({ UserPromptSubmit: [{ hooks: [command] }], Stop: [{ hooks: [command] }] }),
         )
       })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

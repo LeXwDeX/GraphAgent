@@ -30,7 +30,7 @@ cliIt.live(
           }),
         )
       })
-      const server = yield* opencode.serve({ env: { OPENCODE_PURE: "0", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1" } })
+      const server = yield* opencode.host({ env: { OPENCODE_PURE: "0", OPENCODE_DISABLE_DEFAULT_PLUGINS: "1" } })
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -79,7 +79,7 @@ cliIt.live("actual loopback MCP authenticate emits auth_success without fabricat
     )
     const audit = path.join(home, "mcp-auth-notification.jsonl")
     const hook = path.join(home, "mcp-auth-hook.ts")
-    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
+    const probe = Bun.serve({ fetch: () => new Response() })
     const callbackPort = probe.port
     yield* Effect.promise(async () => {
       await probe.stop(true)
@@ -126,7 +126,7 @@ cliIt.live("actual loopback MCP authenticate emits auth_success without fabricat
         }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const response = yield* Effect.promise(() =>
       fetch(server.url + "/mcp/fixture/auth/authenticate", {
         method: "POST",

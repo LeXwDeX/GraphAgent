@@ -55,7 +55,7 @@ for (const decision of ["block", "continue_false"] as const) {
           })
           yield* llm.tool("read", { path: source })
           yield* llm.text("FRESH_AFTER_BATCH_STOP")
-          const server = yield* opencode.serve()
+          const server = yield* opencode.host()
           const request = (route: string, body?: object) =>
             fetch(server.url + route, {
               method: body ? "POST" : "GET",

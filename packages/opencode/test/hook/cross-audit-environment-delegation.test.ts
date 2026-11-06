@@ -37,7 +37,7 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
       yield* llm.text("CHILD_FIRST")
       if (subagentStopOnce) yield* llm.text("CHILD_AFTER_CONTINUE")
       yield* llm.text("PARENT_DONE")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -132,7 +132,7 @@ cliIt.live("UserPromptSubmit session_title appears only for a real custom title"
     })
     yield* llm.text("TITLED_DONE")
     yield* llm.text("UNTITLED_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

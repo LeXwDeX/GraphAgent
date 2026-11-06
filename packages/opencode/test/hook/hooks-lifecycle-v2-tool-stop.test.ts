@@ -55,7 +55,7 @@ for (const event of ["PostToolUse", "PostToolUseFailure"] as const) {
           })
           yield* llm.tool("read", { path: source })
           yield* llm.text("FRESH_AFTER_TOOL_STOP")
-          const server = yield* opencode.serve()
+          const server = yield* opencode.host()
           const request = (route: string, body?: object) =>
             fetch(server.url + route, {
               method: body ? "POST" : "GET",

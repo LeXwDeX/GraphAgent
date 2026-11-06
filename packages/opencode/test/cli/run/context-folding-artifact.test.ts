@@ -4,30 +4,18 @@ import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { chmod, mkdir } from "node:fs/promises"
 import path from "node:path"
-import {
-  artifactCliTarget,
-  cliItFor,
-  sourceCliTarget,
-  type CliFixture,
-  type ResolvedCliTarget,
-} from "../../lib/cli-process"
+import { cliItFor, sourceCliTarget, type CliFixture, type ResolvedCliTarget } from "../../lib/cli-process"
 import { raw, reply } from "../../lib/llm-server"
 import { testProviderConfig } from "../../lib/test-provider"
 
-const artifactExecutable = process.env.OPENCODE_TEST_ARTIFACT_EXECUTABLE
 const sourceEnabled = process.env.OPENCODE_TEST_CONTEXT_FOLDING_SOURCE === "1"
 const evidenceDir = process.env.OPENCODE_TEST_CONTEXT_FOLDING_EVIDENCE_DIR
-const enabled = !!artifactExecutable || sourceEnabled
-const target = artifactExecutable ? artifactCliTarget(artifactExecutable) : sourceCliTarget
-const cliIt = cliItFor(target)
+const enabled = sourceEnabled
+const cliIt = cliItFor(sourceCliTarget)
 
 if (evidenceDir && !path.isAbsolute(evidenceDir)) {
   throw new Error(`context folding evidence directory must be absolute: ${evidenceDir}`)
 }
-if (artifactExecutable && !evidenceDir) {
-  throw new Error("artifact context folding checks require OPENCODE_TEST_CONTEXT_FOLDING_EVIDENCE_DIR")
-}
-
 const files = ["artifact-fold-a.txt", "artifact-fold-b.txt", "artifact-fold-c.txt"] as const
 const markers = files.map((_, index) => `artifact-fold-file-${index}-marker`)
 const contents = files.map((_, index) =>
@@ -228,8 +216,7 @@ const runArm =
         ),
       )
 
-      const server = yield* opencode.serve({
-        hostname: "127.0.0.1",
+      const server = yield* opencode.host({
         readyTimeoutMs: 30_000,
         env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(providerConfig(llm.url, dynamic)) },
       })

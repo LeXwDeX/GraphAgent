@@ -53,7 +53,7 @@ if (i.hook_event_name === "PostToolUse") await (await import("node:fs/promises")
       yield* llm.tool("write", { path: edited, content: "before" })
       yield* llm.tool("edit", { path: edited, oldString: "before", newString: "after" })
       yield* llm.text("Done")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const headers = { "content-type": "application/json", "x-opencode-directory": home }
       const request = (route: string, body: object) =>
         Effect.promise(() => fetch(server.url + route, { method: "POST", headers, body: JSON.stringify(body) }))

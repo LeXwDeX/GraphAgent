@@ -61,7 +61,7 @@ cliIt.live(
       yield* llm.text("BLOCKED_SECOND")
       yield* llm.text("SUMMARY_MARKER")
       yield* llm.text("AFTER_COMPACT")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const headers = { "content-type": "application/json", "x-opencode-directory": home }
       const created = yield* Effect.promise(() =>
         fetch(server.url + "/api/session", {

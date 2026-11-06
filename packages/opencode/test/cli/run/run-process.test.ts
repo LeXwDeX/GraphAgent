@@ -324,7 +324,7 @@ describe("opencode run (non-interactive subprocess)", () => {
         const sentinel = "client-only attachment sentinel"
         yield* Effect.promise(() => Bun.write(source, sentinel))
         yield* llm.text("attachment received")
-        const server = yield* opencode.serve()
+        const server = yield* opencode.host()
 
         const result = yield* opencode.run("read the attachment", {
           extraArgs: ["--attach", server.url, `--file=${source}`, "--"],

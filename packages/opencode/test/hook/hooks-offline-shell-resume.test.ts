@@ -24,7 +24,7 @@ cliIt.live(
         )
       })
       const options = { env: { OPENCODE_DB: path.join(home, "cold-model.sqlite") } }
-      const first = yield* opencode.serve(options)
+      const first = yield* opencode.host(options)
       const post = (url: string, route: string, body: object) =>
         Effect.promise(() =>
           fetch(url + route, {
@@ -43,7 +43,7 @@ cliIt.live(
       expect(decodeRecord(session.model).id).toBe("removed-model")
       first.kill()
       yield* Effect.promise(() => first.exited)
-      const second = yield* opencode.serve(options)
+      const second = yield* opencode.host(options)
       yield* llm.text("VALID_REPLACEMENT")
       const response = yield* post(second.url, `/session/${id}/message`, {
         model: { providerID: "test", modelID: "test-model" },
@@ -92,7 +92,7 @@ for (const deny of [false, true]) {
             JSON.stringify({ PreToolUse: hooks, PostToolUse: hooks }),
           )
         })
-        const server = yield* opencode.serve({
+        const server = yield* opencode.host({
           env: {
             OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: {}, enabled_providers: [] }),
             ...(deny ? { OPENCODE_PERMISSION: JSON.stringify({ bash: "deny" }) } : {}),

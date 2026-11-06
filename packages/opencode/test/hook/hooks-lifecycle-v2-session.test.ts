@@ -30,7 +30,7 @@ cliIt.live(
           ),
         )
       })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, method: string, body?: object) =>
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {
@@ -134,7 +134,7 @@ cliIt.live(
       yield* Effect.addFinalizer(() => Effect.sync(release))
       yield* llm.hold("V2_INITIAL_ANSWER", gate)
       yield* llm.text("V2_FOLLOWUP_ANSWER")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, body: object) =>
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {
@@ -241,7 +241,7 @@ cliIt.live(
       yield* llm.text("V2_RESTART_INITIAL_DONE")
       yield* llm.text("V2_RESTART_FOLLOWUP_DONE")
       const opts = { env: { OPENCODE_DB: path.join(home, "v2-restart.sqlite") } }
-      const first = yield* opencode.serve(opts)
+      const first = yield* opencode.host(opts)
       const request = (url: string, route: string, method: string, body?: object) =>
         Effect.promise(() =>
           fetch(url + route, {
@@ -279,7 +279,7 @@ cliIt.live(
       first.kill()
       yield* Effect.promise(() => first.exited)
       yield* Effect.promise(() => fs.writeFile(allow, "allow"))
-      const restarted = yield* opencode.serve(opts)
+      const restarted = yield* opencode.host(opts)
       const resumed = yield* request(restarted.url, `/api/session/${id}/resume`, "POST")
       if (resumed.status !== 204)
         throw new Error(`V2 resume failed ${resumed.status}: ${yield* Effect.promise(() => resumed.text())}`)
@@ -372,7 +372,7 @@ cliIt.live(
           JSON.stringify({ SessionStart: [{ hooks: [hook] }], UserPromptSubmit: [{ hooks: [hook] }] }),
         )
       })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const controller = new AbortController()
       const events: { type: string; properties?: { sessionID?: string; message?: string } }[] = []
       const stream = yield* Effect.promise(() =>
@@ -450,7 +450,7 @@ cliIt.live("V2 SessionStart reloadSkills refreshes the actual current Location s
         JSON.stringify({ SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })
-    const server = yield* opencode.serve({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "0" } })
+    const server = yield* opencode.host({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "0" } })
     const get = () =>
       Effect.promise(async () => {
         const response = await fetch(server.url + "/api/skill?directory=" + encodeURIComponent(home), {
@@ -495,7 +495,7 @@ cliIt.live(
         )
       })
       yield* llm.text("V2_CANCEL_NEW_ANSWER")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, body?: object) =>
         fetch(server.url + route, {
           method: body ? "POST" : "GET",
@@ -576,7 +576,7 @@ cliIt.live(
         )
       })
       yield* llm.text("V2_CANCEL_START_NEXT_ANSWER")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const id = "ses_v2_cancel_start"
       const request = (route: string, body?: object) =>
         fetch(server.url + route, {
@@ -655,7 +655,7 @@ cliIt.live(
       yield* llm.tool("read", { path: source })
       yield* llm.hold("V2_CANCEL_RESUME_OLD_ANSWER", gate)
       yield* llm.text("V2_CANCEL_RESUME_NEW_ANSWER")
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const request = (route: string, body?: object) =>
         fetch(server.url + route, {
           method: body ? "POST" : "GET",

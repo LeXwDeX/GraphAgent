@@ -14,8 +14,8 @@
 // Plus HOME / XDG_* pointing at the tmpdir for belt-and-suspenders isolation.
 //
 // Today only `opencode.run` is fully wired. The shape supports adding more
-// builders (`opencode.serve(opts)`, `opencode.acp(opts)`, `opencode.auth(...)`)
-// without changing the fixture. Long-lived commands like `serve` will need a
+// builders (`opencode.host(opts)`, `opencode.acp(opts)`, `opencode.auth(...)`)
+// without changing the fixture. Long-lived commands like `host` will need a
 // different return shape — see the TODO at the bottom of OpencodeCli.
 import { test, type TestOptions } from "bun:test"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -123,7 +123,7 @@ function fromBunStream(name: string, get: () => ReadableStream<Uint8Array>) {
   })
 }
 
-// Long-lived processes (serve, acp) all want the same stderr drain: read every
+// Long-lived processes (host, acp) all want the same stderr drain: read every
 // chunk, push to a tail buffer, swallow stream errors (the child closing the
 // pipe is normal). `log: true` surfaces a real protocol error to logs so a
 // regression doesn't silently disappear.
@@ -183,21 +183,17 @@ export type RunOpts = SpawnOpts & {
   readonly extraArgs?: string[]
 }
 
-// `opencode serve` is a long-lived process — it never exits on its own.
-// `serve(opts)` therefore returns a handle inside the caller's Scope: the
-// subprocess is killed when the scope closes (test end), and the URL the
-// server actually bound to (port 0 means OS-assigned) is parsed off stdout.
-export type ServeOpts = SpawnOpts & {
-  readonly port?: number
-  readonly hostname?: string
-  readonly extraArgs?: string[]
+// `opencode.host` is a test-only long-lived process. It serves the same fetch
+// handler as the TUI worker without product listening code. The handle lives
+// inside the caller's Scope and the URL bound by the OS is parsed off stdout.
+export type HostOpts = SpawnOpts & {
   // How long to wait for the "listening on http://..." line before failing.
   // Default 15s — startup is dominated by bun's transpile + plugin init, not
   // the actual listen() call.
   readonly readyTimeoutMs?: number
 }
 
-export type ServeHandle = {
+export type HostHandle = {
   // Full URL the server is bound to, e.g. "http://127.0.0.1:54321". Use this
   // as the base for HTTP requests in tests — never assume the port.
   readonly url: string
@@ -239,10 +235,10 @@ export type OpencodeCli = {
   // High-level: run a single prompt against the test model. Short-lived.
   readonly run: (message: string, opts?: RunOpts) => Effect.Effect<RunResult>
   readonly startRun: (message: string, opts?: RunOpts) => Effect.Effect<RunHandle, never, Scope.Scope>
-  // Spawn `opencode serve` and wait until it's listening. Long-lived: the
-  // returned handle is killed when the caller's Scope closes. Fails if the
+  // Spawn the test-only host process and wait until it's listening. Long-lived:
+  // the returned handle is killed when the caller's Scope closes. Fails if the
   // listening line doesn't appear within `readyTimeoutMs`.
-  readonly serve: (opts?: ServeOpts) => Effect.Effect<ServeHandle, Error, Scope.Scope>
+  readonly host: (opts?: HostOpts) => Effect.Effect<HostHandle, Error, Scope.Scope>
   // Spawn `opencode acp` and return a duplex JSON-RPC handle. Long-lived:
   // the subprocess exits on stdin close, which the scope finalizer triggers.
   readonly acp: (opts?: AcpOpts) => Effect.Effect<AcpHandle, Error, Scope.Scope>
@@ -429,22 +425,14 @@ export function withCliFixture<A, E>(
       } satisfies RunHandle
     })
 
-    const serve = Effect.fn("opencode.serve")(function* (opts?: ServeOpts) {
-      const argv = ["serve"]
-      // Default port 0 — let the OS pick a free port, parse the actual one
-      // off stdout. Hard-coded ports flake under parallel tests.
-      argv.push("--port", String(opts?.port ?? 0))
-      if (opts?.hostname) argv.push("--hostname", opts.hostname)
-      if (opts?.extraArgs) argv.push(...opts.extraArgs)
-      yield* Effect.promise(() => verifyCliTarget(target))
-      const invocation = cliCommand(target, argv)
-
-      // Acquire the subprocess; release sends SIGTERM and awaits exit on
-      // scope close. Wrapped in Effect.ignore so a flaky kill doesn't surface
-      // as a finalizer error during test teardown.
+    const serverHostEntry = path.join(import.meta.dir, "server-host.ts")
+    const host = Effect.fn("opencode.host")(function* (opts?: HostOpts) {
+      if (target.mode !== "source") {
+        return yield* Effect.fail(new Error("opencode.host only supports the source CLI target"))
+      }
       const proc = yield* Effect.acquireRelease(
         Effect.sync(() =>
-          Bun.spawn([invocation.executable, ...invocation.args], {
+          Bun.spawn([target.executable, "run", "--conditions=browser", serverHostEntry], {
             cwd: home,
             env: { ...process.env, ...env, ...opts?.env },
             stdout: "pipe",
@@ -458,14 +446,9 @@ export function withCliFixture<A, E>(
           }).pipe(Effect.ignore),
       )
 
-      // Tail buffer so timeout failures can include stderr context. The fork
-      // also keeps the OS pipe buffer from filling and wedging the child.
       const stderrChunks: string[] = []
       yield* forkStderrDrain(proc.stderr, stderrChunks)
 
-      // Watch stdout line-by-line for the listening sentinel. Format
-      // (see src/cli/cmd/serve.ts):
-      //   "opencode server listening on http://<host>:<port>"
       const readyRe = /listening on (http:\/\/([^\s:]+):(\d+))/
       const readyDeferred = yield* Deferred.make<{ url: string; hostname: string; port: number }>()
       yield* Effect.forkScoped(
@@ -487,7 +470,7 @@ export function withCliFixture<A, E>(
           orElse: () =>
             Effect.fail(
               new Error(
-                `opencode serve did not become ready within ${readyTimeoutMs}ms\n` +
+                `opencode test host did not become ready within ${readyTimeoutMs}ms\n` +
                   `stderr (last 2000):\n${stderrChunks.join("").slice(-2000)}`,
               ),
             ),
@@ -503,7 +486,7 @@ export function withCliFixture<A, E>(
           proc.kill()
         },
         exited: proc.exited as Promise<number>,
-      } satisfies ServeHandle
+      } satisfies HostHandle
     })
 
     const acp = Effect.fn("opencode.acp")(function* (opts?: AcpOpts) {
@@ -587,11 +570,11 @@ export function withCliFixture<A, E>(
       } satisfies AcpHandle
     })
 
-    const opencode: OpencodeCli = { target, run, startRun, serve, acp, spawn, expectExit, parseJsonEvents }
+    const opencode: OpencodeCli = { target, run, startRun, host, acp, spawn, expectExit, parseJsonEvents }
 
     return yield* fn({ llm, home, env, opencode, target })
     // FetchHttpClient is provided so test bodies can `yield* HttpClient.HttpClient`
-    // and hit endpoints on `opencode.serve()` without rolling their own fetch.
+    // and hit endpoints on `opencode.host()` without rolling their own fetch.
   }).pipe(
     Effect.provide(
       Layer.mergeAll(TestLLMServer.layer, FetchHttpClient.layer, FSUtil.defaultLayer, AppProcess.defaultLayer),
@@ -633,7 +616,7 @@ function expectExit(result: RunResult, expected: number, label = "opencode") {
 // environment can't drive a child process. If you need `.only` or `.skip`, fall
 // back to `it.live` + `withCliFixture` directly.
 // Body's R is `Scope.Scope | never` so tests can yield* scope-requiring
-// resources (e.g. `opencode.serve`) without an extra `Effect.scoped` wrapper —
+// resources (e.g. `opencode.host`) without an extra `Effect.scoped` wrapper —
 // `withCliFixture`'s outer scope is the natural lifetime.
 export function cliItFor(target: CliTarget) {
   return {

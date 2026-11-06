@@ -31,7 +31,7 @@ cliIt.live("V1 PostToolUse asyncRewake exit-2 wakes the legacy session it came f
     yield* llm.tool("bash", { command: "echo V1_TOOL_RAN", description: "Print a marker" })
     yield* llm.text("FIRST_DONE")
     yield* llm.text("REWAKE_DONE")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body?: object) =>
       Effect.promise(async () => {
         const result = await fetch(server.url + route, {

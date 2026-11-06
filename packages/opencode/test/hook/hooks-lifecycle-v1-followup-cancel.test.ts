@@ -39,7 +39,7 @@ for (const kind of ["prompt", "command"] as const) {
         })
         yield* llm.text("INITIAL_BEFORE_CLAIM_DONE")
         yield* llm.text("NEXT_ALLOWED_TURN_RESPONSE")
-        const server = yield* opencode.serve()
+        const server = yield* opencode.host()
         const request = (route: string, body?: object) =>
           fetch(server.url + route, {
             method: body ? "POST" : "GET",

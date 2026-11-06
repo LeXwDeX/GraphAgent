@@ -22,7 +22,7 @@ cliIt.live("V2 HTTP model switch runs PreModelSwitch before persisting and retur
         }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, method: string, body?: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -110,7 +110,7 @@ cliIt.live(
       })
       const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT)
       config.provider.test.models["old-model"] = { ...config.provider.test.models["test-model"] }
-      const server = yield* opencode.serve({ env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } })
+      const server = yield* opencode.host({ env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } })
       const request = (route: string, body?: object) =>
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {

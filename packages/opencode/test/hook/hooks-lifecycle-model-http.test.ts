@@ -21,7 +21,7 @@ cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons"
         }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {
@@ -103,7 +103,7 @@ for (const transport of ["command", "http"] as const) {
           id: "wire-other",
           cost: { input: 2, output: 3, cache_write: 4 },
         }
-        const server = yield* opencode.serve({ env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } })
+        const server = yield* opencode.host({ env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } })
         const request = (route: string, body: object) =>
           Effect.promise(async () => {
             const result = await fetch(server.url + route, {
@@ -216,7 +216,7 @@ cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, 
         JSON.stringify({ StopFailure: [{ hooks: [{ type: "command", command: process.execPath, args: [hook] }] }] }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body: object) =>
       Effect.promise(async () => {
         const response = await fetch(server.url + route, {

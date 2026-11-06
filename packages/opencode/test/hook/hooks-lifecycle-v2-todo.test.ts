@@ -59,7 +59,7 @@ if (mode === "block-complete" && input.hook_event_name === "TaskCompleted") { pr
           }),
         )
       })
-      const server = yield* opencode.serve()
+      const server = yield* opencode.host()
       const headers = { "content-type": "application/json", "x-opencode-directory": home }
       const request = (route: string, method = "GET", body?: object) =>
         Effect.promise(() =>

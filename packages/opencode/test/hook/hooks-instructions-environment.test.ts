@@ -36,7 +36,7 @@ cliIt.live(
       // Instance directories are canonicalized; use the same real path for
       // traversal instead of macOS's /var alias for the temporary directory.
       nested = yield* Effect.promise(() => fs.realpath(nested))
-      const server = yield* opencode.serve({ env: { INSTRUCTION_REMOVE: "HOST_BASELINE" } })
+      const server = yield* opencode.host({ env: { INSTRUCTION_REMOVE: "HOST_BASELINE" } })
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {
@@ -140,7 +140,7 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
         }),
       )
     })
-    const server = yield* opencode.serve({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "" } })
+    const server = yield* opencode.host({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "" } })
     const post = (route: string, payload: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

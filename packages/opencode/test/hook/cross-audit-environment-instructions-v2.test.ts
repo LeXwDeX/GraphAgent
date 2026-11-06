@@ -49,7 +49,7 @@ cliIt.live("V2 InstructionsLoaded does not delay the first model request", ({ ho
       )
     })
     yield* llm.text("V2_INSTRUCTIONS_ANSWER")
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const request = (route: string, body?: object) =>
       fetch(server.url + route, {
         method: body ? "POST" : "GET",

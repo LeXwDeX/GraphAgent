@@ -162,7 +162,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
         }),
       )
     })
-    const server = yield* opencode.serve()
+    const server = yield* opencode.host()
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const session = yield* Effect.promise(async () => {
       const response = await fetch(server.url + "/session", { method: "POST", headers, body: "{}" })
