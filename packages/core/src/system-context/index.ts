@@ -19,7 +19,7 @@ import { Effect, Option, Schema } from "effect"
  */
 
 /** Stable namespaced identity for one independently refreshable context source. */
-export const Key = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*$/)).pipe(
+export const Key = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._/-]*$/u)).pipe(
   Schema.brand("SystemContext.Key"),
 )
 export type Key = typeof Key.Type

@@ -20,7 +20,7 @@ import { Model } from "./model"
 // Fully anchored pattern: llama.cpp's tool-schema conversion rejects any
 // `pattern` that doesn't start with '^' and end with '$'. `^dag.*$` keeps the
 // exact starts-with("dag") semantics of the previous isStartsWith filter.
-export const DagID = Schema.String.check(Schema.isPattern(/^dag.*$/)).pipe(
+export const DagID = Schema.String.check(Schema.isPattern(/^dag.*$/u)).pipe(
   Schema.brand("DagID"),
   withStatics((schema) => {
     const create = () => schema.make("dag_" + descending())
