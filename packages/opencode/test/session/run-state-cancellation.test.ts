@@ -35,6 +35,13 @@ const fallback = testEffect(
           list: () =>
             Effect.succeed([
               {
+                id: "marked",
+                type: "watch_pr",
+                status: "running",
+                started_at: 0,
+                metadata: { sessionId: fallbackSession, survivesSessionCancel: true },
+              },
+              {
                 id: "uncoordinated",
                 type: "test",
                 status: "running",
@@ -55,7 +62,7 @@ const fallback = testEffect(
   ),
 )
 
-fallback.live("local cleanup still cancels uncoordinated jobs", () =>
+fallback.live("local cleanup keeps marked jobs and cancels uncoordinated jobs", () =>
   Effect.gen(function* () {
     const runs = yield* SessionRunState.Service
     yield* runs.cancelBackground(fallbackSession, true)

@@ -1,8 +1,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- JSON responses and ctx.extra are untyped boundaries */
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
-import { SessionCancellation } from "@/session/cancellation"
-import { Clock, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
+import { Cause, Clock, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { ChildProcessSpawner as Spawner } from "effect/process/ChildProcessSpawner"
 import type { TaskPromptOps } from "./task"
@@ -347,6 +346,14 @@ function outcomeLabel(outcome: Outcome) {
   return OUTCOME_LABEL[outcome]
 }
 
+export function renderStopped(request: Request, reason: string) {
+  return [
+    `watch_pr stopped (${reason}) for ${request.url}`,
+    `inspect: ${inspectCommand(request)}`,
+    "Run one bounded check before reporting or merging.",
+  ].join("\n")
+}
+
 export function renderNotice(notice: Notice) {
   const snapshot = notice.snapshot
   const checks = snapshot
@@ -368,7 +375,6 @@ export type WatchInput = {
   runner: Runner
   deadlineMs: number
   pollMs: number
-  cancelled: () => boolean
   deliver: (notice: Notice) => Effect.Effect<void>
 }
 
@@ -396,7 +402,6 @@ export function watch(input: WatchInput): Effect.Effect<Notice> {
       const now = yield* Clock.currentTimeMillis
       if (now >= deadline) return yield* deadlineNotice(current)
       yield* Effect.sleep(Duration.millis(Math.min(input.pollMs, deadline - now)))
-      if (input.cancelled()) return yield* Effect.interrupt
       const beforeRead = yield* Clock.currentTimeMillis
       if (beforeRead >= deadline) return yield* deadlineNotice(current)
       const next = yield* readWithin(deadline - beforeRead)
@@ -467,7 +472,27 @@ export const WatchPrTool = Tool.define(
           const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
           if (!ops) return yield* Effect.fail(new Error("watch_pr requires promptOps in ctx.extra"))
           const runner = (ctx.extra?.watchPrRunner as Runner | undefined) ?? processRunner
-          const epoch = SessionCancellation.epoch(ctx.sessionID)
+          const existing = (yield* background.list()).find(
+            (job) =>
+              job.status === "running" &&
+              job.type === "watch_pr" &&
+              job.metadata?.sessionId === ctx.sessionID &&
+              job.metadata?.url === request.url,
+          )
+          if (existing) {
+            const metadata = { jobId: existing.id, provider: request.provider, url: request.url }
+            yield* ctx.metadata({ title: `watch ${request.url}`, metadata })
+            return {
+              title: `watch ${request.url}`,
+              metadata,
+              output: [
+                `Already watching ${request.url} (job ${existing.id}).`,
+                "No new job was started; the existing watch delivers its notice.",
+                `If no notice arrives, run one bounded check: ${inspectCommand(request)}`,
+                `If an autonomous goal has nothing else to do until this notice, declare goal intent=await with wait_source=watch_pr and wait_id=${existing.id}.`,
+              ].join("\n"),
+            }
+          }
           const deadline = (params.deadline_seconds ?? DEFAULT_DEADLINE_SECONDS) * 1000
           const poll = (params.poll_seconds ?? DEFAULT_POLL_SECONDS) * 1000
           // A goal waiting on this watch registers either the job ID (known
@@ -481,44 +506,80 @@ export const WatchPrTool = Tool.define(
               const ids = jobID ? [jobID, request.url] : [request.url]
               yield* loops.wake(ctx.sessionID, { source: "watch_pr", ids }, payload, { evaluate })
             }).pipe(Effect.ignore)
+          const shouldNotifyWithoutReply = Effect.gen(function* () {
+            const messages = yield* sessions.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
+            let lastUserAt = -1
+            let lastAssistantAt = -1
+            let lastAssistantAborted = false
+            for (const message of messages) {
+              const createdAt = message.info.time?.created
+              if (typeof createdAt !== "number") continue
+              if (message.info.role === "user") lastUserAt = Math.max(lastUserAt, createdAt)
+              if (message.info.role === "assistant" && createdAt >= lastAssistantAt) {
+                lastAssistantAt = createdAt
+                lastAssistantAborted = message.info.error?.name === "MessageAbortedError"
+              }
+            }
+            return lastAssistantAborted && lastUserAt <= lastAssistantAt
+          })
+          const deliverNotice = (text: string) =>
+            Effect.gen(function* () {
+              // The session may have been deleted while the watch ran.
+              const current = yield* sessions.get(ctx.sessionID).pipe(Effect.option)
+              if (Option.isNone(current)) return
+              const noReply = yield* shouldNotifyWithoutReply
+              yield* ops.prompt(
+                {
+                  sessionID: ctx.sessionID,
+                  agent: current.value.agent ?? ctx.agent,
+                  noReply,
+                  parts: [{ type: "text", synthetic: true, text }],
+                },
+                { continueToolBudget: true },
+              )
+            }).pipe(
+              // A delivery failure must not turn into a stopped notice loop.
+              Effect.catch((error) =>
+                Effect.logError("watch_pr notice delivery failed", {
+                  sessionID: ctx.sessionID,
+                  url: request.url,
+                  error: String(error),
+                }),
+              ),
+            )
           const info = yield* background.start({
             type: "watch_pr",
             title: `watch ${request.url}`,
-            metadata: { sessionId: ctx.sessionID, url: request.url, provider: request.provider },
+            metadata: {
+              sessionId: ctx.sessionID,
+              url: request.url,
+              provider: request.provider,
+              survivesSessionCancel: true,
+            },
             run: watch({
               request,
               runner,
               deadlineMs: deadline,
               pollMs: poll,
-              cancelled: () => SessionCancellation.epoch(ctx.sessionID) !== epoch,
               deliver: (notice) =>
                 Effect.gen(function* () {
                   // Flip the goal back to active before the notice turn; that
                   // turn's idle event drives the next goal evaluation, so the
                   // goal neither races the notice nor runs a turn without it.
                   yield* wakeGoal(renderNotice(notice), false)
-                  // The user may switch agents while the watch runs. Read the
-                  // session at delivery time instead of using the captured value.
-                  // Omit model and variant so createUserMessage keeps the
-                  // session's saved selections.
-                  const current = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
-                  yield* ops.prompt(
-                    {
-                      sessionID: ctx.sessionID,
-                      agent: current.agent ?? ctx.agent,
-                      parts: [{ type: "text", synthetic: true, text: renderNotice(notice) }],
-                    },
-                    { continueToolBudget: true },
-                  )
+                  yield* deliverNotice(renderNotice(notice))
                 }),
             }).pipe(
               Effect.map(renderNotice),
-              Effect.onExit((exit) =>
-                // No notice prompt follows a failed job, so evaluate now.
-                Exit.isFailure(exit)
-                  ? wakeGoal(`watch_pr job exited without a notice for ${request.url}`, true)
-                  : Effect.void,
-              ),
+              Effect.onExit((exit) => {
+                if (!Exit.isFailure(exit)) return Effect.void
+                const reason = Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : Cause.pretty(exit.cause)
+                return Effect.gen(function* () {
+                  // No notice prompt follows a failed job, so evaluate now.
+                  yield* wakeGoal(`watch_pr stopped (${reason}) for ${request.url}`, true)
+                  yield* deliverNotice(renderStopped(request, reason))
+                })
+              }),
             ),
           })
           jobID = info.id

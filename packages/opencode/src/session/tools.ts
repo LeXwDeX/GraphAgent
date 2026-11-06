@@ -80,7 +80,7 @@ const PERMISSION_RESTART_TOOLS = new Set([
   "lsp",
   "workflow",
 ])
-const ROOT_ONLY_TOOLS = new Set([MemorySearch.MemorySearchTool.id, TaskTool.id, "workflow", "goal"])
+const ROOT_ONLY_TOOLS = new Set([MemorySearch.MemorySearchTool.id, TaskTool.id, "workflow", "goal", "watch_pr"])
 
 const canUseAgentMessages = Effect.fn("SessionTools.canUseAgentMessages")(function* (session: Session.Info) {
   const store = yield* Effect.serviceOption(DagStore.Service)
