@@ -84,13 +84,10 @@ test("rule 1 catches non-allowlisted lock hosts", () => {
   expect(scanText("bun.lock", text, []).violations).toEqual([{ file: "bun.lock", line: 1, rule: 1 }])
 })
 
-test("rule 1 allows the public registry and only @solidjs/start from pkg.pr.new", () => {
-  const text = [
-    `"a": "https://registry.npmjs.org/a.tgz"`,
-    `"b": "https://pkg.pr.new/@solidjs/start@dfb2020"`,
-  ].join("\n")
+test("rule 1 allows the public registry only", () => {
+  const text = `"a": "https://registry.npmjs.org/a.tgz"`
   expect(scanText("bun.lock", text, []).violations).toEqual([])
-  const other = `"c": "https://pkg.pr.new/@evil/pkg@1.0.0"`
+  const other = `"c": "https://pkg.pr.new/@solidjs/start@dfb2020"`
   expect(scanText("bun.lock", other, []).violations).toEqual([{ file: "bun.lock", line: 1, rule: 1 }])
 })
 

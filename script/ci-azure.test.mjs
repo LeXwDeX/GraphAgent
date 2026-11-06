@@ -14,10 +14,8 @@ await test("CI keeps the required gate names", () => {
     "displayName: Unit Tests (opencode ${{ shard }}/${{ length(parameters.shards) }})\n",
     "displayName: Unit Tests (HttpAPI)\n",
     "displayName: Unit Tests (linux)\n",
-    "displayName: E2E Tests (${{ platform }})\n",
   ])
     assert(ci.includes(name), name)
-  assert.match(ci, /name: e2ePlatforms\n[\s\S]*?default: \[linux\]/)
   assert.match(ci, /name: shards\n[\s\S]*?default: \[1, 2, 3, 4\]/)
 })
 
@@ -29,7 +27,7 @@ await test("every main PR and main push runs the full suite", () => {
 })
 
 await test("the unit aggregate fails unless every unit job succeeded", () => {
-  const aggregate = ci.slice(ci.indexOf("\n  - job: unit_tests"), ci.indexOf("\n  - ${{ each platform"))
+  const aggregate = ci.slice(ci.indexOf("\n  - job: unit_tests"))
   assert(aggregate.includes("condition: always()"), "aggregate runs after failed or skipped dependencies")
   for (const job of ["unit_workspace", "unit_httpapi", "unit_opencode_${{ shard }}"]) {
     assert(aggregate.includes(`- ${job}\n`), `depends on ${job}`)
@@ -50,16 +48,13 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
     "bash script/oc-install-boundary.test.sh && bash script/oc-path-priority.test.sh",
     "bun turbo test --concurrency=1 --filter='!opencode'",
     "go test ./...",
-    "bun run test:unit",
     "bun run check:generated",
     "--shard=${{ shard }}/${{ length(parameters.shards) }} --timings=test/ci-timings.json",
     "bun run test:httpapi:ci",
-    "bun --cwd packages/app test:e2e:local",
-    "test/dag/dag-artifact-permissions.test.ts",
-    "test/sanitize-markdown.test.ts",
   ])
     assert(ci.includes(command), command)
   assert.match(ci, /bun run test:httpapi:ci\n\s+displayName: [^\n]+\n\s+workingDirectory: [^\n]+\n\s+timeoutInMinutes: \d+/)
+  assert.match(ci, /bun run check:generated\n\s+displayName: Check generated SDK\n\s+workingDirectory: packages\/sdk\/js/)
   assert.match(
     ci,
     /bun run check:hosts\n\s+displayName: Check private hosts\n\s+env:\n\s+PRIVATE_HOST_PATTERNS: \$\(PRIVATE_HOST_PATTERNS\)/,
@@ -77,6 +72,10 @@ await test("Azure Pipelines runs development CI and GitHub Actions runs release 
     assert(existsSync(new URL(`../.azure-pipelines/${file}`, import.meta.url)), file)
   const release = read(".azure-pipelines/release.yml")
   assert.match(release, /\ntrigger: none\npr: none\n/, "the Azure release fallback is manual only")
+  const windows = read(".github/workflows/windows-e2e.yml")
+  assert.match(windows, /name: Verify DAG artifact storage on Windows\n\s+working-directory: packages\/opencode/)
+  for (const file of ["dag-output-ref", "dag-output-ref-result", "dag-input-mapping-runtime", "dag-artifact-permissions"])
+    assert(windows.includes(`test/dag/${file}.test.ts`), file)
   const nix = read(".azure-pipelines/nix-verify.yml")
   assert.match(nix, /\ntrigger: none\n/)
   assert.match(nix, /\n  paths:\n    include:\n      - flake\.nix\n/)

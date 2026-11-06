@@ -28,7 +28,7 @@ team.**
 ## What GraphAgent adds
 
 Everything below is developed in this fork on top of opencode. Each feature is opt-in or self-contained; the rest of
-opencode (providers, LSP, client/server, TUI/desktop/web clients) behaves as upstream.
+opencode (providers, LSP, client/server and TUI) retains its existing behavior.
 
 | Feature | What it does | How to use it |
 | --- | --- | --- |
@@ -413,11 +413,11 @@ Curated reference topologies — design decision deep-dive, parallel project del
 - **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
 - **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
 - **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~31 KB to ~20 KB, 36.5 percent), strict `edit` matching that lists ambiguous candidate lines and the closest line when one is close instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
-- **CJK & IME fixes**: corrections for Chinese/Japanese/Korean input in the terminal UI (IME composition flushing, full-width text handling), plus a Korean IME fix script under [`patches/`](./patches).
+- **CJK & IME**: terminal input behavior depends on the terminal and input method.
 - **Worktree isolation**: per-workflow `git worktree` isolation, with experimental sandbox-worktree HTTP endpoints.
 - **Configuration assistant**: a standalone Go TUI under [`config_assistant`](./config_assistant) for locating, validating, and editing opencode configuration (`cd config_assistant && go run ./cmd/ocfg`).
 
-All upstream capabilities (multi-provider, built-in LSP, client/server architecture, TUI/desktop/web clients) are preserved.
+Retained capabilities include multi-provider support, built-in LSP, client/server architecture, and the TUI.
 
 ---
 
@@ -425,7 +425,7 @@ All upstream capabilities (multi-provider, built-in LSP, client/server architect
 
 Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
 
-Built-in application updating is disabled across CLI, TUI, web, and Desktop. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `opencode upgrade` and `POST /global/upgrade` report that updates are disabled.
+Built-in application updating is disabled in CLI and TUI. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `opencode upgrade` and `POST /global/upgrade` report that updates are disabled.
 
 Release acceptance enforces two distinct integrity boundaries:
 
@@ -449,7 +449,7 @@ bun dev serve        # headless API server (port 4096)
 
 ## Quality gates
 
-- **CI**: typecheck on every PR; the `main` gate additionally runs the Bun/Turbo unit suite and config-assistant Go tests (Linux), Playwright e2e (Linux + Windows), an HTTP API contract exerciser, and generated-SDK freshness checks.
+- **CI**: typecheck on every PR; the `main` gate additionally runs the Bun/Turbo unit suite and config-assistant Go tests (Linux), an HTTP API contract exerciser, and generated-SDK freshness checks.
 - **DAG-specific tests**: core scheduling unit tests, projector/state-machine drift tests, workflow lifecycle integration tests, and HTTP API exercise scenarios for every DAG route.
 
 ## License
@@ -460,8 +460,9 @@ Mixed license model:
 |---------|---------|------|
 | Upstream opencode code (the vast majority) | MIT | [`LICENSE`](./LICENSE) |
 | DAG workflow engine (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE), [`packages/opencode/src/dag/LICENSE`](./packages/opencode/src/dag/LICENSE) |
+| Portable runtime assets (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE) |
 
-Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers the DAG engine and derivatives of it, including network-server deployments. If you don't touch the DAG engine, the rest of the repository is plain MIT.
+Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers these modules and their derivatives, including network-server deployments. Other files retain their existing licenses.
 
 ## Docs
 

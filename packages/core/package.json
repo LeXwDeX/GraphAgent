@@ -87,7 +87,6 @@
     "@npmcli/arborist": "catalog:",
     "@npmcli/config": "11.2.0",
     "@opencode-ai/effect-drizzle-sqlite": "workspace:*",
-    "@opencode-ai/effect-sqlite-node": "workspace:*",
     "@opencode-ai/llm": "workspace:*",
     "@opencode-ai/schema": "workspace:*",
     "@opencode-ai/plugin": "workspace:*",

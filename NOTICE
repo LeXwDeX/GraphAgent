@@ -47,7 +47,7 @@ are checked for consistency in CI.
    - packages/opencode/src/server/routes/instance/httpapi/groups/dag.ts
    - packages/opencode/src/server/routes/instance/httpapi/handlers/dag.ts
                                              DAG HTTP API routes
-   2.2 Portable desktop runtime (active)
+   2.2 Portable runtime assets (active)
 
    - packages/core/src/runtime-asset/        Runtime asset discovery, bundled
                                              assets, verified cache, internal
@@ -55,11 +55,6 @@ are checked for consistency in CI.
    - packages/opencode/script/prefetch-ripgrep.ts
                                              Verified ripgrep release prefetch
                                              for distributable artifacts
-   - packages/desktop/scripts/runtime-assets.ts
-   - packages/desktop/scripts/verify-runtime-assets.ts
-                                             Required desktop runtime asset
-                                             preparation and package gate
-
    The AGPL applies to these paths and to derivative works of them, including
    network-server deployments. Files outside the scopes recorded in
    `LICENSE-SCOPE.json` remain under their existing licenses unless they carry

@@ -21,7 +21,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **OpenCode-GraphAgent** �
 
 ## GraphAgent 自研功能
 
-以下功能都是本 fork 在 opencode 之上自行开发的，各自可选或自成体系；opencode 的其余部分（多 Provider、LSP、客户端/服务器、TUI/桌面/Web 客户端）与上游一致。
+以下功能都是本 fork 在 opencode 之上自行开发的，各自可选或自成体系；其余保留能力包括多 Provider、LSP、客户端/服务器和 TUI。
 
 | 功能                                  | 作用                                                                   | 怎么用                                               |
 | ------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
@@ -327,11 +327,11 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 - **委派智能体**：`task` 把工作委派给子智能体，并可用 `task_id` 继续；带完成通知的后台子智能体需开启 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`。
 - **统一系统提示词**：所有模型收到同一份系统提示词——身份、hooks 与 DAG 入口、工作规则和安全约束——不再按 Provider 选择提示词。每种工具的用法写在工具自描述里，提示词不再重复；常驻的 DAG 与 hooks 指导只保留入口，详细主题按需加载。
 - **工具健壮性**：工具自描述（系统提示不再重复每种工具的用法，传给模型的工具描述从约 31 KB 降到约 20 KB，约 37%）；`edit` 严格匹配，多个候选时列出行号，找不到时在足够接近（至少 20% 相似）时给出最近片段而不是猜测，并兼容多种 Provider 参数形状；修复 LLM 输出里损坏的多字节 Unicode 转义（JSON 修复），校验错误带字段级提示，子进程管道修复。
-- **CJK 与 IME 修复**：终端 UI 里中日韩文输入的修正（IME 组字刷新、全角文本处理），另有 [`patches/`](./patches) 下的韩文 IME 修复脚本。
+- **CJK 与 IME**：终端中的中日韩文输入行为取决于终端和输入法。
 - **Worktree 隔离**：按工作流的 `git worktree` 隔离，附实验性的 sandbox-worktree HTTP 端点。
 - **配置助手**：[`config_assistant`](./config_assistant) 下提供独立 Go TUI，用于定位、校验和编辑 opencode 配置（`cd config_assistant && go run ./cmd/ocfg`）。
 
-上游全部能力（多 Provider、内置 LSP、客户端/服务器架构、TUI/桌面/Web 客户端）均完整保留。
+保留的能力包括多 Provider、内置 LSP、客户端/服务器架构和 TUI。
 
 ---
 
@@ -339,7 +339,7 @@ DAG 相关的东西都放在 `.opencode/` 下，在 opencode 配置目录（`OPE
 
 预构建 CLI 二进制（Linux / macOS / Windows，附 SHA256SUMS）发布在 [releases 页面](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases)。正式版从 `main` 构建；`oc` 安装器负责选择并安装版本。
 
-CLI、TUI、网页和 Desktop 均已停用内置应用更新。请通过安装器或 release 产物手动安装新版本。旧的 `autoupdate` 配置仍可读取，但不再生效；`opencode upgrade` 和 `POST /global/upgrade` 会明确返回更新已停用。
+CLI 和 TUI 已停用内置应用更新。请通过安装器或 release 产物手动安装新版本。旧的 `autoupdate` 配置仍可读取，但不再生效；`opencode upgrade` 和 `POST /global/upgrade` 会明确返回更新已停用。
 
 发布验收维护两条相互独立的完整性边界：
 
@@ -363,7 +363,7 @@ bun dev serve        # headless API 服务（端口 4096）
 
 ## 质量门禁
 
-- **CI**：每个 PR 跑 typecheck；`main` 门禁额外运行 Bun/Turbo 单元测试与配置助手 Go 测试（Linux）、Playwright e2e（Linux + Windows）、HTTP API 契约测试器、以及生成 SDK 的新鲜度校验。
+- **CI**：每个 PR 跑 typecheck；`main` 门禁额外运行 Bun/Turbo 单元测试与配置助手 Go 测试（Linux）、HTTP API 契约测试器、以及生成 SDK 的新鲜度校验。
 - **DAG 专项测试**：核心调度单元测试、投影器/状态机漂移测试、工作流生命周期集成测试、每条 DAG 路由的 HTTP API 演练场景。
 
 ## 许可证
@@ -374,8 +374,9 @@ bun dev serve        # headless API 服务（端口 4096）
 | ------------------------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | 上游 opencode 代码（绝大多数） | MIT               | [`LICENSE`](./LICENSE)                                                                                                                         |
 | DAG 工作流引擎（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/opencode/src/dag/LICENSE`](./packages/opencode/src/dag/LICENSE) |
+| 便携运行时资源（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                           |
 
-精确的文件边界列在 [`NOTICE`](./NOTICE) 中。AGPL 覆盖 DAG 引擎及其衍生品，包括网络服务部署；不碰 DAG 引擎的话，仓库其余部分按 MIT 用就行。
+精确的文件边界列在 [`NOTICE`](./NOTICE) 中。AGPL 覆盖这些模块及其衍生品，包括网络服务部署；其他文件保持原有许可证。
 
 ## 文档
 

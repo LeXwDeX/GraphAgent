@@ -51,12 +51,3 @@ jobs:
           test/dag/dag-output-ref-result.test.ts
           test/dag/dag-input-mapping-runtime.test.ts
           test/dag/dag-artifact-permissions.test.ts
-
-      - name: Install Playwright chromium
-        working-directory: packages/app
-        run: bunx playwright install chromium
-
-      - name: Run app e2e tests
-        run: bun --cwd packages/app test:e2e:local
-        env:
-          CI: "true"

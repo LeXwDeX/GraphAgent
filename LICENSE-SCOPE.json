@@ -28,16 +28,14 @@
     },
     {
       "id": "portable-runtime",
-      "name": "Portable desktop runtime",
+      "name": "Portable runtime assets",
       "status": "active",
       "spdx": "AGPL-3.0-or-later",
       "copyright": "Copyright (c) 2026 LeXwDeX",
       "licenseFiles": ["packages/core/src/runtime-asset/LICENSE"],
       "paths": [
         "packages/core/src/runtime-asset/",
-        "packages/opencode/script/prefetch-ripgrep.ts",
-        "packages/desktop/scripts/runtime-assets.ts",
-        "packages/desktop/scripts/verify-runtime-assets.ts"
+        "packages/opencode/script/prefetch-ripgrep.ts"
       ]
     }
   ]

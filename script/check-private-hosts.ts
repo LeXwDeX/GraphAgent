@@ -5,9 +5,6 @@ const PRIVATE_PATTERNS_ENV = "PRIVATE_HOST_PATTERNS"
 const PRIVATE_PATTERNS_UNSET = "$(PRIVATE_HOST_PATTERNS)"
 const ALLOW_MARKER = new RegExp(String.raw`check-private-hosts:\s*allow\s+\S`)
 const PUBLIC_LOCK_HOSTS = new Set(["registry.npmjs.org"])
-const PKG_PR_NEW_PREFIX = "https://pkg.pr.new/@solidjs/start@"
-// Temporary: A1 (#885) deletes packages/web. Remove this exclusion with it.
-const TEMPORARY_EXCLUDED_PREFIX = "packages/web/"
 
 export type Rule = 1 | 2 | 3
 export type Violation = { file: string; line: number; rule: Rule }
@@ -70,7 +67,6 @@ function lockUrls(line: string): string[] {
 }
 
 function isAllowedLockUrl(value: string): boolean {
-  if (value.startsWith(PKG_PR_NEW_PREFIX)) return true
   try {
     return PUBLIC_LOCK_HOSTS.has(new URL(value).host)
   } catch {
@@ -141,11 +137,6 @@ function displayPath(file: string): string {
   return relative.startsWith("..") ? file : relative
 }
 
-function isTemporarilyExcluded(file: string): boolean {
-  const relative = relativePath(file)
-  return relative === "packages/web" || relative.startsWith(TEMPORARY_EXCLUDED_PREFIX)
-}
-
 async function readWorktreeText(file: string): Promise<string | undefined> {
   const absolute = path.isAbsolute(file) ? file : path.join(REPO_ROOT, file)
   try {
@@ -168,7 +159,6 @@ export async function run(options: { staged: boolean; files?: string[]; patterns
   const files = options.files?.length ? options.files : options.staged ? stagedFiles() : trackedFiles()
   const result: ScanResult = { violations: [], allowed: 0, rule3Skipped: patternSet.skipped }
   for (const file of files) {
-    if (isTemporarilyExcluded(file)) continue
     const text = options.staged ? readStagedText(file) : await readWorktreeText(file)
     if (text === undefined) continue
     const scanned = scanText(displayPath(file), text, patternSet.patterns)

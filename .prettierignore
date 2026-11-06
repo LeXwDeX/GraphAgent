@@ -1,6 +1,2 @@
-sst-env.d.ts
-packages/desktop/src/bindings.ts
-packages/client/src/generated/
-packages/client/src/generated-effect/
 # Carries tool-managed blocks (SpecGit, Turborepo) that their generators verify byte-for-byte.
 AGENTS.md

@@ -1,7 +1,6 @@
 .DS_Store
 node_modules
 .worktrees
-.sst
 .env
 .env.local
 .idea
@@ -109,7 +108,6 @@ tsconfig.tsbuildinfo
 # Prototype and implementation specifications
 /specs/
 /packages/opencode/specs/
-/packages/app/create-effect-simplification-spec.md
 /packages/llm/DESIGN.md
 /packages/llm/example/call-sites.md
 /packages/opencode/test/EFFECT_TEST_MIGRATION.md

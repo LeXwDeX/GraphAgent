@@ -1,7 +1,7 @@
 # ============================================================================
 # Nix verification (Azure Pipelines)
 # ----------------------------------------------------------------------------
-# Purpose : Verify the native Nix toolchain, dependency hash and both packages
+# Purpose : Verify the native Nix toolchain, dependency hash and CLI package
 # Trigger : PRs touching Nix inputs, manual run (optionally regenerating
 #           native hashes and returning them as artifacts for review)
 # Agents  : "GitHub-hosted Agents" pool, billed per minute:
@@ -28,7 +28,6 @@ pr:
       - bun.lock
       - .node-version
       - config_assistant/go.mod
-      - packages/desktop/package.json
       - .azure-pipelines/nix-verify.yml
 
 parameters:
@@ -77,7 +76,7 @@ jobs:
               args=(--system "$system")
               if [[ "${{ parameters.regenerateHashes }}" == "True" ]]; then args+=(--apply); fi
               python3 nix/scripts/verify_build.py "${args[@]}"
-            displayName: Verify native toolchain, dependency hash and both packages
+            displayName: Verify native toolchain, dependency hash and CLI package
           - publish: nix-evidence
             artifact: nix-${{ agent.name }}-$(Build.SourceVersion)-$(System.JobAttempt)
             displayName: Preserve measured hashes and native build evidence

@@ -17,7 +17,7 @@ const decode = Schema.decodeUnknownSync(Config.Info)
 describe("ConfigSkillPlugin.Plugin", () => {
   it.effect("registers configured skill directories and URLs", () =>
     Effect.gen(function* () {
-      const directory = AbsolutePath.make("/repo/packages/app")
+      const directory = AbsolutePath.make("/repo/pkg-a")
       const sources: SkillV2.Source[] = []
       const transform = Effect.fnUntraced(function* (update: (draft: SkillV2.Draft) => void | Effect.Effect<void>) {
         const result = update({

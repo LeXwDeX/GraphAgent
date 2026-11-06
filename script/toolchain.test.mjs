@@ -100,7 +100,7 @@ void test("CLI reads the same central versions from a different working director
   assert.equal(actual, readToolchain(root).node)
 })
 
-void test("Nix's copied source includes every shared policy input and the GitHub workspace", (t) => {
+void test("Nix's copied source includes every shared policy input", (t) => {
   const source = read("nix/node_modules.nix")
   const fileset = source.match(/lib\.fileset\.unions \[([\s\S]*?)\]/)?.[1]
   assert.ok(fileset)
@@ -113,7 +113,6 @@ void test("Nix's copied source includes every shared policy input and the GitHub
     ".node-version",
     "config_assistant/go.mod",
     "packages/containers/rust-toolchain.toml",
-    "github/package.json",
     "bun.lock",
   ]) {
     assert.ok(
@@ -129,7 +128,7 @@ void test("Nix's copied source includes every shared policy input and the GitHub
   }).trim()
   assert.equal(actual, readToolchain(root).node)
   const nodeMajor = readToolchain(root).node.split(".")[0]
-  for (const path of ["nix/node_modules.nix", "nix/opencode.nix", "nix/desktop.nix"]) {
+  for (const path of ["nix/node_modules.nix", "nix/opencode.nix"]) {
     const derivation = read(path)
     assert.match(derivation, /toolchain\.requireVersion "bun" bun/)
     assert.ok(
