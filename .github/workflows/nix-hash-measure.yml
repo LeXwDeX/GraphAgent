@@ -1,0 +1,49 @@
+# ============================================================================
+# Temporary native hash measurement for the two Nix systems that the Azure
+# "GitHub-hosted Agents" pool cannot route (aarch64-linux, x86_64-darwin).
+# Removed before this branch is merged; evidence is uploaded as artifacts.
+# ============================================================================
+
+name: Nix hash measurement
+
+on:
+  push:
+    branches:
+      - chore/nix-bun-1.4.4
+    paths:
+      - .github/workflows/nix-hash-measure.yml
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: x86_64-darwin
+            runner: macos-26-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Install Nix
+        run: |
+          set -euo pipefail
+          sh <(curl --fail --location --silent --show-error --retry 3 \
+            https://releases.nixos.org/nix/nix-2.35.0/install) --daemon --yes
+      - name: Measure native nodeModules hash
+        run: |
+          set -euo pipefail
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          export NIX_CONFIG="experimental-features = nix-command flakes"
+          python3 nix/scripts/test_verify_build.py
+          python3 nix/scripts/verify_build.py --system ${{ matrix.system }} --apply
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-evidence-${{ matrix.system }}
+          path: nix-evidence
