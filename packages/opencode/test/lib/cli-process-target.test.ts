@@ -26,11 +26,11 @@ describe("CLI subprocess target", () => {
   })
 
   test("rejects a relative artifact path before filesystem access", () => {
-    expect(() => artifactCliTarget("bin/opencode")).toThrow("must be an absolute path")
+    expect(() => artifactCliTarget("bin/graphagent")).toThrow("must be an absolute path")
   })
 
   test("rejects a directly constructed relative artifact target", async () => {
-    expect(await rejectionMessage(resolveCliTarget({ mode: "artifact", executable: "bin/opencode" }))).toContain(
+    expect(await rejectionMessage(resolveCliTarget({ mode: "artifact", executable: "bin/graphagent" }))).toContain(
       "must be an absolute path",
     )
   })

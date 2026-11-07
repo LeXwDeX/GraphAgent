@@ -40,7 +40,7 @@ export async function createCorrespondingSource(input: CorrespondingSourceInput)
 
   const output = path.resolve(input.output)
   const version = input.version.replace(/[^0-9A-Za-z._-]/g, "-")
-  const base = `opencode-graphagent-${version}-source-${commit.slice(0, 12)}`
+  const base = `graphagent-${version}-source-${commit.slice(0, 12)}`
   const archive = path.join(output, `${base}.tar.gz`)
   await mkdir(output, { recursive: true })
   await command(root, ["git", "archive", "--format=tar.gz", `--prefix=${base}/`, `--output=${archive}`, commit])

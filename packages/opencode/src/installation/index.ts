@@ -1,8 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer, Schema, Context } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { ChildProcess } from "effect/process"
-import { AppProcess } from "@opencode-ai/core/process"
 import path from "path"
 import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -53,25 +51,9 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/In
 
 export const use = serviceUse(Service)
 
-export const layer: Layer.Layer<Service, never, AppProcess.Service> = Layer.effect(
+export const layer: Layer.Layer<Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const appProcess = yield* AppProcess.Service
-
-    const text = Effect.fnUntraced(
-      function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
-        const result = yield* appProcess.run(
-          ChildProcess.make(cmd[0], cmd.slice(1), {
-            cwd: opts?.cwd,
-            env: opts?.env,
-            extendEnv: true,
-          }),
-        )
-        return result.stdout.toString("utf8")
-      },
-      Effect.catch(() => Effect.succeed("")),
-    )
-
     const result: Interface = {
       info: Effect.fn("Installation.info")(function* () {
         return {
@@ -80,37 +62,8 @@ export const layer: Layer.Layer<Service, never, AppProcess.Service> = Layer.effe
         }
       }),
       method: Effect.fn("Installation.method")(function* () {
-        if (process.execPath.includes(path.join(".opencode", "bin"))) return "curl" as Method
+        if (process.execPath.includes(path.join(".graphagent", "bin"))) return "curl" as Method
         if (process.execPath.includes(path.join(".local", "bin"))) return "curl" as Method
-        const exec = process.execPath.toLowerCase()
-
-        const checks: Array<{ name: Method; command: () => Effect.Effect<string> }> = [
-          { name: "npm", command: () => text(["npm", "list", "-g", "--depth=0"]) },
-          { name: "yarn", command: () => text(["yarn", "global", "list"]) },
-          { name: "pnpm", command: () => text(["pnpm", "list", "-g", "--depth=0"]) },
-          { name: "bun", command: () => text(["bun", "pm", "ls", "-g"]) },
-          { name: "brew", command: () => text(["brew", "list", "--formula", "opencode"]) },
-          { name: "scoop", command: () => text(["scoop", "list", "opencode"]) },
-          { name: "choco", command: () => text(["choco", "list", "--limit-output", "opencode"]) },
-        ]
-
-        checks.sort((a, b) => {
-          const aMatches = exec.includes(a.name)
-          const bMatches = exec.includes(b.name)
-          if (aMatches && !bMatches) return -1
-          if (!aMatches && bMatches) return 1
-          return 0
-        })
-
-        for (const check of checks) {
-          const output = yield* check.command()
-          const installedName =
-            check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "opencode" : "opencode-ai"
-          if (output.includes(installedName)) {
-            return check.name
-          }
-        }
-
         return "unknown" as Method
       }),
       // Compatibility accessors never query releases or execute an installer.
@@ -122,7 +75,7 @@ export const layer: Layer.Layer<Service, never, AppProcess.Service> = Layer.effe
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(AppProcess.defaultLayer))
+export const defaultLayer = layer
 
 const { runPromise } = makeRuntime(Service, defaultLayer)
 
@@ -130,6 +83,6 @@ export const latest = (...args: Parameters<Interface["latest"]>) => runPromise((
 export const method = () => runPromise((s) => s.method())
 export const upgrade = (...args: Parameters<Interface["upgrade"]>) => runPromise((s) => s.upgrade(...args))
 
-export const node = LayerNode.make(layer, [AppProcess.node])
+export const node = LayerNode.make(layer, [])
 
 export * as Installation from "."

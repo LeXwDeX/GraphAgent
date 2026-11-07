@@ -1,8 +1,8 @@
 # ============================================================================
 # 📦 Release · Fork Build
 # ----------------------------------------------------------------------------
-# Purpose : Build opencode CLI binaries (linux / macos / windows) for the
-#           LeXwDeX/opencode fork. Stripped-down version of upstream
+# Purpose : Build GraphAgent CLI binaries (linux / macos / windows) for the
+#           LeXwDeX/GraphAgent fork. Stripped-down version of upstream
 #           publish.yml — removes repo guard, Blacksmith runners, code
 #           signing, npm publish, and Tauri desktop.
 # Trigger : Manual workflow_dispatch from main only
@@ -23,7 +23,7 @@
 #           prepare-release — always assembles and verifies a release candidate
 #           publish-release — optional, creates the GitHub Release
 #           register  — no-op for push triggers, just registers in Actions UI
-# Output  : Artifacts: opencode-{linux,macos,windows}.{tar.gz,zip} +
+# Output  : Artifacts: graphagent-{linux,macos,windows}.{tar.gz,zip} +
 #           dag-templates.tar.gz + SHA256SUMS
 # ============================================================================
 
@@ -258,7 +258,7 @@ jobs:
           OPENCODE_CHANNEL: latest
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
 
-      # Bundle ripgrep into each dist/opencode-*/bin so air-gapped users do not
+      # Bundle ripgrep into each dist/graphagent-*/bin so air-gapped users do not
       # hit the runtime download in packages/core/src/ripgrep/binary.ts.
       - name: Prefetch Ripgrep
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
@@ -267,8 +267,8 @@ jobs:
       - name: Verify CLI executable
         if: matrix.name != 'macos' && (inputs.platforms == '' || contains(inputs.platforms, matrix.name))
         run: |
-          for dir in packages/opencode/dist/opencode-*/; do
-            cli="$dir/bin/opencode"
+          for dir in packages/opencode/dist/graphagent-*/; do
+            cli="$dir/bin/graphagent"
             if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
             actual="$("$cli" --version)"
             if [[ "$actual" != "${{ needs.version.outputs.version }}" ]]; then
@@ -283,7 +283,7 @@ jobs:
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         working-directory: packages/opencode/dist
         run: |
-          for dir in opencode-*/; do
+          for dir in graphagent-*/; do
             base="${dir%/}"
             if [[ "$base" == *linux* ]]; then
               bun run ../script/package-cli-artifact.ts "$base" "${base}.tar.gz"
@@ -300,14 +300,16 @@ jobs:
       # legitimate); no post-sign digest.
       - name: macOS Install Acceptance
         if: matrix.name == 'macos' && (inputs.platforms == '' || contains(inputs.platforms, matrix.name))
-        run: bash script/oc-macos-acceptance.test.sh packages/opencode/dist/opencode-darwin-arm64.zip
+        # The self-contained mode runs the oc upgrade path with a compiled stub.
+        # Real-artifact acceptance returns in G1 with the oc switch.
+        run: bash script/oc-macos-acceptance.test.sh
         timeout-minutes: 10
 
       - name: Upload Artifacts
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: opencode-${{ matrix.name }}
+          name: graphagent-${{ matrix.name }}
           path: |
             packages/opencode/dist/*.tar.gz
             packages/opencode/dist/*.zip
@@ -339,7 +341,7 @@ jobs:
           SELECTED_PLATFORMS: ${{ inputs.platforms }}
         run: |
           shopt -s nullglob
-          assets=(opencode-*.tar.gz opencode-*.zip dag-templates.tar.gz dag-template-provenance.json)
+          assets=(graphagent-*.tar.gz graphagent-*.zip dag-templates.tar.gz dag-template-provenance.json)
           if (( ${#assets[@]} < 3 )); then
             echo "::error::Release candidate is incomplete: expected templates, provenance, and at least one CLI archive."
             exit 1
@@ -355,9 +357,9 @@ jobs:
               fi
             fi
           }
-          require_archive linux "opencode-linux-*.tar.gz"
-          require_archive macos "opencode-darwin-*.zip"
-          require_archive windows "opencode-windows-*.zip"
+          require_archive linux "graphagent-linux-*.tar.gz"
+          require_archive macos "graphagent-darwin-*.zip"
+          require_archive windows "graphagent-windows-*.zip"
           if command -v shasum >/dev/null 2>&1; then
             shasum -a 256 "${assets[@]}" > SHA256SUMS
           elif command -v sha256sum >/dev/null 2>&1; then
@@ -477,7 +479,7 @@ jobs:
           )
           gh release create "${{ needs.version.outputs.tag }}" \
             --repo "${{ github.repository }}" \
-            --title "OpenCode GraphAgent v${{ needs.version.outputs.version }}" \
+            --title "GraphAgent v${{ needs.version.outputs.version }}" \
             --notes-file "release-assets/RELEASE_NOTES.md" \
             --target "${{ github.sha }}" \
             --latest \

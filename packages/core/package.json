@@ -11,9 +11,6 @@
     "test": "bun test --only-failures",
     "typecheck": "tsgo --noEmit"
   },
-  "bin": {
-    "opencode": "./bin/opencode"
-  },
   "exports": {
     "./session/runner": "./src/session/runner/index.ts",
     "./session/context-folding": "./src/session/context-folding/index.ts",

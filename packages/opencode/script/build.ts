@@ -118,7 +118,7 @@ if (!skipInstall) {
 }
 for (const item of targets) {
   const name = [
-    pkg.name,
+    Script.artifactPrefix,
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -154,17 +154,12 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
+      target: name.replace(Script.artifactPrefix, "bun") as any,
+      outfile: `dist/${name}/bin/graphagent`,
+      execArgv: [`--user-agent=graphagent/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
-    entrypoints: [
-      "./src/index.ts",
-      parserWorker,
-      workerPath,
-      schemaValidationWorkerPath,
-    ],
+    entrypoints: ["./src/index.ts", parserWorker, workerPath, schemaValidationWorkerPath],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${Script.version}'`,
@@ -181,12 +176,12 @@ for (const item of targets) {
 
   // macOS kills freshly compiled unsigned darwin binaries (SIGKILL 137) before they can run
   if (process.platform === "darwin" && item.os === "darwin" && fs.existsSync("/usr/bin/codesign")) {
-    await $`/usr/bin/codesign --force --sign - dist/${name}/bin/opencode`
+    await $`/usr/bin/codesign --force --sign - dist/${name}/bin/graphagent`
   }
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/opencode`
+    const binaryPath = `dist/${name}/bin/graphagent`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()

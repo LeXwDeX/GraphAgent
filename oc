@@ -161,19 +161,7 @@ current_version() {
     local bin
     bin=$(command -v "$INSTALL_NAME" 2>/dev/null || true)
     [ -z "$bin" ] && { echo "(未安装)"; return; }
-    # 穿透 tmux shim + wrapper，找到真实 opencode 二进制
-    local real="$bin"
-    if head -n5 "$bin" 2>/dev/null | grep -q "opencode-tmux"; then
-        # shim 里 exec 的是 wrapper.sh，wrapper.sh 里有 OPENCODE_REAL_BIN=
-        local wrapper
-        wrapper=$(grep -m1 'exec ' "$bin" 2>/dev/null | sed 's/exec //' | tr -d '"' | awk '{print $1}' || true)
-        if [ -n "$wrapper" ] && [ -f "$wrapper" ]; then
-            local extracted
-            extracted=$(printf '%s\n' "$wrapper" | grep -oE 'OPENCODE_REAL_BIN="[^"]*"|OPENCODE_REAL_BIN='\''[^'\'']*'\''' | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
-            [ -n "$extracted" ] && [ -x "$extracted" ] && real="$extracted"
-        fi
-    fi
-    "$real" --version 2>/dev/null | head -n1 || echo "(无法读取)"
+    "$bin" --version 2>/dev/null | head -n1 || echo "(无法读取)"
 }
 
 # ---------- GitHub API ----------
