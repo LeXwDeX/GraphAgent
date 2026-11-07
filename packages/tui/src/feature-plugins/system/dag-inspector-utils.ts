@@ -4,7 +4,7 @@
 /** Pure topology helpers for the DAG inspector. Extracted for unit testing,
  * mirroring the diff-viewer-file-tree-utils pattern in this directory. */
 
-import type { DagNode, DagWorkflowSummary } from "@opencode-ai/sdk/v2"
+import type { DagNode, DagWorkflowSummary } from "@graphagent/sdk/v2"
 
 export type { DagNode }
 

@@ -17,7 +17,7 @@ import type {
   TextPart,
   Config as SdkConfig,
   DagWorkflowSummary,
-} from "@opencode-ai/sdk/v2"
+} from "@graphagent/sdk/v2"
 import type { CliRenderer, KeyEvent, RGBA, Renderable, SlotMode } from "@opentui/core"
 import type { Binding, Keymap } from "@opentui/keymap"
 import {

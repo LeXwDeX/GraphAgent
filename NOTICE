@@ -25,7 +25,7 @@ are checked for consistency in CI.
 
    License:  GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)
    Text:     ./packages/core/src/dag/LICENSE
-             ./packages/opencode/src/dag/LICENSE
+             ./packages/graphagent/src/dag/LICENSE
              ./packages/core/src/runtime-asset/LICENSE
    Copyright (c) 2026 LeXwDeX
 
@@ -34,25 +34,25 @@ are checked for consistency in CI.
    - packages/core/src/dag/                  DAG core: state machine, dependency
                                              graph, scheduling, event projection,
                                              SQLite read model
-   - packages/opencode/src/dag/              DAG runtime: workflow service,
+   - packages/graphagent/src/dag/              DAG runtime: workflow service,
                                              execution loop, node spawn,
                                              admission, review lifecycle,
                                              crash recovery, templates
-   - packages/opencode/src/tool/workflow.ts  The `workflow` agent tool
+   - packages/graphagent/src/tool/workflow.ts  The `workflow` agent tool
    - packages/schema/src/dag-event.ts        DAG event schema definitions
    - packages/tui/src/feature-plugins/system/dag-inspector.tsx
    - packages/tui/src/feature-plugins/system/dag-inspector-utils.ts
    - packages/tui/src/feature-plugins/sidebar/dag-panel.tsx
                                              TUI DAG inspector and sidebar panel
-   - packages/opencode/src/server/routes/instance/httpapi/groups/dag.ts
-   - packages/opencode/src/server/routes/instance/httpapi/handlers/dag.ts
+   - packages/graphagent/src/server/routes/instance/httpapi/groups/dag.ts
+   - packages/graphagent/src/server/routes/instance/httpapi/handlers/dag.ts
                                              DAG HTTP API routes
    2.2 Portable runtime assets (active)
 
    - packages/core/src/runtime-asset/        Runtime asset discovery, bundled
                                              assets, verified cache, internal
                                              mirrors, and public fallback
-   - packages/opencode/script/prefetch-ripgrep.ts
+   - packages/graphagent/script/prefetch-ripgrep.ts
                                              Verified ripgrep release prefetch
                                              for distributable artifacts
    The AGPL applies to these paths and to derivative works of them, including

@@ -115,7 +115,7 @@ export namespace RuntimeAsset {
     }
   }
 
-  export class Service extends Context.Service<Service, Interface>()("@opencode/RuntimeAsset") {}
+  export class Service extends Context.Service<Service, Interface>()("@graphagent/RuntimeAsset") {}
 
   export function make(input: { readonly platform: Platform; readonly candidates: Candidates }): Interface {
     const finish = (

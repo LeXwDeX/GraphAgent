@@ -31,7 +31,7 @@ target
 
 # Local dev files
 graphagent-dev
-packages/opencode/script/config.json
+packages/graphagent/script/config.json
 UPCOMING_CHANGELOG.md
 # Test machine / review host addresses (public repo: never track)
 /.env.hosts
@@ -56,7 +56,7 @@ tsconfig.tsbuildinfo
 .qoder
 
 # CI watcher test for the local .agents hook scaffolding; kept local with its tool
-/packages/opencode/test/hook/repo-ci-watcher.test.ts
+/packages/graphagent/test/hook/repo-ci-watcher.test.ts
 
 # Local-only agent tooling: SpecGit integration and MCP plugin resources.
 # These are per-checkout configuration, instructions, caches and workspace
@@ -100,10 +100,10 @@ tsconfig.tsbuildinfo
 
 # Prototype and implementation specifications
 /specs/
-/packages/opencode/specs/
+/packages/graphagent/specs/
 /packages/llm/DESIGN.md
 /packages/llm/example/call-sites.md
-/packages/opencode/test/EFFECT_TEST_MIGRATION.md
+/packages/graphagent/test/EFFECT_TEST_MIGRATION.md
 
 # Expiring internal workflow, performance, and status records
 /workflows/

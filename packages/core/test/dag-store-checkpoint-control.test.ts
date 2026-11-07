@@ -3,11 +3,11 @@
 
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { Database } from "@opencode-ai/core/database/database"
-import { EventV2 } from "@opencode-ai/core/event"
-import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { DagStore } from "@graphagent/core/dag/store"
+import { Database } from "@graphagent/core/database/database"
+import { EventV2 } from "@graphagent/core/event"
+import { EventSequenceTable, EventTable } from "@graphagent/core/event/sql"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { testEffect } from "./lib/effect"
 
 const database = Database.layerFromPath(":memory:")

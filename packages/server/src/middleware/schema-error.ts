@@ -1,8 +1,8 @@
 import { Effect } from "effect"
 import { HttpApiMiddleware } from "effect/http-api"
-import { InvalidRequestError } from "@opencode-ai/protocol/errors"
-import { SchemaErrorMiddleware } from "@opencode-ai/protocol/middleware/schema-error"
-export { SchemaErrorMiddleware } from "@opencode-ai/protocol/middleware/schema-error"
+import { InvalidRequestError } from "@graphagent/protocol/errors"
+import { SchemaErrorMiddleware } from "@graphagent/protocol/middleware/schema-error"
+export { SchemaErrorMiddleware } from "@graphagent/protocol/middleware/schema-error"
 
 const REASON_LIMIT = 1024
 

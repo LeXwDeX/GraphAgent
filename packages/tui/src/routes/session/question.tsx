@@ -3,11 +3,11 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show }
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
-import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
+import type { QuestionAnswer, QuestionRequest } from "@graphagent/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
-import { useBindings, useOpencodeModeStack } from "../../keymap"
+import { useBindings, useGraphagentModeStack } from "../../keymap"
 import { useToast } from "../../ui/toast"
 
 const QUESTION_MODE = "question"
@@ -32,7 +32,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
-  const modeStack = useOpencodeModeStack()
+  const modeStack = useGraphagentModeStack()
   const toast = useToast()
 
   const questions = createMemo(() => props.request.questions)

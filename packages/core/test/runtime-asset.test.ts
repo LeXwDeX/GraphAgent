@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Result } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { RuntimeAsset } from "@opencode-ai/core/runtime-asset"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { RuntimeAsset } from "@graphagent/core/runtime-asset"
 
 describe("RuntimeAsset", () => {
   test("uses the deterministic source order and reports provenance", async () => {

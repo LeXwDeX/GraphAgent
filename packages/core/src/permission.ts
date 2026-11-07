@@ -1,9 +1,9 @@
 export * as PermissionV2 from "./permission"
 
-import { Permission } from "@opencode-ai/schema/permission"
+import { Permission } from "@graphagent/schema/permission"
 import { Wildcard } from "./util/wildcard"
 
-export { Effect, Rule, Ruleset } from "@opencode-ai/schema/permission"
+export { Effect, Rule, Ruleset } from "@graphagent/schema/permission"
 
 export function evaluate(action: string, resource: string, ...rulesets: Permission.Ruleset[]): Permission.Rule {
   return (

@@ -13,17 +13,17 @@
       "status": "active",
       "spdx": "AGPL-3.0-or-later",
       "copyright": "Copyright (c) 2026 LeXwDeX",
-      "licenseFiles": ["packages/core/src/dag/LICENSE", "packages/opencode/src/dag/LICENSE"],
+      "licenseFiles": ["packages/core/src/dag/LICENSE", "packages/graphagent/src/dag/LICENSE"],
       "paths": [
         "packages/core/src/dag/",
-        "packages/opencode/src/dag/",
-        "packages/opencode/src/tool/workflow.ts",
+        "packages/graphagent/src/dag/",
+        "packages/graphagent/src/tool/workflow.ts",
         "packages/schema/src/dag-event.ts",
         "packages/tui/src/feature-plugins/system/dag-inspector.tsx",
         "packages/tui/src/feature-plugins/system/dag-inspector-utils.ts",
         "packages/tui/src/feature-plugins/sidebar/dag-panel.tsx",
-        "packages/opencode/src/server/routes/instance/httpapi/groups/dag.ts",
-        "packages/opencode/src/server/routes/instance/httpapi/handlers/dag.ts"
+        "packages/graphagent/src/server/routes/instance/httpapi/groups/dag.ts",
+        "packages/graphagent/src/server/routes/instance/httpapi/handlers/dag.ts"
       ]
     },
     {
@@ -35,7 +35,7 @@
       "licenseFiles": ["packages/core/src/runtime-asset/LICENSE"],
       "paths": [
         "packages/core/src/runtime-asset/",
-        "packages/opencode/script/prefetch-ripgrep.ts"
+        "packages/graphagent/script/prefetch-ripgrep.ts"
       ]
     }
   ]

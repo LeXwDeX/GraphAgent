@@ -1,5 +1,5 @@
-import { Global } from "@opencode-ai/core/global"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { Global } from "@graphagent/core/global"
+import { APP_NAME } from "@graphagent/core/brand"
 import fs from "fs/promises"
 import path from "path"
 import { formatWithOptions } from "util"

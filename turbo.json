@@ -12,13 +12,13 @@
       "dependsOn": [],
       "outputs": ["dist/**"]
     },
-    "opencode#test": {
+    "graphagent#test": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/config_assistant/internal/schema/config.json"],
       "outputs": [],
       "passThroughEnv": ["*"]
     },
-    "@opencode-ai/core#test": {
+    "@graphagent/core#test": {
       "dependsOn": ["^build"],
       "outputs": []
     }

@@ -18,14 +18,14 @@
  */
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { Database } from "@graphagent/core/database/database"
+import { ProjectV2 } from "@graphagent/core/project"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
+import { DagStore } from "@graphagent/core/dag/store"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionSchema } from "@graphagent/core/session/schema"
+import { SessionTable } from "@graphagent/core/session/sql"
 
 function storeLayer() {
   const database = Database.layerFromPath(":memory:")

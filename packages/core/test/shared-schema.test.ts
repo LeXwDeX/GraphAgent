@@ -1,27 +1,27 @@
 import { expect, test } from "bun:test"
 import { Schema } from "effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { Agent } from "@opencode-ai/schema/agent"
-import { Location } from "@opencode-ai/schema/location"
-import { Model } from "@opencode-ai/schema/model"
-import { Prompt } from "@opencode-ai/schema/prompt"
-import { Provider } from "@opencode-ai/schema/provider"
-import { Project } from "@opencode-ai/schema/project"
-import { Session } from "@opencode-ai/schema/session"
-import { Workspace } from "@opencode-ai/schema/workspace"
-import { Command } from "@opencode-ai/schema/command"
-import { Connection } from "@opencode-ai/schema/connection"
-import { Credential } from "@opencode-ai/schema/credential"
-import { FileSystem } from "@opencode-ai/schema/filesystem"
-import { Integration } from "@opencode-ai/schema/integration"
-import { LLM } from "@opencode-ai/schema/llm"
-import { Permission } from "@opencode-ai/schema/permission"
-import { Reference } from "@opencode-ai/schema/reference"
-import { Skill } from "@opencode-ai/schema/skill"
-import { AbsolutePath, DateTimeUtcFromMillis } from "@opencode-ai/schema/schema"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { AgentV2 } from "@graphagent/core/agent"
+import { ModelV2 } from "@graphagent/core/model"
+import { SessionSchema } from "@graphagent/core/session/schema"
+import { Agent } from "@graphagent/schema/agent"
+import { Location } from "@graphagent/schema/location"
+import { Model } from "@graphagent/schema/model"
+import { Prompt } from "@graphagent/schema/prompt"
+import { Provider } from "@graphagent/schema/provider"
+import { Project } from "@graphagent/schema/project"
+import { Session } from "@graphagent/schema/session"
+import { Workspace } from "@graphagent/schema/workspace"
+import { Command } from "@graphagent/schema/command"
+import { Connection } from "@graphagent/schema/connection"
+import { Credential } from "@graphagent/schema/credential"
+import { FileSystem } from "@graphagent/schema/filesystem"
+import { Integration } from "@graphagent/schema/integration"
+import { LLM } from "@graphagent/schema/llm"
+import { Permission } from "@graphagent/schema/permission"
+import { Reference } from "@graphagent/schema/reference"
+import { Skill } from "@graphagent/schema/skill"
+import { AbsolutePath, DateTimeUtcFromMillis } from "@graphagent/schema/schema"
+import { ProviderV2 } from "@graphagent/core/provider"
 
 test("Core reuses the canonical shared schemas", async () => {
   const [
@@ -39,19 +39,19 @@ test("Core reuses the canonical shared schemas", async () => {
     coreV2Schema,
     coreWorkspace,
   ] = await Promise.all([
-    import("@opencode-ai/core/command"),
-    import("@opencode-ai/core/integration/connection"),
-    import("@opencode-ai/core/credential"),
-    import("@opencode-ai/core/filesystem"),
-    import("@opencode-ai/core/integration"),
-    import("@opencode-ai/core/location"),
-    import("@opencode-ai/llm"),
-    import("@opencode-ai/core/permission"),
-    import("@opencode-ai/core/project/schema"),
-    import("@opencode-ai/core/reference"),
-    import("@opencode-ai/core/skill"),
-    import("@opencode-ai/core/v2-schema"),
-    import("@opencode-ai/core/workspace"),
+    import("@graphagent/core/command"),
+    import("@graphagent/core/integration/connection"),
+    import("@graphagent/core/credential"),
+    import("@graphagent/core/filesystem"),
+    import("@graphagent/core/integration"),
+    import("@graphagent/core/location"),
+    import("@graphagent/llm"),
+    import("@graphagent/core/permission"),
+    import("@graphagent/core/project/schema"),
+    import("@graphagent/core/reference"),
+    import("@graphagent/core/skill"),
+    import("@graphagent/core/v2-schema"),
+    import("@graphagent/core/workspace"),
   ])
 
   const schemas = [

@@ -10,7 +10,7 @@ The public server client will be exposed separately. It is intentionally not par
 ## Defining A Plugin
 
 ```ts
-import { define } from "@opencode-ai/core/plugin/context/index"
+import { define } from "@graphagent/core/plugin/context/index"
 import { Effect } from "effect"
 
 export const Plugin = define({

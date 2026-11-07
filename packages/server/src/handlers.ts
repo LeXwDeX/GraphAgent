@@ -1,4 +1,4 @@
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
+import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Layer } from "effect"
 import { layer as locationLayer } from "./location"
 import { ModelHandler } from "./handlers/model"
@@ -13,7 +13,7 @@ import { ReferenceHandler } from "./handlers/reference"
 import { LocationHandler } from "./handlers/location"
 import { IntegrationHandler } from "./handlers/integration"
 import { CredentialHandler } from "./handlers/credential"
-import { Credential } from "@opencode-ai/core/credential"
+import { Credential } from "@graphagent/core/credential"
 import { ProjectCopyHandler } from "./handlers/project-copy"
 
 export const handlers = Layer.mergeAll(

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode-ai/protocol",
+  "name": "@graphagent/protocol",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -12,7 +12,7 @@
     "test": "bun test --pass-with-no-tests"
   },
   "dependencies": {
-    "@opencode-ai/schema": "workspace:*",
+    "@graphagent/schema": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

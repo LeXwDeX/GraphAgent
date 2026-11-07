@@ -1,0 +1,166 @@
+title: "DAG Module Deep Review"
+config:
+  name: dag-module-review
+  max_concurrency: 5
+  max_node_replan_attempts: 3
+  max_total_nodes: 20
+  node_defaults:
+    required: false
+    report_to_parent: false
+    worker_config:
+      timeout_ms: 1800000
+  nodes:
+    - id: explore-core
+      name: explore-core
+      worker_type: explore
+      depends_on: []
+      prompt_template:
+        id: code-explore
+        input:
+          target: "packages/graphagent/src/dag core lifecycle files: dag.ts, config.ts, model.ts, admission.ts, review-lifecycle.ts. Map workflow state machine transitions, locking strategy (withWorkflowLock), node lifecycle (spawn/complete/fail/cancel/pause/resume/step), config normalization, model resolution, and admission QA protocol. Identify state ownership, concurrency guards, and cross-module contracts."
+
+    - id: explore-runtime
+      name: explore-runtime
+      worker_type: explore
+      depends_on: []
+      prompt_template:
+        id: code-explore
+        input:
+          target: "packages/graphagent/src/dag/runtime execution engine: loop.ts (scheduling loop, layer computation, concurrency control), spawn.ts (child session creation), recovery.ts (crash recovery, reconciliation), eval.ts (condition evaluation, input mapping), capture.ts (output schema validation, submit_result), summary-publisher.ts (event emission). Map the scheduling algorithm, session lifecycle, error propagation, and recovery invariants."
+
+    - id: explore-templates
+      name: explore-templates
+      worker_type: explore
+      depends_on: []
+      prompt_template:
+        id: code-explore
+        input:
+          target: "packages/graphagent/src/dag/templates template system: resolve.ts (template resolution, rendering, interpolation) and sanitize.ts (input sanitization, injection prevention). Map template loading (by ID from .agents/dag-prompts, inline), variable interpolation mechanics, and the sanitization boundary. Identify trust assumptions and injection vectors."
+
+    - id: review-arch
+      name: review-arch
+      worker_type: review
+      depends_on: [explore-core, explore-runtime, explore-templates]
+      prompt_template:
+        id: review-arch
+
+    - id: review-logic
+      name: review-logic
+      worker_type: review
+      depends_on: [explore-core, explore-runtime, explore-templates]
+      prompt_template:
+        id: review-logic
+
+    - id: review-style
+      name: review-style
+      worker_type: review
+      depends_on: [explore-core, explore-runtime, explore-templates]
+      prompt_template:
+        id: review-style
+
+    - id: verify-claims
+      name: verify-claims
+      worker_type: general
+      depends_on: [review-arch, review-logic, review-style]
+      required: true
+      prompt_template:
+        inline: |
+          You are a claim verifier. Three reviewers produced findings and unverified_claims about the DAG module (packages/graphagent/src/dag/).
+
+          Your job: take EVERY item listed under `unverified_claims` from all three reviews and check it against the actual source code. For each claim:
+          1. Open the cited file(s) and read the relevant code.
+          2. Determine: CONFIRMED (the claim is true, cite evidence), REFUTED (the claim is false, cite counter-evidence), or INCONCLUSIVE (cannot determine from code alone, state why).
+          3. Also spot-check any finding marked CRITICAL/P0 that lacks a clear file:line citation.
+
+          Output a structured verdict per claim. Never modify any file.
+
+          ## Reviewer outputs to verify:
+
+          ### Architecture Review
+          {{review-arch}}
+
+          ### Logic Review
+          {{review-logic}}
+
+          ### Style Review
+          {{review-style}}
+
+    - id: arbitrate
+      name: arbitrate
+      worker_type: review
+      depends_on: [verify-claims]
+      required: true
+      report_to_parent: true
+      output_schema:
+        type: object
+        required: [verdict, summary, findings, required_actions, next_action]
+        properties:
+          verdict:
+            type: string
+            enum: [ACCEPT, REVISE, REJECT, BLOCKED]
+          summary:
+            type: string
+          findings:
+            type: array
+            items:
+              type: object
+              properties:
+                severity: { type: string }
+                title: { type: string }
+                evidence: { type: string }
+                status: { type: string, enum: [confirmed, refuted, inconclusive] }
+          required_actions:
+            type: array
+            items: { type: string }
+          next_action:
+            type: object
+            required: [operation, targets]
+            properties:
+              operation:
+                type: string
+                enum: [continue, extend, replan, complete, stop]
+              targets:
+                type: array
+                items: { type: string }
+      prompt_template:
+        inline: |
+          You are the arbiter for a deep review of the DAG workflow engine (packages/graphagent/src/dag/).
+
+          Three reviewers (architecture, logic, style) produced findings. A verification node then checked all unverified_claims against the actual code.
+
+          Your task:
+          1. Rule finding-by-finding: accept only findings with CONFIRMED evidence. Discard REFUTED claims. Flag INCONCLUSIVE items as residual risk.
+          2. Deduplicate overlapping findings across reviewers.
+          3. Rank confirmed findings by severity and blast radius.
+          4. Emit a structured verdict:
+             - ACCEPT: no CRITICAL/P0 confirmed findings, module is sound.
+             - REVISE: confirmed findings exist but are addressable without redesign.
+             - REJECT: confirmed CRITICAL/P0 findings require structural rework.
+             - BLOCKED: verification was insufficient to rule.
+          5. Provide required_actions (concrete, file-scoped) and next_action for the orchestrator.
+
+          Never modify any file. Base your ruling ONLY on verified evidence from the verification node.
+
+          ## Verification Results
+          {{verify-claims}}
+
+    - id: deep-dive
+      name: deep-dive
+      worker_type: general
+      depends_on: [arbitrate]
+      condition: 'arbitrate.output.verdict != "ACCEPT"'
+      report_to_parent: true
+      prompt_template:
+        inline: |
+          The arbiter did not ACCEPT the DAG module review. Its findings and required actions are below.
+
+          For each required_action:
+          1. Open the cited file(s) and verify the problem still exists at the stated location.
+          2. Produce a corrected, evidence-backed remediation plan: exact file, function, what to change, and why.
+          3. Identify any dependencies between actions (ordering constraints).
+          4. Flag any action that is infeasible or would cause a regression.
+
+          Output a prioritized remediation plan. Never modify any file.
+
+          ## Arbiter Verdict
+          {{arbitrate}}

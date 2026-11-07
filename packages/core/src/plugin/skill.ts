@@ -7,17 +7,17 @@ import { Effect } from "effect"
 import { AbsolutePath } from "../schema"
 import { SkillV2 } from "../skill"
 import { CONFIG_BASENAME, PROJECT_DIR } from "../brand"
-import customizeOpencodeContent from "./skill/customize-opencode.md" with { type: "text" }
+import customizeGraphagentContent from "./skill/customize-opencode.md" with { type: "text" }
 import configureHooksContent from "./skill/configure-hooks.md" with { type: "text" }
 import createDagWorkflowContent from "./skill/create-dag-workflow.md" with { type: "text" }
 import gitWorkflowContent from "./skill/git-workflow.md" with { type: "text" }
 
-export const CustomizeOpencodeContent = customizeOpencodeContent
+export const CustomizeGraphagentContent = customizeGraphagentContent
 export const ConfigureHooksContent = configureHooksContent
 export const CreateDagWorkflowContent = createDagWorkflowContent
 export const GitWorkflowContent = gitWorkflowContent
 
-export const CustomizeOpencodeDescription =
+export const CustomizeGraphagentDescription =
   `Use ONLY when the user is editing or creating opencode's own configuration: ${CONFIG_BASENAME}.json, ${CONFIG_BASENAME}.jsonc, files under ${PROJECT_DIR}/, or files under ~/.config/${CONFIG_BASENAME}/. Also use when creating or fixing opencode agents, subagents, commands, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself.`
 
 export const ConfigureHooksDescription =
@@ -38,9 +38,9 @@ export const Plugin = define({
           type: "embedded",
           skill: SkillV2.Info.make({
             name: "customize-opencode",
-            description: CustomizeOpencodeDescription,
+            description: CustomizeGraphagentDescription,
             location: AbsolutePath.make("/builtin/customize-opencode.md"),
-            content: CustomizeOpencodeContent,
+            content: CustomizeGraphagentContent,
           }),
         }),
       )

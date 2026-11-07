@@ -82,7 +82,7 @@ jobs:
           out="$AGENT_TEMPDIRECTORY/release-version.txt"
           : > "$out"
           GITHUB_OUTPUT="$out" GITHUB_REF_NAME="$(Build.SourceBranchName)" \
-            bun run ./packages/opencode/script/release-version.ts
+            bun run ./packages/graphagent/script/release-version.ts
           while IFS='=' read -r key value; do
             [ -n "$key" ] || continue
             echo "$key=$value"
@@ -117,7 +117,7 @@ jobs:
             "$root/templates-out/dag-templates.tar.gz" \
             | tee "$root/templates-out/dag-template-provenance.json"
         displayName: Validate and package templates (fail closed)
-        workingDirectory: packages/opencode
+        workingDirectory: packages/graphagent
       - bash: |
           RUNTIME_COMMIT="$(git rev-parse HEAD)" \
           TEMPLATE_COMMIT="$(git -C dag-config rev-parse HEAD)" \
@@ -177,7 +177,7 @@ jobs:
                     echo "models.dev download failed (attempt $attempt), retrying..."
                     sleep 5
                   done
-                  echo "##vso[task.logissue type=warning]Failed to download models.dev api.json; the build falls back to @opencode-ai/models or an empty catalog"
+                  echo "##vso[task.logissue type=warning]Failed to download models.dev api.json; the build falls back to @graphagent/models or an empty catalog"
                 displayName: Fetch models.dev snapshot
               # Embed the DAG reference templates (see dag/workflows.ts builtin
               # scope and script/generate.ts DAG_TEMPLATES_DIR loading).
@@ -195,15 +195,15 @@ jobs:
                   if command -v cygpath >/dev/null 2>&1; then templates_dir="$(cygpath -m "$templates_dir")"; fi
                   echo "##vso[task.setvariable variable=DAG_TEMPLATES_DIR]$templates_dir"
                 displayName: Extract templates
-              - bash: ./packages/opencode/script/build.ts ${{ target.buildArgs }}
+              - bash: ./packages/graphagent/script/build.ts ${{ target.buildArgs }}
                 displayName: Build CLI
               # Bundle ripgrep into each dist/graphagent-*/bin for air-gapped use.
-              - bash: bun run ./packages/opencode/script/prefetch-ripgrep.ts
+              - bash: bun run ./packages/graphagent/script/prefetch-ripgrep.ts
                 displayName: Prefetch ripgrep
               - ${{ if ne(target.name, 'macos') }}:
                   - bash: |
                       set -euo pipefail
-                      for dir in packages/opencode/dist/graphagent-*/; do
+                      for dir in packages/graphagent/dist/graphagent-*/; do
                         cli="$dir/bin/graphagent"
                         if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
                         actual="$("$cli" --version)"
@@ -229,7 +229,7 @@ jobs:
                   cp graphagent-*.tar.gz graphagent-*.zip "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli/" 2>/dev/null || true
                   ls "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli"
                 displayName: Package artifacts
-                workingDirectory: packages/opencode/dist
+                workingDirectory: packages/graphagent/dist
               # #498 B2: macOS release acceptance — runs the self-contained oc
               # upgrade path; real-artifact acceptance returns in G1.
               - ${{ if eq(target.name, 'macos') }}:
@@ -295,7 +295,7 @@ jobs:
       # before a candidate can be published. Fail closed: a missing or invalid
       # series file stops the job here.
       - bash: |
-          bun run ./packages/opencode/script/release-notes.ts \
+          bun run ./packages/graphagent/script/release-notes.ts \
             --notes-dir ".github/releases" \
             --version "$RELEASE_VERSION" \
             --channel "$RELEASE_CHANNEL" \

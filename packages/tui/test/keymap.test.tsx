@@ -5,7 +5,7 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
-import { getOpencodeModeStack, GRAPHAGENT_BASE_MODE, OpencodeKeymapProvider, registerOpencodeKeymap } from "../src/keymap"
+import { getGraphagentModeStack, GRAPHAGENT_BASE_MODE, GraphagentKeymapProvider, registerGraphagentKeymap } from "../src/keymap"
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -28,7 +28,7 @@ test("legacy page key aliases compile as page keys", async () => {
       messages_page_up: "pgup",
       messages_page_down: "pgdown",
     })
-    const offKeymap = registerOpencodeKeymap(keymap, renderer, config)
+    const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
     const offLayer = keymap.registerLayer({
       bindings: config.keybinds.gather("session", ["session.page.up", "session.page.down"]),
     })
@@ -46,9 +46,9 @@ test("legacy page key aliases compile as page keys", async () => {
     })
 
     return (
-      <OpencodeKeymapProvider keymap={keymap}>
+      <GraphagentKeymapProvider keymap={keymap}>
         <box />
-      </OpencodeKeymapProvider>
+      </GraphagentKeymapProvider>
     )
   }
 
@@ -70,7 +70,7 @@ test("session interrupt binds a meta-modified escape fallback for merged double-
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createResolvedKeymapConfig()
-    const offKeymap = registerOpencodeKeymap(keymap, renderer, config)
+    const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
     const offLayer = keymap.registerLayer({
       commands: [{ name: "session.interrupt", run() {} }],
       bindings: config.keybinds.gather("prompt.palette", ["session.interrupt"]),
@@ -94,9 +94,9 @@ test("session interrupt binds a meta-modified escape fallback for merged double-
     })
 
     return (
-      <OpencodeKeymapProvider keymap={keymap}>
+      <GraphagentKeymapProvider keymap={keymap}>
         <box />
-      </OpencodeKeymapProvider>
+      </GraphagentKeymapProvider>
     )
   }
 
@@ -115,7 +115,7 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createResolvedKeymapConfig()
-    const offKeymap = registerOpencodeKeymap(keymap, renderer, config)
+    const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
     const offGlobal = keymap.registerLayer({
       commands: [
         { name: "session.list", run() {} },
@@ -147,10 +147,10 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
       )
 
     counts.base = activeCounts()
-    const popQuestion = getOpencodeModeStack(keymap).push("question")
+    const popQuestion = getGraphagentModeStack(keymap).push("question")
     counts.question = activeCounts()
     popQuestion()
-    const popAutocomplete = getOpencodeModeStack(keymap).push("autocomplete")
+    const popAutocomplete = getGraphagentModeStack(keymap).push("autocomplete")
     counts.autocomplete = activeCounts()
     popAutocomplete()
 
@@ -161,9 +161,9 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
     })
 
     return (
-      <OpencodeKeymapProvider keymap={keymap}>
+      <GraphagentKeymapProvider keymap={keymap}>
         <box />
-      </OpencodeKeymapProvider>
+      </GraphagentKeymapProvider>
     )
   }
 

@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
 import { RGBA, SyntaxStyle } from "@opentui/core"
-import type { AssistantMessage, ReasoningPart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, ReasoningPart } from "@graphagent/sdk/v2"
 import { useSync } from "../../../../src/context/sync"
 import { ReasoningMarkdown } from "../../../../src/routes/session"
 import { tmpdir } from "../../../fixture/fixture"

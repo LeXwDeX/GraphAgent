@@ -1,4 +1,4 @@
-import type { GlobalEvent, Message, Part, Session } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent, Message, Part, Session } from "@graphagent/sdk/v2"
 import { directory } from "../fixture/tui-sdk"
 
 export const SESSION_ID = "ses_perf_main"

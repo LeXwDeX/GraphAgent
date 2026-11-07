@@ -1,4 +1,4 @@
-import type { TuiPluginApi } from "@opencode-ai/tui/plugin-api"
+import type { TuiPluginApi } from "@graphagent/tui/plugin-api"
 import type { TuiConfig } from "../config"
 import { createContext, useContext, type JSX, type ParentProps } from "solid-js"
 import { createPluginRoutes } from "./api"

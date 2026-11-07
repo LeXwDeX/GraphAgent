@@ -161,7 +161,7 @@ type ProjectRootInput struct {
 // by the git toplevel. `$HOME` and the filesystem root never become project
 // roots. Without a marker a git repository falls back to its toplevel and
 // everything else to the instance directory — the same rule as
-// packages/opencode/src/project/project-root.ts.
+// packages/graphagent/src/project/project-root.ts.
 func ResolveProjectRoot(in ProjectRootInput) string {
 	start := filepath.Clean(in.Directory)
 	home := ""

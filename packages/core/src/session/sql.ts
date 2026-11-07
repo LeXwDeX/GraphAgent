@@ -9,7 +9,7 @@ import type { MessageID, PartID, SessionV1 } from "../v1/session"
 import { WorkspaceV2 } from "../workspace"
 import { Timestamps } from "../database/schema.sql"
 import { AgentV2 } from "../agent"
-import type { Revert } from "@opencode-ai/schema/revert"
+import type { Revert } from "@graphagent/schema/revert"
 
 type V1MessageData = Omit<SessionV1.Info, "id" | "sessionID">
 type V1PartData = Omit<SessionV1.Part, "id" | "sessionID" | "messageID">

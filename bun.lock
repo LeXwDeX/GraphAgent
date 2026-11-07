@@ -3,10 +3,10 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "opencode",
+      "name": "graphagent",
       "dependencies": {
-        "@opencode-ai/script": "workspace:*",
-        "@opencode-ai/sdk": "workspace:*",
+        "@graphagent/script": "workspace:*",
+        "@graphagent/sdk": "workspace:*",
         "heap-snapshot-toolkit": "1.1.3",
         "typescript": "catalog:",
       },
@@ -27,7 +27,7 @@
       },
     },
     "packages/core": {
-      "name": "@opencode-ai/core",
+      "name": "@graphagent/core",
       "version": "1.17.11",
       "bin": {
         "opencode": "./bin/opencode",
@@ -60,9 +60,9 @@
         "@ff-labs/fff-bun": "catalog:",
         "@npmcli/arborist": "catalog:",
         "@npmcli/config": "11.2.0",
-        "@opencode-ai/effect-drizzle-sqlite": "workspace:*",
-        "@opencode-ai/llm": "workspace:*",
-        "@opencode-ai/schema": "workspace:*",
+        "@graphagent/effect-drizzle-sqlite": "workspace:*",
+        "@graphagent/llm": "workspace:*",
+        "@graphagent/schema": "workspace:*",
         "@openrouter/ai-sdk-provider": "catalog:",
         "@opentelemetry/api": "catalog:",
         "@opentelemetry/context-async-hooks": "catalog:",
@@ -93,7 +93,7 @@
         "zod": "catalog:",
       },
       "devDependencies": {
-        "@opencode-ai/http-recorder": "workspace:*",
+        "@graphagent/http-recorder": "workspace:*",
         "@parcel/watcher-darwin-arm64": "catalog:",
         "@parcel/watcher-darwin-x64": "catalog:",
         "@parcel/watcher-linux-arm64-glibc": "catalog:",
@@ -115,7 +115,7 @@
       },
     },
     "packages/effect-drizzle-sqlite": {
-      "name": "@opencode-ai/effect-drizzle-sqlite",
+      "name": "@graphagent/effect-drizzle-sqlite",
       "version": "1.17.11",
       "dependencies": {
         "drizzle-orm": "catalog:",
@@ -129,7 +129,7 @@
       },
     },
     "packages/http-recorder": {
-      "name": "@opencode-ai/http-recorder",
+      "name": "@graphagent/http-recorder",
       "version": "1.17.11",
       "dependencies": {
         "@effect/platform-node": "catalog:",
@@ -148,10 +148,10 @@
       },
     },
     "packages/llm": {
-      "name": "@opencode-ai/llm",
+      "name": "@graphagent/llm",
       "version": "1.17.11",
       "dependencies": {
-        "@opencode-ai/schema": "workspace:*",
+        "@graphagent/schema": "workspace:*",
         "@smithy/eventstream-codec": "catalog:",
         "@smithy/util-utf8": "catalog:",
         "aws4fetch": "catalog:",
@@ -160,14 +160,14 @@
       "devDependencies": {
         "@clack/prompts": "catalog:",
         "@effect/platform-node": "catalog:",
-        "@opencode-ai/http-recorder": "workspace:*",
+        "@graphagent/http-recorder": "workspace:*",
         "@tsconfig/bun": "catalog:",
         "@types/bun": "catalog:",
         "@typescript/native-preview": "catalog:",
       },
     },
-    "packages/opencode": {
-      "name": "opencode",
+    "packages/graphagent": {
+      "name": "graphagent",
       "version": "1.17.11",
       "bin": {
         "opencode": "./bin/opencode",
@@ -205,14 +205,14 @@
         "@octokit/graphql": "catalog:",
         "@octokit/rest": "catalog:",
         "@openauthjs/openauth": "catalog:",
-        "@opencode-ai/llm": "workspace:*",
-        "@opencode-ai/plugin": "workspace:*",
-        "@opencode-ai/protocol": "workspace:*",
-        "@opencode-ai/schema": "workspace:*",
-        "@opencode-ai/script": "workspace:*",
-        "@opencode-ai/sdk": "workspace:*",
-        "@opencode-ai/server": "workspace:*",
-        "@opencode-ai/tui": "workspace:*",
+        "@graphagent/llm": "workspace:*",
+        "@graphagent/plugin": "workspace:*",
+        "@graphagent/protocol": "workspace:*",
+        "@graphagent/schema": "workspace:*",
+        "@graphagent/script": "workspace:*",
+        "@graphagent/sdk": "workspace:*",
+        "@graphagent/server": "workspace:*",
+        "@graphagent/tui": "workspace:*",
         "@openrouter/ai-sdk-provider": "catalog:",
         "@opentelemetry/api": "catalog:",
         "@opentelemetry/context-async-hooks": "catalog:",
@@ -275,9 +275,9 @@
         "@babel/core": "7.29.7",
         "@modelcontextprotocol/server": "2.4.0",
         "@octokit/webhooks-types": "7.6.1",
-        "@opencode-ai/core": "workspace:*",
-        "@opencode-ai/http-recorder": "workspace:*",
-        "@opencode-ai/script": "workspace:*",
+        "@graphagent/core": "workspace:*",
+        "@graphagent/http-recorder": "workspace:*",
+        "@graphagent/script": "workspace:*",
         "@standard-schema/spec": "catalog:",
         "@tsconfig/bun": "catalog:",
         "@types/babel__core": "7.20.5",
@@ -300,7 +300,7 @@
       },
     },
     "packages/plugin": {
-      "name": "@opencode-ai/plugin",
+      "name": "@graphagent/plugin",
       "version": "1.17.11",
       "dependencies": {
         "zod": "catalog:",
@@ -313,9 +313,9 @@
       },
     },
     "packages/protocol": {
-      "name": "@opencode-ai/protocol",
+      "name": "@graphagent/protocol",
       "dependencies": {
-        "@opencode-ai/schema": "workspace:*",
+        "@graphagent/schema": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -325,7 +325,7 @@
       },
     },
     "packages/schema": {
-      "name": "@opencode-ai/schema",
+      "name": "@graphagent/schema",
       "dependencies": {
         "effect": "catalog:",
       },
@@ -336,13 +336,13 @@
       },
     },
     "packages/script": {
-      "name": "@opencode-ai/script",
+      "name": "@graphagent/script",
       "devDependencies": {
         "@types/bun": "catalog:",
       },
     },
     "packages/sdk/js": {
-      "name": "@opencode-ai/sdk",
+      "name": "@graphagent/sdk",
       "version": "1.17.11",
       "dependencies": {
         "cross-spawn": "catalog:",
@@ -357,11 +357,11 @@
       },
     },
     "packages/server": {
-      "name": "@opencode-ai/server",
+      "name": "@graphagent/server",
       "version": "1.17.11",
       "dependencies": {
-        "@opencode-ai/core": "workspace:*",
-        "@opencode-ai/protocol": "workspace:*",
+        "@graphagent/core": "workspace:*",
+        "@graphagent/protocol": "workspace:*",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
       },
@@ -372,11 +372,11 @@
       },
     },
     "packages/tui": {
-      "name": "@opencode-ai/tui",
+      "name": "@graphagent/tui",
       "version": "1.17.11",
       "dependencies": {
-        "@opencode-ai/core": "workspace:*",
-        "@opencode-ai/sdk": "workspace:*",
+        "@graphagent/core": "workspace:*",
+        "@graphagent/sdk": "workspace:*",
         "@opentui/core": "catalog:",
         "@opentui/keymap": "catalog:",
         "@opentui/solid": "catalog:",
@@ -914,27 +914,27 @@
 
     "@openauthjs/openauth": ["@openauthjs/openauth@0.4.3", "", { "dependencies": { "@standard-schema/spec": "1.0.0-beta.3", "aws4fetch": "1.0.20", "jose": "5.9.6" }, "peerDependencies": { "arctic": "^2.2.2", "hono": "^4.0.0" } }, "sha512-RlnjqvHzqcbFVymEwhlUEuac4utA5h4nhSK/i2szZuQmxTIqbGUxZ+nM+avM+VV4Ing+/ZaNLKILoXS3yrkOOw=="],
 
-    "@opencode-ai/core": ["@opencode-ai/core@workspace:packages/core"],
+    "@graphagent/core": ["@graphagent/core@workspace:packages/core"],
 
-    "@opencode-ai/effect-drizzle-sqlite": ["@opencode-ai/effect-drizzle-sqlite@workspace:packages/effect-drizzle-sqlite"],
+    "@graphagent/effect-drizzle-sqlite": ["@graphagent/effect-drizzle-sqlite@workspace:packages/effect-drizzle-sqlite"],
 
-    "@opencode-ai/http-recorder": ["@opencode-ai/http-recorder@workspace:packages/http-recorder"],
+    "@graphagent/http-recorder": ["@graphagent/http-recorder@workspace:packages/http-recorder"],
 
-    "@opencode-ai/llm": ["@opencode-ai/llm@workspace:packages/llm"],
+    "@graphagent/llm": ["@graphagent/llm@workspace:packages/llm"],
 
-    "@opencode-ai/plugin": ["@opencode-ai/plugin@workspace:packages/plugin"],
+    "@graphagent/plugin": ["@graphagent/plugin@workspace:packages/plugin"],
 
-    "@opencode-ai/protocol": ["@opencode-ai/protocol@workspace:packages/protocol"],
+    "@graphagent/protocol": ["@graphagent/protocol@workspace:packages/protocol"],
 
-    "@opencode-ai/schema": ["@opencode-ai/schema@workspace:packages/schema"],
+    "@graphagent/schema": ["@graphagent/schema@workspace:packages/schema"],
 
-    "@opencode-ai/script": ["@opencode-ai/script@workspace:packages/script"],
+    "@graphagent/script": ["@graphagent/script@workspace:packages/script"],
 
-    "@opencode-ai/sdk": ["@opencode-ai/sdk@workspace:packages/sdk/js"],
+    "@graphagent/sdk": ["@graphagent/sdk@workspace:packages/sdk/js"],
 
-    "@opencode-ai/server": ["@opencode-ai/server@workspace:packages/server"],
+    "@graphagent/server": ["@graphagent/server@workspace:packages/server"],
 
-    "@opencode-ai/tui": ["@opencode-ai/tui@workspace:packages/tui"],
+    "@graphagent/tui": ["@graphagent/tui@workspace:packages/tui"],
 
     "@openrouter/ai-sdk-provider": ["@openrouter/ai-sdk-provider@2.10.0", "", { "peerDependencies": { "ai": "^6.0.0", "zod": "^3.25.0 || ^4.0.0" } }, "sha512-FMsAEjLUt5pWuRE2LDC/LCvVrFjLlrEzUITH5+5SZtfq7KZ2wrOHjQVxzz92sju8S9ltpzW87CLW8/b0oBXVCw=="],
 
@@ -1928,7 +1928,7 @@
 
     "open": ["open@10.2.0", "", { "dependencies": { "default-browser": "^5.2.1", "define-lazy-prop": "^3.0.0", "is-inside-container": "^1.0.0", "wsl-utils": "^0.1.0" } }, "sha512-YgBpdJHPyQ2UE5x+hlSXcnejzAvD0b22U2OuAP+8OnlJT+PjWPxtgmGqKKc+RgTM63U9gN0YzrYc71R2WT/hTA=="],
 
-    "opencode": ["opencode@workspace:packages/opencode"],
+    "graphagent": ["graphagent@workspace:packages/graphagent"],
 
     "opentui-spinner": ["opentui-spinner@0.0.7", "", { "dependencies": { "cli-spinners": "^3.3.0" }, "peerDependencies": { "@opentui/core": "^0.3.4", "@opentui/react": "^0.3.4", "@opentui/solid": "^0.3.4", "typescript": "^5" }, "optionalPeers": ["@opentui/react", "@opentui/solid"] }, "sha512-nPzwAvJG+y9rVEwwHLHqbsMzLnIk2zw+F9LqwA7aYJvpM5gsrKC2rrGi36A+tZpA+1RnWxXeWEgVZMchnaH18Q=="],
 

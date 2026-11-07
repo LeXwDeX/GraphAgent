@@ -144,7 +144,7 @@ export interface Interface {
     afterSessionID?: string
   }) => Effect.Effect<Endpoint[]>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/DagMessages") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/DagMessages") {}
 
 type DB = Database.Interface["db"]
 type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0]

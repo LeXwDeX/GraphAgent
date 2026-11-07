@@ -1,4 +1,4 @@
-import { AgentV2 } from "@opencode-ai/core/agent"
+import { AgentV2 } from "@graphagent/core/agent"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../api"

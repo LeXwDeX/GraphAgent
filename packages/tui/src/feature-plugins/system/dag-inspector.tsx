@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/tui/plugin-api"
+import type { TuiPlugin, TuiPluginApi } from "@graphagent/tui/plugin-api"
 import type { BuiltinTuiPlugin } from "../builtins"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { createMemo, For, Show, Switch, Match, createSignal, createEffect, onCleanup, untrack } from "solid-js"
@@ -32,7 +32,7 @@ import {
   type DagControlOperation,
   type DagNode,
 } from "./dag-inspector-utils"
-import type { DagWorkflowSummary } from "@opencode-ai/sdk/v2"
+import type { DagWorkflowSummary } from "@graphagent/sdk/v2"
 
 const id = "internal:system-dag-inspector"
 const ROUTE = "dag"

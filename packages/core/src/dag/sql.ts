@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { sqliteTable, text, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { ProjectTable } from "../project/sql"
 import { SessionTable } from "../session/sql"
 import { Timestamps } from "../database/schema.sql"

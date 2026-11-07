@@ -16,7 +16,7 @@ Explicit beta values in provider headers, request headers, or provider options
 still pass through. Other automatic betas, strict tools, GA schema output, and
 the existing JSON-tool fallback are unchanged.
 
-Regression coverage: `packages/opencode/test/provider/anthropic-ga-wire.test.ts`.
+Regression coverage: `packages/graphagent/test/provider/anthropic-ga-wire.test.ts`.
 The tests use fake fetches and synthetic credentials, not upstream accounts.
 They cover all four bundles in streaming and non-streaming modes.
 

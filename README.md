@@ -66,7 +66,7 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 - **Fallback.** If organization fails, times out or no organizer is available, the original reasoning remains.
   Organizer failures do not fail the main turn.
 - **Reversible.** The original text and metadata are stored with the part; turning the feature off replays originals.
-- **Engine-level.** The organizer call goes through the built-in `@opencode-ai/llm` engine with no tools and
+- **Engine-level.** The organizer call goes through the built-in `@graphagent/llm` engine with no tools and
   `none`/`low` reasoning effort. A rejected noise verdict on a long input may receive one bounded retry; a rewrite is
   adopted only if it is actually smaller.
 
@@ -308,7 +308,7 @@ template.
 
 ## The engine
 
-The engine lives in [`packages/core/src/dag`](./packages/core/src/dag) (state machine, dependency graph, scheduling, event projection, SQLite read model) and [`packages/opencode/src/dag`](./packages/opencode/src/dag) (workflow service, execution loop, node spawn, admission, review lifecycle, crash recovery, templates). Agents drive it through a single `workflow` tool; humans watch and control it through the TUI or HTTP API.
+The engine lives in [`packages/core/src/dag`](./packages/core/src/dag) (state machine, dependency graph, scheduling, event projection, SQLite read model) and [`packages/graphagent/src/dag`](./packages/graphagent/src/dag) (workflow service, execution loop, node spawn, admission, review lifecycle, crash recovery, templates). Agents drive it through a single `workflow` tool; humans watch and control it through the TUI or HTTP API.
 
 ### Graph definition
 
@@ -440,7 +440,7 @@ bun dev              # TUI
 bun dev serve        # headless API server (port 4096)
 
 # standalone binary
-./packages/opencode/script/build.ts --single
+./packages/graphagent/script/build.ts --single
 ```
 
 > This fork is not published to npm/brew/scoop. The upstream `opencode-ai` package installs upstream opencode, not this fork.
@@ -459,7 +459,7 @@ Mixed license model:
 | Content | License | Text |
 |---------|---------|------|
 | Upstream opencode code (the vast majority) | MIT | [`LICENSE`](./LICENSE) |
-| DAG workflow engine (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE), [`packages/opencode/src/dag/LICENSE`](./packages/opencode/src/dag/LICENSE) |
+| DAG workflow engine (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE), [`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
 | Portable runtime assets (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE) |
 
 Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers these modules and their derivatives, including network-server deployments. Other files retain their existing licenses.
@@ -467,7 +467,7 @@ Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers these 
 ## Docs
 
 - [`docs/architecture.md`](./docs/architecture.md) — system overview, client/API boundaries, and source map
-- [`packages/opencode/src/memory/CONTEXT.md`](./packages/opencode/src/memory/CONTEXT.md) — Project Memory model and invariants
+- [`packages/graphagent/src/memory/CONTEXT.md`](./packages/graphagent/src/memory/CONTEXT.md) — Project Memory model and invariants
 - [Hooks guide](./packages/core/src/plugin/skill/configure-hooks.md) — events, schemas and verification
 - [Saved workflow authoring guide](./packages/core/src/plugin/skill/create-dag-workflow.md) — the `create-dag-workflow` skill body
 - [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) — curated workflows, composable blocks and worker prompts

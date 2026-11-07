@@ -17,7 +17,7 @@ export type Info = {
   readonly username: string
 }
 
-export class Config extends Context.Service<Config, Info>()("@opencode/ServerAuthConfig") {
+export class Config extends Context.Service<Config, Info>()("@graphagent/ServerAuthConfig") {
   static layer(input: Info) {
     return Layer.succeed(this, this.of(input))
   }

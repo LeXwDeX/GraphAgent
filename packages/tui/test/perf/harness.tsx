@@ -19,7 +19,7 @@ import { RouteProvider } from "../../src/context/route"
 import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
-import { registerOpencodeKeymap, OpencodeKeymapProvider } from "../../src/keymap"
+import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../src/plugin/runtime"
 import { Prompt, type PromptRef } from "../../src/component/prompt"
 import { FrecencyProvider } from "../../src/prompt/frecency"
@@ -124,14 +124,14 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     const renderer = useRenderer()
     keymap = createDefaultOpenTuiKeymap(renderer)
     counters = createCounters(renderer, keymap)
-    onCleanup(registerOpencodeKeymap(keymap, renderer, config))
+    onCleanup(registerGraphagentKeymap(keymap, renderer, config))
     onCleanup(() => counters.dispose())
     return (
       <TestTuiContexts cwd={directory} paths={{ home: stateDir.path, state: stateDir.path, worktree: "/tmp/opencode" }}>
         <ExitProvider exit={() => {}}>
           <EpilogueProvider set={() => {}}>
             <ClipboardProvider>
-              <OpencodeKeymapProvider keymap={keymap}>
+              <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
                     <ToastProvider>
@@ -174,7 +174,7 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
                     </ToastProvider>
                   </KVProvider>
                 </ArgsProvider>
-              </OpencodeKeymapProvider>
+              </GraphagentKeymapProvider>
             </ClipboardProvider>
           </EpilogueProvider>
         </ExitProvider>

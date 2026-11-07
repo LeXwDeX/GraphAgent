@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { APP_NAME } from "@opencode-ai/core/brand"
-import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@graphagent/core/brand"
+import { Global } from "@graphagent/core/global"
 
 describe("global paths", () => {
   test("global directories are scoped by the app name", () => {

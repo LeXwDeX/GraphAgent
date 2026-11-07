@@ -1,8 +1,8 @@
-import { HEADER_PREFIX } from "@opencode-ai/core/brand"
-import { Location } from "@opencode-ai/core/location"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import { HEADER_PREFIX } from "@graphagent/core/brand"
+import { Location } from "@graphagent/core/location"
+import { LocationServiceMap } from "@graphagent/core/location-layer"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { WorkspaceV2 } from "@graphagent/core/workspace"
 import { Effect, Layer } from "effect"
 import { HttpServerRequest } from "effect/http"
 import { HttpApiMiddleware } from "effect/http-api"
@@ -10,7 +10,7 @@ import { HttpApiMiddleware } from "effect/http-api"
 export type LocationServices = Layer.Success<ReturnType<(typeof LocationServiceMap)["get"]>>
 
 export class LocationMiddleware extends HttpApiMiddleware.Service<LocationMiddleware, { provides: LocationServices }>()(
-  "@opencode/HttpApiLocation",
+  "@graphagent/HttpApiLocation",
 ) {}
 
 export function response<A, E, R>(data: Effect.Effect<A, E, R>) {

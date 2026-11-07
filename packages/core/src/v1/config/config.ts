@@ -1,7 +1,7 @@
 export * as ConfigV1 from "./config"
 
 import { Schema } from "effect"
-import { Permission } from "@opencode-ai/schema/permission"
+import { Permission } from "@graphagent/schema/permission"
 import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
 import { ConfigExperimental } from "../../config/experimental"
 import { ConfigReasoningDistillation } from "../../config/reasoning-distillation"
@@ -32,7 +32,7 @@ const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate
 
 /**
  * DAG workflow settings declared by #884. The values are read from the global
- * layer only; `packages/opencode/src/config/config.ts` strips the same keys
+ * layer only; `packages/graphagent/src/config/config.ts` strips the same keys
  * from project-level sources before merging and warns once per file and key.
  */
 export const Dag = Schema.Struct({

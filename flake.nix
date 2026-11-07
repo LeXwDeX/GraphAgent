@@ -62,7 +62,7 @@
             };
           in
           {
-            opencode = final.callPackage ./nix/opencode.nix {
+            graphagent = final.callPackage ./nix/graphagent.nix {
               inherit node_modules;
             };
           }
@@ -77,8 +77,8 @@
           };
         in
         rec {
-          default = opencode;
-          opencode = pkgs.callPackage ./nix/opencode.nix {
+          default = graphagent;
+          graphagent = pkgs.callPackage ./nix/graphagent.nix {
             inherit node_modules;
           };
           # Updater derivation with fakeHash - build fails and reveals correct hash

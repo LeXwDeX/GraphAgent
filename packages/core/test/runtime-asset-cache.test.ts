@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "fs/promises"
 import os from "os"
 import path from "path"
 import { Effect } from "effect"
-import { RuntimeAsset } from "@opencode-ai/core/runtime-asset"
+import { RuntimeAsset } from "@graphagent/core/runtime-asset"
 
 const cleanups: Array<() => void | Promise<void>> = []
 

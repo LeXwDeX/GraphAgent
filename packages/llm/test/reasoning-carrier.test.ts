@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ReasoningCarrier } from "@opencode-ai/llm"
+import { ReasoningCarrier } from "@graphagent/llm"
 
 const text = "ORIGINAL"
 const detail = { type: "reasoning.text", text, format: "unknown", index: 0 }

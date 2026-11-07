@@ -2,12 +2,12 @@
 import { describe, expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { TuiPluginApi, TuiRouteCurrent, TuiRouteDefinition } from "@opencode-ai/tui/plugin-api"
-import type { DagNode, DagWorkflow, DagWorkflowSummary } from "@opencode-ai/sdk/v2"
+import type { TuiPluginApi, TuiRouteCurrent, TuiRouteDefinition } from "@graphagent/tui/plugin-api"
+import type { DagNode, DagWorkflow, DagWorkflowSummary } from "@graphagent/sdk/v2"
 import { KVProvider } from "../../src/context/kv"
 import { ThemeProvider } from "../../src/context/theme"
 import { TuiConfigProvider } from "../../src/config"
-import { OpencodeKeymapProvider } from "../../src/keymap"
+import { GraphagentKeymapProvider } from "../../src/keymap"
 import { createSignal } from "solid-js"
 import dagInspectorPlugin from "../../src/feature-plugins/system/dag-inspector"
 import { createTuiPluginApi } from "../fixture/tui-plugin"
@@ -170,7 +170,7 @@ async function renderDagInspector(opts: RenderOpts = {}) {
 
     return (
       <TestTuiContexts>
-        <OpencodeKeymapProvider keymap={keymap}>
+        <GraphagentKeymapProvider keymap={keymap}>
           <TuiConfigProvider config={config}>
             <KVProvider>
               <ThemeProvider mode="dark">
@@ -183,7 +183,7 @@ async function renderDagInspector(opts: RenderOpts = {}) {
               </ThemeProvider>
             </KVProvider>
           </TuiConfigProvider>
-        </OpencodeKeymapProvider>
+        </GraphagentKeymapProvider>
       </TestTuiContexts>
     )
   }

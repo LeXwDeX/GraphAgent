@@ -233,7 +233,7 @@ Use this as a best-effort friction check for literal force pushes and hard reset
 - Contract: inspect only `tool_input.command` as text. Deny only explicit patterns with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"..."}}`. Allow near-misses by printing nothing or exiting 0. The reason names the safe alternative.
 - Patterns: `git push` with `--force`, `--force-with-lease` or `--force-with-lease=...`, `--force-if-includes`, `--mirror`, a short option cluster containing `f` (`-f`, `-fu`, `-uf`), or a `+`-prefixed refspec (`+main`, `+HEAD:main`); and `git reset` with `--hard` anywhere in its arguments.
 - Never: evaluate or replay the command text, call the forge, mutate the repository, or deny unrelated Bash commands. This guard complements, and never replaces, native deny rules.
-- Path protection is outside this recipe. Recursive deletion and other path-sensitive commands need native permission deny rules and sandbox or container isolation; the permission configuration is defined in `packages/opencode/src/config/permissions.ts`. A text hook cannot reliably resolve `cd`, variables, globs, or command substitution.
+- Path protection is outside this recipe. Recursive deletion and other path-sensitive commands need native permission deny rules and sandbox or container isolation; the permission configuration is defined in `packages/graphagent/src/config/permissions.ts`. A text hook cannot reliably resolve `cd`, variables, globs, or command substitution.
 
 ```json
 {

@@ -20,7 +20,7 @@ import { RouteProvider, useRoute } from "../../src/context/route"
 import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
-import { OpencodeKeymapProvider, registerOpencodeKeymap } from "../../src/keymap"
+import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../src/plugin/runtime"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
@@ -88,11 +88,11 @@ async function mount(handler: (request: Request) => Promise<Response>, onPrompt?
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createTuiResolvedConfig()
-    onCleanup(registerOpencodeKeymap(keymap, renderer, config))
+    onCleanup(registerGraphagentKeymap(keymap, renderer, config))
     return (
       <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
         <ExitProvider exit={() => {}}><EpilogueProvider set={() => {}}><ClipboardProvider>
-          <OpencodeKeymapProvider keymap={keymap}><ArgsProvider><KVProvider><ToastProvider>
+          <GraphagentKeymapProvider keymap={keymap}><ArgsProvider><KVProvider><ToastProvider>
             <RouteProvider initialRoute={{ type: "home" }}><TuiConfigProvider config={config}>
               <PluginRuntimeProvider value={createPluginRuntime()}><SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
                 <ProjectProvider><SyncProvider><ThemeProvider mode="dark"><Toast /><LocalProvider>
@@ -102,7 +102,7 @@ async function mount(handler: (request: Request) => Promise<Response>, onPrompt?
                 </LocalProvider></ThemeProvider></SyncProvider></ProjectProvider>
               </SDKProvider></PluginRuntimeProvider>
             </TuiConfigProvider></RouteProvider>
-          </ToastProvider></KVProvider></ArgsProvider></OpencodeKeymapProvider>
+          </ToastProvider></KVProvider></ArgsProvider></GraphagentKeymapProvider>
         </ClipboardProvider></EpilogueProvider></ExitProvider>
       </TestTuiContexts>
     )

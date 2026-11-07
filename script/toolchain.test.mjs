@@ -128,7 +128,7 @@ void test("Nix's copied source includes every shared policy input", (t) => {
   }).trim()
   assert.equal(actual, readToolchain(root).node)
   const nodeMajor = readToolchain(root).node.split(".")[0]
-  for (const path of ["nix/node_modules.nix", "nix/opencode.nix"]) {
+  for (const path of ["nix/node_modules.nix", "nix/graphagent.nix"]) {
     const derivation = read(path)
     assert.match(derivation, /toolchain\.requireVersion "bun" bun/)
     assert.ok(

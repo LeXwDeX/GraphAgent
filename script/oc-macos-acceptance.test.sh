@@ -26,7 +26,7 @@
 #       script/oc-install-boundary.test.sh (zero network).
 #   bash script/oc-macos-acceptance.test.sh <artifact.zip>
 #       CI release mode: runs the flow against a real packaged artifact,
-#       e.g. packages/opencode/dist/opencode-darwin-x64.zip.
+#       e.g. packages/graphagent/dist/opencode-darwin-x64.zip.
 #
 # Darwin-only; any other host exits 0. Wired into .azure-pipelines/release.yml (macOS job).
 set -u

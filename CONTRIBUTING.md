@@ -41,7 +41,7 @@ https://github.com/anomalyco/models.dev
 
 ### Running against a different directory
 
-By default, `bun dev` runs OpenCode in the `packages/opencode` directory. To run it against a different directory or repository:
+By default, `bun dev` runs OpenCode in the `packages/graphagent` directory. To run it against a different directory or repository:
 
 ```bash
 bun dev <directory>
@@ -58,19 +58,19 @@ bun dev .
 To compile a standalone executable:
 
 ```bash
-./packages/opencode/script/build.ts --single
+./packages/graphagent/script/build.ts --single
 ```
 
 Then run it with:
 
 ```bash
-./packages/opencode/dist/graphagent-<platform>/bin/graphagent
+./packages/graphagent/dist/graphagent-<platform>/bin/graphagent
 ```
 
 Replace `<platform>` with your platform (e.g., `darwin-arm64`, `linux-x64`).
 
 - Core pieces:
-  - `packages/opencode`: OpenCode core business logic & server.
+  - `packages/graphagent`: OpenCode core business logic & server.
   - `packages/tui`: The TUI code, written in SolidJS with [opentui](https://github.com/sst/opentui)
   - `packages/sdk/js`: The JavaScript SDK
   - `packages/plugin`: Tool definition helpers for config-scoped custom tools
@@ -122,9 +122,9 @@ Caveats:
 - If you want to run the OpenCode TUI and have breakpoints triggered in the server code, you might need to run `bun dev spawn` instead of
   the usual `bun dev`. This is because `bun dev` runs the server in a worker thread and breakpoints might not work there.
 - If `spawn` does not work for you, you can debug the server separately:
-  - Debug server: `bun run --inspect=ws://localhost:6499/ --cwd packages/opencode ./src/index.ts serve --port 4096`,
+  - Debug server: `bun run --inspect=ws://localhost:6499/ --cwd packages/graphagent ./src/index.ts serve --port 4096`,
     then attach TUI with `graphagent attach http://localhost:4096`
-  - Debug TUI: `bun run --inspect=ws://localhost:6499/ --cwd packages/opencode --conditions=browser ./src/index.ts`
+  - Debug TUI: `bun run --inspect=ws://localhost:6499/ --cwd packages/graphagent --conditions=browser ./src/index.ts`
 
 Other tips and tricks:
 

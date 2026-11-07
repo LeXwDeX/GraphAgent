@@ -2,6 +2,6 @@ import { HttpApiMiddleware } from "effect/http-api"
 import { InvalidRequestError } from "../errors"
 
 export class SchemaErrorMiddleware extends HttpApiMiddleware.Service<SchemaErrorMiddleware>()(
-  "@opencode/HttpApiSchemaError",
+  "@graphagent/HttpApiSchemaError",
   { error: InvalidRequestError },
 ) {}

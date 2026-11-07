@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import type { GlobalEvent } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk/v2"
 import { tmpdir } from "../../../fixture/fixture"
 import { json, mount, wait } from "./sync-fixture"
 
@@ -11,7 +11,7 @@ const sessionOld = {
   title: "old",
   time: { created: 1, updated: 1 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/opencode",
+  directory: "/tmp/opencode/packages/graphagent",
 }
 
 const sessionMid = {
@@ -21,7 +21,7 @@ const sessionMid = {
   title: "mid",
   time: { created: 2, updated: 2 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/opencode",
+  directory: "/tmp/opencode/packages/graphagent",
 }
 
 const sessionNew = {
@@ -31,7 +31,7 @@ const sessionNew = {
   title: "new",
   time: { created: 3, updated: 3 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/opencode",
+  directory: "/tmp/opencode/packages/graphagent",
 }
 
 function global(payload: GlobalEvent["payload"]): GlobalEvent {

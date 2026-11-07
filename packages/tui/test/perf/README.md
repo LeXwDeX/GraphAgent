@@ -1,6 +1,6 @@
 # TUI performance baseline
 
-This directory measures the pre-rewrite TUI. It mounts the production `Session` and its production `Prompt` under the same provider order as `src/app.tsx`. The keymap is the real OpenTUI keymap plus `registerOpencodeKeymap`. It does not use a standalone `<textarea>` fixture.
+This directory measures the pre-rewrite TUI. It mounts the production `Session` and its production `Prompt` under the same provider order as `src/app.tsx`. The keymap is the real OpenTUI keymap plus `registerGraphagentKeymap`. It does not use a standalone `<textarea>` fixture.
 
 ## Scope
 
@@ -33,7 +33,7 @@ The nightly PTY measurement is intentionally separate from the PR benchmark:
 TUI_PTY_COMMAND=bun TUI_PTY_ARGS='run dev' bun test/perf/pty.ts
 ```
 
-It reports the ratio against `TUI_PTY_BASELINE` when that file is supplied. The PTY script uses the Bun PTY driver and does not change `packages/opencode/test/lib/pty.bun.ts`.
+It reports the ratio against `TUI_PTY_BASELINE` when that file is supplied. The PTY script uses the Bun PTY driver and does not change `packages/graphagent/test/lib/pty.bun.ts`.
 
 ## CPU profiles
 

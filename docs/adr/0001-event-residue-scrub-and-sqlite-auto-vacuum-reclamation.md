@@ -16,7 +16,7 @@ motivated the decision:
   whose `SessionTable` and `WorkflowTable` read models were both gone. Replaying such an
   aggregate is impossible: the `WorkflowCreated` projector INSERT dies on the
   `workflow.session_id` foreign key once the session row is gone (pinned by
-  `packages/opencode/test/dag/dag-replay-idempotency.test.ts`), so residue can neither be
+  `packages/graphagent/test/dag/dag-replay-idempotency.test.ts`), so residue can neither be
   replayed nor re-materialized — it can only be deleted.
 - `database.ts` initialized WAL and pragmas after driver open, so an application-level
   `PRAGMA auto_vacuum` could not take effect: after WAL initialization the pragma silently

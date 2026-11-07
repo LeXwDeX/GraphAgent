@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect"
-import { Info, Ref, response } from "@opencode-ai/schema/location"
+import { Info, Ref, response } from "@graphagent/schema/location"
 import { Project } from "./project"
 
 export * as Location from "./location"
@@ -10,7 +10,7 @@ export interface Interface extends Info {
   readonly vcs?: Project.Vcs
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Location") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Location") {}
 
 export const layer = (ref: Ref) =>
   Layer.effect(

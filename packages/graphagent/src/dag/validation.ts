@@ -1,0 +1,1874 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/**
+ * Workflow spec validation authority.
+ *
+ * Side-effect-free rule core shared by WorkflowAuthoring and Dag.create /
+ * Dag.replan. Raw source orchestration belongs exclusively to
+ * WorkflowAuthoring; this module never chooses or reads a source.
+ *
+ * Profiles:
+ * - portable — proves a spec can be distributed on its own (no dependency on
+ *              one user's project prompts, models, or agents);
+ * - environment — portable plus resolution against the current project/global
+ *              prompt directories and the agent/skill/model catalogs.
+ *
+ * Validation never creates workflows, publishes DAG events, registers nodes,
+ * spawns child sessions, or writes files.
+ */
+
+export * as DagValidation from "./validation"
+
+import { Effect, Option, Schema } from "effect"
+import { isAbsolute } from "node:path"
+import { buildGraph } from "@graphagent/core/dag/core/scheduling"
+import { CycleError } from "@graphagent/core/dag/core/graph"
+import { validateRequiredNodes } from "@graphagent/core/dag/core/required-validator"
+import type { NodeConfig } from "./dag"
+import { DEFAULT_WORKFLOW_CONFIG } from "./dag"
+import { DagBlocks } from "./blocks"
+import { AdmissionInput, ExecutionMode } from "./admission"
+import { validateReviewLifecycle } from "./review-lifecycle"
+import { conditionReference, conditionSyntaxError, parseInputMappingReference } from "./runtime/eval"
+import { unsupportedSchemaKeywords } from "./runtime/capture"
+import { placeholderKeys, templateSourceById } from "./templates/resolve"
+import { DagLocation } from "./location"
+
+// ============================================================================
+// Diagnostic contract
+// ============================================================================
+
+export const DIAGNOSTIC_CODES = {
+  schemaInvalid: "schema.invalid",
+  // Reserved vocabulary from the design: source exclusivity is enforced by the
+  // discriminated parameter schema before any diagnostic path runs.
+  graphSourceConflict: "graph.source_conflict",
+  // A replan document is missing its required top-level `fragment` envelope. A
+  // dedicated code (not the generic union schemaInvalid) so the parent agent can
+  // recognize the exact mistake and retry deterministically instead of reusing a
+  // wrong conclusion across attempts.
+  replanEnvelopeMissing: "replan.envelope_missing",
+  blockCompileFailed: "block.compile_failed",
+  dagInvalid: "dag.invalid",
+  promptUnboundVariable: "prompt.unbound_variable",
+  promptMissingAsset: "prompt.missing_asset",
+  promptNonportableAsset: "prompt.nonportable_asset",
+  workerUnknown: "worker.unknown",
+  modelUnavailable: "model.unavailable",
+  modelLegacyPin: "model.legacy_pin",
+  environmentUnavailable: "environment.unavailable",
+  schemaKeywordWarning: "schema.keyword_warning",
+  verdictVocabulary: "prompt.verdict_vocabulary",
+  workspaceWorktreeMismatch: "workspace.worktree_mismatch",
+  workspaceInvalid: "workspace.invalid",
+  isolationInvalid: "isolation.invalid",
+} as const
+
+export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[keyof typeof DIAGNOSTIC_CODES]
+
+export const DiagnosticCodeSchema = Schema.Literals(Object.values(DIAGNOSTIC_CODES))
+
+export const DiagnosticSchema = Schema.Struct({
+  severity: Schema.Literals(["error", "warning"]),
+  code: DiagnosticCodeSchema,
+  /** Field or asset path, e.g. `config.blocks` or `nodes[verify].prompt_template.id`. */
+  path: Schema.String,
+  message: Schema.String,
+  hint: Schema.String,
+})
+export type Diagnostic = typeof DiagnosticSchema.Type
+
+/** Structural validation errors carry the shared diagnostics so callers can
+ * compare validate/start/replan rejections code by code (spec: one authority). */
+export class StructuralValidationError extends Schema.TaggedError<StructuralValidationError>()(
+  "StructuralValidationError",
+  { diagnostics: Schema.mutable(Schema.Array(DiagnosticSchema)) },
+) {
+  /** The message text tools and tests have always seen, derived from the
+   * shared diagnostic messages. The legacy render format is decided at
+   * construction time via the legacy-class tag — never by re-parsing
+   * message text. */
+  override get message() {
+    return this.diagnostics.map((d) => legacyValidationMessage(d)).join("; ")
+  }
+}
+
+export type Profile = "portable" | "environment"
+
+export interface CompiledNodeSummary {
+  id: string
+  name: string
+  worker_type: string
+  depends_on: string[]
+  required: boolean
+  report_to_parent: boolean
+  has_output_schema: boolean
+  review_phase?: "design" | "diff"
+}
+
+export interface ValidationResult {
+  source: string
+  profile: Profile
+  valid: boolean
+  errors: Diagnostic[]
+  warnings: Diagnostic[]
+  nodes: CompiledNodeSummary[]
+}
+
+export function diagnostic(input: {
+  severity?: "error" | "warning"
+  code: DiagnosticCode
+  path: string
+  message: string
+  hint?: string
+}): Diagnostic {
+  return {
+    severity: input.severity ?? "error",
+    code: input.code,
+    path: input.path,
+    message: input.message,
+    hint: input.hint ?? "",
+  }
+}
+
+/** Stable ordering: field path, then code, then message. Same input always
+ * yields the same diagnostic order, so validate output is diffable. */
+export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
+  return [...diagnostics].sort(
+    (a, b) => a.path.localeCompare(b.path) || a.code.localeCompare(b.code) || a.message.localeCompare(b.message),
+  )
+}
+
+export type YamlParseResult = { parsed: true; value: unknown } | { parsed: false; diagnostic: Diagnostic }
+
+/** YAML parsing belongs to the validation authority so the workflow tool,
+ * config CI, generation, and release packaging cannot drift on parse-error
+ * codes or paths. */
+export function parseYaml(content: string): YamlParseResult {
+  try {
+    return { parsed: true, value: Bun.YAML.parse(content) }
+  } catch {
+    return {
+      parsed: false,
+      diagnostic: diagnostic({
+        code: DIAGNOSTIC_CODES.schemaInvalid,
+        path: "$",
+        message: "file is not parseable YAML",
+        hint: "Fix the YAML syntax before validation can run",
+      }),
+    }
+  }
+}
+
+function summarizeNodes(nodes: readonly NodeConfig[]): CompiledNodeSummary[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    name: node.name,
+    worker_type: node.worker_type,
+    depends_on: [...node.depends_on],
+    required: node.required ?? false,
+    report_to_parent: node.report_to_parent ?? false,
+    has_output_schema: node.output_schema !== undefined,
+    ...(node.review ? { review_phase: node.review.phase } : {}),
+  }))
+}
+
+// ============================================================================
+// Spec schemas — the single decode authority for inline and file-backed input
+// ============================================================================
+
+const PromptInput = Schema.optional(Schema.Record(Schema.String, Schema.Unknown))
+/** A prompt template selects exactly one source: inline text or an asset id.
+ * Both present is ambiguous; neither is a spawn-time guarantee the runtime
+ * cannot keep. */
+export const PromptTemplateSource = Schema.Union([
+  Schema.Struct({
+    inline: Schema.String.annotate({
+      description: "Inline prompt text; bind {{placeholders}} via input or input_mapping",
+    }),
+    input: PromptInput,
+  }),
+  Schema.Struct({
+    id: Schema.String.annotate({
+      description: "Prompt asset id resolved from .agents/dag-prompts (project, then global)",
+    }),
+    input: PromptInput,
+  }),
+])
+
+export const NodeSchema = Schema.Struct({
+  id: Schema.String.annotate({ description: "Unique node identifier, used in depends_on" }),
+  name: Schema.String.annotate({ description: "Human-readable node name" }),
+  worker_type: Schema.String.annotate({ description: "Agent type (explore, build, general, plan, or custom)" }),
+  depends_on: Schema.Array(Schema.String).annotate({ description: "Node IDs this node waits for ([] for root)" }),
+  required: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "If true and this node fails, the workflow terminalizes as failed. Inherits config.node_defaults.required",
+  }),
+  skip_ok: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "If true, a required node skipped by its condition (or a cascade) does not fail the workflow. New required nodes default to false; explicitly mark intentional mutually-exclusive branches true",
+  }),
+  prompt_template: PromptTemplateSource.annotate({
+    description:
+      'Template: exactly one of { id: "..." } or { inline: "...", input: {...} }. Direct dependency outputs are available as {{node-id}} by default',
+  }),
+  worker_config: Schema.optional(
+    Schema.Struct({
+      timeout_ms: Schema.optional(Schema.Number),
+    }),
+  ).annotate({
+    description:
+      "{ timeout_ms } — bounds the node from admission to completion; queue wait counts toward the budget and an expired queued node fails without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Inherits config.node_defaults.worker_config",
+  }),
+  input_mapping: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
+    description:
+      'Optional variable-to-source map, e.g. { resultA: "node-a", count: "node-b.output.count" }. Omit to expose each direct dependency under its node ID',
+  }),
+  report_to_parent: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "If true and the node has dependents, it is a blocking reporting checkpoint: every direct dependent must gate on its output via condition, and the node must declare output_schema. Without dependents it is a reporting leaf (a progress wake). Inherits config.node_defaults.report_to_parent",
+  }),
+  condition: Schema.optional(Schema.String).annotate({
+    description:
+      'One comparison on one direct dependency\'s output: "<dep>.output.<field> <op> <literal>" with ==, !=, <, <=, >, or >=; no && or ||. The node is skipped when the comparison is false',
+  }),
+  restart: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "(replan only) Re-spawn this running node with new prompt. Running nodes only — terminal (completed/failed/skipped) nodes are immutable; to retry a failed node, add a replacement node under a new id",
+  }),
+  cancel: Schema.optional(Schema.Boolean).annotate({ description: "(replan only) Cancel this node" }),
+  output_schema: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
+    description:
+      "JSON Schema for the child's final JSON answer (historical submit_result workflows keep their tool protocol)",
+  }),
+  review: Schema.optional(
+    Schema.Struct({
+      phase: Schema.Literals(["design", "diff"]),
+      implementation_node_id: Schema.optional(Schema.String),
+      verification_node_id: Schema.optional(Schema.String),
+    }),
+  ).annotate({
+    description:
+      "(deep review workers) design reviews pre-implementation artifacts; diff reviews require implementation_node_id, verification_node_id, and authoring-validated wiring: transitive review→verification→implementation dependencies, input_mapping for the diff artifact, fingerprint, and verification output, a PASS-gated condition, and a verdict+implementation_fingerprint output_schema; deep mode additionally requires the diff review to feed a required final gate conditioned on verdict ACCEPT. Violations are authoring errors in deep mode, warnings in standard mode.",
+  }),
+  fan_out: Schema.optional(Schema.String).annotate({
+    description:
+      "(implementation writers) Direct dependency whose output.packages [{ id, instruction, write_set }] fans this writer out when it becomes ready: two or more disjoint packages run as parallel writers <id>--<package-id> and this node becomes their implementation aggregator under the same id; fewer packages, or an unsafe shape, run this writer unchanged",
+  }),
+  workspace: Schema.optional(Schema.String).annotate({
+    description:
+      "Absolute path to a linked worktree of the same project where this node runs. Overrides config.workspace. Omit to run in config.workspace or the session directory.",
+  }),
+  isolation: Schema.optional(Schema.Literal("worktree")).annotate({
+    description:
+      'Run this writer-capable node in a fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Review and verify workers cannot isolate.',
+  }),
+})
+
+const NodeDefaults = Schema.Struct({
+  required: Schema.optional(Schema.Boolean),
+  worker_config: Schema.optional(
+    Schema.Struct({
+      timeout_ms: Schema.optional(Schema.Number),
+    }),
+  ),
+  report_to_parent: Schema.optional(Schema.Boolean),
+})
+
+const GraphBudgetFields = {
+  result_protocol: Schema.optional(Schema.Literals(["final_response", "submit_result"])).annotate({
+    description:
+      "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
+  }),
+  delivery_node: Schema.optional(Schema.String).annotate({
+    description:
+      "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
+  }),
+  max_concurrency: Schema.optional(Schema.Number).annotate({ description: "Max parallel nodes. Default: 5" }),
+  max_node_replan_attempts: Schema.optional(Schema.Number).annotate({
+    description: "Max replan restarts per node ID. Default: 5",
+  }),
+  max_total_nodes: Schema.optional(Schema.Number).annotate({
+    description: "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
+  }),
+  workspace: Schema.optional(Schema.String).annotate({
+    description:
+      "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
+  }),
+} as const
+
+/** High-level graph: objective + composable blocks compiled into nodes. */
+export const BlocksGraphSchema = Schema.Struct({
+  name: Schema.String.annotate({ description: "Workflow name" }),
+  objective: Schema.String.annotate({
+    description: "Injected into every generated child prompt; required for blocks",
+  }),
+  blocks: Schema.Array(DagBlocks.WorkflowBlock).annotate({
+    description: "Composable blocks compiled into nodes by the runtime",
+  }),
+  node_defaults: Schema.optional(NodeDefaults).annotate({
+    description: "Defaults inherited by nodes that omit required, worker_config, or report_to_parent",
+  }),
+  ...GraphBudgetFields,
+})
+
+/** Low-level graph: explicit node declarations. */
+export const NodesGraphSchema = Schema.Struct({
+  name: Schema.String.annotate({ description: "Workflow name" }),
+  nodes: Schema.Array(NodeSchema).annotate({ description: "Low-level node declarations" }),
+  node_defaults: Schema.optional(NodeDefaults).annotate({
+    description: "Defaults inherited by nodes that omit required, worker_config, or report_to_parent",
+  }),
+  ...GraphBudgetFields,
+})
+
+/** A start/replan graph carries exactly one source shape: blocks or nodes. */
+export const WorkflowGraphSchema = Schema.Union([BlocksGraphSchema, NodesGraphSchema])
+
+export const StartSpec = Schema.Struct({
+  title: Schema.optional(Schema.String),
+  mode: Schema.optional(ExecutionMode),
+  admission: Schema.optional(AdmissionInput),
+  config: WorkflowGraphSchema,
+})
+
+/** Extend adds exactly one graph source: objective+blocks or nodes. */
+export const ExtendSpec = Schema.Union([
+  Schema.Struct({
+    objective: Schema.String.annotate({ description: "Injected into every generated child prompt" }),
+    blocks: Schema.Array(DagBlocks.WorkflowBlock),
+  }),
+  Schema.Struct({
+    nodes: Schema.Array(NodeSchema),
+  }),
+])
+
+export const ReplanSpec = Schema.Struct({
+  fragment: WorkflowGraphSchema,
+})
+
+export type StartSpec = typeof StartSpec.Type
+export type StartGraph = typeof WorkflowGraphSchema.Type
+export type ExtendGraph = typeof ExtendSpec.Type
+export type NodeSpec = typeof NodeSchema.Type
+
+/** The validator decodes untrusted model/YAML input; unknown keys are
+ * rejected so a foreign field can never be silently dropped or defaulted. */
+export const STRICT_PARSE_OPTIONS = { onExcessProperty: "error" as const }
+
+// ============================================================================
+// Schema-error → diagnostics
+// ============================================================================
+
+interface LeafIssue {
+  path: string
+  message: string
+}
+
+function issuePathSegment(segment: unknown): string {
+  return typeof segment === "number" ? `[${segment}]` : `[${JSON.stringify(String(segment))}]`
+}
+
+function collectLeafIssues(issue: unknown, path: readonly string[], out: LeafIssue[]) {
+  if (!isRecord(issue)) return
+  const nextPath = Array.isArray(issue.path) ? [...path, ...issue.path.map(issuePathSegment)] : path
+  const children: unknown[] = []
+  if (Array.isArray(issue.issues)) children.push(...issue.issues)
+  if (issue.issue !== undefined) children.push(issue.issue)
+  const tag = typeof issue._tag === "string" ? issue._tag : ""
+  if (tag === "AnyOf" || tag === "UnionMember") {
+    for (const value of Object.values(issue)) {
+      if (value !== null && typeof value === "object" && "_tag" in value) children.push(value)
+    }
+  }
+  if (children.length > 0) {
+    for (const child of children) collectLeafIssues(child, nextPath, out)
+    return
+  }
+  const message = typeof issue.message === "string" ? issue.message : tag
+  if (message) out.push({ path: nextPath.join("") || "$", message })
+}
+
+// High-frequency authoring drift: fields the model reaches for from
+// neighboring vocabularies, mapped to the field that exists. The decode leaf
+// only carries the tag ("UnexpectedKey"); the offending field name lives in
+// the diagnostic path, so both are matched. Block-level vocabulary means the
+// same thing for every action.
+const FIELD_DRIFT_HINTS: Record<string, string> = {
+  worker: "worker_type",
+  workers: "worker_type",
+  agent: "worker_type",
+  timeout: "worker_config: { timeout_ms }",
+  timeouts: "worker_config: { timeout_ms }",
+  timeout_ms: "worker_config: { timeout_ms }",
+  prompt: "instruction",
+  task: "instruction",
+  nodes: "blocks (or vice versa — exactly one graph source)",
+  blocks: "nodes (or vice versa — exactly one graph source)",
+}
+
+/** The authoring action whose envelope a decoded document must satisfy.
+ * Hints describe the selected action's own contract; a start-shaped answer
+ * steered an extend retry into a second rejection (issue #775). */
+export type SchemaAction = "start" | "extend" | "replan"
+
+/** The exact document shape each action decodes. Every envelope-level hint
+ * ends with this sentence so a retry is keyed off the action's own contract. */
+const ACTION_ENVELOPES: Record<SchemaAction, string> = {
+  start: "a start document: { title?, mode?, admission?, config: { name, objective + blocks | nodes } }",
+  extend:
+    'an extend document: { "objective": "...", "blocks": [...] } or { "nodes": [...] } at the top level — no "config", "title", "name", "fragment", or graph-budget fields',
+  replan: 'a replan document: { "fragment": { name, objective + blocks | nodes } }',
+}
+
+/** Where the graph's objective lives for the selected action; appended to the
+ * block-field drift sentence, which is otherwise action-independent. */
+const OBJECTIVE_LOCATION: Record<SchemaAction, string> = {
+  start: "objective lives inside config",
+  extend: "extend takes objective at the top level",
+  replan: 'the graph lives inside "fragment"',
+}
+
+/** Graph-envelope vocabulary whose right answer depends on the action being
+ * decoded. The generic table above intentionally omits these keys: their
+ * start-shaped answers were wrong for extend and replan. */
+const ACTION_FIELD_DRIFT: Record<string, Record<SchemaAction, string>> = {
+  objective: {
+    start: 'config ("config.objective"; objective lives inside config)',
+    extend: 'the extend document\'s top level, next to "blocks"',
+    replan: 'the "fragment" graph',
+  },
+  graph: { start: "config", extend: "the extend document's top level", replan: 'the "fragment" graph' },
+  spec: { start: "config", extend: "the extend document's top level", replan: 'the "fragment" graph' },
+  config: {
+    start: "config",
+    extend: "the start document only (extend has no config wrapper)",
+    replan: 'the start document only (replan wraps the graph in "fragment")',
+  },
+  title: {
+    start: "the start document's top level",
+    extend: "the start document only (an extend file has no title)",
+    replan: 'the start document only (a replan file has only "fragment")',
+  },
+  fragment: {
+    start: 'the replan document only (start wraps the graph in "config")',
+    extend: "the replan document only (extend has no fragment wrapper)",
+    replan: 'the replan document\'s "fragment" envelope',
+  },
+  name: {
+    start: 'the graph ("config.name")',
+    extend: "nowhere in extend (the document is exactly { objective, blocks } or { nodes })",
+    replan: 'the "fragment" graph ("fragment.name")',
+  },
+}
+
+function driftHint(path: string, message: string, action: SchemaAction = "start") {
+  // Match the offending leaf, never an ancestor such as "blocks" or
+  // "config". Only document/graph envelopes can relocate action fields.
+  const field = path.match(/\["([^"\\]+)"\]$/)?.[1]
+  const envelope = /^(?:\["(?:config|fragment)"\])?\["[^"\\]+"\]$/.test(path)
+  if (/\["blocks"\]\[\d+\]\["name"\]$/.test(path)) {
+    return `Did you mean "id"? A block's identifier belongs on that block; expected ${ACTION_ENVELOPES[action]}`
+  }
+  for (const [wrong, right] of Object.entries(FIELD_DRIFT_HINTS)) {
+    if (field === wrong || ((path === "$" || !path) && message.includes(`"${wrong}"`))) {
+      return `Did you mean "${right}"? Every block field is one of id, kind, depends_on, instruction, worker_type, worker_config, required, report_to_parent; ${OBJECTIVE_LOCATION[action]}; expected ${ACTION_ENVELOPES[action]}`
+    }
+  }
+  for (const [field, where] of Object.entries(ACTION_FIELD_DRIFT)) {
+    if (envelope && path.endsWith(`["${field}"]`)) {
+      return `"${field}" belongs in ${where[action]}; expected ${ACTION_ENVELOPES[action]}`
+    }
+  }
+  return `Fix the field shape; expected ${ACTION_ENVELOPES[action]}`
+}
+
+export function schemaDiagnostics(error: unknown, basePath = "", action: SchemaAction = "start"): Diagnostic[] {
+  const leaves: LeafIssue[] = []
+  collectLeafIssues(
+    isRecord(error) && error.issue !== undefined ? error.issue : error,
+    basePath ? [basePath] : [],
+    leaves,
+  )
+  if (leaves.length === 0) {
+    return [diagnostic({ code: DIAGNOSTIC_CODES.schemaInvalid, path: basePath || "$", message: String(error) })]
+  }
+  return sortDiagnostics(
+    leaves.map((leaf) =>
+      diagnostic({
+        code: DIAGNOSTIC_CODES.schemaInvalid,
+        path: leaf.path,
+        message: leaf.message,
+        hint: driftHint(leaf.path, leaf.message, action),
+      }),
+    ),
+  )
+}
+
+/**
+ * Replan envelope guard. A replan document must carry a top-level `fragment`
+ * wrapping the graph. When it is missing, the generic `ReplanSpec` union decode
+ * reports a misleading "blocks graphs need name+objective+blocks / nodes graphs
+ * need name+nodes" error that hides the real mistake — the absent envelope key.
+ * Surface the envelope error directly, with a targeted hint keyed on the
+ * top-level keys that ARE present. An `undefined`/`null` fragment counts as
+ * missing: legacy file normalization rewrites a fragment-less replan doc to
+ * `{ ...originalKeys, fragment: undefined }`, so the key can exist yet be empty.
+ * Returns `undefined` when the envelope is present, letting normal decode run.
+ */
+export function replanEnvelopeDiagnostic(value: unknown): Diagnostic | undefined {
+  if (isRecord(value) && value.fragment != null) return undefined
+  const keys = isRecord(value) ? Object.keys(value) : []
+  const targeted = keys.includes("blocks")
+    ? 'Move "name", "objective", and "blocks" under "fragment".'
+    : keys.includes("config")
+      ? '"config" is the start envelope; replan requires "fragment".'
+      : keys.includes("nodes")
+        ? 'Move "nodes" under "fragment".'
+        : keys.includes("name")
+          ? 'Wrap the graph in a top-level "fragment" key.'
+          : 'Wrap the graph fields in a top-level "fragment" key.'
+  return diagnostic({
+    code: DIAGNOSTIC_CODES.replanEnvelopeMissing,
+    path: "$",
+    message: 'replan file is missing required top-level key "fragment"',
+    hint: `${targeted}\n\nExpected:\n\nfragment:\n  name: workflow-name\n  nodes:\n    - id: node-id\n      ...`,
+  })
+}
+
+// ============================================================================
+// Graph compilation (blocks → nodes) as diagnostics
+// ============================================================================
+
+export type BlockSource =
+  { objective: string; blocks: readonly DagBlocks.WorkflowBlock[] } | { nodes: readonly NodeSpec[] }
+
+export function compileBlockSource(
+  source: BlockSource,
+  options: { known_dependencies?: string[] } = {},
+): { nodes?: NodeConfig[]; diagnostics: Diagnostic[] } {
+  if ("blocks" in source) {
+    try {
+      const nodes = DagBlocks.compileWorkflowBlocks(
+        { objective: source.objective, blocks: [...source.blocks] },
+        { known_dependencies: options.known_dependencies },
+      )
+      return { nodes, diagnostics: [] }
+    } catch (error) {
+      return {
+        diagnostics: [
+          diagnostic({
+            code: DIAGNOSTIC_CODES.blockCompileFailed,
+            path: "config.blocks",
+            message: error instanceof Error ? error.message : String(error),
+            hint: "Blocks must satisfy the writer-serialization and review-route contracts; inline compiled nodes if you need a shape blocks cannot express",
+          }),
+        ],
+      }
+    }
+  }
+  return { nodes: source.nodes.map(materializeNode), diagnostics: [] }
+}
+
+function materializeNode(node: NodeSpec): NodeConfig {
+  return {
+    ...node,
+    depends_on: [...node.depends_on],
+    prompt_template: {
+      ...node.prompt_template,
+      ...(node.prompt_template.input ? { input: { ...node.prompt_template.input } } : {}),
+    },
+    ...(node.worker_config ? { worker_config: { ...node.worker_config } } : {}),
+    ...(node.input_mapping ? { input_mapping: { ...node.input_mapping } } : {}),
+    ...(node.output_schema ? { output_schema: { ...node.output_schema } } : {}),
+    ...(node.review ? { review: { ...node.review } } : {}),
+  }
+}
+
+export function compileGraphSource(
+  graph: StartGraph,
+  options: { known_dependencies?: string[] } = {},
+): { nodes?: NodeConfig[]; diagnostics: Diagnostic[] } {
+  if ("blocks" in graph) {
+    return compileBlockSource({ objective: graph.objective, blocks: graph.blocks }, options)
+  }
+  return compileBlockSource({ nodes: graph.nodes }, options)
+}
+
+// ============================================================================
+// Structural diagnostics — shared by validate, create, and replan
+// ============================================================================
+
+/** A parseable condition may only reference the node's direct dependencies —
+ * anything else silently resolves to undefined and evaluates false at spawn. */
+export function conditionReferenceErrors(nodes: readonly NodeConfig[]): string[] {
+  return nodes.flatMap((node) => {
+    const ref = conditionReference(node.condition)
+    if (!ref || node.depends_on.includes(ref)) return []
+    return [
+      `node "${node.id}" condition references "${ref}" which is not in its depends_on (condition inputs come from direct dependencies only; this would silently evaluate false)`,
+    ]
+  })
+}
+
+/** Inline prompt templates may only reference bound variables: static
+ * prompt_template.input keys, input_mapping target names, or (without
+ * input_mapping) the direct depends_on ids. Id templates are resolved from
+ * disk and are binding-checked by the environment profile. */
+export function templateBindingErrors(nodes: readonly NodeConfig[]): string[] {
+  return nodes.flatMap((node) => {
+    const template = node.prompt_template.inline
+    if (template === undefined) return []
+    const bound = new Set([
+      ...Object.keys(node.prompt_template.input ?? {}),
+      ...Object.keys(node.input_mapping ?? Object.fromEntries(node.depends_on.map((dep) => [dep, dep]))),
+    ])
+    return placeholderKeys(template)
+      .filter((key) => !bound.has(key))
+      .map(
+        (key) =>
+          `node "${node.id}" prompt_template references unbound variable "{{${key}}}" (bind it via prompt_template.input, input_mapping, or depends_on)`,
+      )
+  })
+}
+
+export interface StructuralInput {
+  nodes: readonly NodeConfig[]
+  delivery_node?: string
+  mode?: ExecutionMode
+  max_total_nodes?: number
+  /** Nodes already registered in a live workflow; counts toward the ceiling. */
+  existing_node_count?: number
+  /** Node ids already present in a live workflow; valid dependency targets for
+   * replan/extend fragments whose depends_on may reference them. */
+  known_node_ids?: ReadonlySet<string>
+  /** Graph node_defaults for nodes that omit a field (authoring graphs are not
+   * default-normalized). */
+  node_defaults?: { readonly required?: boolean }
+  /** Node graphs are hand-authored, so redundant transitive edges are worth a
+   * warning. Block-compiled graphs are compiler-owned; their edges are not
+   * linted (default true for direct callers such as Dag.create). */
+  redundant_dependency_lint?: boolean
+}
+
+// Legacy byte-compat: Dag.create has always reported one structural class at
+// a time in a fixed sequence. Each helper tags its diagnostics with that
+// class index so callers can restore the historical ordering without
+// re-parsing message text — the ordering lives with the message authors.
+const legacyClassByDiagnostic = new WeakMap<Diagnostic, number>()
+
+// Classes whose messages pass through as-is in the legacy render; every
+// other structural class is prefixed with "Invalid workflow config:".
+const RAW_LEGACY_CLASSES = new Set([4, 5, 7])
+
+function tagLegacyClass(diagnostics: Diagnostic[], classIndex: number): Diagnostic[] {
+  for (const d of diagnostics) legacyClassByDiagnostic.set(d, classIndex)
+  return diagnostics
+}
+
+export function sortLegacyStructural(diagnostics: readonly Diagnostic[]): Diagnostic[] {
+  return sortDiagnostics([...diagnostics]).sort(
+    (a, b) => (legacyClassByDiagnostic.get(a) ?? 8) - (legacyClassByDiagnostic.get(b) ?? 8),
+  )
+}
+
+/** Legacy message render driven by the structural class tag, never by
+ * re-parsing message text. Schema-decode diagnostics (untagged) render with
+ * the historical "Invalid workflow config:" wrapper. */
+function legacyValidationMessage(d: Diagnostic): string {
+  const cls = legacyClassByDiagnostic.get(d)
+  if (cls !== undefined && RAW_LEGACY_CLASSES.has(cls)) return d.message
+  return `Invalid workflow config: ${d.message}`
+}
+
+function duplicateNodeIds(nodes: readonly NodeConfig[]): string[] {
+  const ids = nodes.map((node) => node.id)
+  return [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))]
+}
+
+function duplicateIdDiagnostics(duplicates: string[]): Diagnostic[] {
+  if (duplicates.length === 0) return []
+  return [
+    diagnostic({
+      code: DIAGNOSTIC_CODES.dagInvalid,
+      path: "nodes",
+      message: `duplicate node ids: ${duplicates.join(", ")}`,
+      hint: "Every node id must be unique; rename the colliding node",
+    }),
+  ]
+}
+
+function danglingDependencyDiagnostics(nodes: readonly NodeConfig[], knownNodeIds?: ReadonlySet<string>): Diagnostic[] {
+  const idSet = new Set(nodes.map((node) => node.id))
+  if (knownNodeIds) for (const id of knownNodeIds) idSet.add(id)
+  const dangling = nodes.flatMap((node) =>
+    node.depends_on.filter((dep) => !idSet.has(dep)).map((dep) => ({ node, dep })),
+  )
+  if (dangling.length === 0) return []
+  return [
+    diagnostic({
+      code: DIAGNOSTIC_CODES.dagInvalid,
+      path: "nodes",
+      message: dangling.map(({ node, dep }) => `node "${node.id}" depends on unknown node "${dep}"`).join("; "),
+      hint: "depends_on may only reference node ids declared in this graph",
+    }),
+  ]
+}
+
+function conditionDiagnostics(nodes: readonly NodeConfig[], grandfathered?: ReadonlySet<string>): Diagnostic[] {
+  // The evaluator supports one comparison; anything else (===, !==, &&, ||)
+  // would otherwise be accepted here and mis-route silently at spawn time.
+  // Grandfathered nodes carry a condition persisted before this check existed:
+  // re-rejecting it would block every later mutation of the workflow, and the
+  // runtime already fails such a node loudly (evaluateCondition ok:false).
+  const syntax = nodes.flatMap((node) => {
+    if (grandfathered?.has(node.id)) return []
+    const error = conditionSyntaxError(node.condition)
+    if (!error) return []
+    return [
+      diagnostic({
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: `nodes[${node.id}].condition`,
+        message: `node "${node.id}" ${error}`,
+        hint: 'Use a single comparison such as gate.output.verdict == "ACCEPT"; express "not equal" with !=',
+      }),
+    ]
+  })
+  const errors = conditionReferenceErrors(nodes)
+  if (errors.length === 0) return syntax
+  return [
+    ...syntax,
+    diagnostic({
+      code: DIAGNOSTIC_CODES.dagInvalid,
+      path: "nodes",
+      message: errors.join("; "),
+      hint: "A condition may only read outputs of the node's direct depends_on",
+    }),
+  ]
+}
+
+// Verdict words a block's schema could plausibly demand. A block only emits
+// one vocabulary; naming another one in the shared objective or instruction
+// teaches the worker the wrong contract at the exact place the runtime will
+// reject it.
+const VERDICT_WORD_PATTERN =
+  /\b(?:ACCEPT|ACCEPTED|REJECT|REJECTED|REVISE|REVISED|BLOCKED|BLOCKING|PASS|PASSED|FAIL|FAILED|INCOMPLETE)\b/g
+
+const BLOCK_VERDICT_ALLOWED: Partial<Record<DagBlocks.WorkflowBlockKind, readonly string[]>> = {
+  verify: ["PASS", "FAIL"],
+  review: ["ACCEPT", "REJECT"],
+}
+
+function verdictWords(text: string | undefined): string[] {
+  if (!text) return []
+  return [...new Set(text.match(VERDICT_WORD_PATTERN) ?? [])]
+}
+
+/** Warn when the text injected into a verdict-bearing block names words that
+ * block's output schema cannot accept (#956). The check is advisory: the
+ * runtime contract still fails invalid output, and the repair turn is only a
+ * bounded near-miss path. */
+export function verdictVocabularyDiagnostics(
+  objective: string | undefined,
+  blocks: readonly DagBlocks.WorkflowBlock[] | undefined,
+): Diagnostic[] {
+  if (!blocks) return []
+  return blocks.flatMap((block) => {
+    const allowed = BLOCK_VERDICT_ALLOWED[block.kind]
+    if (!allowed) return []
+    const diagnostics: Diagnostic[] = []
+    const instructionConflicts = verdictWords(block.instruction).filter((word) => !allowed.includes(word))
+    if (instructionConflicts.length > 0) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: DIAGNOSTIC_CODES.verdictVocabulary,
+          path: `config.blocks[${block.id}].instruction`,
+          message: `block "${block.id}" (${block.kind}) instruction names verdict words its output schema does not accept: ${instructionConflicts.join(", ")}`,
+          hint: `Use only ${allowed.join(", ")} for this block, or remove the verdict wording. The runtime validates the output schema, not the instruction.`,
+        }),
+      )
+    }
+    const objectiveConflicts = verdictWords(objective).filter((word) => !allowed.includes(word))
+    if (objectiveConflicts.length > 0) {
+      diagnostics.push(
+        diagnostic({
+          severity: "warning",
+          code: DIAGNOSTIC_CODES.verdictVocabulary,
+          path: "config.objective",
+          message: `objective names verdict words block "${block.id}" (${block.kind}) cannot output: ${objectiveConflicts.join(", ")}`,
+          hint: `This objective is injected into the block's prompt. Use only ${allowed.join(", ")} for block "${block.id}", or scope those words to the block that accepts them. The runtime validates the output schema, not the objective.`,
+        }),
+      )
+    }
+    return diagnostics
+  })
+}
+
+/** input_mapping is a data dependency, not a scheduling edge. Every declared
+ * source therefore has to name an existing transitive predecessor; otherwise
+ * the scheduler may start the consumer before the value exists. */
+export function inputMappingDiagnostics(
+  consumers: readonly NodeConfig[],
+  graphNodes: readonly NodeConfig[] = consumers,
+): Diagnostic[] {
+  const byID = new Map(graphNodes.map((node) => [node.id, node]))
+
+  const dependencyClosure = (consumer: NodeConfig) => {
+    const closure = new Set<string>()
+    const pending = [...consumer.depends_on]
+    while (pending.length > 0) {
+      const dependency = pending.pop()!
+      if (closure.has(dependency)) continue
+      closure.add(dependency)
+      const node = byID.get(dependency)
+      if (node) pending.push(...node.depends_on)
+    }
+    return closure
+  }
+
+  return consumers.flatMap((consumer) => {
+    const closure = dependencyClosure(consumer)
+    return Object.entries(consumer.input_mapping ?? {}).flatMap(([variable, source]) => {
+      const path = `nodes[${consumer.id}].input_mapping.${variable}`
+      const parsed = parseInputMappingReference(source)
+      if (!parsed.ok) {
+        return [
+          diagnostic({
+            code: DIAGNOSTIC_CODES.dagInvalid,
+            path,
+            message: `node "${consumer.id}" input_mapping variable "${variable}" has invalid source "${source}": ${parsed.error}`,
+            hint: 'Use "node-id", "node-id.output", or "node-id.output.field"',
+          }),
+        ]
+      }
+      if (parsed.nodeID === consumer.id) {
+        return [
+          diagnostic({
+            code: DIAGNOSTIC_CODES.dagInvalid,
+            path,
+            message: `node "${consumer.id}" input_mapping variable "${variable}" references itself via "${source}"`,
+            hint: "Map inputs from a direct or transitive dependency",
+          }),
+        ]
+      }
+      if (!byID.has(parsed.nodeID)) {
+        return [
+          diagnostic({
+            code: DIAGNOSTIC_CODES.dagInvalid,
+            path,
+            message: `node "${consumer.id}" input_mapping variable "${variable}" references unknown source node "${parsed.nodeID}" via "${source}"`,
+            hint: "Map inputs from a node declared in this workflow",
+          }),
+        ]
+      }
+      if (!closure.has(parsed.nodeID)) {
+        return [
+          diagnostic({
+            code: DIAGNOSTIC_CODES.dagInvalid,
+            path,
+            message: `node "${consumer.id}" input_mapping variable "${variable}" references unordered source node "${parsed.nodeID}" via "${source}"`,
+            hint: `Add a direct or transitive depends_on path from "${consumer.id}" to "${parsed.nodeID}"`,
+          }),
+        ]
+      }
+      return []
+    })
+  })
+}
+
+/** A redundant edge is one whose target stays reachable through another direct
+ * dependency. The wrapper names the edge and the path so the author can remove
+ * it without re-deriving the ordering. */
+export interface RedundantDependencyEdge {
+  consumer: string
+  dependency: string
+  /** Direct dependency whose path makes `dependency` reachable. */
+  via: string
+  /** Full path: consumer -> via -> ... -> dependency. */
+  path: string[]
+}
+
+/** The path between two node ids along `depends_on` edges (from `from` down to
+ * `target`), or undefined when `target` is not a transitive dependency. Iterative
+ * and cycle-safe: topology errors are reported separately. */
+function dependencyPath(byID: ReadonlyMap<string, NodeConfig>, from: string, target: string): string[] | undefined {
+  const pending: Array<{ id: string; path: string[] }> = [{ id: from, path: [from] }]
+  const seen = new Set<string>()
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    if (current.id === target) return current.path
+    if (seen.has(current.id)) continue
+    seen.add(current.id)
+    const node = byID.get(current.id)
+    if (!node) continue
+    for (const dependency of node.depends_on) pending.push({ id: dependency, path: [...current.path, dependency] })
+  }
+  return undefined
+}
+
+/** A redundant edge still supplies the implicit prompt binding for its id, so
+ * removing it can turn a working template into prompt.unbound_variable. An
+ * inline template names the variables it uses, so only removed dependencies
+ * with a matching placeholder need a repair. A prompt asset's content is
+ * unknown here, so keep every former direct-dependency binding unless a static
+ * input already binds that name (static input wins at render time). The repair
+ * must use input_mapping — because input_mapping replaces ALL implicit
+ * direct-dependency bindings — and an explicit mapping is already unaffected. */
+function implicitBindingRepair(node: NodeConfig, removedDependencies: readonly string[]): string {
+  if (node.input_mapping !== undefined || removedDependencies.length === 0) return ""
+  const inline = node.prompt_template.inline
+  const placeholders = inline === undefined ? undefined : new Set(placeholderKeys(inline))
+  if (placeholders && !removedDependencies.some((dependency) => placeholders.has(dependency))) return ""
+  const staticInput = node.prompt_template.input ?? {}
+  const mapping = Object.fromEntries(
+    [...new Set(node.depends_on)]
+      .filter(
+        (dependency) =>
+          !Object.hasOwn(staticInput, dependency) && (placeholders === undefined || placeholders.has(dependency)),
+      )
+      .map((dependency) => [dependency, dependency]),
+  )
+  if (Object.keys(mapping).length === 0) return ""
+  return (
+    `keep the implicit depends_on prompt bindings with input_mapping ${JSON.stringify(mapping)}` +
+    ` (input_mapping replaces every implicit direct-dependency binding; keep one entry for each direct dependency the prompt uses)`
+  )
+}
+
+/** `depends_on` edges whose target is already reachable through another direct
+ * dependency. Redundancy is legal (it still schedules and binds), so callers
+ * report it as a warning; it matters because redundant edges inflate checkpoint
+ * diagnostics and can make a satisfiable gate look unsatisfiable. */
+export function redundantDependencyEdges(
+  consumer: NodeConfig,
+  byID: ReadonlyMap<string, NodeConfig>,
+): RedundantDependencyEdge[] {
+  const dependencies = [...new Set(consumer.depends_on)]
+  return dependencies.flatMap((dependency) => {
+    for (const via of dependencies) {
+      if (via === dependency) continue
+      const path = dependencyPath(byID, via, dependency)
+      if (path) return [{ consumer: consumer.id, dependency, via, path: [consumer.id, ...path] }]
+    }
+    return []
+  })
+}
+
+export function redundantDependencyDiagnostics(
+  consumers: readonly NodeConfig[],
+  graph: readonly NodeConfig[] = consumers,
+): Diagnostic[] {
+  const byID = new Map(graph.map((node) => [node.id, node]))
+  return consumers.flatMap((consumer) =>
+    redundantDependencyEdges(consumer, byID).map((edge) => {
+      const repair = implicitBindingRepair(consumer, [edge.dependency])
+      return diagnostic({
+        severity: "warning",
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: `nodes[${consumer.id}].depends_on`,
+        message:
+          `node "${consumer.id}" depends directly on "${edge.dependency}", but that edge is redundant:` +
+          ` ${edge.path.join(" -> ")} already orders it via "${edge.via}"`,
+        hint:
+          `Remove the redundant depends_on edge "${consumer.id} -> ${edge.dependency}"; it is implied via "${edge.via}". Redundancy is legal, so this is a warning` +
+          (repair ? `. To remove it safely, ${repair}.` : ""),
+      })
+    }),
+  )
+}
+
+/** The `report_to_parent: false` exit is the easiest one to reach and silently
+ * removes verdict gating for the whole downstream graph; name that cost and the
+ * block form that keeps the gate whenever the hint offers it. */
+const CHECKPOINT_WEAKENING =
+  'Setting report_to_parent: false removes verdict gating for every downstream node; for review/decision pipelines prefer the blocks form (workflow guide topic "blocks"), whose compiled graphs gate dependents on verdicts.'
+
+function plural(count: number): string {
+  return count === 1 ? "" : "s"
+}
+
+/** One fix line per ungated dependent. A single `condition` reads exactly one
+ * direct dependency, so a condition gate is only suggested when removing the
+ * named redundant edges leaves exactly one reporting checkpoint. The removal
+ * carries the input_mapping repair whenever it drops an implicit prompt
+ * binding. */
+function checkpointDependentFix(
+  dependent: NodeConfig,
+  reportingCheckpointIds: ReadonlySet<string>,
+  byID: ReadonlyMap<string, NodeConfig>,
+): string {
+  const redundant = redundantDependencyEdges(dependent, byID).filter((edge) =>
+    reportingCheckpointIds.has(edge.dependency),
+  )
+  const redundantDependencies = new Set(redundant.map((edge) => edge.dependency))
+  const remaining = [...new Set(dependent.depends_on)].filter(
+    (dependency) => reportingCheckpointIds.has(dependency) && !redundantDependencies.has(dependency),
+  )
+  const repair = implicitBindingRepair(
+    dependent,
+    redundant.map((edge) => edge.dependency),
+  )
+  const removal =
+    redundant.length === 0
+      ? ""
+      : [
+          `remove the redundant edge${plural(redundant.length)} ` +
+            redundant
+              .map(
+                (edge) =>
+                  `"${edge.consumer} -> ${edge.dependency}" (implied via "${edge.via}": ${edge.path.join(" -> ")})`,
+              )
+              .join(", "),
+          ...(repair ? [repair] : []),
+        ].join("; ") + "; "
+  if (remaining.length === 1) {
+    return (
+      `- "${dependent.id}": ${removal}then gate "${dependent.id}" with condition: "${remaining[0]}.output.<field> == ..."` +
+      ` (e.g. on its verdict) and declare output_schema on "${remaining[0]}" so the gate reads a schema-validated verdict`
+    )
+  }
+  if (remaining.length > 1) {
+    return (
+      `- "${dependent.id}" directly depends on ${remaining.length} reporting checkpoints (${remaining.map((id) => `"${id}"`).join(", ")})` +
+      ` that are not redundant; one condition reads one direct dependency, so a single condition cannot gate all of them. ` +
+      `${removal}Keep one reporting checkpoint for this dependent, or use the blocks form for review/decision pipelines`
+    )
+  }
+  return `- "${dependent.id}": ${removal}no reporting checkpoint remains as a direct dependency after that removal`
+}
+
+/** A report_to_parent node wakes the parent for adjudication; a dependent
+ * without a condition on that node's output is spawned the moment the
+ * checkpoint completes, so the checkpoint verdict can never act first.
+ * Block-compiled graphs gate dependents on the verdict (issue #294
+ * REJECT-checkpoint shape); hand-built node graphs must do the same or keep
+ * the checkpoint as a reporting leaf.
+ *
+ * Options:
+ * - `exemptCheckpointIds` (DAG-02 runtime path): a checkpoint already
+ *   terminal in the durable graph is settled and immutable (terminal nodes
+ *   never re-run) — the ordering race the gate protects is in the past, so
+ *   additive waves / reopens may attach dependents without a condition.
+ *   Authoring never exempts: nothing is terminal there yet.
+ * - `requireOutputSchema` (default true; the runtime replan path passes
+ *   false): DAG-01's "gated checkpoints must declare output_schema" is an
+ *   AUTHORING obligation — runtime-created graphs deliberately bypass
+ *   authoring validation (CONTEXT.md), so the runtime gate polices the
+ *   ordering race only, not the schema declaration. */
+export function checkpointGateDiagnostics(
+  nodes: readonly NodeConfig[],
+  defaults?: { readonly report_to_parent?: boolean },
+  options?: {
+    readonly exemptCheckpointIds?: ReadonlySet<string>
+    readonly requireOutputSchema?: boolean
+  },
+): Diagnostic[] {
+  const reportsToParent = (node: NodeConfig) =>
+    node.report_to_parent ?? defaults?.report_to_parent ?? DEFAULT_WORKFLOW_CONFIG.reportToParent
+  const requireOutputSchema = options?.requireOutputSchema ?? true
+  const byID = new Map(nodes.map((node) => [node.id, node]))
+  const reportingCheckpointIds = new Set(
+    nodes.filter((node) => reportsToParent(node) && !options?.exemptCheckpointIds?.has(node.id)).map((node) => node.id),
+  )
+  return nodes.flatMap((checkpoint) => {
+    if (!reportingCheckpointIds.has(checkpoint.id)) return []
+    const dependents = nodes.filter((dependent) => dependent.depends_on.includes(checkpoint.id))
+    const ungated = dependents.filter((dependent) => conditionReference(dependent.condition) !== checkpoint.id)
+    const fixes = ungated.map((dependent) => checkpointDependentFix(dependent, reportingCheckpointIds, byID))
+    const grouped =
+      ungated.length === 0
+        ? []
+        : [
+            diagnostic({
+              code: DIAGNOSTIC_CODES.dagInvalid,
+              path: `nodes[${checkpoint.id}]`,
+              message:
+                `reporting checkpoint "${checkpoint.id}" has ${ungated.length} dependent${plural(ungated.length)} that ` +
+                `${ungated.length === 1 ? "is" : "are"} not gated on its output: ${ungated.map((dependent) => `"${dependent.id}"`).join(", ")}` +
+                ` — the engine spawns each as soon as "${checkpoint.id}" completes, so the checkpoint verdict cannot be acted on first`,
+              hint:
+                `${fixes.join("\n")}\n` +
+                `Keep "${checkpoint.id}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
+            }),
+          ]
+    // DAG-01: a checkpoint whose output a gate reads must declare
+    // output_schema. Without a schema the child may complete with a raw
+    // string; the runtime normalizes JSON strings, but a prose reply
+    // resolves no fields, so the `.output.<field>` gate is permanently
+    // false and the gated subtree is silently skipped while the workflow
+    // still reports COMPLETED. Make the unsatisfiable gate an authoring
+    // error instead of a runtime trap.
+    const gatedDependents = dependents.some((dependent) => conditionReference(dependent.condition) === checkpoint.id)
+    const schemaRequired =
+      gatedDependents && requireOutputSchema && checkpoint.output_schema === undefined
+        ? [
+            diagnostic({
+              code: DIAGNOSTIC_CODES.dagInvalid,
+              path: `nodes[${checkpoint.id}].output_schema`,
+              message:
+                `reporting checkpoint "${checkpoint.id}" is gated on its output but declares no output_schema` +
+                ` — without a schema the child may complete with prose that resolves no fields, leaving the gate permanently false and silently skipping the gated subtree`,
+              hint:
+                `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),` +
+                ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
+            }),
+          ]
+        : []
+    return [...grouped, ...schemaRequired]
+  })
+}
+
+function bindingDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
+  return templateBindingErrors(nodes).map((error) =>
+    diagnostic({
+      code: DIAGNOSTIC_CODES.promptUnboundVariable,
+      path: "nodes",
+      message: error,
+      hint: "Bind the variable via prompt_template.input, input_mapping, or depends_on",
+    }),
+  )
+}
+
+/** The default is also the floor: a start document may raise the budget but
+ * never shrink it, so a tight self-imposed cap cannot strand remaining work. */
+export function effectiveMaxTotalNodes(maxTotalNodes: number | undefined) {
+  return Math.max(maxTotalNodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes, DEFAULT_WORKFLOW_CONFIG.maxTotalNodes)
+}
+
+/** Which document carries the ceiling. Only `start` can change it: extend,
+ * replan, and recover documents have no graph-budget fields, so a hint that
+ * says "raise max_total_nodes" cannot be followed there. */
+export type CeilingAction = "start" | "extend" | "replan" | "recover"
+
+/** Reusable ceiling check: produces the historical diagnostic when the
+ * cumulative node count exceeds the configured maximum. Shared by create
+ * (existing_node_count + nodes.length) and replan (existing + add count). */
+function ceilingExceeded(
+  totalNodes: number,
+  maxTotalNodes: number | undefined,
+  action: CeilingAction = "start",
+): Diagnostic[] {
+  const max = effectiveMaxTotalNodes(maxTotalNodes)
+  if (totalNodes <= max) return []
+  return [
+    diagnostic({
+      code: DIAGNOSTIC_CODES.dagInvalid,
+      path: action === "start" ? "config.max_total_nodes" : "nodes",
+      message: `Total node ceiling exceeded: ${totalNodes} nodes > ${max} max`,
+      hint:
+        action === "start"
+          ? "Reduce the graph or raise config.max_total_nodes deliberately"
+          : `The ceiling is fixed by the start document (this ${action} would reach ${totalNodes} nodes; limit ${max}); a ${action} document cannot carry config.max_total_nodes. Shrink the fragment, or continue in-scope work in a bounded successor workflow (with a higher config.max_total_nodes if needed) without stopping for user approval`,
+    }),
+  ]
+}
+
+function ceilingDiagnostics(input: StructuralInput): Diagnostic[] {
+  return ceilingExceeded((input.existing_node_count ?? 0) + input.nodes.length, input.max_total_nodes)
+}
+
+/** Review-lifecycle diagnostics for one config. Shared by the structural
+ * validator and Dag.replan's merged-config check. */
+export function reviewLifecycleDiagnostics(input: {
+  name?: string
+  mode?: ExecutionMode
+  nodes: readonly NodeConfig[]
+  /** Authoring graphs are not default-normalized; the final-gate check
+   * resolves `required` through these defaults like Dag.create would. */
+  node_defaults?: { readonly required?: boolean }
+  /** Review nodes whose persisted PASS gate predates the evaluated check;
+   * they keep the legacy textual check (see validateReviewLifecycle). */
+  grandfathered?: ReadonlySet<string>
+}) {
+  const reviewLifecycle = validateReviewLifecycle(
+    {
+      name: input.name ?? "validation",
+      mode: input.mode,
+      nodes: [...input.nodes],
+      ...(input.node_defaults?.required !== undefined
+        ? { node_defaults: { required: input.node_defaults.required } }
+        : {}),
+    },
+    { grandfathered: input.grandfathered },
+  )
+  return {
+    errors: reviewLifecycle.errors.map((error) =>
+      diagnostic({
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: "nodes",
+        message: `Invalid review lifecycle: ${error}`,
+        hint: "Diff reviews need implementation + verification wiring; deep review workers must declare review.phase",
+      }),
+    ),
+    warnings: reviewLifecycle.warnings.map((warning) =>
+      diagnostic({
+        severity: "warning",
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: "nodes",
+        message: `Review lifecycle diagnostic: ${warning}`,
+        hint: "Standard mode records this without failing the workflow",
+      }),
+    ),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+// validateRequiredNodes builds its required-only graph with addEdge, which
+// throws CycleError as soon as an edge closes a required cycle — before its
+// own hasCycle() check can report it. Map that throw to the same result so a
+// required cycle is a diagnostic, never a defect.
+function requiredNodeValidation(nodes: readonly NodeConfig[]): { valid: boolean; errors: string[] } {
+  try {
+    return validateRequiredNodes({
+      nodes: nodes.map((node) => ({
+        id: node.id,
+        depends_on: node.depends_on,
+        required: node.required ?? false,
+      })),
+    })
+  } catch (error) {
+    if (error instanceof CycleError) return { valid: false, errors: ["Required nodes form a cycle"] }
+    throw error
+  }
+}
+
+// Duplicate ids make topology checks ambiguous (projector would silently
+// merge the rows), so callers run these only on id-unique graphs.
+function topologyDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
+  const diagnostics: Diagnostic[] = []
+  const required = requiredNodeValidation(nodes)
+  if (!required.valid) {
+    diagnostics.push(
+      ...tagLegacyClass(
+        required.errors.map((error) =>
+          diagnostic({
+            code: DIAGNOSTIC_CODES.dagInvalid,
+            path: "nodes",
+            message: error,
+            hint: "Required nodes must be reachable without depending on optional work",
+          }),
+        ),
+        6,
+      ),
+    )
+  }
+  const cyclePath = findCycle(nodes)
+  if (cyclePath) {
+    diagnostics.push(
+      ...tagLegacyClass(
+        [
+          diagnostic({
+            code: DIAGNOSTIC_CODES.dagInvalid,
+            path: "nodes",
+            message: `Workflow config contains a dependency cycle: ${cyclePath.join(" -> ")}`,
+            hint: "Break the cycle by removing one depends_on edge",
+          }),
+        ],
+        7,
+      ),
+    )
+  }
+  return diagnostics
+}
+
+function outputSchemaKeywordDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
+  return nodes.flatMap((node) => {
+    if (!node.output_schema) return []
+    const keywords = unsupportedSchemaKeywords(node.output_schema)
+    if (keywords.length === 0) return []
+    return [
+      diagnostic({
+        severity: "warning",
+        code: DIAGNOSTIC_CODES.schemaKeywordWarning,
+        path: `nodes[${node.id}].output_schema`,
+        message: `output_schema uses keywords the subset validator does not enforce: ${keywords.join(", ")}`,
+        hint: "They will be ignored at runtime; simplify the schema or accept the gap",
+      }),
+    ]
+  })
+}
+
+/** A fan-out writer expands from a direct dependency's `packages` output into
+ * parallel writers plus an aggregator under its own id, so downstream
+ * implementation bindings must already read the implementation shape. */
+function fanOutDiagnostics(nodes: readonly NodeConfig[], graph: readonly NodeConfig[] = nodes): Diagnostic[] {
+  return nodes.flatMap((node) => {
+    if (node.fan_out === undefined) return []
+    const path = `nodes[${node.id}].fan_out`
+    const source = graph.find((candidate) => candidate.id === node.fan_out)
+    const problems = [
+      ...(node.depends_on.includes(node.fan_out) ? [] : [`"${node.fan_out}" is not in its depends_on`]),
+      ...(source && !isRecord(schemaProperties(source.output_schema)?.packages)
+        ? [`source "${node.fan_out}" has no output_schema.properties.packages`]
+        : []),
+      ...(["changed_files", "fingerprint"].every((field) => schemaRequired(node.output_schema).includes(field))
+        ? []
+        : ["its output_schema must require changed_files and fingerprint"]),
+    ]
+    return problems.map((problem) =>
+      diagnostic({
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path,
+        message: `node "${node.id}" fan_out ${problem}`,
+        hint: "fan_out names a direct dependency that outputs packages [{ id, instruction, write_set }] on an implementation writer",
+      }),
+    )
+  })
+}
+
+function schemaProperties(schema: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  return isRecord(schema?.properties) ? schema.properties : undefined
+}
+
+function schemaRequired(schema: Record<string, unknown> | undefined): string[] {
+  return Array.isArray(schema?.required) ? schema.required.filter((field) => typeof field === "string") : []
+}
+
+export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
+  const duplicates = duplicateNodeIds(input.nodes)
+  const review = reviewLifecycleDiagnostics({
+    mode: input.mode,
+    nodes: input.nodes,
+    node_defaults: input.node_defaults,
+  })
+  return sortDiagnostics([
+    ...(input.delivery_node !== undefined && !input.nodes.some((node) => node.id === input.delivery_node)
+      ? [
+          diagnostic({
+            severity: "error",
+            code: "schema.invalid",
+            path: "config.delivery_node",
+            message: `delivery_node "${input.delivery_node}" does not exist in the graph`,
+          }),
+        ]
+      : []),
+    ...tagLegacyClass(duplicateIdDiagnostics(duplicates), 0),
+    ...tagLegacyClass(danglingDependencyDiagnostics(input.nodes, input.known_node_ids), 1),
+    ...tagLegacyClass(inputMappingDiagnostics(input.nodes), 1),
+    ...tagLegacyClass(conditionDiagnostics(input.nodes), 2),
+    ...tagLegacyClass(fanOutDiagnostics(input.nodes), 2),
+    ...tagLegacyClass(bindingDiagnostics(input.nodes), 3),
+    ...tagLegacyClass(ceilingDiagnostics(input), 4),
+    ...tagLegacyClass(review.errors, 5),
+    ...tagLegacyClass(review.warnings, 5),
+    ...(duplicates.length === 0 ? topologyDiagnostics(input.nodes) : []),
+    ...tagLegacyClass(outputSchemaKeywordDiagnostics(input.nodes), 8),
+    ...tagLegacyClass(input.redundant_dependency_lint === false ? [] : redundantDependencyDiagnostics(input.nodes), 8),
+  ])
+}
+
+export interface ReplanStructuralInput {
+  /** Full fragment nodes — checked for duplicate ids within the fragment. */
+  fragmentNodes: readonly NodeConfig[]
+  /** Fragment nodes that will actually (re)run (excludes cancel + terminal).
+   * Condition, binding, dangling-dep, topology, and output-schema checks
+   * run on these — a cancelled or terminal node never evaluates them. */
+  rerunNodes: readonly NodeConfig[]
+  /** Existing workflow node ids — valid dependency targets and ceiling baseline. */
+  existingNodeIds: ReadonlySet<string>
+  existingNodeCount: number
+  /** New node ids being added by this replan (toward the lifetime ceiling). */
+  addCount: number
+  /** Merged config (existing + fragment) for review-lifecycle and
+   * checkpoint-gate validation. */
+  merged: {
+    name?: string
+    mode?: ExecutionMode
+    nodes: readonly NodeConfig[]
+    node_defaults?: { readonly report_to_parent?: boolean }
+  }
+  /** Durable nodes already terminal before this replan. Their reporting
+   * verdicts are delivered — the checkpoint gate exempts them so additive
+   * waves/reopens can attach dependents without a condition (DAG-02). */
+  terminalNodeIds?: ReadonlySet<string>
+  /** Merged-graph nodes carried with their persisted condition (not authored
+   * or changed by this mutation). The condition-syntax and evaluated PASS-gate
+   * checks added after those definitions were accepted are not re-applied to
+   * them, so a legacy workflow stays mutable; new fragment conditions are
+   * still held to the full grammar. */
+  grandfatheredNodeIds?: ReadonlySet<string>
+  /** The document that triggered this check. Only a start document owns the
+   * graph budget; extend/replan/recover hints must not suggest raising it. */
+  action?: Exclude<CeilingAction, "start">
+  config: { mode?: ExecutionMode; max_total_nodes?: number }
+}
+
+/** Replan structural validation through the same helper functions as create —
+ * the authority lives here, not in Dag.replan. The scoping differs (fragment
+ * vs whole-graph, rerun-only condition/binding, merged-config review), but
+ * every check reuses the same underlying helper. */
+export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagnostic[] {
+  const knownIds = new Set<string>([...input.existingNodeIds, ...input.fragmentNodes.map((n) => n.id)])
+  const duplicates = duplicateNodeIds(input.fragmentNodes)
+  const review = reviewLifecycleDiagnostics({
+    name: input.merged.name,
+    mode: input.merged.mode,
+    nodes: input.merged.nodes,
+    grandfathered: input.grandfatheredNodeIds,
+  })
+  return sortDiagnostics([
+    ...tagLegacyClass(duplicateIdDiagnostics(duplicates), 0),
+    ...tagLegacyClass(danglingDependencyDiagnostics(input.rerunNodes, knownIds), 1),
+    ...tagLegacyClass(inputMappingDiagnostics(input.rerunNodes, input.merged.nodes), 1),
+    ...tagLegacyClass(conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds), 2),
+    ...tagLegacyClass(fanOutDiagnostics(input.rerunNodes, input.merged.nodes), 2),
+    ...tagLegacyClass(bindingDiagnostics(input.rerunNodes), 3),
+    ...tagLegacyClass(
+      ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
+      4,
+    ),
+    ...tagLegacyClass(review.errors, 5),
+    ...tagLegacyClass(review.warnings, 5),
+    ...(duplicates.length === 0 ? topologyDiagnostics(input.rerunNodes) : []),
+    ...tagLegacyClass(outputSchemaKeywordDiagnostics(input.rerunNodes), 8),
+    ...tagLegacyClass(redundantDependencyDiagnostics(input.rerunNodes, input.merged.nodes), 8),
+    // DAG-02: the checkpoint gate must police the MERGED graph too — a
+    // fragment can attach a new dependent to an EXISTING reporting
+    // checkpoint, which the fragment-scoped authoring check cannot see.
+    // Pre-fix replan/extend skipped this gate entirely, so the dependent
+    // was spawned the moment the checkpoint completed, before the parent
+    // could read the verdict. Checkpoints already terminal in the durable
+    // graph are exempt: they are settled and immutable, the race is past. The
+    // output_schema obligation is authoring-only (requireOutputSchema:false)
+    // — runtime-created graphs deliberately bypass authoring validation.
+    ...checkpointGateDiagnostics(input.merged.nodes, input.merged.node_defaults, {
+      exemptCheckpointIds: input.terminalNodeIds,
+      requireOutputSchema: false,
+    }),
+  ])
+}
+
+function findCycle(nodes: readonly NodeConfig[]): string[] | null {
+  try {
+    const graph = buildGraph(
+      nodes.map((node) => ({
+        id: node.id,
+        dependsOn: node.depends_on,
+        status: "pending" as const,
+        required: node.required ?? false,
+      })),
+    )
+    return graph.hasCycle() ? (graph.findCycles()[0] ?? null) : null
+  } catch (error) {
+    if (error instanceof CycleError) return error.cycle
+    throw error
+  }
+}
+
+// ============================================================================
+// Portable + environment validation
+// ============================================================================
+
+export interface EnvironmentCatalogs {
+  /** Known worker types from the Agent catalog; undefined skips the check. */
+  worker_types?: ReadonlySet<string>
+  /** #946: worker types whose agent can write files. Worktree isolation is a
+   * write-capable feature; undefined falls back to the static builtin check. */
+  writer_types?: ReadonlySet<string>
+  /** Resolves a node's model against this environment (dag.jsonc tiers,
+   * worker agent model, parent session). undefined skips the check. */
+  resolveModel?: (
+    node: {
+      id: string
+      worker_type: string
+      required: boolean
+      model?: { modelID: string; providerID: string }
+    },
+    defaults?: {
+      required?: boolean
+      model?: { modelID: string; providerID: string }
+    },
+  ) => Effect.Effect<boolean>
+}
+
+/** The directory a node actually executes in, or undefined when the workspace
+ * cannot resolve (workspaceDiagnostics reports that separately). */
+function resolveExecutionDirectory(workspace: string | undefined, owner: string | undefined): string | undefined {
+  if (!workspace || !owner) return undefined
+  const resolved = DagLocation.resolveWorkspace(workspace, owner)
+  return resolved._tag === "ok" ? resolved.directory : undefined
+}
+
+/** Environment-only diagnostics for an already-compiled node list: prompt-id
+ * resolution and bindings, worker catalog, and model
+ * resolution. Used by start/extend/replan before any durable side effect. */
+export function environmentDiagnostics(input: {
+  nodes: readonly NodeConfig[]
+  directory?: string
+  /** Workflow-level workspace; node assets resolve from their effective
+   * execution directory, the same directory spawn uses. */
+  workspace?: string
+  catalogs?: EnvironmentCatalogs
+  /** Graph-level required default, applied when a node does not declare one. */
+  defaults?: { required?: boolean }
+}): Effect.Effect<Diagnostic[]> {
+  return Effect.gen(function* () {
+    const diagnostics: Diagnostic[] = []
+    for (const node of input.nodes) {
+      const promptDirectory =
+        resolveExecutionDirectory(node.workspace, input.directory) ??
+        resolveExecutionDirectory(input.workspace, input.directory) ??
+        input.directory
+      diagnostics.push(...(yield* promptIdDiagnostics(node, promptDirectory)))
+      if (input.catalogs?.worker_types && !input.catalogs.worker_types.has(node.worker_type)) {
+        diagnostics.push(
+          diagnostic({
+            code: DIAGNOSTIC_CODES.workerUnknown,
+            path: `nodes[${node.id}].worker_type`,
+            message: `worker type "${node.worker_type}" is not in the current agent catalog`,
+            hint: "Use a builtin agent type or register the custom agent before start",
+          }),
+        )
+      }
+      if (input.catalogs?.resolveModel) {
+        const required = node.required ?? input.defaults?.required ?? DEFAULT_WORKFLOW_CONFIG.nodeRequired
+        const resolves = yield* input.catalogs.resolveModel(
+          { id: node.id, worker_type: node.worker_type, required, model: node.model },
+          input.defaults,
+        )
+        if (!resolves) {
+          diagnostics.push(
+            diagnostic({
+              code: DIAGNOSTIC_CODES.modelUnavailable,
+              path: `nodes[${node.id}]`,
+              message: `no model resolves for node "${node.id}"`,
+              hint: "Configure dag.jsonc tiers, the worker agent model, or a parent-session model",
+            }),
+          )
+        }
+      }
+    }
+    return sortDiagnostics(diagnostics)
+  })
+}
+
+/**
+ * #949: warn when the text that will become a node's instructions names an
+ * absolute path of ANOTHER worktree of the same repository while the workflow
+ * executes elsewhere. Cheap by construction: one `git worktree list` per
+ * validation, then plain string matching. Non-git directories and unreadable
+ * git commands skip the check instead of inventing a mismatch.
+ */
+export function worktreeMismatchDiagnostics(input: {
+  directory?: string
+  workspace?: string
+  objective?: string
+  nodes: readonly NodeConfig[]
+}): Diagnostic[] {
+  if (!input.directory) return []
+  const worktrees = DagLocation.gitWorktrees(input.directory)
+  if (!worktrees || worktrees.length < 2) return []
+  const owner = DagLocation.canonicalDirectory(input.directory)
+  const resolveExecution = (workspace: string | undefined) => {
+    if (!workspace) return undefined
+    const resolved = DagLocation.resolveWorkspace(workspace, input.directory!)
+    return resolved._tag === "ok" ? resolved.directory : undefined
+  }
+  // #949: the workflow workspace binds the objective and every node without
+  // its own workspace. A node workspace overrides it for that node's prompt.
+  const workflowExecution = resolveExecution(input.workspace) ?? owner
+  const texts = [
+    ...(input.objective ? [{ path: "config.objective", text: input.objective, execution: workflowExecution }] : []),
+    ...input.nodes.flatMap((node) => {
+      if (!node.prompt_template.inline) return []
+      const execution = resolveExecution(node.workspace) ?? workflowExecution
+      return [{ path: `nodes[${node.id}].prompt_template.inline`, text: node.prompt_template.inline, execution }]
+    }),
+  ]
+  return texts.flatMap(({ path, text, execution }) => {
+    const others = worktrees.filter((worktree) => worktree !== execution)
+    return others
+      .filter((worktree) => mentionsAbsolutePath(text, worktree))
+      .map((worktree) =>
+        diagnostic({
+          severity: "warning",
+          code: DIAGNOSTIC_CODES.workspaceWorktreeMismatch,
+          path,
+          message: `this text names worktree "${worktree}" of the same project, but nodes execute in "${execution}"`,
+          hint: "Run the workflow from the named worktree, or change the path in the text to the execution directory.",
+        }),
+      )
+  })
+}
+
+/**
+ * #943: `workspace` binds child sessions to an explicit checkout. Reject a
+ * malformed value in every profile (a relative path can never be resolved
+ * consistently at runtime); existence, project and worktree checks need the
+ * owner directory and therefore run only in the environment profile.
+ */
+export function workspaceDiagnostics(input: {
+  workspace?: string
+  nodes: readonly NodeConfig[]
+  ownerDirectory?: string
+  profile: Profile
+}): Diagnostic[] {
+  const targets = [
+    ...(input.workspace !== undefined ? [{ path: "config.workspace", workspace: input.workspace }] : []),
+    ...input.nodes.flatMap((node) =>
+      node.workspace !== undefined ? [{ path: `nodes[${node.id}].workspace`, workspace: node.workspace }] : [],
+    ),
+  ]
+  return targets.flatMap(({ path, workspace }) => {
+    if (!isAbsolute(workspace)) {
+      return [
+        diagnostic({
+          code: DIAGNOSTIC_CODES.workspaceInvalid,
+          path,
+          message: `workspace must be an absolute path, got "${workspace}"`,
+          hint: "Use an absolute path to a linked worktree of this project, or remove workspace.",
+        }),
+      ]
+    }
+    if (input.profile !== "environment" || !input.ownerDirectory) return []
+    const resolved = DagLocation.resolveWorkspace(workspace, input.ownerDirectory)
+    if (resolved._tag === "ok") return []
+    return [
+      diagnostic({
+        code: DIAGNOSTIC_CODES.workspaceInvalid,
+        path,
+        message: resolved.reason,
+        hint: "Use an absolute path to a linked worktree of the same project (git worktree list), or remove workspace.",
+      }),
+    ]
+  })
+}
+
+/** #946: worktree isolation belongs to write-capable workers. Review and
+ * verify workers judge a tree from outside; isolating them would hide the
+ * changes they must inspect. */
+const STATIC_READONLY_WORKERS = new Set(["plan", "explore", "review", "verify", "verification"])
+
+function isReadonlyWorker(name: string): boolean {
+  return STATIC_READONLY_WORKERS.has(name) || /^(?:review|verify|verification)-/.test(name)
+}
+
+/**
+ * #946: side-effect-free isolation rules. Git existence and cleanliness are
+ * environment facts; portable validation checks only source-contained rules.
+ */
+export function isolationDiagnostics(input: {
+  nodes: readonly NodeConfig[]
+  ownerDirectory?: string
+  workspace?: string
+  profile: Profile
+  catalogs?: EnvironmentCatalogs
+}): Diagnostic[] {
+  const target =
+    resolveExecutionDirectory(input.workspace, input.ownerDirectory) ?? input.ownerDirectory
+  return input.nodes
+    .filter((node) => node.isolation !== undefined)
+    .flatMap((node) => {
+      const path = `nodes[${node.id}].isolation`
+      const problems: string[] = []
+      if (node.workspace !== undefined)
+        problems.push(`node "${node.id}" sets both isolation and workspace; they are mutually exclusive`)
+      if (node.review !== undefined) problems.push(`review node "${node.id}" cannot use worktree isolation`)
+      if (node.target_sensitive === true)
+        problems.push(`target-sensitive node "${node.id}" cannot use worktree isolation`)
+      if (isReadonlyWorker(node.worker_type))
+        problems.push(`worker type "${node.worker_type}" is not write-capable and cannot use worktree isolation`)
+      if (
+        input.profile === "environment" &&
+        input.catalogs !== undefined &&
+        input.catalogs.writer_types === undefined
+      )
+        problems.push(
+          `worker type "${node.worker_type}" cannot be verified as write-capable because the writer catalog is unavailable`,
+        )
+      else if (
+        input.profile === "environment" &&
+        input.catalogs?.writer_types !== undefined &&
+        !input.catalogs.writer_types.has(node.worker_type)
+      )
+        problems.push(`worker type "${node.worker_type}" resolves to a read-only agent and cannot use worktree isolation`)
+      if (input.profile === "environment" && target) {
+        if (!DagLocation.isGitWorktree(target))
+          problems.push(`worktree isolation requires a git target, but "${target}" is not a git repository`)
+        else if (!DagLocation.isCleanWorktree(target))
+          problems.push(
+            `worktree isolation requires a clean target; commit or stash changes in "${target}" before starting`,
+          )
+      }
+      return problems.map((message) =>
+        diagnostic({
+          code: DIAGNOSTIC_CODES.isolationInvalid,
+          path,
+          message,
+          hint:
+            "Remove isolation, use a clean git target, and isolate only writer-capable nodes; use workspace for an existing worktree.",
+        }),
+      )
+    })
+}
+
+/** A path mention must start at a path boundary and end at a separator or
+ * token boundary, so `/repo/wt-a` never matches `/repo/wt-ab`. */
+function mentionsAbsolutePath(text: string, target: string) {
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`(?:^|[\\s"'\\x60(<\\[]|file://)${escaped}(?=$|[\\s"'\\x60)>\\],:;./\\\\])`).test(text)
+}
+
+function nodeBoundVariables(node: NodeConfig): Set<string> {
+  return new Set([
+    ...Object.keys(node.prompt_template.input ?? {}),
+    ...Object.keys(node.input_mapping ?? Object.fromEntries(node.depends_on.map((dep) => [dep, dep]))),
+  ])
+}
+
+function nonportablePromptDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
+  return nodes.flatMap((node) => {
+    const prompt = node.prompt_template
+    if (prompt.id === undefined) return []
+    return [
+      diagnostic({
+        code: DIAGNOSTIC_CODES.promptNonportableAsset,
+        path: `nodes[${node.id}].prompt_template.id`,
+        message: `prompt id "${prompt.id}" is not shipped with the template`,
+        hint: "Inline the prompt content or ship the asset with the distributable package",
+      }),
+    ]
+  })
+}
+
+function promptIdDiagnostics(node: NodeConfig, directory: string | undefined): Effect.Effect<Diagnostic[]> {
+  return Effect.gen(function* () {
+    const prompt = node.prompt_template
+    if (prompt.id === undefined) return []
+    if (!directory) {
+      return [
+        diagnostic({
+          code: DIAGNOSTIC_CODES.promptMissingAsset,
+          path: `nodes[${node.id}].prompt_template.id`,
+          message: `prompt id "${prompt.id}" cannot be resolved without a project directory`,
+          hint: "Inline the prompt content or validate from a project with dag-prompts",
+        }),
+      ]
+    }
+    // A missing or unsafe asset id is a typed failure; it becomes a diagnostic.
+    const source = yield* templateSourceById(prompt.id, directory).pipe(Effect.option)
+    if (Option.isNone(source)) {
+      return [
+        diagnostic({
+          code: DIAGNOSTIC_CODES.promptMissingAsset,
+          path: `nodes[${node.id}].prompt_template.id`,
+          message: `prompt id "${prompt.id}" does not resolve in project or global dag-prompts`,
+          hint: "Add <id>.md to .agents/dag-prompts (project or global) or switch to an inline template",
+        }),
+      ]
+    }
+    const bound = nodeBoundVariables(node)
+    return placeholderKeys(source.value)
+      .filter((key) => !bound.has(key))
+      .map((key) =>
+        diagnostic({
+          code: DIAGNOSTIC_CODES.promptUnboundVariable,
+          path: `nodes[${node.id}].prompt_template.id`,
+          message: `prompt asset "${prompt.id}" references unbound variable "{{${key}}}"`,
+          hint: "Bind it via prompt_template.input, input_mapping, or depends_on",
+        }),
+      )
+  })
+}
+
+/** Validate a decoded + compiled spec under the chosen profile. Shared by
+ * the raw-entry validateSpec and the workflow start path. */
+export function validatePostCompile(input: {
+  source: string
+  profile: Profile
+  config: {
+    mode?: ExecutionMode
+    objective?: string
+    delivery_node?: string
+    max_total_nodes?: number
+    workspace?: string
+    node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
+  }
+  nodes: readonly NodeConfig[]
+  /** The original blocks when the graph used the high-level interface. */
+  blocks?: readonly DagBlocks.WorkflowBlock[]
+  directory?: string
+  /** The persisted workflow workspace. Extend/replan fragments cannot carry
+   * `workspace`, so callers pass the durable value; a fragment's own
+   * config.workspace still wins when present. */
+  executionWorkspace?: string
+  catalogs?: EnvironmentCatalogs
+  /** Fragment actions are structurally validated by Dag.replan after merge;
+   * authoring still owns profile checks without pretending a fragment is a
+   * standalone graph. */
+  structural?: boolean
+}): Effect.Effect<ValidationResult> {
+  return Effect.gen(function* () {
+    const workspace = input.config.workspace ?? input.executionWorkspace
+    const diagnostics = [
+      ...(input.structural === false
+        ? []
+        : structuralDiagnostics({
+            nodes: input.nodes,
+            delivery_node: input.config.delivery_node,
+            mode: input.config.mode,
+            max_total_nodes: input.config.max_total_nodes,
+            node_defaults: input.config.node_defaults,
+            redundant_dependency_lint: input.blocks === undefined,
+          })),
+      // DAG-02: the checkpoint gate is NOT a whole-graph structural check —
+      // fragment actions (replan/extend) must satisfy it exactly like start.
+      // Pre-fix it was skipped together with `structural`, so a replan could
+      // attach an ungated dependent to a reporting checkpoint and the engine
+      // spawned it the moment the checkpoint completed.
+      ...checkpointGateDiagnostics(input.nodes, input.config.node_defaults),
+      ...verdictVocabularyDiagnostics(input.config.objective, input.blocks),
+    ]
+    // Absolute-path syntax is a source-level contract: report it in both
+    // profiles. Existence/project/worktree checks remain environment-only.
+    diagnostics.push(
+      ...workspaceDiagnostics({
+        workspace: input.config.workspace,
+        nodes: input.nodes,
+        ownerDirectory: input.directory,
+        profile: input.profile,
+      }),
+      ...isolationDiagnostics({
+        nodes: input.nodes,
+        ownerDirectory: input.directory,
+        workspace,
+        profile: input.profile,
+        catalogs: input.catalogs,
+      }),
+    )
+    if (input.profile === "portable") diagnostics.push(...nonportablePromptDiagnostics(input.nodes))
+    if (input.profile === "environment") {
+      diagnostics.push(
+        ...(yield* environmentDiagnostics({
+          nodes: input.nodes,
+          directory: input.directory,
+          workspace,
+          catalogs: input.catalogs,
+          defaults: input.config.node_defaults,
+        })),
+        ...worktreeMismatchDiagnostics({
+          directory: input.directory,
+          workspace,
+          objective: input.config.objective,
+          nodes: input.nodes,
+        }),
+      )
+    }
+    const errors = sortDiagnostics(diagnostics.filter((d) => d.severity === "error"))
+    const warnings = sortDiagnostics(diagnostics.filter((d) => d.severity === "warning"))
+    return {
+      source: input.source,
+      profile: input.profile,
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      nodes: summarizeNodes(input.nodes),
+    }
+  })
+}

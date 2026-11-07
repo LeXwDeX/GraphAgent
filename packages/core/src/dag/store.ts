@@ -5,7 +5,7 @@ export * as DagStore from "./store"
 
 import { and, asc, count, desc, eq, gt, inArray, max, or, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { Database } from "../database/database"
 import { versionedType } from "../event"
 import { EventTable } from "../event/sql"
@@ -281,7 +281,7 @@ export interface Interface {
   readonly hasReportedWakeNodes: (sessionID: string) => Effect.Effect<boolean>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/DagStore") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/DagStore") {}
 
 export const layer = Layer.effect(
   Service,

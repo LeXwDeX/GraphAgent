@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
+import { ConfigCompaction } from "@graphagent/core/config/compaction"
 import { contextFoldingDiagnostic, type FoldPlan } from "../../src/session/context-folding"
 
 describe("context folding diagnostics", () => {

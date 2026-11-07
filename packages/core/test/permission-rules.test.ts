@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { PermissionV2 } from "@opencode-ai/core/permission"
+import { PermissionV2 } from "@graphagent/core/permission"
 
 describe("Permission rules", () => {
   test("last matching rule wins", () => {

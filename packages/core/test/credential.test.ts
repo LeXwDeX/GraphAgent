@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import { Credential } from "@opencode-ai/core/credential"
-import { Integration } from "@opencode-ai/core/integration"
+import { Credential } from "@graphagent/core/credential"
+import { Integration } from "@graphagent/core/integration"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(Credential.defaultLayer)

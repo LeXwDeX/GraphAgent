@@ -9,7 +9,7 @@ import (
 )
 
 // The project-root rules are shared with the runtime: both sides read
-// packages/opencode/test/fixtures/project-root-cases.json so a divergence in
+// packages/graphagent/test/fixtures/project-root-cases.json so a divergence in
 // one implementation fails the other's test suite.
 type projectRootCase struct {
 	Name      string   `json:"name"`
@@ -21,7 +21,7 @@ type projectRootCase struct {
 }
 
 func TestResolveProjectRootSharedFixture(t *testing.T) {
-	fixture := filepath.Join("..", "..", "..", "packages", "opencode", "test", "fixtures", "project-root-cases.json")
+	fixture := filepath.Join("..", "..", "..", "packages", "graphagent", "test", "fixtures", "project-root-cases.json")
 	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("read shared project-root fixture: %v", err)

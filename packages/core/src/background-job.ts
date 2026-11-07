@@ -102,7 +102,7 @@ export interface Interface {
   readonly capture: (info: Info) => Effect.Effect<Captured | undefined>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/BackgroundJob") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/BackgroundJob") {}
 
 function errorText(error: unknown) {
   if (error instanceof Error) return error.message
