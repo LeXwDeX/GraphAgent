@@ -283,10 +283,6 @@ import type {
   V2LocationGetResponses,
   V2ModelListErrors,
   V2ModelListResponses,
-  V2PermissionSavedListErrors,
-  V2PermissionSavedListResponses,
-  V2PermissionSavedRemoveErrors,
-  V2PermissionSavedRemoveResponses,
   V2ProjectCopyCreateErrors,
   V2ProjectCopyCreateResponses,
   V2ProjectCopyRefreshErrors,
@@ -5356,61 +5352,6 @@ export class Credential extends HeyApiClient {
   }
 }
 
-export class Saved extends HeyApiClient {
-  /**
-   * List saved permissions
-   *
-   * Retrieve saved permissions, optionally filtered by project.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      projectID?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2PermissionSavedListResponses, V2PermissionSavedListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "projectID" }] }])
-    return (options?.client ?? this.client).get<
-      V2PermissionSavedListResponses,
-      V2PermissionSavedListErrors,
-      ThrowOnError
-    >({
-      url: "/api/permission/saved",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Remove saved permission
-   *
-   * Remove a saved permission by ID.
-   */
-  public remove<ThrowOnError extends boolean = false>(
-    parameters: {
-      id: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2PermissionSavedRemoveResponses, V2PermissionSavedRemoveErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "id" }] }])
-    return (options?.client ?? this.client).delete<
-      V2PermissionSavedRemoveResponses,
-      V2PermissionSavedRemoveErrors,
-      ThrowOnError
-    >({
-      url: "/api/permission/saved/{id}",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Permission2 extends HeyApiClient {
-  private _saved?: Saved
-  get saved(): Saved {
-    return (this._saved ??= new Saved({ client: this.client }))
-  }
-}
-
 export class Fs extends HeyApiClient {
   /**
    * Read file
@@ -5743,11 +5684,6 @@ export class V2 extends HeyApiClient {
   private _credential?: Credential
   get credential(): Credential {
     return (this._credential ??= new Credential({ client: this.client }))
-  }
-
-  private _permission?: Permission2
-  get permission(): Permission2 {
-    return (this._permission ??= new Permission2({ client: this.client }))
   }
 
   private _fs?: Fs

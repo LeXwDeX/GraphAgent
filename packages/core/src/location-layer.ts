@@ -19,7 +19,6 @@ import { FSUtil } from "./fs-util"
 import { Git } from "./git"
 import { Global } from "./global"
 import { Database } from "./database/database"
-import { PermissionSaved } from "./permission/saved"
 import { FileSystem } from "./filesystem"
 import { Ripgrep } from "./ripgrep"
 import { Watcher } from "./filesystem/watcher"
@@ -71,7 +70,6 @@ export class LocationServiceMap extends LayerMap.Service<LocationServiceMap>()("
     Ripgrep.defaultLayer,
     Database.defaultLayer,
     ProjectDirectories.defaultLayer,
-    PermissionSaved.defaultLayer,
     RepositoryCache.defaultLayer,
   ],
 }) {}
