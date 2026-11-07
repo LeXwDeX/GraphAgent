@@ -194,7 +194,10 @@ for (const runtime of ["sdk", "native"] as const)
         stderr: "pipe",
         env: {
           ...process.env,
-          GRAPHAGENT_TEST_HOME: directory,
+          // Keep the isolated user home distinct from the project root: a root
+          // that equals $HOME carries no project layer, so the fixture provider
+          // in the project config would not be discovered.
+          GRAPHAGENT_TEST_HOME: path.join(directory, ".home"),
           XDG_DATA_HOME: path.join(directory, "data"),
           XDG_CONFIG_HOME: path.join(directory, "config"),
           XDG_CACHE_HOME: path.join(directory, "cache"),

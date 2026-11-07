@@ -664,10 +664,11 @@ export const layer = Layer.effect(
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const ctx = yield* InstanceState.context
-      assertProjectRootWritable(ctx.root, Global.Path.home)
       const file = path.join(ctx.directory, "config.json")
       const existing = yield* loadFile(file)
+      // Hook vetoes take precedence over the project-root guard so policies see the write first.
       yield* checkConfigChange(file, "project_settings")
+      assertProjectRootWritable(ctx.root, Global.Path.home)
       yield* fs
         .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
         .pipe(Effect.orDie)
@@ -682,8 +683,7 @@ export const layer = Layer.effect(
       )
       if (!effectiveUpdates.length) return yield* InstanceState.use(state, (current) => current.config)
       const ctx = yield* InstanceState.context
-      if (effectiveUpdates.some((entry) => entry.destination !== "userSettings"))
-        assertProjectRootWritable(ctx.root, Global.Path.home)
+      const projectWrite = effectiveUpdates.some((entry) => entry.destination !== "userSettings")
       for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
         if (!effectiveUpdates.some((entry) => entry.destination === destination)) continue
         const file =
@@ -701,6 +701,7 @@ export const layer = Layer.effect(
               : "project_settings",
         )
       }
+      if (projectWrite) assertProjectRootWritable(ctx.root, Global.Path.home)
       for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
         const entries = effectiveUpdates.filter((entry) => entry.destination === destination)
         if (!entries.length) continue

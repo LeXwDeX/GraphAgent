@@ -11,8 +11,10 @@ cliIt.live(
     Effect.gen(function* () {
       const audit = path.join(home, "session-audit.jsonl")
       const script = path.join(home, "session-hook.ts")
+      const project = path.join(home, "project")
       yield* Effect.promise(async () => {
-        await fs.writeFile(path.join(home, "AGENTS.md"), "LOCAL_INSTRUCTION_CONTENT")
+        await fs.mkdir(path.join(project, ".agents"), { recursive: true })
+        await fs.writeFile(path.join(project, "AGENTS.md"), "LOCAL_INSTRUCTION_CONTENT")
         await fs.writeFile(
           script,
           `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({...i,transcript:await Bun.file(i.transcript_path).text()})+"\\n");if(i.hook_event_name==='SessionStart')process.stdout.write(JSON.stringify({systemMessage:'FORK_USER_NOTIFICATION'}));`,
@@ -39,7 +41,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-graphagent-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": project },
             body: JSON.stringify(body),
           }),
         )
@@ -57,7 +59,7 @@ cliIt.live(
       const notifications: { type: string; properties?: { sessionID?: string; message?: string } }[] = []
       const stream = yield* Effect.promise(() =>
         fetch(server.url + "/event", {
-          headers: { "x-graphagent-directory": home },
+          headers: { "x-graphagent-directory": project },
           signal: controller.signal,
         }),
       )

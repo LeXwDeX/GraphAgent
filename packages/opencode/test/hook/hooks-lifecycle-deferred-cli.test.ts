@@ -100,7 +100,8 @@ cliIt.live(
   ({ home, env, llm, opencode }) =>
     Effect.gen(function* () {
       const target = path.join(home, "must-not-execute")
-      const source = path.join(home, ".agents/tool/restart_fixture.ts")
+      const project = path.join(home, "project")
+      const source = path.join(project, ".agents/tool/restart_fixture.ts")
       const hook = path.join(home, "missing-tool-hook.ts")
       yield* Effect.promise(async () => {
         await fs.mkdir(path.dirname(source), { recursive: true })
@@ -126,7 +127,7 @@ cliIt.live(
         format: "json",
         env: {
           GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0",
-          PWD: home,
+          PWD: project,
           GRAPHAGENT_DB: path.join(home, "restart.sqlite"),
           GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(cfg),
         },
