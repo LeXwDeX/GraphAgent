@@ -5,7 +5,30 @@ import path from "path"
 
 const REPO = path.resolve(import.meta.dir, "../../..")
 
-const GUARDED_ROOTS = ["packages", "patches", "script", "nix", "config_assistant", "oc", ".github", ".azure-pipelines"]
+const GUARDED_ROOTS = [
+  "packages",
+  "patches",
+  "script",
+  "nix",
+  "config_assistant",
+  "oc",
+  ".github",
+  ".azure-pipelines",
+  // B3 (#1011) scans the root configuration, docs and guidance next to the
+  // package trees so the workspace rename cannot regress outside packages/.
+  "package.json",
+  "turbo.json",
+  "tsconfig.json",
+  "flake.nix",
+  ".gitignore",
+  "LICENSE-SCOPE.json",
+  "NOTICE",
+  "docs",
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  "CONTEXT.md",
+  "CONTEXT-MAP.md",
+]
 const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".turbo", ".artifacts"])
 const SKIP_PATHS = [".github/releases"]
 // The guard lists the forbidden literals as regular expressions, so it must not
@@ -53,11 +76,11 @@ const LEGACY_ENV_ALLOW: Allow[] = [
     reason: "macOS acceptance pins OC_OPENCODE_NAME until G1",
   },
   {
-    file: "packages/opencode/src/skill/index.ts",
+    file: "packages/graphagent/src/skill/index.ts",
     reason: "CUSTOMIZE_OPENCODE_SKILL_* constants are renamed by B4",
   },
   {
-    file: "packages/opencode/src/image/image.ts",
+    file: "packages/graphagent/src/image/image.ts",
     reason: "G0b: the photon-node patch reads __OPENCODE_PHOTON_WASM_PATH",
   },
   {
@@ -65,16 +88,31 @@ const LEGACY_ENV_ALLOW: Allow[] = [
     reason: "G0b: the patch defines __OPENCODE_PHOTON_WASM_PATH",
   },
   {
-    file: "packages/opencode/test/hook/workspace-trust.test.ts",
+    file: "packages/graphagent/test/hook/workspace-trust.test.ts",
     reason: "negative test: the retired HOOKS_REQUIRE_TRUST name is ignored",
   },
   {
-    file: "packages/opencode/test/hook/scoped-frontmatter.test.ts",
+    file: "packages/graphagent/test/hook/scoped-frontmatter.test.ts",
     reason: "negative test: legacy trust values no longer filter hooks",
   },
   {
     file: "packages/core/test/flag.test.ts",
     reason: "negative test: proves the legacy OPENCODE_ variables are not read",
+  },
+  {
+    file: "docs/continuation-2026-09-20/s09/scripts/live-pair-driver.ts",
+    reason: "dated 2026-09-20 evidence bundle records the pre-rename live-pair driver environment",
+  },
+  {
+    file: "docs/continuation-2026-09-20/s09/scripts/live-pair-driver.integration.test.ts",
+    reason: "dated evidence bundle pins the pre-rename driver environment",
+  },
+]
+
+const DATED_EVIDENCE_HEADER_ALLOW: Allow[] = [
+  {
+    file: "docs/continuation-2026-09-20/s09/scripts/live-pair-driver.ts",
+    reason: "dated 2026-09-20 evidence bundle records the pre-rename request header",
   },
 ]
 
@@ -118,7 +156,7 @@ const CATEGORIES: Category[] = [
     pattern: /\.opencode[\/\\"'`]/,
     allow: [
       {
-        file: "packages/opencode/src/ide/index.ts",
+        file: "packages/graphagent/src/ide/index.ts",
         reason: "upstream IDE extension identity; B5 removes the IDE bridge",
       },
     ],
@@ -185,7 +223,7 @@ const CATEGORIES: Category[] = [
     id: "internal-request-header",
     stage: 4,
     pattern: /x-opencode-/,
-    allow: [],
+    allow: DATED_EVIDENCE_HEADER_ALLOW,
   },
   {
     id: "user-agent-product",
@@ -212,6 +250,79 @@ const CATEGORIES: Category[] = [
       /(?:providerMetadata|providerOptions)\.opencode\b|\bopencode\.(?:synthetic|context|cache|suppressedActivity|failedAttempt|thinkingReplay)\b/,
     allow: [],
   },
+  // B3 (#1011): workspace scope, directory, service-ID and identifier rename.
+  // Each category is exact enough to name the surface it guards; the identifier
+  // category carries the closed PENDING_C1 exception inline so C1 can delete
+  // the lookahead when it renames the SDK client symbols.
+  {
+    id: "package-scope",
+    stage: 2,
+    pattern: /@opencode-ai\//,
+    allow: [],
+  },
+  {
+    id: "service-id",
+    stage: 2,
+    pattern: /@opencode\//,
+    allow: [],
+  },
+  {
+    id: "reference-key",
+    stage: 2,
+    pattern: /~opencode\//,
+    allow: [],
+  },
+  {
+    id: "project-directory",
+    stage: 2,
+    pattern: /packages[\/\\]opencode\b/,
+    allow: [],
+  },
+  {
+    id: "nix-file",
+    stage: 2,
+    pattern: /nix[\/\\]opencode\b/,
+    allow: [],
+  },
+  {
+    id: "ci-job-name",
+    stage: 2,
+    pattern: /unit_opencode|UNIT_RESULT_OPENCODE/,
+    allow: [],
+  },
+  {
+    id: "package-name-literal",
+    stage: 2,
+    pattern: /"name"\s*:\s*"opencode"/,
+    allow: [],
+  },
+  {
+    id: "nix-node-modules-name",
+    stage: 2,
+    pattern: /opencode-node_modules/,
+    allow: [],
+  },
+  {
+    id: "lowercase-identifier",
+    stage: 2,
+    pattern: /\bopencode[A-Z][A-Za-z]*\b/,
+    allow: [],
+  },
+  {
+    id: "code-identifier",
+    stage: 2,
+    // PENDING_C1: OpencodeClient, createOpencodeClient and OpencodeClientConfig
+    // are renamed by C1 (#1013); every other Opencode-containing identifier is B3.
+    pattern: /\b(?!(?:OpencodeClient|createOpencodeClient|OpencodeClientConfig)\b)[A-Za-z]*Opencode[A-Za-z]*\b/,
+    allow: [],
+  },
+  {
+    id: "uppercase-identifier",
+    stage: 2,
+    // Identifier shape only: the standalone product word "OpenCode" is B4 copy.
+    pattern: /OpenCode[A-Za-z]+/,
+    allow: [],
+  },
 ]
 
 const CURRENT_STAGE = 4
@@ -234,6 +345,15 @@ function relative(file: string) {
 
 describe("brand literals", () => {
   test("legacy build names are confined to the G1 installer allowlist", async () => {
+    const missing: string[] = []
+    for (const root of GUARDED_ROOTS) {
+      try {
+        await stat(path.join(REPO, root))
+      } catch {
+        missing.push(root)
+      }
+    }
+    expect(missing).toEqual([])
     const files = await listFiles(GUARDED_ROOTS.map((root) => path.join(REPO, root)))
     expect(files).toContain(path.join(REPO, "packages/core/test/brand-literals.test.ts"))
     expect(files.length).toBeGreaterThan(1000)
@@ -285,6 +405,53 @@ describe("brand literals", () => {
     // `providerMetadata.opencode"` also matches the stage-3 project-directory
     // category (`\.opencode[\/\\"'`]`), so line 7 is reported twice.
     expect(hits.map((hit) => hit.line).sort((a, b) => a - b)).toEqual([1, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9])
+  })
+
+  test("the second-stage rename categories detect planted violations", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "brand-literals-"))
+    roots.push(root)
+    await mkdir(path.join(root, "packages", "example", "src"), { recursive: true })
+    await writeFile(
+      path.join(root, "packages", "example", "src", "index.ts"),
+      [
+        'const scope = "@opencode-ai/core"',
+        'const service = "@opencode/v2/Catalog"',
+        'const ref = "~opencode/Instance"',
+        'const dir = "packages/opencode/src"',
+        'const nix = "nix/opencode.nix"',
+        'const job = "unit_opencode_1"',
+        'const result = "UNIT_RESULT_OPENCODE_1"',
+        'const name = `"name": "opencode"`',
+        'const pname = "opencode-node_modules"',
+        "const lower = opencodeGlobal",
+        "const upper = OpenCodeHttpApi",
+        "const plugin = OpencodeKeymapProvider",
+        "const keep = createOpencodeClient",
+        "const keep2 = OpencodeClient",
+        "const keep3: OpencodeClientConfig = { client: OpencodeClient }",
+        "const prose = 'OpenCode is a product word'",
+      ].join("\n"),
+    )
+
+    const hits = await scan(await listFiles([root]), active())
+    const categories = new Set(hits.map((hit) => hit.category))
+    for (const id of [
+      "package-scope",
+      "service-id",
+      "reference-key",
+      "project-directory",
+      "nix-file",
+      "ci-job-name",
+      "package-name-literal",
+      "nix-node-modules-name",
+      "lowercase-identifier",
+      "uppercase-identifier",
+      "code-identifier",
+    ]) {
+      expect({ category: id, detected: categories.has(id) }).toEqual({ category: id, detected: true })
+    }
+    // PENDING_C1 symbols and the standalone OpenCode word stay unflagged.
+    expect(hits.filter((hit) => /keep|product word/.test(hit.text))).toEqual([])
   })
 
   test("the scan skips immutable release notes and dependency directories", async () => {
