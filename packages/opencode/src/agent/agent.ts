@@ -37,7 +37,7 @@ export const Info = Schema.Struct({
   description: Schema.optional(Schema.String),
   hooks: Schema.optional(Schema.Unknown),
   hookOrigin: Schema.optional(Schema.String),
-  hookSource: Schema.optional(Schema.Literals(["project", "user", "plugin", "builtin"])),
+  hookSource: Schema.optional(Schema.Literals(["project", "user", "builtin"])),
   mode: Schema.Literals(["subagent", "primary", "all"]),
   native: Schema.optional(Schema.Boolean),
   hidden: Schema.optional(Schema.Boolean),

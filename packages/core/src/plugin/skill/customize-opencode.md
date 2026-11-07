@@ -30,7 +30,7 @@ mistakes as they type.
 ## Applying changes
 
 Config is loaded once when opencode starts and is not hot-reloaded. After
-saving changes to `opencode.json`, an agent file, a skill, a plugin, or any
+saving changes to `opencode.json`, an agent file, a skill, or any
 other config-time file, **tell the user to quit and restart opencode** for
 the changes to take effect. The running session will keep using the
 already-loaded config until then.
@@ -121,13 +121,6 @@ Every field is optional.
     }
   },
 
-  "plugin": [
-    "opencode-gemini-auth",
-    "opencode-foo@1.2.3",
-    "./local-plugin.ts",
-    ["opencode-bar", { "option": "value" }]
-  ],
-
   "permission": {
     "edit": "deny",
     "bash": { "git *": "allow", "*": "ask" }
@@ -154,7 +147,6 @@ Shape notes worth being explicit about:
 - `references` is an object keyed by alias. Each value is a local path, Git repository, or string shorthand.
 - `agent` is an object keyed by agent name, not an array.
 - `command` is an object keyed by command name, not an array.
-- `plugin` is an array of strings or `[name, options]` tuples, not an object.
 - `mcp[name].command` is an array of strings, never a single string. `type` is required.
 - `permission` is either a string action or an object keyed by tool name.
 
@@ -305,85 +297,6 @@ model: anthropic/claude-sonnet-4-6
 - `$ARGUMENTS` is replaced with everything the user typed after the command; `$1`, `$2`, … pull individual positional arguments.
 - Optional: `description`, `agent`, `model`, `variant`, `subtask`.
 
-## Plugins
-
-`plugin:` is an array. Each entry is one of:
-
-```json
-"plugin": [
-  "opencode-gemini-auth",            // npm spec, latest
-  "opencode-foo@1.2.3",              // npm spec, pinned
-  "./local-plugin.ts",               // file path, relative to the declaring config
-  "file:///abs/path/plugin.js",      // file URL
-  ["opencode-bar", { "key": "val" }] // tuple form with options
-]
-```
-
-Auto-discovered plugins (no config entry needed): any `*.ts` or `*.js` file in
-`.opencode/plugin/` or `.opencode/plugins/`.
-
-A plugin module exports `default` (or any named export) of type
-`Plugin = (input: PluginInput, options?) => Promise<Hooks>`. The export is a
-function, not a plain object literal, and the function returns an object
-(return `{}` if there is nothing to register).
-
-```ts
-import type { Plugin } from "@opencode-ai/plugin"
-
-export default (async ({ client, project, directory, $ }) => {
-  return {
-    config: (cfg) => {
-      // cfg is the live merged config; mutate fields here.
-    },
-    "tool.execute.before": async (input, output) => {
-      // mutate output.args before the tool runs
-    },
-  }
-}) satisfies Plugin
-```
-
-These are JavaScript plugin callbacks. For lifecycle handlers configured in
-`hooks.json` (command, MCP, HTTP, prompt or agent), including background polling
-that resumes an idle conversation, load the `configure-hooks` skill. Its event
-names, output protocol and `async` / `asyncRewake` fields belong to that system;
-they are not fields to add to the plugin callback object below.
-
-Legacy JavaScript plugin callbacks dispatched through `Plugin.trigger` are
-awaited sequentially. The `event({ event })` observer is fire-and-forget:
-bus delivery does not await it, and callbacks or later events can overlap.
-Callbacks with an
-`output` argument mutate that object in place and resolve to `void`; returning
-a replacement object does not apply it. Their inputs use JavaScript field
-names such as `sessionID`, unlike lifecycle command stdin.
-
-| Callback                               | Capability and output                                                                                                                           |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `event({ event })`                     | Observe published bus events asynchronously without delaying bus delivery; no decision output or sequential-await guarantee.                    |
-| `config(cfg)`                          | Mutate the merged configuration during plugin initialization.                                                                                   |
-| `dispose()`                            | Release plugin-owned resources when the plugin instance is disposed; this is not the end of every assistant turn.                               |
-| `chat.message`                         | Receive session/agent/model/message identity and mutate `output.message` / `output.parts` for an incoming message.                              |
-| `chat.params`                          | Adjust `temperature`, `topP`, `topK`, `maxOutputTokens`, and provider `options` before a model request.                                         |
-| `chat.headers`                         | Mutate `output.headers` for a model request.                                                                                                    |
-| `tool.execute.before`                  | Receive tool/session/call identity and mutate `output.args` before execution.                                                                   |
-| `tool.execute.after`                   | Receive identity and arguments, then mutate result `title`, `output`, and `metadata`.                                                           |
-| `tool.definition`                      | Mutate a tool's model-facing `description` and `parameters`; preserve the object-rooted parameter schema.                                       |
-| `command.execute.before`               | Mutate prompt `parts` in the LLM command-template path; directly dispatched commands can bypass this path.                                      |
-| `shell.env`                            | Receive `cwd` and optional session/call identity; add or change `output.env` when a shell environment is assembled.                             |
-| `experimental.chat.messages.transform` | Mutate the model-bound `output.messages` array.                                                                                                 |
-| `experimental.chat.system.transform`   | Receive model and optional session identity; mutate `output.system` strings.                                                                    |
-| `experimental.provider.small_model`    | Provide `output.model` when small-model selection needs a fallback; a usable configured `small_model` takes precedence and skips this callback. |
-| `experimental.session.compacting`      | Add `output.context` or replace the compaction prompt with `output.prompt`.                                                                     |
-| `experimental.compaction.autocontinue` | Set `output.enabled` to control the synthetic continuation after successful compaction.                                                         |
-| `experimental.text.complete`           | Mutate `output.text` when an assistant text part completes.                                                                                     |
-
-`permission.ask` remains in the legacy TypeScript interface, but the current
-runtime has no dispatch callsite. Do not use it to implement permission
-interception; configure permission rules or the supported lifecycle
-`PreToolUse` / `PermissionRequest` contracts instead.
-
-Special object-shaped (not callbacks): `tool: { my_tool: { ... } }`,
-`auth: { ... }`, `provider: { ... }`.
-
 ## MCP servers
 
 `mcp:` is an object keyed by server name. Each server is discriminated by
@@ -457,7 +370,6 @@ When a user's config is broken and opencode won't start, these env vars help:
 - `OPENCODE_CONFIG=/path/to/file.json`: load an additional explicit config.
 - `OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json"}'`:
   inject inline JSON as a final local-scope merge.
-- `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`: skip default plugins.
 - `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`,
   `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1`: skip the external skill scans under
   `~/.claude/` and `~/.agents/`.
@@ -468,7 +380,7 @@ When a user's config is broken and opencode won't start, these env vars help:
   exact shape, or the field is not covered in this skill, fetch
   `https://opencode.ai/config.json` and read the schema rather than guessing.
 - Preserve `$schema` and any existing fields the user did not ask to change.
-- For agent, command, skill, and plugin definitions, prefer creating new files
+- For agent, command, and skill definitions, prefer creating new files
   in the correct location over inlining everything in `opencode.json`.
 - If the user's existing config is malformed, point them at the env-var escape
   hatches above so they can edit from inside opencode without breaking their

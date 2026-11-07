@@ -4,7 +4,7 @@ export * as SourceProvenance from "./source-provenance"
 /** Loader-owned provenance. Public hook JSON cannot grant a source exemption. */
 export interface Provenance {
   readonly origin: string
-  readonly source: "project" | "user" | "plugin" | "builtin"
+  readonly source: "project" | "user" | "builtin"
 }
 const agents = new WeakMap<object, Map<string, Provenance>>()
 const skills = new WeakMap<object, Provenance>()

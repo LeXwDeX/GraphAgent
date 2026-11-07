@@ -73,7 +73,7 @@ Commands:
   opencode debug snapshot      snapshot debugging utilities
   opencode debug startup       print startup timing
   opencode debug agent <name>  show agent configuration details
-  opencode debug v2            debug v2 catalog and built-in plugins
+  opencode debug v2            debug v2 catalog and built-in provider adapters
   opencode debug info          show debug information
   opencode debug paths         show global paths (data, config, cache, state)
   opencode debug wait          wait indefinitely (for debugging)

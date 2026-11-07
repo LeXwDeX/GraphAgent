@@ -1,8 +1,8 @@
 import { test, expect, describe } from "bun:test"
 import { resolvePluginProviders } from "../../../src/cli/cmd/providers"
-import type { Hooks } from "@opencode-ai/plugin"
+import type { AuthHook } from "../../../src/provider/adapter/types"
 
-function hookWithAuth(provider: string): Hooks {
+function hookWithAuth(provider: string): { auth?: AuthHook } {
   return {
     auth: {
       provider,
@@ -11,7 +11,7 @@ function hookWithAuth(provider: string): Hooks {
   }
 }
 
-function hookWithoutAuth(): Hooks {
+function hookWithoutAuth(): { auth?: AuthHook } {
   return {}
 }
 

@@ -73,7 +73,7 @@ describe("PluginV2", () => {
   )
 })
 
-it.effect("records hook provenance from the actual plugin execution boundary", () =>
+it.effect("records hook provenance from the actual contributor execution boundary", () =>
   Effect.gen(function* () {
     const plugins = yield* PluginV2.Service
     const agents = yield* AgentV2.Service
@@ -89,15 +89,15 @@ it.effect("records hook provenance from the actual plugin execution boundary", (
     )
     expect((yield* agents.get(AgentV2.ID.make("scoped")))?.hooks).toBeDefined()
     expect(SourceProvenance.agent(agents, "scoped")).toEqual({
-      source: "plugin",
+      source: "builtin",
       origin: "actual-hook-owner:agent:scoped",
     })
     yield* agents.reload()
-    expect(SourceProvenance.agent(agents, "scoped")?.source).toBe("plugin")
+    expect(SourceProvenance.agent(agents, "scoped")?.source).toBe("builtin")
   }),
 )
 
-it.effect("records only actually registered plugin skill hooks as plugin sources", () =>
+it.effect("records only actually registered contributor skill hooks as builtin sources", () =>
   Effect.gen(function* () {
     const plugins = yield* PluginV2.Service
     const skills = yield* SkillV2.Service
@@ -119,7 +119,7 @@ it.effect("records only actually registered plugin skill hooks as plugin sources
     const loaded = (yield* skills.list()).find((item) => item.name === "plugin-hook-skill")
     expect(loaded?.hooks).toBeDefined()
     expect(loaded && SourceProvenance.skill(loaded)).toEqual({
-      source: "plugin",
+      source: "builtin",
       origin: "actual-skill-owner:skill:embedded:plugin-hook-skill",
     })
   }),

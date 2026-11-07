@@ -1,14 +1,8 @@
 import { expect, test } from "bun:test"
-import { CloudflareAIGatewayAuthPlugin } from "@/plugin/cloudflare"
+import { CloudflareAIGatewayAdapter } from "@/provider/adapter/cloudflare"
+import type { AdapterContext } from "@/provider/adapter/types"
 
-const pluginInput = {
-  client: {} as never,
-  project: {} as never,
-  directory: "",
-  worktree: "",
-  serverUrl: new URL("https://example.com"),
-  $: {} as never,
-}
+const adapterContext = {} as AdapterContext
 
 function makeHookInput(overrides: { providerID?: string; apiId?: string; reasoning?: boolean }) {
   return {
@@ -37,29 +31,29 @@ function makeHookOutput() {
 }
 
 test("omits maxOutputTokens for openai reasoning models on cloudflare-ai-gateway", async () => {
-  const hooks = await CloudflareAIGatewayAuthPlugin(pluginInput)
+  const adapter = CloudflareAIGatewayAdapter(adapterContext)
   const out = makeHookOutput()
-  await hooks["chat.params"]!(makeHookInput({ apiId: "openai/gpt-5.2-codex", reasoning: true }), out)
+  await adapter.chatParams!(makeHookInput({ apiId: "openai/gpt-5.2-codex", reasoning: true }), out)
   expect(out.maxOutputTokens).toBeUndefined()
 })
 
 test("keeps maxOutputTokens for openai non-reasoning models", async () => {
-  const hooks = await CloudflareAIGatewayAuthPlugin(pluginInput)
+  const adapter = CloudflareAIGatewayAdapter(adapterContext)
   const out = makeHookOutput()
-  await hooks["chat.params"]!(makeHookInput({ apiId: "openai/gpt-4-turbo", reasoning: false }), out)
+  await adapter.chatParams!(makeHookInput({ apiId: "openai/gpt-4-turbo", reasoning: false }), out)
   expect(out.maxOutputTokens).toBe(32_000)
 })
 
 test("keeps maxOutputTokens for non-openai reasoning models on cloudflare-ai-gateway", async () => {
-  const hooks = await CloudflareAIGatewayAuthPlugin(pluginInput)
+  const adapter = CloudflareAIGatewayAdapter(adapterContext)
   const out = makeHookOutput()
-  await hooks["chat.params"]!(makeHookInput({ apiId: "anthropic/claude-sonnet-4-5", reasoning: true }), out)
+  await adapter.chatParams!(makeHookInput({ apiId: "anthropic/claude-sonnet-4-5", reasoning: true }), out)
   expect(out.maxOutputTokens).toBe(32_000)
 })
 
 test("ignores non-cloudflare-ai-gateway providers", async () => {
-  const hooks = await CloudflareAIGatewayAuthPlugin(pluginInput)
+  const adapter = CloudflareAIGatewayAdapter(adapterContext)
   const out = makeHookOutput()
-  await hooks["chat.params"]!(makeHookInput({ providerID: "openai", apiId: "gpt-5.2-codex", reasoning: true }), out)
+  await adapter.chatParams!(makeHookInput({ providerID: "openai", apiId: "gpt-5.2-codex", reasoning: true }), out)
   expect(out.maxOutputTokens).toBe(32_000)
 })

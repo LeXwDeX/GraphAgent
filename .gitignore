@@ -111,7 +111,6 @@ tsconfig.tsbuildinfo
 /packages/llm/DESIGN.md
 /packages/llm/example/call-sites.md
 /packages/opencode/test/EFFECT_TEST_MIGRATION.md
-/packages/plugin/src/v2/effect/PLAN.md
 
 # Expiring internal workflow, performance, and status records
 /workflows/

@@ -45,7 +45,7 @@ export const make = Effect.fn("PluginHost.make")(function* () {
                 for (const item of draft.list()) {
                   if (item.hooks !== undefined && before.get(item.id) !== hookFingerprint(item.hooks))
                     SourceProvenance.setAgent(agents, item.id, {
-                      source: "plugin",
+                      source: "builtin",
                       origin: pluginID + ":agent:" + item.id,
                     })
                 }
@@ -223,7 +223,7 @@ export const make = Effect.fn("PluginHost.make")(function* () {
                 const decoded = Schema.decodeUnknownSync(SkillV2.Source)(source)
                 if (pluginID && pluginID !== "config-skill") {
                   const provenance = {
-                    source: "plugin" as const,
+                    source: "builtin" as const,
                     origin: pluginID + ":skill:" + SkillV2.Source.key(decoded),
                   }
                   SourceProvenance.setSkillSource(decoded, provenance)

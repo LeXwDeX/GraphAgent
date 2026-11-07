@@ -58,7 +58,7 @@ export interface ScopedHooksInput {
   origin: string
   hooks: unknown
   /** Explicit loader provenance; never inferred from the filename itself. */
-  source?: "project" | "user" | "plugin" | "builtin"
+  source?: "project" | "user" | "builtin"
   /** Only a child agent's frontmatter Stop hook becomes SubagentStop. */
   child?: boolean
 }

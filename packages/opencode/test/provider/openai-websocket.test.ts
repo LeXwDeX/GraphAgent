@@ -1,8 +1,7 @@
 import { expect, spyOn, test } from "bun:test"
-import { $ } from "bun"
 import { streamText } from "ai"
 import { pathToFileURL } from "node:url"
-import { createOpencodeClient, type Event } from "@opencode-ai/sdk"
+import type { Event } from "@opencode-ai/sdk"
 import { Effect, Layer } from "effect"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -20,7 +19,8 @@ import { Env } from "@/env"
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
 import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
-import { CodexAuthPlugin } from "@/plugin/openai/codex"
+import { CodexAdapter } from "@/provider/adapter/codex"
+import type { AdapterContext } from "@/provider/adapter/types"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -945,23 +945,23 @@ async function failureError(promise: Promise<string>) {
   throw new Error("Expected response text to reject")
 }
 
-test("built-in openai plugin resets its Responses socket on session.compacted and still aborts session.deleted", async () => {
+test("built-in openai adapter resets its Responses socket on session.compacted and still aborts session.deleted", async () => {
   const upstream = chainedServer()
   try {
-    const hooks = await CodexAuthPlugin(
+    const adapter = CodexAdapter(
       {
-        client: createOpencodeClient({ baseUrl: upstream.url.toString() }),
-        project: { id: "builtin-openai", worktree: "/tmp/issue868", time: { created: 0 } },
         directory: "/tmp/issue868",
         worktree: "/tmp/issue868",
-        serverUrl: new URL(upstream.url),
-        $,
+        project: { id: "builtin-openai", worktree: "/tmp/issue868", time: { created: 0 } } as AdapterContext["project"],
+        auth: { set: async () => {} },
+        sessions: { get: async () => undefined, message: async () => undefined },
+        experimentalWebSockets: true,
       },
       { experimentalWebSockets: true },
     )
     try {
-      const loaded = await hooks.auth!.loader!(async () => ({ type: "api", key: "sk-test" }), {
-        id: "openai",
+      const loaded = await adapter.auth!.loader!(async () => ({ type: "api", key: "sk-test" }), {
+        id: ProviderV2.ID.make("openai"),
         name: "OpenAI",
         source: "api",
         env: [],
@@ -983,7 +983,7 @@ test("built-in openai plugin resets its Responses socket on session.compacted an
       expect(upstream.connections("builtin-session")).toBe(1)
       const closed = upstream.closing("builtin-session")
       const compacted: Event = { type: "session.compacted", properties: { sessionID: "builtin-session" } }
-      await hooks.event!({ event: compacted })
+      await adapter.onEvent!({ id: "session.compacted", type: compacted.type, properties: compacted.properties })
       await closed
       await completed("builtin-session")
       expect(upstream.connections("builtin-session")).toBe(2)
@@ -1008,13 +1008,13 @@ test("built-in openai plugin resets its Responses socket on session.compacted an
           },
         },
       }
-      await hooks.event!({ event: deleted })
+      await adapter.onEvent!({ id: "session.deleted", type: deleted.type, properties: deleted.properties })
       expect(await failureError(failure)).toMatchObject({
         name: "AbortError",
         message: "WebSocket session removed",
       })
     } finally {
-      await hooks.dispose?.()
+      await adapter.dispose?.()
     }
   } finally {
     await upstream[Symbol.asyncDispose]()

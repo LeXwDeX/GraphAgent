@@ -73,7 +73,7 @@ Replace `<platform>` with your platform (e.g., `darwin-arm64`, `linux-x64`).
   - `packages/opencode`: OpenCode core business logic & server.
   - `packages/tui`: The TUI code, written in SolidJS with [opentui](https://github.com/sst/opentui)
   - `packages/sdk/js`: The JavaScript SDK
-  - `packages/plugin`: Source for `@opencode-ai/plugin`
+  - `packages/plugin`: Tool definition helpers for config-scoped custom tools
 
 ### Understanding bun dev vs opencode
 

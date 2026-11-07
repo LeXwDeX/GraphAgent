@@ -64,7 +64,7 @@ export const Info = Schema.Struct({
   content: Schema.String,
   hooks: Schema.optional(Schema.Unknown),
   hookOrigin: Schema.optional(Schema.String),
-  hookSource: Schema.optional(Schema.Literals(["project", "user", "plugin", "builtin"])),
+  hookSource: Schema.optional(Schema.Literals(["project", "user", "builtin"])),
 })
 export type Info = Schema.Schema.Type<typeof Info>
 

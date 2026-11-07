@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { OAUTH_DUMMY_KEY } from "../../../src/auth"
-import { oauthScope, SnowflakeCortexAuthPlugin } from "../../../src/plugin/snowflake-cortex"
+import { oauthScope, SnowflakeCortexAdapter } from "../../../src/provider/adapter/snowflake-cortex"
 
 function makeInput() {
   let auth: any = {
@@ -18,12 +18,10 @@ function makeInput() {
       auth = next
     },
     input: {
-      client: {
-        auth: {
-          set: async (request: any) => {
-            setCalls.push(request)
-            auth = request.body
-          },
+      auth: {
+        set: async (_provider: string, next: any) => {
+          setCalls.push({ body: next })
+          auth = next
         },
       },
     } as any,
@@ -39,7 +37,7 @@ describe("plugin.snowflake-cortex", () => {
   })
 
   test("loader returns empty options when auth is not oauth", async () => {
-    const hooks = await SnowflakeCortexAuthPlugin({} as any)
+    const hooks = await SnowflakeCortexAdapter({} as any)
     const options = await hooks.auth!.loader!(async () => ({ type: "api", key: "token" }) as any, {} as any)
     expect(options).toEqual({})
   })
@@ -53,7 +51,7 @@ describe("plugin.snowflake-cortex", () => {
       expires: Date.now() + 60 * 60 * 1000,
       accountId: "myorg-myaccount",
     })
-    const hooks = await SnowflakeCortexAuthPlugin(input)
+    const hooks = await SnowflakeCortexAdapter(input)
     const options = await hooks.auth!.loader!(getAuth as any, {} as any)
     expect(options.apiKey).toBe(OAUTH_DUMMY_KEY)
 
@@ -104,7 +102,7 @@ describe("plugin.snowflake-cortex", () => {
     }) as typeof fetch
 
     try {
-      const hooks = await SnowflakeCortexAuthPlugin(input)
+      const hooks = await SnowflakeCortexAdapter(input)
       const options = await hooks.auth!.loader!(
         async () =>
           ({
@@ -138,7 +136,7 @@ describe("plugin.snowflake-cortex", () => {
 
   test("loader retries once after 401 by refreshing token", async () => {
     const { input, getAuth, setCalls } = makeInput()
-    const hooks = await SnowflakeCortexAuthPlugin(input)
+    const hooks = await SnowflakeCortexAdapter(input)
     const options = await hooks.auth!.loader!(
       async () =>
         ({
@@ -188,7 +186,7 @@ describe("plugin.snowflake-cortex", () => {
 
   test("loader converts max_tokens to max_completion_tokens in request body", async () => {
     const { input, getAuth } = makeInput()
-    const hooks = await SnowflakeCortexAuthPlugin(input)
+    const hooks = await SnowflakeCortexAdapter(input)
     const options = await hooks.auth!.loader!(getAuth as any, {} as any)
 
     let sentBody: string | undefined
@@ -216,7 +214,7 @@ describe("plugin.snowflake-cortex", () => {
 
   test("loader maps 400 'conversation complete' to 200 stop", async () => {
     const { input, getAuth } = makeInput()
-    const hooks = await SnowflakeCortexAuthPlugin(input)
+    const hooks = await SnowflakeCortexAdapter(input)
     const options = await hooks.auth!.loader!(getAuth as any, {} as any)
 
     const originalFetch = globalThis.fetch
@@ -242,7 +240,7 @@ describe("plugin.snowflake-cortex", () => {
 
   test("loader fixes empty role in SSE stream", async () => {
     const { input, getAuth } = makeInput()
-    const hooks = await SnowflakeCortexAuthPlugin(input)
+    const hooks = await SnowflakeCortexAdapter(input)
     const options = await hooks.auth!.loader!(getAuth as any, {} as any)
 
     const originalFetch = globalThis.fetch
