@@ -656,9 +656,9 @@ it.instance(
     git: true,
     config: {
       references: {
-        // Project settings live in <root>/.agents/settings.json, so relative
-        // paths are anchored at that file's directory.
-        docs: "../../docs",
+        // Project settings live in <root>/.agents/settings.json, but relative
+        // reference paths stay anchored at the project root.
+        docs: "../docs",
       },
     },
   },
