@@ -34,7 +34,9 @@ import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { SettingsHook } from "@/hook/settings"
 import { Dag } from "@/dag/dag"
+import { DagLoop } from "@/dag/runtime/loop"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { DagProjector } from "@opencode-ai/core/dag/projector"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
@@ -49,13 +51,19 @@ import { Format } from "@/format"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { testProviderConfig } from "../lib/test-provider"
-import { countingAppProcessLayer, countingDatabaseLayer, countingEventLayer } from "../lib/engine-probe"
+import {
+  countingAppProcessLayer,
+  countingDatabaseLayer,
+  countingEventLayer,
+  countingSnapshotLayer,
+} from "../lib/engine-probe"
 import type { FakeProvider } from "../lib/fake-provider"
 
 // Layer graph for the H0 scenarios. It mirrors test/session/prompt-empty.test.ts
 // (the smallest SessionPrompt harness) with production defaults for runtime
-// flags and two substitutions:
+// flags and three substitutions:
 //   - the database and event bus come from test/lib/engine-probe.ts;
+//   - Snapshot is wrapped to observe lock waits;
 //   - `LLM.Service` is the scripted engine-probe provider, so no sockets or
 //     test LLM server are involved.
 // SessionSummary stays stubbed for S1: summary generation is measured by the
@@ -121,6 +129,10 @@ const mcp = Layer.succeed(
   }),
 )
 
+// `hasEvent: false` matters: SessionPrompt treats a missing probe as "maybe
+// configured" and materializes a transcript before every trigger. The real
+// layer reports false when no hooks.json defines the event, so scenarios
+// without hooks must do the same to keep their counts on the production path.
 const hookRecorderLayer = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
@@ -134,6 +146,7 @@ const hookRecorderLayer = Layer.succeed(
         systemMessages: [],
         hookSpecificOutput: undefined,
       }),
+    hasEvent: () => Effect.succeed(false),
     list: () => Effect.succeed([]),
   }),
 )
@@ -155,10 +168,12 @@ const flags = RuntimeFlags.layer()
 
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
 
-const snapshot = Snapshot.layer.pipe(
-  Layer.provide(countingAppProcessLayer),
-  Layer.provide(FSUtil.defaultLayer),
-  Layer.provide(Config.defaultLayer),
+const snapshot = countingSnapshotLayer(
+  Snapshot.layer.pipe(
+    Layer.provide(countingAppProcessLayer),
+    Layer.provide(FSUtil.defaultLayer),
+    Layer.provide(Config.defaultLayer),
+  ),
 )
 
 const status = SessionStatus.layer.pipe(Layer.provideMerge(bridgeLayer))
@@ -182,38 +197,45 @@ const sessionLayer = Session.layer.pipe(
   Layer.provide(DagMessages.defaultLayer),
 )
 
-const deps = Layer.mergeAll(
-  dbLayer,
-  bridgeLayer,
-  hookRecorderLayer,
-  memoryLayer,
-  sessionLayer,
-  snapshot,
-  Env.defaultLayer,
-  AgentSvc.defaultLayer,
-  Command.defaultLayer,
-  Permission.defaultLayer,
-  Config.defaultLayer,
-  ProviderSvc.defaultLayer,
-  lsp,
-  mcp,
-  FSUtil.defaultLayer,
-  BackgroundJob.defaultLayer,
-  status,
-  DagMessages.defaultLayer,
-  DagStore.defaultLayer,
-  ToolSourceLedger.defaultLayer,
-).pipe(Layer.provideMerge(infra))
+const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
+  Layer.mergeAll(
+    dbLayer,
+    bridgeLayer,
+    hooks,
+    memoryLayer,
+    sessionLayer,
+    snapshot,
+    Env.defaultLayer,
+    AgentSvc.defaultLayer,
+    Command.defaultLayer,
+    Permission.defaultLayer,
+    Config.defaultLayer,
+    ProviderSvc.defaultLayer,
+    lsp,
+    mcp,
+    FSUtil.defaultLayer,
+    BackgroundJob.defaultLayer,
+    status,
+    DagMessages.defaultLayer,
+    DagStore.defaultLayer,
+    ToolSourceLedger.defaultLayer,
+  ).pipe(Layer.provideMerge(infra))
 
-const question = Question.layer.pipe(Layer.provideMerge(deps))
-const todo = Todo.layer.pipe(Layer.provideMerge(deps))
-const makeRegistry = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>) =>
-  ToolRegistry.layer.pipe(
+// The hook service is part of `deps`, so everything composed against it is
+// built per makePerfLayer call instead of at module scope.
+const makeStacks = (
+  hooks: Layer.Layer<SettingsHook.Service>,
+  shell: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>,
+) => {
+  const deps = makeDeps(hooks)
+  const question = Question.layer.pipe(Layer.provideMerge(deps))
+  const todo = Todo.layer.pipe(Layer.provideMerge(deps))
+  const registry = ToolRegistry.layer.pipe(
     Layer.provide(DagAgentMessages.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Dag.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(spawner),
+    Layer.provide(shell),
     Layer.provide(Git.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
@@ -222,8 +244,9 @@ const makeRegistry = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawn
     Layer.provideMerge(question),
     Layer.provideMerge(deps),
   )
-const registry = makeRegistry(CrossSpawnSpawner.defaultLayer)
-const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
+  const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
+  return { deps, registry, trunc }
+}
 
 export interface PerfLayerOptions {
   /**
@@ -232,6 +255,12 @@ export interface PerfLayerOptions {
    * spawner (git, ripgrep, snapshot).
    */
   readonly shell?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>
+  /**
+   * SettingsHook implementation. S7 passes the real `SettingsHook.layer` so
+   * configured command hooks actually run; scenarios without hooks keep the
+   * stub, which reports no configured events.
+   */
+  readonly hooks?: Layer.Layer<SettingsHook.Service>
 }
 
 /** Build the perf layer for one fake provider instance. */
@@ -239,7 +268,10 @@ export function makePerfLayer(
   provider: FakeProvider,
   options?: PerfLayerOptions,
 ): Layer.Layer<SessionPrompt.Service | Session.Service, never, never> {
-  const registryLayer = options?.shell ? makeRegistry(options.shell) : registry
+  const { deps, registry, trunc } = makeStacks(
+    options?.hooks ?? hookRecorderLayer,
+    options?.shell ?? CrossSpawnSpawner.defaultLayer,
+  )
   const proc = SessionProcessor.layer.pipe(
     Layer.provide(summary),
     Layer.provide(Image.defaultLayer),
@@ -255,7 +287,7 @@ export function makePerfLayer(
     Layer.provideMerge(run),
     Layer.provideMerge(compact),
     Layer.provideMerge(proc),
-    Layer.provideMerge(registryLayer),
+    Layer.provideMerge(registry),
     Layer.provideMerge(trunc),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(Goal.defaultLayer),
@@ -271,4 +303,111 @@ export function makePerfLayer(
     Layer.provideMerge(deps),
     Layer.provide(summary),
   )
+}
+
+/**
+ * Layer graph for the DAG scenario (S5). `makePerfLayer` cannot serve it for
+ * three reasons, all of them load-bearing:
+ *   - DAG rows need `DagProjector` and scheduling needs `DagLoop`;
+ *   - `Dag.defaultLayer`/`DagStore.defaultLayer`/`DagMessages.defaultLayer`
+ *     carry their own database and event bus, bypassing the probe;
+ *   - a visible `DagMessages` makes DagLoop poll mailboxes every 250ms
+ *     forever, so `settle()` never sees a quiet window, and a visible
+ *     `SettingsHook` makes the spawn path materialize the parent transcript.
+ * The composition therefore uses the counting Dag/DagStore/DagProjector, a
+ * bare `Session.layer`, and provides neither DagMessages nor SettingsHook.
+ */
+export function makeDagPerfLayer(provider: FakeProvider) {
+  const dagStore = DagStore.layer.pipe(Layer.provide(dbLayer))
+  const dagProjector = DagProjector.layer.pipe(Layer.provide(eventLayer), Layer.provide(dbLayer))
+  const dag = Dag.layer.pipe(Layer.provide(bridgeLayer), Layer.provide(dagStore))
+  const dagSession = Session.layer.pipe(
+    Layer.provide(Storage.defaultLayer),
+    Layer.provide(dbLayer),
+    Layer.provide(bridgeLayer),
+    Layer.provide(projectorLayer),
+    Layer.provide(flags),
+    Layer.provide(BackgroundJob.defaultLayer),
+    Layer.provide(Goal.defaultLayer),
+    Layer.provide(SessionAutomationLease.defaultLayer),
+    Layer.provide(dag),
+  )
+  const dagDeps = Layer.mergeAll(
+    dbLayer,
+    bridgeLayer,
+    memoryLayer,
+    dagSession,
+    snapshot,
+    Env.defaultLayer,
+    AgentSvc.defaultLayer,
+    Command.defaultLayer,
+    Permission.defaultLayer,
+    Config.defaultLayer,
+    ProviderSvc.defaultLayer,
+    lsp,
+    mcp,
+    FSUtil.defaultLayer,
+    BackgroundJob.defaultLayer,
+    status,
+    dag,
+    dagStore,
+    dagProjector,
+    ToolSourceLedger.defaultLayer,
+  ).pipe(Layer.provideMerge(infra))
+  const dagQuestion = Question.layer.pipe(Layer.provideMerge(dagDeps))
+  const dagTodo = Todo.layer.pipe(Layer.provideMerge(dagDeps))
+  const dagRegistry = ToolRegistry.layer.pipe(
+    Layer.provide(DagAgentMessages.defaultLayer),
+    Layer.provide(Skill.defaultLayer),
+    Layer.provide(dag),
+    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(CrossSpawnSpawner.defaultLayer),
+    Layer.provide(Git.defaultLayer),
+    Layer.provide(Ripgrep.defaultLayer),
+    Layer.provide(Format.defaultLayer),
+    Layer.provide(flags),
+    Layer.provideMerge(dagTodo),
+    Layer.provideMerge(dagQuestion),
+    Layer.provideMerge(dagDeps),
+  )
+  const dagTrunc = Truncate.layer.pipe(Layer.provideMerge(dagDeps))
+  const proc = SessionProcessor.layer.pipe(
+    Layer.provide(summary),
+    Layer.provide(Image.defaultLayer),
+    Layer.provide(flags),
+    Layer.provideMerge(dagDeps),
+    Layer.provideMerge(provider.layer),
+  )
+  const compact = SessionCompaction.layer.pipe(
+    Layer.provide(flags),
+    Layer.provideMerge(proc),
+    Layer.provideMerge(dagDeps),
+  )
+  const prompt = SessionPrompt.layer.pipe(
+    Layer.provide(SessionRevert.defaultLayer),
+    Layer.provide(Image.defaultLayer),
+    Layer.provide(summary),
+    Layer.provideMerge(run),
+    Layer.provideMerge(compact),
+    Layer.provideMerge(proc),
+    Layer.provideMerge(dagRegistry),
+    Layer.provideMerge(dagTrunc),
+    Layer.provide(Instruction.defaultLayer),
+    Layer.provide(Goal.defaultLayer),
+    Layer.provide(
+      SystemPrompt.layer.pipe(
+        Layer.provide(Skill.defaultLayer),
+        Layer.provide(LocationServiceMap.layer),
+        Layer.provide(Goal.defaultLayer),
+        Layer.provide(dagDeps),
+      ),
+    ),
+    Layer.provide(flags),
+    Layer.provideMerge(dagDeps),
+    Layer.provide(summary),
+  )
+  // DagLoop.layer hard-wires SessionAutomationLease.defaultLayer internally;
+  // dagDeps uses the same layer object, so memoization yields one instance.
+  const loop = DagLoop.layer.pipe(Layer.provide(prompt))
+  return Layer.mergeAll(prompt, loop)
 }

@@ -1,4 +1,5 @@
 import { Database as BunDatabase, type SQLQueryBindings } from "bun:sqlite"
+import { mock } from "bun:test"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { AppProcess } from "@opencode-ai/core/process"
@@ -8,6 +9,9 @@ import type { Connection } from "effect/sql/SqlConnection"
 import { SqlError, classifySqliteError } from "effect/sql/SqlError"
 import * as Statement from "effect/sql/Statement"
 import * as Reactivity from "effect/reactivity/Reactivity"
+import * as MessageV2 from "@/session/message-v2"
+import * as ToolJsonSchema from "@/tool/json-schema"
+import { Snapshot } from "@/snapshot"
 
 // Engine-level counters for the H0 performance baseline (Issue #1009).
 //
@@ -31,6 +35,22 @@ export type CounterKey =
   | "schema.fromSchema"
 
 export type Counters = Record<CounterKey, number>
+
+/** Every baseline metric, in report order. */
+export const COUNTER_KEYS: ReadonlyArray<CounterKey> = [
+  "sql.read",
+  "sql.write",
+  "commits",
+  "json.parseBytes",
+  "json.encodeBytes",
+  "sha256Bytes",
+  "git.spawns",
+  "snapshot.lockWaits",
+  "events.durable",
+  "events.ephemeral",
+  "convert.messages",
+  "schema.fromSchema",
+]
 
 function zero(): Counters {
   return {
@@ -64,8 +84,96 @@ export function touch() {
   activityTicks += 1
 }
 
+// JSON parse bytes. Event payloads live in `text({ mode: "json" })` columns
+// (packages/core/src/event/sql.ts), so the driver parses them with whichever
+// `JSON.parse` is current at call time; there is no project symbol to wrap
+// without touching `src/`. Patching the process-global once per test process
+// measures every parse the engine performs, including event reads and JSON
+// columns of messages and parts. The probe's own serialization stays on the
+// captured native function so it adds no engine bytes.
+const nativeParse = JSON.parse
+let jsonParseCounted = false
+function installJsonParseCounter() {
+  if (jsonParseCounted) return
+  jsonParseCounted = true
+  JSON.parse = ((text: string, reviver?: unknown) => {
+    if (typeof text === "string") note("json.parseBytes", Buffer.byteLength(text))
+    return nativeParse(text, reviver as never)
+  }) as typeof JSON.parse
+}
+installJsonParseCounter()
+
+// `convert.messages` and `schema.fromSchema` are plain module functions, not
+// Effect services, so the probe replaces their exports for this test process.
+// The mock factories spread the real namespace and delegate to the captured
+// originals, so behavior is unchanged; each Bun test file runs in its own
+// process, keeping the replacement scoped to the perf suite.
+const messageV2Exports = { ...MessageV2 }
+const jsonSchemaExports = { ...ToolJsonSchema }
+const realToModelMessagesEffect = messageV2Exports.toModelMessagesEffect
+const realFromSchema = jsonSchemaExports.fromSchema
+
+mock.module("@/session/message-v2", () => ({
+  ...messageV2Exports,
+  toModelMessagesEffect: (...args: Parameters<typeof realToModelMessagesEffect>) =>
+    Effect.suspend(() => {
+      // One unit per input message converted for the next provider request.
+      note("convert.messages", args[0]?.length ?? 0)
+      return realToModelMessagesEffect(...args)
+    }),
+}))
+
+mock.module("@/tool/json-schema", () => ({
+  ...jsonSchemaExports,
+  fromSchema: (...args: Parameters<typeof realFromSchema>) => {
+    note("schema.fromSchema")
+    return realFromSchema(...args)
+  },
+}))
+
 export function snapshot(): Counters {
   return { ...counters }
+}
+
+// Per-request counter deltas. `markStep()` is called by the fake provider when
+// a request starts, so each delta covers one provider request and everything
+// the engine did after the previous one. The baseline keeps two books per
+// scenario (Issue #1009): `perTurn` is the whole measured window and `perStep`
+// is the median delta, which is what a request costs once the turn is warm.
+let stepMark: Counters | null = null
+let stepDeltas: Counters[] = []
+
+function difference(next: Counters, previous: Counters): Counters {
+  const result = zero()
+  for (const key of Object.keys(result) as CounterKey[]) result[key] = next[key] - previous[key]
+  return result
+}
+
+/** Mark the start of a provider request, closing the previous step. */
+export function markStep() {
+  const now = snapshot()
+  if (stepMark) stepDeltas.push(difference(now, stepMark))
+  stepMark = now
+}
+
+function median(deltas: ReadonlyArray<Counters>): Counters {
+  const result = zero()
+  if (deltas.length === 0) return result
+  for (const key of Object.keys(result) as CounterKey[]) {
+    const values = deltas.map((delta) => delta[key]).sort((left, right) => left - right)
+    const middle = Math.floor(values.length / 2)
+    result[key] = values.length % 2 === 1 ? values[middle]! : Math.round((values[middle - 1]! + values[middle]!) / 2)
+  }
+  return result
+}
+
+/** Close the last step and return the per-step book for the measured window. */
+export function stepBook(): { readonly steps: number; readonly perStep: Counters } {
+  if (stepMark) {
+    stepDeltas.push(difference(snapshot(), stepMark))
+    stepMark = null
+  }
+  return { steps: stepDeltas.length, perStep: median(stepDeltas) }
 }
 
 /** Reset counters. Also resets the quiescence detector used by `settle()`. */
@@ -73,6 +181,8 @@ export function reset() {
   for (const key of Object.keys(counters) as CounterKey[]) counters[key] = 0
   activityTicks = 0
   inFlight = 0
+  stepMark = null
+  stepDeltas = []
 }
 
 export function inFlightCount() {
@@ -163,7 +273,10 @@ function countStatement(statement: string) {
 export const countingClientLayer = Layer.effect(
   Client.SqlClient,
   Effect.gen(function* () {
-    const native = new BunDatabase(":memory:")
+    // The count gate uses an in-memory database (counts do not depend on the
+    // medium); `PERF_DB_PATH` switches to a file database for the wall-clock
+    // script, which must observe WAL writes on the self-hosted CI machine.
+    const native = new BunDatabase(process.env.PERF_DB_PATH ?? ":memory:")
     native.run("PRAGMA journal_mode = WAL;")
     const counting = new Proxy(native, {
       get(target, prop) {
@@ -340,3 +453,35 @@ export const countingAppProcessLayer = Layer.effect(
 
 /** Counting EventV2 layer on top of the counting database. */
 export const countingEventBusLayer = countingEventLayer(EventV2.layer.pipe(Layer.provide(countingDatabaseLayer)))
+
+/**
+ * Wrap Snapshot so calls that queue behind the per-worktree git semaphore are
+ * counted. `snapshot/index.ts` keeps its semaphore private, so the probe counts
+ * service calls that enter while another locked call is still running: every
+ * public locked method (cleanup/track/patch/restore/revert/diff/diffFull)
+ * takes the same single-permit lock, making overlap equal to a lock wait.
+ */
+export const countingSnapshotLayer = <E, R>(base: Layer.Layer<Snapshot.Service, E, R>) =>
+  Layer.effect(
+    Snapshot.Service,
+    Effect.gen(function* () {
+      const service = yield* Snapshot.Service
+      let active = 0
+      const counted = <A, E2, R2>(fx: () => Effect.Effect<A, E2, R2>): Effect.Effect<A, E2, R2> =>
+        Effect.suspend(() => {
+          if (active > 0) note("snapshot.lockWaits")
+          active += 1
+          return fx().pipe(Effect.ensuring(Effect.sync(() => (active -= 1))))
+        })
+      return Snapshot.Service.of({
+        init: service.init,
+        cleanup: () => counted(() => service.cleanup()),
+        track: () => counted(() => service.track()),
+        patch: (hash) => counted(() => service.patch(hash)),
+        restore: (snapshot) => counted(() => service.restore(snapshot)),
+        revert: (patches) => counted(() => service.revert(patches)),
+        diff: (hash) => counted(() => service.diff(hash)),
+        diffFull: (from, to) => counted(() => service.diffFull(from, to)),
+      })
+    }),
+  ).pipe(Layer.provide(base))
