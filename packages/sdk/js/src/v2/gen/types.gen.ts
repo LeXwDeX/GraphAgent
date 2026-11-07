@@ -662,6 +662,8 @@ export type Session = {
     snapshot?: string
     diff?: string
   }
+  dagMode?: "on" | "off"
+  dagBudgetTokens?: number
 }
 
 export type PermissionRuleset = Array<PermissionRule>
@@ -1197,6 +1199,8 @@ export type GlobalSession = {
     snapshot?: string
     diff?: string
   }
+  dagMode?: "on" | "off"
+  dagBudgetTokens?: number
   project: ProjectSummary | null
 }
 

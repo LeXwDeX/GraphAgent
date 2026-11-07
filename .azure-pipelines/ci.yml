@@ -5,7 +5,8 @@
 #           generated-code tests on Linux (Windows DAG tests run in GitHub Actions)
 # Trigger : Push to `main`, PRs targeting `main`, manual run
 # Jobs    : Typecheck               — private-host scan, its unit test, lint,
-#                                     typecheck, DAG core gate, oc tests
+#                                     typecheck, database baseline, DAG core
+#                                     gate, oc tests
 #           Unit Tests (workspace)  — workspace tests except opencode, Go,
 #                                     and generated-code checks
 #           Unit Tests (opencode N/4) — opencode tests in parallel shards
@@ -71,6 +72,8 @@ jobs:
         displayName: Run lint
       - bash: bun typecheck
         displayName: Run typecheck
+      - bash: bun run --cwd packages/core migration --check
+        displayName: Check database baseline
       - bash: bun run test:dag-core
         displayName: Run DAG core behavior and coverage gate
         workingDirectory: packages/opencode

@@ -44,6 +44,7 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
     "bun run check:hosts:test",
     "bun run lint",
     "bun typecheck",
+    "bun run --cwd packages/core migration --check",
     "bun run test:dag-core",
     "bash script/oc-install-boundary.test.sh && bash script/oc-path-priority.test.sh",
     "bun turbo test --concurrency=1 --filter='!opencode'",

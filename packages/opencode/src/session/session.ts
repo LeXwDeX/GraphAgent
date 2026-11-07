@@ -54,6 +54,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionMessageID } from "@opencode-ai/schema/session-message-id"
+import { DagBudgetTokens, DagMode } from "@opencode-ai/schema/dag-mode"
 import { Goal } from "@/goal/goal"
 import { SessionAutomationLease } from "./automation-lease"
 import { SessionStatus } from "./status"
@@ -150,6 +151,8 @@ export function fromRow(row: SessionRow): Info {
       compacting: row.time_compacting ?? undefined,
       archived: row.time_archived ?? undefined,
     },
+    dagMode: row.dag_mode,
+    dagBudgetTokens: row.dag_budget_tokens,
   }
 }
 
@@ -189,6 +192,8 @@ export function toRow(info: Info) {
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
     time_archived: info.time.archived,
+    dag_mode: info.dagMode,
+    dag_budget_tokens: info.dagBudgetTokens,
   }
 }
 
@@ -270,6 +275,8 @@ export const Info = Schema.Struct({
   time: Time,
   permission: optionalOmitUndefined(PermissionV1.Ruleset),
   revert: optionalOmitUndefined(Revert),
+  dagMode: optionalOmitUndefined(DagMode),
+  dagBudgetTokens: optionalOmitUndefined(DagBudgetTokens),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -584,6 +591,8 @@ export const layer: Layer.Layer<
       path?: string
       metadata?: typeof Metadata.Type
       permission?: PermissionV1.Ruleset
+      dagMode?: "on" | "off"
+      dagBudgetTokens?: number | null
     }) {
       const ctx = yield* InstanceState.context
       const result: Info = {
@@ -610,6 +619,8 @@ export const layer: Layer.Layer<
           created: Date.now(),
           updated: Date.now(),
         },
+        dagMode: input.dagMode ?? "off",
+        dagBudgetTokens: input.dagBudgetTokens ?? null,
       }
       yield* Effect.logInfo("created", result)
 
@@ -935,6 +946,10 @@ export const layer: Layer.Layer<
         title,
         metadata: structuredClone(original.metadata),
         titleSource: original.metadata?.hookTitleSource === "custom" ? "custom" : "generated",
+        // #1010 (E0): a fork keeps the DAG mode and budget of its source;
+        // usage counters still start from zero.
+        dagMode: original.dagMode,
+        dagBudgetTokens: original.dagBudgetTokens,
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const cutoff = input.messageID ? msgs.find((msg) => msg.info.id === input.messageID) : undefined

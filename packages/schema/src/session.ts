@@ -9,6 +9,7 @@ import { DateTimeUtcFromMillis, optionalOmitUndefined, RelativePath } from "./sc
 import { SessionEvent } from "./session-event"
 import { SessionID } from "./session-id"
 import { Revert } from "./revert"
+import { DagBudgetTokens, DagMode } from "./dag-mode"
 
 export const ID = SessionID
 export type ID = SessionID
@@ -41,6 +42,8 @@ export const Info = Schema.Struct({
   location: Location.Ref,
   subpath: RelativePath.pipe(Schema.optional),
   revert: Revert.State.pipe(Schema.optional),
+  dagMode: DagMode,
+  dagBudgetTokens: DagBudgetTokens,
 }).annotate({ identifier: "SessionV2.Info" })
 
 export const ListAnchor = Schema.Struct({

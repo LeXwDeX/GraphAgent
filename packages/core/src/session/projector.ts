@@ -65,7 +65,29 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
     time_archived: info.time.archived,
+    dag_mode: info.dagMode,
+    dag_budget_tokens: info.dagBudgetTokens,
   }
+}
+
+/**
+ * #1010 (E0): usage counters (`cost` and `tokens_*`) are owned exclusively by
+ * `applyUsage`, which increments them from step-finish parts. The Updated
+ * projection must never copy the event's snapshot of those columns over the
+ * row: a Session.patch racing an in-flight usage update would otherwise
+ * rewind the counters to stale values.
+ */
+function sessionUpdatedRow(info: SessionV1.SessionInfo) {
+  const {
+    cost: _cost,
+    tokens_input: _tokensInput,
+    tokens_output: _tokensOutput,
+    tokens_reasoning: _tokensReasoning,
+    tokens_cache_read: _tokensCacheRead,
+    tokens_cache_write: _tokensCacheWrite,
+    ...rest
+  } = sessionRow(info)
+  return rest
 }
 
 function messageData(
@@ -134,7 +156,7 @@ export const layer = Layer.effectDiscard(
     yield* project(SessionV1.Event.Updated, (event) =>
       db
         .update(SessionTable)
-        .set(sessionRow(event.data.info))
+        .set(sessionUpdatedRow(event.data.info))
         .where(eq(SessionTable.id, event.data.sessionID))
         .run()
         .pipe(Effect.orDie),

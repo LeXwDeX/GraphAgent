@@ -67,6 +67,53 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`child_binding\` (
+          \`child_session_id\` text PRIMARY KEY,
+          \`parent_session_id\` text NOT NULL,
+          \`owner_kind\` text NOT NULL,
+          \`owner_ref\` text,
+          \`time_created\` integer NOT NULL,
+          CONSTRAINT \`fk_child_binding_child_session_id_session_id_fk\` FOREIGN KEY (\`child_session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_child_binding_parent_session_id_session_id_fk\` FOREIGN KEY (\`parent_session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`child_run\` (
+          \`id\` text PRIMARY KEY,
+          \`child_session_id\` text NOT NULL,
+          \`parent_session_id\` text NOT NULL,
+          \`owner_kind\` text NOT NULL,
+          \`owner_id\` text,
+          \`attempt\` integer,
+          \`state\` text NOT NULL,
+          \`policy\` text,
+          \`detached\` integer,
+          \`deadline_at\` integer,
+          \`outcome\` text,
+          \`reported_at\` integer,
+          \`time_created\` integer NOT NULL,
+          \`time_ended\` integer,
+          CONSTRAINT \`fk_child_run_child_session_id_child_binding_child_session_id_fk\` FOREIGN KEY (\`child_session_id\`) REFERENCES \`child_binding\`(\`child_session_id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_turn\` (
+          \`id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`origin\` text,
+          \`origin_ref\` text,
+          \`state\` text NOT NULL,
+          \`outcome\` text,
+          \`user_message_id\` text,
+          \`last_assistant_id\` text,
+          \`steps\` integer,
+          \`runner_id\` text,
+          \`time_started\` integer,
+          \`time_ended\` integer,
+          CONSTRAINT \`fk_session_turn_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`credential\` (
           \`id\` text PRIMARY KEY,
           \`integration_id\` text,
@@ -77,6 +124,17 @@ export default {
           \`active\` integer,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`dag_node_attempt\` (
+          \`workflow_id\` text NOT NULL,
+          \`node_id\` text NOT NULL,
+          \`attempt\` integer NOT NULL,
+          \`child_session_id\` text NOT NULL,
+          \`started_at\` integer NOT NULL,
+          CONSTRAINT \`dag_node_attempt_pk\` PRIMARY KEY(\`workflow_id\`, \`node_id\`, \`attempt\`),
+          CONSTRAINT \`fk_dag_node_attempt_workflow_id_workflow_id_fk\` FOREIGN KEY (\`workflow_id\`) REFERENCES \`workflow\`(\`id\`) ON DELETE CASCADE
         );
       `)
       yield* tx.run(`
@@ -140,6 +198,7 @@ export default {
           \`seq\` integer NOT NULL,
           \`wake_reported\` integer DEFAULT false NOT NULL,
           \`graph_rev\` integer DEFAULT 1 NOT NULL,
+          \`worktree\` text,
           \`started_at\` integer,
           \`completed_at\` integer,
           \`time_created\` integer NOT NULL,
@@ -272,7 +331,10 @@ export default {
           \`time_updated\` integer NOT NULL,
           \`time_compacting\` integer,
           \`time_archived\` integer,
-          CONSTRAINT \`fk_session_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE
+          \`dag_mode\` text DEFAULT 'off' NOT NULL,
+          \`dag_budget_tokens\` integer,
+          CONSTRAINT \`fk_session_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT "session_dag_mode_check" CHECK("dag_mode" in ('on', 'off'))
         );
       `)
       yield* tx.run(`
@@ -303,6 +365,19 @@ export default {
       )
       yield* tx.run(
         `CREATE INDEX \`agent_message_session_idx\` ON \`agent_message\` (\`recipient_session_id\`,\`state\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`child_run_session_time_idx\` ON \`child_run\` (\`child_session_id\`,\`time_created\`);`,
+      )
+      yield* tx.run(
+        `CREATE UNIQUE INDEX \`child_run_active\` ON \`child_run\` (\`child_session_id\`) WHERE "child_run"."state" in ('queued', 'starting', 'running', 'continuing');`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`child_run_unreported\` ON \`child_run\` (\`parent_session_id\`) WHERE "child_run"."reported_at" is null and "child_run"."detached" = 1;`,
+      )
+      yield* tx.run(`CREATE INDEX \`session_turn_session_idx\` ON \`session_turn\` (\`session_id\`,\`time_started\`);`)
+      yield* tx.run(
+        `CREATE INDEX \`dag_node_attempt_child_session_idx\` ON \`dag_node_attempt\` (\`child_session_id\`);`,
       )
       yield* tx.run(`CREATE INDEX \`workflow_node_workflow_idx\` ON \`workflow_node\` (\`workflow_id\`);`)
       yield* tx.run(

@@ -224,6 +224,94 @@ describe("SessionProjector", () => {
     }),
   )
 
+  it.effect("keeps usage counters when a stale session update is projected", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seedProject()
+      const events = yield* EventV2.Service
+      const info = {
+        id: sessionID,
+        projectID: Project.ID.global,
+        slug: "test",
+        directory: "/project",
+        title: "test",
+        version: "test",
+        time: { created: 1, updated: 1 },
+      }
+
+      yield* events.publish(SessionV1.Event.Created, { sessionID, info })
+      yield* events.publish(SessionV1.Event.MessageUpdated, {
+        sessionID: SessionID.make(sessionID),
+        info: userMessage("msg_usage_race"),
+      })
+      yield* events.publish(SessionV1.Event.PartUpdated, {
+        sessionID: SessionID.make(sessionID),
+        time: 2,
+        part: {
+          type: "step-finish",
+          id: SessionV1.PartID.make("prt_usage_race"),
+          messageID: SessionV1.MessageID.make("msg_usage_race"),
+          sessionID: SessionID.make(sessionID),
+          reason: "stop",
+          cost: 3,
+          tokens: { input: 5, output: 7, reasoning: 11, cache: { read: 13, write: 17 } },
+        },
+      })
+
+      // Session.patch snapshots the session before the usage event; projecting
+      // that stale snapshot must not rewind the counters maintained by
+      // applyUsage.
+      yield* events.publish(SessionV1.Event.Updated, { sessionID, info: { ...info, title: "renamed" } })
+
+      expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+        title: "renamed",
+        cost: 3,
+        tokens_input: 5,
+        tokens_output: 7,
+        tokens_reasoning: 11,
+        tokens_cache_read: 13,
+        tokens_cache_write: 17,
+      })
+    }),
+  )
+
+  it.effect("projects DAG mode columns and leaves them untouched on stale updates", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seedProject()
+      const events = yield* EventV2.Service
+      const info = {
+        id: sessionID,
+        projectID: Project.ID.global,
+        slug: "test",
+        directory: "/project",
+        title: "test",
+        version: "test",
+        time: { created: 1, updated: 1 },
+        dagMode: "on" as const,
+        dagBudgetTokens: 1000,
+      }
+
+      yield* events.publish(SessionV1.Event.Created, { sessionID, info })
+      expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+        dag_mode: "on",
+        dag_budget_tokens: 1000,
+      })
+
+      // An update that predates the column (no dagMode/dagBudgetTokens) must
+      // not reset the stored values.
+      yield* events.publish(SessionV1.Event.Updated, {
+        sessionID,
+        info: { ...info, title: "renamed", dagMode: undefined, dagBudgetTokens: undefined },
+      })
+      expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+        title: "renamed",
+        dag_mode: "on",
+        dag_budget_tokens: 1000,
+      })
+    }),
+  )
+
   it.effect("switches the session agent and model", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

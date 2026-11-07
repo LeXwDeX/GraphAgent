@@ -14,7 +14,7 @@ Guidance for coding agents in GraphAgent, an opencode fork with a DAG workflow e
 ## Secondary development constraints
 
 - Before behavior changes, record Why, Scope, Approach, and Acceptance. Read the affected package rules and existing regression tests. Keep fixes focused; do not combine unrelated cleanup or dependency upgrades.
-- Keep database schemas and migrations in `packages/core`. Generate schema changes with `bun run migration` there. Include the migration under `src/database/migration/`, `schema.json`, `src/database/migration.gen.ts`, and `src/database/schema.gen.ts` together. Preserve existing data and test both new databases and upgrades.
+- Keep database schemas and migrations in `packages/core`. Until v2.0.0 publishes, change the baseline in place as described under Database baseline; after release, add incremental migrations again.
 - Persist DAG lifecycle changes through the existing Dag/EventV2 path. Keep projectors limited to database writes. Preserve replay idempotency and keep projection guards consistent with the transition tables.
 - Preserve workflow locking, execution-attempt identity, directory ownership, and pause/cancel/recovery behavior. Cover affected stale completion, restart, deletion, and lease-release paths. Do not assume cross-process locking or exactly-once execution.
 - Use `InstanceState` for state owned by a directory. Bind subscriptions, child processes, and background work to scopes with finalizers. Preserve application-scoped supervision that must survive directory disposal. Test resource release when changing lifecycle behavior.
@@ -22,6 +22,19 @@ Guidance for coding agents in GraphAgent, an opencode fork with a DAG workflow e
 - Keep tool parameter schemas object-rooted. Validate arguments and apply the tool's permission policy before side effects. Preserve interruption and defect propagation. Follow the relevant tool rules in `packages/opencode/AGENTS.md` or `packages/core/src/tool/AGENTS.md`.
 - Keep dependency manifests, the workspace catalog, lockfiles, overrides, and patches consistent. Match native wrappers to their platform packages. Change runtime pins at their declared sources and verify affected CI, containers, and Nix builds. Use real Nix builds to regenerate hashes.
 - Use isolated sessions, temporary data, and task-owned test processes. Preserve the user's active chats, configuration, and running services. Keep credentials out of logs, fixtures, and artifacts. Security audits use model reasoning over business logic and source; do not use external DayBreak tools.
+
+## Database baseline (until v2.0.0)
+
+The repository ships a single generated baseline instead of the historical incremental migrations. Until the v2.0.0 release commits `packages/core/baseline.lock`:
+
+1. Change only the Drizzle definitions (`*.sql.ts` / `sql.ts`), then run `bun run migration --rebaseline` from `packages/core`. Commit `schema.json`, `src/database/migration.gen.ts`, and `src/database/schema.gen.ts` together with the definition.
+2. Do not add migration files under `src/database/migration/`; only the `.gitkeep` placeholder is tracked. Repository CI databases are rebuilt from an empty file, so drop/rename migrations are unnecessary.
+3. A rebaseline changes the baseline fingerprint. Delete and recreate every local development database, and state "baseline changed" in the PR description.
+4. When parallel PRs touch the baseline, re-run `--rebaseline` against the definitions of the merge target; never hand-merge `schema.gen.ts` or `schema.json`.
+5. Tests cover empty-database creation and baseline-fingerprint rejection; upgrade-an-existing-database cases are not required in this period.
+6. The baseline already registers `session_turn`, `child_binding`, `child_run`, `dag_node_attempt`, `workflow.worktree`, and `session.dag_mode` / `session.dag_budget_tokens`. `message_diff` (H5), the `workflow_node(child_session_id)` index (E1), `dag_runner` (E1b), `agent_mailbox.change_seq` and `workflow.pause_reason` (E1), and `workflow_node.safety_denials` (E4) are added in place by their owning Issues under these rules.
+
+After v2.0.0 publishes, run `bun run migration --freeze-baseline` once and commit `baseline.lock`. That freezes the baseline, makes `--rebaseline` refuse to run, and restores incremental migration generation with the upgrade tests.
 
 ## File permission diagnosis
 
@@ -68,7 +81,7 @@ Host details live only in the maintainer's global agent instructions and the unt
 
 - Every change: run `bun run check:hosts` before commit; `bun.lock` may only contain public registry URLs.
 - Behavior changes: run the affected package's typecheck and focused regression tests, then the applicable gates below. Record actual commands and results. For documentation-only changes, check facts, links, formatting, and the diff; runtime tests are unnecessary.
-- Database changes: from `packages/core`, run `bun run migration --check` and the affected migration tests. Include empty-database and existing-database cases.
+- Database changes: from `packages/core`, run `bun run migration --check` (in the pre-release period it requires an empty migration directory and an up-to-date baseline) and the affected migration tests. Include empty-database and baseline-fingerprint cases; upgrade cases are unnecessary before v2.0.0.
 - DAG lifecycle or persistence changes: run the DAG gate (Commands), plus affected replay, attempt, cancellation, recovery, and lease tests.
 - Public event changes: run both `packages/schema/test/event-manifest.test.ts` and `packages/opencode/test/event-manifest.test.ts` from their respective packages, plus affected event consumers. Check inventories, fixed-count assertions and generated event types together; the DAG gate does not include every runtime manifest test.
 - HTTP contract changes: follow Generated code below, verify the SDK generator is idempotent, and run `bun run test:httpapi` from `packages/opencode` with the updated scenarios. Generated-file checks compare against Git, so distinguish intended uncommitted output from unexpected regeneration drift.
