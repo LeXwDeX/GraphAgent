@@ -11,7 +11,7 @@ Read the highest-value sources first:
 - `README*`, root manifests, workspace config, lockfiles
 - build, test, lint, formatter, typecheck, and codegen config
 - CI workflows and pre-commit / task runner config
-- existing instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`, `.cursorrules`, `.github/copilot-instructions.md`)
+- existing instruction files (`AGENTS.md`, `.cursor/rules/`, `.cursorrules`, `.github/copilot-instructions.md`)
 - repo-local OpenCode config such as `graphagent.json`
 
 If config and docs do not clarify the architecture, inspect a few representative files. Find the real entrypoints, package boundaries, and execution flow. Prefer files that show how the system is wired over random leaf files.

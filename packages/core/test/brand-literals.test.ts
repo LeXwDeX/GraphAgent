@@ -39,7 +39,7 @@ const OC_BINARY_PATH_ALLOW: Allow[] = [
 ]
 
 // Every entry below is a closed, itemised exception from #884. The four
-// OPENCODE_DISABLE_CLAUDE_CODE* / OPENCODE_DISABLE_EXTERNAL_SKILLS names are
+// OPENCODE_DISABLE_CLAUDE_CODE* / OPENCODE_DISABLE_EXTERNAL_SKILLS names were
 // deleted together with their readers by B5; the remaining entries are either
 // the G0b photon patch key or negative tests proving a retired name is ignored.
 const LEGACY_ENV_ALLOW: Allow[] = [
@@ -51,18 +51,6 @@ const LEGACY_ENV_ALLOW: Allow[] = [
   {
     file: "script/oc-macos-acceptance.test.sh",
     reason: "macOS acceptance pins OC_OPENCODE_NAME until G1",
-  },
-  {
-    file: "packages/opencode/src/effect/runtime-flags.ts",
-    reason: "G3b variables keep the upstream prefix until B5 deletes their readers",
-  },
-  {
-    file: "packages/opencode/test/effect/runtime-flags.test.ts",
-    reason: "covers the G3b variables that B5 deletes",
-  },
-  {
-    file: "packages/core/src/plugin/skill/customize-opencode.md",
-    reason: "documents the G3b variables and the B4 skill constants",
   },
   {
     file: "packages/opencode/src/skill/index.ts",

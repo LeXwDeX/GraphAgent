@@ -261,7 +261,6 @@ describe("hooks.json hot reload candidate gate", () => {
     const committed: string[] = []
     const handle = watchSettings(
       dir,
-      undefined,
       () =>
         Effect.gen(function* () {
           started++

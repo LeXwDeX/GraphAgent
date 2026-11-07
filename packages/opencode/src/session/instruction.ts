@@ -9,7 +9,6 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { Config } from "@/config/config"
 import { SettingsHook } from "@/hook/settings"
 import { InstanceState } from "@/effect/instance-state"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -53,25 +52,20 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/In
 export const layer: Layer.Layer<
   Service,
   never,
-  FSUtil.Service | Config.Service | Global.Service | HttpClient.HttpClient | RuntimeFlags.Service
+  FSUtil.Service | Config.Service | Global.Service | HttpClient.HttpClient
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
     const cfg = yield* Config.Service
     const fs = yield* FSUtil.Service
     const global = yield* Global.Service
-    const flags = yield* RuntimeFlags.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const http = HttpClient.filterStatusOk(withTransientReadRetry(yield* HttpClient.HttpClient))
-    const globalFiles = [
-      path.join(global.config, "AGENTS.md"),
-      ...(!flags.disableClaudeCodePrompt ? [path.join(global.home, ".claude", "CLAUDE.md")] : []),
-    ]
-    const instructionFiles = [
-      "AGENTS.md",
-      ...(!flags.disableClaudeCodePrompt ? ["CLAUDE.md"] : []),
-      "CONTEXT.md", // deprecated
-    ]
+    // Instruction files are GraphAgent's own: AGENTS.md only. Claude configuration
+    // (`CLAUDE.md`, `CONTEXT.md`, `~/.claude/`) is never read at runtime; users who
+    // need those files convert them explicitly.
+    const globalFiles = [path.join(global.config, "AGENTS.md")]
+    const instructionFiles = ["AGENTS.md"]
 
     const state = yield* InstanceState.make(
       Effect.fn("Instruction.state")(function* () {
@@ -89,8 +83,8 @@ export const layer: Layer.Layer<
       }),
     )
 
-    const userRoots = [global.config, path.join(global.home, ".claude")].map((item) => path.resolve(item))
-    // User scope: the global instruction files and anything under the user's config or ~/.claude. Everything
+    const userRoots = [path.resolve(global.config)]
+    // User scope: the global instruction files and anything under the user's config. Everything
     // else, including nested and config-listed project files, is project scope. Managed/Local are never guessed.
     const memoryType = (file: string): "User" | "Project" => {
       const target = path.resolve(file)
@@ -149,7 +143,7 @@ export const layer: Layer.Layer<
         }
       }
 
-      // The first project-level match wins so we don't stack AGENTS.md/CLAUDE.md from every ancestor.
+      // The first project-level match wins so we don't stack AGENTS.md from every ancestor.
       // `$HOME` carries no project layer, so a root that resolves there reads no project instructions.
       if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && hasProjectLayer(ctx.root, global.home)) {
         for (const file of instructionFiles) {
@@ -344,13 +338,12 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Global.layer),
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
-  Layer.provide(RuntimeFlags.defaultLayer),
 )
 
 export function loaded(messages: SessionV1.WithParts[]) {
   return extract(messages)
 }
 
-export const node = LayerNode.make(layer, [Config.node, FSUtil.node, Global.node, RuntimeFlags.node, httpClient])
+export const node = LayerNode.make(layer, [Config.node, FSUtil.node, Global.node, httpClient])
 
 export * as Instruction from "./instruction"

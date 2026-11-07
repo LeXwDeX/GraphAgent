@@ -10,16 +10,7 @@ const positiveInteger = (name: string) =>
 
 export class Service extends ConfigService.Service<Service>()("@opencode/RuntimeFlags", {
   disableDefaultPlugins: bool("GRAPHAGENT_DISABLE_DEFAULT_PLUGINS"),
-  disableExternalSkills: bool("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
   disableLspDownload: bool("GRAPHAGENT_DISABLE_LSP_DOWNLOAD"),
-  disableClaudeCodePrompt: Config.all({
-    broad: bool("OPENCODE_DISABLE_CLAUDE_CODE"),
-    direct: bool("OPENCODE_DISABLE_CLAUDE_CODE_PROMPT"),
-  }).pipe(Config.map((flags) => flags.broad || flags.direct)),
-  disableClaudeCodeSkills: Config.all({
-    broad: bool("OPENCODE_DISABLE_CLAUDE_CODE"),
-    direct: bool("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"),
-  }).pipe(Config.map((flags) => flags.broad || flags.direct)),
   enableExa: bool("GRAPHAGENT_ENABLE_EXA"),
   enableParallel: bool("GRAPHAGENT_ENABLE_PARALLEL"),
   enableExperimentalModels: bool("GRAPHAGENT_ENABLE_EXPERIMENTAL_MODELS"),

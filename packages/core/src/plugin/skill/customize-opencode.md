@@ -1,7 +1,6 @@
 <!--
   Built-in skill. Name and description are registered in code at
-  packages/core/src/plugin/skill.ts
-  and CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION). The body below becomes the
+  packages/core/src/plugin/skill.ts. The body below becomes the
   skill's content.
 -->
 
@@ -47,7 +46,7 @@ already-loaded config until then.
 | Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                 |
 | Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                      |
 | Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                             |
-| External skills (auto-loaded) | `~/.claude/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md`                                                    |
+| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                       |
 
 Configs from each scope are deep-merged. Project overrides global. Unknown
 top-level keys in `graphagent.json` are rejected with `ConfigInvalidError`.
@@ -370,9 +369,6 @@ When a user's config is broken and opencode won't start, these env vars help:
 - `GRAPHAGENT_CONFIG=/path/to/file.json`: load an additional explicit config.
 - `GRAPHAGENT_CONFIG_CONTENT='{"$schema":"https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"}'`:
   inject inline JSON as a final local-scope merge.
-- `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`,
-  `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1`: skip the external skill scans under
-  `~/.claude/` and `~/.agents/`.
 
 ## When proposing edits
 

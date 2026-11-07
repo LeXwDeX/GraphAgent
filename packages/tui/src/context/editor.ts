@@ -100,7 +100,6 @@ type EditorServerInfo = Schema.Schema.Type<typeof EditorServerInfoSchema>
 
 type EditorConnection = {
   url: string
-  authToken?: string
   source: string
 }
 
@@ -114,7 +113,7 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
   init: (props: { integration?: EditorIntegration; WebSocketImpl?: typeof WebSocket }) => {
     const paths = useTuiPaths()
     const editor = props.integration ?? editorIntegration
-    const value = process.env.CLAUDE_CODE_SSE_PORT || process.env.GRAPHAGENT_EDITOR_SSE_PORT
+    const value = process.env.GRAPHAGENT_EDITOR_SSE_PORT
     const parsedPort = value ? Number.parseInt(value, 10) : undefined
     const port =
       parsedPort && Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535 ? parsedPort : undefined
@@ -388,13 +387,7 @@ export function editorSelectionKey(selection: EditorSelection | undefined) {
 }
 
 function openEditorSocket(connection: EditorConnection, WebSocketImpl: typeof WebSocket) {
-  if (!connection.authToken) return new WebSocketImpl(connection.url)
-
-  return new WebSocketImpl(connection.url, {
-    headers: {
-      "x-claude-code-ide-authorization": connection.authToken,
-    },
-  } as any)
+  return new WebSocketImpl(connection.url)
 }
 
 function parseMessage(value: unknown) {
