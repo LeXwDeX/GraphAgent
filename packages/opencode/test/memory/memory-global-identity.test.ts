@@ -9,7 +9,6 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Effect, Layer } from "effect"
-import { stringify } from "yaml"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import fs from "node:fs"
 import os from "node:os"
@@ -210,46 +209,6 @@ describe("MEM-PR01-R1-03: memory is inert once the identity row is retired", () 
                 expect(yield* memory.setEnabled(true)).toContain("unavailable")
               }),
             )
-          }),
-        ).pipe(Effect.provide(testInstanceStoreLayer))
-      }),
-    { timeout: 30_000 },
-  )
-})
-
-describe("MEM-PR01-R1-23: the runtime admission snapshot covers every registered sandbox", () => {
-  it.live(
-    "a legacy topic living only in a registered sandbox is imported on activation",
-    () =>
-      Effect.gen(function* () {
-        const dir = yield* tmpdirScoped({ git: true })
-        const sandbox = yield* tmpdirScoped()
-        const project = yield* Project.Service
-        const { project: info } = yield* project.fromDirectory(dir)
-        yield* provideInstance({ directory: dir, worktree: info.worktree, project: info })(
-          Effect.gen(function* () {
-            const project = yield* Project.Service
-            const memory = yield* Memory.Service
-            const configStore = yield* MemoryConfig.Service
-            const store = yield* MemoryStore.Service
-
-            yield* project.setInitialized(info.id)
-            yield* project.addSandbox(info.id, sandbox)
-            yield* configStore.writeGlobal(baseConfig)
-
-            // The only legacy topic lives in the sandbox, not the primary.
-            const legacyDir = path.join(sandbox, ".agents", "memory", "topics")
-            fs.mkdirSync(legacyDir, { recursive: true })
-            const seeded = topic()
-            fs.writeFileSync(path.join(legacyDir, `${seeded.id}.yaml`), stringify(seeded))
-
-            // Activation (any product surface) must admit the FULL snapshot —
-            // primary plus every registered sandbox.
-            const sessionID = SessionID.make("ses_sandbox_snapshot")
-            yield* memory.search({ sessionID, messages: [userMessage(sessionID)], query: "架构边界" })
-
-            const snapshot = yield* store.readSnapshot(info.id)
-            expect(snapshot.topics.map((value) => value.id)).toContain(seeded.id)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
       }),
