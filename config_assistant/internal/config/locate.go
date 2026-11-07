@@ -16,7 +16,7 @@ type Layer int
 const (
 	LayerManaged Layer = iota // 管理员强制（最高优先级中的文件层）
 	LayerInline               // GRAPHAGENT_CONFIG_CONTENT 环境变量
-	LayerProject              // 项目根 graphagent.json
+	LayerProject              // 项目层 <root>/.agents/settings.json
 	LayerCustom               // GRAPHAGENT_CONFIG 环境变量
 	LayerGlobal               // ~/.config/graphagent/graphagent.json
 )
@@ -146,23 +146,33 @@ func projectConfigPaths() []string {
 
 const projectDirName = ".agents"
 
-// projectRoot resolves the single project layer: the nearest directory at or
-// above the working directory that holds `.agents/`, bounded by the git
-// toplevel. `$HOME` and the filesystem root never become project roots. Without
-// a marker a git repository falls back to its toplevel and everything else to
-// the working directory — the same rule the runtime applies.
-func projectRoot() string {
-	start, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	start = filepath.Clean(start)
+// ProjectRootInput is the pure input for project-root resolution. Tests inject
+// `$HOME`, the git toplevel, and the `.agents/` probe so the shared TS/Go
+// fixture can drive both implementations without touching the real machine.
+type ProjectRootInput struct {
+	Directory   string
+	Home        string
+	Toplevel    string
+	IsDirectory func(string) bool
+}
+
+// ResolveProjectRoot implements the runtime's project-root rule: the nearest
+// directory at or above the instance directory that holds `.agents/`, bounded
+// by the git toplevel. `$HOME` and the filesystem root never become project
+// roots. Without a marker a git repository falls back to its toplevel and
+// everything else to the instance directory — the same rule as
+// packages/opencode/src/project/project-root.ts.
+func ResolveProjectRoot(in ProjectRootInput) string {
+	start := filepath.Clean(in.Directory)
 	home := ""
-	if resolved, err := os.UserHomeDir(); err == nil {
-		home = filepath.Clean(resolved)
+	if in.Home != "" {
+		home = filepath.Clean(in.Home)
+	}
+	toplevel := ""
+	if in.Toplevel != "" {
+		toplevel = filepath.Clean(in.Toplevel)
 	}
 	root := fsRoot(start)
-	toplevel := gitToplevel(start)
 	upper := toplevel
 	if upper == "" {
 		if home != "" && within(start, home) {
@@ -173,7 +183,7 @@ func projectRoot() string {
 	}
 
 	for current := start; ; {
-		if !samePath(current, home) && !samePath(current, root) && isDirectory(filepath.Join(current, projectDirName)) {
+		if !samePath(current, home) && !samePath(current, root) && in.IsDirectory(filepath.Join(current, projectDirName)) {
 			return current
 		}
 		if samePath(current, upper) {
@@ -188,10 +198,31 @@ func projectRoot() string {
 	if toplevel != "" {
 		return toplevel
 	}
-	if samePath(start, home) {
+	return start
+}
+
+// projectRoot returns the single writable project layer, or "" when there is
+// none. A root that resolves to `$HOME` has no project layer: `~/.agents` is
+// the user-level shared directory, so callers must reject project-layer writes.
+func projectRoot() string {
+	start, err := os.Getwd()
+	if err != nil {
 		return ""
 	}
-	return start
+	home := ""
+	if resolved, err := os.UserHomeDir(); err == nil {
+		home = resolved
+	}
+	root := ResolveProjectRoot(ProjectRootInput{
+		Directory:   start,
+		Home:        home,
+		Toplevel:    gitToplevel(start),
+		IsDirectory: isDirectory,
+	})
+	if samePath(root, home) {
+		return ""
+	}
+	return root
 }
 
 func gitToplevel(dir string) string {
