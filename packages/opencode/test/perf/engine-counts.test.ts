@@ -7,6 +7,7 @@ import { baselineEntry, compareScenario, type Baseline, type ScenarioActual } fr
 import { s1Scenario } from "./scenarios/s1"
 import { s2Scenario } from "./scenarios/s2"
 import { s3Scenario } from "./scenarios/s3"
+import { s4Scenario } from "./scenarios/s4"
 import { s5Scenario } from "./scenarios/s5"
 import { s6Scenario } from "./scenarios/s6"
 import { s7Scenario } from "./scenarios/s7"
@@ -37,6 +38,16 @@ const WRITE = process.env.PERF_WRITE_BASELINE === "1"
 // difference (S1/S2/S7 assert 64 bytes); across processes only the counts,
 // steps and request shapes are comparable.
 const BYTES: ReadonlyArray<CounterKey> = ["json.parseBytes", "json.encodeBytes", "sha256Bytes"]
+// S4's #523 dedup drops the repeated tool-part appends that land in the same
+// real millisecond, which moves reads and writes together in three-statement
+// units; the scenario test states the bound.
+const S4_VOLATILE: ReadonlyArray<CounterKey> = [
+  "json.parseBytes",
+  "json.encodeBytes",
+  "sha256Bytes",
+  "sql.read",
+  "sql.write",
+]
 // 15-way concurrency reorders SQL and lock waits (S5 test states the reason).
 const CONCURRENCY: ReadonlyArray<CounterKey> = [
   "sql.read",
@@ -111,6 +122,7 @@ function register<A extends ScenarioActual, R>(
 register("S1", s1Scenario(), BYTES)
 register("S2", s2Scenario(), BYTES)
 register("S3", s3Scenario(), BYTES)
+register("S4", s4Scenario(), S4_VOLATILE)
 register("S5", s5Scenario(), CONCURRENCY)
 register("S6", s6Scenario(), BYTES)
 register("S7", s7Scenario(), BYTES)
