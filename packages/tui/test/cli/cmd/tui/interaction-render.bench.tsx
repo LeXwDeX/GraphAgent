@@ -13,7 +13,7 @@ import {
   type ScrollBoxRenderable,
   type TextareaRenderable,
 } from "@opentui/core"
-import { testRender } from "@opentui/solid"
+import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal, For } from "solid-js"
 import parsers from "../../../../src/parsers-config"
 
@@ -22,7 +22,6 @@ addDefaultParsers(parsers.parsers)
 const bounded = process.argv[2] === "bounded"
 const Patch = bounded ? (await import("../../../../src/component/patch-diff")).PatchDiff : undefined
 const fg = RGBA.fromHex("#dddddd")
-const syntax = SyntaxStyle.fromStyles({ default: { fg } })
 const patch = `--- /dev/null\n+++ b/large.ts\n@@ -0,0 +1,7500 @@\n${Array.from({ length: 7500 }, (_, i) => `+const line${i + 1} = ${i + 1}`).join("\n")}`
 const nodes = (root: Renderable): Renderable[] => [root, ...root.getChildren().flatMap(nodes)]
 const percentile = (values: number[], p: number) =>
@@ -48,7 +47,6 @@ for (const width of [80, 160]) {
       diff: patch,
       view: "unified" as const,
       filetype: "typescript",
-      syntaxStyle: syntax,
       showLineNumbers: true,
       width: "100%" as const,
       wrapMode: "char" as const,
@@ -56,34 +54,37 @@ for (const width of [80, 160]) {
     }
     const mountedAt = performance.now()
     const app = await testRender(
-      () => (
-        <box width="100%" height="100%" flexDirection="column">
-          <scrollbox ref={scroll} flexGrow={1} minHeight={0}>
-            {kind === "diff" ? (
-              Patch ? (
-                <Patch {...props} scroll={() => scroll} />
+      () => {
+        const syntax = SyntaxStyle.fromStyles({ default: { fg } }, useRenderer().nativeScene)
+        return (
+          <box width="100%" height="100%" flexDirection="column">
+            <scrollbox ref={scroll} flexGrow={1} minHeight={0}>
+              {kind === "diff" ? (
+                Patch ? (
+                  <Patch {...props} syntaxStyle={syntax} scroll={() => scroll} />
+                ) : (
+                  <diff {...props} syntaxStyle={syntax} />
+                )
               ) : (
-                <diff {...props} />
-              )
-            ) : (
-              <>
-                <For each={Array.from({ length: kind === "long-session" ? 100 : 1 }, (_, i) => i)}>
-                  {(index) => (
-                    <markdown
-                      content={`### Message ${index}\n\nRead this ordinary answer with **details** and \`code\`.\n\n${"Paragraph of context. ".repeat(12)}`}
-                      syntaxStyle={syntax}
-                      streaming={false}
-                    />
-                  )}
-                </For>
-                <markdown content={stream()} syntaxStyle={syntax} streaming={true} />
-              </>
-            )}
-          </scrollbox>
-          <textarea ref={editor} height={1} onContentChange={() => setTyped(editor.plainText)} />
-          <text height={1}>{`Input: ${typed()}`}</text>
-        </box>
-      ),
+                <>
+                  <For each={Array.from({ length: kind === "long-session" ? 100 : 1 }, (_, i) => i)}>
+                    {(index) => (
+                      <markdown
+                        content={`### Message ${index}\n\nRead this ordinary answer with **details** and \`code\`.\n\n${"Paragraph of context. ".repeat(12)}`}
+                        syntaxStyle={syntax}
+                        streaming={false}
+                      />
+                    )}
+                  </For>
+                  <markdown content={stream()} syntaxStyle={syntax} streaming={true} />
+                </>
+              )}
+            </scrollbox>
+            <textarea ref={editor} height={1} onContentChange={() => setTyped(editor.plainText)} />
+            <text height={1}>{`Input: ${typed()}`}</text>
+          </box>
+        )
+      },
       { width, height: 30 },
     )
     try {

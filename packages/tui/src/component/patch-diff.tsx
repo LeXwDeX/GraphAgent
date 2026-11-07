@@ -80,7 +80,7 @@ function VirtualAddedPatch(props: {
   })
   // Use OpenTUI's own wrapping engine so placeholders preserve tabs, wide characters and word wrapping.
   // This buffer measures text only; it never mounts offscreen diff/code renderables.
-  const buffer = TextBuffer.create(renderer.widthMethod)
+  const buffer = TextBuffer.create(renderer.widthMethod, renderer.nativeScene)
   const view = TextBufferView.create(buffer)
   onCleanup(() => {
     view.destroy()

@@ -1600,7 +1600,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
   const summary = createMemo(() => reasoningSummary(content()))
-  const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
+  const syntax = createSyntaxStyleMemo((owner) => generateSubtleSyntax(theme, owner))
 
   const toggle = () => {
     if (!inMinimal()) return

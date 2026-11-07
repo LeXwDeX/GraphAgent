@@ -7,14 +7,20 @@ import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24 })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  // The test renderer has no terminal session, so the native title control
+  // rejects with InvalidPhase; record the call without forwarding it.
   const titles: string[] = []
-  const setTitle = setup.renderer.setTerminalTitle.bind(setup.renderer)
   setup.renderer.setTerminalTitle = (title) => {
     titles.push(title)
-    setTitle(title)
+  }
+  let titlesAtDestroy: number | undefined
+  const destroy = setup.renderer.destroy.bind(setup.renderer)
+  setup.renderer.destroy = () => {
+    titlesAtDestroy ??= titles.length
+    destroy()
   }
   const listeners = new Set(process.listeners("SIGHUP"))
   const events = createEventSource()
@@ -51,6 +57,7 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
 
     expect(setup.renderer.isDestroyed).toBe(true)
     expect(titles.at(-1)).toBe("")
+    expect(titlesAtDestroy).toBe(titles.length)
     expect(disposes).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
   } finally {
@@ -60,23 +67,28 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
 })
 
 test("app.exit prints the session epilogue after scoped cleanup", async () => {
-  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const setup = await createTestRenderer({ width: 80, height: 24 })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  // The test renderer has no terminal session, so the native title control
+  // rejects with InvalidPhase and trips the app error boundary.
+  setup.renderer.setTerminalTitle = () => {}
   const events = createEventSource()
+  const session = {
+    id: "dummy",
+    title: "Demo session",
+    slug: "dummy",
+    projectID: "project",
+    directory,
+    version: "0.0.0-test",
+    time: { created: 0, updated: 0 },
+  }
   const calls = createFetch((url) => {
-    if (url.pathname === "/session")
-      return json([
-        {
-          id: "dummy",
-          title: "Demo session",
-          slug: "dummy",
-          projectID: "project",
-          directory,
-          version: "0.0.0-test",
-          time: { created: 0, updated: 0 },
-        },
-      ])
+    if (url.pathname === "/session") return json([session])
+    if (url.pathname === "/session/dummy") return json(session)
+    if (url.pathname === "/session/dummy/message") return json([])
+    if (url.pathname === "/session/dummy/todo") return json([])
+    if (url.pathname === "/session/dummy/diff") return json([])
   })
   const originalWrite = process.stdout.write.bind(process.stdout)
   let stdout = ""
@@ -113,7 +125,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
 
     await ready
     await setup.renderOnce()
-    await setup.renderOnce()
+    await Bun.sleep(20)
     api?.keymap.dispatchCommand("app.exit")
     await task
 

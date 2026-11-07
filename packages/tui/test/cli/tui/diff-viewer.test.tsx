@@ -157,6 +157,14 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
       layer.commands?.forEach((command) => commands.set(command.name, command))
       return registerLayer(layer)
     }
+    // 0.8.3 registers `useBindings` layers through the keymap's internal layer
+    // service, bypassing `registerLayer`; mirror the catalog on state changes so
+    // component-owned commands stay visible to the test.
+    const sync = () => {
+      for (const command of keymap.getCommands({ visibility: "registered" })) commands.set(command.name, command)
+    }
+    keymap.on("state", sync)
+    sync()
     const base = createTuiPluginApi({
       keymap,
       client: {

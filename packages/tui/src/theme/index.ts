@@ -1,4 +1,4 @@
-import { SyntaxStyle, RGBA, type TerminalColors } from "@opentui/core"
+import { SyntaxStyle, RGBA, type NativeResourceOwner, type TerminalColors } from "@opentui/core"
 import aura from "./assets/aura.json" with { type: "json" }
 import ayu from "./assets/ayu.json" with { type: "json" }
 import carbonfox from "./assets/carbonfox.json" with { type: "json" }
@@ -553,11 +553,11 @@ function generateMutedTextColor(bg: RGBA, isDark: boolean): RGBA {
   return RGBA.fromInts(grayValue, grayValue, grayValue)
 }
 
-export function generateSyntax(theme: Theme) {
-  return SyntaxStyle.fromTheme(getSyntaxRules(theme))
+export function generateSyntax(theme: Theme, owner: NativeResourceOwner) {
+  return SyntaxStyle.fromTheme(getSyntaxRules(theme), owner)
 }
 
-export function generateSubtleSyntax(theme: Theme, overrides?: SyntaxStyleOverrides) {
+export function generateSubtleSyntax(theme: Theme, owner: NativeResourceOwner, overrides?: SyntaxStyleOverrides) {
   const rules = getSyntaxRules(theme)
   return SyntaxStyle.fromTheme(
     rules.map((rule) => {
@@ -580,6 +580,7 @@ export function generateSubtleSyntax(theme: Theme, overrides?: SyntaxStyleOverri
       }
       return rule
     }),
+    owner,
   )
 }
 
