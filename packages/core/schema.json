@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "a1bfac64-404f-4091-b6b8-281751e4979c",
+  "id": "f2dbf957-9a4c-435f-9bf3-fc4dfeac9eb1",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -52,10 +52,6 @@
     },
     {
       "name": "goal_state",
-      "entityType": "tables"
-    },
-    {
-      "name": "permission",
       "entityType": "tables"
     },
     {
@@ -1444,66 +1440,6 @@
     },
     {
       "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "id",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "project_id",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "action",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "resource",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_created",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_updated",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
       "notNull": true,
       "autoincrement": false,
       "default": null,
@@ -2223,21 +2159,6 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_permission_project_id_project_id_fk",
-      "entityType": "fks",
-      "table": "permission"
-    },
-    {
-      "columns": [
-        "project_id"
-      ],
-      "tableTo": "project",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "nameExplicit": false,
       "name": "fk_project_directory_project_id_project_id_fk",
       "entityType": "fks",
       "table": "project_directory"
@@ -2429,15 +2350,6 @@
       "nameExplicit": false,
       "name": "goal_state_pk",
       "table": "goal_state",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "permission_pk",
-      "table": "permission",
       "entityType": "pks"
     },
     {
@@ -2801,28 +2713,6 @@
       "name": "goal_state_updated_at_idx",
       "entityType": "indexes",
       "table": "goal_state"
-    },
-    {
-      "columns": [
-        {
-          "value": "project_id",
-          "isExpression": false
-        },
-        {
-          "value": "action",
-          "isExpression": false
-        },
-        {
-          "value": "resource",
-          "isExpression": false
-        }
-      ],
-      "isUnique": true,
-      "where": null,
-      "origin": "manual",
-      "name": "permission_project_action_resource_idx",
-      "entityType": "indexes",
-      "table": "permission"
     },
     {
       "columns": [

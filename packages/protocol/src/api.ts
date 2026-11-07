@@ -3,7 +3,6 @@ import { HttpApi, HttpApiGroup, HttpApiMiddleware, OpenApi } from "effect/http-a
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 import { ModelGroup } from "./groups/model"
 import { ProviderGroup } from "./groups/provider"
-import { makePermissionGroup } from "./groups/permission"
 import { FileSystemGroup } from "./groups/fs"
 import { CommandGroup } from "./groups/command"
 import { SkillGroup } from "./groups/skill"
@@ -35,7 +34,6 @@ const makeApiFromGroup = <
     .add(ProviderGroup.middleware(locationMiddleware))
     .add(IntegrationGroup.middleware(locationMiddleware))
     .add(CredentialGroup.middleware(locationMiddleware))
-    .add(makePermissionGroup(locationMiddleware))
     .add(FileSystemGroup.middleware(locationMiddleware))
     .add(CommandGroup.middleware(locationMiddleware))
     .add(SkillGroup.middleware(locationMiddleware))

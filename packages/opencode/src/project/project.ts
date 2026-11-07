@@ -6,7 +6,6 @@ import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
 import { WorkflowTable } from "@opencode-ai/core/dag/sql"
-import { PermissionTable } from "@opencode-ai/core/permission/sql"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { GlobalBus } from "@/bus/global"
 import { which } from "@opencode-ai/core/util/which"
@@ -195,27 +194,9 @@ export const layer = Layer.effect(
                   .where(eq(WorkspaceTable.project_id, oldID))
                   .run()
 
-                // Repoint the Project-owned references that the old row's deletion would otherwise
-                // cascade-destroy. Both workflow and permission carry ON DELETE CASCADE on project_id,
-                // so without this repointing, gaining a first remote would silently delete every DAG
-                // workflow and every saved permission for the project.
+                // Workflow carries ON DELETE CASCADE on project_id, so without this repointing,
+                // gaining a first remote would silently delete every DAG workflow for the project.
                 yield* d.update(WorkflowTable).set({ project_id: newID }).where(eq(WorkflowTable.project_id, oldID)).run()
-                // (project_id, action, resource) is unique on permission. When the successor
-                // identity already holds a row with the same (action, resource), it already grants
-                // the identical permission: drop the old row instead of repointing it. A bulk
-                // UPDATE would violate the unique index and wedge the whole identity upgrade.
-                const successorPermissions = new Set(
-                  (yield* d.select().from(PermissionTable).where(eq(PermissionTable.project_id, newID)).all()).map(
-                    (row) => JSON.stringify([row.action, row.resource]),
-                  ),
-                )
-                for (const row of yield* d.select().from(PermissionTable).where(eq(PermissionTable.project_id, oldID)).all()) {
-                  if (successorPermissions.has(JSON.stringify([row.action, row.resource]))) {
-                    yield* d.delete(PermissionTable).where(eq(PermissionTable.id, row.id)).run()
-                  } else {
-                    yield* d.update(PermissionTable).set({ project_id: newID }).where(eq(PermissionTable.id, row.id)).run()
-                  }
-                }
 
                 if (oldProject) yield* d.delete(ProjectTable).where(eq(ProjectTable.id, oldID)).run()
               }),
