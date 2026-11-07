@@ -11,7 +11,7 @@ import { copyFile, mkdir, mkdtemp, readdir, rm } from "fs/promises"
 
 import { createClient } from "@hey-api/openapi-ts"
 
-const opencode = path.resolve(dir, "../../opencode")
+const graphagent = path.resolve(dir, "../../graphagent")
 
 // The generated spec and the raw codegen output are per-run artifacts:
 // overlapping builds in one checkout never share their lifecycle, and a run
@@ -25,7 +25,7 @@ const openapiTmpDir = await mkdtemp(path.join(os.tmpdir(), "opencode-sdk-openapi
 const openapiPath = path.join(openapiTmpDir, "openapi.json")
 const genDir = path.join(openapiTmpDir, "gen")
 
-await $`bun dev generate > ${openapiPath}`.cwd(opencode)
+await $`bun dev generate > ${openapiPath}`.cwd(graphagent)
 
 await createClient({
   input: openapiPath,

@@ -308,7 +308,7 @@ test("runs enabled and disabled preflights through the real host using only loop
     taskSpecSha256: sha256(new Uint8Array(await Bun.file(taskSpecPath).arrayBuffer())),
     host: {
       executable: process.execPath,
-      argsPrefix: ["run", "--conditions=browser", path.join(repo, "packages/opencode/src/index.ts")],
+      argsPrefix: ["run", "--conditions=browser", path.join(repo, "packages/graphagent/src/index.ts")],
       cwd: repo,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -322,7 +322,7 @@ test("runs enabled and disabled preflights through the real host using only loop
       },
       apiHeaders: {},
       startupTimeoutMs: 30_000,
-      opencodeConfigTemplate: {
+      graphagentConfigTemplate: {
         autoupdate: false,
         formatter: false,
         lsp: false,

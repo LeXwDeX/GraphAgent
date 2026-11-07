@@ -1,4 +1,4 @@
-import { NO_USEFUL_REASONING_TEXT } from "@opencode-ai/core/session/reasoning-distillation"
+import { NO_USEFUL_REASONING_TEXT } from "@graphagent/core/session/reasoning-distillation"
 
 /** Fixed-fixture semantic checks for the opt-in live acceptance harness. Not a production judge. */
 export function checkFixtureSemantics(id: string, texts: string[]): Record<string, boolean> {
@@ -96,7 +96,7 @@ export function checkFixtureSemantics(id: string, texts: string[]): Record<strin
         reference_resolved:
           /旧调度器.{0,12}LegacyScheduler|LegacyScheduler.{0,12}旧调度器/.test(text) &&
           /packages\/core\/src\/legacy\/scheduler\.ts/.test(text),
-        next_read_only: /只读检查.{0,4}packages\/opencode\/src\/session\/prompt\.ts/.test(text),
+        next_read_only: /只读检查.{0,4}packages\/graphagent\/src\/session\/prompt\.ts/.test(text),
       }
     case "all-noise":
       return { empty: texts.length === 1 && texts[0] === NO_USEFUL_REASONING_TEXT.zh }

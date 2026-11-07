@@ -34,7 +34,7 @@ export type PrivateConfig = {
     cwd: string
     env: Record<string, string>
     apiHeaders: Record<string, string>
-    opencodeConfigTemplate: JsonRecord
+    graphagentConfigTemplate: JsonRecord
     startupTimeoutMs: number
   }
   realModel: { providerID: string; modelID: string }
@@ -138,8 +138,8 @@ function parsePrivateConfig(input: unknown): PrivateConfig {
     throw new DriverFailure("private-config-invalid", "private config host/upstream are required")
   if (!Array.isArray(input.host.argsPrefix) || input.host.argsPrefix.some((item) => typeof item !== "string"))
     throw new DriverFailure("private-config-invalid", "host.argsPrefix must be a string array")
-  if (!isRecord(input.host.opencodeConfigTemplate))
-    throw new DriverFailure("private-config-invalid", "host.opencodeConfigTemplate must be an object")
+  if (!isRecord(input.host.graphagentConfigTemplate))
+    throw new DriverFailure("private-config-invalid", "host.graphagentConfigTemplate must be an object")
   const startupTimeoutMs = input.host.startupTimeoutMs
   if (!Number.isInteger(startupTimeoutMs) || Number(startupTimeoutMs) <= 0)
     throw new DriverFailure("private-config-invalid", "host.startupTimeoutMs must be a positive integer")
@@ -171,7 +171,7 @@ function parsePrivateConfig(input: unknown): PrivateConfig {
       cwd,
       env: stringRecord(input.host.env ?? {}, "host.env"),
       apiHeaders: stringRecord(input.host.apiHeaders ?? {}, "host.apiHeaders"),
-      opencodeConfigTemplate: structuredClone(input.host.opencodeConfigTemplate),
+      graphagentConfigTemplate: structuredClone(input.host.graphagentConfigTemplate),
       startupTimeoutMs: Number(startupTimeoutMs),
     },
     realModel: parseModel(input.realModel, "realModel"),
@@ -568,7 +568,7 @@ type HostHandle = {
 }
 
 function validateHostConfigTemplate(config: PrivateConfig) {
-  const template = config.host.opencodeConfigTemplate
+  const template = config.host.graphagentConfigTemplate
   const realID = `${config.realModel.providerID}/${config.realModel.modelID}`
   if (template.model !== realID || template.small_model !== realID)
     throw new DriverFailure("default-or-small-model-bypasses-guard")
@@ -620,14 +620,14 @@ async function startHost(input: {
 }): Promise<HostHandle> {
   validateHostConfigTemplate(input.config)
   const counts = new Map<string, number>()
-  const opencodeConfig = replacePlaceholders(
-    input.config.host.opencodeConfigTemplate,
+  const graphagentConfig = replacePlaceholders(
+    input.config.host.graphagentConfigTemplate,
     { [GUARD_PLACEHOLDER]: input.guardUrl },
     counts,
   )
   if (counts.get(GUARD_PLACEHOLDER) !== 1) throw new DriverFailure("provider-routing-template-invalid")
   const compaction =
-    isRecord(opencodeConfig) && isRecord(opencodeConfig.compaction) ? opencodeConfig.compaction : undefined
+    isRecord(graphagentConfig) && isRecord(graphagentConfig.compaction) ? graphagentConfig.compaction : undefined
   if (!compaction || compaction.auto !== true || compaction.dynamic !== true)
     throw new DriverFailure("compaction-config-not-frozen")
 
@@ -663,7 +663,7 @@ async function startHost(input: {
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_PRINT_LOGS: "1",
     OPENCODE_LOG_LEVEL: "INFO",
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(graphagentConfig),
     OPENCODE_DISABLE_AUTOUPDATE: "true",
     OPENCODE_DISABLE_MODELS_FETCH: "true",
     OPENCODE_AUTH_CONTENT: "{}",

@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks"
 import path from "node:path"
-import { spawn } from "../../../opencode/test/lib/pty.bun"
+import { spawn } from "../../../graphagent/test/lib/pty.bun"
 
 const command = process.env.TUI_PTY_COMMAND ?? "bun"
 const args = (process.env.TUI_PTY_ARGS ?? "run dev").split(" ").filter(Boolean)
