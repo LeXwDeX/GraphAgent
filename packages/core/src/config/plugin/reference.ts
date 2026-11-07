@@ -3,6 +3,7 @@ export * as ConfigReferencePlugin from "./reference"
 import { define } from "../../plugin/internal"
 import path from "path"
 import { Effect } from "effect"
+import { PROJECT_DIR } from "../../brand"
 import { Config } from "../../config"
 import { ConfigReference } from "../reference"
 import { Reference } from "../../reference"
@@ -22,7 +23,15 @@ export const Plugin = define({
         for (const doc of (yield* config.entries()).filter(
           (entry): entry is Config.Document => entry.type === "document",
         )) {
-          const directory = doc.path ? path.dirname(doc.path) : location.directory
+          // Project settings live in `<root>/.agents/`, but relative reference
+          // paths stay relative to the project root, as they were when the
+          // project document lived at the root. User documents keep resolving
+          // relative to their own directory.
+          const directory = doc.path
+            ? path.basename(path.dirname(doc.path)) === PROJECT_DIR
+              ? path.dirname(path.dirname(doc.path))
+              : path.dirname(doc.path)
+            : location.directory
           for (const [name, entry] of Object.entries(doc.info.references ?? {})) {
             if (!validAlias(name)) continue
             entries.set(
