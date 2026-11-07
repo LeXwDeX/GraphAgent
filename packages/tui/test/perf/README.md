@@ -20,12 +20,12 @@ Input and scroll latency starts immediately before the mock key or scroll operat
 From `packages/tui`:
 
 ```sh
-bun test/perf/run.ts --update-baseline=f21cabe7f
+bun test/perf/run.ts --update-baseline=<commit>
 bun test/perf/run.ts
-bun test/perf/compare.ts test/perf/baseline-f21cabe7f.json /tmp/tui-current.json
+bun test/perf/compare.ts test/perf/baseline-<commit>.json /tmp/tui-current.json
 ```
 
-The baseline file is a comparison artifact for the code before the F1 interface rewrite. F2 must create a separate `baseline.json`; this file must not be updated after the rewrite. Five repetitions are used by default. Set `PERF_REPEATS` or pass `--repeats=N` when investigating locally.
+`--update-baseline=<commit>` writes `test/perf/baseline-<commit>.json` and records `<commit>` in its `baseline` field; use the short hash of the measured commit. The comparison artifact for the interface before the F1 rewrite is measured on the post-OpenTUI-upgrade `main` commit. `baseline-f21cabe7f.json` is the pre-upgrade reference and must not be updated after the rewrite; F2 creates its own `baseline.json`. Five repetitions are used by default. Set `PERF_REPEATS` or pass `--repeats=N` when investigating locally.
 
 The nightly PTY measurement is intentionally separate from the PR benchmark:
 
