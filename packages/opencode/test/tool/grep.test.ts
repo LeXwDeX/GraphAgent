@@ -394,7 +394,9 @@ describe("tool.grep", () => {
       const result = yield* Effect.exit(grep.execute({ pattern: "needle", path: missing }, ctx))
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
-        const text = Cause.pretty(result.cause)
+        // Only the message: a pretty-printed cause appends stack frames whose
+        // checkout path can itself contain the word "permission".
+        const text = Cause.pretty(result.cause).split("\n")[0]
         expect(text).toContain(`Search path does not exist: ${missing}`)
         expect(text).toContain("Verify the path with Glob")
         expect(text).not.toContain("permission")
