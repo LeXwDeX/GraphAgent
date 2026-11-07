@@ -239,7 +239,10 @@ const discoverSkills = Effect.fnUntraced(function* (
     externalDirs.push(AGENTS_EXTERNAL_DIR)
 
     for (const dir of externalDirs) {
-      const root = path.join(global.home, dir)
+      // Read the live path, not the injected Global service: userSkillRoots()
+      // resolves provenance against Global.Path.home too, and an injected
+      // Global layer snapshots home at build time.
+      const root = path.join(Global.Path.home, dir)
       if (!(yield* fsys.isDir(root))) continue
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
     }

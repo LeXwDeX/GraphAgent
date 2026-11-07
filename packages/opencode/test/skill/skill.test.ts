@@ -567,16 +567,6 @@ description: A skill in the .claude/skills directory.
 `,
               ),
               Bun.write(
-                path.join(dir, ".agents", "skills", "agent-skill", "SKILL.md"),
-                `---
-name: agent-skill
-description: A skill in the .agents/skills directory.
----
-
-# Agent Skill
-`,
-              ),
-              Bun.write(
                 path.join(dir, ".agents", "skill", "opencode-skill", "SKILL.md"),
                 `---
 name: opencode-skill
@@ -634,13 +624,13 @@ description: A skill in the .agents/skill directory.
 `,
               ),
               Bun.write(
-                path.join(dir, ".agents", "skills", "agent-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skills", "second-skill", "SKILL.md"),
                 `---
-name: opencode-skill
-description: A skill in the .agents/skills directory.
+name: second-skill
+description: A second skill in the .agents/skills directory.
 ---
 
-# OpenCode Skill
+# Second Skill
 `,
               ),
             ]),
