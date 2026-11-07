@@ -19,10 +19,8 @@ import { Provider } from "@/provider/provider"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { LLMEvent } from "@opencode-ai/llm"
 import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
@@ -142,7 +140,6 @@ const root = LayerNode.group([
 ])
 const replacements = [
   LayerNode.replace(SessionSummary.node, summary),
-  LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
 ]
 
 /**
@@ -470,12 +467,8 @@ exhausted.it.effect(
         const { processors, session, provider } = yield* boot()
         const events = yield* EventV2Bridge.Service
         const sts = yield* SessionStatus.Service
-        const retried: number[] = []
         const errors: string[] = []
         const off = yield* events.listen((event) => {
-          if (event.type === SessionEvent.Retried.type && Schema.is(SessionEvent.Retried.data)(event.data)) {
-            retried.push(event.data.attempt)
-          }
           if (event.type === Session.Event.Error.type && Schema.is(Session.Event.Error.data)(event.data)) {
             if (event.data.error) errors.push(event.data.error.name)
           }
@@ -496,7 +489,6 @@ exhausted.it.effect(
 
         expect(result).toBe("stop")
         expect(exhausted.count()).toBe(6)
-        expect(retried).toStrictEqual([1, 2, 3, 4, 5])
         expect(errors).toContain("APIError")
         expect(handle.message.error).toBeDefined()
         expect(handle.message.error?.name).toBe("APIError")

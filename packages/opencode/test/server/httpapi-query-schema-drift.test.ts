@@ -23,7 +23,6 @@ import {
   MessagesQuery,
   SessionPaths,
 } from "../../src/server/routes/instance/httpapi/groups/session"
-import { SessionMessagesQuery } from "@opencode-ai/protocol/groups/message"
 import { QueryBoolean, QueryBooleanOpenApi } from "../../src/server/routes/instance/httpapi/groups/query"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
@@ -53,7 +52,6 @@ const openApiDriftRoutes = [
   { method: "get", path: ExperimentalPaths.session, query: ExperimentalSessionListQuery },
   { method: "get", path: ExperimentalPaths.tool, query: ToolListQuery },
   { method: "get", path: InstancePaths.vcsDiff, query: VcsDiffQuery },
-  { method: "get", path: "/api/session/:sessionID/message", query: SessionMessagesQuery },
 ] satisfies Array<{ method: Method; path: string; query: QuerySchema }>
 
 const numericSdkQueryParams = [
@@ -69,7 +67,6 @@ const numericSdkQueryParams = [
     name: "limit",
     schema: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
   },
-  { method: "get", path: "/api/session/:sessionID/message", name: "limit", schema: { type: "number" } },
 ] satisfies Array<{ method: Method; path: string; name: string; schema: OpenApiSchema }>
 
 const booleanSdkQueryParams = [

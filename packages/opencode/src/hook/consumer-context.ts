@@ -41,26 +41,17 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
     const permissions = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     permissionMode = permissions ? (yield* permissions.hookPolicy(sessionID)).mode : undefined
   }
-  const { SessionStore } = yield* Effect.promise(() => import("@opencode-ai/core/session/store"))
-  const store = Option.getOrUndefined(yield* Effect.serviceOption(SessionStore.Service))
-  let nativeSession: { parentID?: string; agent?: string; model?: { variant?: string } } | undefined = store
-    ? yield* store.get(SessionID.make(sessionID))
+  const { Session } = yield* Effect.promise(() => import("@/session/session"))
+  const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
+  const nativeSession = sessions
+    ? yield* sessions
+        .get(SessionID.make(sessionID))
+        .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
     : undefined
-  if (!nativeSession) {
-    // AppLayer hides the core store behind SessionV2; the V1 session service
-    // reads the same row, including model.variant.
-    const { Session } = yield* Effect.promise(() => import("@/session/session"))
-    const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
-    nativeSession = sessions
-      ? yield* sessions
-          .get(SessionID.make(sessionID))
-          .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
-      : undefined
-  }
   const agent = currentAgent ?? nativeSession?.agent ?? messages.findLast((message) => message.info.agent)?.info.agent
   if (agent === "plan" && permissionMode === undefined) permissionMode = "plan"
   const identity = withPromptIdentity(promptIdentity(messages), { promptID })
-  // V2 durable user rows carry no model metadata, so the transcript identity
+  // Durable user rows may carry no model metadata, so the transcript identity
   // cannot name the effort even though the session row holds the variant.
   const effort = identity.effort ?? variantToEffort(nativeSession?.model?.variant)
   return {

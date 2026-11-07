@@ -123,7 +123,6 @@ export const ReasoningPart = Schema.Struct({
   type: Schema.Literal("reasoning"),
   text: Schema.String,
   distillation: ReasoningDistillation.pipe(Schema.optional),
-  v2: Schema.Struct({ messageID: Schema.String, reasoningID: Schema.String }).pipe(Schema.optional),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
   time: Schema.Struct({
     start: NonNegativeInt,
@@ -324,7 +323,6 @@ export const ToolPart = Schema.Struct({
   type: Schema.Literal("tool"),
   callID: Schema.String,
   tool: Schema.String,
-  v2: Schema.Struct({ messageID: Schema.String }).pipe(Schema.optional),
   state: ToolState,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
 }).annotate({ identifier: "ToolPart" })
@@ -632,6 +630,24 @@ const events = {
       partID: PartID,
     },
   }),
+  AgentSwitched: define({
+    type: "session.agent.switched",
+    ...options,
+    schema: {
+      sessionID: SessionID,
+      agent: Schema.String,
+      timestamp: Timestamp,
+    },
+  }),
+  ModelSwitched: define({
+    type: "session.model.switched",
+    ...options,
+    schema: {
+      sessionID: SessionID,
+      model: SessionModel,
+      timestamp: Timestamp,
+    },
+  }),
 }
 
 export const PartDelta = define({
@@ -674,6 +690,8 @@ export const Event = {
     events.MessageRemoved,
     events.PartUpdated,
     events.PartRemoved,
+    events.AgentSwitched,
+    events.ModelSwitched,
     PartDelta,
     Diff,
     Error,

@@ -3,12 +3,8 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { tmpdir } from "../fixture/fixture"
-for (const { move, v2 } of [
-  { move: false, v2: false },
-  { move: true, v2: false },
-  { move: false, v2: true },
-])
-  test(`real TUI worker RPC ${v2 ? "V2 " : ""}creation${move ? ", move" : ""} and shutdown own the local session lifecycle`, async () => {
+for (const { move } of [{ move: false }, { move: true }])
+  test(`real TUI worker RPC creation${move ? ", move" : ""} and shutdown own the local session lifecycle`, async () => {
     await using tmp = await tmpdir({ git: move })
     const audit = path.join(tmp.path, "audit.jsonl")
     const hook = path.join(tmp.path, "hook.ts")
@@ -35,7 +31,6 @@ for (const { move, v2 } of [
           HOME: tmp.path,
           PWD: tmp.path,
           LIFECYCLE_MOVE: move ? "1" : "0",
-          LIFECYCLE_V2: v2 ? "1" : "0",
           OPENCODE_TEST_HOME: tmp.path,
           OPENCODE_CONFIG_CONTENT: '{"enabled_providers":[]}',
           OPENCODE_AUTH_CONTENT: "{}",

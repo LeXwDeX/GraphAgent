@@ -1,8 +1,12 @@
 export * as SessionAdmission from "./admission"
 
-import { Deferred, Effect } from "effect"
+import { Deferred, Effect, Schema } from "effect"
 import { KeyedMutex } from "../effect/keyed-mutex"
-import { SessionConversationHooks } from "./conversation-hooks"
+
+/** Admission rejection shared by the V1 conversation path. */
+export class Blocked extends Schema.TaggedError<Blocked>()("SessionConversationHookBlocked", {
+  reason: Schema.String,
+}) {}
 
 /** Application-owned admissions. Cancellation fences only owners already present;
  * later requests wait for cancellation to finish before acquiring a new owner. */
@@ -11,15 +15,15 @@ export const make = () => {
   const cancelling = new Map<string, Deferred.Deferred<void>>()
   const commits = KeyedMutex.makeUnsafe<string>()
   const active = new Map<string, Deferred.Deferred<void>>()
-  const cancelled = () => new SessionConversationHooks.Blocked({ reason: "Prompt cancelled before admission" })
+  const cancelled = () => new Blocked({ reason: "Prompt cancelled before admission" })
   const run = <A, E, R>(
     id: string,
     effect: (
       commit: <B, E2, R2>(
         effect: Effect.Effect<B, E2, R2>,
-      ) => Effect.Effect<B, E2 | SessionConversationHooks.Blocked, R2>,
+      ) => Effect.Effect<B, E2 | Blocked, R2>,
     ) => Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E | SessionConversationHooks.Blocked, R> =>
+  ): Effect.Effect<A, E | Blocked, R> =>
     Effect.suspend(() => {
       const barrier = cancelling.get(id)
       if (barrier) return Deferred.await(barrier).pipe(Effect.flatMap(() => run(id, effect)))
@@ -28,13 +32,13 @@ export const make = () => {
       current.add(owner)
       owners.set(id, current)
       const commit = <B, E2, R2>(body: Effect.Effect<B, E2, R2>) =>
-        Effect.suspend<B, E2 | SessionConversationHooks.Blocked, R2>(() => {
+        Effect.suspend<B, E2 | Blocked, R2>(() => {
           const invalid = () => cancelling.has(id) || Deferred.isDoneUnsafe(owner)
           if (invalid()) return Effect.fail(cancelled())
           return Effect.raceFirst(
             Effect.interruptible(commits.withLock(id)(
               Effect.uninterruptible(
-                Effect.suspend<B, E2 | SessionConversationHooks.Blocked, R2>(() => {
+                Effect.suspend<B, E2 | Blocked, R2>(() => {
                   if (invalid()) return Effect.fail(cancelled())
                   const finished = Deferred.makeUnsafe<void>()
                   active.set(id, finished)

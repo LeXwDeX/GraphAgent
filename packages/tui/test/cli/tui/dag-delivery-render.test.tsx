@@ -7,7 +7,6 @@ import { onCleanup } from "solid-js"
 import { TuiConfigProvider } from "../../../src/config"
 import { ArgsProvider } from "../../../src/context/args"
 import { ClipboardProvider } from "../../../src/context/clipboard"
-import { DataProvider } from "../../../src/context/data"
 import { EditorContextProvider } from "../../../src/context/editor"
 import { EpilogueProvider } from "../../../src/context/epilogue"
 import { ExitProvider } from "../../../src/context/exit"
@@ -168,7 +167,6 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                               >
                                 <ProjectProvider>
                                   <SyncProvider>
-                                    <DataProvider>
                                       <ThemeProvider mode="dark">
                                         <LocalProvider>
                                           <PromptStashProvider>
@@ -188,7 +186,6 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                                           </PromptStashProvider>
                                         </LocalProvider>
                                       </ThemeProvider>
-                                    </DataProvider>
                                   </SyncProvider>
                                 </ProjectProvider>
                               </SDKProvider>

@@ -68,5 +68,6 @@ export const migrations = (
     import("./migration/20261103002352_workflow_node_worktree_history"),
     import("./migration/20261106141024_remove_session_share"),
     import("./migration/20261106195046_mature_gateway"),
+    import("./migration/20261107004535_bizarre_blizzard"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

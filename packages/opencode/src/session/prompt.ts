@@ -1,4 +1,4 @@
-import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { randomUUID } from "node:crypto"
 import { Question } from "@/question"
 import { HookToolBatch } from "@/hook/tool-batch"
@@ -61,7 +61,7 @@ import { SystemPrompt } from "./system"
 import { RuntimeContext } from "./runtime-context"
 import { ProviderTransform } from "@/provider/transform"
 import { Instruction } from "./instruction"
-import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
+import { MAX_STEPS_PROMPT } from "./max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
@@ -110,11 +110,8 @@ import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
-import { SessionEvent } from "@opencode-ai/core/session/event"
-import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { AgentAttachment, FileAttachment, Prompt, Source } from "@opencode-ai/core/session/prompt"
 import * as DateTime from "effect/DateTime"
 import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
@@ -205,11 +202,11 @@ function formatMcpResourceBytes(value: number) {
 
 /** Maps an admission cancellation to the prompt's typed rejected-command error. */
 function mapAdmissionBlocked<A, E, R>(
-  effect: Effect.Effect<A, E | SessionConversationHooks.Blocked, R>,
+  effect: Effect.Effect<A, E | SessionAdmission.Blocked, R>,
 ): Effect.Effect<A, E | ModelSwitchBlocked, R> {
   return effect.pipe(
     Effect.catchIf(
-      (error): error is SessionConversationHooks.Blocked => error instanceof SessionConversationHooks.Blocked,
+      (error): error is SessionAdmission.Blocked => error instanceof SessionAdmission.Blocked,
       (error) => Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
     ),
   )
@@ -246,7 +243,7 @@ export interface AdmissionOptions {
 /** Admission-guarded commit: fails with Blocked when the session was cancelled first. */
 export type AdmissionCommit = <B, E, R>(
   body: Effect.Effect<B, E, R>,
-) => Effect.Effect<B, E | SessionConversationHooks.Blocked, R>
+) => Effect.Effect<B, E | SessionAdmission.Blocked, R>
 
 export interface Interface {
   readonly cancel: (
@@ -1544,15 +1541,6 @@ export const layer = Layer.effect(
               },
             }
             yield* sessions.updatePart(part)
-            if (flags.experimentalEventSystem) {
-              yield* events.publish(SessionEvent.Shell.Started, {
-                sessionID: input.sessionID,
-                messageID: SessionMessage.ID.create(),
-                timestamp: DateTime.makeUnsafe(started),
-                callID: part.callID,
-                command: input.command,
-              })
-            }
             return { msg, part, cwd: ctx.directory }
           }).pipe(Effect.ensuring(markReady))
 
@@ -1576,14 +1564,6 @@ export const layer = Layer.effect(
                 output += "\n\n" + ["<metadata>", SHELL_ABORT_NOTE, "</metadata>"].join("\n")
               }
               const completed = Date.now()
-              if (flags.experimentalEventSystem) {
-                yield* events.publish(SessionEvent.Shell.Ended, {
-                  sessionID: input.sessionID,
-                  timestamp: DateTime.makeUnsafe(completed),
-                  callID: mutablePart.callID,
-                  output,
-                })
-              }
               if (!msg.time.completed) {
                 msg.time.completed = completed
                 yield* sessions.updateMessage(msg)
@@ -1879,10 +1859,9 @@ export const layer = Layer.effect(
         if (current?.model && !changed && !variantChanged) return Effect.void
         return Effect.uninterruptible(
           Effect.gen(function* () {
-            yield* events.publish(SessionEvent.ModelSwitched, {
+            yield* sessions.setModelSelection({
               sessionID: input.sessionID,
-              messageID: SessionMessage.ID.create(),
-              timestamp: yield* DateTime.now,
+              timestamp: DateTime.toEpochMillis(yield* DateTime.now),
               model: {
                 id: selected.modelID,
                 providerID: selected.providerID,
@@ -2388,86 +2367,14 @@ export const layer = Layer.effect(
           : true
         if (unchanged) yield* modelSwitch.persist
         if (current?.agent !== info.agent) {
-          yield* events.publish(SessionEvent.AgentSwitched, {
+          yield* sessions.setAgent({
             sessionID: input.sessionID,
-            messageID: SessionMessage.ID.create(),
-            timestamp: DateTime.makeUnsafe(info.time.created),
+            timestamp: info.time.created,
             agent: info.agent,
           })
         }
         yield* sessions.updateMessage(info)
         for (const part of parts) yield* sessions.updatePart(part)
-        const nextPrompt = parts.reduce(
-          (result, part) => {
-            if (part.type === "text") {
-              if (part.synthetic) result.synthetic.push(part.text)
-              else result.text.push(part.text)
-            }
-            if (part.type === "file") {
-              result.files.push(
-                FileAttachment.make({
-                  uri: part.url,
-                  mime: part.mime,
-                  name: part.filename,
-                  source: part.source
-                    ? Source.make({
-                        start: part.source.text.start,
-                        end: part.source.text.end,
-                        text: part.source.text.value,
-                      })
-                    : undefined,
-                }),
-              )
-            }
-            if (part.type === "agent") {
-              result.agents.push(
-                AgentAttachment.make({
-                  name: part.name,
-                  source: part.source
-                    ? Source.make({
-                        start: part.source.start,
-                        end: part.source.end,
-                        text: part.source.value,
-                      })
-                    : undefined,
-                }),
-              )
-            }
-            return result
-          },
-          {
-            text: [] as string[],
-            files: [] as FileAttachment[],
-            agents: [] as AgentAttachment[],
-            synthetic: [] as string[],
-          },
-        )
-        // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-        if (flags.experimentalEventSystem) {
-          yield* events.publish(SessionEvent.Prompted, {
-            sessionID: input.sessionID,
-            messageID: SessionMessage.ID.create(),
-            timestamp: DateTime.makeUnsafe(info.time.created),
-            delivery: "steer",
-            prompt: Prompt.make({
-              text: nextPrompt.text.join("\n"),
-              files: nextPrompt.files,
-              agents: nextPrompt.agents,
-            }),
-          })
-        }
-        for (const text of nextPrompt.synthetic) {
-          // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-          if (flags.experimentalEventSystem) {
-            yield* events.publish(SessionEvent.Synthetic, {
-              sessionID: input.sessionID,
-              messageID: SessionMessage.ID.create(),
-              timestamp: DateTime.makeUnsafe(info.time.created),
-              text,
-            })
-          }
-        }
-
         if (persistAdmission) yield* persistAdmission
       })
       // Preparation and hook callbacks stay outside the write reservation.
@@ -4039,27 +3946,32 @@ export const layer = Layer.effect(
           input.sessionID,
           (
             commit,
-          ): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionConversationHooks.Blocked> =>
-            withRunRequest(input.sessionID, (request) =>
-              promptLocks.withLock(input.sessionID)(
-                Effect.gen(function* () {
-                  if (!request.valid()) return yield* Effect.interrupt
-                  const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-                  const contexts = yield* resumeContexts(target)
-                  if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
-                  const initial =
-                    input.hookMode !== "interactive" && hookLifecycle
-                      ? yield* hookLifecycle.consumeInitial(input.sessionID)
-                      : undefined
-                  const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-                  const initialTurn = initial && !history.some((message) => message.info.role === "user")
-                  const latest = history.findLast((message) => message.info.role === "assistant")
-                  const deferred = latest?.parts.some(
-                    (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
-                  )
-                  const saved = yield* pendingInput(target.metadata)
-                  if (!initialTurn && !deferred && !saved) {
-                    if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
+          ): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionAdmission.Blocked> =>
+            withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
+              Effect.gen(function* () {
+                if (!request.valid()) return yield* Effect.interrupt
+                const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+                const contexts = yield* resumeContexts(target)
+                if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
+                const initial =
+                  input.hookMode !== "interactive" && hookLifecycle
+                    ? yield* hookLifecycle.consumeInitial(input.sessionID)
+                    : undefined
+                const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+                const initialTurn = initial && !history.some((message) => message.info.role === "user")
+                const latest = history.findLast((message) => message.info.role === "assistant")
+                const deferred = latest?.parts.some(
+                  (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
+                )
+                const saved = yield* pendingInput(target.metadata)
+                if (!initialTurn && !deferred && !saved) {
+                  if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
+                  return yield* new NoPendingHookInput({
+                    message: "No initial hook message or deferred tool call is pending",
+                  })
+                }
+                if (input.followup) {
+                  if (saved)
                     return yield* new NoPendingHookInput({
                       message: "No initial hook message or deferred tool call is pending",
                     })

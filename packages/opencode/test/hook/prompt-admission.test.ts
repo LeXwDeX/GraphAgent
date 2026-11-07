@@ -23,7 +23,6 @@ import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { SessionRetry } from "@/session/retry"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { MessageID, SessionID } from "@/session/schema"
@@ -99,7 +98,6 @@ const it = testEffect(
     replacements: [
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
-      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
     ],
   }),
 )
@@ -159,6 +157,49 @@ it.live("followup admission owners are visible across instances", () =>
   ),
 )
 
+it.live("resume does not wait on cancellation while holding the admission commit lock", () =>
+  provideTmpdirServer(({ llm, dir }) =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const lifecycle = yield* HookLifecycle.Service
+      const hooks = yield* SessionHooks.Service
+      const session = yield* sessions.create({ title: "resume cancellation lock ordering" })
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      const entered = path.join(dir, "resume-admission-entered")
+      const release = path.join(dir, "resume-admission-release")
+      yield* hooks.add(session.id, {
+        event: "UserPromptSubmit",
+        hooks: [
+          {
+            type: "command",
+            command: `touch ${quote(entered)}; while [ ! -f ${quote(release)} ]; do sleep 0.01; done; printf '%s' '{}'`,
+          },
+        ],
+      })
+      yield* lifecycle.queueInitial(session.id, "initial")
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.writeFile(release, "go").catch(() => undefined)))
+      const resumed = yield* prompt.resume({ sessionID: session.id, hookMode: "noninteractive" }).pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
+        "resume did not reach admission",
+      )
+      const abort = SessionCancellation.begin(session.id)
+      yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
+      // Cancel while resume is parked inside the UserPromptSubmit hook. The
+      // admission fences the registered owner without waiting for the callback,
+      // and the resumed turn must observe the cancellation once it returns.
+      const cancelled = yield* SessionCancellation.admissions
+        .cancel(session.id, Effect.sync(abort.finish))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Fiber.join(cancelled), "cancel waited on the resume commit lock")
+      yield* Effect.promise(() => fs.writeFile(release, "go"))
+      expect(Exit.isFailure(yield* Fiber.await(resumed))).toBe(true)
+      expect(yield* llm.calls).toBe(0)
+    }),
+  ),
+)
+
 const goalIt = testEffect(
   LayerNode.buildLayer(LayerNode.group([
     root,
@@ -171,7 +212,6 @@ const goalIt = testEffect(
     replacements: [
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
-      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
     ],
   }).pipe(
     Layer.provideMerge(
@@ -1667,7 +1707,7 @@ it.live("a no-op model write appends no ModelSwitched event and uses the version
         hookMode: "interactive",
       })
       const before = yield* types()
-      expect(before.filter((row) => row.type.startsWith("session.next.model.switched"))).toHaveLength(1)
+      expect(before.filter((row) => row.type.startsWith("session.model.switched"))).toHaveLength(1)
       yield* prompt.setModel({
         sessionID: session.id,
         model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
@@ -1676,7 +1716,7 @@ it.live("a no-op model write appends no ModelSwitched event and uses the version
         hookMode: "interactive",
       })
       const after = yield* types()
-      expect(after.filter((row) => row.type.startsWith("session.next.model.switched"))).toHaveLength(1)
+      expect(after.filter((row) => row.type.startsWith("session.model.switched"))).toHaveLength(1)
       expect(after.every((row) => !row.type.endsWith("."))).toBe(true)
     }),
     { git: true, config: providerCfg },

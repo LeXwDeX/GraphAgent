@@ -1,41 +1,30 @@
 import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Equal, Hash, Layer, Schema } from "effect"
-import { Tool } from "@opencode-ai/core/tool/tool"
+import { Effect, Equal, Hash, Layer, Schema } from "effect"
 import { define } from "@opencode-ai/core/plugin/context/index"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
-import { toolDefinitions } from "./lib/tool"
-import { FSUtil } from "../src/fs-util"
 import { Credential } from "../src/credential"
 import { Database } from "../src/database/database"
 import { EventV2 } from "../src/event"
+import { FSUtil } from "../src/fs-util"
 import { Global } from "../src/global"
 import { ModelsDev } from "../src/models-dev"
 import { Npm } from "../src/npm"
 import { Project } from "../src/project"
-import { Reference } from "../src/reference"
-import { ToolRegistry } from "../src/tool/registry"
-import { ApplicationTools } from "../src/tool/application-tools"
 
-const applicationTools = ApplicationTools.layer
 const it = testEffect(
   Layer.merge(
-    Layer.mergeAll(applicationTools, Database.defaultLayer, EventV2.defaultLayer),
+    Layer.mergeAll(Database.defaultLayer, EventV2.defaultLayer),
     LocationServiceMap.layer.pipe(
-      Layer.provide(applicationTools),
       Layer.provide(
         Layer.mergeAll(
           Project.defaultLayer,
@@ -83,14 +72,6 @@ describe("LocationServiceMap", () => {
     ).pipe(
       Effect.flatMap(([blocked, allowed]) =>
         Effect.gen(function* () {
-          yield* (yield* ApplicationTools.Service).register({
-            application_context: Tool.make({
-              description: "Read application context",
-              input: Schema.Struct({}),
-              output: Schema.Struct({ ok: Schema.Boolean }),
-              execute: () => Effect.succeed({ ok: true }),
-            }),
-          })
           yield* Effect.promise(() =>
             fs.writeFile(
               path.join(blocked.path, "opencode.json"),
@@ -102,13 +83,9 @@ describe("LocationServiceMap", () => {
 
           const update = (directory: string) =>
             Effect.gen(function* () {
-              yield* Reference.Service
               const catalog = yield* Catalog.Service
               yield* catalog.transform((editor) => editor.provider.update(ProviderV2.ID.make("test"), () => {}))
-              return {
-                providers: yield* catalog.provider.all(),
-                tools: yield* toolDefinitions(yield* ToolRegistry.Service),
-              }
+              return { providers: yield* catalog.provider.all() }
             }).pipe(
               Effect.scoped,
               Effect.provide(LocationServiceMap.get(Location.Ref.make({ directory: AbsolutePath.make(directory) }))),
@@ -116,88 +93,8 @@ describe("LocationServiceMap", () => {
 
           const blockedState = yield* update(blocked.path)
           expect(blockedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(false)
-          expect(blockedState.tools.map((tool) => tool.name).sort()).toEqual([
-            "application_context",
-            "apply_patch",
-            "bash",
-            "edit",
-            "glob",
-            "grep",
-            "question",
-            "read",
-            "skill",
-            "todowrite",
-            "webfetch",
-            "websearch",
-            "write",
-          ])
           const allowedState = yield* update(allowed.path)
           expect(allowedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(true)
-          expect(allowedState.tools.map((tool) => tool.name).sort()).toEqual([
-            "application_context",
-            "apply_patch",
-            "bash",
-            "edit",
-            "glob",
-            "grep",
-            "question",
-            "read",
-            "skill",
-            "todowrite",
-            "webfetch",
-            "websearch",
-            "write",
-          ])
-        }),
-      ),
-    ),
-  )
-
-  it.live("rejects an unavailable selected model during location model resolution", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((dir) =>
-        Effect.gen(function* () {
-          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
-          yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(dir.path, "opencode.json"),
-              JSON.stringify({
-                providers: {
-                  unavailable: {
-                    name: "Unavailable",
-                    api: { type: "native", settings: {} },
-                    models: { chat: { disabled: true } },
-                  },
-                },
-              }),
-            ),
-          )
-          const failure = yield* SessionRunnerModel.Service.use((models) =>
-            models.resolve(
-              SessionV2.Info.make({
-                id: SessionV2.ID.make("ses_unavailable_model"),
-                projectID: ProjectV2.ID.global,
-                title: "test",
-                model: {
-                  id: ModelV2.ID.make("chat"),
-                  providerID: ProviderV2.ID.make("unavailable"),
-                },
-                cost: 0,
-                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-                time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
-                location,
-              }),
-            ),
-          ).pipe(Effect.provide(LocationServiceMap.get(location)), Effect.flip)
-
-          expect(failure).toMatchObject({
-            _tag: "SessionRunnerModel.ModelUnavailableError",
-            providerID: "unavailable",
-            modelID: "chat",
-          })
         }),
       ),
     ),

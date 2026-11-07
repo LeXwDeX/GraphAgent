@@ -5,7 +5,7 @@ import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/http
 import { HttpApiBuilder } from "effect/http-api"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
@@ -17,7 +17,7 @@ import { schemaErrorLayer } from "../../src/server/routes/instance/httpapi/middl
 import { testEffect } from "../lib/effect"
 
 const input = MoveSession.Input.make({
-  sessionID: SessionV2.ID.make("ses_move"),
+  sessionID: SessionSchema.ID.make("ses_move"),
   destination: { directory: AbsolutePath.make("/destination") },
   moveChanges: true,
 })

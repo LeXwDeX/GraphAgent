@@ -8,7 +8,7 @@ import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath, NonNegativeInt } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
@@ -37,7 +37,7 @@ function seed() {
     yield* db
       .insert(SessionTable)
       .values({
-        id: SessionV2.ID.make("ses_parent"),
+        id: SessionSchema.ID.make("ses_parent"),
         project_id: Project.ID.make("project-1"),
         slug: "parent",
         directory: AbsolutePath.make(process.cwd()),
@@ -51,7 +51,7 @@ function seed() {
       .values({
         id: "dag_capture",
         project_id: Project.ID.make("project-1"),
-        session_id: SessionV2.ID.make("ses_parent"),
+        session_id: SessionSchema.ID.make("ses_parent"),
         title: "Capture presence",
         status: "running",
         config: "{}",
@@ -123,13 +123,13 @@ describe("DAG null capture presence (#697)", () => {
         yield* events.publish(DagEvent.NodeRestarted, {
           dagID: DagEvent.DagID.make("dag_capture"),
           nodeID: DagEvent.NodeID.make("node"),
-          childSessionID: SessionV2.ID.make("ses_old"),
+          childSessionID: SessionSchema.ID.make("ses_old"),
           timestamp: yield* DateTime.now,
         })
         yield* events.publish(DagEvent.NodeStarted, {
           dagID: DagEvent.DagID.make("dag_capture"),
           nodeID: DagEvent.NodeID.make("node"),
-          childSessionID: SessionV2.ID.make("ses_new"),
+          childSessionID: SessionSchema.ID.make("ses_new"),
           timestamp: yield* DateTime.now,
         })
         expect(yield* store.getNode("dag_capture", "node")).toEqual(

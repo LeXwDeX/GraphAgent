@@ -1,8 +1,8 @@
 import { describe, expect } from "bun:test"
 import { sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
-import { SessionV2 } from "@opencode-ai/core/session"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
@@ -23,6 +23,7 @@ const it = testEffect(
     SessionAutomationLease.defaultLayer,
     DagMessages.defaultLayer,
     Database.defaultLayer,
+    SessionProjector.defaultLayer,
     testInstanceStoreLayer,
     CrossSpawnSpawner.defaultLayer,
   ),
@@ -137,13 +138,13 @@ const faultedIt = testEffect(
           Goal.defaultLayer,
           SessionAutomationLease.defaultLayer,
           Dag.defaultLayer,
-          SessionV2.defaultLayer,
           faultedMailbox,
         ),
       ),
     ),
     Database.defaultLayer,
     DagMessages.defaultLayer,
+    SessionProjector.defaultLayer,
     testInstanceStoreLayer,
     CrossSpawnSpawner.defaultLayer,
   ),

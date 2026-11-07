@@ -26,7 +26,6 @@ import { DagApi } from "./groups/dag"
 import { WorkspaceApi } from "./groups/workspace"
 import { makeApi } from "@opencode-ai/protocol/api"
 import { LocationMiddleware } from "@opencode-ai/server/location"
-import { SessionLocationMiddleware } from "@opencode-ai/server/middleware/session-location"
 import { GlobalApi } from "./groups/global"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
@@ -46,7 +45,6 @@ const EventSchema = Schema.Union([
 export const ServerApi = makeApi({
   definitions: EventManifest.Latest.values().toArray(),
   locationMiddleware: LocationMiddleware,
-  sessionLocationMiddleware: SessionLocationMiddleware,
 })
 
 export const RootHttpApi = HttpApi.make("opencode-root")

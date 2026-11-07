@@ -4,6 +4,7 @@ import { ConfigReasoningDistillation } from "@opencode-ai/core/config/reasoning-
 import { Hash } from "@opencode-ai/core/util/hash"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { APICallError } from "ai"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
@@ -27,8 +28,6 @@ import { SessionStatus } from "../../src/session/status"
 import { Todo } from "../../src/session/todo"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { SessionSummary } from "../../src/session/summary"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
 
 import type { Provider } from "@/provider/provider"
 import * as SessionProcessorModule from "../../src/session/processor"
@@ -244,7 +243,7 @@ const deps = Layer.mergeAll(
   EventV2Bridge.defaultLayer,
   Config.defaultLayer,
   SessionStatus.defaultLayer,
-  RuntimeFlags.layer({ experimentalEventSystem: true }),
+  RuntimeFlags.layer(),
   Database.defaultLayer,
   EventV2Bridge.defaultLayer,
 )
@@ -253,6 +252,7 @@ const env = Layer.mergeAll(
   SessionNs.defaultLayer,
   Database.defaultLayer,
   EventV2Bridge.defaultLayer,
+  SessionProjector.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
   SessionCompaction.layer.pipe(Layer.provide(SessionNs.defaultLayer), Layer.provideMerge(deps)),
 )
@@ -263,6 +263,7 @@ const compactionEnv = Layer.mergeAll(
   SessionNs.defaultLayer,
   Database.defaultLayer,
   EventV2Bridge.defaultLayer,
+  SessionProjector.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
 )
 const itCompaction = testEffect(compactionEnv)
@@ -290,7 +291,7 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     ? SessionProcessorModule.SessionProcessor.layer.pipe(
         Layer.provide(summary),
         Layer.provide(Image.defaultLayer),
-        Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
+        Layer.provide(RuntimeFlags.layer()),
         Layer.provide(status),
       )
     : layer(options?.result ?? "continue")
@@ -316,7 +317,7 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     Layer.provide(status),
     Layer.provide(events),
     Layer.provide(options?.config ?? Config.defaultLayer),
-    Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
+    Layer.provide(RuntimeFlags.layer()),
     Layer.provide(EventV2Bridge.defaultLayer),
   )
 }
@@ -691,35 +692,6 @@ describe("session.compaction.create", () => {
           type: "compaction",
           auto: true,
           overflow: true,
-        })
-      }),
-    ),
-  )
-
-  it.live.skip(
-    "projects a compaction message to v2 (v2 projector disabled)",
-    provideTmpdirInstance(() =>
-      Effect.gen(function* () {
-        const compact = yield* SessionCompaction.Service
-        const ssn = yield* SessionNs.Service
-        const info = yield* ssn.create({})
-
-        yield* compact.create({
-          sessionID: info.id,
-          agent: "build",
-          model: ref,
-          auto: true,
-          overflow: true,
-        })
-
-        const v2 = yield* SessionV2.Service.use((svc) => svc.messages({ sessionID: info.id })).pipe(
-          Effect.provide(SessionExecution.noopLayer),
-          Effect.provide(SessionV2.defaultLayer),
-        )
-        expect(v2.at(-1)).toMatchObject({
-          type: "compaction",
-          reason: "auto",
-          summary: "",
         })
       }),
     ),
@@ -2571,7 +2543,6 @@ describe("session.compaction.process", () => {
           () => {
             const stub = llm()
             const captured: string[] = []
-            let recent = ""
             const small = { ...createModel({ context: 100_000, output: 32_000 }), id: ModelV2.ID.make("qwen-small") }
             const fallback = { ...small, id: ModelV2.ID.make(family) }
             const provider = ProviderTest.fake({
@@ -2591,13 +2562,6 @@ describe("session.compaction.process", () => {
             return Effect.gen(function* () {
               const ssn = yield* SessionNs.Service
               const instance = yield* TestInstance
-              const events = yield* EventV2Bridge.Service
-              const publish = events.publish.bind(events)
-              spyOn(events, "publish").mockImplementation((definition, data, options) => {
-                if (typeof data === "object" && data !== null && "recent" in data && typeof data.recent === "string")
-                  recent = data.recent
-                return publish(definition, data, options)
-              })
               const session = yield* ssn.create({})
               let tailID: MessageID | undefined
               let suffixID: MessageID | undefined
@@ -2657,17 +2621,10 @@ describe("session.compaction.process", () => {
               )
               if (enabled ?? true) {
                 expect(captured[1]).not.toContain("tail distilled reasoning")
-                expect(recent).toContain("tail distilled reasoning")
-                expect(recent).not.toContain("tail original reasoning")
               } else {
                 expect(captured[1]).toContain(`tail original reasoning${"x".repeat(4_000)}`)
-                expect(recent).not.toContain("tail original reasoning")
-                if (suffix) {
-                  expect(captured[1]).not.toContain("retained tiny suffix")
-                  expect(recent).toContain("retained tiny suffix")
-                } else expect(recent).toBe("")
+                if (suffix) expect(captured[1]).not.toContain("retained tiny suffix")
               }
-              expect(Token.estimate(recent)).toBeLessThanOrEqual(300)
               const retained = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
               expect(retained.some((message) => message.info.id === tailID)).toBe((enabled ?? true) === true)
               if (suffixID) expect(retained.some((message) => message.info.id === suffixID)).toBe(true)

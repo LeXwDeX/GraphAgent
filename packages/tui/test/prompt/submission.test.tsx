@@ -9,7 +9,6 @@ import { Prompt, type PromptRef } from "../../src/component/prompt"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
-import { DataProvider } from "../../src/context/data"
 import { EditorContextProvider, useEditorContext, type EditorIntegration } from "../../src/context/editor"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
@@ -222,7 +221,6 @@ async function mountRoute(
                             >
                               <ProjectProvider>
                                 <SyncProvider>
-                                  <DataProvider>
                                     <ThemeProvider mode="dark">
                                       <Toast />
                                       <LocalProvider>
@@ -266,7 +264,6 @@ async function mountRoute(
                                         </PromptStashProvider>
                                       </LocalProvider>
                                     </ThemeProvider>
-                                  </DataProvider>
                                 </SyncProvider>
                               </ProjectProvider>
                             </SDKProvider>

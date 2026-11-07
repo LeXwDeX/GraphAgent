@@ -34,7 +34,6 @@ import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
-import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { DialogModel } from "./component/dialog-model"
@@ -280,8 +279,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                         >
                                           <ProjectProvider>
                                             <SyncProvider>
-                                              <DataProvider>
-                                                <ThemeProvider mode={mode}>
+                                              <ThemeProvider mode={mode}>
                                                   <LocalProvider>
                                                     <PromptStashProvider>
                                                       <DialogProvider>
@@ -303,7 +301,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                     </PromptStashProvider>
                                                   </LocalProvider>
                                                 </ThemeProvider>
-                                              </DataProvider>
                                             </SyncProvider>
                                           </ProjectProvider>
                                         </SDKProvider>

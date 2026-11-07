@@ -8,7 +8,6 @@ import { Prompt } from "../../../src/component/prompt"
 import { TuiConfigProvider } from "../../../src/config"
 import { ArgsProvider } from "../../../src/context/args"
 import { ClipboardProvider } from "../../../src/context/clipboard"
-import { DataProvider } from "../../../src/context/data"
 import { EditorContextProvider } from "../../../src/context/editor"
 import { EpilogueProvider } from "../../../src/context/epilogue"
 import { useEvent } from "../../../src/context/event"
@@ -271,7 +270,6 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
                             >
                               <ProjectProvider>
                                 <SyncProvider>
-                                  <DataProvider>
                                     <ThemeProvider mode="dark">
                                       <LocalProvider>
                                         <PromptStashProvider>
@@ -304,7 +302,6 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
                                         </PromptStashProvider>
                                       </LocalProvider>
                                     </ThemeProvider>
-                                  </DataProvider>
                                 </SyncProvider>
                               </ProjectProvider>
                             </SDKProvider>

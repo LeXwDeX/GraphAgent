@@ -31,7 +31,6 @@ import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import {
@@ -291,7 +290,6 @@ const root = LayerNode.group([
 const env = LayerNode.buildLayer(root, {
   replacements: [
     LayerNode.replace(SessionSummary.node, summary),
-    LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
     LayerNode.replace(LLM.node, idleLLM),
   ],
 })

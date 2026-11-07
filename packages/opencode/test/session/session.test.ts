@@ -1,7 +1,3 @@
-import { SessionEvent } from "@opencode-ai/core/session/event"
-import { SessionMessage } from "@opencode-ai/core/session/message"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
-import { eq } from "drizzle-orm"
 import { adoptReasoning } from "@/session/reasoning-adoption"
 import { ProviderTest } from "../fake/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -11,8 +7,10 @@ import { describe, expect } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
+import { EventTable } from "@opencode-ai/core/event/sql"
+import { eq } from "drizzle-orm"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Schema, DateTime, Deferred, Effect, Exit, Layer } from "effect"
+import { Schema, Deferred, Effect, Exit, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
 import { SessionAutomationLease } from "@/session/automation-lease"
@@ -216,6 +214,112 @@ describe("step-finish token propagation via event", () => {
   )
 })
 
+describe("session agent and model switches", () => {
+  it.instance("publishes durable switch events and updates only the switched columns", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const events = yield* EventV2Bridge.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "switch" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      const received = yield* Deferred.make<void>()
+      const seen: EventV2.Payload[] = []
+      const unsub = yield* events.listen((event) => {
+        if (event.type !== SessionV1.Event.AgentSwitched.type && event.type !== SessionV1.Event.ModelSwitched.type)
+          return Effect.void
+        seen.push(event)
+        if (seen.length === 2) Deferred.doneUnsafe(received, Effect.void)
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => unsub)
+
+      const model = {
+        id: ModelV2.ID.make("model-b"),
+        providerID: ProviderV2.ID.make("provider-b"),
+        variant: "high",
+      }
+      yield* session.setAgent({ sessionID: created.id, agent: "plan", timestamp: 1 })
+      yield* session.setModelSelection({ sessionID: created.id, model, timestamp: 2 })
+      yield* awaitDeferred(received, "timed out waiting for switch events")
+
+      expect(seen.map((event) => event.type)).toEqual([
+        SessionV1.Event.AgentSwitched.type,
+        SessionV1.Event.ModelSwitched.type,
+      ])
+      expect(seen[0].data).toMatchObject({ sessionID: created.id, agent: "plan", timestamp: 1 })
+      expect(seen[1].data).toMatchObject({ sessionID: created.id, model, timestamp: 2 })
+      expect(seen[0].durable).toMatchObject({ aggregateID: created.id, version: 1 })
+      expect(seen[1].durable).toMatchObject({ aggregateID: created.id, version: 1 })
+
+      // Switching writes only its own column: the untouched title survives.
+      const saved = yield* session.get(created.id)
+      expect(saved.title).toBe("switch")
+      expect(saved.agent).toBe("plan")
+      expect(saved.model).toEqual(model)
+
+      // Switches publish the V1 durable events only; no session.next.* row may be written.
+      const { db } = yield* Database.Service
+      const types = yield* db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, created.id))
+        .pipe(Effect.orDie)
+      expect(types.filter((row) => row.type.startsWith("session.next."))).toEqual([])
+    }),
+  )
+
+  it.instance("switches interleaved with a token increment keep title, cost and tokens", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "rename-me" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      yield* session.setTitle({ sessionID: created.id, title: "renamed" })
+
+      const messageID = MessageID.ascending()
+      yield* session.updateMessage({
+        id: messageID,
+        sessionID: created.id,
+        role: "user",
+        time: { created: Date.now() },
+        agent: "user",
+        model: { providerID: "test", modelID: "test" },
+        tools: {},
+        mode: "",
+      } as unknown as SessionV1.Info)
+
+      const model = { id: ModelV2.ID.make("model-b"), providerID: ProviderV2.ID.make("provider-b") }
+      // The switch projections and the step-finish usage projection run
+      // concurrently. Each one writes only its own columns, so no update can
+      // clobber the title, cost or token counters written by another.
+      yield* Effect.all(
+        [
+          session.updatePart({
+            id: PartID.ascending(),
+            messageID,
+            sessionID: created.id,
+            type: "step-finish",
+            reason: "stop",
+            cost: 0.25,
+            tokens: { total: 1500, input: 500, output: 800, reasoning: 200, cache: { read: 100, write: 50 } },
+          } satisfies SessionV1.StepFinishPart),
+          session.setAgent({ sessionID: created.id, agent: "plan" }),
+          session.setModelSelection({ sessionID: created.id, model }),
+        ],
+        { concurrency: "unbounded" },
+      )
+
+      const saved = yield* session.get(created.id)
+      expect(saved.title).toBe("renamed")
+      expect(saved.agent).toBe("plan")
+      expect(saved.model).toMatchObject({ id: "model-b", providerID: "provider-b" })
+      expect(saved.cost).toBe(0.25)
+      expect(saved.tokens).toEqual({ input: 500, output: 800, reasoning: 200, cache: { read: 100, write: 50 } })
+    }),
+  )
+})
+
 describe("Session", () => {
   it.live("remove works without an instance", () =>
     Effect.gen(function* () {
@@ -291,29 +395,6 @@ describe("adopted reasoning", () => {
       text: "original private reasoning",
       time: { start: 1, end: 2 },
     }
-    const events = yield* EventV2Bridge.Service
-    const assistantMessageID = SessionMessage.ID.create()
-    yield* events.publish(SessionEvent.Step.Started, {
-      sessionID: chat.id,
-      assistantMessageID,
-      agent: "build",
-      model: { id: info.modelID, providerID: info.providerID },
-      timestamp: DateTime.makeUnsafe(1),
-    })
-    yield* events.publish(SessionEvent.Reasoning.Started, {
-      sessionID: chat.id,
-      assistantMessageID,
-      reasoningID: "r1",
-      timestamp: DateTime.makeUnsafe(1),
-    })
-    yield* events.publish(SessionEvent.Reasoning.Ended, {
-      sessionID: chat.id,
-      assistantMessageID,
-      reasoningID: "r1",
-      text: reasoning.text,
-      timestamp: DateTime.makeUnsafe(2),
-    })
-    reasoning.v2 = { messageID: assistantMessageID, reasoningID: "r1" }
     yield* session.updatePart(reasoning)
     const after = "采用后的思考"
     const adopt = (part: SessionV1.ReasoningPart = reasoning, canAdopt = Effect.succeed(true)) =>
@@ -347,14 +428,6 @@ describe("adopted reasoning", () => {
         .find((message) => message.info.id === info.id)
         ?.parts.find((part) => part.id === reasoning.id)
       expect(part).toMatchObject({ text: after, distillation: { originalText: reasoning.text } })
-      const { db } = yield* Database.Service
-      const mirror = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(eq(SessionMessageTable.id, SessionMessage.ID.make(reasoning.v2!.messageID)))
-        .get()
-        .pipe(Effect.orDie)
-      expect(JSON.stringify(mirror?.data)).toContain(after)
       const model = ProviderTest.model({ id: info.modelID, providerID: info.providerID })
       const plain = yield* MessageV2.toModelMessagesEffect(reloaded, model, {
         reasoningDistillationEnabled: true,
@@ -391,24 +464,6 @@ describe("adopted reasoning", () => {
     }),
   )
 
-  it.instance("rejects a part whose v2 mirror changed without touching either copy", () =>
-    Effect.gen(function* () {
-      const { session, chat, info, reasoning, adopt } = yield* seed()
-      const events = yield* EventV2Bridge.Service
-      yield* events.publish(SessionEvent.Reasoning.Ended, {
-        sessionID: chat.id,
-        assistantMessageID: SessionMessage.ID.make(reasoning.v2!.messageID),
-        reasoningID: "r1",
-        text: "mirror moved on",
-        timestamp: DateTime.makeUnsafe(3),
-      })
-      expect(yield* adopt()).toBeUndefined()
-      expect(yield* session.getPart({ sessionID: chat.id, messageID: info.id, partID: reasoning.id })).toEqual(
-        reasoning,
-      )
-      yield* session.remove(chat.id)
-    }),
-  )
   it.instance("adopts a source already sent by a later assistant attempt", () =>
     Effect.gen(function* () {
       const { session, chat, info, reasoning, after, adopt } = yield* seed()
@@ -420,56 +475,7 @@ describe("adopted reasoning", () => {
       yield* session.remove(chat.id)
     }),
   )
-  it.instance("adopts a part whose assistant turn has an earlier continuation attempt", () =>
-    Effect.gen(function* () {
-      const { session, chat, info, reasoning, after, adopt } = yield* seed()
-      const events = yield* EventV2Bridge.Service
-      // Each continuation of one assistant turn persists its own V2 attempt. The part belongs to the second
-      // attempt, so the first attempt's row is earlier and cannot have carried it. The first id sorts after the
-      // second and both share a timestamp, so only the per-session seq proves which row is earlier: ids are not
-      // comparable across processes and producer clocks can tie or skew.
-      const first = SessionMessage.ID.make("msg_zzzz")
-      yield* events.publish(SessionEvent.Step.Started, {
-        sessionID: chat.id,
-        assistantMessageID: first,
-        agent: "build",
-        model: { id: info.modelID, providerID: info.providerID },
-        timestamp: DateTime.makeUnsafe(4),
-      })
-      const second = SessionMessage.ID.make("msg_aaaa")
-      yield* events.publish(SessionEvent.Step.Started, {
-        sessionID: chat.id,
-        assistantMessageID: second,
-        agent: "build",
-        model: { id: info.modelID, providerID: info.providerID },
-        timestamp: DateTime.makeUnsafe(4),
-      })
-      yield* events.publish(SessionEvent.Reasoning.Started, {
-        sessionID: chat.id,
-        assistantMessageID: second,
-        reasoningID: "r1",
-        timestamp: DateTime.makeUnsafe(4),
-      })
-      yield* events.publish(SessionEvent.Reasoning.Ended, {
-        sessionID: chat.id,
-        assistantMessageID: second,
-        reasoningID: "r1",
-        text: reasoning.text,
-        timestamp: DateTime.makeUnsafe(5),
-      })
-      yield* events.publish(SessionEvent.Step.Started, {
-        sessionID: chat.id,
-        assistantMessageID: SessionMessage.ID.make("msg_newer"),
-        agent: "build",
-        model: { id: info.modelID, providerID: info.providerID },
-        timestamp: DateTime.makeUnsafe(6),
-      })
-      const continued: SessionV1.ReasoningPart = { ...reasoning, v2: { messageID: second, reasoningID: "r1" } }
-      yield* session.updatePart(continued)
-      expect((yield* adopt(continued))?.text).toBe(after)
-      yield* session.remove(chat.id)
-    }),
-  )
+
   it.instance("deleted source or session and adoption defects retain history without failing the turn", () =>
     Effect.gen(function* () {
       const { session, chat, reasoning, adopt } = yield* seed()
@@ -481,6 +487,7 @@ describe("adopted reasoning", () => {
       expect(yield* adopt()).toBeUndefined()
     }),
   )
+
   it.instance("drops finished reasoning rewrites outside the compacted replay range", () =>
     Effect.gen(function* () {
       const { session, chat, info, reasoning, adopt } = yield* seed()
@@ -514,6 +521,7 @@ describe("adopted reasoning", () => {
       ).toEqual(reasoning)
     }),
   )
+
   it.instance("a deleted reasoning source message is an ordinary adoption rejection", () =>
     Effect.gen(function* () {
       const { session, chat, info, adopt } = yield* seed()
@@ -521,6 +529,7 @@ describe("adopted reasoning", () => {
       expect(yield* adopt()).toBeUndefined()
     }),
   )
+
   it.instance("a disabled switch blocks an already prepared adoption", () =>
     Effect.gen(function* () {
       const { session, chat, reasoning, adopt } = yield* seed()

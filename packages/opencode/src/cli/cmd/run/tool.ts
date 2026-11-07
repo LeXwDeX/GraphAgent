@@ -1404,32 +1404,7 @@ function structuredBody(commit: StreamCommit, raw: string): RunEntryBody | undef
   }
 }
 
-function shellOutput(command: string, raw: string): string | undefined {
-  const body = stripAnsi(raw).replace(/^\n+/, "").replace(/\n+$/, "")
-  if (!body) {
-    return undefined
-  }
-
-  if (!command) {
-    return body
-  }
-
-  return `\n${body}`
-}
-
 export function toolEntryBody(commit: StreamCommit, raw: string): RunEntryBody | undefined {
-  if (commit.shell) {
-    if (commit.phase === "start") {
-      return textBody(`$ ${commit.shell.command}`)
-    }
-
-    if (commit.phase === "progress") {
-      return textBody(shellOutput(commit.shell.command, raw) ?? "")
-    }
-
-    return undefined
-  }
-
   const ctx = toolFrame(commit, raw)
   const view = toolView(ctx.name)
 

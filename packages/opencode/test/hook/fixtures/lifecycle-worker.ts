@@ -3,13 +3,10 @@ const worker = new Worker(new URL("../../../src/cli/tui/worker.ts", import.meta.
 const client = Rpc.client<typeof import("../../../src/cli/tui/worker").rpc>(worker)
 try {
   const response = await client.call("fetch", {
-    url: process.env.LIFECYCLE_V2 === "1" ? "http://opencode.example.com/api/session" : "http://opencode.example.com/session",
+    url: "http://opencode.example.com/session",
     method: "POST",
     headers: { "content-type": "application/json", "x-opencode-directory": process.env.LIFECYCLE_DIRECTORY! },
-    body:
-      process.env.LIFECYCLE_V2 === "1"
-        ? JSON.stringify({ location: { directory: process.env.LIFECYCLE_DIRECTORY! } })
-        : "{}",
+    body: "{}",
   })
   if (response.status !== 200) throw new Error(`session fixture status ${response.status}`)
   if (process.env.LIFECYCLE_MOVE === "1") {
