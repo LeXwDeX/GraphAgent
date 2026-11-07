@@ -57,12 +57,30 @@ describe("tui thread", () => {
     }
   })
 
+  test("preserves boolean negation for existing options", async () => {
+    const args = await yargs([])
+      .command({ ...TuiThreadCommand, handler: () => {} })
+      .exitProcess(false)
+      .parse(["--fork", "--no-fork"])
+
+    expect(args.fork).toBe(false)
+  })
+
   cliIt.live("rejects mini-only options without --mini", ({ opencode }) =>
     Effect.gen(function* () {
       const result = yield* opencode.spawn(["--replay-limit", "10"])
 
       opencode.expectExit(result, 1)
       expect(result.stderr).toContain("--replay-limit requires --mini")
+    }),
+  )
+
+  cliIt.live("rejects mini mode without a TTY stdout", ({ opencode }) =>
+    Effect.gen(function* () {
+      const result = yield* opencode.spawn(["--mini"])
+
+      opencode.expectExit(result, 1)
+      expect(result.stderr).toContain("--mini requires a TTY stdout")
     }),
   )
 })

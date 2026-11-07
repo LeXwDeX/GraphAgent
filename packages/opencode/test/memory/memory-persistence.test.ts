@@ -808,9 +808,9 @@ describe("Project-owned MEMORY persistence", () => {
       }),
   )
 
-  // Windows chmod is a no-op on directories, so the undeletable-generation
-  // injection cannot be staged there.
-  const itPosix = process.platform === "win32" ? it.live.skip : it.live
+  // Windows chmod is a no-op on directories, and root bypasses the permission
+  // check, so the undeletable-generation injection cannot be staged there.
+  const itPosix = process.platform === "win32" || process.getuid?.() === 0 ? it.live.skip : it.live
   itPosix(
     "keeps committing when generation GC cannot delete a stale generation",
     () =>

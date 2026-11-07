@@ -56,11 +56,12 @@ const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: stri
   }
 }
 
+// The adapter registry currently lives in the app runtime, but LLM only sees
+// it when the layer graph provides it. Production wires it in `AppLayer`, so
+// the test layer must do the same or adapter hooks (OpenAI output-token
+// stripping) silently do not run.
 const it = testEffect(
-  Layer.mergeAll(
-    LLM.defaultLayer.pipe(Layer.provideMerge(ProviderAdapters.defaultLayer)),
-    Provider.defaultLayer,
-  ),
+  Layer.mergeAll(LLM.defaultLayer.pipe(Layer.provideMerge(ProviderAdapters.defaultLayer)), Provider.defaultLayer),
 )
 
 // LLM.stream returns a Stream, not an Effect, so we can't use the serviceUse proxy.
