@@ -409,7 +409,7 @@ export function RunQuestionBody(props: {
         <Show
           when={!confirm()}
           fallback={
-            <box width="100%" flexGrow={1} flexShrink={1} paddingLeft={1}>
+            <box width="100%" flexGrow={1} flexShrink={1} flexBasis={0} minHeight={0} paddingLeft={1}>
               <scrollbox
                 width="100%"
                 height="100%"
@@ -453,7 +453,7 @@ export function RunQuestionBody(props: {
               </text>
             </box>
 
-            <box flexGrow={1} flexShrink={1}>
+            <box flexGrow={1} flexShrink={1} flexBasis={0} minHeight={0}>
               <scrollbox
                 width="100%"
                 height="100%"
@@ -605,7 +605,9 @@ export function RunQuestionBody(props: {
         <Show when={remaining() !== undefined}>
           <text fg={props.theme.warning}>Timeout in {remaining()}s</text>
         </Show>
-        <Show when={interaction().error}>{(error) => <text fg={props.theme.error}>{error()}</text>}</Show>
+        <Show when={interaction().error}>
+          {(error) => <text fg={props.theme.error}>{error()}</text>}
+        </Show>
       </box>
 
       <box
