@@ -9,7 +9,6 @@ describe("context folding diagnostics", () => {
       requestPurpose: "conversation",
       resolution: ConfigCompaction.resolveDynamic({
         disabledByEnvironment: false,
-        knownExternalDcp: "unknown",
       }),
     })
 
@@ -46,7 +45,6 @@ describe("context folding diagnostics", () => {
         enabled: true,
         source: "default",
         deprecatedPrune: false,
-        externalDcp: "unknown",
       },
       duplicatePlan,
     })
@@ -58,7 +56,6 @@ describe("context folding diagnostics", () => {
       enabledSource: "default",
       configured: true,
       enabled: true,
-      externalDcp: "unknown",
       applied: false,
       duplicateGroups: 1,
       foldedOutputs: 0,
@@ -89,31 +86,5 @@ describe("context folding diagnostics", () => {
     for (const forbidden of ["secret", "witness-message", "excluded-message", "fingerprint", "filePath", "args"]) {
       expect(serialized).not.toContain(forbidden)
     }
-  })
-
-  test("reports explicit disablement without manufacturing zero token estimates", () => {
-    expect(
-      contextFoldingDiagnostic({
-        runtime: "opencode-ai-sdk",
-        requestPurpose: "conversation",
-        resolution: {
-          configured: true,
-          enabled: false,
-          source: "dynamic",
-          deprecatedPrune: false,
-          externalDcp: "loaded",
-          skipped: "external-dcp",
-        },
-      }),
-    ).toMatchObject({
-      enabled: false,
-      externalDcp: "loaded",
-      estimatedBefore: "unknown",
-      estimatedAfter: "unknown",
-      estimatedSavings: "unknown",
-      excludedByReason: "unknown",
-      protectedSteps: "unknown",
-      skipReason: "external-dcp",
-    })
   })
 })

@@ -72,9 +72,6 @@ export const Flag = {
   get OPENCODE_CONFIG_DIR() {
     return process.env["OPENCODE_CONFIG_DIR"]
   },
-  get OPENCODE_PURE() {
-    return truthy("OPENCODE_PURE")
-  },
   get OPENCODE_PERMISSION() {
     return process.env["OPENCODE_PERMISSION"]
   },

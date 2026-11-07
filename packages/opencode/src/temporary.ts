@@ -19,10 +19,6 @@ const cli = yargs(hideBin(process.argv))
     type: "string",
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
-  .option("pure", {
-    describe: "run without external plugins",
-    type: "boolean",
-  })
   .middleware((opts) => {
     if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel

@@ -4,7 +4,6 @@ import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { Effect } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { AzurePlugin } from "@opencode-ai/core/plugin/provider/azure"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -14,9 +13,8 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* AzurePlugin.effect(host)
 })
 
@@ -143,7 +141,6 @@ describe("AzurePlugin", () => {
   it.effect("allows configured baseURL without resourceName", () =>
     withEnv({ AZURE_RESOURCE_NAME: undefined }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -181,7 +178,6 @@ describe("AzurePlugin", () => {
 
   it.effect("selects chat only for completion URLs", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -199,7 +195,6 @@ describe("AzurePlugin", () => {
 
   it.effect("selects chat from per-call useCompletionUrls", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -217,7 +212,6 @@ describe("AzurePlugin", () => {
 
   it.effect("ignores model useCompletionUrls when per-call option is unset", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -236,7 +230,6 @@ describe("AzurePlugin", () => {
 
   it.effect("uses the legacy Azure selector order and provider guard", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -263,7 +256,6 @@ describe("AzurePlugin", () => {
 
   it.effect("falls back through the legacy Azure selector order", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       const make = (method: string) => (id: string) => {

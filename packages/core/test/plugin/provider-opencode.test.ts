@@ -5,7 +5,6 @@ import { Catalog } from "@opencode-ai/core/catalog"
 import { Credential } from "@opencode-ai/core/credential"
 import { Integration } from "@opencode-ai/core/integration"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { OpencodePlugin } from "@opencode-ai/core/plugin/provider/opencode"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -28,8 +27,7 @@ const it = testEffect(Layer.mergeAll(PluginTestLayer, stubHttpLayer))
 const itLive = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   const integration = yield* Integration.Service
   yield* OpencodePlugin.effect(host).pipe(Effect.provideService(Integration.Service, integration))
 })

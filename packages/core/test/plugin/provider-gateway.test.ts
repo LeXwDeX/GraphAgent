@@ -2,7 +2,6 @@ import { AISDK } from "@opencode-ai/core/aisdk"
 import { describe, expect, mock } from "bun:test"
 import { Effect } from "effect"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { GatewayPlugin } from "@opencode-ai/core/plugin/provider/gateway"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -14,9 +13,8 @@ const vercelGatewayModels = ["anthropic/claude-sonnet-4", "openai/gpt-5", "googl
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* GatewayPlugin.effect(host)
 })
 
@@ -39,7 +37,6 @@ describe("GatewayPlugin", () => {
   it.effect("creates a Gateway SDK for @ai-sdk/gateway", () =>
     Effect.gen(function* () {
       gatewayCalls.length = 0
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -58,7 +55,6 @@ describe("GatewayPlugin", () => {
   it.effect("passes the model providerID as the Gateway SDK name", () =>
     Effect.gen(function* () {
       gatewayCalls.length = 0
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
 
@@ -83,7 +79,6 @@ describe("GatewayPlugin", () => {
   it.effect("matches Vercel AI Gateway models by their @ai-sdk/gateway package", () =>
     Effect.gen(function* () {
       gatewayCalls.length = 0
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
 

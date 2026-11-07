@@ -216,9 +216,6 @@ describe("plugin.codex", () => {
         project: {} as never,
         directory: "",
         worktree: "",
-        experimental_workspace: {
-          register() {},
-        },
         serverUrl: new URL("https://example.com"),
         $: {} as never,
       },
@@ -269,7 +266,6 @@ describe("plugin.codex", () => {
           project: { id: "title-marker-test", worktree: "", time: { created: 0 } },
           directory: "",
           worktree: "",
-          experimental_workspace: { register() {} },
           serverUrl: server.url,
           $,
         },

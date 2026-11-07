@@ -3,7 +3,6 @@ import { describe, expect } from "bun:test"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { Effect } from "effect"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { PerplexityPlugin } from "@opencode-ai/core/plugin/provider/perplexity"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -13,9 +12,8 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* PerplexityPlugin.effect(host)
 })
 
@@ -35,7 +33,6 @@ function fakeSelectorSdk(calls: string[]) {
 describe("PerplexityPlugin", () => {
   it.effect("creates a Perplexity SDK for the exact @ai-sdk/perplexity package", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -52,7 +49,6 @@ describe("PerplexityPlugin", () => {
 
   it.effect("ignores packages that are not the bundled Perplexity package", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -69,7 +65,6 @@ describe("PerplexityPlugin", () => {
 
   it.effect("uses the Perplexity provider ID as the SDK name for the bundled provider", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -86,7 +81,6 @@ describe("PerplexityPlugin", () => {
 
   it.effect("creates bundled Perplexity SDKs for custom provider IDs", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -103,7 +97,6 @@ describe("PerplexityPlugin", () => {
 
   it.effect("leaves Perplexity language selection to the default languageModel fallback", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()

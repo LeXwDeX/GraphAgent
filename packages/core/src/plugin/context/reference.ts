@@ -1,5 +1,5 @@
 import type { ReferenceGitSource, ReferenceLocalSource } from "@opencode-ai/sdk/v2/types"
-import type { Hooks } from "./registration.js"
+import type { Hooks } from "./registration"
 
 export interface ReferenceDraft {
   add(name: string, source: ReferenceLocalSource | ReferenceGitSource): void

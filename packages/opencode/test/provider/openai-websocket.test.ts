@@ -960,7 +960,6 @@ test("built-in openai plugin resets its Responses socket on session.compacted an
         project: { id: "builtin-openai", worktree: "/tmp/issue868", time: { created: 0 } },
         directory: "/tmp/issue868",
         worktree: "/tmp/issue868",
-        experimental_workspace: { register() {} },
         serverUrl: new URL(upstream.url),
         $,
       },

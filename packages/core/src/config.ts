@@ -18,7 +18,6 @@ import { ConfigExperimental } from "./config/experimental"
 import { ConfigFormatter } from "./config/formatter"
 import { ConfigLSP } from "./config/lsp"
 import { ConfigMCP } from "./config/mcp"
-import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
@@ -109,9 +108,6 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   references: ConfigReference.Info.pipe(Schema.optional).annotate({
     description: "Named local directories or Git repositories available as external context",
-  }),
-  plugins: ConfigPlugin.Plugins.pipe(Schema.optional).annotate({
-    description: "Ordered external plugin packages to load",
   }),
   experimental: ConfigExperimental.Experimental.pipe(Schema.optional),
   providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(Schema.optional),

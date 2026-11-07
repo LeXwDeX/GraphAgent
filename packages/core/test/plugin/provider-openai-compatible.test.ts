@@ -14,7 +14,7 @@ const it = testEffect(PluginTestLayer)
 const addPlugin = Effect.fn(function* () {
   const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* OpenAICompatiblePlugin.effect(host)
 })
 

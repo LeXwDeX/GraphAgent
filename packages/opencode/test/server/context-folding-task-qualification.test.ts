@@ -159,7 +159,6 @@ function isolatedEnv(home: string, config: Partial<ConfigV1.Info>, arm: Arm) {
     XDG_CACHE_HOME: path.join(home, ".cache"),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_PURE: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_AUTH_CONTENT: "{}",

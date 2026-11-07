@@ -3,7 +3,6 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { GithubCopilotPlugin } from "@opencode-ai/core/plugin/provider/github-copilot"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -14,9 +13,8 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* GithubCopilotPlugin.effect(host)
 })
 
@@ -41,7 +39,6 @@ function fakeSelectorSdk(calls: string[]) {
 describe("GithubCopilotPlugin", () => {
   it.effect("creates the bundled Copilot SDK for the GitHub Copilot package", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const ignored = yield* aisdk.runSDK({
@@ -67,7 +64,6 @@ describe("GithubCopilotPlugin", () => {
 
   it.effect("selects languageModel when responses and chat are absent", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -85,7 +81,6 @@ describe("GithubCopilotPlugin", () => {
 
   it.effect("selects languageModel with the API model ID when responses and chat are absent", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -103,7 +98,6 @@ describe("GithubCopilotPlugin", () => {
 
   it.effect("uses responses for gpt-5 models except gpt-5-mini", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -159,7 +153,6 @@ describe("GithubCopilotPlugin", () => {
 
   it.effect("uses the API model ID when selecting responses or chat", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -223,7 +216,6 @@ describe("GithubCopilotPlugin", () => {
 
   it.effect("ignores non-Copilot providers", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()

@@ -38,7 +38,6 @@ import { Global } from "@opencode-ai/core/global"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { Filesystem } from "@/util/filesystem"
 import { ConfigPlugin } from "@/config/plugin"
-import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { AccountTest } from "../fake/account"
 import { AuthTest } from "../fake/auth"
 import { NpmTest } from "../fake/npm"
@@ -926,58 +925,10 @@ it.effect("does not try to install dependencies in read-only OPENCODE_CONFIG_DIR
 // core Npm.Service (via EffectFlock). Those behaviors are tested in the core
 // package's npm tests, not here.
 
-it.instance("resolves scoped npm plugins in config", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    const pluginDir = path.join(test.directory, "node_modules", "@scope", "plugin")
-    yield* FSUtil.use.writeWithDirs(
-      path.join(test.directory, "package.json"),
-      JSON.stringify({ name: "config-fixture", version: "1.0.0", type: "module" }, null, 2),
-    )
-    yield* FSUtil.use.writeWithDirs(
-      path.join(pluginDir, "package.json"),
-      JSON.stringify(
-        {
-          name: "@scope/plugin",
-          version: "1.0.0",
-          type: "module",
-          main: "./index.js",
-        },
-        null,
-        2,
-      ),
-    )
-    yield* FSUtil.use.writeWithDirs(path.join(pluginDir, "index.js"), "export default {}\n")
-    yield* writeConfigEffect(test.directory, { plugin: ["@scope/plugin"] })
-
-    const config = yield* Config.use.get()
-    expect(config.plugin ?? []).toContain("@scope/plugin")
-  }),
-)
-
-it.effect("merges plugin arrays from global and local configs", () =>
-  withConfigTree(
-    {
-      global: { plugin: ["global-plugin-1", "global-plugin-2"] },
-      local: { plugin: ["local-plugin-1"] },
-    },
-    Effect.gen(function* () {
-      const plugins = (yield* Config.use.get()).plugin ?? []
-
-      expect(plugins.some((p) => p.includes("global-plugin-1"))).toBe(true)
-      expect(plugins.some((p) => p.includes("global-plugin-2"))).toBe(true)
-      expect(plugins.some((p) => p.includes("local-plugin-1"))).toBe(true)
-      expect(
-        plugins.filter((p) => p.includes("global-plugin") || p.includes("local-plugin")).length,
-      ).toBeGreaterThanOrEqual(3)
-    }),
-  ),
-)
-
 it.effect("global config remains global when project config is disabled", () =>
   withConfigTree(
     {
-      global: { model: "global/model", plugin: ["global-plugin"] },
+      global: { model: "global/model" },
       project: { model: "project/model" },
       local: { model: "local/model" },
     },
@@ -987,7 +938,6 @@ it.effect("global config remains global when project config is disabled", () =>
       Effect.gen(function* () {
         const config = yield* Config.use.get()
         expect(config.model).toBe("global/model")
-        expect(config.plugin_origins?.find((item) => item.spec === "global-plugin")?.scope).toBe("global")
       }),
     ),
   ),
@@ -999,7 +949,6 @@ describe("dynamic compaction configuration", () => {
       disabledByEnvironment: false,
       dynamic: config.compaction?.dynamic,
       prune: config.compaction?.prune,
-      knownExternalDcp: "unknown",
     })
 
   it.instance("defaults off after loading without manufacturing explicit config", () =>
@@ -1152,51 +1101,6 @@ it.effect("deduplicates duplicate instructions from global and local configs", (
     },
     Effect.gen(function* () {
       expect((yield* Config.use.get()).instructions).toEqual(["duplicate.md", "global-only.md", "local-only.md"])
-    }),
-  ),
-)
-
-it.effect("deduplicates duplicate plugins from global and local configs", () =>
-  withConfigTree(
-    {
-      global: { plugin: ["duplicate-plugin", "global-plugin-1"] },
-      local: { plugin: ["duplicate-plugin", "local-plugin-1"] },
-    },
-    Effect.gen(function* () {
-      const plugins = (yield* Config.use.get()).plugin ?? []
-
-      expect(plugins.some((p) => p.includes("global-plugin-1"))).toBe(true)
-      expect(plugins.some((p) => p.includes("local-plugin-1"))).toBe(true)
-      expect(plugins.filter((p) => p.includes("duplicate-plugin")).length).toBe(1)
-      expect(
-        plugins.filter(
-          (p) => p.includes("global-plugin") || p.includes("local-plugin") || p.includes("duplicate-plugin"),
-        ).length,
-      ).toBe(3)
-    }),
-  ),
-)
-
-it.effect("keeps plugin origins aligned with merged plugin list", () =>
-  withConfigTree(
-    {
-      global: { plugin: [["shared-plugin@1.0.0", { source: "global" }], "global-only@1.0.0"] },
-      local: { plugin: [["shared-plugin@2.0.0", { source: "local" }], "local-only@1.0.0"] },
-    },
-    Effect.gen(function* () {
-      const config = yield* Config.use.get()
-      const plugins = config.plugin ?? []
-      const origins = config.plugin_origins ?? []
-      const names = plugins.map((item) => ConfigPlugin.pluginSpecifier(item))
-
-      expect(names).toContain("shared-plugin@2.0.0")
-      expect(names).not.toContain("shared-plugin@1.0.0")
-      expect(names).toContain("global-only@1.0.0")
-      expect(names).toContain("local-only@1.0.0")
-      expect(origins.map((item) => item.spec)).toEqual(plugins)
-      expect(origins.find((item) => ConfigPlugin.pluginSpecifier(item.spec) === "shared-plugin@2.0.0")?.scope).toBe(
-        "local",
-      )
     }),
   ),
 )
@@ -1813,7 +1717,7 @@ describe("resolvePluginSpec", () => {
 })
 
 describe("deduplicatePluginOrigins", () => {
-  const dedupe = (plugins: ConfigPluginV1.Spec[]) =>
+  const dedupe = (plugins: ConfigPlugin.Spec[]) =>
     ConfigPlugin.deduplicatePluginOrigins(
       plugins.map((spec) => ({
         spec,
@@ -1857,23 +1761,6 @@ describe("deduplicatePluginOrigins", () => {
 
     expect(result).toEqual(["a-plugin@1.0.0", "b-plugin@1.0.0", "c-plugin@1.0.0"])
   })
-
-  it.effect("loads auto-discovered local plugins as file urls", () =>
-    withConfigTree(
-      { global: { plugin: ["my-plugin@1.0.0"] } },
-      Effect.gen(function* () {
-        const test = yield* TestInstance
-        yield* FSUtil.use.writeWithDirs(
-          path.join(test.directory, ".opencode", "plugin", "my-plugin.js"),
-          "export default {}",
-        )
-
-        const plugins = (yield* Config.use.get()).plugin ?? []
-        expect(plugins.some((p) => ConfigPlugin.pluginSpecifier(p) === "my-plugin@1.0.0")).toBe(true)
-        expect(plugins.some((p) => ConfigPlugin.pluginSpecifier(p).startsWith("file://"))).toBe(true)
-      }),
-    ),
-  )
 })
 
 describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
@@ -2022,7 +1909,7 @@ test("parseManagedPlist strips MDM metadata keys", async () => {
           PayloadUUID: "AAAA-BBBB-CCCC",
           PayloadVersion: 1,
           _manualProfile: true,
-              model: "mdm/model",
+          model: "mdm/model",
         }),
       ),
       "test:mobileconfig",

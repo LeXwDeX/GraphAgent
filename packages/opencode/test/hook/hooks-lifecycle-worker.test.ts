@@ -37,7 +37,6 @@ for (const { move, v2 } of [
           LIFECYCLE_MOVE: move ? "1" : "0",
           LIFECYCLE_V2: v2 ? "1" : "0",
           OPENCODE_TEST_HOME: tmp.path,
-          OPENCODE_PURE: "1",
           OPENCODE_CONFIG_CONTENT: '{"enabled_providers":[]}',
           OPENCODE_AUTH_CONTENT: "{}",
           OPENCODE_DISABLE_MODELS_FETCH: "1",

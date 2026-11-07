@@ -4,7 +4,6 @@ import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { Effect } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { AmazonBedrockPlugin } from "@opencode-ai/core/plugin/provider/amazon-bedrock"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -14,9 +13,8 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* AmazonBedrockPlugin.effect(host)
 })
 
@@ -110,7 +108,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("prefers endpoint over baseURL for SDK base URL", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: undefined, AWS_PROFILE: undefined, AWS_ACCESS_KEY_ID: undefined }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -135,7 +132,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("uses baseURL as SDK base URL", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: undefined, AWS_PROFILE: undefined, AWS_ACCESS_KEY_ID: undefined }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -169,7 +165,6 @@ describe("AmazonBedrockPlugin", () => {
       },
       () =>
         Effect.gen(function* () {
-          const plugin = yield* PluginV2.Service
           const aisdk = yield* AISDK.Service
           yield* addPlugin()
           const result = yield* aisdk.runSDK({
@@ -193,7 +188,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("uses config region over AWS_REGION for SDK base URL", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: "token", AWS_REGION: "us-east-1" }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -212,7 +206,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("uses AWS_REGION for SDK base URL when config region is absent", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: "token", AWS_REGION: "eu-west-1" }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -231,7 +224,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("defaults SDK region to us-east-1", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: "token", AWS_REGION: undefined }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -250,7 +242,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("loads bearer token option into env and uses bearer auth", () =>
     withEnv({ AWS_ACCESS_KEY_ID: undefined, AWS_BEARER_TOKEN_BEDROCK: undefined, AWS_PROFILE: undefined }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         const headers: Array<string | null> = []
         yield* addPlugin()
@@ -279,7 +270,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("prefers bearer token env over bearer token option", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: "env-token" }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         const headers: Array<string | null> = []
         yield* addPlugin()
@@ -308,7 +298,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("creates Mantle SDK with GPT-5 OpenAI base path", () =>
     withEnv({ AWS_BEARER_TOKEN_BEDROCK: undefined, AWS_PROFILE: undefined, AWS_ACCESS_KEY_ID: undefined }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
         const result = yield* aisdk.runSDK({
@@ -338,7 +327,6 @@ describe("AmazonBedrockPlugin", () => {
 
   it.effect("selects Mantle APIs without Bedrock cross-region prefixes", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -372,7 +360,6 @@ describe("AmazonBedrockPlugin", () => {
 
   it.effect("ignores other Bedrock provider subpaths", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -402,7 +389,6 @@ describe("AmazonBedrockPlugin", () => {
       },
       () =>
         Effect.gen(function* () {
-          const plugin = yield* PluginV2.Service
           const aisdk = yield* AISDK.Service
           const headers: Array<string | null> = []
           yield* addPlugin()
@@ -437,7 +423,6 @@ describe("AmazonBedrockPlugin", () => {
 
   it.effect("applies legacy cross-region inference prefixes", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()
@@ -498,7 +483,6 @@ describe("AmazonBedrockPlugin", () => {
   it.effect("uses AWS_REGION for language prefixes when region option is absent", () =>
     withEnv({ AWS_REGION: "eu-west-1" }, () =>
       Effect.gen(function* () {
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         const calls: string[] = []
         yield* addPlugin()
@@ -517,7 +501,6 @@ describe("AmazonBedrockPlugin", () => {
 
   it.effect("applies the full legacy cross-region prefix matrix", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       const cases = [
@@ -603,7 +586,6 @@ describe("AmazonBedrockPlugin", () => {
 
   it.effect("ignores non-Bedrock providers for language selection", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       const calls: string[] = []
       yield* addPlugin()

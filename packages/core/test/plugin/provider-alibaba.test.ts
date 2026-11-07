@@ -3,7 +3,6 @@ import { describe, expect } from "bun:test"
 import { createAlibaba } from "@ai-sdk/alibaba"
 import { Effect } from "effect"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { AlibabaPlugin } from "@opencode-ai/core/plugin/provider/alibaba"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -13,16 +12,14 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* AlibabaPlugin.effect(host)
 })
 
 describe("AlibabaPlugin", () => {
   it.effect("creates an Alibaba SDK for @ai-sdk/alibaba", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -39,7 +36,6 @@ describe("AlibabaPlugin", () => {
 
   it.effect("ignores non-Alibaba SDK packages", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -56,7 +52,6 @@ describe("AlibabaPlugin", () => {
 
   it.effect("matches the old bundled Alibaba SDK provider naming", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const result = yield* aisdk.runSDK({
@@ -76,7 +71,6 @@ describe("AlibabaPlugin", () => {
 
   it.effect("uses the old default languageModel(api.id) behavior", () =>
     Effect.gen(function* () {
-      const plugin = yield* PluginV2.Service
       const aisdk = yield* AISDK.Service
       yield* addPlugin()
       const item = ModelV2.Info.make({

@@ -16,8 +16,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode run --help 1`] = `
@@ -33,7 +32,6 @@ Options:
   -v, --version                       show version number                                  [boolean]
       --print-logs                    print logs to stderr                                 [boolean]
       --log-level                     log level [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure                          run without external plugins                         [boolean]
       --command                       the command to run, use message for args              [string]
   -c, --continue                      continue the last session                            [boolean]
   -s, --session                       session id to continue                                [string]
@@ -84,8 +82,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers --help 1`] = `
@@ -102,8 +99,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent --help 1`] = `
@@ -119,8 +115,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode uninstall --help 1`] = `
@@ -133,7 +128,6 @@ Options:
   -v, --version      show version number                                                   [boolean]
       --print-logs   print logs to stderr                                                  [boolean]
       --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure         run without external plugins                                          [boolean]
   -c, --keep-config  keep configuration files                             [boolean] [default: false]
   -d, --keep-data    keep session data and snapshots                      [boolean] [default: false]
       --dry-run      show what would be removed without removing          [boolean] [default: false]
@@ -153,7 +147,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
       --verbose     use more verbose model output (includes metadata like costs)           [boolean]
       --refresh     refresh the models cache from models.dev                               [boolean]"
 `;
@@ -168,7 +161,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
       --days        show stats for the last N days (default: all time)                      [number]
       --tools       number of tools to show (default: all)                                  [number]
       --models      show model statistics (default: hidden). Pass a number to show top N, otherwise
@@ -189,7 +181,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
       --sanitize    redact sensitive transcript and file data                              [boolean]"
 `;
 
@@ -205,8 +196,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode pr --help 1`] = `
@@ -221,8 +211,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session --help 1`] = `
@@ -238,26 +227,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
-`;
-
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode plugin --help 1`] = `
-"opencode plugin <module>
-
-install plugin and update config
-
-Positionals:
-  module  npm module name                                                        [string] [required]
-
-Options:
-  -h, --help        show help                                                              [boolean]
-  -v, --version     show version number                                                    [boolean]
-      --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
-  -g, --global      install in global config                              [boolean] [default: false]
-  -f, --force       replace existing plugin version                       [boolean] [default: false]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db --help 1`] = `
@@ -279,7 +249,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
       --format      Output format                 [string] [choices: "json", "tsv"] [default: "tsv"]"
 `;
 
@@ -292,8 +261,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp add --help 1`] = `
@@ -309,7 +277,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
       --url         URL for a remote MCP server                                             [string]
       --env         environment variable for a local MCP server (KEY=VALUE)                  [array]
       --header      HTTP header for a remote MCP server (KEY=VALUE)                          [array]"
@@ -330,8 +297,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp logout --help 1`] = `
@@ -346,8 +312,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers list --help 1`] = `
@@ -359,8 +324,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers login --help 1`] = `
@@ -376,7 +340,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
   -p, --provider    provider id or name to log in to (skips provider selection)             [string]
   -m, --method      login method label (skips method selection)                             [string]"
 `;
@@ -393,8 +356,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent create --help 1`] = `
@@ -407,7 +369,6 @@ Options:
   -v, --version               show version number                                          [boolean]
       --print-logs            print logs to stderr                                         [boolean]
       --log-level             log level         [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure                  run without external plugins                                 [boolean]
       --path                  directory path to generate the agent file                     [string]
       --description           what the agent should do                                      [string]
       --mode                  agent mode            [string] [choices: "all", "primary", "subagent"]
@@ -426,8 +387,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session list --help 1`] = `
@@ -440,7 +400,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
   -n, --max-count   limit to N most recent sessions                                         [number]
       --format      output format             [string] [choices: "table", "json"] [default: "table"]"
 `;
@@ -457,8 +416,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db path --help 1`] = `
@@ -470,8 +428,7 @@ Options:
   -h, --help        show help                                                              [boolean]
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
+      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db vacuum --help 1`] = `
@@ -484,7 +441,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
       --db          path to the SQLite database file (print the default with \`opencode db path\`)
                                                                                  [string] [required]"
 `;

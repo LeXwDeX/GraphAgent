@@ -2,7 +2,6 @@ import { AISDK } from "@opencode-ai/core/aisdk"
 import { describe, expect, mock } from "bun:test"
 import { Effect } from "effect"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { CloudflareAIGatewayPlugin } from "@opencode-ai/core/plugin/provider/cloudflare-ai-gateway"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -12,9 +11,8 @@ import { PluginTestLayer } from "./fixture"
 const it = testEffect(PluginTestLayer)
 
 const addPlugin = Effect.fn(function* () {
-  const plugin = yield* PluginV2.Service
   const aisdk = yield* AISDK.Service
-  const host = yield* PluginHost.make(plugin)
+  const host = yield* PluginHost.make()
   yield* CloudflareAIGatewayPlugin.effect(host)
 })
 
@@ -112,7 +110,6 @@ describe("CloudflareAIGatewayPlugin", () => {
       },
       () =>
         Effect.gen(function* () {
-          const plugin = yield* PluginV2.Service
           const aisdk = yield* AISDK.Service
           yield* addPlugin()
           const result = yield* aisdk.runSDK({
@@ -132,7 +129,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv(), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -176,7 +172,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv(), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -205,7 +200,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv(), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -242,7 +236,6 @@ describe("CloudflareAIGatewayPlugin", () => {
       () =>
         Effect.gen(function* () {
           resetCalls()
-          const plugin = yield* PluginV2.Service
           const aisdk = yield* AISDK.Service
           yield* addPlugin()
 
@@ -273,7 +266,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv({ CLOUDFLARE_API_TOKEN: undefined, CF_AIG_TOKEN: "cf-aig-token" }), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -295,7 +287,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv({ CLOUDFLARE_ACCOUNT_ID: undefined, CLOUDFLARE_GATEWAY_ID: undefined }), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -318,7 +309,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv({ CLOUDFLARE_API_TOKEN: undefined, CF_AIG_TOKEN: undefined }), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -347,7 +337,6 @@ describe("CloudflareAIGatewayPlugin", () => {
       () =>
         Effect.gen(function* () {
           resetCalls()
-          const plugin = yield* PluginV2.Service
           const aisdk = yield* AISDK.Service
           yield* addPlugin()
 
@@ -370,7 +359,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv(), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 
@@ -405,7 +393,6 @@ describe("CloudflareAIGatewayPlugin", () => {
     withEnv(cloudflareEnv(), () =>
       Effect.gen(function* () {
         resetCalls()
-        const plugin = yield* PluginV2.Service
         const aisdk = yield* AISDK.Service
         yield* addPlugin()
 

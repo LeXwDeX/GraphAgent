@@ -243,7 +243,7 @@ const live: Layer.Layer<
         provider: item,
         cfg,
         auth: info,
-         ...(adapters._tag === "Some" ? { adapters: adapters.value } : {}),
+        ...(adapters._tag === "Some" ? { adapters: adapters.value } : {}),
         flags,
         isWorkflow,
       })
@@ -306,7 +306,6 @@ const live: Layer.Layer<
         disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
         dynamic: cfg.compaction?.dynamic,
         prune: cfg.compaction?.prune,
-        knownExternalDcp: "unknown",
       })
       const folding = {
         enabled: dynamicFolding.enabled,

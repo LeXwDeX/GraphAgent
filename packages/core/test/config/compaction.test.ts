@@ -59,10 +59,9 @@ describe("ConfigCompaction.resolveDynamic", () => {
     expect(
       ConfigCompaction.resolveDynamic({
         disabledByEnvironment: false,
-        knownExternalDcp: "unknown",
         ...input,
       }),
-    ).toMatchObject({ ...expected, externalDcp: "unknown" })
+    ).toMatchObject(expected)
   })
 
   test("environment disable has highest priority", () => {
@@ -71,47 +70,26 @@ describe("ConfigCompaction.resolveDynamic", () => {
         disabledByEnvironment: true,
         dynamic: true,
         prune: true,
-        knownExternalDcp: "unknown",
       }),
     ).toEqual({
       configured: false,
       enabled: false,
       source: "environment",
       deprecatedPrune: false,
-      externalDcp: "unknown",
       skipped: "disabled",
     })
   })
 
-  test("positively identified external DCP makes the builtin policy retreat", () => {
+  test("an unconfigured policy reports why nothing folds", () => {
     expect(
       ConfigCompaction.resolveDynamic({
         disabledByEnvironment: false,
-        dynamic: true,
-        knownExternalDcp: "loaded",
-      }),
-    ).toEqual({
-      configured: true,
-      enabled: false,
-      source: "dynamic",
-      deprecatedPrune: false,
-      externalDcp: "loaded",
-      skipped: "external-dcp",
-    })
-  })
-
-  test("an unknown external plugin state does not pretend a DCP was detected", () => {
-    expect(
-      ConfigCompaction.resolveDynamic({
-        disabledByEnvironment: false,
-        knownExternalDcp: "unknown",
       }),
     ).toEqual({
       configured: false,
       enabled: false,
       source: "default",
       deprecatedPrune: false,
-      externalDcp: "unknown",
       skipped: "disabled",
     })
   })

@@ -65,9 +65,6 @@ export function migrate(info: typeof ConfigV1.Info.Type, source?: unknown) {
     commands: info.command,
     instructions: info.instructions,
     references: info.references ?? info.reference,
-    plugins: info.plugin?.map((plugin) =>
-      typeof plugin === "string" ? plugin : { package: plugin[0], options: plugin[1] },
-    ),
     experimental: info.experimental?.policies && { policies: info.experimental.policies },
     providers: providers(info.provider),
   }
@@ -96,7 +93,9 @@ function permissions(
   const ordered = order
     ? [
         ...order.flatMap((key) => {
-          const rule = (info as Record<string, ConfigPermissionV1.Info[keyof ConfigPermissionV1.Info]> | undefined)?.[key]
+          const rule = (info as Record<string, ConfigPermissionV1.Info[keyof ConfigPermissionV1.Info]> | undefined)?.[
+            key
+          ]
           return rule === undefined ? [] : [[key, rule] as const]
         }),
         ...entries.filter(([key]) => !order.includes(key)),

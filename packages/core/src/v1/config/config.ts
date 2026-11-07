@@ -14,7 +14,6 @@ import { ConfigLayoutV1 } from "./layout"
 import { ConfigLSPV1 } from "./lsp"
 import { ConfigMCPV1 } from "./mcp"
 import { ConfigPermissionV1 } from "./permission"
-import { ConfigPluginV1 } from "./plugin"
 import { ConfigProviderV1 } from "./provider"
 import { ConfigSkillsV1 } from "./skills"
 import { ToolBudget } from "../../session/tool-budget"
@@ -53,7 +52,6 @@ export const Info = Schema.Struct({
     description:
       "Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true.",
   }),
-  plugin: Schema.optional(Schema.mutable(Schema.Array(ConfigPluginV1.Spec))),
   autoupdate: Schema.optional(Schema.Union([Schema.Boolean, Schema.Literal("notify")])).annotate({
     description:
       "Deprecated compatibility setting; built-in application updates are disabled and this value is ignored",

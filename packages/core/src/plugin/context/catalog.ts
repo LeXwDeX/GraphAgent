@@ -1,5 +1,5 @@
 import type { ModelV2Info, ProviderV2Info } from "@opencode-ai/sdk/v2/types"
-import type { Hooks } from "./registration.js"
+import type { Hooks } from "./registration"
 
 export interface CatalogProviderRecord {
   readonly provider: ProviderV2Info

@@ -41,7 +41,6 @@ export type ContextFoldingDiagnostic = Readonly<{
   enabledSource: DynamicResolution["source"]
   configured: boolean
   enabled: boolean
-  externalDcp: DynamicResolution["externalDcp"]
   applied: boolean
   duplicateGroups: UnknownNumber
   foldedOutputs: number
@@ -88,7 +87,6 @@ export function contextFoldingDiagnostic(input: {
     enabledSource: input.resolution.source,
     configured: input.resolution.configured,
     enabled: input.resolution.enabled,
-    externalDcp: input.resolution.externalDcp,
     applied: (input.projectionPlan?.replacements.length ?? 0) > 0,
     duplicateGroups: witnesses ?? "unknown",
     foldedOutputs: input.projectionPlan?.replacements.length ?? 0,

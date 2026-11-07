@@ -24,7 +24,6 @@ import { containsPath, type InstanceContext } from "../project/instance-context"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
-import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { ConfigAgent } from "./agent"
 import { setAgentHookOrigins, type AgentHookProvenance } from "./agent-hooks"
 import { ConfigCommand } from "./command"
@@ -34,7 +33,6 @@ import { HookConfigChange } from "@/hook/config-change"
 import { HookPermissions } from "./permissions"
 import type { PermissionUpdate } from "@/hook/trigger-result"
 import { ConfigPaths } from "./paths"
-import { ConfigPlugin } from "./plugin"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -104,21 +102,7 @@ async function substituteWellKnownRemoteConfig(input: {
   return { url, headers }
 }
 
-async function resolveLoadedPlugins<T extends { plugin?: ConfigPluginV1.Spec[] }>(config: T, filepath: string) {
-  if (!config.plugin) return config
-  for (let i = 0; i < config.plugin.length; i++) {
-    // Normalize path-like plugin specs while we still know which config file declared them.
-    // This prevents `./plugin.ts` from being reinterpreted relative to some later merge location.
-    config.plugin[i] = await ConfigPlugin.resolvePluginSpec(config.plugin[i], filepath)
-  }
-  return config
-}
-
-type Info = ConfigV1.Info & {
-  // plugin_origins is derived state, not a persisted config field. It keeps each winning plugin spec together
-  // with the file and scope it came from so later runtime code can make location-sensitive decisions.
-  plugin_origins?: ConfigPlugin.Origin[]
-}
+type Info = ConfigV1.Info
 
 type State = {
   config: Info
@@ -171,8 +155,7 @@ function patchJsonc(input: string, patch: unknown, path: string[] = []): string 
 }
 
 function writable(info: Info) {
-  const { plugin_origins: _plugin_origins, ...next } = info
-  return next
+  return info
 }
 
 function writableGlobal(info: Info) {
@@ -304,7 +287,6 @@ export const layer = Layer.effect(
       const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
       if (!("path" in options)) return data
 
-      yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
       if (!data.$schema) {
         data.$schema = "https://opencode.ai/config.json"
         const updated = text.replace(/^\s*\{/, '{\n  "$schema": "https://opencode.ai/config.json",')
@@ -394,38 +376,9 @@ export const layer = Layer.effect(
         const consoleManagedProviders = new Set<string>()
         let activeOrgName: string | undefined
 
-        const pluginScopeForSource = Effect.fnUntraced(function* (source: string) {
-          if (source.startsWith("http://") || source.startsWith("https://")) return "global"
-          if (source === "OPENCODE_CONFIG_CONTENT") return "local"
-          if (containsPath(source, ctx)) return "local"
-          return "global"
-        })
-
-        const mergePluginOrigins = Effect.fnUntraced(function* (
-          source: string,
-          // mergePluginOrigins receives raw Specs from one config source, before provenance for this merge step
-          // is attached.
-          list: ConfigPluginV1.Spec[] | undefined,
-          // Scope can be inferred from the source path, but some callers already know whether the config should
-          // behave as global or local and can pass that explicitly.
-          kind?: ConfigPlugin.Scope,
-        ) {
-          if (!list?.length) return
-          const hit = kind ?? (yield* pluginScopeForSource(source))
-          // Merge newly seen plugin origins with previously collected ones, then dedupe by plugin identity while
-          // keeping the winning source/scope metadata for downstream installs, writes, and diagnostics.
-          const plugins = ConfigPlugin.deduplicatePluginOrigins([
-            ...(result.plugin_origins ?? []),
-            ...list.map((spec) => ({ spec, source, scope: hit })),
-          ])
-          result.plugin = plugins.map((item) => item.spec)
-          result.plugin_origins = plugins
-        })
-
-        const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
+        const merge = (source: string, next: Info) => {
           rememberAgentHooks(next, source)
           result = mergeConfigConcatArrays(result, next)
-          return mergePluginOrigins(source, next.plugin, kind)
         }
 
         for (const [key, value] of Object.entries(auth)) {
@@ -499,7 +452,7 @@ export const layer = Layer.effect(
               yield* RemoteLkg.write({ url: wellknownURL, role: "well-known", body: wellknown.body })
             }
             if (fetched.cache) yield* RemoteLkg.write(fetched.cache)
-            yield* merge(source, next, "global")
+            merge(source, next)
             yield* Effect.logDebug("loaded remote config from well-known", {
               digest: RemoteLkg.digest(wellknownURL),
               role: "well-known",
@@ -508,22 +461,21 @@ export const layer = Layer.effect(
         }
 
         const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
-        yield* merge(Global.Path.config, global, "global")
+        merge(Global.Path.config, global)
 
         if (Flag.OPENCODE_CONFIG) {
-          yield* merge(Flag.OPENCODE_CONFIG, yield* loadFile(Flag.OPENCODE_CONFIG, authEnv))
+          merge(Flag.OPENCODE_CONFIG, yield* loadFile(Flag.OPENCODE_CONFIG, authEnv))
           yield* Effect.logDebug("loaded custom config", { path: Flag.OPENCODE_CONFIG })
         }
 
         if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
           for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            yield* merge(file, yield* loadFile(file, authEnv), "local")
+            merge(file, yield* loadFile(file, authEnv))
           }
         }
 
         result.agent = result.agent || {}
         result.mode = result.mode || {}
-        result.plugin = result.plugin || []
 
         const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
 
@@ -536,10 +488,9 @@ export const layer = Layer.effect(
             for (const file of ["opencode.json", "opencode.jsonc"]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source, authEnv))
+              merge(source, yield* loadFile(source, authEnv))
               result.agent ??= {}
               result.mode ??= {}
-              result.plugin ??= []
             }
           }
 
@@ -554,10 +505,6 @@ export const layer = Layer.effect(
             }
             result.agent = mergeDeep(result.agent ?? {}, loaded)
           }
-          // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
-          // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
-          yield* mergePluginOrigins(dir, list)
         }
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
@@ -566,7 +513,7 @@ export const layer = Layer.effect(
             dir: ctx.directory,
             source,
           })
-          yield* merge(source, next, "local")
+          merge(source, next)
           yield* Effect.logDebug("loaded custom config from OPENCODE_CONFIG_CONTENT")
         }
 
@@ -596,7 +543,7 @@ export const layer = Layer.effect(
               for (const providerID of Object.keys(next.provider ?? {})) {
                 consoleManagedProviders.add(providerID)
               }
-              yield* merge(source, next, "global")
+              merge(source, next)
             }
           }).pipe(
             Effect.withSpan("Config.loadActiveOrgConfig"),
@@ -612,7 +559,7 @@ export const layer = Layer.effect(
         if (existsSync(managedDir)) {
           for (const file of ["opencode.json", "opencode.jsonc"]) {
             const source = path.join(managedDir, file)
-            yield* merge(source, yield* loadFile(source), "global")
+            merge(source, yield* loadFile(source))
           }
         }
 
@@ -770,7 +717,6 @@ export const layer = Layer.effect(
       }
       const next = yield* loadInstanceState(ctx).pipe(Effect.orDie)
       yield* InstanceState.use(state, (current) => {
-        // Permission writes must not discard plugin.config's derived agent/hooks layer.
         current.config.permission = next.config.permission
         current.config.permissions = next.config.permissions
         current.config.hookPermissions = next.config.hookPermissions
