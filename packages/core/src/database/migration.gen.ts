@@ -1,5 +1,5 @@
 import type { DatabaseMigration } from "./migration"
 
-export const baseline = { id: "baseline-6f0a13f753fe76dd" } as const
+export const baseline = { id: "baseline-f1730d503471af4a" } as const
 
 export const migrations: DatabaseMigration.Migration[] = []

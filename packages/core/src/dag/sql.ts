@@ -58,6 +58,10 @@ export const WorkflowTable = sqliteTable(
     // predicate is the per-node `superseded` marker below. Default 1: legacy
     // rows predate the concept and render exactly as before.
     graph_rev: integer().notNull().default(1),
+    // #1010 (E0): workflow-level worktree settlement, written by the E3
+    // projection from `WorkflowWorktreeSettled`. NULL means the workflow has
+    // no workflow-level worktree (all isolation is per node).
+    worktree: text({ mode: "json" }).$type<DagEvent.NodeWorktree>(),
     started_at: integer(),
     completed_at: integer(),
     ...Timestamps,
@@ -146,6 +150,29 @@ export const WorkflowNodeTable = sqliteTable(
     index("workflow_node_workflow_idx").on(table.workflow_id),
     index("workflow_node_workflow_status_idx").on(table.workflow_id, table.status),
     uniqueIndex("workflow_node_workflow_id_seq_idx").on(table.workflow_id, table.id, table.seq),
+  ],
+)
+
+/**
+ * #1010 (E0): per-attempt ledger for node usage accounting, projected from
+ * `dag.node.started` by E2. `child_session_id` intentionally has no foreign
+ * key: child sessions may be cleaned up before the ledger row, and the row is
+ * removed together with its workflow (ON DELETE CASCADE on `workflow_id`).
+ */
+export const DagNodeAttemptTable = sqliteTable(
+  "dag_node_attempt",
+  {
+    workflow_id: text()
+      .notNull()
+      .references(() => WorkflowTable.id, { onDelete: "cascade" }),
+    node_id: text().notNull(),
+    attempt: integer().notNull(),
+    child_session_id: text().notNull(),
+    started_at: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workflow_id, table.node_id, table.attempt] }),
+    index("dag_node_attempt_child_session_idx").on(table.child_session_id),
   ],
 )
 

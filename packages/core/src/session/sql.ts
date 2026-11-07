@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, index, primaryKey, real } from "drizzle-orm/sqlite-core"
+import { sqliteTable, text, integer, index, primaryKey, real, check } from "drizzle-orm/sqlite-core"
+import { sql } from "drizzle-orm"
 import * as DatabasePath from "../database/path"
 import { ProjectTable } from "../project/sql"
 import { PermissionV1 } from "../v1/permission"
@@ -49,8 +50,14 @@ export const SessionTable = sqliteTable(
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),
+    // #1010 (E0): DAG-mode state is read and written by E4/C1. The column is
+    // created here so the v2.0 baseline owns the shape; `off` is the default
+    // until the per-session value is resolved at creation time.
+    dag_mode: text().notNull().default("off").$type<"on" | "off">(),
+    dag_budget_tokens: integer(),
   },
   (table) => [
+    check("session_dag_mode_check", sql`${table.dag_mode} in ('on', 'off')`),
     index("session_project_idx").on(table.project_id),
     index("session_workspace_idx").on(table.workspace_id),
     index("session_parent_idx").on(table.parent_id),

@@ -811,14 +811,6 @@ const scenarios: Scenario[] = [
     .get("/api/provider/{providerID}", "v2.provider.get")
     .at((ctx) => ({ path: route("/api/provider/{providerID}", { providerID: "missing" }), headers: ctx.headers() }))
     .json(404, object, "status"),
-  http.protected.get("/api/permission/saved", "v2.permission.saved.list").json(200, (body) => {
-    object(body)
-    array(body.data)
-  }),
-  http.protected
-    .delete("/api/permission/saved/{id}", "v2.permission.saved.remove")
-    .at((ctx) => ({ path: route("/api/permission/saved/{id}", { id: "psv_httpapi_missing" }), headers: ctx.headers() }))
-    .status(204, undefined, "status"),
   http.protected
     .get("/session", "session.list")
     .seeded((ctx) => ctx.session({ title: "List me" }))

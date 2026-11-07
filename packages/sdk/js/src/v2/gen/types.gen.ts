@@ -662,6 +662,8 @@ export type Session = {
     snapshot?: string
     diff?: string
   }
+  dagMode?: "on" | "off"
+  dagBudgetTokens?: number
 }
 
 export type PermissionRuleset = Array<PermissionRule>
@@ -1197,6 +1199,8 @@ export type GlobalSession = {
     snapshot?: string
     diff?: string
   }
+  dagMode?: "on" | "off"
+  dagBudgetTokens?: number
   project: ProjectSummary | null
 }
 
@@ -4380,13 +4384,6 @@ export type CommandV2Info = {
 export type FileSystemEntry = {
   path: string
   type: "file" | "directory"
-}
-
-export type PermissionSavedInfo = {
-  id: string
-  projectID: string
-  action: string
-  resource: string
 }
 
 export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
@@ -9587,70 +9584,6 @@ export type V2CredentialUpdateResponses = {
 }
 
 export type V2CredentialUpdateResponse = V2CredentialUpdateResponses[keyof V2CredentialUpdateResponses]
-
-export type V2PermissionSavedListData = {
-  body?: never
-  path?: never
-  query?: {
-    projectID?: string
-  }
-  url: "/api/permission/saved"
-}
-
-export type V2PermissionSavedListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2PermissionSavedListError = V2PermissionSavedListErrors[keyof V2PermissionSavedListErrors]
-
-export type V2PermissionSavedListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    data: Array<PermissionSavedInfo>
-  }
-}
-
-export type V2PermissionSavedListResponse = V2PermissionSavedListResponses[keyof V2PermissionSavedListResponses]
-
-export type V2PermissionSavedRemoveData = {
-  body?: never
-  path: {
-    id: string
-  }
-  query?: never
-  url: "/api/permission/saved/{id}"
-}
-
-export type V2PermissionSavedRemoveErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2PermissionSavedRemoveError = V2PermissionSavedRemoveErrors[keyof V2PermissionSavedRemoveErrors]
-
-export type V2PermissionSavedRemoveResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2PermissionSavedRemoveResponse = V2PermissionSavedRemoveResponses[keyof V2PermissionSavedRemoveResponses]
 
 export type V2FsReadData = {
   body?: never

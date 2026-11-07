@@ -11559,123 +11559,6 @@
         ]
       }
     },
-    "/api/permission/saved": {
-      "get": {
-        "tags": ["permissions"],
-        "operationId": "v2.permission.saved.list",
-        "parameters": [
-          {
-            "name": "projectID",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          }
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/PermissionSavedInfo"
-                      }
-                    }
-                  },
-                  "required": ["data"],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UnauthorizedError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedError"
-                }
-              }
-            }
-          }
-        },
-        "description": "Retrieve saved permissions, optionally filtered by project.",
-        "summary": "List saved permissions",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.v2.permission.saved.list({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/api/permission/saved/{id}": {
-      "delete": {
-        "tags": ["permissions"],
-        "operationId": "v2.permission.saved.remove",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          }
-        ],
-        "security": [],
-        "responses": {
-          "204": {
-            "description": "<No Content>"
-          },
-          "400": {
-            "description": "InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UnauthorizedError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedError"
-                }
-              }
-            }
-          }
-        },
-        "description": "Remove a saved permission by ID.",
-        "summary": "Remove saved permission",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.v2.permission.saved.remove({\n  ...\n})"
-          }
-        ]
-      }
-    },
     "/api/fs/read/*": {
       "get": {
         "tags": ["filesystem"],
@@ -26104,25 +25987,6 @@
         "required": ["path", "type"],
         "additionalProperties": false
       },
-      "PermissionSavedInfo": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "projectID": {
-            "type": "string"
-          },
-          "action": {
-            "type": "string"
-          },
-          "resource": {
-            "type": "string"
-          }
-        },
-        "required": ["id", "projectID", "action", "resource"],
-        "additionalProperties": false
-      },
       "ConnectionInfo": {
         "anyOf": [
           {
@@ -27530,10 +27394,6 @@
     {
       "name": "opencode HttpApi",
       "description": "Experimental HttpApi surface for selected instance routes."
-    },
-    {
-      "name": "permissions",
-      "description": "Experimental permission routes."
     },
     {
       "name": "filesystem",

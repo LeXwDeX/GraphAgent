@@ -11,6 +11,7 @@ import { Model } from "./model"
 import { NonNegativeInt, optionalOmitUndefined, withStatics } from "./schema"
 import { ascending } from "./identifier"
 import { SessionID } from "./session-id"
+import { DagBudgetTokens, DagMode } from "./dag-mode"
 import { WorkspaceID } from "./workspace-id"
 
 const Timestamp = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
@@ -568,6 +569,8 @@ export const SessionInfo = Schema.Struct({
   }),
   permission: optionalOmitUndefined(PermissionV1.Ruleset),
   revert: optionalOmitUndefined(SessionRevert),
+  dagMode: optionalOmitUndefined(DagMode),
+  dagBudgetTokens: optionalOmitUndefined(DagBudgetTokens),
 }).annotate({ identifier: "Session" })
 export type SessionInfo = typeof SessionInfo.Type
 

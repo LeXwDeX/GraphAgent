@@ -11,7 +11,7 @@ at the root. Nest a discriminated union under a property, for example
 ## Database
 
 - **Schema**: Drizzle schema lives in `packages/core/src/**/*.sql.ts`.
-- **Migrations**: core applies migrations from `packages/core/src/database/migration/`. Run `bun run migration` from `packages/core` after schema changes. Include `schema.json`, `src/database/migration.gen.ts`, and `src/database/schema.gen.ts` with the migration; check them with `bun run migration --check`.
+- **Migrations**: core ships a single generated baseline until v2.0.0. Change the Drizzle definitions and run `bun run migration --rebaseline` from `packages/core`; include `schema.json`, `src/database/migration.gen.ts`, and `src/database/schema.gen.ts`. Do not add files under `src/database/migration/` (only the `.gitkeep` placeholder is tracked). Check the result with `bun run migration --check`, which in the pre-release period requires that directory to stay empty. After v2.0.0, `--freeze-baseline` (committing `baseline.lock`) restores incremental `bun run migration` generation.
 
 ## Development server
 

@@ -1,10 +1,8 @@
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { Layer } from "effect"
 import { layer as locationLayer } from "./location"
 import { ModelHandler } from "./handlers/model"
 import { ProviderHandler } from "./handlers/provider"
-import { PermissionHandler } from "./handlers/permission"
 import { FileSystemHandler } from "./handlers/fs"
 import { CommandHandler } from "./handlers/command"
 import { SkillHandler } from "./handlers/skill"
@@ -26,7 +24,6 @@ export const handlers = Layer.mergeAll(
   ProviderHandler,
   IntegrationHandler,
   CredentialHandler,
-  PermissionHandler,
   FileSystemHandler,
   CommandHandler,
   SkillHandler,
@@ -35,7 +32,6 @@ export const handlers = Layer.mergeAll(
   ProjectCopyHandler,
 ).pipe(
   Layer.provide(locationLayer),
-  Layer.provide(PermissionSaved.defaultLayer),
   Layer.provide(LocationServiceMap.layer),
   Layer.provide(Credential.defaultLayer),
 )

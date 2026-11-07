@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "a1bfac64-404f-4091-b6b8-281751e4979c",
+  "id": "a05e6f5b-dafb-49cb-9e65-77e55d72e75a",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -23,7 +23,23 @@
       "entityType": "tables"
     },
     {
+      "name": "child_binding",
+      "entityType": "tables"
+    },
+    {
+      "name": "child_run",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_turn",
+      "entityType": "tables"
+    },
+    {
       "name": "credential",
+      "entityType": "tables"
+    },
+    {
+      "name": "dag_node_attempt",
       "entityType": "tables"
     },
     {
@@ -52,10 +68,6 @@
     },
     {
       "name": "goal_state",
-      "entityType": "tables"
-    },
-    {
-      "name": "permission",
       "entityType": "tables"
     },
     {
@@ -538,6 +550,316 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "child_binding"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "parent_session_id",
+      "entityType": "columns",
+      "table": "child_binding"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_kind",
+      "entityType": "columns",
+      "table": "child_binding"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_ref",
+      "entityType": "columns",
+      "table": "child_binding"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "child_binding"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "parent_session_id",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_kind",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_id",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "attempt",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "policy",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "detached",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "deadline_at",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "outcome",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "reported_at",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_ended",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "origin",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "origin_ref",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "outcome",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "user_message_id",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "last_assistant_id",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "steps",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "runner_id",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_started",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_ended",
+      "entityType": "columns",
+      "table": "session_turn"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "id",
       "entityType": "columns",
       "table": "credential"
@@ -621,6 +943,56 @@
       "name": "time_updated",
       "entityType": "columns",
       "table": "credential"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "workflow_id",
+      "entityType": "columns",
+      "table": "dag_node_attempt"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_id",
+      "entityType": "columns",
+      "table": "dag_node_attempt"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "attempt",
+      "entityType": "columns",
+      "table": "dag_node_attempt"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "dag_node_attempt"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "table": "dag_node_attempt"
     },
     {
       "type": "text",
@@ -1153,6 +1525,16 @@
       "table": "workflow"
     },
     {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "worktree",
+      "entityType": "columns",
+      "table": "workflow"
+    },
+    {
       "type": "integer",
       "notNull": false,
       "autoincrement": false,
@@ -1441,66 +1823,6 @@
       "name": "updated_at",
       "entityType": "columns",
       "table": "goal_state"
-    },
-    {
-      "type": "text",
-      "notNull": false,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "id",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "project_id",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "action",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "text",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "resource",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_created",
-      "entityType": "columns",
-      "table": "permission"
-    },
-    {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "time_updated",
-      "entityType": "columns",
-      "table": "permission"
     },
     {
       "type": "text",
@@ -2056,6 +2378,26 @@
       "type": "text",
       "notNull": true,
       "autoincrement": false,
+      "default": "'off'",
+      "generated": null,
+      "name": "dag_mode",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "dag_budget_tokens",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
       "default": null,
       "generated": null,
       "name": "session_id",
@@ -2136,6 +2478,81 @@
       "name": "fk_workspace_project_id_project_id_fk",
       "entityType": "fks",
       "table": "workspace"
+    },
+    {
+      "columns": [
+        "child_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_child_binding_child_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "child_binding"
+    },
+    {
+      "columns": [
+        "parent_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_child_binding_parent_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "child_binding"
+    },
+    {
+      "columns": [
+        "child_session_id"
+      ],
+      "tableTo": "child_binding",
+      "columnsTo": [
+        "child_session_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_child_run_child_session_id_child_binding_child_session_id_fk",
+      "entityType": "fks",
+      "table": "child_run"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_session_turn_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "session_turn"
+    },
+    {
+      "columns": [
+        "workflow_id"
+      ],
+      "tableTo": "workflow",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_dag_node_attempt_workflow_id_workflow_id_fk",
+      "entityType": "fks",
+      "table": "dag_node_attempt"
     },
     {
       "columns": [
@@ -2223,21 +2640,6 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
-      "name": "fk_permission_project_id_project_id_fk",
-      "entityType": "fks",
-      "table": "permission"
-    },
-    {
-      "columns": [
-        "project_id"
-      ],
-      "tableTo": "project",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "CASCADE",
-      "nameExplicit": false,
       "name": "fk_project_directory_project_id_project_id_fk",
       "entityType": "fks",
       "table": "project_directory"
@@ -2301,6 +2703,17 @@
       "name": "fk_todo_session_id_session_id_fk",
       "entityType": "fks",
       "table": "todo"
+    },
+    {
+      "columns": [
+        "workflow_id",
+        "node_id",
+        "attempt"
+      ],
+      "nameExplicit": false,
+      "name": "dag_node_attempt_pk",
+      "entityType": "pks",
+      "table": "dag_node_attempt"
     },
     {
       "columns": [
@@ -2370,6 +2783,33 @@
     },
     {
       "columns": [
+        "child_session_id"
+      ],
+      "nameExplicit": false,
+      "name": "child_binding_pk",
+      "table": "child_binding",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "child_run_pk",
+      "table": "child_run",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "session_turn_pk",
+      "table": "session_turn",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -2429,15 +2869,6 @@
       "nameExplicit": false,
       "name": "goal_state_pk",
       "table": "goal_state",
-      "entityType": "pks"
-    },
-    {
-      "columns": [
-        "id"
-      ],
-      "nameExplicit": false,
-      "name": "permission_pk",
-      "table": "permission",
       "entityType": "pks"
     },
     {
@@ -2583,6 +3014,84 @@
       "name": "agent_message_session_idx",
       "entityType": "indexes",
       "table": "agent_message"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_created",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "child_run_session_time_idx",
+      "entityType": "indexes",
+      "table": "child_run"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": "\"child_run\".\"state\" in ('queued', 'starting', 'running', 'continuing')",
+      "origin": "manual",
+      "name": "child_run_active",
+      "entityType": "indexes",
+      "table": "child_run"
+    },
+    {
+      "columns": [
+        {
+          "value": "parent_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": "\"child_run\".\"reported_at\" is null and \"child_run\".\"detached\" = 1",
+      "origin": "manual",
+      "name": "child_run_unreported",
+      "entityType": "indexes",
+      "table": "child_run"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_started",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_turn_session_idx",
+      "entityType": "indexes",
+      "table": "session_turn"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "dag_node_attempt_child_session_idx",
+      "entityType": "indexes",
+      "table": "dag_node_attempt"
     },
     {
       "columns": [
@@ -2805,28 +3314,6 @@
     {
       "columns": [
         {
-          "value": "project_id",
-          "isExpression": false
-        },
-        {
-          "value": "action",
-          "isExpression": false
-        },
-        {
-          "value": "resource",
-          "isExpression": false
-        }
-      ],
-      "isUnique": true,
-      "where": null,
-      "origin": "manual",
-      "name": "permission_project_action_resource_idx",
-      "entityType": "indexes",
-      "table": "permission"
-    },
-    {
-      "columns": [
-        {
           "value": "session_id",
           "isExpression": false
         },
@@ -2947,6 +3434,12 @@
       "name": "todo_session_idx",
       "entityType": "indexes",
       "table": "todo"
+    },
+    {
+      "value": "\"dag_mode\" in ('on', 'off')",
+      "name": "session_dag_mode_check",
+      "entityType": "checks",
+      "table": "session"
     }
   ],
   "renames": []
