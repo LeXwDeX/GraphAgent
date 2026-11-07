@@ -8,7 +8,6 @@ import { AbsolutePath } from "../../schema"
 import { SkillV2 } from "../../skill"
 import { Global } from "../../global"
 import { Location } from "../../location"
-import { PROJECT_DIR } from "../../brand"
 
 export const Plugin = define({
   id: "config-skill",
@@ -19,18 +18,9 @@ export const Plugin = define({
     yield* ctx.skill.transform(
       Effect.fn(function* (draft) {
         const entries = yield* config.entries()
-        const directories = [
-          ...new Set([
-            ...entries.flatMap((entry) => (entry.type === "directory" ? [entry.path] : [])),
-            path.join(location.project.directory, PROJECT_DIR),
-            path.join(location.directory, PROJECT_DIR),
-          ]),
-        ]
+        const directories = [...new Set(entries.flatMap((entry) => (entry.type === "directory" ? [entry.path] : [])))]
         const items = entries.flatMap((entry) => (entry.type === "document" ? (entry.info.skills ?? []) : []))
         for (const directory of directories) {
-          draft.source(
-            SkillV2.DirectorySource.make({ type: "directory", path: AbsolutePath.make(path.join(directory, "skill")) }),
-          )
           draft.source(
             SkillV2.DirectorySource.make({
               type: "directory",

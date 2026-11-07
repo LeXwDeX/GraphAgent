@@ -4,7 +4,7 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import path from "path"
 import { pathToFileURL } from "url"
 import os from "os"
-import { mergeDeep } from "remeda"
+import { mergeDeep, unique } from "remeda"
 import { Global } from "@opencode-ai/core/global"
 import { assertProjectRootWritable, hasProjectLayer } from "@/project/project-root"
 import fsNode from "fs/promises"
@@ -20,7 +20,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
+import { InvalidError as ConfigInvalidError, RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { ConfigAgent } from "./agent"
 import { setAgentHookOrigins, type AgentHookProvenance } from "./agent-hooks"
@@ -45,6 +45,14 @@ const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/
 // every directory instance re-reads the same project files.
 const PROJECT_SCOPED_DAG_KEYS = ["mode", "concurrency", "max_total_nodes", "budget", "safety"] as const
 const warnedProjectDagKeys = new Set<string>()
+
+// Project settings are not the home of hook or MCP definitions; those have
+// dedicated files so that a shared settings file cannot silently enable code
+// execution or external servers.
+const PROJECT_FORBIDDEN_KEYS = new Map([
+  ["hooks", "hooks.json"],
+  ["mcpServers", "mcp.json"],
+])
 
 function stripProjectDagKeys(source: string, next: Info): Array<(typeof PROJECT_SCOPED_DAG_KEYS)[number]> {
   if (!next.dag) return []
@@ -184,6 +192,18 @@ function writableGlobal(info: Info) {
   return next
 }
 
+function rejectProjectSettings(parsed: unknown, source: string) {
+  if (!isRecord(parsed)) return undefined
+  for (const [key, target] of PROJECT_FORBIDDEN_KEYS) {
+    if (!Object.hasOwn(parsed, key)) continue
+    return new ConfigInvalidError({
+      path: source,
+      message: `"${key}" is not allowed in project settings. Move it to ${PROJECT_DIR}/${target}.`,
+    })
+  }
+  return undefined
+}
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -291,6 +311,7 @@ export const layer = Layer.effect(
       text: string,
       options: { path: string } | { dir: string; source: string },
       env?: Record<string, string>,
+      flags?: { projectSettings?: boolean },
     ) {
       const source = "path" in options ? options.path : options.source
       const expanded = yield* Effect.promise(() =>
@@ -301,8 +322,14 @@ export const layer = Layer.effect(
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
+      if (flags?.projectSettings) {
+        const rejection = rejectProjectSettings(parsed, source)
+        if (rejection) throw rejection
+      }
       const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
-      if (!("path" in options)) return data
+      // Project settings are user-editable files; never write a generated
+      // `$schema` key into them during a read.
+      if (!("path" in options) || flags?.projectSettings) return data
 
       if (!data.$schema) {
         data.$schema = CONFIG_SCHEMA_URL
@@ -312,11 +339,15 @@ export const layer = Layer.effect(
       return data
     })
 
-    const loadFile = Effect.fnUntraced(function* (filepath: string, env?: Record<string, string>) {
+    const loadFile = Effect.fnUntraced(function* (
+      filepath: string,
+      env?: Record<string, string>,
+      flags?: { projectSettings?: boolean },
+    ) {
       yield* Effect.logInfo("loading", { path: filepath })
       const text = yield* readConfigFile(filepath)
       if (!text) return {} as Info
-      return yield* loadConfig(text, { path: filepath }, env)
+      return yield* loadConfig(text, { path: filepath }, env, flags)
     })
 
     const loadGlobal = Effect.fnUntraced(function* (env?: Record<string, string>) {
@@ -493,63 +524,64 @@ export const layer = Layer.effect(
         const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
         yield* merge(Global.Path.config, global, "global")
 
+        // GRAPHAGENT_CONFIG_DIR names an explicit user-level directory. It is
+        // normally read through Global.Path.config; only load it separately
+        // when another override (the test config dir) shadows that path.
+        if (
+          Flag.GRAPHAGENT_CONFIG_DIR &&
+          path.resolve(Flag.GRAPHAGENT_CONFIG_DIR) !== path.resolve(Global.Path.config)
+        ) {
+          for (const name of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
+            const source = path.join(Flag.GRAPHAGENT_CONFIG_DIR, name)
+            yield* merge(source, yield* loadFile(source, authEnv), "global")
+          }
+        }
+
         if (Flag.GRAPHAGENT_CONFIG) {
           yield* merge(Flag.GRAPHAGENT_CONFIG, yield* loadFile(Flag.GRAPHAGENT_CONFIG, authEnv), "global")
           yield* Effect.logDebug("loaded custom config", { path: Flag.GRAPHAGENT_CONFIG })
         }
 
         const projectLayer = hasProjectLayer(ctx.root, Global.Path.home)
-
-        if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && projectLayer) {
-          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.root).pipe(
-            Effect.orDie,
-          )) {
-            yield* merge(file, yield* loadFile(file, authEnv), "project")
-          }
-        }
+        const readProject = !Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && projectLayer
 
         result.agent = result.agent || {}
         result.mode = result.mode || {}
 
-        // `$HOME` carries no project layer: `~/.agents` is user-level even when
-        // the root walk terminates there. GRAPHAGENT_CONFIG_DIR stays global.
-        const homeAgents = path.join(Global.Path.home, PROJECT_DIR)
-        const directories = (yield* ConfigPaths.directories(ctx.directory, ctx.root)).filter(
-          (dir) => projectLayer || dir === Flag.GRAPHAGENT_CONFIG_DIR || dir !== homeAgents,
-        )
+        // User-level configuration lives in the XDG config directory (or the
+        // GRAPHAGENT_CONFIG_DIR replacement). The project layer is exactly one
+        // directory: `<root>/.agents/`.
+        const directories = unique([
+          Global.Path.config,
+          ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : []),
+        ])
 
         if (Flag.GRAPHAGENT_CONFIG_DIR) {
           yield* Effect.logDebug("loading config from GRAPHAGENT_CONFIG_DIR", { path: Flag.GRAPHAGENT_CONFIG_DIR })
         }
 
-        for (const dir of directories) {
-          if (path.basename(dir) === PROJECT_DIR || dir === Flag.GRAPHAGENT_CONFIG_DIR) {
-            for (const file of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
-              const source = path.join(dir, file)
-              yield* Effect.logDebug(`loading config from ${source}`)
-              // GRAPHAGENT_CONFIG_DIR is explicitly global; .agents directories
-              // found upward from the project are the project layer.
-              yield* merge(
-                source,
-                yield* loadFile(source, authEnv),
-                dir === Flag.GRAPHAGENT_CONFIG_DIR ? "global" : "project",
-              )
-              result.agent ??= {}
-              result.mode ??= {}
-            }
-          }
-
+        const loadAgentDirectory = Effect.fnUntraced(function* (dir: string) {
           result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          for (const loaded of [
-            yield* Effect.promise(() => ConfigAgent.load(dir)),
-            yield* Effect.promise(() => ConfigAgent.loadMode(dir)),
-          ]) {
-            for (const [name, agent] of Object.entries(loaded)) {
-              if (agent.hooks !== undefined)
-                agentHookOrigins.set(name, { source: agentHookSource(dir), origin: String(agent.hookOrigin) })
-            }
-            result.agent = mergeDeep(result.agent ?? {}, loaded)
+          const loaded = yield* Effect.promise(() => ConfigAgent.load(dir))
+          for (const [name, agent] of Object.entries(loaded)) {
+            if (agent.hooks !== undefined)
+              agentHookOrigins.set(name, { source: agentHookSource(dir), origin: String(agent.hookOrigin) })
           }
+          result.agent = mergeDeep(result.agent ?? {}, loaded)
+        })
+
+        if (readProject) {
+          for (const file of ConfigPaths.projectSettingsFiles(ctx.root)) {
+            yield* merge(file, yield* loadFile(file, authEnv, { projectSettings: true }), "project")
+          }
+        }
+
+        for (const dir of directories) {
+          yield* loadAgentDirectory(dir)
+        }
+
+        if (readProject) {
+          yield* loadAgentDirectory(ConfigPaths.projectDirectory(ctx.root))
         }
 
         if (process.env.GRAPHAGENT_CONFIG_CONTENT) {
@@ -589,11 +621,8 @@ export const layer = Layer.effect(
           })
         }
 
-        const localPermissions = yield* HookPermissions.read(HookPermissions.localFile(ctx.directory))
-        if (localPermissions.permission || localPermissions.permissions) result = mergeConfig(result, localPermissions)
-        if (localPermissions.hookPermissions)
-          result.hookPermissions = { ...result.hookPermissions, ...localPermissions.hookPermissions }
-
+        // Local permission overrides are part of <root>/.agents/settings.local.json
+        // and were merged with the rest of the project layer above.
         if (Flag.GRAPHAGENT_PERMISSION) {
           try {
             result = mergeConfig(result, { permission: JSON.parse(Flag.GRAPHAGENT_PERMISSION) })
@@ -664,14 +693,17 @@ export const layer = Layer.effect(
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const ctx = yield* InstanceState.context
-      const file = path.join(ctx.directory, "config.json")
-      const existing = yield* loadFile(file)
-      // Hook vetoes take precedence over the project-root guard so policies see the write first.
+      const file = ConfigPaths.projectSettingsFile(ctx.root)
+      const existing = (yield* readConfigFile(file)) ?? "{}"
+      // Hook vetoes take precedence over the project-root guard so policies
+      // see the write first.
       yield* checkConfigChange(file, "project_settings")
       assertProjectRootWritable(ctx.root, Global.Path.home)
-      yield* fs
-        .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
-        .pipe(Effect.orDie)
+      // Edit the JSONC document in place so comments and formatting survive a
+      // PATCH /config write. The previous implementation wrote a separate
+      // `<directory>/config.json` that the loader never read.
+      const next = patchJsonc(existing, writable(config))
+      yield* fs.writeWithDirs(file, next.endsWith("\n") ? next : next + "\n").pipe(Effect.orDie)
     })
 
     const updateHookPermissions = Effect.fn("Config.updateHookPermissions")(function* (
@@ -690,8 +722,8 @@ export const layer = Layer.effect(
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.root, `${CONFIG_BASENAME}.jsonc`)
-              : HookPermissions.localFile(ctx.root)
+              ? ConfigPaths.projectSettingsFile(ctx.root)
+              : ConfigPaths.projectLocalSettingsFile(ctx.root)
         yield* checkConfigChange(
           file,
           destination === "userSettings"
@@ -709,8 +741,8 @@ export const layer = Layer.effect(
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.root, `${CONFIG_BASENAME}.jsonc`)
-              : HookPermissions.localFile(ctx.root)
+              ? ConfigPaths.projectSettingsFile(ctx.root)
+              : ConfigPaths.projectLocalSettingsFile(ctx.root)
         yield* HookPermissions.update(file, entries, ctx.root).pipe(
           Effect.provideService(FSUtil.Service, fs),
           Effect.provide(EffectFlock.defaultLayer),

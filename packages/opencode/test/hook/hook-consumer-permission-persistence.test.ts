@@ -16,6 +16,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 
 const it = testEffect(AppLayer.pipe(Layer.provideMerge(SessionHooks.defaultLayer)))
 const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'"
+const projectSettingsFile = (dir: string) => path.join(dir, ".agents", "settings.json")
 
 describe("permission updates through real AppLayer and command hooks", () => {
   it.instance(
@@ -32,9 +33,13 @@ describe("permission updates through real AppLayer and command hooks", () => {
         process.env.GRAPHAGENT_TEST_CONFIG_DIR = globalDir
         yield* cfg.invalidate()
         yield* Effect.gen(function* () {
-          const projectFile = path.join(instance.directory, "graphagent.jsonc")
+          const projectFile = projectSettingsFile(instance.directory)
           yield* Effect.promise(() =>
-            fs.writeFile(projectFile, '{\n  // retain this unrelated comment\n  "username": "fixture-user"\n}\n'),
+            fs
+              .mkdir(path.dirname(projectFile), { recursive: true })
+              .then(() =>
+                fs.writeFile(projectFile, '{\n  // retain this unrelated comment\n  "username": "fixture-user"\n}\n'),
+              ),
           )
           const id = SessionID.descending()
           const updates = ["session", "localSettings", "projectSettings", "userSettings"].map((destination) => ({
@@ -198,7 +203,7 @@ it.instance("rule removals and replacements refresh an already cached Agent with
     ])
     expect((yield* cfg.get()).permissions?.some((rule) => rule.action === "old_rule")).toBe(false)
     expect((yield* cfg.get()).permissions).toContainEqual({ action: "new_rule", resource: "*", effect: "allow" })
-    const file = path.join(instance.directory, "graphagent.jsonc")
+    const file = projectSettingsFile(instance.directory)
     const before = yield* Effect.promise(() => fs.readFile(file, "utf8"))
     expect(
       Exit.isFailure(
@@ -283,8 +288,12 @@ it.instance("ordered wildcard rules survive mixed-source reload and invalid file
     const instance = yield* TestInstance
     const cfg = yield* Config.Service
     const agent = yield* Agent.Service
-    const file = path.join(instance.directory, "graphagent.jsonc")
-    yield* Effect.promise(() => fs.writeFile(file, JSON.stringify({ permission: { read: { a: "allow" } } })))
+    const file = projectSettingsFile(instance.directory)
+    yield* Effect.promise(() =>
+      fs
+        .mkdir(path.dirname(file), { recursive: true })
+        .then(() => fs.writeFile(file, JSON.stringify({ permission: { read: { a: "allow" } } }))),
+    )
     yield* cfg.invalidate()
     yield* cfg.updateHookPermissions([
       { type: "addRules", destination: "projectSettings", behavior: "deny", rules: [{ toolName: "*" }] },

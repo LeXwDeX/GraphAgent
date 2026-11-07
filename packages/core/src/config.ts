@@ -95,8 +95,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
     description: "Conversation compaction behavior",
   }),
   reasoningDistillation: ConfigReasoningDistillation.Info.pipe(Schema.optional).annotate({
-    description:
-      `Reasoning distillation of returned model thoughts (default-off; set \`enabled: true\` in ${CONFIG_BASENAME}.json to turn it on; signed, encrypted or unknown provider reasoning is never rewritten; \`language\` selects zh (default) or en)`,
+    description: `Reasoning distillation of returned model thoughts (default-off; set \`enabled: true\` in ${CONFIG_BASENAME}.json to turn it on; signed, encrypted or unknown provider reasoning is never rewritten; \`language\` selects zh (default) or en)`,
   }),
   skills: Schema.String.pipe(Schema.Array, Schema.optional).annotate({
     description: "Additional paths or URLs to discover skills from",
@@ -196,40 +195,34 @@ export const layer = Layer.effect(
     const globalDirectory = AbsolutePath.make(global.config)
     const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
     const readConfigs = Effect.fn("Config.readConfigs")(function* (strict: boolean) {
-      const discovered = locationIsGlobal
-        ? []
-        : yield* fs.up({
-            targets: [PROJECT_DIR, ...names.toReversed()],
-            start: location.directory,
-            stop: location.project.directory,
-          })
+      const globalEntries = yield* loadDirectory(globalDirectory, strict)
+      let configs = globalEntries
 
-      const directories = [
-        globalDirectory,
-        ...discovered
-          .filter((item) => path.basename(item) === PROJECT_DIR)
-          .toReversed()
-          .map((directory) => AbsolutePath.make(directory)),
-      ]
-      // A config closer to the opened directory should win over one higher up.
-      // Search starts nearby, so reverse the results before applying them.
-      const directPaths = discovered.filter((item) => path.basename(item) !== PROJECT_DIR).toReversed()
-      const direct = yield* Effect.forEach(directPaths, (file) => loadFile(file, strict)).pipe(
-        Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
-      )
-      const supplementary = yield* Effect.forEach(directories, (directory) => loadDirectory(directory, strict))
-      // Apply general settings first and more specific settings last:
-      // global config, project files, then `.agents` files.
-      const localPermissions = yield* loadFile(
-        path.join(location.directory, PROJECT_DIR, "permissions.local.json"),
-        strict,
-      )
-      const configs = [
-        ...(supplementary[0] ?? []),
-        ...direct,
-        ...supplementary.slice(1).flat(),
-        ...(localPermissions ? [localPermissions] : []),
-      ]
+      if (!locationIsGlobal) {
+        const home = path.resolve(global.home)
+        // Without a VCS boundary, a directory under the home directory stops
+        // at $HOME instead of walking to the filesystem root.
+        const relativeHome = path.relative(home, location.directory)
+        const underHome = relativeHome === "" || (!relativeHome.startsWith("..") && !path.isAbsolute(relativeHome))
+        const discovered = yield* fs.up({
+          targets: [PROJECT_DIR],
+          start: location.directory,
+          stop: location.vcs === undefined && underHome ? home : location.project.directory,
+        })
+        // The project layer is exactly one directory: the nearest `.agents/`
+        // at or above the instance directory, never `~/.agents`.
+        const projectAgents = discovered.find(
+          (item) => path.basename(item) === PROJECT_DIR && path.dirname(item) !== home,
+        )
+        if (projectAgents) {
+          const projectFiles = yield* Effect.forEach(["settings.json", "settings.local.json"], (file) =>
+            loadFile(path.join(projectAgents, file), strict),
+          ).pipe(Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)))
+          const directory = new Directory({ type: "directory", path: AbsolutePath.make(projectAgents) })
+          configs = [...globalEntries, ...projectFiles, directory]
+        }
+      }
+
       // Rules use the opposite order so a user-global rule can override a
       // repository rule. Statement order inside each file stays unchanged.
       yield* policy.load(

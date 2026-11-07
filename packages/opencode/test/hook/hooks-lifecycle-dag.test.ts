@@ -41,7 +41,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
             ),
           ),
         )
-        const directory = path.join(home, ".config/graphagent/agent")
+        const directory = path.join(home, ".config/graphagent/agents")
         await fs.mkdir(directory, { recursive: true })
         await fs.writeFile(
           path.join(directory, "general.md"),

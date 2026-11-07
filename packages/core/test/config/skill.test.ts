@@ -64,21 +64,7 @@ describe("ConfigSkillPlugin.Plugin", () => {
       expect(sources).toEqual([
         SkillV2.DirectorySource.make({
           type: "directory",
-          path: AbsolutePath.make(path.join("/repo/.agents", "skill")),
-        }),
-        SkillV2.DirectorySource.make({
-          type: "directory",
           path: AbsolutePath.make(path.join("/repo/.agents", "skills")),
-        }),
-        // Register both standard candidates even when the directories do not
-        // exist yet, so a hook-created skill can be discovered after reload.
-        SkillV2.DirectorySource.make({
-          type: "directory",
-          path: AbsolutePath.make(path.join(directory, ".agents", "skill")),
-        }),
-        SkillV2.DirectorySource.make({
-          type: "directory",
-          path: AbsolutePath.make(path.join(directory, ".agents", "skills")),
         }),
         SkillV2.DirectorySource.make({ type: "directory", path: AbsolutePath.make(path.join(directory, "skills")) }),
         SkillV2.DirectorySource.make({

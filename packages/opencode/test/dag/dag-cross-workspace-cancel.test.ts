@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { $ } from "bun"
-import { rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Stream } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -64,9 +64,11 @@ test("workflow cancel stops its real cross-workspace child without stopping an o
           }
           yield* Effect.promise(() =>
             Promise.all(
-              [owner.path, workspace.path].map((dir) =>
-                writeFile(path.join(dir, "graphagent.json"), JSON.stringify(config)),
-              ),
+              [owner.path, workspace.path].map(async (dir) => {
+                const file = path.join(dir, ".agents", "settings.json")
+                await mkdir(path.dirname(file), { recursive: true })
+                await writeFile(file, JSON.stringify(config))
+              }),
             ),
           )
           const instances = yield* InstanceStore.Service
@@ -378,7 +380,10 @@ test("interrupting the abort caller does not abandon its owner snapshot", async 
         yield* Effect.addFinalizer(() =>
           Deferred.succeed(release, undefined).pipe(Effect.andThen(instances.disposeAll())),
         )
-        const session = yield* instances.provide({ directory: workspace.path }, sessions.create({ title: "caller interrupt" }))
+        const session = yield* instances.provide(
+          { directory: workspace.path },
+          sessions.create({ title: "caller interrupt" }),
+        )
         const owner = yield* instances.provide(
           { directory: workspace.path },
           runs.ensureRunningHandle(
@@ -386,7 +391,9 @@ test("interrupting the abort caller does not abandon its owner snapshot", async 
             Effect.die("interrupted"),
             Deferred.succeed(started, undefined).pipe(
               Effect.andThen(Effect.never),
-              Effect.onInterrupt(() => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+              Effect.onInterrupt(() =>
+                Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+              ),
               Effect.ensuring(Deferred.succeed(stopped, undefined)),
             ),
           ),
@@ -551,8 +558,7 @@ test("same-directory cancel with a stale InstanceRef after disposal does not pub
 
 test("cancel clears a durable followup when the target workspace is not loaded", () => assertFollowupCancelNoOp(false))
 
-test("cancel clears a durable followup when the target workspace was disposed", () =>
-  assertFollowupCancelNoOp(true))
+test("cancel clears a durable followup when the target workspace was disposed", () => assertFollowupCancelNoOp(true))
 
 test.skipIf(process.platform === "win32")(
   "cancel resolves a symlinked target directory to the loaded workspace",

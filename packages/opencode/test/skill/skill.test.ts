@@ -98,7 +98,7 @@ describe("skill", () => {
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".agents", "skill", "workflow", "SKILL.md"),
+              path.join(dir, ".agents", "skills", "workflow", "SKILL.md"),
               `---
 name: workflow
 description: User-defined workflow guidance.
@@ -120,13 +120,13 @@ description: User-defined workflow guidance.
     ),
   )
 
-  it.live("discovers skills from .agents/skill/ directory", () =>
+  it.live("discovers skills from .agents/skills/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".agents", "skill", "test-skill", "SKILL.md"),
+              path.join(dir, ".agents", "skills", "test-skill", "SKILL.md"),
               `---
 name: test-skill
 description: A test skill for verification.
@@ -145,7 +145,7 @@ Instructions here.
           const item = list.find((x) => x.name === "test-skill")
           expect(item).toBeDefined()
           expect(item!.description).toBe("A test skill for verification.")
-          expect(item!.location).toContain(path.join("skill", "test-skill", "SKILL.md"))
+          expect(item!.location).toContain(path.join("skills", "test-skill", "SKILL.md"))
         }),
       { git: true },
     ),
@@ -162,7 +162,7 @@ Instructions here.
           Effect.gen(function* () {
             yield* Effect.promise(() =>
               Bun.write(
-                path.join(dir, ".agents", "skill", "dir-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skills", "dir-skill", "SKILL.md"),
                 `---
 name: dir-skill
 description: Skill for dirs test.
@@ -175,7 +175,7 @@ description: Skill for dirs test.
 
             const skill = yield* Skill.Service
             const dirs = yield* skill.dirs()
-            expect(dirs).toContain(path.join(dir, ".agents", "skill", "dir-skill"))
+            expect(dirs).toContain(path.join(dir, ".agents", "skills", "dir-skill"))
             expect(dirs.length).toBe(1)
           }),
         ),
@@ -183,14 +183,14 @@ description: Skill for dirs test.
     ),
   )
 
-  it.live("discovers multiple skills from .agents/skill/ directory", () =>
+  it.live("discovers multiple skills from .agents/skills/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Promise.all([
               Bun.write(
-                path.join(dir, ".agents", "skill", "skill-one", "SKILL.md"),
+                path.join(dir, ".agents", "skills", "skill-one", "SKILL.md"),
                 `---
 name: skill-one
 description: First test skill.
@@ -200,7 +200,7 @@ description: First test skill.
 `,
               ),
               Bun.write(
-                path.join(dir, ".agents", "skill", "skill-two", "SKILL.md"),
+                path.join(dir, ".agents", "skills", "skill-two", "SKILL.md"),
                 `---
 name: skill-two
 description: Second test skill.
@@ -228,7 +228,7 @@ description: Second test skill.
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".agents", "skill", "no-frontmatter", "SKILL.md"),
+              path.join(dir, ".agents", "skills", "no-frontmatter", "SKILL.md"),
               `# No Frontmatter
 
 Just some content without YAML frontmatter.
@@ -249,7 +249,7 @@ Just some content without YAML frontmatter.
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".agents", "skill", "manual-skill", "SKILL.md"),
+              path.join(dir, ".agents", "skills", "manual-skill", "SKILL.md"),
               `---
 name: manual-skill
 ---
@@ -570,7 +570,7 @@ description: A skill in the .claude/skills directory.
 `,
               ),
               Bun.write(
-                path.join(dir, ".agents", "skill", "opencode-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skills", "opencode-skill", "SKILL.md"),
                 `---
 name: opencode-skill
 description: A skill in the .agents/skill directory.
@@ -617,16 +617,6 @@ description: A skill in the .agents/skills directory.
 `,
               ),
               Bun.write(
-                path.join(dir, ".agents", "skill", "agent-skill", "SKILL.md"),
-                `---
-name: opencode-skill
-description: A skill in the .agents/skill directory.
----
-
-# OpenCode Skill
-`,
-              ),
-              Bun.write(
                 path.join(dir, ".agents", "skills", "second-skill", "SKILL.md"),
                 `---
 name: second-skill
@@ -640,7 +630,7 @@ description: A second skill in the .agents/skills directory.
           )
 
           const skill = yield* Skill.Service
-          expect((yield* skill.dirs()).length).toBe(4)
+          expect((yield* skill.dirs()).length).toBe(3)
         }),
       { git: true },
     ),

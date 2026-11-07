@@ -369,7 +369,7 @@ function makePrompt(input?: PromptLayerOptions) {
         Layer.provide(Auth.defaultLayer),
         Layer.provide(Config.defaultLayer),
         Layer.provide(ProviderSvc.defaultLayer),
-         Layer.provide(
+        Layer.provide(
           LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
         ),
         Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
@@ -717,7 +717,7 @@ const ensureDir = Effect.fn("test.ensureDir")(function* (dir: string) {
 
 const writeConfig = Effect.fn("test.writeConfig")(function* (dir: string, config: Partial<ConfigV1.Info>) {
   yield* writeText(
-    path.join(dir, "graphagent.json"),
+    path.join(dir, ".agents", "settings.json"),
     JSON.stringify({ $schema: "https://opencode.ai/config.json", ...config }),
   )
 })
@@ -3712,42 +3712,44 @@ it.instance("keeps the reminder on a tools-disabled last step (#953)", () =>
   }),
 )
 
-it.instance("clears the todo reminder ledger when the session is deleted (#953)", () =>
-  Effect.gen(function* () {
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const todo = yield* Todo.Service
-    const reminders = yield* TodoReminders.Service
-    const chat = yield* sessions.create({
-      title: "Deleted reminder",
-      permission: [{ permission: "*", pattern: "*", action: "allow" }],
-    })
-    yield* todo.update({
-      sessionID: chat.id,
-      todos: [{ content: "delete cleanup", status: "in_progress", priority: "high" }],
-    })
-    yield* prompt.prompt({
-      sessionID: chat.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "create a reminder before deletion" }],
-    })
-    const messages = yield* sessions.messages({ sessionID: chat.id })
-    const before = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
-    expect(before).toContain("[todo reminder]")
+it.instance(
+  "clears the todo reminder ledger when the session is deleted (#953)",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const todo = yield* Todo.Service
+      const reminders = yield* TodoReminders.Service
+      const chat = yield* sessions.create({
+        title: "Deleted reminder",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* todo.update({
+        sessionID: chat.id,
+        todos: [{ content: "delete cleanup", status: "in_progress", priority: "high" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "create a reminder before deletion" }],
+      })
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const before = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
+      expect(before).toContain("[todo reminder]")
 
-    yield* sessions.remove(chat.id)
+      yield* sessions.remove(chat.id)
 
-    expect(
-      yield* pollWithTimeout(
-        Effect.gen(function* () {
-          const current = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
-          return current?.includes("[todo reminder]") ? undefined : true
-        }),
-        "todo reminder ledger was not cleared after session deletion",
-      ),
-    ).toBe(true)
-  }),
+      expect(
+        yield* pollWithTimeout(
+          Effect.gen(function* () {
+            const current = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
+            return current?.includes("[todo reminder]") ? undefined : true
+          }),
+          "todo reminder ledger was not cleared after session deletion",
+        ),
+      ).toBe(true)
+    }),
   { config: cfg },
 )
 
@@ -4659,7 +4661,8 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
     const grepFile = path.join(dir, "fold-grep.txt")
     const globDir = path.join(dir, "fold-glob")
     const probeLedger = path.join(dir, "s08-probe-ledger.ndjson")
-    const probeTool = path.join(dir, ".agents", "tools", "s08_probe.ts")
+    const probeScript = path.join(dir, "s08-probe.sh")
+    const probeCommand = (mode: "success" | "fail" | "slow") => `bash ${JSON.stringify(probeScript)} ${mode}`
     const uniqueMarker = `unique-tool-output-${runtime}-`
     yield* writeText(readFile, foldingReadBody("read-body-abcdefghij-"))
     yield* writeText(uniqueFile, `${uniqueMarker}${"u".repeat(4_000)}\n`)
@@ -4667,31 +4670,23 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
       grepFile,
       Array.from({ length: 40 }, (_, index) => `needle-${index}-${"g".repeat(320)}`).join("\n"),
     )
+    // Custom tools no longer load from the project, so the probe runs as a
+    // scripted shell command through the builtin `bash` tool.
     yield* writeText(
-      probeTool,
+      probeScript,
       [
-        "export default {",
-        "  description: 'S08 deterministic side-effect and lifecycle probe',",
-        "  args: { mode: { type: 'string' } },",
-        "  execute: async ({ mode }, ctx) => {",
-        "    const { appendFile } = await import('node:fs/promises')",
-        `    const ledger = ${JSON.stringify(probeLedger)}`,
-        "    await appendFile(ledger, JSON.stringify({ mode, event: 'start' }) + '\\n')",
-        "    if (mode === 'fail') throw new Error('s08 expected probe failure')",
-        "    if (mode === 'slow') {",
-        "      await new Promise((_resolve, reject) => {",
-        "        const abort = async () => {",
-        "          await appendFile(ledger, JSON.stringify({ mode, event: 'abort' }) + '\\n')",
-        "          reject(new Error('s08 probe cancelled'))",
-        "        }",
-        "        if (ctx.abort.aborted) void abort()",
-        "        else ctx.abort.addEventListener('abort', () => void abort(), { once: true })",
-        "      })",
-        "    }",
-        "    await appendFile(ledger, JSON.stringify({ mode, event: 'complete' }) + '\\n')",
-        "    return `s08-probe-${mode}-complete`",
-        "  },",
-        "}",
+        "#!/usr/bin/env bash",
+        `ledger=${JSON.stringify(probeLedger)}`,
+        'mode="$1"',
+        `echo '{"mode":"'"$mode"'","event":"start"}' >> "$ledger"`,
+        'if [ "$mode" = "fail" ]; then exit 1; fi',
+        'if [ "$mode" = "slow" ]; then',
+        `  finish() { echo '{"mode":"slow","event":"abort"}' >> "$ledger"; exit 143; }`,
+        "  trap finish TERM INT",
+        "  while true; do sleep 1; done",
+        "fi",
+        `echo '{"mode":"success","event":"complete"}' >> "$ledger"`,
+        'echo "s08-probe-$mode-complete"',
         "",
       ].join("\n"),
     )
@@ -4722,11 +4717,11 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
               index: 0,
               delta: {
                 role: "assistant",
-                tool_calls: ["success", "fail"].map((mode, index) => ({
+                tool_calls: (["success", "fail"] as const).map((mode, index) => ({
                   index,
                   id: `call-probe-${mode}`,
                   type: "function",
-                  function: { name: "s08_probe", arguments: JSON.stringify({ mode }) },
+                  function: { name: "bash", arguments: JSON.stringify({ command: probeCommand(mode) }) },
                 })),
               },
               finish_reason: "tool_calls",
@@ -4758,11 +4753,21 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
     const beforeMessages = yield* MessageV2.filterCompactedEffect(session.id)
     const probeParts = beforeMessages
       .flatMap((message) => message.parts)
-      .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "s08_probe")
+      .filter(
+        (part): part is SessionV1.ToolPart =>
+          part.type === "tool" && part.tool === "bash" && part.callID.startsWith("call-probe-"),
+      )
+    // The builtin `bash` tool reports a nonzero exit as a completed result, so
+    // the failing probe is identified by its exit metadata rather than an
+    // error state.
     expect(probeParts.map((part) => ({ callID: part.callID, status: part.state.status }))).toEqual([
       { callID: "call-probe-success", status: "completed" },
-      { callID: "call-probe-fail", status: "error" },
+      { callID: "call-probe-fail", status: "completed" },
     ])
+    const failedProbe = probeParts.find((part) => part.callID === "call-probe-fail")
+    expect(failedProbe?.state.status).toBe("completed")
+    if (failedProbe?.state.status !== "completed") throw new Error("missing failing probe result")
+    expect(failedProbe.state.output).toContain("Command exited with code 1")
     const beforeTools = beforeMessages
       .flatMap((message) => message.parts)
       .filter(
@@ -4914,7 +4919,7 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
       noReply: true,
       parts: [{ type: "text", text: "start the cancellable lifecycle probe" }],
     })
-    yield* llm.tool("s08_probe", { mode: "slow" })
+    yield* llm.push(reply().tool("bash", { command: probeCommand("slow") }, "call-probe-slow"))
     const slowRun = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.forkChild)
     yield* pollWithTimeout(
       Effect.gen(function* () {
@@ -4929,8 +4934,12 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
     expect(Exit.isSuccess(yield* Fiber.await(slowRun))).toBe(true)
     const cancelled = (yield* MessageV2.filterCompactedEffect(session.id))
       .flatMap((message) => message.parts)
-      .findLast((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "s08_probe")
-    expect(cancelled?.state.status).toBe("error")
+      .findLast((part): part is SessionV1.ToolPart => part.type === "tool" && part.callID === "call-probe-slow")
+    // The shell tool turns a client cancel into a completed result carrying the
+    // abort note; the cancelled side effect is still observable in the ledger.
+    expect(cancelled?.state.status).toBe("completed")
+    if (cancelled?.state.status !== "completed") throw new Error("missing cancelled probe result")
+    expect(cancelled.state.output).toContain("aborted before completion")
 
     yield* prompt.prompt({
       sessionID: session.id,
@@ -4986,22 +4995,10 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
     expect(yield* llm.pending).toBe(0)
   })
 
-const contextFoldingOverrideFailsClosed = (sourceKind: "custom" | "mcp") =>
+const contextFoldingOverrideFailsClosed = () =>
   Effect.gen(function* () {
-    const { dir, llm } = yield* useServerConfig(foldingProviderCfg)
-    if (sourceKind === "custom") {
-      yield* writeText(
-        path.join(dir, ".agents", "tools", "read.ts"),
-        [
-          "export default {",
-          "  description: 'custom read override',",
-          "  args: {},",
-          "  execute: async () => 'custom-context-folding-override-' + 'c'.repeat(24000),",
-          "}",
-          "",
-        ].join("\n"),
-      )
-    }
+    const { llm } = yield* useServerConfig(foldingProviderCfg)
+    const sourceKind = "mcp" as const
 
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
@@ -5187,7 +5184,7 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
   const grepFile = path.join(dir, "lifecycle-grep.txt")
   const globDir = path.join(dir, "lifecycle-glob")
   const ledger = path.join(dir, "s08-lifecycle-ledger.ndjson")
-  const toolFile = path.join(dir, ".agents", "tools", "s08_lifecycle.ts")
+  const lifecycleScript = path.join(dir, "s08-lifecycle.sh")
   const markers = {
     read: `lifecycle-read-${input.runtime}-`,
     grep: `lifecycle-needle-0-${input.runtime}-`,
@@ -5201,20 +5198,16 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
       "\n",
     ),
   )
+  // The side effect runs through the builtin `bash` tool: project custom tools
+  // are no longer part of the configuration surface.
   yield* writeText(
-    toolFile,
+    lifecycleScript,
     [
-      "export default {",
-      "  description: 'S08 lifecycle side-effect probe',",
-      "  args: {},",
-      "  execute: async () => {",
-      "    const { appendFile } = await import('node:fs/promises')",
-      `    const ledger = ${JSON.stringify(ledger)}`,
-      "    await appendFile(ledger, JSON.stringify({ event: 'start' }) + '\\n')",
-      "    await appendFile(ledger, JSON.stringify({ event: 'complete' }) + '\\n')",
-      "    return 's08-lifecycle-complete'",
-      "  },",
-      "}",
+      "#!/usr/bin/env bash",
+      `ledger=${JSON.stringify(ledger)}`,
+      `echo '{"event":"start"}' >> "$ledger"`,
+      `echo '{"event":"complete"}' >> "$ledger"`,
+      'echo "s08-lifecycle-complete"',
       "",
     ].join("\n"),
   )
@@ -5234,7 +5227,7 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
     parts: [{ type: "text", text: "collect lifecycle duplicate context" }],
   })
   yield* llm.push(
-    reply().tool("s08_lifecycle", {}, "call-lifecycle-side-effect"),
+    reply().tool("bash", { command: `bash ${JSON.stringify(lifecycleScript)}` }, "call-lifecycle-side-effect"),
     reply().tool("read", { filePath: readFile }, "call-lifecycle-read-source"),
     reply().tool("read", { filePath: readFile }, "call-lifecycle-read-witness"),
     reply().tool("grep", { pattern: "lifecycle-needle", path: grepFile }, "call-lifecycle-grep-source"),
@@ -5480,15 +5473,9 @@ stableNativeFoldingIt.instance(
   30_000,
 )
 
-it.instance(
-  "keeps a custom same-name read override unfolded after real settlement",
-  () => contextFoldingOverrideFailsClosed("custom"),
-  30_000,
-)
-
 withMcpReadOverride.instance(
   "keeps an MCP same-name read override unfolded after real settlement",
-  () => contextFoldingOverrideFailsClosed("mcp"),
+  () => contextFoldingOverrideFailsClosed(),
   30_000,
 )
 
@@ -5591,31 +5578,33 @@ it.instance("subtask child inherits parent session external_directory allow", ()
   }),
 )
 
-noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
-  Effect.gen(function* () {
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const session = yield* sessions.create({ title: "Prompt tools" })
+noLLMServer.instance(
+  "prompt tools replace previous prompt tool rules",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Prompt tools" })
 
-    yield* prompt.prompt({
-      sessionID: session.id,
-      agent: "build",
-      noReply: true,
-      tools: { bash: false },
-      parts: [{ type: "text", text: "first" }],
-    })
-    yield* prompt.prompt({
-      sessionID: session.id,
-      agent: "build",
-      noReply: true,
-      tools: { read: true },
-      parts: [{ type: "text", text: "second" }],
-    })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        tools: { bash: false },
+        parts: [{ type: "text", text: "first" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        tools: { read: true },
+        parts: [{ type: "text", text: "second" }],
+      })
 
-    const reloaded = yield* sessions.get(session.id)
-    expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
-    expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
-  }),
+      const reloaded = yield* sessions.get(session.id)
+      expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
+      expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
+    }),
   { config: cfg },
 )
 

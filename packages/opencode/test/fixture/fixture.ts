@@ -90,7 +90,7 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
   }
   if (options?.config) {
     await Bun.write(
-      path.join(dirpath, "graphagent.json"),
+      path.join(dirpath, ".agents", "settings.json"),
       JSON.stringify({
         $schema: "https://opencode.ai/config.json",
         ...options.config,
@@ -147,12 +147,11 @@ export function tmpdirScoped<E = never, R = never>(options?: {
 
     if (options?.config) {
       const resolved = typeof options.config === "function" ? options.config() : options.config
-      yield* Effect.promise(() =>
-        fs.writeFile(
-          path.join(dir, "graphagent.json"),
-          JSON.stringify({ $schema: "https://opencode.ai/config.json", ...resolved }),
-        ),
-      )
+      yield* Effect.promise(async () => {
+        const target = path.join(dir, ".agents", "settings.json")
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, JSON.stringify({ $schema: "https://opencode.ai/config.json", ...resolved }))
+      })
     }
 
     if (options?.init) yield* options.init(dir)

@@ -208,7 +208,9 @@ const scenarios: Scenario[] = [
           )
           const directory = ctx.directory
           check(directory !== undefined, "config patch should run in a project directory")
-          const saved = JSON.parse(yield* Effect.promise(() => Bun.file(path.join(directory, "config.json")).text()))
+          const saved = JSON.parse(
+            yield* Effect.promise(() => Bun.file(path.join(directory, ".agents", "settings.json")).text()),
+          )
           object(saved.provider)
           object(saved.provider["test-provider"])
           object(saved.provider["test-provider"].models)

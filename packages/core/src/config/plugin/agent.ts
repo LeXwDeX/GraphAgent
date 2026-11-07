@@ -15,10 +15,7 @@ import { ConfigMigrateV1 } from "../../v1/config/migrate"
 import { Global } from "../../global"
 import { PermissionV2 } from "../../permission"
 
-const legacySources = [
-  { pattern: "{agent,agents}/**/*.md", primary: false },
-  { pattern: "{mode,modes}/*.md", primary: true },
-] as const
+const legacySources = [{ pattern: "agents/**/*.md", primary: false }] as const
 const decodeAgent = Schema.decodeUnknownOption(ConfigAgent.Info)
 const decodeLegacyAgent = Schema.decodeUnknownOption(ConfigAgentV1.Info)
 const decodeConfig = Schema.decodeUnknownOption(Config.Info)
@@ -164,7 +161,7 @@ function decode(file: { directory: string; filepath: string; primary: boolean },
   const name = path
     .relative(file.directory, file.filepath)
     .replaceAll("\\", "/")
-    .replace(/^(agent|agents|mode|modes)\//, "")
+    .replace(/^agents\//, "")
     .replace(/\.md$/, "")
   const body = markdown.content.trim()
   const legacy = Object.keys(markdown.data).some((key) => !agentKeys.has(key))

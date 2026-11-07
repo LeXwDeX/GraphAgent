@@ -259,7 +259,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
     Layer.provide(Env.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(auth),
-        Layer.provide(adapters),
+    Layer.provide(adapters),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
@@ -292,7 +292,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
       Layer.provide(auth),
       Layer.provide(Config.defaultLayer),
       Layer.provide(provider),
-            Layer.provide(adapters),
+      Layer.provide(adapters),
       Layer.provide(recordedClient),
       Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
     ),
@@ -302,7 +302,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
 const writeConfig = (directory: string, scenario: RecordedScenario, model: ModelsDev.Provider["models"][string]) =>
   Effect.promise(() =>
     Bun.write(
-      path.join(directory, "graphagent.json"),
+      path.join(directory, ".agents", "settings.json"),
       JSON.stringify({ $schema: "https://opencode.ai/config.json", ...scenario.config(model) }),
     ),
   )

@@ -52,7 +52,7 @@ export const Plugin = define({
 function loadDirectory(fs: FSUtil.Interface, directory: string) {
   return Effect.gen(function* () {
     const files = yield* fs
-      .glob("{command,commands}/**/*.md", { cwd: directory, absolute: true, dot: true, symlink: true })
+      .glob("commands/**/*.md", { cwd: directory, absolute: true, dot: true, symlink: true })
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
     return yield* Effect.forEach(files.toSorted(), (filepath) =>
       fs.readFileStringSafe(filepath).pipe(
@@ -76,7 +76,7 @@ function decode(directory: string, filepath: string, content: string) {
     name: path
       .relative(directory, filepath)
       .replaceAll("\\", "/")
-      .replace(/^(command|commands)\//, "")
+      .replace(/^commands\//, "")
       .replace(/\.md$/, ""),
     info,
   }

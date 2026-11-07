@@ -23,7 +23,7 @@ import { hasProjectLayer } from "@/project/project-root"
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
 const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
-const GRAPHAGENT_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
+const GRAPHAGENT_SKILL_PATTERN = "skills/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
 
 // Built-in skill that ships with opencode. The model's intuition for what an
@@ -259,20 +259,19 @@ const discoverSkills = Effect.fnUntraced(function* (
       : []
 
     for (const root of upDirs) {
+      // `.agents` is a single project layer at the resolved root. Other
+      // `.agents` directories between the instance directory and the root are
+      // not project configuration layers.
+      if (path.basename(root) === AGENTS_EXTERNAL_DIR && path.dirname(root) !== bound) continue
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
     }
   }
 
   // SessionStart may install the first .agents directory after configuration was cached.
-  const configDirs = new Set([
-    ...(yield* config.directories()),
-    ...(projectLayer
-      ? yield* ConfigPaths.directories(directory, bound).pipe(
-          Effect.provideService(FSUtil.Service, fsys),
-          Effect.orDie,
-        )
-      : []),
-  ])
+  const configDirs = new Set([...(yield* config.directories())])
+  if (projectLayer && !Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
+    configDirs.add(ConfigPaths.projectDirectory(bound))
+  }
   for (const dir of configDirs) {
     yield* scan(state, dir, GRAPHAGENT_SKILL_PATTERN)
   }

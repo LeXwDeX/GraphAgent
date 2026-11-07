@@ -13,9 +13,14 @@ import { testEffect } from "../lib/effect"
 const it = testEffect(Layer.mergeAll(Config.defaultLayer, FSUtil.defaultLayer))
 const winIt = process.platform === "win32" ? it.instance : it.instance.skip
 
-const globalConfigFiles = ["graphagent.json", "graphagent.jsonc", "tui.json", "tui.jsonc"].map((file) =>
-  path.join(Global.Path.config, file),
-)
+const globalConfigFiles = [
+  "graphagent.json",
+  "graphagent.jsonc",
+  "tui.json",
+  "tui.jsonc",
+  "keybind.txt",
+  "theme.txt",
+].map((file) => path.join(Global.Path.config, file))
 
 const cleanState = Effect.gen(function* () {
   const fs = yield* FSUtil.Service
@@ -71,7 +76,7 @@ const getTuiConfig = (directory: string) =>
     Effect.provide(TuiConfig.defaultLayer.pipe(Layer.provide(Layer.succeed(CurrentWorkingDirectory, directory)))),
   )
 
-it.instance("loads tui config with the same precedence order as server config paths", () =>
+it.instance("loads tui config from the user-level directory only", () =>
   withCleanState(
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
@@ -84,8 +89,8 @@ it.instance("loads tui config with the same precedence order as server config pa
       )
 
       const config = yield* getTuiConfig(test.directory)
-      expect(config.theme).toBe("local")
-      expect(config.diff_style).toBe("stacked")
+      expect(config.theme).toBe("global")
+      expect(config.diff_style).toBeUndefined()
     }),
   ),
 )
@@ -105,7 +110,7 @@ it.instance("resolves attention config defaults and overrides", () =>
         sounds: {},
       })
 
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
         attention: {
           enabled: false,
           notifications: false,
@@ -115,8 +120,8 @@ it.instance("resolves attention config defaults and overrides", () =>
           sounds: {
             default: path.join(test.directory, "default.mp3"),
             question: pathToFileURL(path.join(test.directory, "question.mp3")).href,
-            error: "./error.mp3",
-            subagent_done: "./subagent-done.mp3",
+            error: path.join(test.directory, "error.mp3"),
+            subagent_done: path.join(test.directory, "subagent-done.mp3"),
           },
         },
       })
@@ -143,12 +148,15 @@ it.instance("does not migrate server configuration keys into tui.json", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      const source = path.join(test.directory, "graphagent.json")
-      yield* fs.writeJson(source, {
-        theme: "server-theme",
-        tui: { scroll_speed: 5 },
-        keybinds: { app_exit: "ctrl+q" },
-      })
+      const source = path.join(test.directory, ".agents", "settings.json")
+      yield* fs.writeWithDirs(
+        source,
+        JSON.stringify({
+          theme: "server-theme",
+          tui: { scroll_speed: 5 },
+          keybinds: { app_exit: "ctrl+q" },
+        }),
+      )
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.theme).toBeUndefined()
@@ -169,10 +177,13 @@ it.instance("keeps global tui.json authoritative over server configuration keys"
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
       yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { theme: "global" })
-      yield* fs.writeJson(path.join(test.directory, "graphagent.json"), {
-        theme: "server-theme",
-        tui: { scroll_speed: 2 },
-      })
+      yield* fs.writeWithDirs(
+        path.join(test.directory, ".agents", "settings.json"),
+        JSON.stringify({
+          theme: "server-theme",
+          tui: { scroll_speed: 2 },
+        }),
+      )
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.theme).toBe("global")
@@ -187,8 +198,8 @@ it.instance("does not migrate an invalid server config", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeFileString(
-        path.join(test.directory, "graphagent.jsonc"),
+      yield* fs.writeWithDirs(
+        path.join(test.directory, ".agents", "settings.json"),
         `{
   "theme": "broken-theme",
   "tui": { "scroll_speed": 2 }
@@ -201,7 +212,7 @@ it.instance("does not migrate an invalid server config", () =>
       expect(config.scroll_speed).toBeUndefined()
       expect(yield* fs.existsSafe(path.join(test.directory, "tui.json"))).toBe(false)
       expect(yield* fs.existsSafe(path.join(test.directory, "graphagent.jsonc.tui-migration.bak"))).toBe(false)
-      const source = yield* fs.readFileString(path.join(test.directory, "graphagent.jsonc"))
+      const source = yield* fs.readFileString(path.join(test.directory, ".agents", "settings.json"))
       expect(source).toContain('"theme": "broken-theme"')
       expect(source).toContain('"tui": { "scroll_speed": 2 }')
     }),
@@ -213,14 +224,17 @@ it.instance("does not merge server configuration keys when tui.json exists", () 
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "graphagent.json"), { theme: "server-theme" })
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), { diff_style: "stacked" })
+      yield* fs.writeWithDirs(
+        path.join(test.directory, ".agents", "settings.json"),
+        JSON.stringify({ theme: "server-theme" }),
+      )
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { diff_style: "stacked" })
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.diff_style).toBe("stacked")
       expect(config.theme).toBeUndefined()
 
-      const server = JSON.parse(yield* fs.readFileString(path.join(test.directory, "graphagent.json")))
+      const server = JSON.parse(yield* fs.readFileString(path.join(test.directory, ".agents", "settings.json")))
       expect(server.theme).toBe("server-theme")
       expect(yield* fs.existsSafe(path.join(test.directory, "graphagent.json.tui-migration.bak"))).toBe(false)
     }),
@@ -232,7 +246,7 @@ it.instance("flattens nested tui key inside tui.json", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
         theme: "outer",
         tui: { scroll_speed: 3, diff_style: "stacked" },
       })
@@ -250,7 +264,7 @@ it.instance("top-level keys in tui.json take precedence over nested tui key", ()
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
         diff_style: "auto",
         tui: { diff_style: "stacked", scroll_speed: 2 },
       })
@@ -262,13 +276,13 @@ it.instance("top-level keys in tui.json take precedence over nested tui key", ()
   ),
 )
 
-it.instance("project config takes precedence over GRAPHAGENT_TUI_CONFIG (matches GRAPHAGENT_CONFIG)", () =>
+it.instance("GRAPHAGENT_TUI_CONFIG overrides the user-level tui.json", () =>
   withCleanState(
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
       const custom = path.join(test.directory, "custom-tui.json")
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), { theme: "project", diff_style: "auto" })
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { theme: "global", diff_style: "auto" })
       yield* fs.writeJson(custom, { theme: "custom", diff_style: "stacked" })
 
       yield* withEnv(
@@ -276,8 +290,8 @@ it.instance("project config takes precedence over GRAPHAGENT_TUI_CONFIG (matches
         custom,
         Effect.gen(function* () {
           const config = yield* getTuiConfig(test.directory)
-          expect(config.theme).toBe("project")
-          expect(config.diff_style).toBe("auto")
+          expect(config.theme).toBe("custom")
+          expect(config.diff_style).toBe("stacked")
         }),
       )
     }),
@@ -289,12 +303,19 @@ it.instance("merges keybind overrides across precedence layers", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
+      const custom = path.join(test.directory, "custom-tui.json")
       yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { keybinds: { app_exit: "ctrl+q" } })
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), { keybinds: { theme_list: "ctrl+k" } })
+      yield* fs.writeJson(custom, { keybinds: { theme_list: "ctrl+k" } })
 
-      const config = yield* getTuiConfig(test.directory)
-      expect(config.keybinds.get("app.exit")?.[0]?.key).toBe("ctrl+q")
-      expect(config.keybinds.get("theme.switch")?.[0]?.key).toBe("ctrl+k")
+      yield* withEnv(
+        "GRAPHAGENT_TUI_CONFIG",
+        custom,
+        Effect.gen(function* () {
+          const config = yield* getTuiConfig(test.directory)
+          expect(config.keybinds.get("app.exit")?.[0]?.key).toBe("ctrl+q")
+          expect(config.keybinds.get("theme.switch")?.[0]?.key).toBe("ctrl+k")
+        }),
+      )
     }),
   ),
 )
@@ -323,7 +344,7 @@ it.instance("resolves keybind lookup from canonical keybinds", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
         keybinds: {
           leader: { key: { name: "g", ctrl: true } },
           command_list: "alt+p",
@@ -365,7 +386,7 @@ it.instance("keybinds accept OpenTUI binding specs", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
         keybinds: {
           command_list: [{ key: "alt+p", preventDefault: false }],
           editor_open: { key: { name: "e", ctrl: true }, group: "Explicit" },
@@ -403,7 +424,7 @@ winIt("keeps explicit input undo overrides on Windows", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), { keybinds: { input_undo: "ctrl+y" } })
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { keybinds: { input_undo: "ctrl+y" } })
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.keybinds.get("terminal.suspend")).toEqual([])
@@ -417,7 +438,7 @@ winIt("ignores terminal suspend bindings on Windows", () =>
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), { keybinds: { terminal_suspend: "alt+z" } })
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { keybinds: { terminal_suspend: "alt+z" } })
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.keybinds.get("terminal.suspend")).toEqual([])
@@ -447,7 +468,7 @@ it.instance("ignores explicit keybind terminal suspend binding on Windows", () =
       Effect.gen(function* () {
         const fs = yield* FSUtil.Service
         const test = yield* TestInstance
-        yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+        yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
           keybinds: {
             terminal_suspend: "alt+z",
           },
@@ -467,7 +488,7 @@ it.instance("keeps explicit configured keybind input undo on Windows", () =>
       Effect.gen(function* () {
         const fs = yield* FSUtil.Service
         const test = yield* TestInstance
-        yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+        yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
           keybinds: {
             input_undo: "ctrl+y",
           },
@@ -531,8 +552,8 @@ it.instance("applies env and file substitutions in tui.json", () =>
       Effect.gen(function* () {
         const fs = yield* FSUtil.Service
         const test = yield* TestInstance
-        yield* fs.writeFileString(path.join(test.directory, "keybind.txt"), "ctrl+q")
-        yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+        yield* fs.writeFileString(path.join(Global.Path.config, "keybind.txt"), "ctrl+q")
+        yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
           theme: "{env:TUI_THEME_TEST}",
           keybinds: { app_exit: "{file:keybind.txt}" },
         })
@@ -550,9 +571,9 @@ it.instance("applies file substitutions when first identical token is in a comme
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeFileString(path.join(test.directory, "theme.txt"), "resolved-theme")
+      yield* fs.writeFileString(path.join(Global.Path.config, "theme.txt"), "resolved-theme")
       yield* fs.writeFileString(
-        path.join(test.directory, "tui.jsonc"),
+        path.join(Global.Path.config, "tui.jsonc"),
         `{
   // "theme": "{file:theme.txt}",
   "theme": "{file:theme.txt}"
@@ -565,18 +586,20 @@ it.instance("applies file substitutions when first identical token is in a comme
   ),
 )
 
-it.instance("loads .agents/tui.json", () =>
+it.instance("ignores project-level tui.json files", () =>
   withCleanState(
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
+      yield* fs.writeJson(path.join(test.directory, "tui.json"), { theme: "project" })
       yield* fs.writeWithDirs(
         path.join(test.directory, ".agents", "tui.json"),
         JSON.stringify({ diff_style: "stacked" }, null, 2),
       )
 
       const config = yield* getTuiConfig(test.directory)
-      expect(config.diff_style).toBe("stacked")
+      expect(config.theme).toBeUndefined()
+      expect(config.diff_style).toBeUndefined()
     }),
   ),
 )
@@ -586,8 +609,8 @@ it.instance("silently skips malformed tui.json - load failures degrade to {}", (
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
-      yield* fs.writeFileString(path.join(test.directory, "tui.json"), '{ "theme": "broken",')
-      yield* fs.writeWithDirs(path.join(test.directory, ".agents", "tui.json"), JSON.stringify({ theme: "fallback" }))
+      yield* fs.writeFileString(path.join(Global.Path.config, "tui.json"), '{ "theme": "broken",')
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.jsonc"), { theme: "fallback" })
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.theme).toBe("fallback")
@@ -595,16 +618,22 @@ it.instance("silently skips malformed tui.json - load failures degrade to {}", (
   ),
 )
 
-it.instance("silently skips non-ENOENT read failures (e.g. tui.json is a directory) - fallback layer still loads", () =>
+it.instance("silently skips non-ENOENT read failures on the explicit config path", () =>
   withCleanState(
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance
+      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { theme: "global" })
       yield* fs.makeDirectory(path.join(test.directory, "tui.json"), { recursive: true })
-      yield* fs.writeWithDirs(path.join(test.directory, ".agents", "tui.json"), JSON.stringify({ theme: "fallback" }))
 
-      const config = yield* getTuiConfig(test.directory)
-      expect(config.theme).toBe("fallback")
+      yield* withEnv(
+        "GRAPHAGENT_TUI_CONFIG",
+        path.join(test.directory, "tui.json"),
+        Effect.gen(function* () {
+          const config = yield* getTuiConfig(test.directory)
+          expect(config.theme).toBe("global")
+        }),
+      )
     }),
   ),
 )
