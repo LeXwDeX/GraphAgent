@@ -3,7 +3,7 @@ export * as SessionProjector from "./projector"
 import { and, eq, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer } from "effect"
 import { Database } from "../database/database"
-import { EventV2 } from "../event"
+import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
 import { SessionEvent } from "./event"
 import { SessionV1 } from "../v1/session"
@@ -106,7 +106,12 @@ export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const { db } = yield* Database.Service
-    yield* events.project(SessionV1.Event.Created, (event) =>
+    // A layer can be built more than once against the same bus (e.g. a node
+    // graph and a default layer resolving it through different memo maps).
+    // Keying the registrations keeps the projection single-shot per bus.
+    const project = <D extends Definition>(definition: D, projector: Subscriber<D>) =>
+      events.project(definition, projector, "projector/session")
+    yield* project(SessionV1.Event.Created, (event) =>
       Effect.gen(function* () {
         const stored = yield* db
           .insert(SessionTable)
@@ -126,7 +131,7 @@ export const layer = Layer.effectDiscard(
         }
       }),
     )
-    yield* events.project(SessionV1.Event.Updated, (event) =>
+    yield* project(SessionV1.Event.Updated, (event) =>
       db
         .update(SessionTable)
         .set(sessionRow(event.data.info))
@@ -134,7 +139,7 @@ export const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie),
     )
-    yield* events.project(SessionEvent.Moved, (event) =>
+    yield* project(SessionEvent.Moved, (event) =>
       Effect.gen(function* () {
         yield* db
           .update(SessionTable)
@@ -164,10 +169,10 @@ export const layer = Layer.effectDiscard(
           .pipe(Effect.orDie)
       }),
     )
-    yield* events.project(SessionV1.Event.Deleted, (event) =>
+    yield* project(SessionV1.Event.Deleted, (event) =>
       db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie),
     )
-    yield* events.project(SessionV1.Event.MessageUpdated, (event) =>
+    yield* project(SessionV1.Event.MessageUpdated, (event) =>
       Effect.gen(function* () {
         const time_created = event.data.info.time.created
         const id = event.data.info.id
@@ -203,7 +208,7 @@ export const layer = Layer.effectDiscard(
           .pipe(Effect.orDie)
       }),
     )
-    yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
+    yield* project(SessionV1.Event.MessageRemoved, (event) =>
       Effect.gen(function* () {
         const rows = yield* db
           .select()
@@ -222,7 +227,7 @@ export const layer = Layer.effectDiscard(
           .pipe(Effect.orDie)
       }),
     )
-    yield* events.project(SessionV1.Event.PartRemoved, (event) =>
+    yield* project(SessionV1.Event.PartRemoved, (event) =>
       Effect.gen(function* () {
         const row = yield* db
           .select()
@@ -239,7 +244,7 @@ export const layer = Layer.effectDiscard(
           .pipe(Effect.orDie)
       }),
     )
-    yield* events.project(SessionV1.Event.PartUpdated, (event) =>
+    yield* project(SessionV1.Event.PartUpdated, (event) =>
       Effect.gen(function* () {
         const id = event.data.part.id
         const messageID = event.data.part.messageID
@@ -276,7 +281,7 @@ export const layer = Layer.effectDiscard(
         if (next) yield* applyUsage(db, sessionID, next)
       }),
     )
-    yield* events.project(SessionV1.Event.AgentSwitched, (event) =>
+    yield* project(SessionV1.Event.AgentSwitched, (event) =>
       db
         .update(SessionTable)
         .set({ agent: event.data.agent, time_updated: event.data.timestamp })
@@ -284,7 +289,7 @@ export const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie),
     )
-    yield* events.project(SessionV1.Event.ModelSwitched, (event) =>
+    yield* project(SessionV1.Event.ModelSwitched, (event) =>
       db
         .update(SessionTable)
         .set({ model: event.data.model, time_updated: event.data.timestamp })
