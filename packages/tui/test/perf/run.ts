@@ -7,10 +7,13 @@ import { mountHarness } from "./harness"
 import { runCharacterProfile, runScenarios, runSlashProfile, type ScenarioResult } from "./scenarios"
 
 const sizes: FixtureSize[] = ["S", "M", "L"]
-const baselineFile = path.join(import.meta.dir, "baseline-f21cabe7f.json")
 
 function arg(name: string) {
   return process.argv.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1)
+}
+
+function baselineFile(name: string) {
+  return path.join(import.meta.dir, `baseline-${name}.json`)
 }
 
 function median(values: number[]) {
@@ -74,6 +77,7 @@ async function main() {
     return
   }
 
+  const baselineName = arg("--update-baseline")
   const repeats = Number(arg("--repeats") ?? process.env.PERF_REPEATS ?? 5)
   const samples: Record<FixtureSize, Record<string, ScenarioResult[]>> = {
     S: {},
@@ -109,7 +113,7 @@ async function main() {
 
   const report = {
     schemaVersion: 1,
-    baseline: arg("--update-baseline") ? `f21cabe7f` : undefined,
+    baseline: baselineName,
     commit: gitCommit(),
     generatedAt: new Date().toISOString(),
     opentuiVersion: await opentuiVersion(),
@@ -129,7 +133,7 @@ async function main() {
     scenarios,
   }
 
-  if (arg("--update-baseline")) await Bun.write(baselineFile, JSON.stringify(report, null, 2) + "\n")
+  if (baselineName) await Bun.write(baselineFile(baselineName), JSON.stringify(report, null, 2) + "\n")
   console.log(JSON.stringify(report, null, 2))
 }
 
