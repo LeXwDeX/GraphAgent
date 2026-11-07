@@ -49,7 +49,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preBuild
     node script/toolchain.mjs check
 
-    cd ./packages/opencode
+    cd ./packages/graphagent
     bun --bun ./script/build.ts --single --skip-install
     bun --bun ./script/schema.ts schema.json
 

@@ -40,7 +40,7 @@ class ReviewedInputsTest(unittest.TestCase):
 
 class HashEvidenceTest(unittest.TestCase):
     def setUp(self):
-        self.drv = "/nix/store/example-opencode-node_modules-test.drv"
+        self.drv = "/nix/store/example-graphagent-node_modules-test.drv"
         self.actual = "sha256-" + base64.b64encode(b"test" * 8).decode()
         self.fake = "sha256-" + base64.b64encode(bytes(32)).decode()
         self.log = f"error: hash mismatch in fixed-output derivation '{self.drv}':\n specified: {self.fake}\n got: {self.actual}\n"
@@ -79,7 +79,7 @@ class BuildTest(unittest.TestCase):
              patch("verify_build.output_hash", return_value=measured):
             verify_build.main()
 
-        self.assertEqual(commands[-1], ["nix", "build", ".#opencode", "--no-link", "--print-build-logs", "--json"])
+        self.assertEqual(commands[-1], ["nix", "build", ".#graphagent", "--no-link", "--print-build-logs", "--json"])
 
 
 if __name__ == "__main__":
