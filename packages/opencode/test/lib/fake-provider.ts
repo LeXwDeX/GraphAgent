@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { Global } from "@opencode-ai/core/global"
 import { LLM, type StreamInput } from "@/session/llm"
 import { LLMEvent } from "@opencode-ai/llm"
 import { Effect, Layer, Stream } from "effect"
@@ -100,12 +101,34 @@ function hash(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16)
 }
 
+// Tool descriptions may embed machine-specific global paths (the shell tool
+// publishes `Global.Path.tmp`). CI runners and developer machines resolve
+// different temp/config roots, so replace every resolved global path with a
+// stable placeholder before hashing. Longest-first keeps nested roots (a temp
+// directory inside the home directory) fully normalized.
+const environmentPaths = [
+  Global.Path.tmp,
+  Global.Path.home,
+  Global.Path.config,
+  Global.Path.data,
+  Global.Path.cache,
+  Global.Path.state,
+]
+  .filter((value, index, all) => value.length > 1 && all.indexOf(value) === index)
+  .sort((left, right) => right.length - left.length)
+
+function normalizeEnvironment(value: string) {
+  return environmentPaths.reduce((text, prefix) => text.split(prefix).join("<global>"), value)
+}
+
 function toolShape(tools: StreamInput["tools"]) {
   return Object.keys(tools)
     .sort()
     .map((name) => {
       const tool = tools[name] as { description?: unknown; inputSchema?: unknown }
-      return `${name}:${JSON.stringify(tool?.description ?? "")}:${JSON.stringify(tool?.inputSchema ?? "")}`
+      return normalizeEnvironment(
+        `${name}:${JSON.stringify(tool?.description ?? "")}:${JSON.stringify(tool?.inputSchema ?? "")}`,
+      )
     })
     .join("\n")
 }
