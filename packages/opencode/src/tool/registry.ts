@@ -64,8 +64,8 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import type { ToolSourceKind } from "@opencode-ai/core/session/context-folding"
 
-export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
-  return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
+export function webSearchEnabled(flags = { exa: false, parallel: false }) {
+  return flags.exa || flags.parallel
 }
 
 type TaskDef = Tool.InferDef<typeof TaskTool>
@@ -324,7 +324,7 @@ export const layer = Layer.effect(
       ]
       const filtered = registered.filter(({ definition: tool }) => {
         if (tool.id === WebSearchTool.id) {
-          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
+          return webSearchEnabled({ exa: flags.enableExa, parallel: flags.enableParallel })
         }
 
         const usePatch = usesApplyPatch(input.modelID)

@@ -17,7 +17,6 @@ import * as Observability from "@opencode-ai/core/observability"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Database } from "@opencode-ai/core/database/database"
 import { Auth } from "@/auth"
-import { Account } from "@/account/account"
 import { Config } from "@/config/config"
 import { Git } from "@/git"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -86,7 +85,6 @@ const BaseAppLayer = Layer.mergeAll(
     FSUtil.defaultLayer,
     Database.defaultLayer,
     Auth.defaultLayer,
-    Account.defaultLayer,
     Config.defaultLayer,
     Git.defaultLayer,
     Storage.defaultLayer,

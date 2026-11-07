@@ -3,14 +3,12 @@ import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import type { Auth } from "@/auth"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
-import { InstanceState } from "@/effect/instance-state"
 import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
 import type { Provider } from "@/provider/provider"
 import type { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
-import { RuntimeContext } from "../runtime-context"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
 import { Effect, Record } from "effect"
@@ -39,7 +37,6 @@ type PrepareInput = {
   readonly auth: Auth.Info | undefined
   readonly adapters?: ProviderAdapters.Interface
   readonly flags: RuntimeFlags.Info
-  readonly isWorkflow: boolean
 }
 
 export type Prepared = {
@@ -69,19 +66,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     } satisfies Pick<ProviderAdapters.Interface, "chatParams" | "chatHeaders">)
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const tools = resolveTools(input)
-  // GitLab workflow models take their goal from the last user message and read state only from the system text.
-  const workflowContext = input.isWorkflow
-    ? input.messages.flatMap((message) =>
-        RuntimeContext.isMessage(message) && typeof message.content === "string" ? [message.content] : [],
-      )
-    : []
   const system = [
     [
       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(Object.keys(tools))),
       DEFAULT_WRITING_STYLE,
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),
-      ...workflowContext,
     ]
       .filter((x) => x)
       .join("\n"),
@@ -117,15 +107,13 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
 
   const messages = isOpenaiOauth
     ? input.messages
-    : input.isWorkflow
-      ? input.messages.filter((message) => !RuntimeContext.isMessage(message))
-      : [
-          ...system.map((x): ModelMessage => ({
-            role: "system",
-            content: x,
-          })),
-          ...input.messages,
-        ]
+    : [
+        ...system.map((x): ModelMessage => ({
+          role: "system",
+          content: x,
+        })),
+        ...input.messages,
+      ]
 
   const params = yield* adapters.chatParams(
     {
@@ -199,10 +187,6 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     })
   }
 
-  const opencodeProjectID = input.model.providerID.startsWith("opencode")
-    ? (yield* InstanceState.context).project.id
-    : undefined
-
   return {
     system,
     // Hosted history must become text before the SDK converts prompts and
@@ -212,19 +196,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     params,
     messageTransformOptions: options,
     headers: {
-      ...(input.model.providerID.startsWith("opencode")
-        ? {
-            ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
-            "x-opencode-session": input.sessionID,
-            "x-opencode-request": input.user.id,
-            "x-opencode-client": input.flags.client,
-            "User-Agent": USER_AGENT,
-          }
-        : {
-            "x-session-affinity": input.sessionID,
-            "X-Session-Id": input.sessionID,
-            "User-Agent": USER_AGENT,
-          }),
+      "x-session-affinity": input.sessionID,
+      "X-Session-Id": input.sessionID,
+      "User-Agent": USER_AGENT,
       ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
       ...input.model.headers,
       ...headers,

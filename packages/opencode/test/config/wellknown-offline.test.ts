@@ -12,7 +12,6 @@ import path from "path"
 
 import { Config } from "@/config/config"
 import { Auth } from "../../src/auth"
-import { AccountTest } from "../fake/account"
 import { AuthTest } from "../fake/auth"
 import { NpmTest } from "../fake/npm"
 import { Env } from "../../src/env"
@@ -38,7 +37,6 @@ const configLayer = (client: HttpClient.HttpClient, url = "https://example.com",
     Layer.provide(testFlock),
     Layer.provide(Env.defaultLayer),
     Layer.provide(wellKnownAuth(url, token)),
-    Layer.provide(AccountTest.empty),
     Layer.provideMerge(infra),
     Layer.provide(NpmTest.noop),
     Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),

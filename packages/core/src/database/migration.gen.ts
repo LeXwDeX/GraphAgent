@@ -67,5 +67,6 @@ export const migrations = (
     import("./migration/20261102230116_spicy_kid_colt"),
     import("./migration/20261103002352_workflow_node_worktree_history"),
     import("./migration/20261106141024_remove_session_share"),
+    import("./migration/20261106195046_mature_gateway"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

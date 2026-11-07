@@ -164,7 +164,6 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
   "@ai-sdk/perplexity": () => import("@ai-sdk/perplexity").then((m) => m.createPerplexity),
   "@ai-sdk/vercel": () => import("@ai-sdk/vercel").then((m) => m.createVercel),
   "@ai-sdk/alibaba": () => import("@ai-sdk/alibaba").then((m) => m.createAlibaba),
-  "gitlab-ai-provider": () => import("gitlab-ai-provider").then((m) => m.createGitLab),
   "@ai-sdk/github-copilot": () =>
     import("@opencode-ai/core/github-copilot/copilot-provider").then((m) => m.createOpenaiCompatible),
   "venice-ai-sdk-provider": () => import("venice-ai-sdk-provider").then((m) => m.createVenice),
@@ -172,13 +171,11 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
 
 type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>, model?: Model) => Promise<any>
 type CustomVarsLoader = (options: Record<string, any>) => Record<string, string>
-type CustomDiscoverModels = () => Promise<Record<string, Model>>
 type CustomLoader = (provider: Info) => Effect.Effect<{
   autoload: boolean
   getModel?: CustomModelLoader
   vars?: CustomVarsLoader
   options?: Record<string, any>
-  discoverModels?: CustomDiscoverModels
 }>
 
 type CustomDep = {
@@ -213,29 +210,6 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           },
         },
       }),
-    opencode: Effect.fnUntraced(function* (input: Info) {
-      const env = yield* dep.env()
-      const hasKey = iife(() => {
-        if (input.env.some((item) => env[item])) return true
-        return false
-      })
-      const ok =
-        hasKey ||
-        Boolean(yield* dep.auth(input.id)) ||
-        Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
-
-      if (!ok) {
-        for (const [key, value] of Object.entries(input.models)) {
-          if (value.cost.input === 0) continue
-          delete input.models[key]
-        }
-      }
-
-      return {
-        autoload: Object.keys(input.models).length > 0,
-        options: ok ? {} : { apiKey: "public" },
-      }
-    }),
     openai: () =>
       Effect.succeed({
         autoload: false,
@@ -625,131 +599,6 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           },
         },
       }),
-    gitlab: Effect.fnUntraced(function* (input: Info) {
-      const {
-        VERSION: GITLAB_PROVIDER_VERSION,
-        isWorkflowModel,
-        discoverWorkflowModels,
-      } = yield* Effect.promise(() => import("gitlab-ai-provider"))
-
-      const instanceUrl = (yield* dep.get("GITLAB_INSTANCE_URL")) || "https://gitlab.com"
-
-      const auth = yield* dep.auth(input.id)
-      const apiKey = auth?.type === "oauth" ? auth.access : auth?.type === "api" ? auth.key : undefined
-      const token = apiKey ?? (yield* dep.get("GITLAB_TOKEN"))
-
-      const providerConfig = (yield* dep.config()).provider?.["gitlab"]
-      const directory = yield* InstanceState.directory
-
-      const aiGatewayHeaders = {
-        "User-Agent": `opencode/${InstallationVersion} gitlab-ai-provider/${GITLAB_PROVIDER_VERSION} (${os.platform()} ${os.release()}; ${os.arch()})`,
-        "anthropic-beta": "context-1m-2025-08-07",
-        ...providerConfig?.options?.aiGatewayHeaders,
-      }
-
-      const featureFlags = {
-        duo_agent_platform_agentic_chat: true,
-        duo_agent_platform: true,
-        ...providerConfig?.options?.featureFlags,
-      }
-
-      return {
-        autoload: !!token,
-        options: {
-          instanceUrl,
-          apiKey: token,
-          aiGatewayHeaders,
-          featureFlags,
-        },
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
-          if (modelID.startsWith("duo-workflow-")) {
-            const workflowRef = typeof options?.workflowRef === "string" ? options.workflowRef : undefined
-            // Use the static mapping if it exists, otherwise use duo-workflow with selectedModelRef
-            const sdkModelID = isWorkflowModel(modelID) ? modelID : "duo-workflow"
-            const workflowDefinition =
-              typeof options?.workflowDefinition === "string" ? options.workflowDefinition : undefined
-            const model = sdk.workflowChat(sdkModelID, {
-              featureFlags,
-              workflowDefinition,
-            })
-            if (workflowRef) {
-              model.selectedModelRef = workflowRef
-            }
-            return model
-          }
-          return sdk.agenticChat(modelID, {
-            aiGatewayHeaders,
-            featureFlags,
-          })
-        },
-        async discoverModels(): Promise<Record<string, Model>> {
-          if (!apiKey) {
-            return {}
-          }
-
-          try {
-            const token = apiKey
-            const getHeaders = (): Record<string, string> =>
-              auth?.type === "api" ? { "PRIVATE-TOKEN": token } : { Authorization: `Bearer ${token}` }
-
-            const result = await discoverWorkflowModels({ instanceUrl, getHeaders }, { workingDirectory: directory })
-
-            if (!result.models.length) {
-              return {}
-            }
-
-            const models: Record<string, Model> = {}
-            for (const m of result.models) {
-              if (!input.models[m.id]) {
-                models[m.id] = {
-                  id: ModelV2.ID.make(m.id),
-                  providerID: ProviderV2.ID.make("gitlab"),
-                  name: `Agent Platform (${m.name})`,
-                  family: "",
-                  api: {
-                    id: m.id,
-                    url: instanceUrl,
-                    npm: "gitlab-ai-provider",
-                  },
-                  status: "active",
-                  headers: {},
-                  options: { workflowRef: m.ref },
-                  cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
-                  limit: { context: m.context, output: m.output },
-                  capabilities: {
-                    temperature: false,
-                    reasoning: true,
-                    attachment: true,
-                    toolcall: true,
-                    input: {
-                      text: true,
-                      audio: false,
-                      image: true,
-                      video: false,
-                      pdf: true,
-                    },
-                    output: {
-                      text: true,
-                      audio: false,
-                      image: false,
-                      video: false,
-                      pdf: false,
-                    },
-                    interleaved: false,
-                  },
-                  release_date: "",
-                  variants: {},
-                }
-              }
-            }
-
-            return models
-          } catch (e) {
-            return {}
-          }
-        },
-      }
-    }),
     "cloudflare-workers-ai": Effect.fnUntraced(function* (input: Info) {
       // When baseURL is already configured (e.g. corporate config routing through a proxy/gateway),
       // skip the account ID check because the URL is already fully specified.
@@ -1373,9 +1222,6 @@ export const layer = Layer.effect(
           fetches: new Map<string, ReturnType<typeof OpenAIWebSocketPool.createWebSocketFetch>>(),
           closed: false,
         }
-        const discoveryLoaders: {
-          [providerID: string]: CustomDiscoverModels
-        } = {}
         const dep = {
           auth: (id: string) => auth.get(id).pipe(Effect.orDie),
           config: () => config.get(),
@@ -1595,7 +1441,6 @@ export const layer = Layer.effect(
           if (result && (result.autoload || providers[providerID])) {
             if (result.getModel) modelLoaders[providerID] = result.getModel
             if (result.vars) varsLoaders[providerID] = result.vars
-            if (result.discoverModels) discoveryLoaders[providerID] = result.discoverModels
             const opts = result.options ?? {}
             const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
             mergeProvider(providerID, patch)
@@ -1610,20 +1455,6 @@ export const layer = Layer.effect(
           if (provider.name) partial.name = provider.name
           if (provider.options) partial.options = provider.options
           mergeProvider(providerID, partial)
-        }
-
-        const gitlab = ProviderV2.ID.make("gitlab")
-        if (discoveryLoaders[gitlab] && providers[gitlab] && isProviderAllowed(gitlab)) {
-          yield* Effect.promise(async () => {
-            try {
-              const discovered = await discoveryLoaders[gitlab]()
-              for (const [modelID, model] of Object.entries(discovered)) {
-                if (!providers[gitlab].models[modelID]) {
-                  providers[gitlab].models[modelID] = model
-                }
-              }
-            } catch (e) {}
-          })
         }
 
         for (const [id, provider] of Object.entries(providers)) {
@@ -1985,11 +1816,9 @@ export const layer = Layer.effect(
         "gemini-2.5-flash",
         "gpt-5-nano",
       ]
-      const priority = providerID.startsWith("opencode")
-        ? ["gpt-5-nano"]
-        : providerID.startsWith("github-copilot")
-          ? ["gpt-5-mini", "claude-haiku-4.5", ...defaultPriority]
-          : defaultPriority
+      const priority = providerID.startsWith("github-copilot")
+        ? ["gpt-5-mini", "claude-haiku-4.5", ...defaultPriority]
+        : defaultPriority
       for (const item of priority) {
         if (providerID === ProviderV2.ID.amazonBedrock) {
           const crossRegionPrefixes = ["global.", "us.", "eu."]

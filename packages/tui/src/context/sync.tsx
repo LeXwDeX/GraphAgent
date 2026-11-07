@@ -19,7 +19,6 @@ import type {
   ProviderAuthMethod,
   VcsInfo,
   SnapshotFileDiff,
-  ConsoleState,
   Goal,
   DagWorkflowSummary,
 } from "@opencode-ai/sdk/v2"
@@ -37,11 +36,6 @@ import { batch, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { TuiLog } from "../util/log"
-
-const emptyConsoleState: ConsoleState = {
-  consoleManagedProviders: [],
-  switchableOrgCount: 0,
-}
 
 function search<T>(items: T[], target: string, key: (item: T) => string) {
   let left = 0
@@ -88,7 +82,6 @@ export const {
       provider: Provider[]
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
-      console_state: ConsoleState
       capabilities: {
         experimentalBackgroundSubagents: boolean
       }
@@ -143,7 +136,6 @@ export const {
         default: {},
         connected: [],
       },
-      console_state: emptyConsoleState,
       capabilities: {
         experimentalBackgroundSubagents: false,
       },
@@ -544,10 +536,6 @@ export const {
         .get({ workspace }, { throwOnError: true })
         .then((x) => x.data)
         .catch(() => undefined)
-      const consoleStatePromise = sdk.client.experimental.console
-        .get({ workspace }, { throwOnError: true })
-        .then((x) => x.data)
-        .catch(() => emptyConsoleState)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
       await Promise.all([
@@ -600,9 +588,6 @@ export const {
           // non-blocking
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
-            consoleStatePromise.then((consoleState) => {
-              if (!disposed && attempt === bootstrapAttempt) setStore("console_state", reconcile(consoleState))
-            }),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
             sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
