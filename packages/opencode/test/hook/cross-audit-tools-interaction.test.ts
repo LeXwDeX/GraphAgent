@@ -7,7 +7,6 @@ import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
-import { Plugin } from "@/plugin"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
@@ -54,7 +53,6 @@ const freshTools = () => ({
 const it = testEffect(
   Layer.mergeAll(
     Permission.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provideMerge(hookLayer)),
-    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed(mcpTools) }),
     Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
     Layer.mock(ToolRegistry.Service, { tools: () => Effect.succeed([]), registrations: () => Effect.succeed([]) }),

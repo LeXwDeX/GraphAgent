@@ -1,6 +1,5 @@
 import { Layer, ManagedRuntime } from "effect"
 
-import { Plugin } from "@/plugin"
 import { LSP } from "@/lsp/lsp"
 import { Format } from "@/format"
 import { Vcs } from "@/project/vcs"
@@ -12,7 +11,6 @@ import { memoMap } from "@opencode-ai/core/effect/memo-map"
 
 export const BootstrapLayer = Layer.mergeAll(
   Config.defaultLayer,
-  Plugin.defaultLayer,
   Format.defaultLayer,
   LSP.defaultLayer,
   Vcs.defaultLayer,

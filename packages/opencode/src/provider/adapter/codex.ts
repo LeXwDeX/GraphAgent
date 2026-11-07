@@ -1,4 +1,4 @@
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
 import { OAUTH_DUMMY_KEY } from "../../auth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -44,6 +44,14 @@ function base64UrlEncode(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   const binary = String.fromCharCode(...bytes)
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+}
+
+export function experimentalWebSocketsEnabled(input: {
+  enabled: boolean
+  channel?: string
+  configured?: boolean
+}) {
+  return input.configured ?? (input.enabled || ["local", "dev", "beta"].includes(input.channel ?? InstallationChannel))
 }
 
 export interface IdTokenClaims {

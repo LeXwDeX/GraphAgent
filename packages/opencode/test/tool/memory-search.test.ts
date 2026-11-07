@@ -7,7 +7,6 @@ import { Agent } from "@/agent/agent"
 import { Memory } from "@/memory/memory"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
-import { Plugin } from "@/plugin"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionProcessor } from "@/session/processor"
 import { Session } from "@/session/session"
@@ -28,22 +27,10 @@ const memoryDefinition: Tool.Def<typeof memoryParameters> = {
   parameters: memoryParameters,
   execute: () => Effect.succeed({ title: "memory", output: "attached", metadata: {} }),
 }
-const trigger: Plugin.Interface["trigger"] = (_name, _input, output) => Effect.succeed(output)
-const pluginLayer = Layer.succeed(
-  Plugin.Service,
-  Plugin.Service.of({
-    init: () => Effect.void,
-    list: () => Effect.succeed([]),
-    trigger,
-    contextFoldingCompatibility: () =>
-      Effect.succeed({ knownExternalDcp: "unknown", migrationNotice: "not-applicable" }),
-  }),
-)
 const resolveIt = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
     Truncate.defaultLayer,
-    pluginLayer,
     Layer.mock(Permission.Service, { ask: () => Effect.void }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(ToolRegistry.Service, {
@@ -73,7 +60,6 @@ const nativeDenyIt = testEffect(
         }),
     }),
     Truncate.defaultLayer,
-    pluginLayer,
     Layer.mock(Permission.Service, { ask: () => Effect.void }),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(ToolRegistry.Service, {

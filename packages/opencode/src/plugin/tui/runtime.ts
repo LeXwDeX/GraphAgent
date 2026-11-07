@@ -24,10 +24,10 @@ import {
   resolvePluginId,
   type PluginPackage,
   type PluginSource,
-} from "@/plugin/shared"
-import { PluginLoader } from "@/plugin/loader"
-import { PluginMeta } from "@/plugin/meta"
-import { installPlugin as installModulePlugin, patchPluginConfig, readPluginManifest } from "@/plugin/install"
+} from "@/plugin/tui/shared"
+import { PluginLoad } from "@/plugin/tui/loader"
+import { PluginMeta } from "@/plugin/tui/meta"
+import { installPlugin as installModulePlugin, patchPluginConfig, readPluginManifest } from "@/plugin/tui/install"
 import { hasTheme, upsertTheme } from "@opencode-ai/tui/context/theme"
 import { Global } from "@opencode-ai/core/global"
 import { Filesystem } from "@/util/filesystem"
@@ -673,7 +673,7 @@ function applyInitialPluginEnabledState(state: RuntimeState, config: TuiConfig.R
 }
 
 async function resolveExternalPlugins(list: ConfigPlugin.Origin[], wait: () => Promise<void>) {
-  return PluginLoader.loadExternal({
+  return PluginLoad.loadExternal({
     items: list,
     kind: "tui",
     wait: async () => {

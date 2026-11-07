@@ -19,7 +19,6 @@ import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
-import { Plugin } from "@/plugin"
 import { Skill } from "../skill"
 import { Effect, Context, Layer, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
@@ -100,7 +99,6 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const config = yield* Config.Service
     const auth = yield* Auth.Service
-    const plugin = yield* Plugin.Service
     const skill = yield* Skill.Service
     const provider = yield* Provider.Service
     const locations = yield* LocationServiceMap
@@ -438,7 +436,6 @@ export const layer = Layer.effect(
           : undefined
 
         const system = [PROMPT_GENERATE]
-        yield* plugin.trigger("experimental.chat.system.transform", { model: resolved }, { system })
         const existing = yield* InstanceState.useEffect(state, (s) => s.list())
 
         // TODO: clean this up so provider specific logic doesnt bleed over
@@ -497,7 +494,6 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = layer.pipe(
-  Layer.provide(Plugin.defaultLayer),
   Layer.provide(Provider.defaultLayer),
   Layer.provide(Auth.defaultLayer),
   Layer.provide(Config.defaultLayer),
@@ -510,7 +506,6 @@ const locationServiceMapNode = LayerNode.make(LocationServiceMap.layer, [])
 export const node = LayerNode.make(layer, [
   Config.node,
   Auth.node,
-  Plugin.node,
   Skill.node,
   Provider.node,
   locationServiceMapNode,

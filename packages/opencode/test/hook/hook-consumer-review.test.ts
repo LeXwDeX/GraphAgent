@@ -2,10 +2,6 @@ import { expect } from "bun:test"
 import { DateTime, Effect, Layer, Exit, Fiber, Schema } from "effect"
 import path from "node:path"
 import fs from "node:fs/promises"
-import { Agent } from "@/agent/agent"
-import { Config } from "@/config/config"
-import { Plugin } from "@/plugin"
-import { SettingsHook } from "@/hook/settings"
 import { consumerContext } from "@/hook/consumer-context"
 import { AppLayer } from "@/effect/app-runtime"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -159,64 +155,6 @@ it.instance("V2 stop wins over defer without waiting for its tool batch", () =>
     expect(result.toolInput).toEqual({ path: "original" })
     expect(batches).toBe(0)
   }),
-)
-
-it.instance(
-  "plugin-derived agent hooks still execute after a permission-only config write",
-  () =>
-    Effect.gen(function* () {
-      yield* (yield* Plugin.Service).list()
-      const agent = yield* Agent.Service
-      const config = yield* Config.Service
-      const settings = yield* SettingsHook.Service
-      const session = yield* (yield* Session.Service).create({})
-      const trigger = Effect.gen(function* () {
-        const current = yield* agent.get("plugin-permission-agent")
-        if (!current) throw new Error("Expected configured agent fixture")
-        expect(current.hookSource).toBe("plugin")
-        expect(current.hooks).toBeDefined()
-        yield* settings.unregisterScoped?.(session.id, current.hookOrigin!) ?? Effect.void
-        yield* settings.registerScoped?.(session.id, {
-          kind: "agent",
-          origin: current.hookOrigin!,
-          source: current.hookSource,
-          hooks: current.hooks,
-        }) ?? Effect.void
-        yield* settings.trigger(
-          { event: "Stop", stopHookActive: false },
-          yield* consumerContext(session.id).pipe(Effect.orDie),
-        )
-      })
-      yield* trigger
-      yield* config.updateHookPermissions([
-        {
-          type: "addRules",
-          destination: "projectSettings",
-          behavior: "deny",
-          rules: [{ toolName: "fixture-permission-only" }],
-        },
-      ])
-      yield* trigger
-      const instance = yield* TestInstance
-      expect(yield* Effect.promise(() => fs.readFile(path.join(instance.directory, "plugin-hook-ran"), "utf8"))).toBe(
-        "xx",
-      )
-    }),
-  {
-    init: (directory) =>
-      Effect.promise(async () => {
-        const plugin = path.join(directory, "permission-plugin.mjs")
-        const audit = path.join(directory, "plugin-hook-ran")
-        await fs.writeFile(
-          plugin,
-          `export default async()=>({config(config){config.agent["plugin-permission-agent"].hooks={Stop:[{hooks:[{type:"command",command:${JSON.stringify("printf x >> " + JSON.stringify(audit))}}]}]}}})`,
-        )
-        await fs.writeFile(
-          path.join(directory, "opencode.json"),
-          JSON.stringify({ plugin: [plugin], agent: { "plugin-permission-agent": {} } }),
-        )
-      }),
-  },
 )
 
 it.instance("bypass requires an isolated startup capability, retains deny and is cleared", () =>

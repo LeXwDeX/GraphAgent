@@ -16,7 +16,6 @@ import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Plugin } from "../../src/plugin"
 import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -25,7 +24,6 @@ import { InstanceStore } from "@/project/instance-store"
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
   FSUtil.defaultLayer,
-  Plugin.defaultLayer,
   Truncate.defaultLayer,
   Config.defaultLayer,
   Agent.defaultLayer,

@@ -12,7 +12,7 @@ import { ConfigPlugin } from "@/config/plugin"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
-export namespace PluginLoader {
+export namespace PluginLoad {
   // A normalized plugin declaration derived from config before any filesystem or npm work happens.
   export type Plan = {
     spec: string

@@ -9,7 +9,6 @@ import { SessionTools } from "@/session/tools"
 import { ReadTool } from "@/tool/read"
 import { WriteTool } from "@/tool/write"
 import { ToolRegistry } from "@/tool/registry"
-import { Plugin } from "@/plugin"
 import { MCP } from "@/mcp"
 import { Truncate } from "@/tool/truncate"
 import { Instruction } from "@/session/instruction"
@@ -48,7 +47,6 @@ const toolDependencies = Layer.mergeAll(
 const layers = Layer.mergeAll(
   Permission.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provideMerge(hookLayer)),
   toolDependencies,
-  Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
   Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
   Layer.unwrap(
     Effect.gen(function* () {

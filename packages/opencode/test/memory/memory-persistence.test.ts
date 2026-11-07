@@ -815,6 +815,10 @@ describe("Project-owned MEMORY persistence", () => {
     "keeps committing when generation GC cannot delete a stale generation",
     () =>
       Effect.gen(function* () {
+        // A chmod-based undeletable entry only blocks removal for non-root
+        // users; root bypasses permission checks, so the scenario cannot be
+        // staged there.
+        if (process.getuid?.() === 0) return
         const root = yield* tmpdirScoped()
         yield* Effect.gen(function* () {
           const fs = yield* FSUtil.Service

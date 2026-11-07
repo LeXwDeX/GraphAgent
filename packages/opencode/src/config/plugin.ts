@@ -2,7 +2,7 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { pathToFileURL } from "url"
-import { isPathPluginSpec, parsePluginSpecifier, resolvePathPluginTarget } from "@/plugin/shared"
+import { isPathPluginSpec, parsePluginSpecifier, resolvePathPluginTarget } from "@/plugin/tui/shared"
 import path from "path"
 
 export type Scope = "global" | "local"

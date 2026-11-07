@@ -9,7 +9,6 @@ import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { testProviderConfig } from "../lib/test-provider"
 import { Env } from "@/env"
-import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
 
@@ -18,7 +17,7 @@ afterEach(async () => {
 })
 
 const it = testEffect(
-  Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer, CrossSpawnSpawner.defaultLayer),
+  Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, CrossSpawnSpawner.defaultLayer),
 )
 
 it.live("headerTimeout does not abort delayed SSE body after headers arrive", () =>

@@ -9,7 +9,6 @@ import path from "path"
 import os from "os"
 import { Effect } from "effect"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
-import { markPluginDependenciesReady } from "../../fixture/plugin"
 
 // A direct subprocess does not run test/preload.ts. Set its own paths before
 // importing application modules, including xdg-basedir's import-time cache.
@@ -25,8 +24,6 @@ process.env.OPENCODE_DB = ":memory:"
 delete process.env.OPENCODE_CONFIG
 delete process.env.OPENCODE_CONFIG_CONTENT
 await fs.mkdir(process.env.OPENCODE_TEST_HOME, { recursive: true })
-await markPluginDependenciesReady(process.env.OPENCODE_CONFIG_DIR)
-
 const { MCP } = await import("../../../src/mcp/index")
 const { TestInstance, withTmpdirInstance } = await import("../../fixture/fixture")
 const { Process } = await import("../../../src/util/process")

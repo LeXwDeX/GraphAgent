@@ -7,7 +7,6 @@ import { Agent } from "@/agent/agent"
 import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { MCP } from "@/mcp"
 import { Permission, type AskOptions } from "@/permission"
-import { Plugin } from "@/plugin"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionProcessor } from "@/session/processor"
 import { Session } from "@/session/session"
@@ -58,17 +57,11 @@ const todoDefinition: Tool.Def<typeof Parameters> = {
       .ask({ permission: "todowrite", patterns: ["*"], always: [], metadata: {} })
       .pipe(Effect.as({ title: "todo", output: "ok", metadata: {} })),
 }
-const trigger: Plugin.Interface["trigger"] = (_name, _input, output) => Effect.succeed(output)
 const askCapture: AskOptions[] = []
 const it = testEffect(
   Layer.mergeAll(
     Agent.defaultLayer,
     Truncate.defaultLayer,
-    Layer.mock(Plugin.Service, {
-      init: () => Effect.void,
-      list: () => Effect.succeed([]),
-      trigger,
-    }),
     Layer.mock(Permission.Service, {
       ask: (_input, options) => {
         if (options) askCapture.push(options)

@@ -5,7 +5,6 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Session as SessionNs } from "@/session/session"
 import { Provider } from "@/provider/provider"
 import { Env } from "../../src/env"
-import { Plugin } from "../../src/plugin/index"
 import { testEffect } from "../lib/effect"
 
 // Deterministic resolved-model fixtures matching the runtime ProviderCost shape that
@@ -174,7 +173,7 @@ const tieredConfig = {
   },
 }
 
-const loaded = testEffect(Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer))
+const loaded = testEffect(Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer))
 
 const loadModel = (id: string) =>
   Effect.gen(function* () {

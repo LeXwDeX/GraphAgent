@@ -9,13 +9,12 @@ const fromConfig = (input: Record<string, unknown>) =>
 const readFlags = RuntimeFlags.Service.useSync((flags) => flags)
 
 describe("RuntimeFlags", () => {
-  it.effect("defaultLayer parses plugin flags from the active ConfigProvider", () =>
+  it.effect("defaultLayer parses runtime flags from the active ConfigProvider", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(
         Effect.provide(
           fromConfig({
             OPENCODE_PURE: "true",
-            OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
             OPENCODE_DISABLE_EMBEDDED_WEB_UI: "true",
             OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
             OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
@@ -30,7 +29,6 @@ describe("RuntimeFlags", () => {
       )
 
       expect(flags.pure).toBe(true)
-      expect(flags.disableDefaultPlugins).toBe(true)
       expect(flags.disableEmbeddedWebUi).toBe(true)
       expect(flags.disableExternalSkills).toBe(true)
       expect(flags.disableLspDownload).toBe(true)
@@ -91,11 +89,10 @@ describe("RuntimeFlags", () => {
   it.effect("layer accepts partial test overrides and fills defaults from Config definitions", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(
-        Effect.provide(RuntimeFlags.layer({ disableDefaultPlugins: true, bashDefaultTimeoutMs: 1_000 })),
+        Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 1_000 })),
       )
 
       expect(flags.pure).toBe(false)
-      expect(flags.disableDefaultPlugins).toBe(true)
       expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
       expect(flags.disableLspDownload).toBe(false)
@@ -337,7 +334,6 @@ describe("RuntimeFlags", () => {
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
               OPENCODE_PURE: "true",
-              OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
               OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
               OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
               OPENCODE_EXPERIMENTAL: "true",
@@ -350,7 +346,6 @@ describe("RuntimeFlags", () => {
       )
 
       expect(flags.pure).toBe(false)
-      expect(flags.disableDefaultPlugins).toBe(false)
       expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
       expect(flags.disableLspDownload).toBe(false)

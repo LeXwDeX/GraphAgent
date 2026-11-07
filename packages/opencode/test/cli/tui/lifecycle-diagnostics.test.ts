@@ -15,7 +15,6 @@ test("real worker reload/shutdown diagnostics only reach its background file", a
         OPENCODE_PRINT_LOGS: "1",
         OPENCODE_TEST_HOME: tmp.path,
         OPENCODE_TEST_PURE: "1",
-        OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
         XDG_DATA_HOME: tmp.path,
         XDG_CONFIG_HOME: path.join(tmp.path, "config"),
         XDG_CACHE_HOME: path.join(tmp.path, "cache"),

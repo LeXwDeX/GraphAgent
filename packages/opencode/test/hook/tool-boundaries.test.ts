@@ -14,7 +14,6 @@ import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
-import { Plugin } from "@/plugin"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -58,7 +57,6 @@ const writeDefinition = {
 }
 const layers = Layer.mergeAll(
   hookLayer,
-  Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
   Layer.mock(Permission.Service, {
     ask: () => Effect.void,
     hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
@@ -303,7 +301,6 @@ const shellFailureDefinition = {
 }
 const shellFailureLayers = Layer.mergeAll(
   hookLayer,
-  Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
   Layer.mock(Permission.Service, {
     ask: () => Effect.void,
     hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),
@@ -467,7 +464,6 @@ const discoveryToolLayer = Layer.mergeAll(
 const discovery = testEffect(
   Layer.mergeAll(
     hookLayer,
-    Layer.mock(Plugin.Service, { trigger: (_name, _input, output) => Effect.succeed(output) }),
     Layer.mock(Permission.Service, {
       ask: () => Effect.void,
       hookPolicy: () => Effect.succeed({ rules: [], directories: [] }),

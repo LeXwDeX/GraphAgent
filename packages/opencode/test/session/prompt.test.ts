@@ -21,7 +21,6 @@ import { Config } from "@/config/config"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
 import { Permission } from "../../src/permission"
-import { Plugin } from "../../src/plugin"
 import { Provider as ProviderSvc } from "@/provider/provider"
 import { Env } from "../../src/env"
 import { Git } from "../../src/git"
@@ -373,8 +372,7 @@ function makePrompt(input?: PromptLayerOptions) {
         Layer.provide(Auth.defaultLayer),
         Layer.provide(Config.defaultLayer),
         Layer.provide(ProviderSvc.defaultLayer),
-        Layer.provide(Plugin.defaultLayer),
-        Layer.provide(
+         Layer.provide(
           LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
         ),
         Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true, experimentalNativeLlm: true })),
@@ -421,7 +419,6 @@ function makePrompt(input?: PromptLayerOptions) {
     input?.agentLayer ?? AgentSvc.defaultLayer,
     Command.defaultLayer,
     Permission.defaultLayer,
-    Plugin.defaultLayer,
     Config.defaultLayer,
     ProviderSvc.defaultLayer,
     lsp,
@@ -1518,53 +1515,6 @@ closingFailureIt.instance(
         value: { associated: true, stopReason: "model_error" },
       })
     }),
-)
-
-it.instance("DAG request preparation failure finalizes the assistant and retains unassociated input", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const mailbox = yield* DagMessages.Service
-    const plugins = yield* Plugin.Service
-    const { parent, childCaller, parentCaller, workflowID } = yield* seedAgentConversation()
-    expect(
-      yield* mailbox.send(childCaller, {
-        workflowID,
-        idempotencyKey: "preparation-input",
-        content: "DAG_INPUT_BEFORE_PREPARATION_FAILURE",
-      }),
-    ).toMatchObject({ ok: true })
-    let preparations = 0
-    const hooks = yield* plugins.list()
-    hooks.push({
-      "experimental.chat.messages.transform": async () => {
-        preparations++
-        throw new Error("Injected outbound preparation failure")
-      },
-    })
-    yield* prompt
-      .prompt({
-        sessionID: parent.id,
-        model: ref,
-        parts: [{ type: "text", text: "Prepare DAG model input" }],
-      })
-      .pipe(Effect.exit)
-    const history = yield* sessions.messages({ sessionID: parent.id })
-    const assistant = history.findLast((message) => message.info.role === "assistant")?.info
-    if (!assistant || assistant.role !== "assistant") throw new Error("Expected persisted failed assistant")
-    expect(assistant.error).toBeDefined()
-    expect(assistant.time.completed).toBeDefined()
-    expect(yield* mailbox.snapshotForTurn(parentCaller, assistant.id)).toMatchObject({
-      value: { associated: false, logicalTurnID: assistant.id, stopReason: "preparation_failed" },
-    })
-    expect(yield* mailbox.receive(parentCaller)).toMatchObject({ value: [{ state: "queued" }] })
-    expect(yield* (yield* SessionStatus.Service).get(parent.id)).toMatchObject({ type: "idle" })
-    expect(preparations).toBe(1)
-    expect(
-      (yield* llm.hits).filter((hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation")),
-    ).toHaveLength(0)
-  }),
 )
 
 it.instance("DAG early model resolution failure durably stops preparation without consuming queued input", () =>
@@ -3769,102 +3719,6 @@ withMemoryContext.instance("does not target provider-executed tool attachment me
     for (const message of synthetic) expect(JSON.stringify(message)).not.toContain("[todo reminder]")
     expect(JSON.stringify(messages.at(-1))).toContain("project-memory-probe")
     expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
-  }),
-)
-
-it.instance("applies plugin redaction before the todo reminder is attached (#953)", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const todo = yield* Todo.Service
-    const plugins = yield* Plugin.Service
-    const chat = yield* sessions.create({
-      title: "Plugin redaction",
-      permission: [{ permission: "*", pattern: "*", action: "allow" }],
-    })
-    yield* todo.update({
-      sessionID: chat.id,
-      todos: [{ content: "redacted turn", status: "in_progress", priority: "high" }],
-    })
-    const hooks = yield* plugins.list()
-    hooks.push({
-      "experimental.chat.messages.transform": async (_input, output) => {
-        for (const message of output.messages)
-          for (const part of message.parts)
-            if (part.type === "text") part.text = part.text.replaceAll("PLUGIN_SECRET", "[REDACTED]")
-      },
-    })
-    yield* prompt.prompt({
-      sessionID: chat.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "keep PLUGIN_SECRET out of the provider request" }],
-    })
-    yield* llm.tool("glob", { pattern: "**/todo-reminder-redaction" })
-    yield* llm.text("done")
-
-    yield* prompt.loop({ sessionID: chat.id })
-
-    const hits = yield* llm.hits
-    expect(hits).toHaveLength(2)
-    for (const hit of hits) {
-      const body = JSON.stringify(hit.body)
-      expect(body).not.toContain("PLUGIN_SECRET")
-      expect(body).toContain("[REDACTED]")
-      expect(body.match(/\[todo reminder\]/g)).toHaveLength(1)
-    }
-    const stored = JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))
-    expect(stored).toContain("PLUGIN_SECRET")
-    expect(stored).not.toContain("[todo reminder]")
-  }),
-)
-
-it.instance("keeps the todo reminder after a plugin removes the user text (#953)", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const todo = yield* Todo.Service
-    const plugins = yield* Plugin.Service
-    const chat = yield* sessions.create({
-      title: "Plugin removal",
-      permission: [{ permission: "*", pattern: "*", action: "allow" }],
-    })
-    yield* todo.update({
-      sessionID: chat.id,
-      todos: [{ content: "removed user text", status: "in_progress", priority: "high" }],
-    })
-    const hooks = yield* plugins.list()
-    hooks.push({
-      "experimental.chat.messages.transform": async (_input, output) => {
-        for (const message of output.messages)
-          if (message.info.role === "user") message.parts = message.parts.filter((part) => part.type !== "text")
-      },
-    })
-    yield* prompt.prompt({
-      sessionID: chat.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "REMOVED_BY_PLUGIN" }],
-    })
-    yield* llm.tool("glob", { pattern: "**/todo-reminder-removal" })
-    yield* llm.text("done")
-
-    yield* prompt.loop({ sessionID: chat.id })
-
-    const hits = yield* llm.hits
-    expect(hits).toHaveLength(2)
-    for (const hit of hits) {
-      const body = JSON.stringify(hit.body)
-      expect(body).not.toContain("REMOVED_BY_PLUGIN")
-      // The plugin removed the user content, so there is no persisted user
-      // message left to carry the reminder; do not manufacture a user turn.
-      expect(body).not.toContain("[todo reminder]")
-    }
-    const stored = JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))
-    expect(stored).toContain("REMOVED_BY_PLUGIN")
-    expect(stored).not.toContain("[todo reminder]")
   }),
 )
 

@@ -11,7 +11,6 @@ import path from "node:path"
 import z from "zod"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
-import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 
@@ -285,8 +284,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
     Layer.provide(Env.defaultLayer),
     Layer.provide(Config.defaultLayer),
     Layer.provide(auth),
-    Layer.provide(Plugin.defaultLayer),
-    Layer.provide(adapters),
+    Layer.provide(ProviderAdapters.defaultLayer),
     Layer.provide(ModelsDev.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
@@ -320,8 +318,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
       Layer.provide(auth),
       Layer.provide(Config.defaultLayer),
       Layer.provide(provider),
-      Layer.provide(Plugin.defaultLayer),
-      Layer.provide(adapters),
+      Layer.provide(ProviderAdapters.defaultLayer),
       Layer.provide(recordedClient),
       Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
     ),

@@ -10,7 +10,7 @@ import { SessionID } from "@/session/schema"
 import { Effect, Layer, Context, Option } from "effect"
 import { AzureAdapter } from "./azure"
 import { CloudflareAIGatewayAdapter, CloudflareWorkersAdapter } from "./cloudflare"
-import { CodexAdapter } from "./codex"
+import { CodexAdapter, experimentalWebSocketsEnabled } from "./codex"
 import { CopilotAdapter } from "./copilot/copilot"
 import { DigitalOceanAdapter } from "./digitalocean"
 import { SnowflakeCortexAdapter } from "./snowflake-cortex"
@@ -155,7 +155,10 @@ export const layer: Layer.Layer<
           directory: ctx.directory,
           worktree: ctx.worktree,
           project: ctx.project,
-          experimentalWebSockets: cfg.provider?.openai?.options?.experimentalWebSockets === true,
+          experimentalWebSockets: experimentalWebSocketsEnabled({
+            enabled: flags.experimentalWebSockets,
+            configured: cfg.provider?.openai?.options?.experimentalWebSockets,
+          }),
           auth: {
             set: (providerID, info) => bridge.promise(auth.set(providerID, info)),
           },
