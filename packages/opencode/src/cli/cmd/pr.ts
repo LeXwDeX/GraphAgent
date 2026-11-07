@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { UI } from "../ui"
 import { effectCmd, fail } from "../effect-cmd"
 import { Git } from "@/git"
@@ -7,7 +8,7 @@ import { Process } from "@/util/process"
 
 export const PrCommand = effectCmd({
   command: "pr <number>",
-  describe: "fetch and checkout a GitHub PR branch, then run opencode",
+  describe: `fetch and checkout a GitHub PR branch, then run ${APP_NAME}`,
   builder: (yargs) =>
     yargs.positional("number", {
       type: "number",

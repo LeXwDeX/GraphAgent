@@ -2,6 +2,7 @@ import type { Argv } from "yargs"
 import { spawn } from "child_process"
 import { Database } from "@opencode-ai/core/database/database"
 import { Vacuum } from "@opencode-ai/core/database/vacuum"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { Effect } from "effect"
 import { sql } from "drizzle-orm"
 import { effectCmd, fail } from "../effect-cmd"
@@ -66,7 +67,7 @@ const VacuumCommand = effectCmd({
     return yargs.option("db", {
       type: "string",
       demandOption: true,
-      describe: "path to the SQLite database file (print the default with `opencode db path`)",
+      describe: `path to the SQLite database file (print the default with \`${APP_NAME} db path\`)`,
     })
   },
   handler: Effect.fn("Cli.db.vacuum")(function* (args: { db: string }) {

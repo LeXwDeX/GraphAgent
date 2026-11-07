@@ -3,6 +3,7 @@ import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -21,7 +22,7 @@ interface RemovalTargets {
 
 export const UninstallCommand = {
   command: "uninstall",
-  describe: "uninstall opencode and remove all related files",
+  describe: `uninstall ${APP_NAME} and remove all related files`,
   builder: (yargs: Argv) =>
     yargs
       .option("keep-config", {
