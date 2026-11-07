@@ -27,19 +27,3 @@ export function getWorkspaceRouteSessionID(url: URL) {
 
   return SessionID.make(id)
 }
-
-export function workspaceProxyURL(target: string | URL, requestURL: URL) {
-  const proxyURL = new URL(target)
-  proxyURL.pathname = `${proxyURL.pathname.replace(/\/$/, "")}${requestURL.pathname}`
-  proxyURL.search = requestURL.search
-  proxyURL.hash = requestURL.hash
-  proxyURL.searchParams.delete("workspace")
-  // The `directory` param is the *host's* working directory (e.g. a Windows
-  // path like `F:\proj`). It is meaningless — and dangerous — on the remote:
-  // the sandbox would `path.resolve` it against its own cwd, producing a bogus
-  // path like `/home/daytona/workspace/repo/F:\proj` that does not exist and
-  // crashes prompt handling. Drop it so the remote falls back to its own
-  // project root. This mirrors ProxyUtil.headers stripping the directory header.
-  proxyURL.searchParams.delete("directory")
-  return proxyURL
-}

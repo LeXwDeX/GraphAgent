@@ -108,7 +108,6 @@ import { disposeMiddleware } from "./lifecycle"
 import { memoMap } from "@graphagent/core/effect/memo-map"
 import { compressionLayer } from "./middleware/compression"
 import { errorLayer } from "./middleware/error"
-import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
@@ -296,7 +295,7 @@ export function createRoutes(options?: {
 }): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   const moveSession = MoveSession.defaultLayer.pipe(Layer.provide(MoveSessionLookup.layer))
   return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, serverRoutes).pipe(
-    Layer.provide([errorLayer, compressionLayer, fenceLayer, moveSession, HttpServer.layerServices]),
+    Layer.provide([errorLayer, compressionLayer, moveSession, HttpServer.layerServices]),
     Layer.provide(LayerNode.buildLayer(app, options)),
     Layer.provideMerge(Observability.layer),
     // tsgo (native TS preview) widens the merged error channel to `unknown` after the

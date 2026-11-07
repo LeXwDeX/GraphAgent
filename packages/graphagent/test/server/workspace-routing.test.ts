@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import {
-  isLocalWorkspaceRoute,
-  getWorkspaceRouteSessionID,
-  workspaceProxyURL,
-} from "../../src/server/shared/workspace-routing"
+import { isLocalWorkspaceRoute, getWorkspaceRouteSessionID } from "../../src/server/shared/workspace-routing"
 import { SessionID } from "../../src/session/schema"
 
 describe("isLocalWorkspaceRoute", () => {
@@ -62,40 +58,3 @@ describe("getWorkspaceRouteSessionID", () => {
   })
 })
 
-describe("workspaceProxyURL", () => {
-  test("appends request path to target", () => {
-    const result = workspaceProxyURL("http://remote:8080/base", new URL("http://localhost/config"))
-    expect(result.toString()).toBe("http://remote:8080/base/config")
-  })
-
-  test("strips trailing slash on target before appending", () => {
-    const result = workspaceProxyURL("http://remote:8080/base/", new URL("http://localhost/session/abc"))
-    expect(result.pathname).toBe("/base/session/abc")
-  })
-
-  test("preserves query params from request but removes workspace", () => {
-    const url = new URL("http://localhost/config?workspace=ws_123&keep=yes")
-    const result = workspaceProxyURL("http://remote:8080/base", url)
-    expect(result.searchParams.get("workspace")).toBeNull()
-    expect(result.searchParams.get("keep")).toBe("yes")
-  })
-
-  test("strips the host directory param so the remote resolves its own root", () => {
-    const url = new URL("http://localhost/session/abc?directory=F%3A%5Cproj&keep=yes")
-    const result = workspaceProxyURL("http://remote:8080/base", url)
-    expect(result.searchParams.get("directory")).toBeNull()
-    expect(result.searchParams.get("keep")).toBe("yes")
-  })
-
-  test("preserves hash from request", () => {
-    const url = new URL("http://localhost/page#section")
-    const result = workspaceProxyURL("http://remote:8080", url)
-    expect(result.hash).toBe("#section")
-  })
-
-  test("works with URL object as target", () => {
-    const target = new URL("http://remote:3000/api")
-    const result = workspaceProxyURL(target, new URL("http://localhost/users"))
-    expect(result.toString()).toBe("http://remote:3000/api/users")
-  })
-})

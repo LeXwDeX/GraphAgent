@@ -1,35 +1,25 @@
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
-import { Flag } from "@graphagent/core/flag/flag"
 import { describe, expect } from "bun:test"
 import { Config, Context, Effect, FileSystem, Layer, Path } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
 import * as Socket from "effect/socket/Socket"
-import { WorkspaceV2 } from "@graphagent/core/workspace"
-import { ControlPaths } from "../../src/server/routes/instance/httpapi/groups/control"
 import { InstancePaths } from "../../src/server/routes/instance/httpapi/groups/instance"
-import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { ProjectV2 } from "@graphagent/core/project"
 import { QuestionID } from "../../src/question/schema"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
-import { HEADER as FenceHeader } from "../../src/server/shared/fence"
 import { resetDatabase } from "../fixture/db"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
-// Flip the experimental workspaces flag so EventV2.run actually writes to
-// EventSequenceTable (the source of truth the fence middleware reads). Reset
-// the database around the test so per-instance state does not leak between
-// runs. resetDatabase() already calls disposeAllInstances(), so we don't
-// repeat it.
+// Reset the database around the test so per-instance state does not leak
+// between runs. resetDatabase() already calls disposeAllInstances(), so we
+// don't repeat it.
 const testStateLayer = Layer.effectDiscard(
   Effect.gen(function* () {
-    const originalWorkspaces = Flag.GRAPHAGENT_WORKSPACES
-    Flag.GRAPHAGENT_WORKSPACES = true
     yield* Effect.promise(() => resetDatabase())
     yield* Effect.addFinalizer(() =>
       Effect.promise(async () => {
-        Flag.GRAPHAGENT_WORKSPACES = originalWorkspaces
         await resetDatabase()
       }),
     )
@@ -56,53 +46,6 @@ const handlerContext = Context.empty() as Context.Context<unknown>
 const directoryHeader = (dir: string) => HttpClientRequest.setHeader("x-graphagent-directory", dir)
 
 describe("instance HttpApi", () => {
-  it.live("emits a sync fence header for fixed-workspace mutations", () =>
-    Effect.gen(function* () {
-      const originalWorkspaceID = Flag.GRAPHAGENT_WORKSPACE_ID
-      Flag.GRAPHAGENT_WORKSPACE_ID = WorkspaceV2.ID.ascending()
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          Flag.GRAPHAGENT_WORKSPACE_ID = originalWorkspaceID
-        }),
-      )
-
-      const dir = yield* tmpdirScoped({ git: true })
-      const response = yield* HttpClientRequest.post(SessionPaths.create).pipe(
-        directoryHeader(dir),
-        HttpClientRequest.bodyJson({ title: "fenced" }),
-        Effect.flatMap(HttpClient.execute),
-      )
-
-      expect(response.status).toBe(200)
-      expect(JSON.parse(response.headers[FenceHeader] ?? "{}")).not.toEqual({})
-    }),
-  )
-
-  it.live("does not emit sync fence headers for fixed-workspace reads or no-op mutations", () =>
-    Effect.gen(function* () {
-      const originalWorkspaceID = Flag.GRAPHAGENT_WORKSPACE_ID
-      Flag.GRAPHAGENT_WORKSPACE_ID = WorkspaceV2.ID.ascending()
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          Flag.GRAPHAGENT_WORKSPACE_ID = originalWorkspaceID
-        }),
-      )
-
-      const dir = yield* tmpdirScoped({ git: true })
-      const read = yield* HttpClientRequest.get(InstancePaths.path).pipe(directoryHeader(dir), HttpClient.execute)
-      const log = yield* HttpClientRequest.post(ControlPaths.log).pipe(
-        directoryHeader(dir),
-        HttpClientRequest.bodyJson({ service: "fence-test", level: "info", message: "noop" }),
-        Effect.flatMap(HttpClient.execute),
-      )
-
-      expect(read.status).toBe(200)
-      expect(read.headers[FenceHeader]).toBeUndefined()
-      expect(log.status).toBe(200)
-      expect(log.headers[FenceHeader]).toBeUndefined()
-    }),
-  )
-
   it.live("rejects malformed permission and question request ids", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
