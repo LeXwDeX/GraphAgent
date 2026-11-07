@@ -3,6 +3,7 @@ import { HttpClient } from "effect/http"
 import * as Tool from "./tool"
 import * as McpWebSearch from "./mcp-websearch"
 import DESCRIPTION from "./websearch.txt"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { checksum } from "@opencode-ai/core/util/encode"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -54,7 +55,7 @@ export function webSearchModelName(extra: Tool.Context["extra"]) {
 }
 
 function parallelAuthHeaders() {
-  const headers = { "User-Agent": `opencode/${InstallationVersion}` }
+  const headers = { "User-Agent": `${APP_NAME}/${InstallationVersion}` }
   if (!process.env.PARALLEL_API_KEY) return headers
   return { ...headers, Authorization: `Bearer ${process.env.PARALLEL_API_KEY}` }
 }

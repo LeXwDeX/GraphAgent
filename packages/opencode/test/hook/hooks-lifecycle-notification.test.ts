@@ -21,7 +21,7 @@ cliIt.live("a real pending permission emits Notification through a command hook"
       )
     })
     const server = yield* opencode.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "ask" }) } })
-    const headers = { "content-type": "application/json", "x-opencode-directory": home }
+    const headers = { "content-type": "application/json", "x-graphagent-directory": home }
     const post = (route: string, body: object) =>
       Effect.promise(() => fetch(server.url + route, { method: "POST", headers, body: JSON.stringify(body) }))
     const created = yield* post("/session", {})

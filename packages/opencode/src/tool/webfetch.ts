@@ -1,3 +1,4 @@
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { Parser } from "htmlparser2"
@@ -88,7 +89,7 @@ export const WebFetchTool = Tool.define(
                 () =>
                   httpOk.execute(
                     HttpClientRequest.get(params.url).pipe(
-                      HttpClientRequest.setHeaders({ ...headers, "User-Agent": "opencode" }),
+                      HttpClientRequest.setHeaders({ ...headers, "User-Agent": APP_NAME }),
                     ),
                   ),
               ),

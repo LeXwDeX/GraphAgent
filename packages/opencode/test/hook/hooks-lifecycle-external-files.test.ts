@@ -29,7 +29,7 @@ cliIt.live(
       const create = Effect.promise(async () => {
         const response = await fetch(server.url + "/session", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: "{}",
         })
         return response.json()

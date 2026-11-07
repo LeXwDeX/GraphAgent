@@ -39,7 +39,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )
@@ -57,7 +57,7 @@ cliIt.live(
       const notifications: { type: string; properties?: { sessionID?: string; message?: string } }[] = []
       const stream = yield* Effect.promise(() =>
         fetch(server.url + "/event", {
-          headers: { "x-opencode-directory": home },
+          headers: { "x-graphagent-directory": home },
           signal: controller.signal,
         }),
       )
@@ -153,7 +153,7 @@ cliIt.live(
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {
             method,
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           })
           expect(response.status).toBe(200)

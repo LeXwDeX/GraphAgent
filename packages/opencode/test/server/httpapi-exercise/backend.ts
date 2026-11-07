@@ -85,7 +85,7 @@ function authReady(backend: CachedApp) {
           new Request("http://localhost/global/health", {
             headers: {
               authorization: basic("opencode", "secret"),
-              "x-opencode-directory": exerciseWorkingDirectory,
+              "x-graphagent-directory": exerciseWorkingDirectory,
             },
             signal,
           }),
@@ -203,7 +203,7 @@ function toAuthProbeRequest(scenario: ActiveScenario, credentials: "missing" | "
   const headers = {
     ...(spec.body === undefined ? {} : { "content-type": "application/json" }),
     // Valid-credential probes run the real handler; keep them inside the exercise root.
-    "x-opencode-directory": exerciseWorkingDirectory,
+    "x-graphagent-directory": exerciseWorkingDirectory,
     ...spec.headers,
     ...(credentials === "valid" ? { authorization: basic("opencode", "secret") } : {}),
   }

@@ -39,7 +39,7 @@ export function workspaceProxyURL(target: string | URL, requestURL: URL) {
   // the sandbox would `path.resolve` it against its own cwd, producing a bogus
   // path like `/home/daytona/workspace/repo/F:\proj` that does not exist and
   // crashes prompt handling. Drop it so the remote falls back to its own
-  // project root. This mirrors ProxyUtil.headers stripping `x-opencode-directory`.
+  // project root. This mirrors ProxyUtil.headers stripping the directory header.
   proxyURL.searchParams.delete("directory")
   return proxyURL
 }

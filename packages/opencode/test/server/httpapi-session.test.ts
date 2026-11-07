@@ -211,7 +211,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory }
+        const headers = { "x-graphagent-directory": test.directory }
         const missingSession = SessionID.descending()
         const missingSessionBody = {
           name: "NotFoundError",
@@ -276,7 +276,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory }
+        const headers = { "x-graphagent-directory": test.directory }
         const parent = yield* createSession({ title: "parent" })
         const child = yield* createSession({ title: "child", parentID: parent.id })
         const message = yield* createTextMessage(parent.id, "hello")
@@ -379,7 +379,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
 
         const createdEmpty = yield* requestJson<Session.Info>(SessionPaths.create, {
           method: "POST",
@@ -411,7 +411,7 @@ describe("session HttpApi", () => {
           pathFor(SessionPaths.fork, { sessionID: created.id }),
           {
             method: "POST",
-            headers: { "x-opencode-directory": test.directory },
+            headers: { "x-graphagent-directory": test.directory },
           },
         )
         expect(forkedWithoutContentType.id).not.toBe(created.id)
@@ -465,13 +465,13 @@ describe("session HttpApi", () => {
 
         const created = yield* requestJson<Session.Info>(`${SessionPaths.create}?workspace=${workspace.id}`, {
           method: "POST",
-          headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+          headers: { "x-graphagent-directory": test.directory, "content-type": "application/json" },
           body: JSON.stringify({ title: "workspace session" }),
         })
         const messages = yield* request(
           `${pathFor(SessionPaths.messages, { sessionID: created.id })}?workspace=${workspace.id}`,
           {
-            headers: { "x-opencode-directory": test.directory },
+            headers: { "x-graphagent-directory": test.directory },
           },
         )
 
@@ -487,7 +487,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
         const session = yield* createSession({ title: "archived" })
         const body = JSON.stringify({ time: { archived: -1 } })
 
@@ -527,7 +527,7 @@ describe("session HttpApi", () => {
           path: "packages/opencode/src",
           directory: currentDir,
         })
-        const headers = { "x-opencode-directory": test.directory }
+        const headers = { "x-graphagent-directory": test.directory }
         const sessions = (yield* json<Session.Info[]>(
           yield* request(`${SessionPaths.list}?${query}`, { headers }),
         )).map((item) => item.id)
@@ -543,7 +543,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory }
+        const headers = { "x-graphagent-directory": test.directory }
         const session = yield* createSession({ title: "messages" })
         yield* createTextMessage(session.id, "first")
         yield* createTextMessage(session.id, "second")
@@ -563,7 +563,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
         const session = yield* createSession({ title: "messages" })
         const first = yield* createTextMessage(session.id, "first")
         const second = yield* createTextMessage(session.id, "second")
@@ -608,7 +608,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
         const session = yield* createSession({ title: "queued message errors" })
         const first = yield* createTextMessage(session.id, "first")
         const pending = yield* createPendingAssistant(session.id, first.info.id)
@@ -683,7 +683,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
         const session = yield* createSession({ title: "queued message stale" })
         const first = yield* createTextMessage(session.id, "first")
         yield* createPendingAssistant(session.id, first.info.id)
@@ -734,7 +734,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
         const session = yield* createSession({ title: "part mismatch" })
         const message = yield* createTextMessage(session.id, "first")
         const response = yield* request(
@@ -760,7 +760,7 @@ describe("session HttpApi", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const headers = { "x-graphagent-directory": test.directory, "content-type": "application/json" }
         const session = yield* createSession({ title: "remaining" })
 
         expect(

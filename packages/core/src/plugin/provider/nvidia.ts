@@ -1,3 +1,4 @@
+import { APP_TITLE, HOMEPAGE_URL } from "../../brand"
 import { Effect } from "effect"
 import { define } from "../internal"
 
@@ -11,9 +12,9 @@ export const NvidiaPlugin = define({
           if (item.provider.api.package !== "@ai-sdk/openai-compatible") continue
           if (item.provider.api.url !== "https://integrate.api.nvidia.com/v1") continue
           evt.provider.update(item.provider.id, (provider) => {
-            provider.request.headers["HTTP-Referer"] = "https://opencode.ai/"
-            provider.request.headers["X-Title"] = "opencode"
-            provider.request.headers["X-BILLING-INVOKE-ORIGIN"] ??= "OpenCode"
+            provider.request.headers["HTTP-Referer"] = HOMEPAGE_URL
+            provider.request.headers["X-Title"] = APP_TITLE
+            provider.request.headers["X-BILLING-INVOKE-ORIGIN"] ??= APP_TITLE
           })
         }
       }),

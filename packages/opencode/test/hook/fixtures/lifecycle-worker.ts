@@ -5,7 +5,7 @@ try {
   const response = await client.call("fetch", {
     url: "http://opencode.example.com/session",
     method: "POST",
-    headers: { "content-type": "application/json", "x-opencode-directory": process.env.LIFECYCLE_DIRECTORY! },
+    headers: { "content-type": "application/json", "x-graphagent-directory": process.env.LIFECYCLE_DIRECTORY! },
     body: "{}",
   })
   if (response.status !== 200) throw new Error(`session fixture status ${response.status}`)
@@ -17,7 +17,7 @@ try {
     const moved = await client.call("fetch", {
       url: "http://opencode.example.com/experimental/control-plane/move-session",
       method: "POST",
-      headers: { "content-type": "application/json", "x-opencode-directory": directory },
+      headers: { "content-type": "application/json", "x-graphagent-directory": directory },
       body: JSON.stringify({ sessionID: session.id, destination: { directory: destination } }),
     })
     if (moved.status !== 204) throw new Error(`move fixture status ${moved.status}`)

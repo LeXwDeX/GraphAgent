@@ -6,7 +6,7 @@ const user = (text: string): ModelMessage => ({ role: "user", content: text })
 const contextUser = (text: string): ModelMessage => ({
   role: "user",
   content: text,
-  providerOptions: { opencode: { context: true, cache: "none" } },
+  providerOptions: { graphagent: { context: true, cache: "none" } },
 })
 const assistant = (text: string): ModelMessage => ({ role: "assistant", content: text })
 

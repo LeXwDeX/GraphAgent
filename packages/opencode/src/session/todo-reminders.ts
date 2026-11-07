@@ -24,6 +24,7 @@
  * State is per instance and cleaned on instance disposal or session deletion.
  */
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import type { ModelMessage } from "ai"
 import { Cause, Context, Effect, Layer, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -57,15 +58,9 @@ export interface Interface {
 const ephemeral = (part: unknown) => {
   if (typeof part !== "object" || part === null || !("providerOptions" in part)) return false
   const options = part.providerOptions
-  return (
-    typeof options === "object" &&
-    options !== null &&
-    "opencode" in options &&
-    typeof options.opencode === "object" &&
-    options.opencode !== null &&
-    "cache" in options.opencode &&
-    options.opencode.cache === "none"
-  )
+  if (typeof options !== "object" || options === null) return false
+  const local = (options as Record<string, unknown>)[METADATA_NAMESPACE]
+  return isRecord(local) && local.cache === "none"
 }
 
 /**
@@ -81,12 +76,14 @@ export function append(messages: ModelMessage[], reminder: string | undefined): 
   // persisted turn; use the runtime-context provenance instead.
   const synthetic = (message: ModelMessage) => {
     const messageOptions = isRecord(message.providerOptions) ? message.providerOptions : undefined
-    const messageOpencode = isRecord(messageOptions?.opencode) ? messageOptions.opencode : undefined
+    const messageOpencode = isRecord(messageOptions?.[METADATA_NAMESPACE])
+      ? messageOptions[METADATA_NAMESPACE]
+      : undefined
     if (messageOpencode?.synthetic === "attachment") return true
     if (!Array.isArray(message.content)) return false
     return message.content.some((part) => {
       const options = "providerOptions" in part && isRecord(part.providerOptions) ? part.providerOptions : undefined
-      const opencode = isRecord(options?.opencode) ? options.opencode : undefined
+      const opencode = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
       return opencode?.synthetic === "attachment"
     })
   }
@@ -108,8 +105,8 @@ export function append(messages: ModelMessage[], reminder: string | undefined): 
         ...message,
         providerOptions: {
           ...options,
-          opencode: {
-            ...(isRecord(options.opencode) ? options.opencode : {}),
+          [METADATA_NAMESPACE]: {
+            ...(isRecord(options[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : {}),
             cache: "none",
           },
         },
@@ -124,7 +121,10 @@ export function append(messages: ModelMessage[], reminder: string | undefined): 
   if (content.at(-1) && ephemeral(content.at(-1))) return next
   next[at] = {
     ...message,
-    content: [...content, { type: "text", text: reminder, providerOptions: { opencode: { cache: "none" } } }],
+    content: [
+      ...content,
+      { type: "text", text: reminder, providerOptions: { [METADATA_NAMESPACE]: { cache: "none" } } },
+    ],
   }
   return next
 }

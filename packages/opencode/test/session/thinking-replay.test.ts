@@ -169,7 +169,7 @@ test("compaction invalidation preserves saved carriers and settles only in proje
   const marked = ThinkingReplay.invalidate(thinking.providerMetadata)
   expect(marked).toEqual({
     ...original.providerMetadata,
-    opencode: { thinkingReplay: { ...ThinkingReplay.origin(original.providerMetadata)!, invalidated: true } },
+    graphagent: { thinkingReplay: { ...ThinkingReplay.origin(original.providerMetadata)!, invalidated: true } },
   })
   expect(
     ThinkingReplay.project({

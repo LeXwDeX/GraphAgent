@@ -1,3 +1,4 @@
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -231,7 +232,7 @@ async function listRouters(
     headers: {
       Authorization: `Bearer ${bearer}`,
       Accept: "application/json",
-      "User-Agent": `opencode/${InstallationVersion}`,
+      "User-Agent": `${APP_NAME}/${InstallationVersion}`,
     },
     signal: AbortSignal.timeout(10_000),
   }).catch(() => undefined)

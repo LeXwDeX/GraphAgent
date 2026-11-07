@@ -1,4 +1,5 @@
 import { OAUTH_DUMMY_KEY } from "../../auth"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { createServer } from "http"
 import { escapeHtml } from "@/util/html"
@@ -87,7 +88,7 @@ function authHeaders() {
   return {
     "Content-Type": "application/x-www-form-urlencoded",
     Accept: "application/json",
-    "User-Agent": `opencode/${InstallationVersion}`,
+    "User-Agent": `${APP_NAME}/${InstallationVersion}`,
   }
 }
 
@@ -405,7 +406,7 @@ export function SnowflakeCortexAdapter(input: AdapterContext): ProviderAdapter {
                 }
               }
               headers.set("authorization", `Bearer ${currentOauth.access}`)
-              headers.set("User-Agent", `opencode/${InstallationVersion}`)
+              headers.set("User-Agent", `${APP_NAME}/${InstallationVersion}`)
 
               let body = init?.body
               if (body && typeof body === "string") {

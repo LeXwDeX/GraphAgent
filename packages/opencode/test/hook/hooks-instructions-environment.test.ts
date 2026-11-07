@@ -41,7 +41,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )
@@ -68,7 +68,7 @@ cliIt.live(
             decodeRecords(
               await (
                 await fetch(server.url + `/session/${id}/message`, {
-                  headers: { "x-opencode-directory": home },
+                  headers: { "x-graphagent-directory": home },
                 })
               ).json(),
             ),
@@ -145,7 +145,7 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(payload),
         }),
       )

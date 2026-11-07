@@ -34,6 +34,6 @@ export function request(path: string, init?: RequestInit) {
 
 export function requestInDirectory(path: string, directory: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
-  headers.set("x-opencode-directory", directory)
+  headers.set("x-graphagent-directory", directory)
   return request(path, { ...init, headers })
 }

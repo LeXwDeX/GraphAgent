@@ -602,12 +602,12 @@ describe("session.message-v2.toModelMessage", () => {
       },
       {
         role: "user",
-        providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+        providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
         content: [
           {
             type: "text",
             text: "Attached media from tool result:",
-            providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+            providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
           },
           {
             type: "file",
@@ -690,13 +690,13 @@ describe("session.message-v2.toModelMessage", () => {
         message.content.some(
           (part) =>
             part.type === "text" &&
-            part.providerOptions?.opencode?.synthetic === "attachment",
+            part.providerOptions?.graphagent?.synthetic === "attachment",
         ),
     )
     expect(synthetic).toHaveLength(2)
     for (const message of synthetic) {
       expect(message.role).toBe("user")
-      expect(message.providerOptions?.opencode).toEqual({ synthetic: "attachment", cache: "none" })
+      expect(message.providerOptions?.graphagent).toEqual({ synthetic: "attachment", cache: "none" })
     }
     const toolResults = output.filter((message) => message.role === "tool")
     expect(toolResults).toHaveLength(2)
@@ -759,7 +759,7 @@ describe("session.message-v2.toModelMessage", () => {
     expect(output.map((message) => message.role)).toEqual(["user", "assistant", "user"])
     const synthetic = output.at(-1)
     expect(synthetic?.role).toBe("user")
-    expect(synthetic?.providerOptions?.opencode).toEqual({ synthetic: "attachment", cache: "none" })
+    expect(synthetic?.providerOptions?.graphagent).toEqual({ synthetic: "attachment", cache: "none" })
     expect(JSON.stringify(synthetic)).toContain("synthetic")
     expect(JSON.stringify(synthetic)).toContain("attachment")
   })

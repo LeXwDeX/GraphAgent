@@ -13,7 +13,7 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { Global } from "@opencode-ai/core/global"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { APP_NAME, HEADER_PREFIX } from "@opencode-ai/core/brand"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 
@@ -68,7 +68,8 @@ export const rpc = {
     const response = await Server.Default().app.fetch(request)
     const body = await response.text()
     const url = new URL(input.url)
-    const directory = request.headers.get("x-opencode-directory") ?? url.searchParams.get("directory") ?? process.cwd()
+    const directory =
+      request.headers.get(`${HEADER_PREFIX}directory`) ?? url.searchParams.get("directory") ?? process.cwd()
     const existing = url.pathname.match(/\/session\/([^/]+)\/(?:message|prompt|command|shell)$/)
     if (input.method.toUpperCase() === "POST" && existing) localSessions.set(decodeURIComponent(existing[1]), directory)
     if (input.method.toUpperCase() === "POST" && /\/session\/?$/.test(url.pathname) && response.ok) {

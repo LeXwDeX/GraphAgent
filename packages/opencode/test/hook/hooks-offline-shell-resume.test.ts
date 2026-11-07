@@ -29,7 +29,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )
@@ -102,7 +102,7 @@ for (const deny of [false, true]) {
           Effect.promise(() =>
             fetch(server.url + route, {
               method: body ? "POST" : "GET",
-              headers: { "content-type": "application/json", "x-opencode-directory": home },
+              headers: { "content-type": "application/json", "x-graphagent-directory": home },
               ...(body ? { body: JSON.stringify(body) } : {}),
             }),
           )

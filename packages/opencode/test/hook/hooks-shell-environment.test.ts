@@ -57,7 +57,7 @@ cliIt.live(`SessionStart exports reach V1 model Bash and command hooks`, ({ home
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         }),
       )

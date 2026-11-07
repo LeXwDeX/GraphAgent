@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { InvalidResponseDataError, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
 import { ProviderError } from "@/provider/error"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { isRecord } from "@/util/record"
 
 type Result = Awaited<ReturnType<typeof streamText>>
@@ -38,7 +39,7 @@ export function adapterState() {
      * A suppressed (non-session-visible) AI SDK chunk — file, source, abort,
      * tool-approval-request, tool-output-denied — was seen in this stream.
      * Conveyed as a reserved internal flag on the synthesized step-finish and
-     * finish providerMetadata (`opencode.suppressedActivity`) so consumers can
+     * finish providerMetadata (`graphagent.suppressedActivity`) so consumers can
      * distinguish this activity from a completely empty response without a
      * public event variant.
      */
@@ -61,7 +62,10 @@ function withSuppressedActivity(
   suppressed: boolean,
 ): ProviderMetadata | undefined {
   if (!suppressed) return metadata
-  return { ...metadata, opencode: { ...metadata?.opencode, ...SUPPRESSED_ACTIVITY_METADATA } }
+  return {
+    ...metadata,
+    [METADATA_NAMESPACE]: { ...metadata?.[METADATA_NAMESPACE], ...SUPPRESSED_ACTIVITY_METADATA },
+  }
 }
 
 function finishReason(value: string | undefined): FinishReason {

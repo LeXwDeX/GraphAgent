@@ -12,9 +12,9 @@
 //   - GRAPHAGENT_DISABLE_AUTOCOMPACT / MODELS_FETCH : no background work
 // Plus HOME / XDG_* pointing at the tmpdir for belt-and-suspenders isolation.
 //
-// Today only `opencode.run` is fully wired. The shape supports adding more
-// builders (`opencode.host(opts)`, `opencode.acp(opts)`, `opencode.auth(...)`)
-// without changing the fixture. Long-lived commands like `host` will need a
+// Today only the `run` builder is fully wired. The shape supports adding more
+// builders (`host(opts)`, `acp(opts)`, `auth(...)`) without changing the fixture.
+// Long-lived commands like `host` will need a
 // different return shape — see the TODO at the bottom of OpencodeCli.
 import { test, type TestOptions } from "bun:test"
 import { FSUtil } from "@opencode-ai/core/fs-util"

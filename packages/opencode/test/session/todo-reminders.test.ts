@@ -216,7 +216,7 @@ describe("TodoReminders.forRequest (#953)", () => {
           {
             type: "text",
             text: "[todo reminder] ephemeral",
-            providerOptions: { opencode: { cache: "none" } },
+            providerOptions: { graphagent: { cache: "none" } },
           },
         ],
       })
@@ -253,14 +253,14 @@ describe("TodoReminders.forRequest (#953)", () => {
           {
             type: "text",
             text: "[todo reminder] ephemeral",
-            providerOptions: { opencode: { cache: "none" } },
+            providerOptions: { graphagent: { cache: "none" } },
           },
         ],
       })
       expect(result[3]).toMatchObject({
         role: "user",
         content: context.content,
-        providerOptions: { opencode: { cache: "none" } },
+        providerOptions: { graphagent: { cache: "none" } },
       })
       expect(JSON.stringify(result[3].content)).toContain("<runtime_context>")
     }),
@@ -273,7 +273,7 @@ describe("TodoReminders.forRequest (#953)", () => {
         content: [
           Object.assign(
             { type: "text" as const, text: "Attached media from tool result:" },
-            { providerOptions: { opencode: { synthetic: "attachment" } } },
+            { providerOptions: { graphagent: { synthetic: "attachment" } } },
           ),
           { type: "file" as const, mediaType: "image/png", data: "AA==" },
         ],
@@ -288,7 +288,7 @@ describe("TodoReminders.forRequest (#953)", () => {
         role: "user",
         content: [
           { type: "text", text: "current turn" },
-          { type: "text", text: "[todo reminder] ephemeral", providerOptions: { opencode: { cache: "none" } } },
+          { type: "text", text: "[todo reminder] ephemeral", providerOptions: { graphagent: { cache: "none" } } },
         ],
       })
       expect(result[2]).toBe(synthetic)

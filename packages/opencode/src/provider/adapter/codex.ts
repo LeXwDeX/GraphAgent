@@ -1,3 +1,4 @@
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
 import { OAUTH_DUMMY_KEY } from "../../auth"
 import os from "os"
@@ -576,7 +577,7 @@ export function CodexAdapter(input: AdapterContext, options: CodexAuthPluginOpti
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                "User-Agent": `opencode/${InstallationVersion}`,
+                "User-Agent": `${APP_NAME}/${InstallationVersion}`,
               },
               body: JSON.stringify({ client_id: CLIENT_ID }),
             })
@@ -600,7 +601,7 @@ export function CodexAdapter(input: AdapterContext, options: CodexAuthPluginOpti
                     method: "POST",
                     headers: {
                       "Content-Type": "application/json",
-                      "User-Agent": `opencode/${InstallationVersion}`,
+                      "User-Agent": `${APP_NAME}/${InstallationVersion}`,
                     },
                     body: JSON.stringify({
                       device_auth_id: deviceData.device_auth_id,
@@ -660,7 +661,7 @@ export function CodexAdapter(input: AdapterContext, options: CodexAuthPluginOpti
     chatHeaders: async (input, output) => {
       if (input.model.providerID !== "openai") return
       output.headers.originator = "opencode"
-      output.headers["User-Agent"] = `opencode/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`
+      output.headers["User-Agent"] = `${APP_NAME}/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`
       output.headers["session-id"] = input.sessionID
       // Temporary fetch-layer hack: title generation currently shares the conversation
       // session ID, so the OpenAI plugin marks it for HTTP fallback until transport

@@ -26,7 +26,7 @@ cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons"
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         }),
       )
@@ -108,7 +108,7 @@ for (const transport of ["command", "http"] as const) {
           Effect.promise(async () => {
             const result = await fetch(server.url + route, {
               method: "POST",
-              headers: { "content-type": "application/json", "x-opencode-directory": home },
+              headers: { "content-type": "application/json", "x-graphagent-directory": home },
               body: JSON.stringify(body),
             })
             if (!result.ok) throw new Error(`${route}: ${result.status} ${await result.text()}`)
@@ -221,7 +221,7 @@ cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, 
       Effect.promise(async () => {
         const response = await fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         })
         expect(response.status).toBe(200)

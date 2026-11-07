@@ -1,3 +1,4 @@
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { setTimeout as sleep } from "node:timers/promises"
 import { CopilotModels } from "./models"
@@ -152,7 +153,7 @@ export function CopilotAdapter(input: AdapterContext): ProviderAdapter {
           {
             ...(provider.options?.headers as Record<string, string> | undefined),
             Authorization: `Bearer ${auth.refresh}`,
-            "User-Agent": `opencode/${InstallationVersion}`,
+            "User-Agent": `${APP_NAME}/${InstallationVersion}`,
             "X-GitHub-Api-Version": API_VERSION,
           },
           provider.models,
@@ -189,7 +190,7 @@ export function CopilotAdapter(input: AdapterContext): ProviderAdapter {
             const headers: Record<string, string> = {
               "x-initiator": isAgent ? "agent" : "user",
               ...(init?.headers as Record<string, string>),
-              "User-Agent": `opencode/${InstallationVersion}`,
+              "User-Agent": `${APP_NAME}/${InstallationVersion}`,
               Authorization: `Bearer ${info.refresh}`,
               "Openai-Intent": "conversation-edits",
             }
@@ -265,7 +266,7 @@ export function CopilotAdapter(input: AdapterContext): ProviderAdapter {
               headers: {
                 Accept: "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": `opencode/${InstallationVersion}`,
+                "User-Agent": `${APP_NAME}/${InstallationVersion}`,
               },
               body: JSON.stringify({
                 client_id: CLIENT_ID,
@@ -295,7 +296,7 @@ export function CopilotAdapter(input: AdapterContext): ProviderAdapter {
                     headers: {
                       Accept: "application/json",
                       "Content-Type": "application/json",
-                      "User-Agent": `opencode/${InstallationVersion}`,
+                      "User-Agent": `${APP_NAME}/${InstallationVersion}`,
                     },
                     body: JSON.stringify({
                       client_id: CLIENT_ID,

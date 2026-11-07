@@ -94,7 +94,7 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
           const request = async (route: string, body?: unknown): Promise<any> => {
             const response = await fetch(server.url + route, {
               method: body === undefined ? "GET" : "POST",
-              headers: { "x-opencode-directory": directory, "content-type": "application/json" },
+              headers: { "x-graphagent-directory": directory, "content-type": "application/json" },
               ...(body === undefined ? {} : { body: JSON.stringify(body) }),
             })
             if (!response.ok) throw new Error(`${route}: HTTP ${response.status}`)

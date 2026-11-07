@@ -30,7 +30,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(server.url + route, {
             method,
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )

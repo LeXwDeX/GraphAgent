@@ -192,9 +192,41 @@ const CATEGORIES: Category[] = [
     pattern: /(?:Process\.(?:spawn|text|run)|Bun\.spawn)\(\["opencode"/,
     allow: [],
   },
+  {
+    id: "internal-request-header",
+    stage: 4,
+    pattern: /x-opencode-/,
+    allow: [],
+  },
+  {
+    id: "user-agent-product",
+    stage: 4,
+    pattern: /opencode\/\$\{Installation/,
+    allow: [],
+  },
+  {
+    id: "attribution-header",
+    stage: 4,
+    pattern:
+      /(?:X-Title|HTTP-Referer|X-Source|X-Cerebras-3rd-Party-Integration)[^\n]*["'`]?opencode(?:\.ai\/)?["'`]/,
+    allow: [],
+  },
+  {
+    id: "telemetry-identity",
+    stage: 4,
+    pattern: /["'`]opencode\.(?:client|run)\b/,
+    allow: [],
+  },
+  {
+    id: "metadata-namespace",
+    stage: 4,
+    pattern:
+      /(?:providerMetadata|providerOptions)\.opencode\b|\bopencode\.(?:synthetic|context|cache|suppressedActivity|failedAttempt|thinkingReplay)\b/,
+    allow: [],
+  },
 ]
 
-const CURRENT_STAGE = 3
+const CURRENT_STAGE = 4
 
 type Hit = { category: string; file: string; line: number; text: string }
 
@@ -249,7 +281,7 @@ describe("brand literals", () => {
     await mkdir(path.join(root, "script"), { recursive: true })
     await writeFile(
       path.join(root, "script", "build.ts"),
-      'const out = "dist/opencode-linux-x64/bin/graphagent"\nconst rel = "bin/opencode"\nconst legacy = process.env.OPENCODE_CONFIG\nconst mode = "opencode.mode"\n',
+      'const out = "dist/opencode-linux-x64/bin/graphagent"\nconst rel = "bin/opencode"\nconst legacy = process.env.OPENCODE_CONFIG\nconst mode = "opencode.mode"\nconst header = "x-opencode-directory"\nconst ua = `opencode/${InstallationVersion}`\nconst meta = "providerMetadata.opencode"\nconst svc = "opencode.client"\nconst title = { "X-Title": "opencode" }\n',
     )
 
     const hits = await scan(await listFiles([root]), active())
@@ -257,7 +289,14 @@ describe("brand literals", () => {
     expect(hits.map((hit) => hit.category)).toContain("distribution-path")
     expect(hits.map((hit) => hit.category)).toContain("legacy-env-prefix")
     expect(hits.map((hit) => hit.category)).toContain("tui-mode-key")
-    expect(hits.map((hit) => hit.line)).toEqual([1, 1, 2, 3, 4])
+    expect(hits.map((hit) => hit.category)).toContain("internal-request-header")
+    expect(hits.map((hit) => hit.category)).toContain("user-agent-product")
+    expect(hits.map((hit) => hit.category)).toContain("metadata-namespace")
+    expect(hits.map((hit) => hit.category)).toContain("telemetry-identity")
+    expect(hits.map((hit) => hit.category)).toContain("attribution-header")
+    // `providerMetadata.opencode"` also matches the stage-3 project-directory
+    // category (`\.opencode[\/\\"'`]`), so line 7 is reported twice.
+    expect(hits.map((hit) => hit.line).sort((a, b) => a - b)).toEqual([1, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9])
   })
 
   test("the scan skips immutable release notes and dependency directories", async () => {
