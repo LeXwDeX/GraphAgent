@@ -16,7 +16,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { SessionPrompt } from "@/session/prompt"
@@ -403,11 +403,11 @@ describe("spawn worktree isolation", () => {
             id: Project.ID.make("project-1"), worktree: AbsolutePath.make(target), sandboxes: [],
           }).run().pipe(Effect.orDie)
           yield* db.insert(SessionTable).values({
-            id: SessionV2.ID.make("ses_parent"), project_id: Project.ID.make("project-1"), slug: "parent",
+            id: SessionSchema.ID.make("ses_parent"), project_id: Project.ID.make("project-1"), slug: "parent",
             directory: AbsolutePath.make(target), title: "Parent", version: "test",
           }).run().pipe(Effect.orDie)
           yield* db.insert(WorkflowTable).values({
-            id: "dag_1", project_id: Project.ID.make("project-1"), session_id: SessionV2.ID.make("ses_parent"),
+            id: "dag_1", project_id: Project.ID.make("project-1"), session_id: SessionSchema.ID.make("ses_parent"),
             title: "Isolation", status: "running", config: "{}", seq: 0,
           }).run().pipe(Effect.orDie)
           yield* db.insert(WorkflowNodeTable).values({
@@ -417,11 +417,11 @@ describe("spawn worktree isolation", () => {
           const dagID = DagEvent.DagID.make("dag_1")
           const nodeID = DagEvent.NodeID.make("a")
           yield* events.publish(DagEvent.NodeStarted, {
-            dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), timestamp: yield* DateTime.now,
+            dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"), timestamp: yield* DateTime.now,
             worktree: { directory: first, touchedPaths: [], state: "active", conflictsWith: [] },
           })
           yield* events.publish(DagEvent.NodeRestarted, {
-            dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), timestamp: yield* DateTime.now,
+            dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"), timestamp: yield* DateTime.now,
           })
           harness.onFailure = (reason, worktree) => Effect.gen(function* () {
             yield* events.publish(DagEvent.NodeFailed, {

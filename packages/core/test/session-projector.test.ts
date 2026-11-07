@@ -1,109 +1,80 @@
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Layer, Schema } from "effect"
-import { asc, eq } from "drizzle-orm"
+import { DateTime, Effect, Layer } from "effect"
+import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
-import { EventTable } from "@opencode-ai/core/event/sql"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionID } from "@opencode-ai/schema/session-id"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { SessionEvent } from "@opencode-ai/core/session/event"
-import { SessionMessage } from "@opencode-ai/core/session/message"
-import { Prompt } from "@opencode-ai/core/session/prompt"
-import { SessionMessageUpdater } from "@opencode-ai/core/session/message-updater"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
-import { SessionInput } from "@opencode-ai/core/session/input"
-import { SessionStore } from "@opencode-ai/core/session/store"
-import {
-  MessageTable,
-  PartTable,
-  SessionInputTable,
-  SessionMessageTable,
-  SessionTable,
-} from "@opencode-ai/core/session/sql"
+import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { WorkflowTable } from "@opencode-ai/core/dag/sql"
 import { testEffect } from "./lib/effect"
-import { Snapshot } from "@opencode-ai/core/snapshot"
 
 const it = testEffect(Layer.mergeAll(Database.defaultLayer, EventV2.defaultLayer, SessionProjector.defaultLayer))
-const sessionID = SessionV2.ID.make("ses_projector_test")
+const sessionID = SessionID.make("ses_projector_test")
 const created = DateTime.makeUnsafe(0)
 const model = { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") }
-const encodeMessage = Schema.encodeSync(SessionMessage.Message)
+const userModel = { providerID: ProviderV2.ID.make("provider"), modelID: ModelV2.ID.make("model") }
 
-const assistantRow = (
-  id: SessionMessage.ID,
-  seq: number,
-  time: { created: DateTime.Utc; completed?: DateTime.Utc } = { created },
-) => {
-  const {
-    id: _,
-    type,
-    ...data
-  } = encodeMessage(SessionMessage.Assistant.make({ id, type: "assistant", agent: "build", model, content: [], time }))
-  return { id, session_id: sessionID, type, seq, time_created: DateTime.toEpochMillis(time.created), data }
+function seedProject() {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .run()
+      .pipe(Effect.orDie)
+  })
+}
+
+function userMessage(id: string, time: { created: number; consumed?: number } = { created: 1 }) {
+  return {
+    id: SessionV1.MessageID.make(id),
+    sessionID,
+    role: "user" as const,
+    agent: "build",
+    model: userModel,
+    time,
+  }
 }
 
 describe("SessionProjector", () => {
-  it.effect("persists display text separately from canonical assistant text", () =>
+  it.effect("projects created, updated, and deleted session rows", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: Project.ID.global,
-          slug: "test",
-          directory: "/project",
-          title: "test",
-          version: "test",
-        })
-        .run()
-        .pipe(Effect.orDie)
-      const assistantMessageID = SessionMessage.ID.make("msg_display_separate")
-      yield* db.insert(SessionMessageTable).values(assistantRow(assistantMessageID, 1)).run().pipe(Effect.orDie)
+      yield* seedProject()
       const events = yield* EventV2.Service
-      const base = { sessionID, assistantMessageID, timestamp: DateTime.makeUnsafe(3), textID: "text-1" }
-      yield* events.publish(SessionEvent.Text.Started, base)
-      yield* events.publish(SessionEvent.Text.Ended, { ...base, text: "canonical secret" })
-      yield* events.publish(SessionEvent.Text.DisplayUpdated, { ...base, displayText: "redacted" })
-      const row = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(eq(SessionMessageTable.id, assistantMessageID))
-        .get()
-        .pipe(Effect.orDie)
-      expect(row).toBeDefined()
-      const message = Schema.decodeUnknownSync(SessionMessage.Message)({ ...row!.data, id: row!.id, type: row!.type })
-      expect(message.type).toBe("assistant")
-      if (message.type !== "assistant") return
-      expect(message.content.find((part) => part.type === "text")).toMatchObject({
-        type: "text",
-        text: "canonical secret",
-        displayText: "redacted",
-      })
+      const info = {
+        id: sessionID,
+        projectID: Project.ID.global,
+        slug: "test",
+        directory: "/project",
+        title: "test",
+        version: "test",
+        time: { created: 1, updated: 1 },
+      }
+
+      yield* events.publish(SessionV1.Event.Created, { sessionID, info })
+      expect((yield* db.select().from(SessionTable).get().pipe(Effect.orDie))?.title).toBe("test")
+
+      yield* events.publish(SessionV1.Event.Updated, { sessionID, info: { ...info, title: "renamed" } })
+      expect((yield* db.select().from(SessionTable).get().pipe(Effect.orDie))?.title).toBe("renamed")
+
+      yield* events.publish(SessionV1.Event.Deleted, { sessionID, info })
+      expect(yield* db.select().from(SessionTable).all().pipe(Effect.orDie)).toEqual([])
     }),
   )
 
   it.effect("skips part updates whose parent message no longer exists", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
+      yield* seedProject()
       yield* db
         .insert(SessionTable)
         .values({
@@ -137,11 +108,7 @@ describe("SessionProjector", () => {
   it.effect("preserves consumed time across stale user message updates", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
+      yield* seedProject()
       yield* db
         .insert(SessionTable)
         .values({
@@ -156,13 +123,7 @@ describe("SessionProjector", () => {
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
       const id = SessionV1.MessageID.make("msg_consumed")
-      const base = {
-        id,
-        sessionID: SessionID.make(sessionID),
-        role: "user" as const,
-        agent: "build",
-        model: { providerID: ProviderV2.ID.make("provider"), modelID: ModelV2.ID.make("model") },
-      }
+      const base = userMessage("msg_consumed")
 
       yield* events.publish(SessionV1.Event.MessageUpdated, {
         sessionID: SessionID.make(sessionID),
@@ -198,66 +159,10 @@ describe("SessionProjector", () => {
     }),
   )
 
-  it.effect("projects staged, cleared, and committed reverts", () =>
-    Effect.gen(function* () {
-      const db = (yield* Database.Service).db
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: Project.ID.global,
-          slug: "test",
-          directory: "/project",
-          title: "test",
-          version: "test",
-        })
-        .run()
-      const boundary = SessionMessage.ID.make("msg_boundary")
-      yield* db
-        .insert(SessionMessageTable)
-        .values([assistantRow(boundary, 1), assistantRow(SessionMessage.ID.make("msg_later"), 2)])
-        .run()
-      const events = yield* EventV2.Service
-      yield* events.publish(SessionEvent.RevertEvent.Staged, {
-        sessionID,
-        timestamp: DateTime.makeUnsafe(1),
-        revert: { messageID: boundary, snapshot: Snapshot.ID.make("tree"), diff: "patch", files: [] },
-      })
-      expect((yield* db.select({ revert: SessionTable.revert }).from(SessionTable).get())?.revert).toMatchObject({
-        messageID: boundary,
-        snapshot: "tree",
-        files: [],
-      })
-      yield* events.publish(SessionEvent.RevertEvent.Cleared, { sessionID, timestamp: DateTime.makeUnsafe(2) })
-      expect((yield* db.select({ revert: SessionTable.revert }).from(SessionTable).get())?.revert).toBeNull()
-      yield* events.publish(SessionEvent.RevertEvent.Staged, {
-        sessionID,
-        timestamp: DateTime.makeUnsafe(3),
-        revert: { messageID: boundary, files: [] },
-      })
-      yield* events.publish(SessionEvent.RevertEvent.Committed, {
-        sessionID,
-        messageID: boundary,
-        timestamp: DateTime.makeUnsafe(4),
-      })
-      expect(
-        (yield* db.select({ id: SessionMessageTable.id }).from(SessionMessageTable).all()).map((row) => row.id),
-      ).toEqual([boundary])
-    }),
-  )
-
-  it.effect("orders projected messages and context by durable aggregate sequence", () =>
+  it.effect("adds and rolls back step-finish usage on session totals", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
+      yield* seedProject()
       yield* db
         .insert(SessionTable)
         .values({
@@ -271,368 +176,94 @@ describe("SessionProjector", () => {
         .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
+      const messageID = SessionV1.MessageID.make("msg_usage")
+      const partID = SessionV1.PartID.make("prt_usage")
 
-      yield* events.publish(
-        SessionEvent.Prompted,
-        {
-          sessionID,
-          messageID: SessionMessage.ID.make("msg_first"),
-          timestamp: created,
-          prompt: Prompt.make({ text: "first" }),
-          delivery: "steer",
+      yield* events.publish(SessionV1.Event.MessageUpdated, {
+        sessionID: SessionID.make(sessionID),
+        info: userMessage("msg_usage"),
+      })
+      yield* events.publish(SessionV1.Event.PartUpdated, {
+        sessionID: SessionID.make(sessionID),
+        time: 2,
+        part: {
+          type: "step-finish",
+          id: partID,
+          messageID,
+          sessionID: SessionID.make(sessionID),
+          reason: "stop",
+          cost: 3,
+          tokens: { input: 5, output: 7, reasoning: 11, cache: { read: 13, write: 17 } },
         },
-        { id: EventV2.ID.make("evt_z") },
-      )
-      yield* events.publish(
-        SessionEvent.Prompted,
-        {
-          sessionID,
-          messageID: SessionMessage.ID.make("msg_second"),
-          timestamp: created,
-          prompt: Prompt.make({ text: "second" }),
-          delivery: "steer",
-        },
-        { id: EventV2.ID.make("evt_a") },
-      )
-
-      const sessions = yield* SessionV2.Service
-      const firstPage = yield* sessions.messages({ sessionID, limit: 1, order: "asc" })
-      expect(firstPage.map((message) => (message.type === "user" ? message.text : message.type))).toEqual(["first"])
-      const secondPage = yield* sessions.messages({
-        sessionID,
-        limit: 1,
-        order: "asc",
-        cursor: { id: firstPage[0]!.id, direction: "next" },
-      })
-      expect(secondPage.map((message) => (message.type === "user" ? message.text : message.type))).toEqual(["second"])
-      expect(
-        (yield* sessions.messages({
-          sessionID,
-          limit: 1,
-          order: "asc",
-          cursor: { id: secondPage[0]!.id, direction: "previous" },
-        })).map((message) => (message.type === "user" ? message.text : message.type)),
-      ).toEqual(["first"])
-      expect(
-        (yield* sessions.context(sessionID)).map((message) => (message.type === "user" ? message.text : message.type)),
-      ).toEqual(["first", "second"])
-    }).pipe(
-      Effect.provide(
-        SessionV2.layer.pipe(
-          Layer.provide(LocationServiceMap.layer),
-          Layer.provide(EventV2.defaultLayer),
-          Layer.provide(Database.defaultLayer),
-          Layer.provide(Project.defaultLayer),
-          Layer.provide(SessionStore.defaultLayer),
-          Layer.provide(SessionExecution.noopLayer),
-        ),
-      ),
-    ),
-  )
-
-  it.effect("marks an inbox row promoted with the Prompted event sequence", () =>
-    Effect.gen(function* () {
-      const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: Project.ID.global,
-          slug: "test",
-          directory: "/project",
-          title: "test",
-          version: "test",
-        })
-        .run()
-        .pipe(Effect.orDie)
-      const events = yield* EventV2.Service
-      const id = SessionMessage.ID.make("msg_admitted")
-      const admitted = yield* SessionInput.admit(db, events, {
-        id,
-        sessionID,
-        prompt: Prompt.make({ text: "promote me" }),
-        delivery: "steer",
-      })
-      if (!admitted) return yield* Effect.die("Prompt admission failed")
-
-      const event = yield* events.publish(SessionEvent.Prompted, {
-        sessionID,
-        timestamp: admitted.timeCreated,
-        messageID: id,
-        prompt: Prompt.make({ text: "promote me" }),
-        delivery: "steer",
       })
 
-      expect(
-        yield* db.select().from(SessionInputTable).where(eq(SessionInputTable.id, id)).get().pipe(Effect.orDie),
-      ).toMatchObject({ promoted_seq: event.durable?.seq })
-    }),
-  )
-
-  it.effect("projects durable context messages supported by the updater", () =>
-    Effect.gen(function* () {
-      const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: Project.ID.global,
-          slug: "test",
-          directory: "/project",
-          title: "test",
-          version: "test",
-        })
-        .run()
-        .pipe(Effect.orDie)
-      const events = yield* EventV2.Service
-
-      yield* events.publish(SessionEvent.AgentSwitched, {
-        sessionID,
-        messageID: SessionMessage.ID.create(),
-        timestamp: created,
-        agent: "build",
-      })
-      yield* events.publish(SessionEvent.ModelSwitched, {
-        sessionID,
-        messageID: SessionMessage.ID.create(),
-        timestamp: created,
-        model,
-      })
-      yield* events.publish(SessionEvent.Synthetic, {
-        sessionID,
-        messageID: SessionMessage.ID.create(),
-        timestamp: created,
-        text: "synthetic context",
-      })
-      yield* events.publish(SessionEvent.Shell.Started, {
-        sessionID,
-        messageID: SessionMessage.ID.create(),
-        timestamp: created,
-        callID: "shell-1",
-        command: "pwd",
-      })
-      yield* events.publish(SessionEvent.Shell.Ended, {
-        sessionID,
-        timestamp: DateTime.makeUnsafe(1),
-        callID: "shell-1",
-        output: "/project",
-      })
-      const compactionID = SessionMessage.ID.create()
-      yield* events.publish(SessionEvent.Compaction.Started, {
-        sessionID,
-        messageID: compactionID,
-        timestamp: created,
-        reason: "manual",
-      })
-      yield* events.publish(SessionEvent.Compaction.Delta, {
-        sessionID,
-        messageID: compactionID,
-        timestamp: created,
-        text: "partial",
-      })
-      expect(
-        yield* db
-          .select({ id: EventTable.id })
-          .from(EventTable)
-          .where(eq(EventTable.type, SessionEvent.Compaction.Delta.type))
-          .all()
-          .pipe(Effect.orDie),
-      ).toEqual([])
-      expect(
-        yield* db
-          .select({ id: SessionMessageTable.id })
-          .from(SessionMessageTable)
-          .where(eq(SessionMessageTable.type, "compaction"))
-          .all()
-          .pipe(Effect.orDie),
-      ).toEqual([])
-      yield* events.publish(SessionEvent.Compaction.Ended, {
-        sessionID,
-        messageID: compactionID,
-        timestamp: DateTime.makeUnsafe(1),
-        reason: "manual",
-        text: "summary",
-        recent: "recent context",
+      const projected = yield* db.select().from(SessionTable).get().pipe(Effect.orDie)
+      expect(projected).toMatchObject({
+        cost: 3,
+        tokens_input: 5,
+        tokens_output: 7,
+        tokens_reasoning: 11,
+        tokens_cache_read: 13,
+        tokens_cache_write: 17,
       })
 
-      const rows = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(eq(SessionMessageTable.session_id, sessionID))
-        .orderBy(asc(SessionMessageTable.seq))
-        .all()
-        .pipe(Effect.orDie)
-      const messages = rows.map((row) =>
-        Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
-      )
-
-      expect(messages.map((message) => message.type)).toEqual([
-        "agent-switched",
-        "model-switched",
-        "synthetic",
-        "shell",
-        "compaction",
-      ])
-      expect(messages.find((message) => message.type === "shell")).toMatchObject({
-        output: "/project",
-        time: { completed: DateTime.makeUnsafe(1) },
+      yield* events.publish(SessionV1.Event.PartRemoved, {
+        sessionID: SessionID.make(sessionID),
+        messageID,
+        partID,
       })
-      expect(messages.find((message) => message.type === "compaction")).toMatchObject({
-        summary: "summary",
-        recent: "recent context",
-      })
-      expect(
-        yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie),
-      ).toMatchObject({
-        agent: "build",
-        model,
-        time_updated: DateTime.toEpochMillis(created),
-      })
-    }),
-  )
-
-  it.effect("rejects distinct creator events that reuse one projected message ID", () =>
-    Effect.gen(function* () {
-      const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: Project.ID.global,
-          slug: "test",
-          directory: "/project",
-          title: "test",
-          version: "test",
-        })
-        .run()
-        .pipe(Effect.orDie)
-      const events = yield* EventV2.Service
-      const id = SessionMessage.ID.make("msg_creator_collision")
-
-      yield* events.publish(SessionEvent.Synthetic, { sessionID, messageID: id, timestamp: created, text: "keep me" })
-      const exit = yield* events
-        .publish(SessionEvent.Step.Started, {
-          sessionID,
-          assistantMessageID: id,
-          timestamp: created,
-          agent: "build",
-          model,
-        })
-        .pipe(Effect.exit)
-
-      expect(exit._tag).toBe("Failure")
-      expect(
-        yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, id)).get().pipe(Effect.orDie),
-      ).toMatchObject({ type: "synthetic" })
-    }),
-  )
-
-  it.effect("does not revive a stale incomplete in-memory assistant projection", () =>
-    Effect.gen(function* () {
-      const stale = SessionMessage.Assistant.make({
-        id: SessionMessage.ID.make("msg_assistant_stale"),
-        type: "assistant",
-        agent: "build",
-        model,
-        content: [],
-        time: { created },
-      })
-      const completed = SessionMessage.Assistant.make({
-        id: SessionMessage.ID.make("msg_assistant_completed"),
-        type: "assistant",
-        agent: "build",
-        model,
-        content: [],
-        time: { created: DateTime.makeUnsafe(1), completed: DateTime.makeUnsafe(2) },
-      })
-
-      expect(
-        yield* SessionMessageUpdater.memory({ messages: [stale, completed] }).getCurrentAssistant(),
-      ).toBeUndefined()
-    }),
-  )
-
-  it.effect("updates only the newest incomplete assistant projection", () =>
-    Effect.gen(function* () {
-      const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: Project.ID.global,
-          slug: "test",
-          directory: "/project",
-          title: "test",
-          version: "test",
-        })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionMessageTable)
-        .values([
-          assistantRow(SessionMessage.ID.make("msg_assistant_1"), 0),
-          assistantRow(SessionMessage.ID.make("msg_assistant_2"), 1),
-        ])
-        .run()
-        .pipe(Effect.orDie)
-
-      const service = yield* EventV2.Service
-      yield* service.publish(SessionEvent.Step.Ended, {
-        sessionID,
-        timestamp: DateTime.makeUnsafe(1),
-        assistantMessageID: SessionMessage.ID.make("msg_assistant_2"),
-        finish: "stop",
+      const rolledBack = yield* db.select().from(SessionTable).get().pipe(Effect.orDie)
+      expect(rolledBack).toMatchObject({
         cost: 0,
-        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      })
-
-      const rows = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(eq(SessionMessageTable.session_id, sessionID))
-        .orderBy(asc(SessionMessageTable.id))
-        .all()
-        .pipe(Effect.orDie)
-      const messages = rows.map((row) =>
-        Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
-      )
-      expect(messages[0]).not.toHaveProperty("time.completed")
-      expect(messages[1]).toMatchObject({
-        type: "assistant",
-        finish: "stop",
-        time: { completed: DateTime.makeUnsafe(1) },
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_reasoning: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
       })
     }),
   )
 
-  it.effect("does not revive a stale incomplete assistant projection", () =>
+  it.effect("switches the session agent and model", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
+      yield* seedProject()
       yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
         .run()
         .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+
+      yield* events.publish(SessionV1.Event.AgentSwitched, {
+        sessionID: SessionID.make(sessionID),
+        agent: "review",
+        timestamp: 2,
+      })
+      yield* events.publish(SessionV1.Event.ModelSwitched, {
+        sessionID: SessionID.make(sessionID),
+        model,
+        timestamp: 3,
+      })
+
+      expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+        agent: "review",
+        model,
+      })
+    }),
+  )
+
+  it.effect("re-stamps session and workflow directories when a session moves", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seedProject()
       yield* db
         .insert(SessionTable)
         .values({
@@ -646,53 +277,35 @@ describe("SessionProjector", () => {
         .run()
         .pipe(Effect.orDie)
       yield* db
-        .insert(SessionMessageTable)
-        .values([
-          assistantRow(SessionMessage.ID.make("msg_assistant_stale"), 0),
-          assistantRow(SessionMessage.ID.make("msg_assistant_completed"), 1, {
-            created: DateTime.makeUnsafe(1),
-            completed: DateTime.makeUnsafe(2),
-          }),
-        ])
+        .insert(WorkflowTable)
+        .values({
+          id: "dag_moved",
+          project_id: Project.ID.global,
+          session_id: sessionID,
+          directory: "/project",
+          title: "Moved",
+          status: "running",
+          config: "{}",
+          seq: 0,
+        })
         .run()
         .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
 
-      const service = yield* EventV2.Service
-      yield* service.publish(SessionEvent.Text.Started, {
+      yield* events.publish(SessionEvent.Moved, {
         sessionID,
-        assistantMessageID: SessionMessage.ID.make("msg_assistant_completed"),
-        timestamp: DateTime.makeUnsafe(3),
-        textID: "text-stale",
+        timestamp: DateTime.makeUnsafe(5),
+        location: { directory: AbsolutePath.make("/moved") },
+        subdirectory: RelativePath.make("nested"),
       })
 
-      const rows = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(eq(SessionMessageTable.session_id, sessionID))
-        .orderBy(asc(SessionMessageTable.id))
-        .all()
-        .pipe(Effect.orDie)
-      const messages = rows.map((row) =>
-        Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
-      )
-      expect(messages).toEqual([
-        SessionMessage.Assistant.make({
-          id: SessionMessage.ID.make("msg_assistant_completed"),
-          type: "assistant",
-          agent: "build",
-          model,
-          content: [SessionMessage.AssistantText.make({ type: "text", id: "text-stale", text: "" })],
-          time: { created: DateTime.makeUnsafe(1), completed: DateTime.makeUnsafe(2) },
-        }),
-        SessionMessage.Assistant.make({
-          id: SessionMessage.ID.make("msg_assistant_stale"),
-          type: "assistant",
-          agent: "build",
-          model,
-          content: [],
-          time: { created },
-        }),
-      ])
+      expect(yield* db.select().from(SessionTable).get().pipe(Effect.orDie)).toMatchObject({
+        directory: "/moved",
+        path: "nested",
+      })
+      expect(yield* db.select().from(WorkflowTable).get().pipe(Effect.orDie)).toMatchObject({
+        directory: "/moved",
+      })
     }),
   )
 })

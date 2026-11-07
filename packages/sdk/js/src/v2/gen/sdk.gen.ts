@@ -107,7 +107,6 @@ import type {
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
-  LocationRef,
   LspStatusErrors,
   LspStatusResponses,
   McpAddErrors,
@@ -144,7 +143,6 @@ import type {
   PermissionRespondErrors,
   PermissionRespondResponses,
   PermissionRuleset,
-  PermissionV2Reply,
   ProjectCurrentErrors,
   ProjectCurrentResponses,
   ProjectDirectoriesErrors,
@@ -155,7 +153,6 @@ import type {
   ProjectListResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
-  Prompt,
   ProviderAuthErrors,
   ProviderAuthResponses,
   ProviderListErrors,
@@ -173,7 +170,6 @@ import type {
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
-  QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionAttentionErrors,
@@ -287,8 +283,6 @@ import type {
   V2LocationGetResponses,
   V2ModelListErrors,
   V2ModelListResponses,
-  V2PermissionRequestListErrors,
-  V2PermissionRequestListResponses,
   V2PermissionSavedListErrors,
   V2PermissionSavedListResponses,
   V2PermissionSavedRemoveErrors,
@@ -303,54 +297,8 @@ import type {
   V2ProviderGetResponses,
   V2ProviderListErrors,
   V2ProviderListResponses,
-  V2QuestionRequestListErrors,
-  V2QuestionRequestListResponses,
   V2ReferenceListErrors,
   V2ReferenceListResponses,
-  V2SessionAttentionErrors,
-  V2SessionAttentionResponses,
-  V2SessionCompactErrors,
-  V2SessionCompactResponses,
-  V2SessionContextErrors,
-  V2SessionContextResponses,
-  V2SessionCreateErrors,
-  V2SessionCreateResponses,
-  V2SessionGetErrors,
-  V2SessionGetResponses,
-  V2SessionInterruptErrors,
-  V2SessionInterruptResponses,
-  V2SessionListErrors,
-  V2SessionListResponses,
-  V2SessionMessagesErrors,
-  V2SessionMessagesResponses,
-  V2SessionPermissionListErrors,
-  V2SessionPermissionListResponses,
-  V2SessionPermissionReplyErrors,
-  V2SessionPermissionReplyResponses,
-  V2SessionPromptErrors,
-  V2SessionPromptResponses,
-  V2SessionQuestionInteractErrors,
-  V2SessionQuestionInteractResponses,
-  V2SessionQuestionListErrors,
-  V2SessionQuestionListResponses,
-  V2SessionQuestionRejectErrors,
-  V2SessionQuestionRejectResponses,
-  V2SessionQuestionReplyErrors,
-  V2SessionQuestionReplyResponses,
-  V2SessionResumeErrors,
-  V2SessionResumeResponses,
-  V2SessionRevertClearErrors,
-  V2SessionRevertClearResponses,
-  V2SessionRevertCommitErrors,
-  V2SessionRevertCommitResponses,
-  V2SessionRevertStageErrors,
-  V2SessionRevertStageResponses,
-  V2SessionSwitchAgentErrors,
-  V2SessionSwitchAgentResponses,
-  V2SessionSwitchModelErrors,
-  V2SessionSwitchModelResponses,
-  V2SessionWaitErrors,
-  V2SessionWaitResponses,
   V2SkillListErrors,
   V2SkillListResponses,
   VcsApplyErrors,
@@ -4965,711 +4913,6 @@ export class Agent extends HeyApiClient {
   }
 }
 
-export class Revert extends HeyApiClient {
-  /**
-   * Stage session revert
-   *
-   * Stage or move a reversible session boundary and optionally apply its file changes.
-   */
-  public stage<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      messageID: string
-      files?: boolean
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionRevertStageResponses, V2SessionRevertStageErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "body", key: "messageID" },
-            { in: "body", key: "files" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionRevertStageResponses,
-      V2SessionRevertStageErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/revert/stage",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Clear staged revert
-   */
-  public clear<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionRevertClearResponses, V2SessionRevertClearErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).post<
-      V2SessionRevertClearResponses,
-      V2SessionRevertClearErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/revert/clear",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Commit staged revert
-   */
-  public commit<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionRevertCommitResponses, V2SessionRevertCommitErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).post<
-      V2SessionRevertCommitResponses,
-      V2SessionRevertCommitErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/revert/commit",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Permission2 extends HeyApiClient {
-  /**
-   * List session permission requests
-   *
-   * Retrieve pending permission requests owned by a session.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionPermissionListResponses, V2SessionPermissionListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).get<
-      V2SessionPermissionListResponses,
-      V2SessionPermissionListErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/permission",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Reply to pending permission request
-   *
-   * Respond to a pending permission request owned by a session.
-   */
-  public reply<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      requestID: string
-      reply: PermissionV2Reply
-      message?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionPermissionReplyResponses, V2SessionPermissionReplyErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "path", key: "requestID" },
-            { in: "body", key: "reply" },
-            { in: "body", key: "message" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionPermissionReplyResponses,
-      V2SessionPermissionReplyErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/permission/{requestID}/reply",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
-export class Question2 extends HeyApiClient {
-  /**
-   * List session question requests
-   *
-   * Retrieve pending question requests owned by a session.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionQuestionListResponses, V2SessionQuestionListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).get<
-      V2SessionQuestionListResponses,
-      V2SessionQuestionListErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/question",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Reply to pending question request
-   *
-   * Answer a pending question request owned by a session.
-   */
-  public reply<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      requestID: string
-      questionV2Reply: QuestionV2Reply
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionQuestionReplyResponses, V2SessionQuestionReplyErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "path", key: "requestID" },
-            { key: "questionV2Reply", map: "body" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionQuestionReplyResponses,
-      V2SessionQuestionReplyErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/question/{requestID}/reply",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Reject pending question request
-   *
-   * Reject a pending question request owned by a session.
-   */
-  public reject<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      requestID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionQuestionRejectResponses, V2SessionQuestionRejectErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "path", key: "requestID" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionQuestionRejectResponses,
-      V2SessionQuestionRejectErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/question/{requestID}/reject",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Interact with pending question request
-   *
-   * Cancel the timeout after a user selects an option or focuses the custom answer input.
-   */
-  public interact<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      requestID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionQuestionInteractResponses, V2SessionQuestionInteractErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "path", key: "requestID" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionQuestionInteractResponses,
-      V2SessionQuestionInteractErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/question/{requestID}/interact",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Session3 extends HeyApiClient {
-  /**
-   * List sessions
-   *
-   * Retrieve sessions in the requested order. Items keep that order across pages; use cursor.next or cursor.previous to move through the ordered list.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      workspace?: string
-      limit?: number
-      order?: "asc" | "desc"
-      search?: string
-      directory?: string
-      project?: string
-      subpath?: string
-      cursor?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionListResponses, V2SessionListErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "workspace" },
-            { in: "query", key: "limit" },
-            { in: "query", key: "order" },
-            { in: "query", key: "search" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "project" },
-            { in: "query", key: "subpath" },
-            { in: "query", key: "cursor" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<V2SessionListResponses, V2SessionListErrors, ThrowOnError>({
-      url: "/api/session",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Create session
-   *
-   * Create a session at the requested location.
-   */
-  public create<ThrowOnError extends boolean = false>(
-    parameters?: {
-      id?: string
-      agent?: string
-      model?: {
-        id: string
-        providerID: string
-        variant?: string
-      }
-      location?: LocationRef
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionCreateResponses, V2SessionCreateErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "body", key: "id" },
-            { in: "body", key: "agent" },
-            { in: "body", key: "model" },
-            { in: "body", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<V2SessionCreateResponses, V2SessionCreateErrors, ThrowOnError>({
-      url: "/api/session",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Get session
-   *
-   * Retrieve a session by ID.
-   */
-  public get<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionGetResponses, V2SessionGetErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).get<V2SessionGetResponses, V2SessionGetErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Report session attention
-   *
-   * Report client activity and a short-lived background task view lease without sending typed content.
-   */
-  public attention<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      clientID: string
-      clientType?: "terminal" | "web"
-      activity?: number
-      backgroundView?: boolean
-      closed?: boolean
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionAttentionResponses, V2SessionAttentionErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "body", key: "clientID" },
-            { in: "body", key: "clientType" },
-            { in: "body", key: "activity" },
-            { in: "body", key: "backgroundView" },
-            { in: "body", key: "closed" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<V2SessionAttentionResponses, V2SessionAttentionErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/attention",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Switch session agent
-   *
-   * Switch the agent used by subsequent provider turns.
-   */
-  public switchAgent<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      agent: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionSwitchAgentResponses, V2SessionSwitchAgentErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "body", key: "agent" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionSwitchAgentResponses,
-      V2SessionSwitchAgentErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/agent",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Switch session model
-   *
-   * Switch the model used by subsequent provider turns.
-   */
-  public switchModel<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      model: {
-        id: string
-        providerID: string
-        variant?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionSwitchModelResponses, V2SessionSwitchModelErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "body", key: "model" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2SessionSwitchModelResponses,
-      V2SessionSwitchModelErrors,
-      ThrowOnError
-    >({
-      url: "/api/session/{sessionID}/model",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Send message
-   *
-   * Durably admit one session input and schedule agent-loop execution unless resume is false.
-   */
-  public prompt<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      id?: string
-      prompt: Prompt
-      hookMode?: "interactive" | "noninteractive"
-      delivery?: "steer" | "queue"
-      resume?: boolean
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionPromptResponses, V2SessionPromptErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "body", key: "id" },
-            { in: "body", key: "prompt" },
-            { in: "body", key: "hookMode" },
-            { in: "body", key: "delivery" },
-            { in: "body", key: "resume" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<V2SessionPromptResponses, V2SessionPromptErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/prompt",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Compact session
-   *
-   * Compact a session conversation.
-   */
-  public compact<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionCompactResponses, V2SessionCompactErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).post<V2SessionCompactResponses, V2SessionCompactErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/compact",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Resume deferred tool call
-   *
-   * Retry the session's saved single deferred tool call without admitting a new prompt. Returns 204 after the attempt. Read session context to distinguish a completed call from a still deferred or unavailable tool.
-   */
-  public resume<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionResumeResponses, V2SessionResumeErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).post<V2SessionResumeResponses, V2SessionResumeErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/resume",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Interrupt session
-   *
-   * Cancel the active session turn and invalidate pending hook continuations.
-   */
-  public interrupt<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionInterruptResponses, V2SessionInterruptErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).post<V2SessionInterruptResponses, V2SessionInterruptErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/interrupt",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Wait for session
-   *
-   * Wait for a session agent loop to become idle.
-   */
-  public wait<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionWaitResponses, V2SessionWaitErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).post<V2SessionWaitResponses, V2SessionWaitErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/wait",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Get session context
-   *
-   * Retrieve the active context messages for a session (all messages after the last compaction).
-   */
-  public context<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionContextResponses, V2SessionContextErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
-    return (options?.client ?? this.client).get<V2SessionContextResponses, V2SessionContextErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/context",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Get session messages
-   *
-   * Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.next or cursor.previous to move through the ordered timeline.
-   */
-  public messages<ThrowOnError extends boolean = false>(
-    parameters: {
-      sessionID: string
-      limit?: number
-      order?: "asc" | "desc"
-      cursor?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SessionMessagesResponses, V2SessionMessagesErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "sessionID" },
-            { in: "query", key: "limit" },
-            { in: "query", key: "order" },
-            { in: "query", key: "cursor" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<V2SessionMessagesResponses, V2SessionMessagesErrors, ThrowOnError>({
-      url: "/api/session/{sessionID}/message",
-      ...options,
-      ...params,
-    })
-  }
-
-  private _revert?: Revert
-  get revert(): Revert {
-    return (this._revert ??= new Revert({ client: this.client }))
-  }
-
-  private _permission?: Permission2
-  get permission(): Permission2 {
-    return (this._permission ??= new Permission2({ client: this.client }))
-  }
-
-  private _question?: Question2
-  get question(): Question2 {
-    return (this._question ??= new Question2({ client: this.client }))
-  }
-}
-
 export class Model extends HeyApiClient {
   /**
    * List models
@@ -6113,34 +5356,6 @@ export class Credential extends HeyApiClient {
   }
 }
 
-export class Request_ extends HeyApiClient {
-  /**
-   * List pending permission requests
-   *
-   * Retrieve pending permission requests for a location.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2PermissionRequestListResponses, V2PermissionRequestListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<
-      V2PermissionRequestListResponses,
-      V2PermissionRequestListErrors,
-      ThrowOnError
-    >({
-      url: "/api/permission/request",
-      ...options,
-      ...params,
-    })
-  }
-}
-
 export class Saved extends HeyApiClient {
   /**
    * List saved permissions
@@ -6189,12 +5404,7 @@ export class Saved extends HeyApiClient {
   }
 }
 
-export class Permission3 extends HeyApiClient {
-  private _request?: Request_
-  get request(): Request_ {
-    return (this._request ??= new Request_({ client: this.client }))
-  }
-
+export class Permission2 extends HeyApiClient {
   private _saved?: Saved
   get saved(): Saved {
     return (this._saved ??= new Saved({ client: this.client }))
@@ -6359,41 +5569,6 @@ export class Event2 extends HeyApiClient {
   }
 }
 
-export class Request2 extends HeyApiClient {
-  /**
-   * List pending question requests
-   *
-   * Retrieve pending question requests for a location.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2QuestionRequestListResponses, V2QuestionRequestListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<
-      V2QuestionRequestListResponses,
-      V2QuestionRequestListErrors,
-      ThrowOnError
-    >({
-      url: "/api/question/request",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Question3 extends HeyApiClient {
-  private _request?: Request2
-  get request(): Request2 {
-    return (this._request ??= new Request2({ client: this.client }))
-  }
-}
-
 export class Reference extends HeyApiClient {
   /**
    * List references
@@ -6550,11 +5725,6 @@ export class V2 extends HeyApiClient {
     return (this._agent ??= new Agent({ client: this.client }))
   }
 
-  private _session?: Session3
-  get session(): Session3 {
-    return (this._session ??= new Session3({ client: this.client }))
-  }
-
   private _model?: Model
   get model(): Model {
     return (this._model ??= new Model({ client: this.client }))
@@ -6575,9 +5745,9 @@ export class V2 extends HeyApiClient {
     return (this._credential ??= new Credential({ client: this.client }))
   }
 
-  private _permission?: Permission3
-  get permission(): Permission3 {
-    return (this._permission ??= new Permission3({ client: this.client }))
+  private _permission?: Permission2
+  get permission(): Permission2 {
+    return (this._permission ??= new Permission2({ client: this.client }))
   }
 
   private _fs?: Fs
@@ -6598,11 +5768,6 @@ export class V2 extends HeyApiClient {
   private _event?: Event2
   get event(): Event2 {
     return (this._event ??= new Event2({ client: this.client }))
-  }
-
-  private _question?: Question3
-  get question(): Question3 {
-    return (this._question ??= new Question3({ client: this.client }))
   }
 
   private _reference?: Reference

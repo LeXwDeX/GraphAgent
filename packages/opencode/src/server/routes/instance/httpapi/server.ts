@@ -54,14 +54,8 @@ import { Goal } from "@/goal/goal"
 import { GoalLoop } from "@/goal/loop"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventResidueSweep } from "@opencode-ai/core/event/residue-sweep"
-import { HookModelSwitch } from "@/hook/model-switch"
-import { HookAttentionHost } from "@/notification/attention-host"
 import { SessionAttention } from "@/notification/attention"
 import { Notification } from "@/notification"
-import { HookV2Conversation } from "@/hook/v2-conversation"
-import { HookV2Turn } from "@/hook/v2-turn"
-import { HookV2Compaction } from "@/hook/v2-compaction"
-import { HookV2Lifecycle } from "@/hook/v2-lifecycle"
 import { HookTodo } from "@/hook/todo"
 import { SettingsHook } from "@/hook/settings"
 import { HookRewakeLive } from "@/hook/rewake-live"
@@ -71,6 +65,7 @@ import { Truncate } from "@/tool/truncate"
 import { Worktree } from "@/worktree"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
+import { MoveSessionLookup } from "@/session/move-session-lookup"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
@@ -81,7 +76,6 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionRewakeBridge } from "@opencode-ai/core/session/execution/rewake-bridge"
 import { lazy } from "@/util/lazy"
 import { InstanceHttpApi, RootHttpApi } from "./api"
 import { Authorization as ProtocolAuthorization } from "@opencode-ai/protocol/middleware/authorization"
@@ -246,7 +240,6 @@ export const app = LayerNode.group([
   // consumers see the service (per-consumer node additions would miss
   // Permission.node / Compaction.node / ShareSession.node etc.).
   SettingsHook.node,
-  LayerNode.make(HookAttentionHost.layer, [InstanceStore.node, SessionAttention.node]),
   LayerNode.make(HookTodo.layer, [SettingsHook.node, Session.node, InstanceStore.node]),
   LayerNode.make(HookCwd.layer, [
     SettingsHook.node,
@@ -257,42 +250,7 @@ export const app = LayerNode.group([
     HookFileWatch.node,
     HookConfigChange.node,
   ]),
-  LayerNode.make(HookV2Conversation.layer, [
-    SettingsHook.node,
-    Session.node,
-    InstanceStore.node,
-    Permission.node,
-    SessionAttention.node,
-  ]),
-  LayerNode.make(HookV2Turn.layer, [
-    SessionAttention.node,
-    Notification.node,
-    SettingsHook.node,
-    Session.node,
-    InstanceStore.node,
-    SessionPrompt.node,
-    BackgroundJob.node,
-    DagStore.node,
-    Permission.node,
-    SessionStatus.node,
-  ]),
-  LayerNode.make(HookV2Compaction.layer, [SettingsHook.node, Session.node, InstanceStore.node]),
-  LayerNode.make(HookV2Lifecycle.layer, [
-    SettingsHook.node,
-    Session.node,
-    SessionPrompt.node,
-    InstanceStore.node,
-    HookLifecycle.node,
-    HookStartContext.node,
-    HookFileWatch.node,
-    HookConfigChange.node,
-    Skill.node,
-  ]),
-  LayerNode.make(HookModelSwitch.layer, [SessionPrompt.node, Session.node, InstanceStore.node]),
   SessionHooks.node,
-  // The V2 handler graph registers its scoped execution callback here; hook
-  // callbacks in the sibling app graph can then wake the same coordinator.
-  SessionRewakeBridge.node,
   // HookRewake live node: async hook rewake delivery (hook-async-rewake).
   // Same app-graph-level placement rationale as SettingsHook above — settings.ts
   // resolves HookRewake.Service via serviceOption from the ambient request
@@ -336,8 +294,9 @@ export const app = LayerNode.group([
 export function createRoutes(options?: {
   readonly replacements?: readonly LayerNode.Replacement[]
 }): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
+  const moveSession = MoveSession.defaultLayer.pipe(Layer.provide(MoveSessionLookup.layer))
   return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, serverRoutes).pipe(
-    Layer.provide([errorLayer, compressionLayer, fenceLayer, MoveSession.defaultLayer, HttpServer.layerServices]),
+    Layer.provide([errorLayer, compressionLayer, fenceLayer, moveSession, HttpServer.layerServices]),
     Layer.provide(LayerNode.buildLayer(app, options)),
     Layer.provideMerge(Observability.layer),
     // tsgo (native TS preview) widens the merged error channel to `unknown` after the

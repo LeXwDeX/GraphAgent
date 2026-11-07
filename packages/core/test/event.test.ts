@@ -920,8 +920,8 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const aggregateID = Session.ID.create()
-      const received = new Array<typeof SessionEvent.ContextUpdated.Type>()
-      yield* events.project(SessionEvent.ContextUpdated, (event) =>
+      const received = new Array<typeof SessionEvent.Moved.Type>()
+      yield* events.project(SessionEvent.Moved, (event) =>
         Effect.sync(() => {
           received.push(event)
         }),
@@ -929,13 +929,14 @@ describe("EventV2", () => {
 
       yield* events.replay({
         id: EventV2.ID.create(),
-        type: EventV2.versionedType(SessionEvent.ContextUpdated.type, 1),
+        type: EventV2.versionedType(SessionEvent.Moved.type, 1),
         seq: 0,
         aggregateID,
-        data: { sessionID: aggregateID, messageID: "msg_context", timestamp: 0, text: "context" },
+        data: { sessionID: aggregateID, timestamp: 0, location: { directory: "/tmp" }, subdirectory: "context" },
       })
 
       expect(received[0]?.data.timestamp).toEqual(DateTime.makeUnsafe(0))
+      expect(received[0]?.data.location.directory).toBe(AbsolutePath.make("/tmp"))
     }),
   )
 

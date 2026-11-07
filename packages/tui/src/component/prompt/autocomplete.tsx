@@ -9,7 +9,6 @@ import { useEditorContext } from "../../context/editor"
 import { useProject } from "../../context/project"
 import { useSDK } from "../../context/sdk"
 import { useSync } from "../../context/sync"
-import { useData } from "../../context/data"
 import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiPaths } from "../../context/runtime"
 import { useTuiConfig } from "../../config"
@@ -87,7 +86,6 @@ export function Autocomplete(props: {
   const editor = useEditorContext()
   const sdk = useSDK()
   const sync = useSync()
-  const data = useData()
   const project = useProject()
   const slashes = useCommandSlashes()
   const modeStack = useOpencodeModeStack()
@@ -277,14 +275,21 @@ export function Autocomplete(props: {
     }
   }
 
-  const references = createMemo(() => data.location.reference.list() ?? [])
+  const [references] = createResource(async () => {
+    const ref = location()
+    const result = await sdk.client.v2.reference.list(
+      { location: { directory: ref?.directory ?? sdk.directory ?? process.cwd(), workspace: ref?.workspaceID } },
+      { throwOnError: true },
+    )
+    return result.data.data
+  })
 
   const referenceMatch = createMemo(() => {
     if (!store.visible || store.visible === "/") return
     const { baseQuery } = extractLineRange(search())
     const slash = baseQuery.indexOf("/")
     const alias = slash === -1 ? baseQuery : baseQuery.slice(0, slash)
-    return references().find((item) => !item.hidden && item.name === alias)
+    return (references() ?? []).find((item) => !item.hidden && item.name === alias)
   })
 
   function normalizeMentionPath(filePath: string) {
@@ -421,7 +426,7 @@ export function Autocomplete(props: {
   })
 
   const referenceAliases = createMemo(() =>
-    references()
+    (references() ?? [])
       .filter((reference) => !reference.hidden)
       .map(
         (reference): AutocompleteOption => ({

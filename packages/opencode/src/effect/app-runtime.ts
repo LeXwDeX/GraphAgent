@@ -1,12 +1,6 @@
 import { SessionAttention } from "@/notification/attention"
-import { HookAttentionHost } from "@/notification/attention-host"
 import { Notification } from "@/notification"
 import { HookCwd } from "@/hook/cwd"
-import { HookModelSwitch } from "@/hook/model-switch"
-import { HookV2Conversation } from "@/hook/v2-conversation"
-import { HookV2Turn } from "@/hook/v2-turn"
-import { HookV2Compaction } from "@/hook/v2-compaction"
-import { HookV2Lifecycle } from "@/hook/v2-lifecycle"
 import { HookTodo } from "@/hook/todo"
 import { HookConfigChange } from "@/hook/config-change"
 import { SessionHooks } from "@/hook/session-hooks"
@@ -173,16 +167,7 @@ const BaseAppLayer = Layer.mergeAll(
   Layer.provideMerge(SessionAttention.defaultLayer),
 )
 
-export const AppLayer = Layer.mergeAll(
-  HookAttentionHost.layer,
-  HookCwd.layer,
-  HookTodo.layer,
-  HookModelSwitch.layer,
-  HookV2Conversation.layer,
-  HookV2Turn.layer,
-  HookV2Compaction.layer,
-  HookV2Lifecycle.layer,
-).pipe(Layer.provideMerge(BaseAppLayer))
+export const AppLayer = Layer.mergeAll(HookCwd.layer, HookTodo.layer).pipe(Layer.provideMerge(BaseAppLayer))
 
 const rt = ManagedRuntime.make(AppLayer, { memoMap })
 type Runtime = Pick<typeof rt, "runSync" | "runPromise" | "runPromiseExit" | "runFork" | "runCallback" | "dispose">

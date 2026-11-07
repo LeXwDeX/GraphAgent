@@ -21,7 +21,6 @@ import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { SessionRetry } from "@/session/retry"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const mcp = Layer.succeed(
   MCP.Service,
@@ -86,7 +85,6 @@ const it = testEffect(
     replacements: [
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
-      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
     ],
   }),
 )

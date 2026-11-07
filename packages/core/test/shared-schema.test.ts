@@ -2,16 +2,14 @@ import { expect, test } from "bun:test"
 import { Schema } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { Agent } from "@opencode-ai/schema/agent"
 import { Location } from "@opencode-ai/schema/location"
 import { Model } from "@opencode-ai/schema/model"
-import { AgentAttachment, FileAttachment, Prompt, Source } from "@opencode-ai/schema/prompt"
+import { Prompt } from "@opencode-ai/schema/prompt"
 import { Provider } from "@opencode-ai/schema/provider"
 import { Project } from "@opencode-ai/schema/project"
 import { Session } from "@opencode-ai/schema/session"
-import { SessionInput } from "@opencode-ai/schema/session-input"
-import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { Workspace } from "@opencode-ai/schema/workspace"
 import { Command } from "@opencode-ai/schema/command"
 import { Connection } from "@opencode-ai/schema/connection"
@@ -37,9 +35,6 @@ test("Core reuses the canonical shared schemas", async () => {
     corePermission,
     coreProject,
     coreReference,
-    coreSessionInput,
-    coreSessionMessage,
-    corePrompt,
     coreSkill,
     coreV2Schema,
     coreWorkspace,
@@ -54,9 +49,6 @@ test("Core reuses the canonical shared schemas", async () => {
     import("@opencode-ai/core/permission"),
     import("@opencode-ai/core/project/schema"),
     import("@opencode-ai/core/reference"),
-    import("@opencode-ai/core/session/input"),
-    import("@opencode-ai/core/session/message"),
-    import("@opencode-ai/core/session/prompt"),
     import("@opencode-ai/core/skill"),
     import("@opencode-ai/core/v2-schema"),
     import("@opencode-ai/core/workspace"),
@@ -115,35 +107,8 @@ test("Core reuses the canonical shared schemas", async () => {
     [coreReference.LocalSource, Reference.LocalSource],
     [coreReference.GitSource, Reference.GitSource],
     [coreReference.Source, Reference.Source],
-    [SessionV2.ID, Session.ID],
-    [SessionV2.Info, Session.Info],
-    [SessionV2.ListAnchor, Session.ListAnchor],
-    [coreSessionInput.Delivery, SessionInput.Delivery],
-    [coreSessionInput.Admitted, SessionInput.Admitted],
-    [coreSessionMessage.ID, SessionMessage.ID],
-    [coreSessionMessage.UnknownError, SessionMessage.UnknownError],
-    [coreSessionMessage.AgentSwitched, SessionMessage.AgentSwitched],
-    [coreSessionMessage.ModelSwitched, SessionMessage.ModelSwitched],
-    [coreSessionMessage.User, SessionMessage.User],
-    [coreSessionMessage.Synthetic, SessionMessage.Synthetic],
-    [coreSessionMessage.System, SessionMessage.System],
-    [coreSessionMessage.Shell, SessionMessage.Shell],
-    [coreSessionMessage.ToolStatePending, SessionMessage.ToolStatePending],
-    [coreSessionMessage.ToolStateRunning, SessionMessage.ToolStateRunning],
-    [coreSessionMessage.ToolStateCompleted, SessionMessage.ToolStateCompleted],
-    [coreSessionMessage.ToolStateError, SessionMessage.ToolStateError],
-    [coreSessionMessage.ToolState, SessionMessage.ToolState],
-    [coreSessionMessage.AssistantTool, SessionMessage.AssistantTool],
-    [coreSessionMessage.AssistantText, SessionMessage.AssistantText],
-    [coreSessionMessage.AssistantReasoning, SessionMessage.AssistantReasoning],
-    [coreSessionMessage.AssistantContent, SessionMessage.AssistantContent],
-    [coreSessionMessage.Assistant, SessionMessage.Assistant],
-    [coreSessionMessage.Compaction, SessionMessage.Compaction],
-    [coreSessionMessage.Message, SessionMessage.Message],
-    [corePrompt.Source, Source],
-    [corePrompt.FileAttachment, FileAttachment],
-    [corePrompt.AgentAttachment, AgentAttachment],
-    [corePrompt.Prompt, Prompt],
+    [SessionSchema.ID, Session.ID],
+    [SessionSchema.Info, Session.Info],
     [coreSkill.DirectorySource, Skill.DirectorySource],
     [coreSkill.UrlSource, Skill.UrlSource],
     [coreSkill.EmbeddedSource, Skill.EmbeddedSource],
@@ -167,13 +132,13 @@ test("Core reuses the canonical shared schemas", async () => {
 test("shared record schemas construct and decode plain objects", () => {
   const made = Prompt.make({ text: "hello" })
   const decoded = Schema.decodeUnknownSync(Prompt)({ text: "hello" })
-  const content = Schema.decodeUnknownSync(SessionMessage.AssistantText)({ type: "text", id: "part_1", text: "hi" })
+  const content = Schema.decodeUnknownSync(Permission.Rule)({ action: "read", resource: "*", effect: "ask" })
 
   expect(Object.getPrototypeOf(made)).toBe(Object.prototype)
   expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype)
   expect(Object.getPrototypeOf(content)).toBe(Object.prototype)
   expect(Prompt.ast.annotations?.identifier).toBe("Prompt")
-  expect(SessionMessage.AssistantText.ast.annotations?.identifier).toBe("Session.Message.Assistant.Text")
+  expect(Permission.Rule.ast.annotations?.identifier).toBe("PermissionV2.Rule")
   expect(Prompt.equivalence(Prompt.make({ text: "hello" }), decoded)).toBe(true)
   expect(Prompt.fromUserMessage({ text: "hello" })).toEqual(made)
   expect(Workspace.ID.ascending("")).toStartWith("wrk_")

@@ -4,14 +4,9 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { HookLifecycle } from "./lifecycle"
 import { NodeFileSystem } from "@effect/platform-node"
-import { DateTime, Effect, FileSystem, Option, Schema } from "effect"
+import { Effect, FileSystem, Option } from "effect"
 import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
-import { Database } from "@opencode-ai/core/database/database"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
-import { SessionMessage } from "@opencode-ai/core/session/message"
-import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { eq, asc } from "drizzle-orm"
 import { Global } from "@opencode-ai/core/global"
 
 export interface Message {
@@ -56,77 +51,12 @@ function content(parts: readonly unknown[]) {
   })
 }
 
-/** V1 and native V2 use different message tables. Prefer supplied V1 history; never merge both projections. */
+/** V1 history is the only transcript source; callers pass the persisted rows they loaded. */
 export const history = Effect.fn("HookTranscript.history")(function* (
-  sessionID: string,
+  _sessionID: string,
   legacyHistory: readonly Message[] = [],
 ) {
-  if (legacyHistory.length) return legacyHistory
-  const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
-  if (!database) return legacyHistory
-  const rows = yield* database.db
-    .select()
-    .from(SessionMessageTable)
-    .where(eq(SessionMessageTable.session_id, SessionSchema.ID.make(sessionID)))
-    .orderBy(asc(SessionMessageTable.seq))
-    .all()
-    .pipe(Effect.orDie)
-  const result: Message[] = []
-  for (const row of rows) {
-    const message = yield* Schema.decodeUnknownEffect(SessionMessage.Message)({
-      ...row.data,
-      id: row.id,
-      type: row.type,
-    }).pipe(Effect.orDie)
-    const base = { id: message.id, sessionID, time: { created: DateTime.toEpochMillis(message.time.created) } }
-    if (message.type === "assistant") {
-      result.push({
-        info: {
-          ...base,
-          role: "assistant",
-          time: {
-            ...base.time,
-            ...(message.time.completed ? { completed: DateTime.toEpochMillis(message.time.completed) } : {}),
-          },
-          modelID: message.model.id,
-          providerID: message.model.providerID,
-          agent: message.agent,
-          tokens: message.tokens,
-        },
-        parts: message.content.map((part) =>
-          part.type === "tool"
-            ? {
-                type: "tool",
-                callID: part.id,
-                tool: part.name,
-                state: {
-                  ...part.state,
-                  ...(part.state.status === "completed"
-                    ? {
-                        output: part.state.content.some((item) => item.type === "text")
-                          ? part.state.content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
-                          : JSON.stringify({ content: part.state.content, structured: part.state.structured }),
-                      }
-                    : {}),
-                  ...(part.state.status === "error" ? { error: part.state.error.message } : {}),
-                },
-              }
-            : part,
-        ),
-      })
-    } else if (message.type === "user" || message.type === "synthetic" || message.type === "system") {
-      result.push({
-        info: { ...base, role: message.type === "system" ? "system" : "user" },
-        parts: [{ type: "text", text: message.text }],
-      })
-    } else if (message.type === "compaction") {
-      result.push({
-        info: { ...base, role: "system" },
-        parts: [{ type: "compaction" }, { type: "text", text: message.summary }],
-      })
-    }
-  }
-  return result
+  return legacyHistory
 })
 
 /** Materialize a stable, private JSONL snapshot before invoking an external hook. */

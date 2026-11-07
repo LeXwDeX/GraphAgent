@@ -21,7 +21,7 @@ export type BuiltinTuiPlugin = Omit<TuiPluginModule, "id"> & {
   enabled?: boolean
 }
 
-export function createBuiltinPlugins(options: { experimentalEventSystem: boolean }): BuiltinTuiPlugin[] {
+export function createBuiltinPlugins(): BuiltinTuiPlugin[] {
   return [
     HomeFooter,
     HomeTips,

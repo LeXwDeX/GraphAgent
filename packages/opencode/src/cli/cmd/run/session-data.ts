@@ -66,20 +66,13 @@ type SessionCommit = StreamCommit
 //            the visible text; `text` then holds displayText and raw deltas are ignored
 // - done:   assistant message IDs whose time.completed/error has arrived; hook-managed
 //           parts finish only then, because the final display batch lands after text-end
-// - shell:  shell call ID → chosen transcript source for direct shell calls
 // - echo:   message ID → bash outputs to strip from the next assistant chunk
-type ShellCall = {
-  source: "shell" | "tool"
-  command?: string
-}
-
 export type SessionData = {
   includeUserText: boolean
   announced: boolean
   ids: Set<string>
   tools: Set<string>
   call: Map<string, Dict>
-  shell: Map<string, ShellCall>
   permissions: PermissionRequest[]
   questions: QuestionRequest[]
   role: Map<string, MessageRole>
@@ -119,7 +112,6 @@ export function createSessionData(
     ids: new Set(),
     tools: new Set(),
     call: new Map(),
-    shell: new Map(),
     permissions: [],
     questions: [],
     role: new Map(),
@@ -649,87 +641,6 @@ function toolCommit(
   }
 }
 
-function shellPartID(callID: string): string {
-  return `shell:${callID}`
-}
-
-function claimShell(data: SessionData, callID: string, source: ShellCall["source"], command?: string): ShellCall {
-  const current = data.shell.get(callID)
-  if (current) {
-    if (command && !current.command) {
-      current.command = command
-    }
-
-    return current
-  }
-
-  const next = {
-    source,
-    ...(command ? { command } : {}),
-  } satisfies ShellCall
-  data.shell.set(callID, next)
-  return next
-}
-
-function bashCommand(part: ToolPart): string | undefined {
-  if (part.tool !== "bash") {
-    return undefined
-  }
-
-  const input = part.state.input
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return undefined
-  }
-
-  const command = Reflect.get(input, "command")
-  return typeof command === "string" ? command : undefined
-}
-
-function shellCommit(
-  input: {
-    callID: string
-    command: string
-  },
-  next: Pick<SessionCommit, "text" | "phase" | "toolState">,
-): SessionCommit {
-  return {
-    kind: "tool",
-    source: "tool",
-    partID: shellPartID(input.callID),
-    tool: "bash",
-    shell: input,
-    ...next,
-  }
-}
-
-function startShell(callID: string, command: string): SessionCommit {
-  return shellCommit(
-    {
-      callID,
-      command,
-    },
-    {
-      text: "running shell",
-      phase: "start",
-      toolState: "running",
-    },
-  )
-}
-
-function doneShell(callID: string, command: string, output: string): SessionCommit {
-  return shellCommit(
-    {
-      callID,
-      command,
-    },
-    {
-      text: output,
-      phase: "progress",
-      toolState: "completed",
-    },
-  )
-}
-
 function startTool(part: ToolPart): SessionCommit {
   return toolCommit(part, {
     text: toolStatus(part),
@@ -789,53 +700,6 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
   const commits: SessionCommit[] = []
   const data = input.data
   const event = input.event
-
-  if (event.type === "session.next.shell.started") {
-    if (event.properties.sessionID !== input.sessionID) {
-      return out(data, commits)
-    }
-
-    const shell = claimShell(data, event.properties.callID, "shell", event.properties.command)
-    if (shell.source !== "shell") {
-      return out(data, commits)
-    }
-
-    const partID = shellPartID(event.properties.callID)
-    if (data.ids.has(partID) || data.tools.has(partID)) {
-      return out(data, commits, patch({ status: "running shell" }))
-    }
-
-    data.tools.add(partID)
-    commits.push(startShell(event.properties.callID, shell.command ?? event.properties.command))
-    return out(data, commits, patch({ status: "running shell" }))
-  }
-
-  if (event.type === "session.next.shell.ended") {
-    if (event.properties.sessionID !== input.sessionID) {
-      return out(data, commits)
-    }
-
-    const shell = claimShell(data, event.properties.callID, "shell")
-    if (shell.source !== "shell") {
-      return out(data, commits)
-    }
-
-    const partID = shellPartID(event.properties.callID)
-    const seen = data.tools.has(partID)
-    const command = shell.command ?? ""
-    data.tools.delete(partID)
-    if (data.ids.has(partID)) {
-      return out(data, commits)
-    }
-
-    if (!seen && command) {
-      commits.push(startShell(event.properties.callID, command))
-    }
-
-    data.ids.add(partID)
-    commits.push(doneShell(event.properties.callID, command, event.properties.output))
-    return out(data, commits)
-  }
 
   if (event.type === "message.updated") {
     if (event.properties.sessionID !== input.sessionID) {
@@ -946,12 +810,6 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
 
     if (part.type === "tool") {
       const view = syncPermission(data, part) ?? syncQuestion(data, part)
-      if (part.tool === "bash" && part.callID) {
-        if (claimShell(data, part.callID, "tool", bashCommand(part)).source === "shell") {
-          return out(data, commits, view)
-        }
-      }
-
       if (part.state.status === "running") {
         if (data.ids.has(part.id)) {
           return out(data, commits, view)

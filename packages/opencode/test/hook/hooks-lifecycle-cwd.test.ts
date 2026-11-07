@@ -6,6 +6,7 @@ import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Session } from "@/session/session"
+import { MoveSessionLookup } from "@/session/move-session-lookup"
 import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { HookLifecycle } from "@/hook/lifecycle"
@@ -24,8 +25,9 @@ const adapter = HookCwd.layer.pipe(
   Layer.provide(HookFileWatch.defaultLayer),
   Layer.provide(HookConfigChange.defaultLayer),
 )
+const moveSession = MoveSession.defaultLayer.pipe(Layer.provide(MoveSessionLookup.layer), Layer.provide(adapter))
 const it = testEffect(
-  Layer.mergeAll(adapter, MoveSession.defaultLayer, SessionProjector.defaultLayer, HookFileWatch.defaultLayer),
+  Layer.mergeAll(adapter, moveSession, SessionProjector.defaultLayer, HookFileWatch.defaultLayer),
 )
 it.instance(
   "real persisted session move executes CwdChanged with new cwd and readable transcript",
