@@ -644,8 +644,7 @@ test("cancel failure is visible, retryable, and a stale failure cannot clear a n
 
 test("secondary endpoint failure stays local and a live update clears its error", async () => {
   const route = await mountRoute("prompt", [], false, (url) => {
-    if (url.pathname === "/experimental/console" || url.pathname === `/session/${routeSessionID}/todo`)
-      return json({ error: "unavailable" }, { status: 500 })
+    if (url.pathname === `/session/${routeSessionID}/todo`) return json({ error: "unavailable" }, { status: 500 })
     return undefined
   })
   try {
