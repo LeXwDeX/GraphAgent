@@ -127,6 +127,10 @@ const mcp = Layer.succeed(
   }),
 )
 
+// `hasEvent: false` matters: SessionPrompt treats a missing probe as "maybe
+// configured" and materializes a transcript before every trigger. The real
+// layer reports false when no hooks.json defines the event, so scenarios
+// without hooks must do the same to keep their counts on the production path.
 const hookRecorderLayer = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
@@ -140,6 +144,7 @@ const hookRecorderLayer = Layer.succeed(
         systemMessages: [],
         hookSpecificOutput: undefined,
       }),
+    hasEvent: () => Effect.succeed(false),
     list: () => Effect.succeed([]),
   }),
 )
@@ -190,38 +195,45 @@ const sessionLayer = Session.layer.pipe(
   Layer.provide(DagMessages.defaultLayer),
 )
 
-const deps = Layer.mergeAll(
-  dbLayer,
-  bridgeLayer,
-  hookRecorderLayer,
-  memoryLayer,
-  sessionLayer,
-  snapshot,
-  Env.defaultLayer,
-  AgentSvc.defaultLayer,
-  Command.defaultLayer,
-  Permission.defaultLayer,
-  Config.defaultLayer,
-  ProviderSvc.defaultLayer,
-  lsp,
-  mcp,
-  FSUtil.defaultLayer,
-  BackgroundJob.defaultLayer,
-  status,
-  DagMessages.defaultLayer,
-  DagStore.defaultLayer,
-  ToolSourceLedger.defaultLayer,
-).pipe(Layer.provideMerge(infra))
+const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
+  Layer.mergeAll(
+    dbLayer,
+    bridgeLayer,
+    hooks,
+    memoryLayer,
+    sessionLayer,
+    snapshot,
+    Env.defaultLayer,
+    AgentSvc.defaultLayer,
+    Command.defaultLayer,
+    Permission.defaultLayer,
+    Config.defaultLayer,
+    ProviderSvc.defaultLayer,
+    lsp,
+    mcp,
+    FSUtil.defaultLayer,
+    BackgroundJob.defaultLayer,
+    status,
+    DagMessages.defaultLayer,
+    DagStore.defaultLayer,
+    ToolSourceLedger.defaultLayer,
+  ).pipe(Layer.provideMerge(infra))
 
-const question = Question.layer.pipe(Layer.provideMerge(deps))
-const todo = Todo.layer.pipe(Layer.provideMerge(deps))
-const makeRegistry = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>) =>
-  ToolRegistry.layer.pipe(
+// The hook service is part of `deps`, so everything composed against it is
+// built per makePerfLayer call instead of at module scope.
+const makeStacks = (
+  hooks: Layer.Layer<SettingsHook.Service>,
+  shell: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>,
+) => {
+  const deps = makeDeps(hooks)
+  const question = Question.layer.pipe(Layer.provideMerge(deps))
+  const todo = Todo.layer.pipe(Layer.provideMerge(deps))
+  const registry = ToolRegistry.layer.pipe(
     Layer.provide(DagAgentMessages.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Dag.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(spawner),
+    Layer.provide(shell),
     Layer.provide(Git.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
@@ -230,8 +242,9 @@ const makeRegistry = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawn
     Layer.provideMerge(question),
     Layer.provideMerge(deps),
   )
-const registry = makeRegistry(CrossSpawnSpawner.defaultLayer)
-const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
+  const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
+  return { deps, registry, trunc }
+}
 
 export interface PerfLayerOptions {
   /**
@@ -240,6 +253,12 @@ export interface PerfLayerOptions {
    * spawner (git, ripgrep, snapshot).
    */
   readonly shell?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>
+  /**
+   * SettingsHook implementation. S7 passes the real `SettingsHook.layer` so
+   * configured command hooks actually run; scenarios without hooks keep the
+   * stub, which reports no configured events.
+   */
+  readonly hooks?: Layer.Layer<SettingsHook.Service>
 }
 
 /** Build the perf layer for one fake provider instance. */
@@ -247,7 +266,10 @@ export function makePerfLayer(
   provider: FakeProvider,
   options?: PerfLayerOptions,
 ): Layer.Layer<SessionPrompt.Service | Session.Service, never, never> {
-  const registryLayer = options?.shell ? makeRegistry(options.shell) : registry
+  const { deps, registry, trunc } = makeStacks(
+    options?.hooks ?? hookRecorderLayer,
+    options?.shell ?? CrossSpawnSpawner.defaultLayer,
+  )
   const proc = SessionProcessor.layer.pipe(
     Layer.provide(summary),
     Layer.provide(Image.defaultLayer),
@@ -263,7 +285,7 @@ export function makePerfLayer(
     Layer.provideMerge(run),
     Layer.provideMerge(compact),
     Layer.provideMerge(proc),
-    Layer.provideMerge(registryLayer),
+    Layer.provideMerge(registry),
     Layer.provideMerge(trunc),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(Goal.defaultLayer),
@@ -280,3 +302,4 @@ export function makePerfLayer(
     Layer.provide(summary),
   )
 }
+

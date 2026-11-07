@@ -23,3 +23,14 @@ export const nativeHookCommand = hookCommand(`
     additionalContext: "NATIVE_CONTEXT:" + JSON.stringify(input)
   }}));
 `)
+
+// A silent hook: it records that it ran and never writes to stdout, so it
+// cannot change the turn through additionalContext or a block decision. Paths
+// are relative to CLAUDE_PROJECT_DIR, which the hook shell always exports.
+export const auditHookCommand = (file = ".agents/hook-audit.jsonl") => hookCommand(`
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const input = JSON.parse(await Bun.stdin.text());
+  fs.appendFileSync(path.join(process.env.CLAUDE_PROJECT_DIR, ${JSON.stringify(file)}),
+    JSON.stringify({ event: input.hook_event_name, tool: input.tool_name ?? null }) + "\\n");
+`)
