@@ -1370,6 +1370,95 @@
             }
           },
           "additionalProperties": true
+        },
+        "dag": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "on",
+                "off"
+              ],
+              "description": "Default DAG mode for new sessions. Global config only: values from project-level configuration are ignored."
+            },
+            "concurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64,
+              "description": "Maximum number of workflow nodes running at the same time across all workflows in this process (1-64). Global config only: values from project-level configuration are ignored."
+            },
+            "max_total_nodes": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
+              "description": "User hard cap on the number of nodes in a single workflow; the model can only choose a smaller number. Global config only: values from project-level configuration are ignored."
+            },
+            "budget": {
+              "type": "object",
+              "properties": {
+                "tokens": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Token limit across all DAG nodes under one main session; null means unlimited. Global config only: values from project-level configuration are ignored."
+                },
+                "warn_ratio": {
+                  "description": "Usage ratio (0-1) at which a budget warning is shown. Global config only: values from project-level configuration are ignored.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "Infinity",
+                        "-Infinity",
+                        "NaN"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": true,
+              "description": "DAG token budget. Global config only: values from project-level configuration are ignored."
+            },
+            "safety": {
+              "type": "object",
+              "properties": {
+                "extra": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "permission": {
+                        "type": "string",
+                        "description": "Permission name the rule matches"
+                      },
+                      "pattern": {
+                        "type": "string",
+                        "description": "Pattern the permission applies to"
+                      },
+                      "reason": {
+                        "type": "string",
+                        "description": "Optional reason shown when the rule denies an action"
+                      }
+                    },
+                    "required": [
+                      "permission",
+                      "pattern"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "description": "Additional safety rules. They can only deny, never allow. Global config only: values from project-level configuration are ignored."
+                }
+              },
+              "additionalProperties": true,
+              "description": "DAG safety rules. Global config only: values from project-level configuration are ignored."
+            }
+          },
+          "additionalProperties": true,
+          "description": "DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning."
         }
       },
       "additionalProperties": true

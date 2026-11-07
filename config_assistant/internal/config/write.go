@@ -223,7 +223,7 @@ func GenerateFromModels(req GenRequest) map[string]any {
 		result["provider"] = providerBlock
 	}
 	if schema, _ := result["$schema"].(string); schema == "" {
-		result["$schema"] = "https://opencode.ai/config.json"
+		result["$schema"] = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"
 	}
 	return result
 }

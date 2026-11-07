@@ -1,0 +1,1533 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/Theme",
+  "$defs": {
+    "Theme": {
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "description": "JSON schema reference for theme validation"
+        },
+        "defs": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "dark": {
+                    "type": "string",
+                    "description": "Color or reference used in dark mode"
+                  },
+                  "light": {
+                    "type": "string",
+                    "description": "Color or reference used in light mode"
+                  }
+                },
+                "required": [
+                  "dark",
+                  "light"
+                ],
+                "additionalProperties": true,
+                "description": "Dark/light pair for the same role"
+              }
+            ]
+          },
+          "description": "Named colors that theme entries can reference"
+        },
+        "theme": {
+          "type": "object",
+          "properties": {
+            "primary": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "secondary": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "accent": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "warning": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "success": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "info": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "textMuted": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "selectedListItemText": {
+              "description": "Foreground for the selected list item; defaults to the background color",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "background": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "backgroundPanel": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "backgroundElement": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "backgroundMenu": {
+              "description": "Menu background; defaults to backgroundElement",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "border": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "borderActive": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "borderSubtle": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffAdded": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffRemoved": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffContext": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffHunkHeader": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffHighlightAdded": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffHighlightRemoved": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffAddedBg": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffRemovedBg": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffContextBg": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffLineNumber": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffAddedLineNumberBg": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "diffRemovedLineNumberBg": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownText": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownHeading": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownLink": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownLinkText": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownCode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownBlockQuote": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownEmph": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownStrong": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownHorizontalRule": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownListItem": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownListEnumeration": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownImage": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownImageText": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "markdownCodeBlock": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxComment": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxKeyword": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxFunction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxVariable": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxString": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxNumber": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxType": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxOperator": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "syntaxPunctuation": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "thinkingOpacity": {
+              "description": "Opacity applied to thinking text (default: 0.6)",
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "Infinity",
+                    "-Infinity",
+                    "NaN"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "primary",
+            "secondary",
+            "accent",
+            "error",
+            "warning",
+            "success",
+            "info",
+            "text",
+            "textMuted",
+            "background",
+            "backgroundPanel",
+            "backgroundElement",
+            "border",
+            "borderActive",
+            "borderSubtle",
+            "diffAdded",
+            "diffRemoved",
+            "diffContext",
+            "diffHunkHeader",
+            "diffHighlightAdded",
+            "diffHighlightRemoved",
+            "diffAddedBg",
+            "diffRemovedBg",
+            "diffContextBg",
+            "diffLineNumber",
+            "diffAddedLineNumberBg",
+            "diffRemovedLineNumberBg",
+            "markdownText",
+            "markdownHeading",
+            "markdownLink",
+            "markdownLinkText",
+            "markdownCode",
+            "markdownBlockQuote",
+            "markdownEmph",
+            "markdownStrong",
+            "markdownHorizontalRule",
+            "markdownListItem",
+            "markdownListEnumeration",
+            "markdownImage",
+            "markdownImageText",
+            "markdownCodeBlock",
+            "syntaxComment",
+            "syntaxKeyword",
+            "syntaxFunction",
+            "syntaxVariable",
+            "syntaxString",
+            "syntaxNumber",
+            "syntaxType",
+            "syntaxOperator",
+            "syntaxPunctuation"
+          ],
+          "additionalProperties": true,
+          "description": "Theme colors; values are resolved through defs"
+        }
+      },
+      "required": [
+        "theme"
+      ],
+      "additionalProperties": true
+    }
+  },
+  "allowComments": true,
+  "allowTrailingCommas": true
+}

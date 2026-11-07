@@ -1,5 +1,5 @@
 {
-  "$schema": "https://opencode.ai/theme.json",
+  "$schema": "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/theme.json",
   "defs": {
     "macRosewater": "#f4dbd6",
     "macFlamingo": "#f0c6c6",

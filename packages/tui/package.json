@@ -15,6 +15,7 @@
     ".": "./src/index.tsx",
     "./builtins": "./src/feature-plugins/builtins.ts",
     "./config": "./src/config/index.tsx",
+    "./theme/schema": "./src/theme/schema.ts",
     "./context/args": "./src/context/args.tsx",
     "./context/epilogue": "./src/context/epilogue.tsx",
     "./context/exit": "./src/context/exit.tsx",
