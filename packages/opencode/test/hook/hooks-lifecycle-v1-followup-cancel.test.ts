@@ -21,7 +21,7 @@ for (const kind of ["prompt", "command"] as const) {
           )
           const hook = { type: "command", command: process.execPath, args: [script], timeout: 20 }
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               SessionStart: [{ hooks: [hook] }],
               UserPromptSubmit: [{ hooks: [hook] }],
@@ -29,7 +29,7 @@ for (const kind of ["prompt", "command"] as const) {
             }),
           )
           await fs.writeFile(
-            path.join(home, ".config/opencode/opencode.json"),
+            path.join(home, ".config/graphagent/graphagent.json"),
             JSON.stringify({
               command: {
                 cancelprobe: { template: 'CLAIMED_CANCELLED_COMMAND !`echo side-effect > "' + marker + '"`' },

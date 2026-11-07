@@ -203,7 +203,7 @@ describe("resolveTemplate", () => {
   it("resolves template by id from project dir", async () => {
     // Create a temp project dir with a template
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-test-"))
-    const promptsDir = path.join(tmpDir, ".opencode", "dag-prompts")
+    const promptsDir = path.join(tmpDir, ".agents", "dag-prompts")
     await fs.mkdir(promptsDir, { recursive: true })
     await fs.writeFile(path.join(promptsDir, "test-tmpl.md"), "Hello {{name}} from template!", "utf-8")
 
@@ -220,7 +220,7 @@ describe("resolveTemplate", () => {
   it("resolves a global template from a redirected GRAPHAGENT_CONFIG_DIR", async () => {
     // #380: the global dag-prompts lookup must honor the same
     // GRAPHAGENT_CONFIG_DIR redirect the Global service applies, not a
-    // hardcoded ~/.config/opencode path.
+    // hardcoded ~/.config/graphagent path.
     const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-global-"))
     const promptsDir = path.join(globalDir, "dag-prompts")
     await fs.mkdir(promptsDir, { recursive: true })

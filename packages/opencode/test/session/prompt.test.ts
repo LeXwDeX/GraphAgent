@@ -717,7 +717,7 @@ const ensureDir = Effect.fn("test.ensureDir")(function* (dir: string) {
 
 const writeConfig = Effect.fn("test.writeConfig")(function* (dir: string, config: Partial<ConfigV1.Info>) {
   yield* writeText(
-    path.join(dir, "opencode.json"),
+    path.join(dir, "graphagent.json"),
     JSON.stringify({ $schema: "https://opencode.ai/config.json", ...config }),
   )
 })
@@ -4659,7 +4659,7 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
     const grepFile = path.join(dir, "fold-grep.txt")
     const globDir = path.join(dir, "fold-glob")
     const probeLedger = path.join(dir, "s08-probe-ledger.ndjson")
-    const probeTool = path.join(dir, ".opencode", "tools", "s08_probe.ts")
+    const probeTool = path.join(dir, ".agents", "tools", "s08_probe.ts")
     const uniqueMarker = `unique-tool-output-${runtime}-`
     yield* writeText(readFile, foldingReadBody("read-body-abcdefghij-"))
     yield* writeText(uniqueFile, `${uniqueMarker}${"u".repeat(4_000)}\n`)
@@ -4991,7 +4991,7 @@ const contextFoldingOverrideFailsClosed = (sourceKind: "custom" | "mcp") =>
     const { dir, llm } = yield* useServerConfig(foldingProviderCfg)
     if (sourceKind === "custom") {
       yield* writeText(
-        path.join(dir, ".opencode", "tools", "read.ts"),
+        path.join(dir, ".agents", "tools", "read.ts"),
         [
           "export default {",
           "  description: 'custom read override',",
@@ -5187,7 +5187,7 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
   const grepFile = path.join(dir, "lifecycle-grep.txt")
   const globDir = path.join(dir, "lifecycle-glob")
   const ledger = path.join(dir, "s08-lifecycle-ledger.ndjson")
-  const toolFile = path.join(dir, ".opencode", "tools", "s08_lifecycle.ts")
+  const toolFile = path.join(dir, ".agents", "tools", "s08_lifecycle.ts")
   const markers = {
     read: `lifecycle-read-${input.runtime}-`,
     grep: `lifecycle-needle-0-${input.runtime}-`,
@@ -9725,7 +9725,7 @@ wrapperUnix("SessionPrompt wrapper command receives truthful JSONL and exported/
       `const input=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},JSON.stringify({input,value:process.env.PROMPT_WRAPPER_VALUE,removed:!("PROMPT_WRAPPER_REMOVE" in process.env)}))`,
     )
     yield* writeText(
-      path.join(instance.directory, ".opencode/hooks.json"),
+      path.join(instance.directory, ".agents/hooks.json"),
       JSON.stringify({
         UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
       }),

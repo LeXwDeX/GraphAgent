@@ -69,10 +69,10 @@ const startHook = (context: string) => ({
   ],
 })
 
-const hooksFile = (dir: string) => path.join(dir, ".opencode", "hooks.json")
+const hooksFile = (dir: string) => path.join(dir, ".agents", "hooks.json")
 const writeHooks = (dir: string, value: unknown) =>
   Effect.promise(async () => {
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(hooksFile(dir), typeof value === "string" ? value : JSON.stringify(value))
   })
 
@@ -253,7 +253,7 @@ describe("hooks.json hot reload candidate gate", () => {
 
   test("reloads are serialized and close() interrupts the one in flight", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hot-reload-serial-"))
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(hooksFile(dir), "{}")
     let running = 0
     let peak = 0

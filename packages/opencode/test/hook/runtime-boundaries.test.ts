@@ -37,9 +37,9 @@ describe("hooks audit - actual runtime boundary", () => {
     Effect.gen(function* () {
       const instance = yield* TestInstance
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(instance.directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(instance.directory, ".agents"), { recursive: true })
         await fs.writeFile(
-          path.join(instance.directory, ".opencode/hooks.json"),
+          path.join(instance.directory, ".agents/hooks.json"),
           JSON.stringify({
             PreToolUse: [
               null,
@@ -264,9 +264,9 @@ describe("hooks audit - actual runtime boundary", () => {
     Effect.gen(function* () {
       const instance = yield* TestInstance
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(instance.directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(instance.directory, ".agents"), { recursive: true })
         await fs.writeFile(
-          path.join(instance.directory, ".opencode/hooks.json"),
+          path.join(instance.directory, ".agents/hooks.json"),
           JSON.stringify({ PreToolUse: [{ matcher: "Bash" }] }),
         )
       })

@@ -246,7 +246,7 @@ export const TuiThreadCommand = cmd({
       const config = await TuiConfig.get()
 
       const transport = {
-        url: "http://opencode.internal", // check-private-hosts: allow in-process dummy base URL
+        url: "http://graphagent.internal", // check-private-hosts: allow in-process dummy base URL
         fetch: createWorkerFetch(client),
         events: createEventSource(client),
       }

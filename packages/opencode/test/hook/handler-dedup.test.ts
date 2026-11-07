@@ -36,9 +36,9 @@ describe("identical hook handlers are deduplicated per trigger", () => {
       init: (dir) =>
         Effect.promise(async () => {
           const cmd = `echo x >> '${path.join(dir, "count.log")}'`
-          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
           await fs.writeFile(
-            path.join(dir, ".opencode", "hooks.json"),
+            path.join(dir, ".agents", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
                 { matcher: "Bash", hooks: [{ type: "command", command: cmd }] },
@@ -66,9 +66,9 @@ describe("identical hook handlers are deduplicated per trigger", () => {
       init: (dir) =>
         Effect.promise(async () => {
           const cmd = (marker: string) => `echo ${marker} >> '${path.join(dir, "count.log")}'`
-          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
           await fs.writeFile(
-            path.join(dir, ".opencode", "hooks.json"),
+            path.join(dir, ".agents", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
                 { matcher: "Bash", hooks: [{ type: "command", command: cmd("a") }] },
@@ -96,9 +96,9 @@ describe("identical hook handlers are deduplicated per trigger", () => {
       init: (dir) =>
         Effect.promise(async () => {
           const cmd = `echo x >> '${path.join(dir, "count.log")}'`
-          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
           await fs.writeFile(
-            path.join(dir, ".opencode", "hooks.json"),
+            path.join(dir, ".agents", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
                 { matcher: "Bash", hooks: [{ type: "command", command: cmd, timeout: 5 }] },

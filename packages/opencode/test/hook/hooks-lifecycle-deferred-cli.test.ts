@@ -20,7 +20,7 @@ for (const command of [false, true]) {
           )
           const hook = { type: "command", command: process.execPath, args: [script] }
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               SessionStart: [{ hooks: [hook] }],
               PreToolUse: [{ matcher: "Write", hooks: [hook] }],
@@ -100,7 +100,7 @@ cliIt.live(
   ({ home, env, llm, opencode }) =>
     Effect.gen(function* () {
       const target = path.join(home, "must-not-execute")
-      const source = path.join(home, ".opencode/tool/restart_fixture.ts")
+      const source = path.join(home, ".agents/tool/restart_fixture.ts")
       const hook = path.join(home, "missing-tool-hook.ts")
       yield* Effect.promise(async () => {
         await fs.mkdir(path.dirname(source), { recursive: true })
@@ -114,7 +114,7 @@ cliIt.live(
         )
         const handler = { type: "command", command: process.execPath, args: [hook] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             SessionStart: [{ hooks: [handler] }],
             PreToolUse: [{ matcher: "restart_fixture", hooks: [handler] }],
@@ -177,7 +177,7 @@ for (const stop of [false, true]) {
           )
           const hook = { type: "command", command: process.execPath, args: [script] }
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               PreToolUse: [{ matcher: "Write", hooks: [hook] }],
               PostToolBatch: [{ hooks: [hook] }],

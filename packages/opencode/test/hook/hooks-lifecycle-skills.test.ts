@@ -10,10 +10,10 @@ cliIt.live("SessionStart reloadSkills refreshes an already populated real skill 
     yield* Effect.promise(async () => {
       await fs.writeFile(
         script,
-        `const input=JSON.parse(await Bun.stdin.text());const name=input.source==='fork'?'fork-hook-skill':'late-hook-skill';await Bun.write(${JSON.stringify(path.join(home, ".opencode/skills"))}+"/"+name+"/SKILL.md","---\\nname: "+name+"\\ndescription: installed by actual hook\\n---\\nbody\\n");process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"SessionStart",reloadSkills:true}}))`,
+        `const input=JSON.parse(await Bun.stdin.text());const name=input.source==='fork'?'fork-hook-skill':'late-hook-skill';await Bun.write(${JSON.stringify(path.join(home, ".agents/skills"))}+"/"+name+"/SKILL.md","---\\nname: "+name+"\\ndescription: installed by actual hook\\n---\\nbody\\n");process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"SessionStart",reloadSkills:true}}))`,
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })

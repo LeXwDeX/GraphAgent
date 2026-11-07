@@ -16,15 +16,15 @@ every time. This skill covers authoring one. Load
 
 | Scope | Path | Use when |
 |---|---|---|
-| Project | `.opencode/workflows/<name>.yaml` | The procedure depends on this repo (its packages, its test commands, its review rules). Committed, so the whole team gets it. |
-| Global | `<opencode config dir>/workflows/<name>.yaml` | The procedure is repo-agnostic (a generic review or research pattern). Available in every project. |
+| Project | `.agents/workflows/<name>.yaml` | The procedure depends on this repo (its packages, its test commands, its review rules). Committed, so the whole team gets it. |
+| Global | `<graphagent config dir>/workflows/<name>.yaml` | The procedure is repo-agnostic (a generic review or research pattern). Available in every project. |
 
-The opencode config dir is `~/.config/opencode` on Linux/macOS unless
+The opencode config dir is `~/.config/graphagent` on Linux/macOS unless
 `GRAPHAGENT_CONFIG_DIR` redirects it. Ask the user which scope they want when the
 answer is not obvious from the request; a repo-specific graph in the global
 scope will break in other projects.
 
-**The name is the filename stem.** `.opencode/workflows/code-review.yaml`
+**The name is the filename stem.** `.agents/workflows/code-review.yaml`
 starts as `workflow(action: "start", spec_path: "code-review")`. Use kebab-case
 and no path separators. A project file shadows a global one with the same name.
 
@@ -77,7 +77,7 @@ admission Q&A and write a one-off deep spec when depth is needed.
 
 - **Never write `model` on a node or in `node_defaults`.** Model choice is configuration-owned: `dag.jsonc` supplies the `advanced` tier preference for `required: true` or `worker_type: review` / `review-*`, `standard` for the rest. A single configured tier serves both groups. Resolution then falls back to the agent model and the parent session model. A saved spec that pins a model breaks on machines without it.
 - **Every `worker_type` must exist** as a built-in (`explore`, `build`, `general`, `plan`) or a configured agent. A custom agent name makes the workflow project-scoped in practice, even if the file sits in the global directory.
-- **Referenced `prompt_template.id` must exist** under project `.opencode/dag-prompts/` or global `<opencode config dir>/dag-prompts/`. Project assets shadow global assets; there is no bundled prompt fallback. Missing assets are rejected during environment validation. A global workflow needs its referenced assets installed in each target environment; use `inline` prompts for portable specs.
+- **Referenced `prompt_template.id` must exist** under project `.agents/dag-prompts/` or global `<graphagent config dir>/dag-prompts/`. Project assets shadow global assets; there is no bundled prompt fallback. Missing assets are rejected during environment validation. A global workflow needs its referenced assets installed in each target environment; use `inline` prompts for portable specs.
 - **Supply every required template variable.** Validation checks bindings before acceptance. Spawn resolves actual values; an unresolved `{{var}}` fails the node, so a valid binding alone does not prove runtime input availability.
 - **No cycles, no dangling `depends_on` ids.** Both are rejected at creation.
 - **Terminal nodes are immutable at runtime.** Design retries as new nodes added by a replan, not as in-place restarts of finished ones.

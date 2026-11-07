@@ -18,8 +18,8 @@ import (
 type WriteTarget int
 
 const (
-	TargetGlobal  WriteTarget = iota // ~/.config/opencode/opencode.json
-	TargetProject                    // ./opencode.json
+	TargetGlobal  WriteTarget = iota // ~/.config/graphagent/graphagent.json
+	TargetProject                    // ./graphagent.json
 )
 
 // ProviderOpts 是单个 provider 的自定义连接选项。空值表示该项不写入。
@@ -122,7 +122,7 @@ func TargetProviderHasOptions(target WriteTarget, prov string) bool {
 	return hasBase || hasKey
 }
 
-// GenerateFromModels 把选中的模型组装成 opencode provider 配置块。
+// GenerateFromModels 把选中的模型组装成 GraphAgent provider 配置块。
 // 返回的 map 可合并进现有配置。
 func GenerateFromModels(req GenRequest) map[string]any {
 	providerBlock := map[string]any{}
@@ -248,7 +248,7 @@ func MergeIntoExisting(target WriteTarget, generated map[string]any) (string, []
 		if parseErr != nil {
 			return path, nil, fmt.Errorf(
 				"目标文件 %s 已存在但解析失败，已中止写入以防覆盖损坏: %w\n"+
-					"请先修复该文件的 JSON 语法错误（可用 `opencode debug config` 或 JSON 校验工具检查）",
+					"请先修复该文件的 JSON 语法错误（可用 `graphagent debug config` 或 JSON 校验工具检查）",
 				path, parseErr)
 		}
 		existing = parsed
@@ -330,7 +330,7 @@ func writeFile(path string, data, expected []byte, expectedExists, checkExpected
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("读取现有配置失败，已中止写入: %w", err)
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".opencode-config-*")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".graphagent-config-*")
 	if err != nil {
 		return backup, err
 	}

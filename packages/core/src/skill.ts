@@ -105,13 +105,13 @@ export const layer = Layer.effect(
           }
           // Operator-owned roots, matching the V1 classifier in
           // packages/opencode/src/skill/index.ts. Everything else — including a
-          // repository's own `.opencode` when the project is the home directory —
+          // repository's own `.agents` when the project is the home directory —
           // stays project-owned so its frontmatter hooks are gated by trust.
           const sourcePath = source.type === "directory" ? source.path : undefined
           const userOwned =
             sourcePath !== undefined &&
             global !== undefined &&
-            [global.config, path.join(global.home, ".opencode")].some((root) => {
+            [global.config].some((root) => {
               const relative = path.relative(root, sourcePath)
               return !relative.startsWith("..") && !path.isAbsolute(relative)
             })

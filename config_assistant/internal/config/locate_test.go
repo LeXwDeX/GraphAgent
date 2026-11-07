@@ -9,7 +9,7 @@ import (
 func TestGlobalPathUsesConfigDirAndExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GRAPHAGENT_CONFIG_DIR", dir)
-	path := filepath.Join(dir, "opencode.jsonc")
+	path := filepath.Join(dir, "graphagent.jsonc")
 	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -39,10 +39,10 @@ func TestDiscoverIncludesGlobalConfigCandidates(t *testing.T) {
 	}
 }
 
-func TestDiscoverIncludesProjectDotOpencodeConfig(t *testing.T) {
+func TestDiscoverIncludesProjectDotAgentsConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	path := filepath.Join(dir, ".opencode", "opencode.json")
+	path := filepath.Join(dir, ".agents", "graphagent.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}

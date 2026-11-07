@@ -72,7 +72,7 @@ const it = testEffect(
 
 const PLAN_RULES = [
   { permission: "edit", pattern: "*", action: "deny" as const },
-  { permission: "edit", pattern: ".opencode/plans/*.md", action: "allow" as const },
+  { permission: "edit", pattern: ".agents/plans/*.md", action: "allow" as const },
   { permission: "bash", pattern: "*", action: "deny" as const },
   { permission: "bash", pattern: "git *", action: "allow" as const },
 ]
@@ -145,7 +145,7 @@ describe("hook permissionDecision ask with pattern-scoped rulesets", () => {
     Effect.gen(function* () {
       const { tools, directory } = yield* setup
       const exit = yield* runApprovingHookAsk(tools, "edit", {
-        filePath: path.join(directory, ".opencode", "plans", "a.md"),
+        filePath: path.join(directory, ".agents", "plans", "a.md"),
       })
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isSuccess(exit)) expect(JSON.stringify(exit.value)).toContain("EDIT_COMPLETE")

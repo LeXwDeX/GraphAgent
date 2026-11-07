@@ -98,7 +98,7 @@ describe("skill", () => {
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".opencode", "skill", "workflow", "SKILL.md"),
+              path.join(dir, ".agents", "skill", "workflow", "SKILL.md"),
               `---
 name: workflow
 description: User-defined workflow guidance.
@@ -120,13 +120,13 @@ description: User-defined workflow guidance.
     ),
   )
 
-  it.live("discovers skills from .opencode/skill/ directory", () =>
+  it.live("discovers skills from .agents/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".opencode", "skill", "test-skill", "SKILL.md"),
+              path.join(dir, ".agents", "skill", "test-skill", "SKILL.md"),
               `---
 name: test-skill
 description: A test skill for verification.
@@ -159,7 +159,7 @@ Instructions here.
           Effect.gen(function* () {
             yield* Effect.promise(() =>
               Bun.write(
-                path.join(dir, ".opencode", "skill", "dir-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skill", "dir-skill", "SKILL.md"),
                 `---
 name: dir-skill
 description: Skill for dirs test.
@@ -172,7 +172,7 @@ description: Skill for dirs test.
 
             const skill = yield* Skill.Service
             const dirs = yield* skill.dirs()
-            expect(dirs).toContain(path.join(dir, ".opencode", "skill", "dir-skill"))
+            expect(dirs).toContain(path.join(dir, ".agents", "skill", "dir-skill"))
             expect(dirs.length).toBe(1)
           }),
         ),
@@ -180,14 +180,14 @@ description: Skill for dirs test.
     ),
   )
 
-  it.live("discovers multiple skills from .opencode/skill/ directory", () =>
+  it.live("discovers multiple skills from .agents/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Promise.all([
               Bun.write(
-                path.join(dir, ".opencode", "skill", "skill-one", "SKILL.md"),
+                path.join(dir, ".agents", "skill", "skill-one", "SKILL.md"),
                 `---
 name: skill-one
 description: First test skill.
@@ -197,7 +197,7 @@ description: First test skill.
 `,
               ),
               Bun.write(
-                path.join(dir, ".opencode", "skill", "skill-two", "SKILL.md"),
+                path.join(dir, ".agents", "skill", "skill-two", "SKILL.md"),
                 `---
 name: skill-two
 description: Second test skill.
@@ -225,7 +225,7 @@ description: Second test skill.
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".opencode", "skill", "no-frontmatter", "SKILL.md"),
+              path.join(dir, ".agents", "skill", "no-frontmatter", "SKILL.md"),
               `# No Frontmatter
 
 Just some content without YAML frontmatter.
@@ -246,7 +246,7 @@ Just some content without YAML frontmatter.
         Effect.gen(function* () {
           yield* Effect.promise(() =>
             Bun.write(
-              path.join(dir, ".opencode", "skill", "manual-skill", "SKILL.md"),
+              path.join(dir, ".agents", "skill", "manual-skill", "SKILL.md"),
               `---
 name: manual-skill
 ---
@@ -341,8 +341,8 @@ description: A skill in the .claude/skills directory.
             `---\n${JSON.stringify({ name, description: `${name} fixture`, hooks })}\n---\n\n# ${name}\n`,
           ),
         )
-      const workspaceSkill = path.join(workspace.path, ".opencode", "skills", "workspace-hooked", "SKILL.md")
-      const userSkill = path.join(home.path, ".opencode", "skills", "user-hooked", "SKILL.md")
+      const workspaceSkill = path.join(workspace.path, ".agents", "skills", "workspace-hooked", "SKILL.md")
+      const userSkill = path.join(home.path, ".agents", "skills", "user-hooked", "SKILL.md")
       yield* write(workspaceSkill, "workspace-hooked")
       yield* write(userSkill, "user-hooked")
 
@@ -577,10 +577,10 @@ description: A skill in the .agents/skills directory.
 `,
               ),
               Bun.write(
-                path.join(dir, ".opencode", "skill", "opencode-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skill", "opencode-skill", "SKILL.md"),
                 `---
 name: opencode-skill
-description: A skill in the .opencode/skill directory.
+description: A skill in the .agents/skill directory.
 ---
 
 # OpenCode Skill
@@ -624,20 +624,20 @@ description: A skill in the .agents/skills directory.
 `,
               ),
               Bun.write(
-                path.join(dir, ".opencode", "skill", "agent-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skill", "agent-skill", "SKILL.md"),
                 `---
 name: opencode-skill
-description: A skill in the .opencode/skill directory.
+description: A skill in the .agents/skill directory.
 ---
 
 # OpenCode Skill
 `,
               ),
               Bun.write(
-                path.join(dir, ".opencode", "skills", "agent-skill", "SKILL.md"),
+                path.join(dir, ".agents", "skills", "agent-skill", "SKILL.md"),
                 `---
 name: opencode-skill
-description: A skill in the .opencode/skills directory.
+description: A skill in the .agents/skills directory.
 ---
 
 # OpenCode Skill

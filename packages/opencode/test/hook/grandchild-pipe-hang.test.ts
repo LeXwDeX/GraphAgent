@@ -25,8 +25,8 @@ const it = testEffect(testLayer)
 
 const writeHooks = (hooks: unknown) => (dir: string) =>
   Effect.promise(() =>
-    fs.mkdir(path.join(dir, ".opencode"), { recursive: true }).then(() =>
-      fs.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(hooks)),
+    fs.mkdir(path.join(dir, ".agents"), { recursive: true }).then(() =>
+      fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooks)),
     ),
   )
 

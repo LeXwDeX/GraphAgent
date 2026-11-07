@@ -8,14 +8,14 @@ for (const { move } of [{ move: false }, { move: true }])
     await using tmp = await tmpdir({ git: move })
     const audit = path.join(tmp.path, "audit.jsonl")
     const hook = path.join(tmp.path, "hook.ts")
-    await fs.mkdir(path.join(tmp.path, ".config/opencode"), { recursive: true })
+    await fs.mkdir(path.join(tmp.path, ".config/graphagent"), { recursive: true })
     await fs.writeFile(
       hook,
       `const input=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:input.hook_event_name,session:input.session_id,reason:input.reason,cwd:input.cwd})+"\\n")`,
     )
     const entry = { type: "command", command: process.execPath, args: [hook] }
     await fs.writeFile(
-      path.join(tmp.path, ".config/opencode/hooks.json"),
+      path.join(tmp.path, ".config/graphagent/hooks.json"),
       JSON.stringify({
         SessionStart: [{ hooks: [entry] }],
         SessionEnd: [{ hooks: [entry] }],

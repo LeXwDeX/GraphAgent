@@ -139,16 +139,16 @@ describe("DAG worker tool profiles", () => {
       const agents = yield* Agent.Service
       const plan = yield* agents.get("plan")
       expect(plan).toBeDefined()
-      const native = Permission.fromConfig({ edit: { "*": "deny", ".opencode/plans/*.md": "allow" } })
+      const native = Permission.fromConfig({ edit: { "*": "deny", ".agents/plans/*.md": "allow" } })
       const planLike: Agent.Info = { ...plan!, permission: native }
       const covering = deriveSubagentSessionPermission({
-        parentSessionPermission: Permission.fromConfig({ edit: { ".opencode/plans/*": "deny" } }),
+        parentSessionPermission: Permission.fromConfig({ edit: { ".agents/plans/*": "deny" } }),
         subagent: planLike,
       })
       expect(advertised(planLike, covering, TOOLS, undefined, native)).not.toContain("edit")
 
       const noncovering = deriveSubagentSessionPermission({
-        parentSessionPermission: Permission.fromConfig({ edit: { ".opencode/plans/private/*": "deny" } }),
+        parentSessionPermission: Permission.fromConfig({ edit: { ".agents/plans/private/*": "deny" } }),
         subagent: planLike,
       })
       expect(advertised(planLike, noncovering, TOOLS, undefined, native)).toContain("edit")

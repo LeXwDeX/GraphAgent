@@ -17,7 +17,7 @@ cliIt.live(
           `await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},(await Bun.stdin.text())+'\\n')`,
         )
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             PostModelSwitch: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
           }),
@@ -88,7 +88,7 @@ for (const deny of [false, true]) {
           )
           const hooks = [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }]
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({ PreToolUse: hooks, PostToolUse: hooks }),
           )
         })

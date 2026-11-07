@@ -15,7 +15,7 @@ cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons"
         `process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreModelSwitch",permissionDecision:"deny",permissionDecisionReason:"MODEL_CHANGE_NEEDS_APPROVAL"}}))`,
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           PreModelSwitch: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
         }),
@@ -90,7 +90,7 @@ for (const transport of ["command", "http"] as const) {
             : { type: "http", url: `http://127.0.0.1:${http.port}/hook` }
         yield* Effect.promise(() =>
           fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               PreModelSwitch: [{ hooks: [handler] }],
               PostModelSwitch: [{ hooks: [handler] }],
@@ -164,7 +164,7 @@ cliIt.live("V1 process restart restores model context once without a model chang
       )
       const handler = { type: "command", command: process.execPath, args: [hook] }
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ PreModelSwitch: [{ hooks: [handler] }], PostModelSwitch: [{ hooks: [handler] }] }),
       )
     })
@@ -212,7 +212,7 @@ cliIt.live("V1 StopFailure receives exactly the displayed error", ({ home, llm, 
     yield* Effect.promise(async () => {
       await fs.writeFile(hook, `await Bun.write(${JSON.stringify(audit)},await Bun.stdin.text())`)
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ StopFailure: [{ hooks: [{ type: "command", command: process.execPath, args: [hook] }] }] }),
       )
     })

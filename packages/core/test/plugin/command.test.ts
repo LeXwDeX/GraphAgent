@@ -248,7 +248,7 @@ describe("CommandPlugin.Plugin", () => {
       expect(CommandPlugin.WorkflowFactsContent).not.toContain('spec_path: "code-review"')
       expect(CommandPlugin.WorkflowFactsContent).toMatch(/Retarget its\s+objective and block instructions/)
       expect(CommandPlugin.WorkflowFactsContent).not.toContain("pass `spec` inline")
-      expect(CommandPlugin.DagAutoContent).toContain(".opencode/.dag-specs/")
+      expect(CommandPlugin.DagAutoContent).toContain(".agents/.dag-specs/")
       expect(CommandPlugin.DagAutoContent).toContain("retarget")
     }),
   )

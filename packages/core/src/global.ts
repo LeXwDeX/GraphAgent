@@ -6,8 +6,9 @@ import { Context, Effect, Layer } from "effect"
 import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
 import { LayerNode } from "./effect/layer-node"
+import { APP_NAME } from "./brand"
 
-const app = "opencode"
+const app = APP_NAME
 const data = path.join(xdgData!, app)
 const cache = path.join(xdgCache!, app)
 const config = path.join(xdgConfig!, app)
@@ -23,7 +24,11 @@ const paths = {
   log: path.join(data, "log"),
   repos: path.join(data, "repos"),
   cache,
-  config,
+  get config() {
+    // GRAPHAGENT_TEST_CONFIG_DIR redirects the directory without triggering the
+    // explicit-config-path behavior (seeding suppression) of GRAPHAGENT_CONFIG_DIR.
+    return process.env.GRAPHAGENT_TEST_CONFIG_DIR ?? Flag.GRAPHAGENT_CONFIG_DIR ?? config
+  },
   state,
   tmp,
 }
@@ -61,7 +66,7 @@ export function make(input: Partial<Interface> = {}): Interface {
     home: Path.home,
     data: Path.data,
     cache: Path.cache,
-    config: Flag.GRAPHAGENT_CONFIG_DIR ?? Path.config,
+    config: Path.config,
     state: Path.state,
     tmp: Path.tmp,
     bin: Path.bin,

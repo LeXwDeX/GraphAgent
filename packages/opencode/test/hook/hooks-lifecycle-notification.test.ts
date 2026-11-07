@@ -16,7 +16,7 @@ cliIt.live("a real pending permission emits Notification through a command hook"
         `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,type:i.notification_type,message:i.message,session:i.session_id,transcript:i.transcript_path,mode:i.permission_mode})+'\\n');`,
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ Notification: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })

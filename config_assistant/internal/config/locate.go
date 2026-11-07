@@ -9,15 +9,15 @@ import (
 	"strings"
 )
 
-// Layer 标识配置来源的层级，对应 opencode 的优先级顺序。
+// Layer 标识配置来源的层级，对应 GraphAgent 的优先级顺序。
 type Layer int
 
 const (
 	LayerManaged Layer = iota // 管理员强制（最高优先级中的文件层）
 	LayerInline               // GRAPHAGENT_CONFIG_CONTENT 环境变量
-	LayerProject              // 项目根 opencode.json
+	LayerProject              // 项目根 graphagent.json
 	LayerCustom               // GRAPHAGENT_CONFIG 环境变量
-	LayerGlobal               // ~/.config/opencode/opencode.json
+	LayerGlobal               // ~/.config/graphagent/graphagent.json
 )
 
 // Source 描述一个配置来源的位置和状态。
@@ -40,9 +40,6 @@ func Discover() []Source {
 	// inline
 	if content := os.Getenv("GRAPHAGENT_CONFIG_CONTENT"); strings.TrimSpace(content) != "" {
 		sources = append(sources, Source{Layer: LayerInline, Label: "Inline (GRAPHAGENT_CONFIG_CONTENT)", Exists: true})
-	}
-	for _, path := range homeProjectPaths() {
-		sources = append(sources, checkFile(LayerProject, "Home .opencode", path))
 	}
 	if !projectConfigDisabled() {
 		for _, path := range projectConfigPaths() {
@@ -71,28 +68,28 @@ func managedPaths() []string {
 	var result []string
 	if runtime.GOOS == "darwin" {
 		if current, err := user.Current(); err == nil {
-			result = append(result, filepath.Join("/Library/Managed Preferences", current.Username, "ai.opencode.managed.plist"))
+			result = append(result, filepath.Join("/Library/Managed Preferences", current.Username, "io.github.lexwdex.graphagent.managed.plist"))
 		}
-		result = append(result, "/Library/Managed Preferences/ai.opencode.managed.plist")
+		result = append(result, "/Library/Managed Preferences/io.github.lexwdex.graphagent.managed.plist")
 	}
-	return append(result, configFiles(managedDir(), "opencode.jsonc", "opencode.json")...)
+	return append(result, configFiles(managedDir(), "graphagent.jsonc", "graphagent.json")...)
 }
 
 func ManagedPath() string {
-	return filepath.Join(managedDir(), "opencode.jsonc")
+	return filepath.Join(managedDir(), "graphagent.jsonc")
 }
 
 func managedDir() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Library/Application Support/opencode"
+		return "/Library/Application Support/graphagent"
 	case "windows":
 		if programData := os.Getenv("ProgramData"); programData != "" {
-			return filepath.Join(programData, "opencode")
+			return filepath.Join(programData, "graphagent")
 		}
-		return filepath.Join(`C:\ProgramData`, "opencode")
+		return filepath.Join(`C:\ProgramData`, "graphagent")
 	default:
-		return "/etc/opencode"
+		return "/etc/graphagent"
 	}
 }
 
@@ -103,13 +100,13 @@ func GlobalPath() string {
 	if dir == "" {
 		return ""
 	}
-	for _, name := range []string{"opencode.jsonc", "opencode.json", "config.json"} {
+	for _, name := range []string{"graphagent.jsonc", "graphagent.json", "config.json"} {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}
 	}
-	return filepath.Join(dir, "opencode.jsonc")
+	return filepath.Join(dir, "graphagent.jsonc")
 }
 
 func configDir() string {
@@ -120,7 +117,7 @@ func configDir() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "opencode")
+	return filepath.Join(home, ".config", "graphagent")
 }
 
 // ProjectPath returns the highest-priority project config file, or the default path.
@@ -130,21 +127,13 @@ func ProjectPath() string {
 	}
 	dir, err := os.Getwd()
 	if err != nil {
-		return "opencode.json"
+		return "graphagent.json"
 	}
-	return filepath.Join(dir, "opencode.json")
+	return filepath.Join(dir, "graphagent.json")
 }
 
 func globalConfigPaths() []string {
-	return configFiles(configDir(), "opencode.jsonc", "opencode.json", "config.json")
-}
-
-func homeProjectPaths() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	return configFiles(filepath.Join(home, ".opencode"))
+	return configFiles(configDir(), "graphagent.jsonc", "graphagent.json", "config.json")
 }
 
 func projectConfigPaths() []string {
@@ -155,10 +144,10 @@ func projectPathCandidates() []string {
 	dirs := projectDirs()
 	var result []string
 	for i := len(dirs) - 1; i >= 0; i-- {
-		result = append(result, configFiles(filepath.Join(dirs[i], ".opencode"))...)
+		result = append(result, configFiles(filepath.Join(dirs[i], ".agents"))...)
 	}
 	for _, dir := range dirs {
-		result = append(result, configFiles(dir, "opencode.jsonc", "opencode.json")...)
+		result = append(result, configFiles(dir, "graphagent.jsonc", "graphagent.json")...)
 	}
 	return result
 }
@@ -185,7 +174,7 @@ func projectDirs() []string {
 
 func configFiles(dir string, names ...string) []string {
 	if len(names) == 0 {
-		names = []string{"opencode.jsonc", "opencode.json"}
+		names = []string{"graphagent.jsonc", "graphagent.json"}
 	}
 	var result []string
 	for _, name := range names {

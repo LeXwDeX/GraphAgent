@@ -1,8 +1,8 @@
 /**
  * [FORK:hook-ext] Hooks config hot reload — not in upstream
  *
- * Polls the global (`~/.config/opencode/hooks.json`), project, and (when
- * distinct) worktree `.opencode/hooks.json` files for mtime changes and
+ * Polls the global (`~/.config/graphagent/hooks.json`), project, and (when
+ * distinct) worktree `.agents/hooks.json` files for mtime changes and
  * triggers a reload when a modification is detected.
  *
  * Scope: global + project + worktree. `.claude/` directories are never read.
@@ -23,6 +23,7 @@
 import { statSync } from "fs"
 import path from "path"
 import { Effect } from "effect"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import * as Log from "@/util/log"
 import type { Settings } from "../settings"
 import { hasWorktreeLayer } from "../worktree-layer"
@@ -34,18 +35,18 @@ const POLL_INTERVAL_MS = 2000
 
 /**
  * hooks.json files polled for changes: global + project + worktree. `.claude/`
- * is never read. Global is included so editing `~/.config/opencode/hooks.json`
+ * is never read. Global is included so editing `~/.config/graphagent/hooks.json`
  * takes effect without a restart (previously startup-only).
  */
-function watchedFiles(projectDir: string, worktree: string | undefined, opencodeGlobalConfig?: string): string[] {
+function watchedFiles(projectDir: string, worktree: string | undefined, globalConfigDir?: string): string[] {
   const files: string[] = []
-  if (opencodeGlobalConfig) files.push(path.join(opencodeGlobalConfig, "hooks.json"))
-  files.push(path.join(projectDir, ".opencode", "hooks.json"))
+  if (globalConfigDir) files.push(path.join(globalConfigDir, "hooks.json"))
+  files.push(path.join(projectDir, PROJECT_DIR, "hooks.json"))
   // A non-VCS project reports the drive/filesystem root as its worktree, which
-  // is not a workspace-owned layer: polling `/.opencode/hooks.json` would watch
-  // a file shared by every session on the machine.
+  // is not a workspace-owned layer: polling `<root>/.agents/hooks.json` would
+  // watch a file shared by every session on the machine.
   if (hasWorktreeLayer(projectDir, worktree)) {
-    files.push(path.join(worktree, ".opencode", "hooks.json"))
+    files.push(path.join(worktree, PROJECT_DIR, "hooks.json"))
   }
   return files
 }
@@ -86,21 +87,21 @@ function mtimeOrZero(file: string): number {
  * as the prior fs.watch implementation).
  *
  * @param projectDir - Project root directory
- * @param worktree - Optional git worktree root; its .opencode/hooks.json is polled too
+ * @param worktree - Optional git worktree root; its .agents/hooks.json is polled too
  * @param reload - Effect that builds the candidate settings for the changed file. It may run the
  *   ConfigChange gate against the CURRENT settings first; resolving to `undefined` rejects the
  *   candidate and the current settings stay in force.
  * @param onReload - Atomic commit callback, invoked synchronously with an accepted candidate
  *   and changed file path. Never invoked after `close()`.
- * @param opencodeGlobalConfig - OpenCode global config dir; its hooks.json is
- *   also polled so global hooks edits hot-reload without a restart.
+ * @param globalConfigDir - Global config dir; its hooks.json is also polled so
+ *   global hooks edits hot-reload without a restart.
  */
 export function watchSettings(
   projectDir: string,
   worktree: string | undefined,
   reload: (changedFile: string) => Effect.Effect<Settings | undefined>,
   onReload: (newSettings: Settings, changedFile: string) => void,
-  opencodeGlobalConfig?: string,
+  globalConfigDir?: string,
 ): HotReloadHandle {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   let lastReload = 0
@@ -111,7 +112,7 @@ export function watchSettings(
   let running = false
   let pending: string | undefined
 
-  const files = watchedFiles(projectDir, worktree, opencodeGlobalConfig)
+  const files = watchedFiles(projectDir, worktree, globalConfigDir)
   // Seed mtime snapshots so a pre-existing file does not fire on the first poll.
   const mtimes = new Map<string, number>(files.map((f) => [f, mtimeOrZero(f)]))
   log.info("polling hooks.json files", { files })

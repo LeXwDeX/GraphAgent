@@ -78,7 +78,7 @@ it.live(
     provideTmpdirInstance((directory) =>
       Effect.promise(async () => {
         await Bun.write(
-          `${directory}/opencode.json`,
+          `${directory}/graphagent.json`,
           JSON.stringify({
             model: "test/test-model",
             formatter: false,

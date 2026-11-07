@@ -884,7 +884,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-exclude-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
-    const reports = path.join(dir, ".opencode", "workflow-reports")
+    const reports = path.join(dir, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const reportPath = path.join(reports, "report.md")
     await Bun.write(reportPath, "recovered report body")
@@ -902,7 +902,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     )
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
     expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
-      ".opencode/workflow-reports/",
+      ".agents/workflow-reports/",
     )
     expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
   })
@@ -916,7 +916,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     tmpRoots.push(linked)
     await $`git -C ${owner} worktree add --detach ${linked} HEAD`.quiet()
     const execution = await fs.realpath(linked)
-    const reports = path.join(execution, ".opencode", "workflow-reports")
+    const reports = path.join(execution, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const reportPath = path.join(reports, "report.md")
     await Bun.write(reportPath, "bound workspace report")
@@ -940,7 +940,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     expect(authorized).toEqual([execution])
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
     expect(await fs.readFile(path.join(owner, ".git", "info", "exclude"), "utf8")).toContain(
-      ".opencode/workflow-reports/",
+      ".agents/workflow-reports/",
     )
   })
 
@@ -948,7 +948,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-root-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
-    const reports = path.join(dir, ".opencode", "workflow-reports")
+    const reports = path.join(dir, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const report = path.join(reports, "report.md")
     await Bun.write(report, "recovered report")
@@ -971,7 +971,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     )
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
     expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
-      ".opencode/workflow-reports/",
+      ".agents/workflow-reports/",
     )
     expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
   })
@@ -980,7 +980,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-crash-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
-    const reports = path.join(dir, ".opencode", "workflow-reports")
+    const reports = path.join(dir, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const source = path.join(reports, "report.md")
     await Bun.write(source, "crash window report")
@@ -1011,7 +1011,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     )
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
     expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
-      ".opencode/workflow-reports/",
+      ".agents/workflow-reports/",
     )
     expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
   })
@@ -1024,7 +1024,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     const beforeExcludeExists = await Bun.file(exclude).exists()
     const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
     expect(beforeExclude?.toString()).toBe(STANDARD_TEMPLATE_EXCLUDE)
-    const reports = path.join(dir, ".opencode", "workflow-reports")
+    const reports = path.join(dir, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const source = path.join(reports, "report.md")
     await Bun.write(source, "lookup failure report")
@@ -1064,7 +1064,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     const beforeExcludeExists = await Bun.file(exclude).exists()
     const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
     expect(beforeExclude?.toString()).toBe(STANDARD_TEMPLATE_EXCLUDE)
-    const reports = path.join(dir, ".opencode", "workflow-reports")
+    const reports = path.join(dir, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const source = path.join(reports, "report.md")
     await Bun.write(source, "lookup interruption report")

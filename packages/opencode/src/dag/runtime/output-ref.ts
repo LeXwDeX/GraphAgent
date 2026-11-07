@@ -17,6 +17,7 @@ import { Effect, Cause } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { Global } from "@opencode-ai/core/global"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 
 export interface OutputFileRef {
   /** Discriminator against output_schema captured payloads (inline JSON). */
@@ -239,9 +240,9 @@ const SUMMARY_DECODE_BYTES = 4096
 const FILE_REF_MAX_BYTES = 64 * 1024 * 1024
 const MAX_PATH_CHARS = 4096
 
-export const REPORT_AREA = path.join(".opencode", "workflow-reports")
+export const REPORT_AREA = path.join(PROJECT_DIR, "workflow-reports")
 // Git ignore patterns are slash-separated on every platform.
-const REPORT_EXCLUDE_ENTRY = ".opencode/workflow-reports/"
+const REPORT_EXCLUDE_ENTRY = `${PROJECT_DIR}/workflow-reports/`
 
 export function isOutputFileRef(value: unknown): value is OutputFileRef {
   if (!isRecord(value)) return false
@@ -303,11 +304,11 @@ export function captureOutputFileRef(rawText: string): Effect.Effect<OutputFileR
 }
 
 /**
- * First-write git-exclude guarantee for the project `.opencode/` report area
+ * First-write git-exclude guarantee for the project `.agents/` report area
  * (B4). The entry goes to the repository's shared `info/exclude`, resolved
  * through `git rev-parse --git-common-dir`, so a root `.gitignore` is never
  * edited and every linked worktree is covered at once. The repository-root
- * report area is canonical. A ref under a subdirectory's own `.opencode/`
+ * report area is canonical. A ref under a subdirectory's own `.agents/`
  * report tree is treated as legacy and kept ignored through a
  * repository-relative entry. Non-git directories are skipped. Best-effort — a
  * permission blip must never fail the node completion.
@@ -324,7 +325,7 @@ export function ensureReportAreaGitignore(directory: string, refPath: string): E
     const entries = new Set<string>()
     if (FSUtil.contains(path.join(root, REPORT_AREA), canonicalRef)) entries.add(REPORT_EXCLUDE_ENTRY)
     // Legacy: earlier builds wrote reports under the execution directory's own
-    // `.opencode/` tree. Keep those persisted refs ignored, relative to the
+    // `.agents/` tree. Keep those persisted refs ignored, relative to the
     // repository root, without making that path the canonical new location.
     if (execution !== root && FSUtil.contains(path.join(execution, REPORT_AREA), canonicalRef)) {
       const prefix = layout.prefix.length === 0 || layout.prefix.endsWith("/") ? layout.prefix : `${layout.prefix}/`

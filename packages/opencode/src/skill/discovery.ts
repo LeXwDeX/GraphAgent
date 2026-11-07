@@ -6,6 +6,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@opencode-ai/core/brand"
 
 const skillConcurrency = 4
 const fileConcurrency = 8
@@ -77,7 +78,7 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | Path.Path | Htt
         (skill) =>
           Effect.gen(function* () {
             const root = path.join(cache, skill.name)
-            const versionFile = path.join(root, ".opencode-version")
+            const versionFile = path.join(root, `.${APP_NAME}-version`)
             const version = skill.version
             const current =
               version === undefined
@@ -102,7 +103,7 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | Path.Path | Htt
                 )
                 if (!downloaded.every(Boolean)) return
                 if (!(yield* fs.exists(path.join(staging, "SKILL.md")).pipe(Effect.orDie))) return
-                yield* fs.writeFileString(path.join(staging, ".opencode-version"), version)
+                yield* fs.writeFileString(path.join(staging, `.${APP_NAME}-version`), version)
                 yield* Effect.uninterruptible(
                   Effect.gen(function* () {
                     const cached = yield* fs.exists(root).pipe(Effect.orDie)

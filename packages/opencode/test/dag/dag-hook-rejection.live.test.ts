@@ -28,7 +28,7 @@ test.skipIf(!setting)(
         withCliFixture(({ opencode, home, env }) =>
           Effect.gen(function* () {
             const dir = path.join(home, "workspace")
-            yield* Effect.promise(() => fs.mkdir(path.join(dir, ".opencode"), { recursive: true }))
+            yield* Effect.promise(() => fs.mkdir(path.join(dir, ".agents"), { recursive: true }))
             const proof = randomBytes(18).toString("hex")
             const protectedFile = path.join(dir, "protected.json")
             yield* Effect.promise(() => fs.writeFile(protectedFile, JSON.stringify({ proof })))
@@ -38,7 +38,7 @@ test.skipIf(!setting)(
             yield* Effect.promise(() => fs.writeFile(hookPath, hook))
             yield* Effect.promise(() =>
               fs.writeFile(
-                path.join(dir, ".opencode", "hooks.json"),
+                path.join(dir, ".agents", "hooks.json"),
                 JSON.stringify({
                   PreToolUse: [
                     {

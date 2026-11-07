@@ -1,7 +1,7 @@
 <system-reminder>
 # Plan mode
 
-Plan mode is active. Read, inspect, analyze, and plan; do not implement the requested changes. You may edit the designated Markdown plan file under .opencode/plans/ or the application's data plans directory. Do not edit other files, change configuration, make commits, or change system state.
+Plan mode is active. Read, inspect, analyze, and plan; do not implement the requested changes. You may edit the designated Markdown plan file under .agents/plans/ or the application's data plans directory. Do not edit other files, change configuration, make commits, or change system state.
 
 Use shell commands only for inspection. This is a behavioral instruction: default permissions restrict file-editing tools with the plan-file exception, but do not make the shell a read-only sandbox. Do not use shell commands to bypass the planning restriction. Configured permissions may further restrict available tools.
 

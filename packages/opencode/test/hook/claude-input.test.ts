@@ -92,7 +92,7 @@ describe("command hook Claude input naming", () => {
           hooks: [
             { type: "command", command: claudeHookCommand, inputFormat: "claude-code" },
             { type: "command", command: nativeHookCommand },
-            { type: "command", command: nativeHookCommand, inputFormat: "opencode" },
+            { type: "command", command: nativeHookCommand, inputFormat: "graphagent" },
           ],
         })
         const toolInput = { filePath: "native.ts", file_path: "claude.ts", offset: 2, limit: 10 }
@@ -291,9 +291,9 @@ describe("command hook Claude input naming", () => {
     {
       init: (dir) =>
         Effect.promise(async () => {
-          await fs.mkdir(path.join(dir, ".opencode"))
+          await fs.mkdir(path.join(dir, ".agents"))
           await fs.writeFile(
-            path.join(dir, ".opencode/hooks.json"),
+            path.join(dir, ".agents/hooks.json"),
             JSON.stringify({
               PostToolUse: [
                 {

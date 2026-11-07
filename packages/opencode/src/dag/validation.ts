@@ -191,7 +191,7 @@ export const PromptTemplateSource = Schema.Union([
   }),
   Schema.Struct({
     id: Schema.String.annotate({
-      description: "Prompt asset id resolved from .opencode/dag-prompts (project, then global)",
+      description: "Prompt asset id resolved from .agents/dag-prompts (project, then global)",
     }),
     input: PromptInput,
   }),
@@ -1759,7 +1759,7 @@ function promptIdDiagnostics(node: NodeConfig, directory: string | undefined): E
           code: DIAGNOSTIC_CODES.promptMissingAsset,
           path: `nodes[${node.id}].prompt_template.id`,
           message: `prompt id "${prompt.id}" does not resolve in project or global dag-prompts`,
-          hint: "Add <id>.md to .opencode/dag-prompts (project or global) or switch to an inline template",
+          hint: "Add <id>.md to .agents/dag-prompts (project or global) or switch to an inline template",
         }),
       ]
     }

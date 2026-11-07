@@ -5,7 +5,6 @@ import { mergeDeep, unique } from "remeda"
 import { Cause, Context, Effect, Layer } from "effect"
 import { ConfigParse } from "@/config/parse"
 import * as ConfigPaths from "@/config/paths"
-import { migrateTuiConfig } from "./tui-migrate"
 import { resolveHostAttentionSoundPaths } from "./tui-host-attention"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { isRecord } from "@opencode-ai/tui/util/record"
@@ -17,6 +16,7 @@ import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { ConfigVariable } from "@/config/variable"
 import { FormatError, FormatUnknownError } from "@/cli/error"
 import { TuiConfig } from "@opencode-ai/tui/config"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 
 export const Info = TuiConfig.Info
 export type Info = TuiConfig.Info
@@ -69,7 +69,7 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       const data = ConfigParse.jsonc(expanded, configFilepath)
       if (!isRecord(data)) return {} as Info
       // Flatten a nested "tui" key so users who wrote `{ "tui": { ... } }` inside tui.json
-      // (mirroring the old opencode.json shape) still get their settings applied.
+      // (mirroring the old main-config shape) still get their settings applied.
       const normalized = dropUnknownKeybinds(normalize(data))
       const parsed = ConfigParse.schema(Info, normalized, configFilepath)
       if (!parsed.attention?.sounds) return parsed
@@ -119,10 +119,9 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       acc.result = mergeDeep(acc.result, data)
     })
 
-  // Every config dir we may read from: global config dir, any `.opencode`
+  // Every config dir we may read from: global config dir, any `.agents`
   // folders between cwd and home, and GRAPHAGENT_CONFIG_DIR.
   const directories = yield* ConfigPaths.directories(ctx.directory)
-  yield* Effect.promise(() => migrateTuiConfig({ directories, cwd: ctx.directory }))
 
   const projectFiles = Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG ? [] : yield* ConfigPaths.files("tui", ctx.directory)
 
@@ -145,10 +144,10 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
     yield* mergeFile(acc, file)
   }
 
-  // 4. `.opencode` directories (and GRAPHAGENT_CONFIG_DIR) discovered while
+  // 4. `.agents` directories (and GRAPHAGENT_CONFIG_DIR) discovered while
   // walking up the tree.
   for (const dir of unique(directories)) {
-    if (!dir.endsWith(".opencode") && dir !== Flag.GRAPHAGENT_CONFIG_DIR) continue
+    if (path.basename(dir) !== PROJECT_DIR && dir !== Flag.GRAPHAGENT_CONFIG_DIR) continue
     for (const file of ConfigPaths.fileInDirectory(dir, "tui")) {
       yield* mergeFile(acc, file)
     }

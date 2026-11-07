@@ -234,7 +234,7 @@ export const layer: Layer.Layer<
     // Project Configuration lives in the Project's primary directory
     // (ADR-0001), but the row's `worktree` is the first-seen checkout and is
     // never repointed. When it is gone or now belongs to another repository,
-    // writing there would recreate `.opencode/memory.jsonc` in a dead path or
+    // writing there would recreate `.agents/memory.jsonc` in a dead path or
     // plant this Project's policy in a foreign repo. Fall back to the first
     // live checkout of this Project in sorted order (deterministic across
     // worktrees, so they agree on one policy file). The active checkout is
@@ -869,7 +869,7 @@ export const layer: Layer.Layer<
         // torn-read ModelNotFoundError edge — both mean unavailable here.
         const model = yield* Effect.option(resolveModel(loaded.config))
         if (!Option.isSome(model) || model.value === undefined)
-          return "Memory is enabled but its configured model is unavailable — run /memory on to reselect a replacement, or set `model` in .opencode/memory.jsonc to an installed provider/model."
+          return "Memory is enabled but its configured model is unavailable — run /memory on to reselect a replacement, or set `model` in .agents/memory.jsonc to an installed provider/model."
       }
       return undefined
     })

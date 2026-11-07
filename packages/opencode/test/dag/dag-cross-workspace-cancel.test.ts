@@ -65,7 +65,7 @@ test("workflow cancel stops its real cross-workspace child without stopping an o
           yield* Effect.promise(() =>
             Promise.all(
               [owner.path, workspace.path].map((dir) =>
-                writeFile(path.join(dir, "opencode.json"), JSON.stringify(config)),
+                writeFile(path.join(dir, "graphagent.json"), JSON.stringify(config)),
               ),
             ),
           )

@@ -10,7 +10,7 @@ cliIt.live(
     Effect.gen(function* () {
       const audit = path.join(home, "lifecycle-audit.jsonl")
       const script = path.join(home, "lifecycle-hook.ts")
-      const config = path.join(home, ".config/opencode/hooks.json")
+      const config = path.join(home, ".config/graphagent/hooks.json")
       yield* Effect.promise(async () => {
         await fs.writeFile(
           script,
@@ -64,7 +64,7 @@ for (const supplied of [false, true]) {
             `process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"SessionStart",initialUserMessage:"HOOK_INITIAL_TURN"}}))`,
           )
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
             }),

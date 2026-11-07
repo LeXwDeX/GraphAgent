@@ -24,13 +24,13 @@ checks without a prescribed mode or number of agents.
 
 Before `start`, `extend`, `control(replan)`, or `validate`, write the graph to a
 `.yaml` or `.yml` file and pass only `spec_path`. A one-off graph may use a
-task-local file such as `.opencode/workflow-drafts/<name>.yaml`; it does not need to
+task-local file such as `.agents/workflow-drafts/<name>.yaml`; it does not need to
 become a saved library workflow. After a validation failure, edit that same
 file and retry with the same path. Standalone `validate` accepts start files
 only; `extend` and `control(replan)` validate their own strict envelopes before
 any workflow mutation.
 
-`draft` writes a new file in `.opencode/workflow-drafts/` after both workflow
+`draft` writes a new file in `.agents/workflow-drafts/` after both workflow
 and edit permission checks. It refuses an existing filename; edit that file
 or choose a different name. Control operations check both `control` and
 `control:<operation>` permissions. For example, allow `control` and
@@ -81,8 +81,8 @@ library instead of the filesystem (a leading dot or a recognized extension
 means a filesystem path). The synthetic `builtin://<name>` marker the `list`
 output shows for builtin templates also resolves by name:
 
-1. `.opencode/workflows/<name>.yaml` — project scope, committed with the repo
-2. `<opencode config dir>/workflows/<name>.yaml` — global scope, available in every project
+1. `.agents/workflows/<name>.yaml` — project scope, committed with the repo
+2. `<graphagent config dir>/workflows/<name>.yaml` — global scope, available in every project
 3. bundled builtin templates shipped with the runtime
 
 Project shadows global, and both shadow builtin. When discovering a reference,
@@ -497,7 +497,7 @@ tier serves both groups.
 ## Prompt Templates
 
 Templates are read-only prompt fragments installed under project
-`.opencode/dag-prompts/*.md` or global `<opencode config dir>/dag-prompts/*.md`.
+`.agents/dag-prompts/*.md` or global `<graphagent config dir>/dag-prompts/*.md`.
 Project assets shadow global assets. Prompt IDs have no bundled fallback;
 bundled workflow YAML does not install these fragments. Confirm that a
 referenced ID exists before using it. Missing assets are rejected during

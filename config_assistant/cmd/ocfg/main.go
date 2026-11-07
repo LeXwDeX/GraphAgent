@@ -9,7 +9,7 @@ import (
 	"github.com/LeXwDeX/GraphAgent/config_assistant/internal/tui"
 )
 
-const banner = `配置助手 — opencode 配置管理工具
+const banner = `配置助手 — GraphAgent 配置管理工具
 
 `
 
@@ -19,7 +19,7 @@ func main() {
 		fmt.Println("用法: config_assistant")
 		fmt.Println()
 		fmt.Println("交互式终端程序，功能：")
-		fmt.Println("  1. 查看当前环境的 opencode 配置（按优先级展示各层来源与合并结果）")
+		fmt.Println("  1. 查看当前环境的 GraphAgent 配置（按优先级展示各层来源与合并结果）")
 		fmt.Println("  2. 从 models.dev 浏览模型并自动生成 provider 配置块")
 		fmt.Println()
 		fmt.Println("模型数据来源: https://models.dev/api.json （24h 本地缓存）")

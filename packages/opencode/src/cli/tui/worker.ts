@@ -13,6 +13,7 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 
@@ -25,7 +26,7 @@ const logFatal = (kind: string, error: unknown) => {
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
   const line = `timestamp=${new Date().toISOString()} level=ERROR service=tui-worker kind=${kind} error=${JSON.stringify(detail)}\n`
   try {
-    appendFileSync(path.join(Global.Path.log, "opencode.log"), line)
+    appendFileSync(path.join(Global.Path.log, `${APP_NAME}.log`), line)
   } catch {
     // The log directory may be gone; never let the crash handler itself throw.
   }

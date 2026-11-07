@@ -6,8 +6,9 @@ import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Global } from "@opencode-ai/core/global"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { APP_NAME } from "@opencode-ai/core/brand"
 
-export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
+export const OAUTH_DUMMY_KEY = `${APP_NAME}-oauth-dummy-key`
 
 const fail = (message: string) => (cause: unknown) => new AuthError({ message, cause })
 

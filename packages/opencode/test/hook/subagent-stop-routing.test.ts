@@ -125,9 +125,9 @@ it.live("subagent completion must not fire main-agent Stop hooks", () =>
     Effect.fnUntraced(function* ({ llm, dir }) {
       const capture = path.join(dir, "stop-events.jsonl")
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
         await fs.writeFile(
-          path.join(dir, ".opencode", "hooks.json"),
+          path.join(dir, ".agents", "hooks.json"),
           JSON.stringify({
             Stop: [{ hooks: [{ type: "command", command: `cat >> '${capture}'; echo >> '${capture}'` }] }],
           }),
@@ -156,9 +156,9 @@ it.live("subagent completion must not fire main-agent Stop hooks", () =>
 const writeStopCapture = (dir: string, event: "Stop" | "SubagentStop" = "Stop") =>
   Effect.promise(async () => {
     const capture = path.join(dir, "stop-events.jsonl")
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(
-      path.join(dir, ".opencode", "hooks.json"),
+      path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         [event]: [{ hooks: [{ type: "command", command: `cat >> '${capture}'; echo >> '${capture}'` }] }],
       }),
@@ -221,9 +221,9 @@ it.live("SubagentStop continue:false lands its stopReason as a user-visible noti
     Effect.fnUntraced(function* ({ llm, dir }) {
       const notice = JSON.stringify({ continue: false, stopReason: "SUBAGENT-STOPPED" })
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
         await fs.writeFile(
-          path.join(dir, ".opencode", "hooks.json"),
+          path.join(dir, ".agents", "hooks.json"),
           JSON.stringify({
             SubagentStop: [{ hooks: [{ type: "command", command: `printf '%s' '${notice}'` }] }],
           }),
@@ -261,9 +261,9 @@ it.live("failed foreground subagent still fires StopFailure", () =>
     Effect.fnUntraced(function* ({ llm, dir }) {
       const capture = path.join(dir, "stop-failure-events.jsonl")
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
         await fs.writeFile(
-          path.join(dir, ".opencode", "hooks.json"),
+          path.join(dir, ".agents", "hooks.json"),
           JSON.stringify({
             StopFailure: [{ hooks: [{ type: "command", command: `cat >> '${capture}'; echo >> '${capture}'` }] }],
           }),

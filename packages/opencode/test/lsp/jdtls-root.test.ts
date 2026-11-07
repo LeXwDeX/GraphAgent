@@ -9,7 +9,7 @@ import type { InstanceContext } from "@/project/instance-context"
 // Helpers
 // ---------------------------------------------------------------------------
 
-const tmpBase = path.join(os.tmpdir(), "opencode-jdtls-test")
+const tmpBase = path.join(os.tmpdir(), "graphagent-jdtls-test")
 
 function makeCtx(directory: string): InstanceContext {
   return { directory, worktree: "/", project: {} as any }

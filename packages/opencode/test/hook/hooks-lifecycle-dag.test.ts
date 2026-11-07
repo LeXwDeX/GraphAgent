@@ -31,7 +31,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
         )
         const handler = { type: "command", command: process.execPath, args: [script, "global"] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify(
             Object.fromEntries(
               ["SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted"].map((event) => [
@@ -41,7 +41,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
             ),
           ),
         )
-        const directory = path.join(home, ".config/opencode/agent")
+        const directory = path.join(home, ".config/graphagent/agent")
         await fs.mkdir(directory, { recursive: true })
         await fs.writeFile(
           path.join(directory, "general.md"),

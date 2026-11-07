@@ -36,8 +36,8 @@ Set a finite `timeout` appropriate to the operation; defaults vary by event and 
 ## Choose and write the file
 
 - Global: `${Global.Path.config}/hooks.json`, following XDG configuration.
-- Project: `${PROJECT_DIR}/.opencode/hooks.json`.
-- Worktree: `${WORKTREE_DIR}/.opencode/hooks.json` when separate.
+- Project: `${PROJECT_DIR}/.agents/hooks.json`.
+- Worktree: `${WORKTREE_DIR}/.agents/hooks.json` when separate.
 
 Read the destination first. Append the intended matcher block to its event array, preserving every sibling event and unrelated field. Create missing directories/files only within the chosen scope. Do not overwrite the whole existing configuration or delete unrelated hooks. Hooks require no workspace trust approval. Preserve tool permissions, HTTP hook policies, and the actual source of scoped hooks; a repository cannot grant itself a bypass startup capability.
 

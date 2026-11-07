@@ -17,7 +17,7 @@ cliIt.live("V1 SessionStart asyncRewake exit-2 wakes the legacy session", ({ hom
         `await Bun.stdin.text();await Bun.sleep(100);console.error('V1_SESSIONSTART_REWAKE');process.exit(2)`,
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           SessionStart: [
             {

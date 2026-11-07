@@ -4,7 +4,7 @@ import "testing"
 
 func TestValidateAcceptsCurrentTopLevelKeys(t *testing.T) {
 	config := map[string]any{
-		"$schema":               "https://opencode.ai/config.json",
+		"$schema":               "https://example.com/graphagent-config.json",
 		"model":                 "openai/gpt-5.5",
 		"provider":              map[string]any{},
 		"reasoningDistillation": map[string]any{"enabled": false},

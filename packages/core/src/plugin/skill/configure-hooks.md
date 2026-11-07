@@ -6,7 +6,7 @@ Hooks run a command, MCP tool, HTTP request, prompt, or agent at a local convers
 
 ## Sources and policies
 
-The file chain is `${Global.Path.config}/hooks.json`, project `.opencode/hooks.json`, then the separate worktree's `.opencode/hooks.json`. The global path follows XDG configuration (usually `~/.config/opencode`). Event arrays append across layers. Matching foreground handlers run concurrently; identical handlers matched more than once run once per trigger. Files reload after about two seconds of polling plus debounce.
+The file chain is `${Global.Path.config}/hooks.json`, project `.agents/hooks.json`, then the separate worktree's `.agents/hooks.json`. The global path follows XDG configuration (usually `~/.config/graphagent`). Event arrays append across layers. Matching foreground handlers run concurrently; identical handlers matched more than once run once per trigger. Files reload after about two seconds of polling plus debounce.
 
 Use top-level event keys. A legacy `{ "hooks": { ... } }` wrapper is accepted. `.claude/settings*.json` and deprecated OpenCode `settings.json` hook fields are not loaded as hook sources; `/import-claude-hooks` migrates them. Skill and agent frontmatter can supply scoped `hooks`; they become active when that skill or agent is actually selected. Plugin contributions retain their real plugin provenance. A project cannot label itself as a trusted user or plugin source.
 
@@ -117,7 +117,7 @@ Exit 0 permits normal processing. Exit 2 has event-specific blocking semantics. 
 
 For synchronous hooks, supported `systemMessage` output is a user-facing warning, separate from model context. Ordinary `async` command-hook results are different: both `systemMessage` and `additionalContext` are delivered only in the next model request and are not shown as user warnings. Supported `terminalSequence` output reaches terminal clients. Do not use accepted but unconsumed aliases such as `displayMessage`, `compactSummary`, or `customSummary` in new hooks. Use `displayContent` for display changes. `suppressOutput` concerns hook-output presentation, not canonical assistant text.
 
-`updatedPermissions` supports session memory, `localSettings` (`.opencode/permissions.local.json`), `projectSettings` (project OpenCode configuration), and `userSettings` (existing OpenCode user configuration). It preserves unrelated settings. `bypassPermissions` requires a separate explicit startup capability; a hook cannot grant itself that capability or override native/configured deny. There is no automatic permission classifier mode. Never map a local destination into a shared project file or write Claude configuration as a substitute.
+`updatedPermissions` supports session memory, `localSettings` (`.agents/permissions.local.json`), `projectSettings` (project OpenCode configuration), and `userSettings` (existing OpenCode user configuration). It preserves unrelated settings. `bypassPermissions` requires a separate explicit startup capability; a hook cannot grant itself that capability or override native/configured deny. There is no automatic permission classifier mode. Never map a local destination into a shared project file or write Claude configuration as a substitute.
 
 ## Async delivery and cleanup
 

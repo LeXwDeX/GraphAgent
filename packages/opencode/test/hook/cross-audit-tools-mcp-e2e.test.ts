@@ -31,7 +31,7 @@ cliIt.live(
           ...extra,
         })
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             PreToolUse: [
               { matcher: "mcp__fixture__pick", hooks: [handler("canonical-pre")] },
@@ -45,7 +45,7 @@ cliIt.live(
           }),
         )
         await fs.writeFile(
-          path.join(home, ".config/opencode/opencode.json"),
+          path.join(home, ".config/graphagent/graphagent.json"),
           JSON.stringify({
             mcp: { fixture: { type: "local", command: [process.execPath, serverScript], enabled: true } },
             permission: { "*": "ask" },

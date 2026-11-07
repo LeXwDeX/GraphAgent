@@ -18,7 +18,7 @@ import { watchSettings } from "@/hook/extensions"
 // Each test builds isolated temp dirs for the global / project / worktree scopes
 // and drives loadChain (or watchSettings) directly. loadChain's optional third
 // arg `globalConfig` points the global layer at an isolated temp dir instead of
-// the real ~/.config/opencode, so no real-machine state is touched.
+// the real ~/.config/graphagent, so no real-machine state is touched.
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -40,7 +40,7 @@ const hooksJsonWrapped = (marker: string) => ({
 })
 
 async function writeHooksJson(dir: string, json: unknown): Promise<string> {
-  const opencodeDir = path.join(dir, ".opencode")
+  const opencodeDir = path.join(dir, ".agents")
   await fs.mkdir(opencodeDir, { recursive: true })
   const file = path.join(opencodeDir, "hooks.json")
   await fs.writeFile(file, JSON.stringify(json))
@@ -55,7 +55,7 @@ async function writeGlobalHooksJson(globalDir: string, json: unknown): Promise<s
 }
 
 async function writeSettingsJson(dir: string, json: unknown): Promise<string> {
-  const opencodeDir = path.join(dir, ".opencode")
+  const opencodeDir = path.join(dir, ".agents")
   await fs.mkdir(opencodeDir, { recursive: true })
   const file = path.join(opencodeDir, "settings.json")
   await fs.writeFile(file, JSON.stringify(json))
@@ -162,7 +162,7 @@ describe("§4.3 top-level events format (no wrapper) parses correctly", () => {
       const settings = readJSON(file)
       expect(settings?.hooks?.PreToolUse?.length).toBe(1)
       expect(settings?.hooks?.PreToolUse?.[0].matcher).toBe("Bash")
-      // __sourceDir must point at the directory containing hooks.json (the .opencode dir).
+      // __sourceDir must point at the directory containing hooks.json (the .agents dir).
       expect(settings?.hooks?.PreToolUse?.[0].hooks[0].__sourceDir).toBe(path.dirname(file))
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
@@ -330,7 +330,7 @@ describe("§4.7 polling reload: modify hooks.json → reload fires with new sett
 
       const cmds = (reloaded?.hooks?.SessionStart ?? []).map((m) => m.hooks[0].command)
       expect(cmds).toContain("v2")
-      expect(changed).toBe(path.join(projectDir, ".opencode", "hooks.json"))
+      expect(changed).toBe(path.join(projectDir, ".agents", "hooks.json"))
 
       handle.close()
     } finally {
@@ -419,7 +419,7 @@ describe("P2: deleting hooks.json triggers reload (mtime from >0 to 0)", () => {
     try {
       // Start with a hooks.json that has real hooks
       await writeHooksJson(projectDir, hooksJsonTopLevel("before-delete"))
-      const hooksFile = path.join(projectDir, ".opencode", "hooks.json")
+      const hooksFile = path.join(projectDir, ".agents", "hooks.json")
 
       let reloaded: Settings | undefined
       const handle = watchSettings(

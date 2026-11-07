@@ -323,7 +323,7 @@ describe("workflow spec validator", () => {
 
     it.effect("flags id prompts as nonportable even when the project happens to own them", () =>
       Effect.gen(function* () {
-        const tmp = yield* projectDir({ ".opencode/dag-prompts/code-explore.md": "Explore {{target}}" })
+        const tmp = yield* projectDir({ ".agents/dag-prompts/code-explore.md": "Explore {{target}}" })
         const result = yield* validateSpec({
           value: {
             config: {
@@ -377,7 +377,7 @@ describe("workflow spec validator", () => {
     it.effect("resolves a project prompt and validates its bindings", () =>
       Effect.gen(function* () {
         const tmp = yield* projectDir({
-          ".opencode/dag-prompts/code-explore.md": "Explore {{target}} and {{missing}}",
+          ".agents/dag-prompts/code-explore.md": "Explore {{target}} and {{missing}}",
         })
         const result = yield* validateSpec({
           value: {
@@ -445,8 +445,8 @@ describe("workflow spec validator", () => {
             await fs.rm(linkedPath, { recursive: true, force: true })
           }),
         )
-        const workspacePrompts = path.join(workspace, ".opencode", "dag-prompts")
-        const ownerPrompts = path.join(owner, ".opencode", "dag-prompts")
+        const workspacePrompts = path.join(workspace, ".agents", "dag-prompts")
+        const ownerPrompts = path.join(owner, ".agents", "dag-prompts")
         const workspaceOnly = `workspace-only-${Math.random().toString(36).slice(2)}`
         const ownerOnly = `owner-only-${Math.random().toString(36).slice(2)}`
         yield* Effect.promise(async () => {

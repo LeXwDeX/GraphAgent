@@ -72,9 +72,9 @@ describe("retired workspace trust compatibility", () => {
                   PostToolUse: [{ hooks: [command("GLOBAL_HOOK")] }],
                 }),
               )
-              await fs.mkdir(path.join(instance.directory, ".opencode"), { recursive: true })
+              await fs.mkdir(path.join(instance.directory, ".agents"), { recursive: true })
               await fs.writeFile(
-                path.join(instance.directory, ".opencode/hooks.json"),
+                path.join(instance.directory, ".agents/hooks.json"),
                 JSON.stringify({
                   requireTrust: true,
                   allowUntrusted: false,

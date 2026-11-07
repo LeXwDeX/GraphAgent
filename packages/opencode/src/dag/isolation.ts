@@ -17,6 +17,7 @@ import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, normalize, sep } from "node:path"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 
 export type WorktreeState = "active" | "removed" | "kept"
 
@@ -209,7 +210,7 @@ export function writePatchArtifact(
   nodeID: string,
   patch: string,
 ): { path: string; sha256: string } {
-  const directory = join(reportRoot, ".opencode", "workflow-reports", safePathComponent(dagID, "workflow ID"))
+  const directory = join(reportRoot, PROJECT_DIR, "workflow-reports", safePathComponent(dagID, "workflow ID"))
   mkdirSync(directory, { recursive: true })
   const path = join(directory, `${safePathComponent(nodeID, "node ID")}.patch`)
   writeFileSync(path, patch)

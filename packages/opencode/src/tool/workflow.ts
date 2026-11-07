@@ -21,6 +21,7 @@ import { isOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "@/
 import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
 import type { DagEvent } from "@opencode-ai/schema/dag-event"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { argumentAction, bound, formatSchemaFailures } from "./schema-error"
@@ -177,7 +178,7 @@ const Guide = Schema.Struct({
 const Draft = Schema.Struct({
   action: Schema.Literal("draft").annotate({
     description:
-      "Write a new YAML START spec under .opencode/workflow-drafts/ and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
+      "Write a new YAML START spec under .agents/workflow-drafts/ and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
   }),
   title: Schema.optional(Schema.String).annotate({ description: "Optional workflow title" }),
   config: DagValidation.WorkflowGraphSchema.annotate({
@@ -1235,7 +1236,7 @@ function blockedMetadata(diagnostics: Diagnostic[]): Metadata {
   }
 }
 
-const DRAFT_DIRECTORY = path.join(".opencode", "workflow-drafts")
+const DRAFT_DIRECTORY = path.join(PROJECT_DIR, "workflow-drafts")
 const DRAFT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_]*$/
 
 class DraftWriteError extends Schema.TaggedError<DraftWriteError>()("WorkflowDraftWriteError", {
@@ -1378,7 +1379,7 @@ function resolveSpecPath(specPath: string, directory: string, ctx: Tool.Context)
     // `builtin://name` marker list output advertises must round-trip the same
     // way: strip the scheme and resolve by name instead of letting the path
     // branch reject it with a cwd-joined extension error. Its project/global
-    // scopes are curated assets the user placed under `.opencode/` or the
+    // scopes are curated assets the user placed under `.agents/` or the
     // config dir — the same trust level as dag.jsonc — so a resolved name
     // needs no external-directory prompt even when the global scope lands
     // outside the session directory. Arbitrary paths below keep the prompt.

@@ -140,7 +140,7 @@ describe("memory maintenance end to end (issue #395)", () => {
           const project = yield* Project.Service
           const registered = yield* project.fromDirectory(dir)
           yield* project.setInitialized(registered.project.id)
-          const configDir = path.join(dir, ".opencode")
+          const configDir = path.join(dir, ".agents")
           yield* Effect.promise(() => fs.mkdir(configDir, { recursive: true }))
           yield* Effect.promise(() => fs.writeFile(path.join(configDir, "memory.jsonc"), JSON.stringify(memoryConfig)))
 

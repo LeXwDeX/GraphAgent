@@ -2,6 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "child_process"
 import path from "path"
 import os from "os"
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { text } from "node:stream/consumers"
 import fs from "fs/promises"
 import { Filesystem } from "@/util/filesystem"
@@ -1243,7 +1244,7 @@ export const JDTLS: Info = {
         }
       })(),
     )
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-jdtls-data"))
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `${APP_NAME}-jdtls-data`))
     return {
       process: spawn(
         java,

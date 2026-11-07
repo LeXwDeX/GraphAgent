@@ -39,7 +39,7 @@ type TuiAttentionHost = TuiAttention & {
 }
 
 const DEFAULT_TITLE = "opencode"
-const DEFAULT_PACK_ID = "opencode.default"
+const DEFAULT_PACK_ID = "graphagent.default"
 const KV_SOUND_PACK = "attention_sound_pack"
 const TITLE_LIMIT = 80
 const MESSAGE_LIMIT = 240

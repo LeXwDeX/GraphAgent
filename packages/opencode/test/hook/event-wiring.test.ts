@@ -247,7 +247,7 @@ const settingsEnv = SettingsHook.layer.pipe(
 
 const settingsIt = testEffect(settingsEnv)
 
-const opencodeDir = (dir: string) => path.join(dir, ".opencode")
+const opencodeDir = (dir: string) => path.join(dir, ".agents")
 const hooksPath = (dir: string) => path.join(opencodeDir(dir), "hooks.json")
 const markerPath = (dir: string) => path.join(dir, "configchange-fired")
 

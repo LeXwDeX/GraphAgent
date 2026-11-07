@@ -23,7 +23,7 @@ const makeDb = EffectDrizzleSqlite.makeWithDefaults()
 
 // Seeds an application-created LEGACY database shape: WAL initialized,
 // auto_vacuum left at its NONE default, real migrations applied, user rows
-// present. Disposable temp files only — never a real opencode.db path.
+// present. Disposable temp files only — never a real graphagent.db path.
 const seedLegacyDatabase = (filename: string) =>
   Effect.runPromise(
     Effect.gen(function* () {

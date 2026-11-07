@@ -85,7 +85,7 @@ const worktreeLifecycleStartInput = {
 const worktreeLifecyclePathInput = {
   params: {
     action: "start",
-    spec_path: ".opencode/workflows/worktree-lifecycle-repair.yaml",
+    spec_path: ".agents/workflows/worktree-lifecycle-repair.yaml",
   },
 } as const
 

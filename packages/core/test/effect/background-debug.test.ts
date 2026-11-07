@@ -30,7 +30,7 @@ async function run(level: string, printLogs: string, mode = "normal") {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ])
-    const log = await fs.readFile(path.join(root, "opencode", "log", "opencode.log"), "utf8").catch(() => "")
+    const log = await fs.readFile(path.join(root, "graphagent", "log", "graphagent.log"), "utf8").catch(() => "")
     return {
       code,
       stdout,

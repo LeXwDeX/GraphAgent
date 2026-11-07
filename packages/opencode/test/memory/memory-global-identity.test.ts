@@ -238,7 +238,7 @@ describe("MEM-PR01-R1-23: the runtime admission snapshot covers every registered
             yield* configStore.writeGlobal(baseConfig)
 
             // The only legacy topic lives in the sandbox, not the primary.
-            const legacyDir = path.join(sandbox, ".opencode", "memory", "topics")
+            const legacyDir = path.join(sandbox, ".agents", "memory", "topics")
             fs.mkdirSync(legacyDir, { recursive: true })
             const seeded = topic()
             fs.writeFileSync(path.join(legacyDir, `${seeded.id}.yaml`), stringify(seeded))
@@ -303,7 +303,7 @@ describe("MEM-PR01-R1-07: /memory writes the Project config to the primary direc
             const written = yield* configStore.load(info.worktree)
             expect(written?.config.enabled).toBe(true)
             expect(written?.level).toBe("project")
-            expect(fs.existsSync(path.join(elsewhere, ".opencode", "memory.jsonc"))).toBe(false)
+            expect(fs.existsSync(path.join(elsewhere, ".agents", "memory.jsonc"))).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
       }),
@@ -375,7 +375,7 @@ describe("MEM-PR01-00: memory is inert under the shared global identity", () => 
             // #350: says WHY (commit-less repo under the shared global
             // identity) instead of the bare "remains off".
             expect(yield* memory.setEnabled(true)).toContain("unavailable")
-            expect(fs.existsSync(path.join(dir, ".opencode", "memory.jsonc"))).toBe(false)
+            expect(fs.existsSync(path.join(dir, ".agents", "memory.jsonc"))).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
       }),

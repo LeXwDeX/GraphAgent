@@ -28,9 +28,9 @@ const ctxHook = (marker: string) => ({
 // /import-claude-hooks imports such matchers "as-is".
 const write = (dir: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(
-      path.join(dir, ".opencode", "hooks.json"),
+      path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         SessionStart: [
           { matcher: "startup", hooks: [ctxHook("session-start-startup")] },
@@ -132,10 +132,10 @@ const markerHook = (file: string) => ({
 
 const writeMarkers = (dir: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     const marker = (name: string) => markerHook(path.join(dir, `marker-${name}`))
     await fs.writeFile(
-      path.join(dir, ".opencode", "hooks.json"),
+      path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         ConfigChange: [{ matcher: "project_settings", hooks: [marker("config-change")] }],
         StopFailure: [{ matcher: "rate_limit|overloaded", hooks: [marker("stop-failure")] }],
@@ -305,9 +305,9 @@ const denySwitch = {
 
 const writeModel = (dir: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(
-      path.join(dir, ".opencode", "hooks.json"),
+      path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         PreModelSwitch: [{ matcher: "claude-sonnet-4", hooks: [denySwitch] }],
         PostModelSwitch: [{ matcher: "claude-opus-4|claude-haiku-4-5", hooks: [ctxHook("post-canonical")] }],

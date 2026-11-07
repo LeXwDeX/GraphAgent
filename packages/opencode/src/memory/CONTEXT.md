@@ -13,7 +13,7 @@ Project Memory preserves user-confirmed, durable human context for one Project. 
 The domain runs on the existing seams; the elaborate `ProjectMemoryAuthority` redesign (ADR-0004) was **Rejected**. The authoritative pieces are:
 
 - **MemoryStore** (`store.ts`) — generation+manifest persistence for Topics. Strict reads (`readSnapshot`/`inspectTopics`) fail closed on a corrupt or missing generation; the runtime read (`readTopics`) is lenient and projects empty.
-- **MemoryConfig** (`config.ts`) — the unversioned `.opencode/memory.jsonc` policy. Writes serialize on a per-file cross-process flock (`memory-config:<file>`).
+- **MemoryConfig** (`config.ts`) — the unversioned `.agents/memory.jsonc` policy. Writes serialize on a per-file cross-process flock (`memory-config:<file>`).
 - **MemoryAdmission** (`admission.ts`) — the single legacy-input seam: scans one Project snapshot, reconciles once, caches only conflict-free results.
 - **MemoryIdentityMigration** (`identity-migration.ts`) — `migrateHome(oldID, newID)`: rename when the target is absent, merge-then-remove otherwise; fails closed on conflict or an unread source.
 - **Worktree guard** (`worktree/index.ts`) — `list()` is a pure observation path; `remove`/`reset` reconcile legacy memory fail-closed against the full directory snapshot and always invalidate the admission cache first.
@@ -28,7 +28,7 @@ The domain runs on the existing seams; the elaborate `ProjectMemoryAuthority` re
 | Topic | A bounded structured collection of confirmed preferences, decisions, or terms with controller-owned metadata. |
 | Legacy Worktree Memory | Memory files stored inside a checkout by an older runtime. They are migration inputs, never a second authoritative store. |
 | Memory Conflict | A case where legacy and Project Memory claim the same logical identity with different **content**, or where legacy configuration differs from the effective Project configuration. Controller metadata drift is not a conflict. |
-| Project Configuration | The MEMORY policy owned by the Project's primary directory (`.opencode/memory.jsonc`). It is unversioned; writes are serialized per file, not atomic with Topics. |
+| Project Configuration | The MEMORY policy owned by the Project's primary directory (`.agents/memory.jsonc`). It is unversioned; writes are serialized per file, not atomic with Topics. |
 | Memory Admission | The single legacy input seam that scans one Project snapshot, reconciles it once, and caches only conflict-free results. |
 | Identity upgrade | The one-way transition when a repo gains a durable identity (root → first-remote, or a changed remote). Memory is migrated before the old Project row is deleted; nothing is forked. |
 | Global identity | The shared fallback identity of commit-less repositories. Memory is fail-closed **inert** under it: one Project = one Memory, and a shared bucket would leak across repos and orphan at the first commit. |

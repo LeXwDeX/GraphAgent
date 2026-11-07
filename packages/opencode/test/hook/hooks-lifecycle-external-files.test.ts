@@ -12,7 +12,7 @@ cliIt.live(
       const audit = path.join(home, "watch-audit.jsonl")
       yield* Effect.promise(async () => {
         await fs.writeFile(
-          path.join(home, ".config/opencode/opencode.json"),
+          path.join(home, ".config/graphagent/graphagent.json"),
           JSON.stringify({ hookPermissions: { mode: "acceptEdits" } }),
         )
         await fs.writeFile(
@@ -21,7 +21,7 @@ cliIt.live(
         )
         const entry = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({ SessionStart: [{ hooks: [entry] }], FileChanged: [{ hooks: [entry] }] }),
         )
       })

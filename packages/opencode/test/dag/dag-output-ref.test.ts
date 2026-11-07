@@ -341,7 +341,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
   it("B-p4(a) writes the report-area entry to info/exclude instead of the project .gitignore", async () => {
     const projectDir = await gitTmpRoot("dag-ref-proj-")
     await Bun.write(path.join(projectDir, "existing-code.ts"), "export const x = 1\n")
-    const reportArea = path.join(projectDir, ".opencode", "workflow-reports")
+    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "run-1.md")
     await Bun.write(reportPath, "# report\n")
@@ -350,7 +350,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(expect.stringContaining("workflow-artifacts"))
     expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
     const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude.split("\n").map((line) => line.trim())).toContain(".opencode/workflow-reports/")
+    expect(exclude.split("\n").map((line) => line.trim())).toContain(".agents/workflow-reports/")
     expect(await isIgnored(projectDir, reportPath)).toBe(true)
     expect(await $`git -C ${projectDir} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
   })
@@ -358,7 +358,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
   it("B-p4(b) is append-only and idempotent: pre-existing entries survive, the report entry lands exactly once", async () => {
     const projectDir = await gitTmpRoot("dag-ref-proj-")
     await Bun.write(path.join(projectDir, ".gitignore"), "node_modules\n*.log\n")
-    const reportArea = path.join(projectDir, ".opencode", "workflow-reports")
+    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "run-2.md")
     await Bun.write(reportPath, "# report 2\n")
@@ -370,7 +370,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     expect(secondEvents.find((event) => event.type === "nodeCompleted")).toBeDefined()
     const exclude = await Bun.file(excludePath(projectDir)).text()
     const lines = exclude.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
-    expect(lines.filter((line) => line === ".opencode/workflow-reports/")).toHaveLength(1)
+    expect(lines.filter((line) => line === ".agents/workflow-reports/")).toHaveLength(1)
     expect(await Bun.file(path.join(projectDir, ".gitignore")).text()).toBe("node_modules\n*.log\n")
   })
 
@@ -396,7 +396,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     const projectDir = await gitTmpRoot("dag-ref-repo-")
     const subdir = path.join(projectDir, "packages", "pkg-a")
     await fs.mkdir(subdir, { recursive: true })
-    const reportArea = path.join(projectDir, ".opencode", "workflow-reports")
+    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "run.md")
     await Bun.write(reportPath, "# canonical root report\n")
@@ -405,7 +405,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     expect(events.find((event) => event.type === "nodeCompleted")).toBeDefined()
     expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
     const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude).toContain(".opencode/workflow-reports/")
+    expect(exclude).toContain(".agents/workflow-reports/")
     expect(exclude).not.toContain("packages/pkg-a/")
     expect(await isIgnored(projectDir, reportPath)).toBe(true)
     expect(await $`git -C ${projectDir} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
@@ -414,12 +414,12 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
   it("B-p4(d2) keeps legacy subdirectory report refs ignored with a repository-relative entry", async () => {
     const projectDir = await gitTmpRoot("dag-ref-legacy-")
     const subdir = path.join(projectDir, "packages", "pkg-a")
-    const reportArea = path.join(subdir, ".opencode", "workflow-reports")
+    const reportArea = path.join(subdir, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "old.md")
     await Bun.write(reportPath, "# legacy report\n")
     await Effect.runPromise(ensureReportAreaGitignore(subdir, reportPath))
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain("packages/pkg-a/.opencode/workflow-reports/")
+    expect(await Bun.file(excludePath(projectDir)).text()).toContain("packages/pkg-a/.agents/workflow-reports/")
     expect(await isIgnored(projectDir, reportPath)).toBe(true)
     expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
   })
@@ -429,17 +429,17 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     const name =
       process.platform === "win32" ? "#hash !bang [bracket]" : "#hash !bang *star ?question [bracket] \\slash "
     const subdir = path.join(projectDir, "packages", name)
-    const reportArea = path.join(subdir, ".opencode", "workflow-reports")
+    const reportArea = path.join(subdir, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "report.md")
     await Bun.write(reportPath, "# adversarial report\n")
     const decoyName = process.platform === "win32" ? "#hash !bang b" : "#hash !bang xstar xquestion b slash "
-    const decoyArea = path.join(projectDir, "packages", decoyName, ".opencode", "workflow-reports")
+    const decoyArea = path.join(projectDir, "packages", decoyName, ".agents", "workflow-reports")
     await fs.mkdir(decoyArea, { recursive: true })
     const decoy = path.join(decoyArea, "decoy.md")
     await Bun.write(decoy, "# unrelated\n")
     await fs.mkdir(path.dirname(excludePath(projectDir)), { recursive: true })
-    await Bun.write(excludePath(projectDir), `packages/${name}/.opencode/workflow-reports/\n`)
+    await Bun.write(excludePath(projectDir), `packages/${name}/.agents/workflow-reports/\n`)
     expect(await isIgnored(projectDir, decoy)).toBe(true)
     await Bun.write(excludePath(projectDir), "")
     await Effect.runPromise(ensureReportAreaGitignore(subdir, reportPath))
@@ -458,11 +458,11 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     for (const name of ["#hash", "!bang"]) {
       const projectDir = await gitTmpRoot("dag-ref-leading-")
       const subdir = path.join(projectDir, name)
-      await fs.mkdir(path.join(subdir, ".opencode", "workflow-reports"), { recursive: true })
-      const report = path.join(subdir, ".opencode", "workflow-reports", "report.md")
+      await fs.mkdir(path.join(subdir, ".agents", "workflow-reports"), { recursive: true })
+      const report = path.join(subdir, ".agents", "workflow-reports", "report.md")
       await Bun.write(report, "# leading marker\n")
       await Effect.runPromise(ensureReportAreaGitignore(subdir, report))
-      expect(await Bun.file(excludePath(projectDir)).text()).toContain(`\\${name}/.opencode/workflow-reports/`)
+      expect(await Bun.file(excludePath(projectDir)).text()).toContain(`\\${name}/.agents/workflow-reports/`)
       expect(await isIgnored(projectDir, report)).toBe(true)
     }
   })
@@ -472,7 +472,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     const root = await fs.realpath(projectDir)
     const subdir = path.join(projectDir, "packages", "app")
     await fs.mkdir(subdir, { recursive: true })
-    const reportArea = path.join(projectDir, ".opencode", "workflow-reports")
+    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "report.md")
     await Bun.write(reportPath, "# root report\n")
@@ -495,10 +495,10 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     const json = directive!.split("\n").find((line) => line.startsWith('{"report_directory"'))
     expect(json).toBeDefined()
     const payload = JSON.parse(json!) as { report_directory: string }
-    expect(payload.report_directory).toBe(`${path.join(root, ".opencode", "workflow-reports")}${path.sep}`)
-    expect(prompt).not.toContain(path.join(subdir, ".opencode", "workflow-reports"))
+    expect(payload.report_directory).toBe(`${path.join(root, ".agents", "workflow-reports")}${path.sep}`)
+    expect(prompt).not.toContain(path.join(subdir, ".agents", "workflow-reports"))
     expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".opencode/workflow-reports/")
+    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".agents/workflow-reports/")
     expect(await isIgnored(projectDir, reportPath)).toBe(true)
   })
 
@@ -522,7 +522,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     expect(json).toBeDefined()
     const payload = JSON.parse(json!) as { report_directory: string }
     const root = path.join(await fs.realpath(parent), name)
-    const expected = `${path.join(root, ".opencode", "workflow-reports")}${path.sep}`
+    const expected = `${path.join(root, ".agents", "workflow-reports")}${path.sep}`
     // On win32 the path separators must survive JSON escaping; elsewhere the
     // name also carries a quote, a backslash, a tab, and an ESC byte.
     expect(payload.report_directory).toBe(expected)
@@ -557,7 +557,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
 
   it("B-p4(d4) rejects dot segments that only look like the report area", async () => {
     const projectDir = await gitTmpRoot("dag-ref-dotdot-")
-    const secret = path.join(projectDir, ".opencode", "secret.md")
+    const secret = path.join(projectDir, ".agents", "secret.md")
     await fs.mkdir(path.dirname(secret), { recursive: true })
     await Bun.write(secret, "# not a report\n")
     const disguised = `${path.join(projectDir, REPORT_AREA)}${path.sep}..${path.sep}secret.md`
@@ -575,7 +575,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     await fs.mkdir(path.join(projectDir, REPORT_AREA), { recursive: true })
     await Bun.write(reportPath, "# report\n")
     await Effect.runPromise(ensureReportAreaGitignore(projectDir, reportPath))
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".opencode/workflow-reports/")
+    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".agents/workflow-reports/")
     expect(await isIgnored(projectDir, path.resolve(reportPath))).toBe(true)
   })
 
@@ -585,7 +585,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     const worktree = await tmpRoot("dag-ref-wt-")
     await fs.rm(worktree, { recursive: true, force: true })
     await $`git -C ${projectDir} worktree add --detach ${worktree}`.quiet()
-    const reportArea = path.join(worktree, ".opencode", "workflow-reports")
+    const reportArea = path.join(worktree, ".agents", "workflow-reports")
     await fs.mkdir(reportArea, { recursive: true })
     const reportPath = path.join(reportArea, "run.md")
     await Bun.write(reportPath, "# worktree report\n")
@@ -593,7 +593,7 @@ describe("report-area exclude entry (Train B, B-p4)", () => {
     await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(worktree))
     expect(events.find((event) => event.type === "nodeCompleted")).toBeDefined()
     expect(await Bun.file(path.join(worktree, ".gitignore")).exists()).toBe(false)
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".opencode/workflow-reports/")
+    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".agents/workflow-reports/")
     expect(await isIgnored(worktree, reportPath)).toBe(true)
     expect(await $`git -C ${worktree} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
   })
@@ -672,7 +672,7 @@ describe("output-ref module rules (Train B, post-feature units)", () => {
       }
       const refPath = path.join(projectDir, REPORT_AREA, "x.md")
       await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-      expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe(".opencode/workflow-reports/\n")
+      expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe(".agents/workflow-reports/\n")
       expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
     }
   })
@@ -683,11 +683,11 @@ describe("output-ref module rules (Train B, post-feature units)", () => {
     await Bun.write(excludePath(projectDir), "node_modules")
     const refPath = path.join(projectDir, REPORT_AREA, "x.md")
     await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-    expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe("node_modules\n.opencode/workflow-reports/\n")
+    expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe("node_modules\n.agents/workflow-reports/\n")
   })
 
   it("leaves the exclude file byte-identical when an entry or a slashless variant already exists", async () => {
-    for (const covering of [".opencode/workflow-reports/", ".opencode/workflow-reports"]) {
+    for (const covering of [".agents/workflow-reports/", ".agents/workflow-reports"]) {
       const projectDir = await gitTmpRoot("dag-ref-proj-")
       await fs.mkdir(path.join(projectDir, ".git", "info"), { recursive: true })
       const before = `${covering}\nkeep-me\n`
@@ -734,6 +734,6 @@ describe("output-ref module rules (Train B, post-feature units)", () => {
       Effect.all(refs.map((ref) => ensureReportAreaGitignore(projectDir, ref)), { concurrency: "unbounded" }),
     )
     const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude.split("\n").filter((line) => line === ".opencode/workflow-reports/")).toHaveLength(1)
+    expect(exclude.split("\n").filter((line) => line === ".agents/workflow-reports/")).toHaveLength(1)
   })
 })

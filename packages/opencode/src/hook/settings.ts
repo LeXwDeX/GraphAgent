@@ -5,12 +5,12 @@
  * top of earlier ones, mirroring Claude Code's merge semantics — hooks
  * accumulate, they do not replace):
  *
- *   1. ~/.config/opencode/hooks.json            (global, hot-reloaded)
- *   2. <project>/.opencode/hooks.json           (project, hot-reloaded)
- *   3. <worktree>/.opencode/hooks.json          (worktree, hot-reloaded, when ≠ project)
+ *   1. ~/.config/graphagent/hooks.json         (global, hot-reloaded)
+ *   2. <project>/.agents/hooks.json            (project, hot-reloaded)
+ *   3. <worktree>/.agents/hooks.json           (worktree, hot-reloaded, when ≠ project)
  *
  * `.claude/` directories are NOT read for hooks (complete cut); a leftover
- * `hooks` field in OpenCode-owned settings.json files triggers a one-time
+ * `hooks` field in GraphAgent-owned settings.json files triggers a one-time
  * deprecation warning pointing at /import-claude-hooks (hooks there are ignored).
  *
  * Supports the Claude Code hook event surface at the protocol/schema layer.
@@ -62,6 +62,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import * as Log from "@/util/log"
 import { Process } from "@/util/process"
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME, PROJECT_DIR } from "@opencode-ai/core/brand"
 import { InstanceState } from "@/effect/instance-state"
 import { MCP } from "@/mcp"
 import { mcpHookOptions } from "@/mcp/elicitation-binding"
@@ -191,8 +192,8 @@ export interface HookCommand {
    * default (/bin/sh on POSIX, platform shell on Windows).
    */
   shell?: "bash" | "powershell"
-  /** Per-handler compatibility adapter. Omitted or opencode preserves the native envelope. */
-  inputFormat?: "opencode" | "claude-code"
+  /** Per-handler compatibility adapter. Omitted or graphagent preserves the native envelope. */
+  inputFormat?: "graphagent" | "claude-code"
   /**
    * Conditional gate, evaluated by `extensions/condition-filter.ts` in
    * `ForkHooks.beforeRunEntry` BEFORE each matched entry runs (returning false
@@ -1189,9 +1190,9 @@ export function mergeSettings(layers: Settings[]): Settings {
 }
 
 /**
- * Resolve the OpenCode global config directory. Uses the explicit override
+ * Resolve the GraphAgent global config directory. Uses the explicit override
  * when provided (tests), otherwise falls back to `Global.Path.config` with a
- * `~/.config/opencode` default. Shared by chainCandidates and loadChain so
+ * `~/.config/graphagent` default. Shared by chainCandidates and loadChain so
  * the fallback logic exists in exactly one place.
  */
 function resolveGlobalConfig(globalConfig?: string): string {
@@ -1199,7 +1200,7 @@ function resolveGlobalConfig(globalConfig?: string): string {
   try {
     return Global.Path.config
   } catch {
-    return path.join(os.homedir(), ".config", "opencode")
+    return path.join(os.homedir(), ".config", APP_NAME)
   }
 }
 
@@ -1213,13 +1214,13 @@ function chainCandidates(
   worktree: string,
   globalConfig?: string,
 ): Array<{ scope: "global" | "project" | "worktree"; file: string }> {
-  const opencodeGlobal = resolveGlobalConfig(globalConfig)
+  const globalConfigDir = resolveGlobalConfig(globalConfig)
   const candidates: Array<{ scope: "global" | "project" | "worktree"; file: string }> = [
-    { scope: "global", file: path.join(opencodeGlobal, "hooks.json") },
-    { scope: "project", file: path.join(directory, ".opencode", "hooks.json") },
+    { scope: "global", file: path.join(globalConfigDir, "hooks.json") },
+    { scope: "project", file: path.join(directory, PROJECT_DIR, "hooks.json") },
   ]
   if (hasWorktreeLayer(directory, worktree)) {
-    candidates.push({ scope: "worktree", file: path.join(worktree, ".opencode", "hooks.json") })
+    candidates.push({ scope: "worktree", file: path.join(worktree, PROJECT_DIR, "hooks.json") })
   }
   return candidates
 }
@@ -1286,8 +1287,8 @@ export function summarizeChain(directory: string, worktree: string, globalConfig
 }
 
 // Exported for unit testing only; not part of the public surface.
-// `globalConfig` overrides the resolved OpenCode global config dir so tests can
-// point it at an isolated temp dir instead of the real ~/.config/opencode.
+// `globalConfig` overrides the resolved GraphAgent global config dir so tests can
+// point it at an isolated temp dir instead of the real ~/.config/graphagent.
 export function loadChain(directory: string, worktree: string, globalConfig?: string): Settings {
   return loadChainWithSummaries(directory, worktree, globalConfig).settings
 }
@@ -1311,8 +1312,8 @@ export function loadChainWithSummaries(
   // the only signal. `.claude/` files are never scanned (silent ignore per spec).
   // Lives outside readChain because it reads settings.json (not hooks.json) and
   // is irrelevant to the summary.
-  const opencodeGlobal = resolveGlobalConfig(globalConfig)
-  for (const fp of deprecatedSettingsPaths(opencodeGlobal, directory, worktree)) {
+  const globalConfigDir = resolveGlobalConfig(globalConfig)
+  for (const fp of deprecatedSettingsPaths(globalConfigDir, directory, worktree)) {
     warnDeprecatedHooksField(fp)
   }
 
@@ -1334,16 +1335,16 @@ const warnedDeprecatedHooks = new Set<string>()
  * `.claude/` is deliberately excluded (silent ignore). Used by the deprecation
  * scan so users who had hooks in settings.json learn they moved to hooks.json.
  */
-function deprecatedSettingsPaths(opencodeGlobal: string, directory: string, worktree: string): string[] {
+function deprecatedSettingsPaths(globalConfigDir: string, directory: string, worktree: string): string[] {
   const paths = [
-    path.join(opencodeGlobal, "settings.json"),
-    path.join(directory, ".opencode", "settings.json"),
-    path.join(directory, ".opencode", "settings.local.json"),
+    path.join(globalConfigDir, "settings.json"),
+    path.join(directory, PROJECT_DIR, "settings.json"),
+    path.join(directory, PROJECT_DIR, "settings.local.json"),
   ]
   if (hasWorktreeLayer(directory, worktree)) {
     paths.push(
-      path.join(worktree, ".opencode", "settings.json"),
-      path.join(worktree, ".opencode", "settings.local.json"),
+      path.join(worktree, PROJECT_DIR, "settings.json"),
+      path.join(worktree, PROJECT_DIR, "settings.local.json"),
     )
   }
   return paths

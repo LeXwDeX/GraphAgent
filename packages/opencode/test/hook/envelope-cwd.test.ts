@@ -48,7 +48,7 @@ const capture = (payload: HookPayload) =>
       event: payload.event,
       matcher: "*",
       hooks: [
-        { type: "command", command, inputFormat: "opencode" },
+        { type: "command", command, inputFormat: "graphagent" },
         { type: "command", command, inputFormat: "claude-code" },
       ],
     })

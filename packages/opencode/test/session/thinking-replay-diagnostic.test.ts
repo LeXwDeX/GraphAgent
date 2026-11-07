@@ -121,7 +121,7 @@ for (const mode of ["default", "debug", "without-layer"] as const)
       expect(code).toBe(0)
       expect(stdout).toBe("")
       expect(stderr).toBe("")
-      const file = Bun.file(path.join(directory, "data/opencode/log/opencode.log"))
+      const file = Bun.file(path.join(directory, "data/graphagent/log/graphagent.log"))
       const logs = (await file.exists()) ? await file.text() : ""
       if (mode === "debug") {
         expect(logs).toContain('message="thinking replay error"')
@@ -175,7 +175,7 @@ for (const runtime of ["sdk", "native"] as const)
         return ${runtime === "native" ? 'new Response(`event: error\\ndata: ${JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } })}\\n\\n`, { headers: { "content-type": "text/event-stream" } })' : 'Response.json({ type: "error", error: { type: "invalid_request_error", message } }, { status: 400, headers: { "request-id": "req_fixture_error" } })'}
       } })
       const directory = ${JSON.stringify(directory)}
-      await Bun.write(directory + "/opencode.json", JSON.stringify({ enabled_providers: ["fixture"], provider: { fixture: { npm: "@ai-sdk/anthropic", options: { apiKey: "PRIVATE_FIXTURE_KEY", baseURL: server.url.origin + "/v1" }, models: { "claude-haiku-5-5": { name: "Synthetic Haiku", limit: { context: 100000, output: 2048 } } } } } }))
+      await Bun.write(directory + "/graphagent.json", JSON.stringify({ enabled_providers: ["fixture"], provider: { fixture: { npm: "@ai-sdk/anthropic", options: { apiKey: "PRIVATE_FIXTURE_KEY", baseURL: server.url.origin + "/v1" }, models: { "claude-haiku-5-5": { name: "Synthetic Haiku", limit: { context: 100000, output: 2048 } } } } } }))
       try {
         await AppRuntime.runPromise(InstanceStore.Service.use(store => store.provide({ directory }, Effect.gen(function* () {
           const provider = yield* Provider.Service
@@ -220,7 +220,7 @@ for (const runtime of ["sdk", "native"] as const)
       expect(stderr).not.toContain("PRIVATE_")
       expect(stdout + stderr).not.toContain("thinking replay error")
       expect(stdout + stderr).not.toContain("stream error")
-      const logs = await Bun.file(path.join(directory, "data/opencode/log/opencode.log")).text()
+      const logs = await Bun.file(path.join(directory, "data/graphagent/log/graphagent.log")).text()
       const diagnostic = logs.split("\n").filter((line) => line.includes('message="thinking replay'))
       expect(
         diagnostic.some(

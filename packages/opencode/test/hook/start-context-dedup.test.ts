@@ -25,9 +25,9 @@ const command = (event: string) =>
 
 const write = (events: readonly string[]) => (dir: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(
-      path.join(dir, ".opencode", "hooks.json"),
+      path.join(dir, ".agents", "hooks.json"),
       JSON.stringify(
         Object.fromEntries(events.map((event) => [event, [{ hooks: [{ type: "command", command: command(event) }] }]])),
       ),

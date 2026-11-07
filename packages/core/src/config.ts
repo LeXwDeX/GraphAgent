@@ -26,6 +26,7 @@ import { ToolBudget } from "./session/tool-budget"
 import { ConfigWatcher } from "./config/watcher"
 import { ConfigV1 } from "./v1/config/config"
 import { ConfigMigrateV1 } from "./v1/config/migrate"
+import { CONFIG_BASENAME, PROJECT_DIR } from "./brand"
 
 export class Info extends Schema.Class<Info>("Config.Info")({
   $schema: Schema.optional(Schema.String).annotate({
@@ -95,7 +96,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   reasoningDistillation: ConfigReasoningDistillation.Info.pipe(Schema.optional).annotate({
     description:
-      "Reasoning distillation of returned model thoughts (default-off; set `enabled: true` in opencode.json to turn it on; signed, encrypted or unknown provider reasoning is never rewritten; `language` selects zh (default) or en)",
+      `Reasoning distillation of returned model thoughts (default-off; set \`enabled: true\` in ${CONFIG_BASENAME}.json to turn it on; signed, encrypted or unknown provider reasoning is never rewritten; \`language\` selects zh (default) or en)`,
   }),
   skills: Schema.String.pipe(Schema.Array, Schema.optional).annotate({
     description: "Additional paths or URLs to discover skills from",
@@ -147,7 +148,7 @@ export const layer = Layer.effect(
     const global = yield* Global.Service
     const location = yield* Location.Service
     const policy = yield* Policy.Service
-    const names = ["config.json", "opencode.json", "opencode.jsonc"]
+    const names = ["config.json", `${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]
     const decodeOptions = { errors: "all", onExcessProperty: "ignore", propertyOrder: "original" } as const
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
@@ -198,7 +199,7 @@ export const layer = Layer.effect(
       const discovered = locationIsGlobal
         ? []
         : yield* fs.up({
-            targets: [".opencode", ...names.toReversed()],
+            targets: [PROJECT_DIR, ...names.toReversed()],
             start: location.directory,
             stop: location.project.directory,
           })
@@ -206,21 +207,21 @@ export const layer = Layer.effect(
       const directories = [
         globalDirectory,
         ...discovered
-          .filter((item) => path.basename(item) === ".opencode")
+          .filter((item) => path.basename(item) === PROJECT_DIR)
           .toReversed()
           .map((directory) => AbsolutePath.make(directory)),
       ]
       // A config closer to the opened directory should win over one higher up.
       // Search starts nearby, so reverse the results before applying them.
-      const directPaths = discovered.filter((item) => path.basename(item) !== ".opencode").toReversed()
+      const directPaths = discovered.filter((item) => path.basename(item) !== PROJECT_DIR).toReversed()
       const direct = yield* Effect.forEach(directPaths, (file) => loadFile(file, strict)).pipe(
         Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
       )
       const supplementary = yield* Effect.forEach(directories, (directory) => loadDirectory(directory, strict))
       // Apply general settings first and more specific settings last:
-      // global config, project files, then `.opencode` files.
+      // global config, project files, then `.agents` files.
       const localPermissions = yield* loadFile(
-        path.join(location.directory, ".opencode", "permissions.local.json"),
+        path.join(location.directory, PROJECT_DIR, "permissions.local.json"),
         strict,
       )
       const configs = [

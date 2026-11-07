@@ -2,7 +2,7 @@ import type { DynamicResolution } from "../../config/compaction"
 import type { CandidateSkipReason, ContextFoldingProjectionPlan, FoldPlan } from "./types"
 import { ContextFoldingPolicy } from "./policy"
 
-export type ContextFoldingRuntime = "opencode-ai-sdk" | "opencode-native" | "core-runner"
+export type ContextFoldingRuntime = "ai-sdk" | "native" | "core-runner"
 export type ContextFoldingPurpose = "conversation" | "compaction" | "auxiliary" | "unknown"
 
 type UnknownNumber = number | "unknown"

@@ -1267,7 +1267,7 @@ describe("DagLoop atomic wake integration", () => {
     // templates are read lazily from disk, so the spawn-time guard (and its
     // failure wake) stays live for them. Exercise that path with a real
     // template file carrying an unbound placeholder.
-    const templateDir = path.join(process.cwd(), ".opencode", "dag-prompts")
+    const templateDir = path.join(process.cwd(), ".agents", "dag-prompts")
     const templateFile = path.join(templateDir, "wake-unbound-fixture.md")
     await fs.mkdir(templateDir, { recursive: true })
     await fs.writeFile(templateFile, "汇总结果：{{never-bound}}")

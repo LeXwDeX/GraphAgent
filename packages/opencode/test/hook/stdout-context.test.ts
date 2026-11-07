@@ -10,7 +10,7 @@ import { testEffect } from "../lib/effect"
 
 // P1a: exit-0 plain-text stdout injection. Real SettingsHook layer (execShell
 // actually runs the command), mirroring settings-dedup.test.ts. Each test writes
-// its own .opencode/hooks.json via init so the InstanceState-built loadChain
+// its own .agents/hooks.json via init so the InstanceState-built loadChain
 // picks it up at construction.
 
 const testLayer = SettingsHook.layer.pipe(
@@ -22,13 +22,13 @@ const it = testEffect(testLayer)
 
 const TEXT = "remember-this-repo-uses-bun"
 
-// Write <dir>/.opencode/hooks.json with the given hooks object. loadChain reads
+// Write <dir>/.agents/hooks.json with the given hooks object. loadChain reads
 // this path at instance-state construction (init runs before the test body).
 const writeHooks = (hooks: unknown) => (dir: string) =>
   Effect.promise(() =>
     fs
-      .mkdir(path.join(dir, ".opencode"), { recursive: true })
-      .then(() => fs.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(hooks))),
+      .mkdir(path.join(dir, ".agents"), { recursive: true })
+      .then(() => fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooks))),
   )
 
 describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", () => {

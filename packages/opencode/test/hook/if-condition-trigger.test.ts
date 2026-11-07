@@ -52,9 +52,9 @@ describe("`if` conditions gate hooks on real tool inputs", () => {
       {
         init: (dir) =>
           Effect.promise(async () => {
-            await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+            await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
             await fs.writeFile(
-              path.join(dir, ".opencode", "hooks.json"),
+              path.join(dir, ".agents", "hooks.json"),
               JSON.stringify({ PreToolUse: [{ hooks: [deny(cond)] }] }),
             )
           }),
@@ -82,9 +82,9 @@ describe("`if` conditions gate hooks on real tool inputs", () => {
     {
       init: (dir) =>
         Effect.promise(async () => {
-          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
           await fs.writeFile(
-            path.join(dir, ".opencode", "hooks.json"),
+            path.join(dir, ".agents", "hooks.json"),
             JSON.stringify({ PreToolUse: [{ hooks: [deny("Edit(*.py)")] }] }),
           )
         }),

@@ -69,7 +69,7 @@ func readManagedPlist(path string) (map[string]any, error) {
 	return data, nil
 }
 
-// Merged 把多份配置按 opencode 语义合并（低优先级在前，高优先级覆盖）。
+// Merged 把多份配置按 GraphAgent 语义合并（低优先级在前，高优先级覆盖）。
 // 调用方需自行保证传入顺序。
 func Merged(loaded []Loaded) map[string]any {
 	merged := map[string]any{}

@@ -11,6 +11,7 @@ import { readdir } from "fs/promises"
 import path from "path"
 
 import { Config } from "@/config/config"
+import { RemoteLkg } from "@/config/remote-lkg"
 import { Auth } from "../../src/auth"
 import { AuthTest } from "../fake/auth"
 import { NpmTest } from "../fake/npm"
@@ -88,7 +89,7 @@ const unreachable = HttpClient.make((request) => transportFailure(request, "conn
 const remoteConfigUnreachable = (seen: { wellKnown?: string; remote?: string }, remoteUrl: string) =>
   HttpClient.make((request) => {
     const parsedUrl = new URL(request.url)
-    if (parsedUrl.pathname.includes("/.well-known/opencode")) {
+    if (parsedUrl.pathname.includes("/.well-known/graphagent")) {
       seen.wellKnown = request.url
       return Effect.succeed(
         json(request, {
@@ -108,9 +109,9 @@ const remoteConfigUnreachable = (seen: { wellKnown?: string; remote?: string }, 
 const remoteOk = (seen: { wellKnown?: string; remote?: string }) =>
   HttpClient.make((request) => {
     const parsedUrl = new URL(request.url)
-    if (parsedUrl.pathname.includes("/.well-known/opencode")) {
+    if (parsedUrl.pathname.includes("/.well-known/graphagent")) {
       seen.wellKnown = request.url
-      return Effect.succeed(json(request, { remote_config: { url: "https://config.example.com/opencode.json" } }))
+      return Effect.succeed(json(request, { remote_config: { url: "https://config.example.com/graphagent.json" } }))
     }
     if (parsedUrl.hostname === "config.example.com") {
       seen.remote = request.url
@@ -126,9 +127,9 @@ const remoteOk = (seen: { wellKnown?: string; remote?: string }) =>
 // Gateway answers the remote_config URL with an HTML login page (auth proxy, not an offline failure).
 const loginPage = (seen: { wellKnown?: string; remote?: string }) =>
   HttpClient.make((request) => {
-    if (request.url.includes(".well-known/opencode")) {
+    if (request.url.includes(".well-known/graphagent")) {
       seen.wellKnown = request.url
-      return Effect.succeed(json(request, { remote_config: { url: "https://config.example.com/opencode.json" } }))
+      return Effect.succeed(json(request, { remote_config: { url: "https://config.example.com/graphagent.json" } }))
     }
     const requestHost = new URL(request.url).hostname
     if (requestHost === "config.example.com") {
@@ -150,7 +151,7 @@ const loginPage = (seen: { wellKnown?: string; remote?: string }) =>
 // errors mid-read (truncated transfer / connection reset). Exercises the body-read
 // degrade path (config.ts:210-217) distinct from the transport-level fetch degrade.
 const bodyReadFails = HttpClient.make((request) => {
-  if (request.url.includes(".well-known/opencode")) {
+  if (request.url.includes(".well-known/graphagent")) {
     return Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
@@ -173,7 +174,7 @@ const bodyReadFails = HttpClient.make((request) => {
 
 const onlineThenFailureState = { mode: "online" }
 const onlineThenAllowedFailure = HttpClient.make((request) => {
-  if (request.url.includes("/.well-known/opencode")) {
+  if (request.url.includes("/.well-known/graphagent")) {
     if (onlineThenFailureState.mode === "wellknown-transport") {
       return transportFailure(request, "offline after initial success")
     }
@@ -189,7 +190,7 @@ const onlineThenAllowedFailure = HttpClient.make((request) => {
       )
     }
     return Effect.succeed(
-      json(request, { remote_config: { url: "https://lkg-transport-config.example.com/opencode.json" } }),
+      json(request, { remote_config: { url: "https://lkg-transport-config.example.com/graphagent.json" } }),
     )
   }
   if (new URL(request.url).hostname === "lkg-transport-config.example.com") {
@@ -246,7 +247,7 @@ type HardFailureMode =
 const hardFailureClient = (origin: string, state: { mode: HardFailureMode }) =>
   HttpClient.make((request) => {
     if (state.mode === "transport") return transportFailure(request, "offline after hard failure")
-    if (request.url.includes("/.well-known/opencode")) {
+    if (request.url.includes("/.well-known/graphagent")) {
       if (state.mode === "wellknown-schema") return Effect.succeed(json(request, ["not-an-object"]))
       return Effect.succeed(json(request, { remote_config: { url: `${origin}/remote-config.json` } }))
     }
@@ -305,13 +306,11 @@ const unavailableWellKnownCases = [
   {
     title: "empty",
     origin: "https://lkg-empty-first.example.com",
-    digest: "89173d6feff949ddb9265e9b19b142875971bf40065fd88b76223612d0b0e705",
     content: "",
   },
   {
     title: "corrupt",
     origin: "https://lkg-corrupt-first.example.com",
-    digest: "f92edb1dcc30a66dee91cb91d73925019660bcd6a87b9db15dd00e527a89245b",
     content: "{CORRUPT_CACHE_CREDENTIAL_MARKER",
   },
 ]
@@ -323,7 +322,7 @@ unavailableWellKnownCases.forEach((scenario) => {
     `${scenario.title} first-hop LKG warns and preserves the existing skip result`,
     () =>
       Effect.gen(function* () {
-        yield* writeLkgFile(scenario.digest, scenario.content)
+        yield* writeLkgFile(RemoteLkg.digest(`${scenario.origin}/.well-known/graphagent`), scenario.content)
         const config = yield* Config.use.get()
         expect(config.model).toBe("local/unavailable-cache-model")
         const logs = JSON.stringify(yield* logLines)
@@ -338,20 +337,18 @@ const unavailableRemoteCases = [
   {
     title: "empty",
     origin: "https://lkg-empty-remote.example.com",
-    digest: "8c123b509f8a3a6c1f06c8103d2c1da2f12d4ba58d12d0059da22a986ea8018a",
     content: "",
   },
   {
     title: "corrupt",
     origin: "https://lkg-corrupt-remote.example.com",
-    digest: "74f3bb458fa277ba39d92a3874d58a0c0095831a90fa0cbc39ad701ca3d68c8b",
     content: "{CORRUPT_REMOTE_CACHE_CREDENTIAL_MARKER",
   },
 ]
 
 unavailableRemoteCases.forEach((scenario) => {
   const client = HttpClient.make((request) => {
-    if (request.url.includes("/.well-known/opencode")) {
+    if (request.url.includes("/.well-known/graphagent")) {
       return Effect.succeed(
         json(request, {
           config: { model: "embedded/unavailable-cache-model" },
@@ -366,7 +363,7 @@ unavailableRemoteCases.forEach((scenario) => {
   unavailableIt.live(
     `${scenario.title} second-hop LKG warns and preserves embedded well-known config`,
     Effect.gen(function* () {
-      yield* writeLkgFile(scenario.digest, scenario.content)
+      yield* writeLkgFile(RemoteLkg.digest(`${scenario.origin}/remote-config.json`), scenario.content)
       const config = yield* provideTmpdirInstance(() => Config.use.get())
       expect(config.model).toBe("embedded/unavailable-cache-model")
       const logs = JSON.stringify(yield* logLines)
@@ -383,7 +380,7 @@ oldLkgIt.live(
   "very old LKG remains usable and reports only safe age diagnostics",
   Effect.gen(function* () {
     yield* writeLkgFile(
-      "1675a350c4b8aa9887c0fad04fa378818761901440a26f5e78e0429786712889",
+      RemoteLkg.digest(`${oldLkgOrigin}/.well-known/graphagent`),
       JSON.stringify({
         version: 1,
         writtenAt: "2000-01-01T00:00:00.000Z",
@@ -391,7 +388,7 @@ oldLkgIt.live(
       }),
     )
     yield* writeLkgFile(
-      "0c467a2ce6c5e997d510fec8d4d3a3115a53ba26509732ad07b84069605e7ad1",
+      RemoteLkg.digest(`${oldLkgOrigin}/remote-config.json`),
       JSON.stringify({
         version: 1,
         writtenAt: "2000-01-01T00:00:00.000Z",
@@ -409,7 +406,7 @@ oldLkgIt.live(
 )
 
 const safetyOrigin = "https://lkg-safety.example.com"
-const safetyRemoteUrl = "https://lkg-safety-config.example.com/opencode.json?credential=QUERY_SECRET_MARKER"
+const safetyRemoteUrl = "https://lkg-safety-config.example.com/graphagent.json?credential=QUERY_SECRET_MARKER"
 const safetyToken = "AUTH_TOKEN_SECRET_MARKER"
 const safetyWellKnownBody = JSON.stringify({
   config: { username: "{env:TEST_TOKEN}" },
@@ -430,7 +427,7 @@ const safetyRemoteBody = JSON.stringify({
 const safetyState = { online: true }
 const safetyClient = HttpClient.make((request) => {
   if (!safetyState.online) return transportFailure(request, "offline for safety diagnostics")
-  if (request.url.includes("/.well-known/opencode")) return Effect.succeed(jsonText(request, safetyWellKnownBody))
+  if (request.url.includes("/.well-known/graphagent")) return Effect.succeed(jsonText(request, safetyWellKnownBody))
   return Effect.succeed(jsonText(request, safetyRemoteBody))
 })
 const safetyIt = it(safetyClient, safetyOrigin, safetyToken)
@@ -443,8 +440,8 @@ safetyIt.live(
     expect(online.username).toBe(safetyToken)
 
     const digests = [
-      "505f8fee6f34341c3236d9240b99654fa1e3d237a020a450b0cc5e0fc373ad0e",
-      "690e1cb0aeb039cd6a0206ada563856113c8f76c7345fadca285e7bf369b54ba",
+      RemoteLkg.digest(`${safetyOrigin}/.well-known/graphagent`),
+      RemoteLkg.digest(safetyRemoteUrl),
     ]
     const filenames = yield* Effect.promise(() => readdir(path.join(Global.Path.cache, "remote-config-lkg")))
     expect(filenames.filter((name) => digests.some((digest) => name === `${digest}.json`)).toSorted()).toEqual(
@@ -498,9 +495,9 @@ unreachableIt.instance(
       expect(config.mcp?.jira?.enabled).toBe(true)
       const logs = JSON.stringify(yield* logLines)
       expect(logs).toContain("failed to fetch remote config")
-      expect(logs).toContain("6b8f8396ae9f582f48dad65f38f88caf722d177638e6d3cadc1d1e7cea36b312")
+      expect(logs).toContain(RemoteLkg.digest(`${missingWellKnownOrigin}/.well-known/graphagent`))
       expect(logs).toContain("well-known")
-      expect(logs).not.toContain(`${missingWellKnownOrigin}/.well-known/opencode`)
+      expect(logs).not.toContain(`${missingWellKnownOrigin}/.well-known/graphagent`)
     }),
   {
     config: {
@@ -512,7 +509,7 @@ unreachableIt.instance(
 
 const remoteUnreachableSeen: { wellKnown?: string; remote?: string } = {}
 const missingRemoteOrigin = "https://missing-remote.example.com"
-const missingRemoteUrl = "https://missing-remote-config.example.com/opencode.json"
+const missingRemoteUrl = "https://missing-remote-config.example.com/graphagent.json"
 const remoteUnreachableIt = it(remoteConfigUnreachable(remoteUnreachableSeen, missingRemoteUrl), missingRemoteOrigin)
 
 remoteUnreachableIt.instance(
@@ -520,12 +517,12 @@ remoteUnreachableIt.instance(
   () =>
     Effect.gen(function* () {
       const config = yield* Config.use.get()
-      expect(remoteUnreachableSeen.wellKnown).toBe(`${missingRemoteOrigin}/.well-known/opencode`)
+      expect(remoteUnreachableSeen.wellKnown).toBe(`${missingRemoteOrigin}/.well-known/graphagent`)
       expect(remoteUnreachableSeen.remote).toBe(missingRemoteUrl)
       expect(config.model).toBe("embedded/model")
       const logs = JSON.stringify(yield* logLines)
       expect(logs).toContain("failed to fetch remote config")
-      expect(logs).toContain("f71d054e157edfcdd072de9b3c9ccbe82c4330d9a054116dc0c920236a7a8e92")
+      expect(logs).toContain(RemoteLkg.digest(missingRemoteUrl))
       expect(logs).toContain("remote-config")
       expect(logs).not.toContain(missingRemoteUrl)
     }),
@@ -537,8 +534,8 @@ const remoteOkIt = it(remoteOk(remoteOkSeen))
 remoteOkIt.instance("success path unchanged: remote config merges, no degradation warning", () =>
   Effect.gen(function* () {
     const config = yield* Config.use.get()
-    expect(remoteOkSeen.wellKnown).toBe("https://example.com/.well-known/opencode")
-    expect(remoteOkSeen.remote).toBe("https://config.example.com/opencode.json")
+    expect(remoteOkSeen.wellKnown).toBe("https://example.com/.well-known/graphagent")
+    expect(remoteOkSeen.remote).toBe("https://config.example.com/graphagent.json")
     expect(config.mcp?.confluence?.enabled).toBe(true)
     expect(JSON.stringify(yield* logLines)).not.toContain("failed to fetch remote config")
   }),
@@ -550,7 +547,7 @@ const loginPageIt = it(loginPage(loginPageSeen))
 loginPageIt.instance("HTML login page stays a hard auth failure even with degradation enabled", () =>
   Effect.gen(function* () {
     const exit = yield* Config.use.get().pipe(Effect.exit)
-    expect(loginPageSeen.remote).toBe("https://config.example.com/opencode.json")
+    expect(loginPageSeen.remote).toBe("https://config.example.com/graphagent.json")
     expect(Exit.isFailure(exit)).toBe(true)
   }),
 )
@@ -567,9 +564,9 @@ bodyReadFailsIt.instance(
       expect(config.mcp?.jira?.enabled).toBe(true)
       const logs = JSON.stringify(yield* logLines)
       expect(logs).toContain("failed to read remote config")
-      expect(logs).toContain("d0d0bbaef7a071d010d7223883169215741dd80cbb362b68b93e30d5f531013a")
+      expect(logs).toContain(RemoteLkg.digest(`${bodyReadMissingOrigin}/.well-known/graphagent`))
       expect(logs).toContain("well-known")
-      expect(logs).not.toContain(`${bodyReadMissingOrigin}/.well-known/opencode`)
+      expect(logs).not.toContain(`${bodyReadMissingOrigin}/.well-known/graphagent`)
     }),
   {
     config: {

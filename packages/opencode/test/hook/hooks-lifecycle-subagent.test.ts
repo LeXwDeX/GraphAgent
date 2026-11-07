@@ -17,7 +17,7 @@ cliIt.live(
         )
         const hook = { type: "command", command: process.execPath, args: [script, "global"] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             SubagentStart: [{ hooks: [hook] }],
             SubagentStop: [{ hooks: [hook] }],
@@ -27,7 +27,7 @@ cliIt.live(
         )
       })
       yield* Effect.promise(async () => {
-        const directory = path.join(home, ".config/opencode/agent")
+        const directory = path.join(home, ".config/graphagent/agent")
         await fs.mkdir(directory, { recursive: true })
         await fs.writeFile(
           path.join(directory, "lifecycle_child.md"),
