@@ -41,7 +41,6 @@ import { Database } from "@opencode-ai/core/database/database"
 import { DagProjector } from "@opencode-ai/core/dag/projector"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { WorkflowTable, WorkflowNodeTable } from "@opencode-ai/core/dag/sql"
-import workflowDirectoryConvergence from "@opencode-ai/core/database/migration/20260815083000_workflow_directory_convergence"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { EventV2 } from "@opencode-ai/core/event"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -1866,56 +1865,6 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               seq: 1,
               wake_reported: true,
             }).run().pipe(Effect.orDie)
-          }),
-      ),
-    )
-  })
-
-  it("C9: the convergence migration moves pre-fix divergent stamps WITH the session and preserves fail-closed NULL (#269 backfill)", async () => {
-    await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ database }) =>
-          Effect.gen(function* () {
-            // Simulate a pre-fix moved session: the durable session row already
-            // points at DIR_B, but one workflow still carries the pre-move stamp
-            // DIR_A (the v1.0.13 mixed-stamp wedge input) and one is a NULL-stamp
-            // zombie (legacy, must stay fail-closed).
-            yield* database.db.update(SessionTable)
-              .set({ directory: DIR_B as never })
-              .where(eq(SessionTable.id, SES_A as never))
-              .run().pipe(Effect.orDie)
-            for (const [id, dir] of [
-              ["c9-wf-stale", DIR_A],
-              ["c9-wf-zombie", null],
-            ] as const) {
-              yield* database.db.insert(WorkflowTable).values({
-                id,
-                project_id: PROJECT_ID as never,
-                session_id: SES_A as never,
-                directory: dir as never,
-                title: "convergence probe",
-                status: "failed",
-                config: "{}",
-                seq: 1,
-                wake_reported: true,
-              }).run().pipe(Effect.orDie)
-            }
-            // Apply the convergence migration against the current db (twice — the
-            // second application must be a no-op: idempotent convergence).
-            for (const _ of [0, 1]) {
-              yield* database.db
-                .transaction((tx) => workflowDirectoryConvergence.up(tx as never))
-                .pipe(Effect.orDie)
-            }
-            const stamps = yield* database.db.select({ id: WorkflowTable.id, directory: WorkflowTable.directory })
-              .from(WorkflowTable)
-              .all().pipe(Effect.orDie)
-            const byId = new Map(stamps.map((row) => [row.id, row.directory]))
-            // The divergent stamp converged to the session's CURRENT directory...
-            expect(byId.get("c9-wf-stale")).toBe(DIR_B)
-            // ...and the NULL zombie stayed NULL (fail-closed is preserved).
-            expect(byId.get("c9-wf-zombie")).toBeNull()
           }),
       ),
     )

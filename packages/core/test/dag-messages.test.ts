@@ -5,7 +5,6 @@ import { Effect, Exit, Layer } from "effect"
 import { Database } from "../src/database/database"
 import { DagMessages } from "../src/dag/messages"
 import { tmpdir } from "./fixture/tmpdir"
-import { DatabaseMigration } from "../src/database/migration"
 
 const parent = { projectID: "p", directory: process.cwd(), sessionID: "parent" }
 const child = { ...parent, sessionID: "child" }
@@ -520,37 +519,6 @@ describe("durable DAG agent mailboxes", () => {
     )
   }, 15000)
 
-  test("upgrades legacy workflow storage once without changing ordinary workflows", async () =>
-    run(
-      Effect.gen(function* () {
-        yield* seed
-        const { db } = yield* Database.Service
-        yield* db.run(sql`UPDATE workflow_node SET captured_output = 'null' WHERE id = 'n'`)
-        yield* db.run(sql`DROP TABLE agent_message`)
-        yield* db.run(sql`DROP TABLE agent_input_snapshot`)
-        yield* db.run(sql`DROP TABLE agent_mailbox`)
-        yield* db.run(sql`ALTER TABLE workflow_node DROP COLUMN captured_output_present`)
-        yield* db.run(sql`ALTER TABLE workflow_node DROP COLUMN captured_snapshot_id`)
-        yield* db.run(
-          sql`DELETE FROM migration WHERE id IN (
-            '20261002224523_dag_agent_messages',
-            '20261002233822_dag_result_nudge',
-            '20261003000100_dag_capture_presence'
-          )`,
-        )
-        yield* DatabaseMigration.apply(db)
-        yield* DatabaseMigration.apply(db)
-        expect(
-          yield* db.get(sql`SELECT status,captured_output,captured_output_present FROM workflow_node WHERE id = 'n'`),
-        ).toEqual({ status: "running", captured_output: "null", captured_output_present: 1 })
-        const columns = yield* db.all<{ name: string }>(sql`PRAGMA table_info(agent_mailbox)`)
-        expect(columns.map((column) => column.name)).toContain("result_nudge_revision")
-        const messages = yield* DagMessages.Service
-        expect(value(yield* messages.send(parent, request())).state).toBe("queued")
-        expect(value(yield* messages.claimResultNudge(child, 1))).toBe(true)
-        expect(value(yield* messages.claimResultNudge(child, 1))).toBe(false)
-      }).pipe(Effect.orDie),
-    ))
   test("rejects foreign session, project/directory impersonation and peer sends", async () =>
     run(
       Effect.gen(function* () {

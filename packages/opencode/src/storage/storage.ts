@@ -2,11 +2,9 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import path from "path"
 import { Global } from "@opencode-ai/core/global"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Effect, Exit, Layer, Option, RcMap, Schema, Context, TxReentrantLock } from "effect"
+import { Effect, Layer, Option, RcMap, Schema, Context, TxReentrantLock } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Git } from "@/git"
-
-type Migration = (dir: string, fs: FSUtil.Interface, git: Git.Interface) => Effect.Effect<void, FSUtil.Error>
 
 export class NotFoundError extends Schema.TaggedError<NotFoundError>()("NotFoundError", {
   message: Schema.String,
@@ -73,174 +71,15 @@ function missing(err: unknown) {
   return false
 }
 
-function parseMigration(text: string) {
-  const value = Number.parseInt(text, 10)
-  return Number.isNaN(value) ? 0 : value
-}
-
-const MIGRATIONS: Migration[] = [
-  Effect.fn("Storage.migration.1")(function* (dir: string, fs: FSUtil.Interface, git: Git.Interface) {
-    const project = path.resolve(dir, "../project")
-    if (!(yield* fs.isDir(project))) return
-    const projectDirs = yield* fs.glob("*", {
-      cwd: project,
-      include: "all",
-    })
-    for (const projectDir of projectDirs) {
-      const full = path.join(project, projectDir)
-      if (!(yield* fs.isDir(full))) continue
-      yield* Effect.logInfo(`migrating project ${projectDir}`)
-      let projectID = projectDir
-      let worktree = "/"
-
-      if (projectID !== "global") {
-        for (const msgFile of yield* fs.glob("storage/session/message/*/*.json", {
-          cwd: full,
-          absolute: true,
-        })) {
-          const json = decodeRoot(yield* fs.readJson(msgFile), { onExcessProperty: "ignore" })
-          const root = Option.isSome(json) ? json.value.path?.root : undefined
-          if (!root) continue
-          worktree = root
-          break
-        }
-        if (!worktree) continue
-        if (!(yield* fs.isDir(worktree))) continue
-        const result = yield* git.run(["rev-list", "--max-parents=0", "--all"], {
-          cwd: worktree,
-        })
-        const [id] = result
-          .text()
-          .split("\n")
-          .filter(Boolean)
-          .map((x) => x.trim())
-          .toSorted()
-        if (!id) continue
-        projectID = id
-
-        yield* fs.writeWithDirs(
-          path.join(dir, "project", projectID + ".json"),
-          JSON.stringify(
-            {
-              id,
-              vcs: "git",
-              worktree,
-              time: {
-                created: Date.now(),
-                initialized: Date.now(),
-              },
-            },
-            null,
-            2,
-          ),
-        )
-
-        yield* Effect.logInfo(`migrating sessions for project ${projectID}`)
-        for (const sessionFile of yield* fs.glob("storage/session/info/*.json", {
-          cwd: full,
-          absolute: true,
-        })) {
-          const dest = path.join(dir, "session", projectID, path.basename(sessionFile))
-          yield* Effect.logInfo("copying", { sessionFile, dest })
-          const session = yield* fs.readJson(sessionFile)
-          const info = decodeSession(session, { onExcessProperty: "ignore" })
-          yield* fs.writeWithDirs(dest, JSON.stringify(session, null, 2))
-          if (Option.isNone(info)) continue
-          yield* Effect.logInfo(`migrating messages for session ${info.value.id}`)
-          for (const msgFile of yield* fs.glob(`storage/session/message/${info.value.id}/*.json`, {
-            cwd: full,
-            absolute: true,
-          })) {
-            const next = path.join(dir, "message", info.value.id, path.basename(msgFile))
-            yield* Effect.logInfo("copying", {
-              msgFile,
-              dest: next,
-            })
-            const message = yield* fs.readJson(msgFile)
-            const item = decodeMessage(message, { onExcessProperty: "ignore" })
-            yield* fs.writeWithDirs(next, JSON.stringify(message, null, 2))
-            if (Option.isNone(item)) continue
-
-            yield* Effect.logInfo(`migrating parts for message ${item.value.id}`)
-            for (const partFile of yield* fs.glob(`storage/session/part/${info.value.id}/${item.value.id}/*.json`, {
-              cwd: full,
-              absolute: true,
-            })) {
-              const out = path.join(dir, "part", item.value.id, path.basename(partFile))
-              const part = yield* fs.readJson(partFile)
-              yield* Effect.logInfo("copying", {
-                partFile,
-                dest: out,
-              })
-              yield* fs.writeWithDirs(out, JSON.stringify(part, null, 2))
-            }
-          }
-        }
-      }
-    }
-  }),
-  Effect.fn("Storage.migration.2")(function* (dir: string, fs: FSUtil.Interface) {
-    for (const item of yield* fs.glob("session/*/*.json", {
-      cwd: dir,
-      absolute: true,
-    })) {
-      const raw = yield* fs.readJson(item)
-      const session = decodeSummary(raw, { onExcessProperty: "ignore" })
-      if (Option.isNone(session)) continue
-      const diffs = session.value.summary.diffs
-      yield* fs.writeWithDirs(
-        path.join(dir, "session_diff", session.value.id + ".json"),
-        JSON.stringify(diffs, null, 2),
-      )
-      yield* fs.writeWithDirs(
-        path.join(dir, "session", session.value.projectID, session.value.id + ".json"),
-        JSON.stringify(
-          {
-            ...(raw as Record<string, unknown>),
-            summary: {
-              additions: diffs.reduce((sum, x) => sum + x.additions, 0),
-              deletions: diffs.reduce((sum, x) => sum + x.deletions, 0),
-            },
-          },
-          null,
-          2,
-        ),
-      )
-    }
-  }),
-]
-
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
-    const git = yield* Git.Service
     const locks = yield* RcMap.make({
       lookup: () => TxReentrantLock.make(),
       idleTimeToLive: 0,
     })
-    const state = yield* Effect.cached(
-      Effect.gen(function* () {
-        const dir = path.join(Global.Path.data, "storage")
-        const marker = path.join(dir, "migration")
-        const migration = yield* fs.readFileString(marker).pipe(
-          Effect.map(parseMigration),
-          Effect.catchIf(missing, () => Effect.succeed(0)),
-          Effect.orElseSucceed(() => 0),
-        )
-        for (let i = migration; i < MIGRATIONS.length; i++) {
-          yield* Effect.logInfo("running migration", { index: i })
-          const step = MIGRATIONS[i]!
-          const exit = yield* Effect.exit(step(dir, fs, git))
-          if (Exit.isFailure(exit)) {
-            yield* Effect.logError("failed to run migration", { index: i, cause: exit.cause })
-            break
-          }
-          yield* fs.writeWithDirs(marker, String(i + 1))
-        }
-        return { dir }
-      }),
-    )
+    const state = yield* Effect.cached(Effect.succeed({ dir: path.join(Global.Path.data, "storage") }))
 
     const fail = (target: string): Effect.Effect<never, NotFoundError> =>
       Effect.fail(new NotFoundError({ message: `Resource not found: ${target}` }))
