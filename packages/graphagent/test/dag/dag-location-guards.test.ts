@@ -811,7 +811,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
       .map(({ file }) => file)
     expect(sessionDirRefs).toEqual([])
 
-    const loopFile = sources.find((s) => s.file.endsWith("opencode/src/dag/runtime/loop.ts"))
+    const loopFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/loop.ts"))
     expect(loopFile).toBeDefined()
     const source = loopFile!.source
 
@@ -909,10 +909,10 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     // (b) Revalidation sites. Each region must carry an executable ownership
     // authority call (ownsWorkflow / ownsSession), located by semantic anchors
     // so the probe survives refactors that keep the site boundaries.
-    const loopFile = sources.find((s) => s.file.endsWith("opencode/src/dag/runtime/loop.ts"))
+    const loopFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/loop.ts"))
     expect(loopFile).toBeDefined()
     const loopSource = loopFile!.source
-    const spawnFile = sources.find((s) => s.file.endsWith("opencode/src/dag/runtime/spawn.ts"))
+    const spawnFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/spawn.ts"))
     expect(spawnFile).toBeDefined()
 
     const regions: Array<{ name: string; source: string; from: string; to: string; authority: RegExp }> = [
