@@ -26,7 +26,7 @@ const GRAPHAGENT_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
 
 // Built-in skill that ships with opencode. The model's intuition for what an
-// opencode.json should look like is often wrong, and opencode hard-fails on
+// graphagent.json should look like is often wrong, and opencode hard-fails on
 // invalid config, so users hit cryptic startup errors. Loading this skill
 // when the model is asked to touch opencode's own config files gives it the
 // actual schemas instead of guesses.
@@ -136,7 +136,6 @@ export interface Interface {
  */
 const userSkillRoots = () => [
   Global.Path.config,
-  path.join(Global.Path.home, ".opencode"),
   path.join(Global.Path.home, ".claude"),
   path.join(Global.Path.home, ".agents"),
   ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : []),
@@ -240,7 +239,10 @@ const discoverSkills = Effect.fnUntraced(function* (
     externalDirs.push(AGENTS_EXTERNAL_DIR)
 
     for (const dir of externalDirs) {
-      const root = path.join(global.home, dir)
+      // Read the live path, not the injected Global service: userSkillRoots()
+      // resolves provenance against Global.Path.home too, and an injected
+      // Global layer snapshots home at build time.
+      const root = path.join(Global.Path.home, dir)
       if (!(yield* fsys.isDir(root))) continue
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
     }
@@ -254,7 +256,7 @@ const discoverSkills = Effect.fnUntraced(function* (
     }
   }
 
-  // SessionStart may install the first .opencode directory after configuration was cached.
+  // SessionStart may install the first .agents directory after configuration was cached.
   const configDirs = new Set([
     ...(yield* config.directories()),
     ...(yield* ConfigPaths.directories(directory, worktree).pipe(

@@ -38,8 +38,8 @@ const it = testEffect(testLayer)
 const writeSettingsTo = (hooksJson: object) => (dir: string) =>
   Effect.promise(() =>
     fs
-      .mkdir(path.join(dir, ".opencode"), { recursive: true })
-      .then(() => fs.writeFile(path.join(dir, ".opencode", "hooks.json"), JSON.stringify(hooksJson))),
+      .mkdir(path.join(dir, ".agents"), { recursive: true })
+      .then(() => fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooksJson))),
   )
 
 const tmp = (name: string) => path.join(os.tmpdir(), `opencode-test-${name}`)

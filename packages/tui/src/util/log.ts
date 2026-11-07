@@ -1,4 +1,5 @@
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import fs from "fs/promises"
 import path from "path"
 import { formatWithOptions } from "util"
@@ -20,7 +21,7 @@ const original = {
 let installed = false
 
 export function logFilePath() {
-  return path.join(Global.Path.log, "opencode.log")
+  return path.join(Global.Path.log, `${APP_NAME}.log`)
 }
 
 export function write(level: ConsoleMethod, ...args: unknown[]) {

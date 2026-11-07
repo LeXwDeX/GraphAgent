@@ -8,7 +8,7 @@
  * sessions. Everything else inherits the main opencode configuration.
  *
  * Lookup order (first existing file wins, project overrides global):
- * - project: `.opencode/dag.jsonc` / `.opencode/dag.json`
+ * - project: `.agents/dag.jsonc` / `.agents/dag.json`
  * - global:  `<config dir>/dag.jsonc` / `<config dir>/dag.json`
  *
  * When neither exists, a commented default `dag.jsonc` is seeded into the
@@ -28,6 +28,7 @@ import * as fs from "node:fs/promises"
 import { parse as parseJsonc } from "jsonc-parser"
 import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import { isReviewWorker } from "./review-lifecycle"
 
 export const Info = Schema.Struct({
@@ -104,8 +105,8 @@ export function tierModel(info: Info, node: { required: boolean; workerType: str
 function candidates(projectDir: string) {
   const globalDir = globalConfigDir()
   return [
-    path.join(projectDir, ".opencode", "dag.jsonc"),
-    path.join(projectDir, ".opencode", "dag.json"),
+    path.join(projectDir, PROJECT_DIR, "dag.jsonc"),
+    path.join(projectDir, PROJECT_DIR, "dag.json"),
     path.join(globalDir, "dag.jsonc"),
     path.join(globalDir, "dag.json"),
   ]

@@ -13,7 +13,7 @@ cliIt.live(
       const hook = path.join(home, "plan-context-hook.ts")
       yield* Effect.promise(async () => {
         await fs.writeFile(
-          path.join(home, ".config/opencode/opencode.json"),
+          path.join(home, ".config/graphagent/graphagent.json"),
           JSON.stringify({
             providers: {
               test: {
@@ -34,7 +34,7 @@ cliIt.live(
         )
         const command = { type: "command", command: process.execPath, args: [hook] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({ UserPromptSubmit: [{ hooks: [command] }], Stop: [{ hooks: [command] }] }),
         )
       })

@@ -20,13 +20,13 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
         )
         const hook = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             UserPromptSubmit: [{ hooks: [hook] }],
             ...(subagentStopOnce ? { SubagentStop: [{ hooks: [hook] }] } : {}),
           }),
         )
-        const directory = path.join(home, ".config/opencode/agent")
+        const directory = path.join(home, ".config/graphagent/agent")
         await fs.mkdir(directory, { recursive: true })
         await fs.writeFile(
           path.join(directory, "delegate_child.md"),
@@ -124,7 +124,7 @@ cliIt.live("UserPromptSubmit session_title appears only for a real custom title"
         `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({session:i.session_id,title:i.session_title,has:Object.hasOwn(i,'session_title')})+'\\n')`,
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
         }),

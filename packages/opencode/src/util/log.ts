@@ -3,12 +3,13 @@
  *
  * The application still owns its Effect logger; this shim exists because those
  * call sites create loggers at module load and cannot yield the Effect service.
- * It writes the same structured lines to opencode.log and exposes an injectable
+ * It writes the same structured lines to the graphagent log and exposes an injectable
  * sink so tests can observe records without sharing a mutable default object.
  */
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 import { Global } from "@opencode-ai/core/global"
+import { APP_NAME } from "@opencode-ai/core/brand"
 
 type Level = "debug" | "info" | "warn" | "error"
 
@@ -106,7 +107,7 @@ function formatMeta(meta: Record<string, unknown> | undefined) {
 function fileSink(entry: Entry) {
   try {
     appendFileSync(
-      path.join(Global.Path.log, "opencode.log"),
+      path.join(Global.Path.log, `${APP_NAME}.log`),
       `${entry.timestamp} ${entry.level} service=${entry.service} message=${entry.message}${entry.meta ? ` ${entry.meta}` : ""}\n`,
     )
   } catch {

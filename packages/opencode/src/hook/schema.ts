@@ -36,7 +36,7 @@ export const HookCommandSchema = z
     statusMessage: z.string().optional(),
     once: z.boolean().optional(),
     shell: z.enum(["bash", "powershell"]).optional(),
-    inputFormat: z.enum(["opencode", "claude-code"]).optional(),
+    inputFormat: z.enum(["graphagent", "claude-code"]).optional(),
     if: z.string().optional(),
     async: z.boolean().optional(),
     asyncRewake: z.boolean().optional(),

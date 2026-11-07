@@ -18,7 +18,7 @@ for (const block of [false, true]) {
           )
           const hook = { type: "command", command: process.execPath, args: [script] }
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               PreCompact: [{ hooks: [hook] }],
               PostCompact: [{ hooks: [hook] }],
@@ -102,7 +102,7 @@ const blockedCompaction = (
           `const i=JSON.parse(await Bun.stdin.text());if(i.hook_event_name==='PreCompact')process.stdout.write(JSON.stringify({decision:'block',reason:'fixture precompact veto'}));`,
         )
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({ PreCompact: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
         )
       })

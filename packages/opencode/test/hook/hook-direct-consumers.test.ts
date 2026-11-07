@@ -18,7 +18,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
       )
       const hooks = [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }]
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ PreToolUse: hooks, PermissionRequest: hooks, PostToolUse: hooks }),
       )
     })
@@ -69,7 +69,7 @@ cliIt.live("direct shell respects configured deny and never emits auto-only Perm
     const audit = path.join(home, "unexpected-events")
     yield* Effect.promise(() =>
       fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           PreToolUse: [
             {
@@ -117,14 +117,14 @@ cliIt.live("direct shell reports a real spawn failure through PostToolUseFailure
     const script = path.join(home, "failure-hook.ts")
     yield* Effect.promise(async () => {
       await fs.writeFile(shell, '#!/bin/sh\nexec /bin/sh "$@"\n', { mode: 0o700 })
-      await fs.writeFile(path.join(home, ".config/opencode/opencode.json"), JSON.stringify({ shell }))
+      await fs.writeFile(path.join(home, ".config/graphagent/graphagent.json"), JSON.stringify({ shell }))
       await fs.writeFile(
         script,
         `const i=JSON.parse(await Bun.stdin.text());if(i.hook_event_name==="PreToolUse")await import("node:fs/promises").then(fs=>fs.unlink(${JSON.stringify(shell)}));else await Bun.write(${JSON.stringify(audit)},i.hook_event_name);`,
       )
       const hooks = [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }]
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ PreToolUse: hooks, PostToolUse: hooks, PostToolUseFailure: hooks }),
       )
     })

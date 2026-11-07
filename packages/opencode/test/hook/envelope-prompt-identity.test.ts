@@ -145,10 +145,10 @@ describe("sessionless Notification", () => {
       `)
       yield* Effect.promise(() =>
         fs
-          .mkdir(path.join(test.directory, ".opencode"), { recursive: true })
+          .mkdir(path.join(test.directory, ".agents"), { recursive: true })
           .then(() =>
             fs.writeFile(
-              path.join(test.directory, ".opencode", "hooks.json"),
+              path.join(test.directory, ".agents", "hooks.json"),
               JSON.stringify({ Notification: [{ hooks: [{ type: "command", command }] }] }),
             ),
           ),

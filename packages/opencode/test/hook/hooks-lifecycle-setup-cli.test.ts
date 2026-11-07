@@ -17,7 +17,7 @@ function auditLayer(home: string) {
       `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,trigger:i.trigger,session:i.session_id})+'\\n');`,
     )
     await fs.writeFile(
-      path.join(home, ".config/opencode/hooks.json"),
+      path.join(home, ".config/graphagent/hooks.json"),
       JSON.stringify({
         Setup: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
       }),

@@ -30,7 +30,7 @@ for (const { event, action } of [
           )
           const handler = { type: "command", command: process.execPath, args: [hookScript] }
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               Elicitation: [{ hooks: [handler] }],
               ElicitationResult: [{ hooks: [handler] }],
@@ -38,7 +38,7 @@ for (const { event, action } of [
             }),
           )
           await fs.writeFile(
-            path.join(home, ".config/opencode/opencode.json"),
+            path.join(home, ".config/graphagent/graphagent.json"),
             JSON.stringify({
               mcp: { fixture: { type: "local", command: [process.execPath, serverScript], enabled: true } },
             }),

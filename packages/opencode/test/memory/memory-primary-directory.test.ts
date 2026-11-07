@@ -26,7 +26,7 @@ import { testEffect } from "../lib/effect"
 // The Project row's `worktree` is the first-seen checkout and is never
 // repointed. Once that checkout is deleted — or its path is reused by an
 // unrelated repository — /memory on|off from another checkout of the same
-// Project must not (re)create `.opencode/memory.jsonc` there.
+// Project must not (re)create `.agents/memory.jsonc` there.
 
 // Private global config dir so other test files cannot leak a global memory.jsonc in.
 const pinnedConfigDir = path.join(os.tmpdir(), `opencode-memory-primary-${process.pid}`)
@@ -120,13 +120,13 @@ describe("memory primary directory", () => {
               expect(yield* memory.setEnabled(false)).toBe("Memory off")
               expect((yield* config.load(sandbox))?.level).toBe("project")
               expect((yield* config.load(sandbox))?.config.enabled).toBe(false)
-              expect(fs.existsSync(path.join(primary, ".opencode"))).toBe(false)
+              expect(fs.existsSync(path.join(primary, ".agents"))).toBe(false)
               if (fate === "deleted") expect(fs.existsSync(primary)).toBe(false)
               expect(yield* memory.status()).toBe("Memory remains off")
 
               expect(yield* memory.setEnabled(true)).toBe("Memory on")
               expect((yield* config.load(sandbox))?.config.enabled).toBe(true)
-              expect(fs.existsSync(path.join(primary, ".opencode"))).toBe(false)
+              expect(fs.existsSync(path.join(primary, ".agents"))).toBe(false)
               expect(yield* memory.status()).toBe("Memory on")
             }),
           ).pipe(Effect.provide(testInstanceStoreLayer))
@@ -155,7 +155,7 @@ describe("memory primary directory", () => {
           Effect.gen(function* () {
             const memory = yield* Memory.Service
             expect(yield* memory.setEnabled(false)).toBe("Memory off")
-            expect(fs.existsSync(path.join(primary, ".opencode", "memory.jsonc"))).toBe(true)
+            expect(fs.existsSync(path.join(primary, ".agents", "memory.jsonc"))).toBe(true)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
 
@@ -182,7 +182,7 @@ describe("memory primary directory", () => {
             const config = yield* MemoryConfig.Service
             // `off` must write Project configuration again (the global default is on).
             expect(yield* memory.setEnabled(false)).toBe("Memory off")
-            expect(fs.existsSync(path.join(primary, ".opencode"))).toBe(false)
+            expect(fs.existsSync(path.join(primary, ".agents"))).toBe(false)
             expect((yield* config.load(sandbox))?.config.enabled).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
@@ -209,12 +209,12 @@ describe("memory primary directory", () => {
           Effect.gen(function* () {
             const memory = yield* Memory.Service
             expect(yield* memory.setEnabled(false)).toBe("Memory off")
-            expect(fs.existsSync(path.join(primary, ".opencode", "memory.jsonc"))).toBe(true)
+            expect(fs.existsSync(path.join(primary, ".agents", "memory.jsonc"))).toBe(true)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
 
         // Same directory and `.git` inode, different repository identity.
-        fs.rmSync(path.join(primary, ".opencode"), { recursive: true, force: true })
+        fs.rmSync(path.join(primary, ".agents"), { recursive: true, force: true })
         git(primary, "remote", "add", "origin", "https://example.test/unrelated/repository.git")
 
         yield* provideInstance(sandbox)(
@@ -222,7 +222,7 @@ describe("memory primary directory", () => {
             const memory = yield* Memory.Service
             const config = yield* MemoryConfig.Service
             expect(yield* memory.setEnabled(false)).toBe("Memory off")
-            expect(fs.existsSync(path.join(primary, ".opencode"))).toBe(false)
+            expect(fs.existsSync(path.join(primary, ".agents"))).toBe(false)
             expect((yield* config.load(sandbox))?.config.enabled).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
@@ -247,13 +247,13 @@ describe("memory primary directory", () => {
           Effect.gen(function* () {
             const memory = yield* Memory.Service
             expect(yield* memory.setEnabled(false)).toBe("Memory off")
-            expect(fs.existsSync(path.join(primary, ".opencode", "memory.jsonc"))).toBe(true)
+            expect(fs.existsSync(path.join(primary, ".agents", "memory.jsonc"))).toBe(true)
 
             // The live instance keeps its Project while the checkout now belongs elsewhere.
-            fs.rmSync(path.join(primary, ".opencode"), { recursive: true, force: true })
+            fs.rmSync(path.join(primary, ".agents"), { recursive: true, force: true })
             git(primary, "remote", "add", "origin", "https://example.test/unrelated/repository.git")
             expect(yield* memory.setEnabled(false)).not.toBe("Memory off")
-            expect(fs.existsSync(path.join(primary, ".opencode"))).toBe(false)
+            expect(fs.existsSync(path.join(primary, ".agents"))).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
       }),
@@ -306,7 +306,7 @@ describe("memory primary directory", () => {
           "-m",
           `unrelated root ${sandbox}`,
         )
-        const foreignConfig = path.join(sandbox, ".opencode", "memory.jsonc")
+        const foreignConfig = path.join(sandbox, ".agents", "memory.jsonc")
         fs.mkdirSync(path.dirname(foreignConfig), { recursive: true })
         fs.writeFileSync(foreignConfig, '{ "enabled": true }\n')
 

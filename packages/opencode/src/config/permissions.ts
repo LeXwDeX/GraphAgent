@@ -6,6 +6,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import type { PermissionUpdate } from "@/hook/trigger-result"
 import { updateSessionPolicy } from "@/permission/session-policy"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 
 const action = z.enum(["allow", "deny", "ask"])
 export const documentSchema = z
@@ -32,7 +33,7 @@ export function orderedRules(document: PermissionDocument): NonNullable<Permissi
 }
 
 export function localFile(directory: string) {
-  return path.join(directory, ".opencode", "permissions.local.json")
+  return path.join(directory, PROJECT_DIR, "permissions.local.json")
 }
 
 export function validateUpdates(updates: readonly PermissionUpdate[]) {

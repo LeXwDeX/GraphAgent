@@ -5,7 +5,7 @@
  * DAG prompt-template resolver.
  *
  * Resolves a node's `prompt_template` declaration into a final prompt string:
- * - `id` reference → reads the `.md` file from project (`.opencode/dag-prompts/`)
+ * - `id` reference → reads the `.md` file from project (`.agents/dag-prompts/`)
  *   or global (`<config dir>/dag-prompts/`) directory
  * - `inline` → used directly as the template source (no filesystem round-trip)
  *
@@ -20,6 +20,7 @@ import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import { sanitizeInput } from "./sanitize"
 
 export interface TemplateRef {
@@ -48,7 +49,7 @@ function isSafeTemplateId(id: string): boolean {
  * Resolve a template reference into a final prompt string.
  *
  * @param ref         The prompt_template declaration from the node config
- * @param projectDir  The project root (for `.opencode/dag-prompts/` lookup)
+ * @param projectDir  The project root (for `.agents/dag-prompts/` lookup)
  */
 export function resolveTemplate(ref: TemplateRef, projectDir: string): Effect.Effect<string, Error> {
   return renderTemplate(ref, projectDir).pipe(Effect.map((result) => result.text))
@@ -101,7 +102,7 @@ function readById(id: string, projectDir: string): Effect.Effect<string, Error> 
     if (!isSafeTemplateId(id)) {
       return yield* Effect.fail(new Error(`Invalid template id: ${id}`))
     }
-    const projectPath = path.join(projectDir, ".opencode", "dag-prompts", `${id}.md`)
+    const projectPath = path.join(projectDir, PROJECT_DIR, "dag-prompts", `${id}.md`)
     // Same GRAPHAGENT_CONFIG_DIR redirect the Global service applies (siblings:
     // dag/workflows.ts, dag/config.ts) so redirected setups resolve their
     // globally installed prompts.

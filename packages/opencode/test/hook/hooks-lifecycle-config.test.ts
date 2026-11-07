@@ -11,7 +11,7 @@ cliIt.live(
       const audit = path.join(home, "config-audit.json")
       yield* Effect.promise(async () => {
         await fs.writeFile(
-          path.join(home, ".config/opencode/opencode.json"),
+          path.join(home, ".config/graphagent/graphagent.json"),
           JSON.stringify({ hookPermissions: { mode: "acceptEdits" } }),
         )
         await fs.writeFile(
@@ -19,7 +19,7 @@ cliIt.live(
           `const input=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},JSON.stringify({event:input.hook_event_name,mode:input.permission_mode,source:input.source,session:input.session_id,readable:await Bun.file(input.transcript_path).exists()}));process.stdout.write(JSON.stringify({decision:"block",reason:"fixture rejects config update"}));`,
         )
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             ConfigChange: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
           }),
@@ -39,7 +39,7 @@ cliIt.live(
       const session = yield* Effect.promise(() => created.json())
       for (const [route, source, filename] of [
         ["/config", "project_settings", path.join(home, "config.json")],
-        ["/global/config", "user_settings", path.join(home, ".config/opencode/opencode.json")],
+        ["/global/config", "user_settings", path.join(home, ".config/graphagent/graphagent.json")],
       ] as const) {
         const before = yield* Effect.promise(() => fs.readFile(filename, "utf8").catch(() => undefined))
         const result = yield* request(route, "PATCH", { username: "must-not-be-written" })

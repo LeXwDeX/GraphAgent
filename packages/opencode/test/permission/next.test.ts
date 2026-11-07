@@ -790,18 +790,18 @@ test("globCovers - POSIX-generated coverage never contradicts the s matcher", ()
 
 test("disabledByPolicy - a covering glob deny removes a plan edit allow", () => {
   const native = Permission.fromConfig({
-    edit: { "*": "deny", ".opencode/plans/*.md": "allow" },
+    edit: { "*": "deny", ".agents/plans/*.md": "allow" },
   })
-  const configured = Permission.merge(native, Permission.fromConfig({ edit: { ".opencode/plans/*": "deny" } }))
+  const configured = Permission.merge(native, Permission.fromConfig({ edit: { ".agents/plans/*": "deny" } }))
   const result = Permission.disabledByPolicy(["edit"], native, configured)
   expect(result.has("edit")).toBe(true)
 })
 
 test("disabledByPolicy - a noncovering glob deny keeps a plan edit allow", () => {
   const native = Permission.fromConfig({
-    edit: { "*": "deny", ".opencode/plans/*.md": "allow" },
+    edit: { "*": "deny", ".agents/plans/*.md": "allow" },
   })
-  const configured = Permission.merge(native, Permission.fromConfig({ edit: { ".opencode/plans/private/*": "deny" } }))
+  const configured = Permission.merge(native, Permission.fromConfig({ edit: { ".agents/plans/private/*": "deny" } }))
   const result = Permission.disabledByPolicy(["edit"], native, configured)
   expect(result.has("edit")).toBe(false)
 })

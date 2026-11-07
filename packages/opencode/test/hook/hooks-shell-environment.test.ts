@@ -17,11 +17,11 @@ cliIt.live(`SessionStart exports reach V1 model Bash and command hooks`, ({ home
       )
       const handler = [{ hooks: [{ type: "command", command: process.execPath, args: [hook] }] }]
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ SessionStart: handler, PreToolUse: handler }),
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/opencode.json"),
+        path.join(home, ".config/graphagent/graphagent.json"),
         JSON.stringify({
           shell: "/bin/sh",
           permission: { bash: "allow" },

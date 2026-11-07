@@ -10,6 +10,7 @@ import { isAbsolute, join } from "path"
 import { DatabaseMigration } from "./migration"
 import { InstallationChannel } from "../installation/version"
 import { LayerNode } from "../effect/layer-node"
+import { APP_NAME } from "../brand"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 type DatabaseShape = Effect.Success<typeof makeDatabase>
@@ -67,8 +68,8 @@ export function path() {
     if (Flag.GRAPHAGENT_DB === ":memory:" || isAbsolute(Flag.GRAPHAGENT_DB)) return Flag.GRAPHAGENT_DB
     return join(Global.Path.data, Flag.GRAPHAGENT_DB)
   }
-  if (["latest", "beta", "prod"].includes(InstallationChannel)) return join(Global.Path.data, "opencode.db")
-  return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+  if (["latest", "beta", "prod"].includes(InstallationChannel)) return join(Global.Path.data, `${APP_NAME}.db`)
+  return join(Global.Path.data, `${APP_NAME}-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
 }
 
 export const defaultLayer = Layer.unwrap(

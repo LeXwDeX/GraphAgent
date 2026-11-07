@@ -73,11 +73,11 @@ describe("DagConfig.load", () => {
     expect(info.thinking_depth).toBe("high")
   })
 
-  it("prefers the project .opencode/dag.jsonc over the global file", async () => {
+  it("prefers the project .agents/dag.jsonc over the global file", async () => {
     await fs.mkdir(globalDir, { recursive: true })
     await fs.writeFile(path.join(globalDir, "dag.jsonc"), `{ "thinking_depth": "low" }`)
-    await fs.mkdir(path.join(projectDir, ".opencode"), { recursive: true })
-    await fs.writeFile(path.join(projectDir, ".opencode", "dag.jsonc"), `{ "thinking_depth": "max" }`)
+    await fs.mkdir(path.join(projectDir, ".agents"), { recursive: true })
+    await fs.writeFile(path.join(projectDir, ".agents", "dag.jsonc"), `{ "thinking_depth": "max" }`)
     const info = await Effect.runPromise(DagConfig.load(projectDir))
     expect(info.thinking_depth).toBe("max")
   })

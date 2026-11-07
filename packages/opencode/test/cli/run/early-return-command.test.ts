@@ -79,7 +79,7 @@ cliIt.live(
   ({ llm, home, opencode }) =>
     Effect.gen(function* () {
       yield* llm.text("unused")
-      const file = path.join(home, ".local/share/opencode/trusted-workspaces.json")
+      const file = path.join(home, ".local/share/graphagent/trusted-workspaces.json")
       const old = '["/old-workspace"]\n'
       yield* Effect.promise(async () => {
         await fs.mkdir(path.dirname(file), { recursive: true })

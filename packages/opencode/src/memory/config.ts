@@ -156,7 +156,7 @@ export function writeLockKey(file: string) {
 }
 
 export function projectPath(projectDir: string) {
-  return join(projectDir, ".opencode", "memory.jsonc")
+  return join(projectDir, MemoryPaths.PROJECT_CONFIG_PATHS[0])
 }
 
 export function candidates(projectDir: string) {
@@ -168,7 +168,7 @@ export function globalConfigDir() {
 }
 
 export function projectCandidates(projectDir: string) {
-  return [join(projectDir, ".opencode", "memory.jsonc"), join(projectDir, ".opencode", "memory.json")]
+  return MemoryPaths.PROJECT_CONFIG_PATHS.map((relative) => join(projectDir, relative))
 }
 
 function globalCandidates() {

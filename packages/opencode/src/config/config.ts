@@ -33,6 +33,7 @@ import { ConfigPaths } from "./paths"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { CONFIG_BASENAME, PROJECT_DIR } from "@opencode-ai/core/brand"
 
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
@@ -126,7 +127,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Co
 export const use = serviceUse(Service)
 
 function globalConfigFile() {
-  const candidates = ["opencode.jsonc", "opencode.json", "config.json"].map((file) =>
+  const candidates = [`${CONFIG_BASENAME}.jsonc`, `${CONFIG_BASENAME}.json`, "config.json"].map((file) =>
     path.join(Global.Path.config, file),
   )
   for (const file of candidates) {
@@ -308,8 +309,8 @@ export const layer = Layer.effect(
         }
       }
       result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, `${CONFIG_BASENAME}.json`), env))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, `${CONFIG_BASENAME}.jsonc`), env))
 
       const legacy = path.join(Global.Path.config, "config")
       if (existsSync(legacy)) {
@@ -352,7 +353,7 @@ export const layer = Layer.effect(
         const agentHookOrigins = new Map<string, AgentHookProvenance>()
         const modeHookOrigins = new Map<string, AgentHookProvenance>()
         const agentHookSource = (source: string): AgentHookProvenance["source"] => {
-          const roots = [Global.Path.config, path.join(Global.Path.home, ".opencode")]
+          const roots = [Global.Path.config]
           return roots.some((root) => source === root || source.startsWith(root + path.sep)) ? "user" : "project"
         }
         const rememberAgentHooks = (next: Info, source: string) => {
@@ -376,7 +377,7 @@ export const layer = Layer.effect(
           if (value.type === "wellknown") {
             const url = key.replace(/\/+$/, "")
             authEnv[value.key] = value.token
-            const wellknownURL = `${url}/.well-known/opencode`
+            const wellknownURL = `${url}/.well-known/graphagent`
             yield* Effect.logDebug("fetching remote config", {
               digest: RemoteLkg.digest(wellknownURL),
               role: "well-known",
@@ -460,7 +461,7 @@ export const layer = Layer.effect(
         }
 
         if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
+          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
             merge(file, yield* loadFile(file, authEnv))
           }
         }
@@ -475,8 +476,8 @@ export const layer = Layer.effect(
         }
 
         for (const dir of directories) {
-          if (dir.endsWith(".opencode") || dir === Flag.GRAPHAGENT_CONFIG_DIR) {
-            for (const file of ["opencode.json", "opencode.jsonc"]) {
+          if (path.basename(dir) === PROJECT_DIR || dir === Flag.GRAPHAGENT_CONFIG_DIR) {
+            for (const file of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
               merge(source, yield* loadFile(source, authEnv))
@@ -510,7 +511,7 @@ export const layer = Layer.effect(
 
         const managedDir = ConfigManaged.managedConfigDir()
         if (existsSync(managedDir)) {
-          for (const file of ["opencode.json", "opencode.jsonc"]) {
+          for (const file of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
             const source = path.join(managedDir, file)
             merge(source, yield* loadFile(source))
           }
@@ -633,7 +634,7 @@ export const layer = Layer.effect(
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.directory, "opencode.jsonc")
+              ? path.join(ctx.directory, `${CONFIG_BASENAME}.jsonc`)
               : HookPermissions.localFile(ctx.directory)
         yield* checkConfigChange(
           file,
@@ -651,7 +652,7 @@ export const layer = Layer.effect(
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.directory, "opencode.jsonc")
+              ? path.join(ctx.directory, `${CONFIG_BASENAME}.jsonc`)
               : HookPermissions.localFile(ctx.directory)
         yield* HookPermissions.update(file, entries, ctx.directory).pipe(
           Effect.provideService(FSUtil.Service, fs),

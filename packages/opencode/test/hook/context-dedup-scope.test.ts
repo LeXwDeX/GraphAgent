@@ -21,9 +21,9 @@ const it = testEffect(testLayer)
 const FEEDBACK = "lint: missing semicolon at src/a.ts:3"
 const write = (dir: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+    await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
     await fs.writeFile(
-      path.join(dir, ".opencode", "hooks.json"),
+      path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         PostToolUse: [
           {
@@ -77,9 +77,9 @@ describe("additionalContext dedup scope", () => {
         Effect.promise(async () => {
           const output = (marker: string) =>
             `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: FEEDBACK } })}' # ${marker}`
-          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
           await fs.writeFile(
-            path.join(dir, ".opencode", "hooks.json"),
+            path.join(dir, ".agents", "hooks.json"),
             JSON.stringify({
               PostToolUse: [
                 {
@@ -108,9 +108,9 @@ describe("additionalContext dedup scope", () => {
     {
       init: (dir) =>
         Effect.promise(async () => {
-          await fs.mkdir(path.join(dir, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
           await fs.writeFile(
-            path.join(dir, ".opencode", "hooks.json"),
+            path.join(dir, ".agents", "hooks.json"),
             JSON.stringify({
               Stop: [
                 {

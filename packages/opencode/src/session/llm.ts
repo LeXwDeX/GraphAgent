@@ -346,7 +346,7 @@ const live: Layer.Layer<
           yield* Effect.logInfo(
             "context folding",
             contextFoldingDiagnostic({
-              runtime: "opencode-native",
+              runtime: "native",
               requestPurpose: folding.purpose,
               resolution: dynamicFolding,
               duplicatePlan: folding.history?.duplicatePlan,
@@ -534,7 +534,7 @@ const live: Layer.Layer<
                       Effect.logInfo(
                         "context folding",
                         contextFoldingDiagnostic({
-                          runtime: "opencode-ai-sdk",
+                          runtime: "ai-sdk",
                           requestPurpose: folding.purpose,
                           resolution: dynamicFolding,
                           duplicatePlan: folding.history?.duplicatePlan,

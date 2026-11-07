@@ -10,6 +10,7 @@ import { LayerNode } from "./effect/layer-node"
 import { Hash } from "./util/hash"
 import { ProjectDirectories } from "./project/directories"
 import { ProjectSchema } from "./project/schema"
+import { APP_NAME } from "./brand"
 
 export const ID = ProjectSchema.ID
 export type ID = ProjectSchema.ID
@@ -63,7 +64,7 @@ export const layer = Layer.effect(
     })
 
     const cached = Effect.fnUntraced(function* (dir: string) {
-      return yield* fs.readFileString(path.join(dir, "opencode")).pipe(
+      return yield* fs.readFileString(path.join(dir, APP_NAME)).pipe(
         Effect.map((value) => value.trim()),
         Effect.map((value) => (value ? ID.make(value) : undefined)),
         Effect.catch(() => Effect.succeed(undefined)),
@@ -122,7 +123,7 @@ export const layer = Layer.effect(
     })
 
     const commit = Effect.fn("Project.commit")(function* (input: { store: AbsolutePath; id: ID }) {
-      yield* fs.writeFileString(path.join(input.store, "opencode"), input.id).pipe(Effect.ignore)
+      yield* fs.writeFileString(path.join(input.store, APP_NAME), input.id).pipe(Effect.ignore)
     })
 
     return Service.of({ directories, resolve, commit })

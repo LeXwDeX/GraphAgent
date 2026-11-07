@@ -24,8 +24,8 @@ const spec = (name: string, nodes: number) =>
 
 const writeProject = (file: string, content: string) =>
   fs
-    .mkdir(path.join(projectDir, ".opencode", "workflows"), { recursive: true })
-    .then(() => fs.writeFile(path.join(projectDir, ".opencode", "workflows", file), content))
+    .mkdir(path.join(projectDir, ".agents", "workflows"), { recursive: true })
+    .then(() => fs.writeFile(path.join(projectDir, ".agents", "workflows", file), content))
 
 const writeGlobal = (file: string, content: string) =>
   fs
@@ -57,7 +57,7 @@ describe("DagWorkflows.isName", () => {
   it("treats anything path-shaped as a path, so existing spec_path calls keep working", () => {
     expect(DagWorkflows.isName("review.yaml")).toBe(false)
     expect(DagWorkflows.isName("review.YML")).toBe(false)
-    expect(DagWorkflows.isName(".opencode/workflows/review.yaml")).toBe(false)
+    expect(DagWorkflows.isName(".agents/workflows/review.yaml")).toBe(false)
     expect(DagWorkflows.isName("./review")).toBe(false)
     expect(DagWorkflows.isName("../review")).toBe(false)
     expect(DagWorkflows.isName("dir\\review")).toBe(false)
@@ -76,7 +76,7 @@ describe("DagWorkflows.resolve", () => {
     await writeProject("code-review.yaml", spec("code-review", 3))
     const entry = await Effect.runPromise(DagWorkflows.resolve("code-review", projectDir))
     expect(entry?.scope).toBe("project")
-    expect(entry?.path).toBe(path.join(projectDir, ".opencode", "workflows", "code-review.yaml"))
+    expect(entry?.path).toBe(path.join(projectDir, ".agents", "workflows", "code-review.yaml"))
     expect(entry?.title).toBe("code-review title")
     expect(entry?.nodes).toBe(3)
   })
@@ -138,7 +138,7 @@ describe("DagWorkflows.resolve", () => {
   it("returns undefined for an unknown name so the caller can report the searched paths", async () => {
     expect(await Effect.runPromise(DagWorkflows.resolve("missing", projectDir))).toBeUndefined()
     expect(DagWorkflows.searchPaths(projectDir)).toEqual([
-      path.join(projectDir, ".opencode", "workflows"),
+      path.join(projectDir, ".agents", "workflows"),
       path.join(globalDir, "workflows"),
     ])
   })
@@ -176,7 +176,7 @@ describe("DagWorkflows.list", () => {
   it("ignores non-spec files and directories", async () => {
     await writeProject("real.yaml", spec("real", 1))
     await writeProject("notes.md", "not a spec")
-    await fs.mkdir(path.join(projectDir, ".opencode", "workflows", "nested.yaml"), { recursive: true })
+    await fs.mkdir(path.join(projectDir, ".agents", "workflows", "nested.yaml"), { recursive: true })
 
     const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
     expect(entries.map((entry) => entry.name)).toEqual(["real"])

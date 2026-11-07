@@ -5,8 +5,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import { basename, join } from "node:path"
-import { parse } from "yaml"
+import { join } from "node:path"
 import { MemoryConfig } from "./config"
 import { MemoryHome } from "./home"
 import { MemoryIdentityFence } from "./identity-fence"
@@ -15,10 +14,6 @@ import { MemorySchema } from "./schema"
 import { MemoryStore } from "./store"
 
 const Code = Schema.Literals([
-  "topic.imported",
-  "topic.duplicate",
-  "topic.invalid",
-  "topic.conflict",
   "config.promoted",
   "config.duplicate",
   "config.invalid",
@@ -35,7 +30,6 @@ export class Diagnostic extends Schema.Class<Diagnostic>("MemoryAdmission.Diagno
 
 export class Result extends Schema.Class<Result>("MemoryAdmission.Result")({
   diagnostics: Schema.Array(Diagnostic),
-  imported: Count,
   duplicates: Count,
   unresolved: Count,
 }) {}
@@ -66,12 +60,6 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryAdmission") {}
 
-type TopicCandidate = {
-  readonly file: string
-  readonly id: string
-  readonly topic?: MemoryStore.Snapshot["topics"][number]
-}
-
 type ConfigCandidate = {
   readonly file: string
   readonly config: MemorySchema.Config | undefined
@@ -87,128 +75,6 @@ export const layer = Layer.effect(
     const home = yield* MemoryHome.Service
     const store = yield* MemoryStore.Service
     const cache = new Map<ProjectV2.ID, { key: string; result: Result }>()
-
-    const readTopicCandidates = Effect.fnUntraced(function* (directories: ReadonlyArray<string>) {
-      return yield* Effect.forEach(
-        directories,
-        (directory) =>
-          Effect.gen(function* () {
-            const legacy = MemoryPaths.legacyTopics(directory)
-            if (!(yield* fs.existsSafe(legacy))) return []
-            const files = (yield* fs.readDirectoryEntries(legacy))
-              .filter((entry) => entry.type === "file" && entry.name.endsWith(".yaml"))
-              .map((entry) => join(legacy, entry.name))
-              .sort()
-            return yield* Effect.forEach(
-              files,
-              (file) =>
-                Effect.gen(function* () {
-                  const id = basename(file, ".yaml")
-                  const text = yield* fs.readFileString(file)
-                  const parsed = yield* Effect.try({
-                    try: () => parse(text),
-                    catch: () => new MemoryStore.StoreError({ message: "Legacy MEMORY topic YAML is invalid" }),
-                  }).pipe(Effect.option)
-                  return {
-                    file,
-                    id,
-                    topic: Option.isSome(parsed) ? MemoryStore.decodeTopic(parsed.value, id) : undefined,
-                  } satisfies TopicCandidate
-                }),
-              { concurrency: 8 },
-            )
-          }),
-        { concurrency: 4 },
-      ).pipe(Effect.map((items) => items.flat().sort((left, right) => left.file.localeCompare(right.file))))
-    })
-
-    // A legacy file may change between the scan and its removal (an older-version
-    // runtime still writing .opencode/memory, or a hand edit). Re-read each file
-    // right before deleting it; if the content no longer matches what was scanned,
-    // preserve the file and surface a conflict instead of destroying the new content.
-    const revalidateTopicFile = Effect.fnUntraced(function* (candidate: TopicCandidate) {
-      const text = yield* fs.readFileStringSafe(candidate.file)
-      if (text === undefined) return true
-      const parsed = yield* Effect.try({
-        try: () => parse(text),
-        catch: () => undefined,
-      }).pipe(Effect.option)
-      if (Option.isNone(parsed) || parsed.value === undefined) return false
-      const decoded = MemoryStore.decodeTopic(parsed.value, candidate.id)
-      return decoded !== undefined && same(decoded, candidate.topic)
-    })
-
-    const reconcileTopics = Effect.fnUntraced(function* (snapshot: ProjectSnapshot, candidates: TopicCandidate[]) {
-      const updated = yield* store.updateTopics(snapshot.projectID, (topics) => {
-        const next = [...topics]
-        const byID = new Map(next.map((topic) => [topic.id, topic]))
-        const changed: string[] = []
-        const removable: TopicCandidate[] = []
-        const diagnostics = candidates.map((candidate) => {
-          if (!candidate.topic)
-            return new Diagnostic({
-              code: "topic.invalid",
-              path: candidate.file,
-              topic_id: candidate.id,
-              message: `Legacy MEMORY topic ${candidate.id} is invalid and was preserved`,
-            })
-          const existing = byID.get(candidate.id)
-          if (!existing) {
-            next.push(candidate.topic)
-            byID.set(candidate.id, candidate.topic)
-            changed.push(candidate.id)
-            removable.push(candidate)
-            return new Diagnostic({
-              code: "topic.imported",
-              path: candidate.file,
-              topic_id: candidate.id,
-              message: `Legacy MEMORY topic ${candidate.id} was imported into Project Memory`,
-            })
-          }
-          if (same(existing, candidate.topic)) {
-            removable.push(candidate)
-            return new Diagnostic({
-              code: "topic.duplicate",
-              path: candidate.file,
-              topic_id: candidate.id,
-              message: `Legacy MEMORY topic ${candidate.id} already exists in Project Memory`,
-            })
-          }
-          return new Diagnostic({
-            code: "topic.conflict",
-            path: candidate.file,
-            topic_id: candidate.id,
-            message: `Legacy MEMORY topic ${candidate.id} differs from Project Memory and was preserved`,
-          })
-        })
-        return {
-          applied: { topics: next, changed, deleted: [] },
-          result: { diagnostics, removable },
-        }
-      })
-      const preserved = new Set<string>()
-      for (const candidate of updated.result.removable) {
-        if (!(yield* revalidateTopicFile(candidate))) preserved.add(candidate.file)
-      }
-      yield* Effect.forEach(
-        updated.result.removable.filter((candidate) => !preserved.has(candidate.file)),
-        (candidate) => fs.remove(candidate.file, { force: true }),
-        {
-          concurrency: 1,
-          discard: true,
-        },
-      )
-      return updated.result.diagnostics.map((diagnostic) =>
-        preserved.has(diagnostic.path)
-          ? new Diagnostic({
-              code: "topic.conflict",
-              path: diagnostic.path,
-              topic_id: diagnostic.topic_id,
-              message: `Legacy MEMORY topic ${diagnostic.topic_id} changed during migration and was preserved`,
-            })
-          : diagnostic,
-      )
-    })
 
     const readConfigCandidates = Effect.fnUntraced(function* (directories: ReadonlyArray<string>) {
       const files = directories.flatMap((directory) =>
@@ -394,32 +260,12 @@ export const layer = Layer.effect(
       )
     })
 
-    const cleanupLegacyDirectory = Effect.fnUntraced(function* (directory: string) {
-      const topics = MemoryPaths.legacyTopics(directory)
-      if ((yield* fs.existsSafe(topics)) && (yield* fs.readDirectoryEntries(topics)).length === 0) {
-        // Re-check immediately before removing: an older-version writer that
-        // does not take our locks may have created a file after the first
-        // listing. Removing on a stale empty listing would destroy it.
-        if ((yield* fs.readDirectoryEntries(topics)).length === 0) yield* fs.remove(topics, { recursive: true })
-      }
-      const legacy = join(directory, ".opencode", "memory")
-      if ((yield* fs.existsSafe(legacy)) && (yield* fs.readDirectoryEntries(legacy)).length === 0) {
-        if ((yield* fs.readDirectoryEntries(legacy)).length === 0) yield* fs.remove(legacy, { recursive: true })
-      }
-    })
-
     const ensureUnsafe = Effect.fnUntraced(function* (snapshot: ProjectSnapshot, key: string) {
       const cached = cache.get(snapshot.projectID)
       if (cached?.key === key) return cached.result
-      const candidates = yield* readTopicCandidates(snapshot.directories)
-      const diagnostics = [
-        ...(yield* reconcileTopics(snapshot, candidates)),
-        ...(yield* reconcileConfigs(snapshot)),
-      ]
-      yield* Effect.forEach(snapshot.directories, cleanupLegacyDirectory, { concurrency: 1, discard: true })
+      const diagnostics = yield* reconcileConfigs(snapshot)
       const result = new Result({
         diagnostics,
-        imported: diagnostics.filter((item) => item.code === "topic.imported").length,
         duplicates: diagnostics.filter((item) => item.code.endsWith(".duplicate")).length,
         unresolved: diagnostics.filter((item) => item.code.endsWith(".invalid") || item.code.endsWith(".conflict")).length,
       })

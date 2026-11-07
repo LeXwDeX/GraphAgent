@@ -211,7 +211,7 @@ const runArm =
       )
       yield* Effect.promise(() =>
         Bun.write(
-          path.join(home, ".config/opencode/memory.jsonc"),
+          path.join(home, ".config/graphagent/memory.jsonc"),
           JSON.stringify({ schema_version: 1, enabled: false }),
         ),
       )

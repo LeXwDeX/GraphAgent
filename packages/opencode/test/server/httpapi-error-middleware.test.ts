@@ -58,7 +58,7 @@ describe("HttpApi error middleware", () => {
   it.live("returns invalid config defects as structured client errors", () =>
     Effect.gen(function* () {
       const configError = new ConfigErrorV1.InvalidError({
-        path: "/tmp/opencode.json",
+        path: "/tmp/graphagent.json",
         issues: [{ message: "Expected object", path: ["provider", "anthropic", "options"] }],
       })
 
@@ -76,11 +76,11 @@ describe("HttpApi error middleware", () => {
       expect(body).toMatchObject({
         name: "ConfigInvalidError",
         data: {
-          path: "/tmp/opencode.json",
+          path: "/tmp/graphagent.json",
           issues: [{ message: "Expected object", path: ["provider", "anthropic", "options"] }],
         },
       })
-      expect(serialized).toContain("/tmp/opencode.json")
+      expect(serialized).toContain("/tmp/graphagent.json")
       expect(serialized).toContain("anthropic")
     }),
   )

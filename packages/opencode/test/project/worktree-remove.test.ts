@@ -3,7 +3,6 @@ import { describe, expect } from "bun:test"
 import * as fs from "fs/promises"
 import path from "path"
 import { Duration, Effect, Exit, Fiber, Layer } from "effect"
-import { stringify } from "yaml"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
@@ -28,6 +27,17 @@ const it = testEffect(
   ),
 )
 const wintest = process.platform === "win32" ? it.instance : it.instance.skip
+
+function memoryConfig(model = "test/memory-small") {
+  return {
+    schema_version: 1,
+    enabled: true,
+    model,
+    topic_limit: 10,
+    turn_interval: 5,
+    injection: { max_topics: 3, max_tokens: 1_200 },
+  } as const
+}
 
 describe("Worktree.remove", () => {
   it.instance(
@@ -182,16 +192,16 @@ describe("Worktree.remove", () => {
         yield* project.addSandbox(current.project.id, dirB)
 
         // Two sandboxes carry disagreeing legacy configs; the primary has none.
-        yield* Effect.promise(() => Bun.write(path.join(dirA, ".opencode", "memory.jsonc"), legacyConfig("test/config-a", false)))
-        yield* Effect.promise(() => Bun.write(path.join(dirB, ".opencode", "memory.jsonc"), legacyConfig("test/config-b", true)))
+        yield* Effect.promise(() => Bun.write(path.join(dirA, ".agents", "memory.jsonc"), legacyConfig("test/config-a", false)))
+        yield* Effect.promise(() => Bun.write(path.join(dirB, ".agents", "memory.jsonc"), legacyConfig("test/config-b", true)))
 
         // Removing A must reconcile against the FULL snapshot: A's lone config
         // disagrees with B's, so nothing may be promoted and the removal fails
         // closed instead of silently flipping the project-wide configuration.
         const outcome = yield* Effect.exit(svc.remove({ directory: dirA }))
         expect(Exit.isFailure(outcome)).toBe(true)
-        expect(yield* exists(path.join(root, ".opencode", "memory.jsonc"))).toBe(false)
-        expect(yield* exists(path.join(dirA, ".opencode", "memory.jsonc"))).toBe(true)
+        expect(yield* exists(path.join(root, ".agents", "memory.jsonc"))).toBe(false)
+        expect(yield* exists(path.join(dirA, ".agents", "memory.jsonc"))).toBe(true)
       }),
     { git: true },
   )
@@ -211,75 +221,18 @@ describe("Worktree.remove", () => {
         yield* Effect.promise(() => $`git worktree add --no-checkout -b opencode/inert-${stamp} ${dirA}`.cwd(root).quiet())
         yield* project.addSandbox(current.project.id, dirA)
 
-        const now = "2026-08-12T00:00:00Z"
-        const legacyTopic = stringify({
-          schema_version: 1,
-          id: "legacy-topic",
-          name: "遗留主题",
-          summary: "工作树中遗留的合法主题",
-          metadata: {
-            categories: ["decision"],
-            status: "active",
-            importance: "core",
-            keywords: ["架构"],
-            related_topics: [],
-            created_at: now,
-            updated_at: now,
-            last_matched_at: null,
-            match_count: 0,
-            revision: 1,
-            item_count: 1,
-          },
-          items: [
-            {
-              id: "legacy-item",
-              kind: "decision",
-              content: "已确认决定：核心模块之间使用稳定边界",
-              rationale: "该边界由用户确认并长期适用",
-              confirmed_at: now,
-            },
-          ],
-        })
-        yield* Effect.promise(() => Bun.write(path.join(dirA, ".opencode", "memory", "topics", "legacy-topic.yaml"), legacyTopic))
+        const legacyConfig = path.join(dirA, ".agents", "memory.jsonc")
+        yield* Effect.promise(() => fs.mkdir(path.dirname(legacyConfig), { recursive: true }))
+        yield* Effect.promise(() => fs.writeFile(legacyConfig, JSON.stringify(memoryConfig())))
 
-        // No migration may run for an uninitialized project: the legacy file
+        // No migration may run for an uninitialized project: the config file
         // stays put and the removal fails closed on the residue.
         const outcome = yield* Effect.exit(svc.remove({ directory: dirA }))
         expect(Exit.isFailure(outcome)).toBe(true)
-        expect(yield* exists(path.join(dirA, ".opencode", "memory", "topics", "legacy-topic.yaml"))).toBe(true)
+        expect(yield* exists(legacyConfig)).toBe(true)
       }),
     { git: true },
   )
-
-  const legacyTopicYaml = (id: string) =>
-    stringify({
-      schema_version: 1,
-      id,
-      name: "生命周期测试主题",
-      summary: "用于验证工作树生命周期行为的主题",
-      metadata: {
-        categories: ["decision"],
-        status: "active",
-        importance: "core",
-        keywords: ["边界"],
-        related_topics: [],
-        created_at: "2026-08-12T00:00:00Z",
-        updated_at: "2026-08-12T00:00:00Z",
-        last_matched_at: null,
-        match_count: 0,
-        revision: 1,
-        item_count: 1,
-      },
-      items: [
-        {
-          id: `${id}-item`,
-          kind: "decision",
-          content: `已确认决定：保留 ${id} 的稳定边界`,
-          rationale: "该边界由用户确认并长期适用",
-          confirmed_at: "2026-08-12T00:00:00Z",
-        },
-      ],
-    })
 
   it.instance(
     "list never prunes or deregisters a merely-prunable worktree (MEM-PR01-R1-16)",
@@ -348,7 +301,6 @@ describe("Worktree.remove", () => {
         const root = (yield* TestInstance).directory
         const project = yield* Project.Service
         const svc = yield* Worktree.Service
-        const store = yield* MemoryStore.Service
         const current = yield* project.fromDirectory(root)
         yield* project.setInitialized(current.project.id)
 
@@ -363,18 +315,17 @@ describe("Worktree.remove", () => {
         // Prime the admission cache with a clean full-snapshot scan.
         yield* svc.reset({ directory: dirB })
 
-        // A legacy topic appears in A after the cached clean scan; the reset of
-        // A must invalidate the cache and rescan, importing it before the sweep.
-        const legacyDir = path.join(dirA, ".opencode", "memory", "topics")
-        yield* Effect.promise(() => fs.mkdir(legacyDir, { recursive: true }))
-        yield* Effect.promise(() =>
-          fs.writeFile(path.join(legacyDir, "cache-topic.yaml"), legacyTopicYaml("cache-topic")),
-        )
+        // A sandbox config appears in A after the cached clean scan; the reset of
+        // A must invalidate the cache and rescan, promoting it before the sweep.
+        const sandboxConfig = path.join(dirA, ".agents", "memory.jsonc")
+        yield* Effect.promise(() => fs.mkdir(path.dirname(sandboxConfig), { recursive: true }))
+        yield* Effect.promise(() => fs.writeFile(sandboxConfig, JSON.stringify(memoryConfig())))
 
         const outcome = yield* Effect.exit(svc.reset({ directory: dirA }))
         expect(Exit.isSuccess(outcome)).toBe(true)
-        const topics = yield* store.readTopics(current.project.id)
-        expect(topics.map((value) => value.id)).toContain("cache-topic")
+        const promoted = path.join(root, ".agents", "memory.jsonc")
+        expect(JSON.parse(yield* Effect.promise(() => fs.readFile(promoted, "utf8")))).toEqual(memoryConfig())
+        expect(yield* exists(sandboxConfig)).toBe(false)
       }),
     { git: true },
   )
@@ -394,14 +345,13 @@ describe("Worktree.remove", () => {
         yield* Effect.promise(() => $`git worktree add -b opencode/resetblock-${stamp} ${dirA}`.cwd(root).quiet())
         yield* project.addSandbox(current.project.id, dirA)
 
-        const legacyDir = path.join(dirA, ".opencode", "memory", "topics")
-        yield* Effect.promise(() => fs.mkdir(legacyDir, { recursive: true }))
-        const invalidFile = path.join(legacyDir, "broken.yaml")
-        yield* Effect.promise(() => fs.writeFile(invalidFile, "id: broken\n"))
+        const invalidFile = path.join(dirA, ".agents", "memory.jsonc")
+        yield* Effect.promise(() => fs.mkdir(path.dirname(invalidFile), { recursive: true }))
+        yield* Effect.promise(() => fs.writeFile(invalidFile, "{ invalid"))
 
         const outcome = yield* Effect.exit(svc.reset({ directory: dirA }))
         expect(Exit.isFailure(outcome)).toBe(true)
-        if (Exit.isFailure(outcome)) expect(String(outcome.cause)).toContain("topic.invalid")
+        if (Exit.isFailure(outcome)) expect(String(outcome.cause)).toContain("config.invalid")
         expect(yield* exists(invalidFile)).toBe(true)
       }),
     { git: true },
@@ -425,11 +375,11 @@ describe("Worktree.remove", () => {
         yield* Effect.promise(() => $`git worktree add -b opencode/retired-remove-${stamp} ${dir}`.cwd(root).quiet())
         yield* project.addSandbox(current.project.id, dir)
 
-        // Legacy memory that was never admitted into any Home.
-        const legacyDir = path.join(dir, ".opencode", "memory", "topics")
-        yield* Effect.promise(() => fs.mkdir(legacyDir, { recursive: true }))
-        const legacyFile = path.join(legacyDir, "never-admitted.yaml")
-        yield* Effect.promise(() => fs.writeFile(legacyFile, "id: never-admitted\n"))
+        // A sandbox config that was never admitted into any Home. A live
+        // identity reconciles (promotes and removes) it; a retirement must not.
+        const legacyFile = path.join(dir, ".agents", "memory.jsonc")
+        yield* Effect.promise(() => fs.mkdir(path.dirname(legacyFile), { recursive: true }))
+        yield* Effect.promise(() => fs.writeFile(legacyFile, JSON.stringify(memoryConfig())))
 
         // Hold the admission lock: the remove's reconcile blocks inside ensure
         // AFTER its own row-liveness check passed. While it blocks, the

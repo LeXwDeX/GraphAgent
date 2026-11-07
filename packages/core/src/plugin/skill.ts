@@ -6,6 +6,7 @@ import { define } from "./internal"
 import { Effect } from "effect"
 import { AbsolutePath } from "../schema"
 import { SkillV2 } from "../skill"
+import { CONFIG_BASENAME, PROJECT_DIR } from "../brand"
 import customizeOpencodeContent from "./skill/customize-opencode.md" with { type: "text" }
 import configureHooksContent from "./skill/configure-hooks.md" with { type: "text" }
 import createDagWorkflowContent from "./skill/create-dag-workflow.md" with { type: "text" }
@@ -17,7 +18,7 @@ export const CreateDagWorkflowContent = createDagWorkflowContent
 export const GitWorkflowContent = gitWorkflowContent
 
 export const CustomizeOpencodeDescription =
-  "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, commands, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself."
+  `Use ONLY when the user is editing or creating opencode's own configuration: ${CONFIG_BASENAME}.json, ${CONFIG_BASENAME}.jsonc, files under ${PROJECT_DIR}/, or files under ~/.config/${CONFIG_BASENAME}/. Also use when creating or fixing opencode agents, subagents, commands, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself.`
 
 export const ConfigureHooksDescription =
   "Use when the user wants opencode to react to a tool or lifecycle event, run a background check, or poll for a result and resume the same idle conversation. Also use for questions about hooks, hooks.json, or migrating Claude Code hooks. Explains the 33 recognized events and local applicability, 5 handler types, matching, configuration scopes, input/output protocols, synchronous decisions, async/asyncRewake continuation, and how to verify execution. Load this skill before creating or changing a lifecycle hook."

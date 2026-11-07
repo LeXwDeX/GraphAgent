@@ -13,7 +13,7 @@ async function mktmp(prefix: string): Promise<string> {
 }
 
 async function writeHooksJson(dir: string, json: unknown): Promise<void> {
-  const opencodeDir = path.join(dir, ".opencode")
+  const opencodeDir = path.join(dir, ".agents")
   await fs.mkdir(opencodeDir, { recursive: true })
   await fs.writeFile(path.join(opencodeDir, "hooks.json"), JSON.stringify(json))
 }

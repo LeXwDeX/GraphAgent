@@ -18,7 +18,7 @@ cliIt.live(
       yield* Effect.promise(async () => {
         await fs.mkdir(path.dirname(nested), { recursive: true })
         await fs.writeFile(
-          path.join(home, ".config/opencode/AGENTS.md"),
+          path.join(home, ".config/graphagent/AGENTS.md"),
           "# Root instruction\nUse fixture conventions.\n",
         )
         await fs.writeFile(path.join(home, "nested/AGENTS.md"), "# Nested instruction\nRead this local fixture.\n")
@@ -29,7 +29,7 @@ cliIt.live(
         )
         const handlers = [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }]
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({ SessionStart: handlers, InstructionsLoaded: handlers }),
         )
       })
@@ -128,13 +128,13 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
       await $`git config commit.gpgsign false`.cwd(home).quiet()
       await $`git -c user.name=Test -c user.email=test@example.test commit --allow-empty -m fixture`.cwd(home).quiet()
       await fs.mkdir(path.join(home, "nested"), { recursive: true })
-      await fs.writeFile(path.join(home, ".config/opencode/AGENTS.md"), "# Global instruction\n")
+      await fs.writeFile(path.join(home, ".config/graphagent/AGENTS.md"), "# Global instruction\n")
       await fs.writeFile(path.join(home, "AGENTS.md"), "# Project instruction\n")
       await fs.writeFile(path.join(home, "nested/AGENTS.md"), "# Nested instruction\n")
       await fs.writeFile(path.join(home, "nested/value.txt"), "NESTED_VALUE")
       await fs.writeFile(script, source.replaceAll("__AUDIT__", JSON.stringify(audit)))
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script, ...args] }] }],
         }),
@@ -186,7 +186,7 @@ cliIt.live("V1 InstructionsLoaded reports real memory_type and the nested trigge
       "10 seconds",
     )
     const byPath = (suffix: string) => rows.find((row) => String(row.path).endsWith(suffix))
-    expect(byPath(path.join(".config/opencode/AGENTS.md"))).toMatchObject({ reason: "session_start", type: "User" })
+    expect(byPath(path.join(".config/graphagent/AGENTS.md"))).toMatchObject({ reason: "session_start", type: "User" })
     expect(rows.find((row) => row.reason === "session_start" && row.type === "Project")).toBeDefined()
     expect(rows.find((row) => row.reason === "nested_traversal")).toMatchObject({
       type: "Project",

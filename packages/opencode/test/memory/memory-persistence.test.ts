@@ -14,7 +14,6 @@ import { MemoryHome } from "@/memory/home"
 import { MemoryIdentityFence } from "@/memory/identity-fence"
 import { MemoryIdentityMigration } from "@/memory/identity-migration"
 import { MemoryAdmission } from "@/memory/admission"
-import { MemoryPaths } from "@/memory/paths"
 import { MemorySchema } from "@/memory/schema"
 import { MemoryStore } from "@/memory/store"
 import { tmpdirScoped } from "../fixture/fixture"
@@ -323,95 +322,6 @@ describe("Project-owned MEMORY persistence", () => {
     }),
   )
 
-  it.live("imports, deduplicates, and preserves conflicting legacy Topics", () =>
-    Effect.gen(function* () {
-      const root = yield* tmpdirScoped()
-      const primary = yield* tmpdirScoped({ git: true })
-      const sandbox = yield* tmpdirScoped()
-      yield* Effect.gen(function* () {
-        const fs = yield* FSUtil.Service
-        const home = yield* MemoryHome.Service
-        const admission = yield* MemoryAdmission.Service
-        const store = yield* MemoryStore.Service
-        yield* insertLiveRow(projectID)
-        const file = path.join(MemoryPaths.legacyTopics(sandbox), "project-architecture.yaml")
-        yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-        yield* fs.writeFileString(file, Bun.YAML.stringify(topic()))
-
-        const imported = yield* admission.ensure({
-          projectID,
-          projectDirectory: primary,
-          directories: [primary, sandbox],
-          updated: 1,
-        })
-        expect(imported.diagnostics.map((item) => item.code)).toEqual(["topic.imported"])
-        expect(yield* fs.exists(file)).toBe(false)
-        expect(yield* store.readTopics(projectID)).toEqual([topic()])
-        expect(yield* fs.exists(home.manifest(projectID))).toBe(true)
-
-        yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-        yield* fs.writeFileString(file, Bun.YAML.stringify(topic()))
-        const duplicate = yield* admission.ensure({
-          projectID,
-          projectDirectory: primary,
-          directories: [sandbox],
-          updated: 2,
-        })
-        expect(duplicate.diagnostics.map((item) => item.code)).toEqual(["topic.duplicate"])
-        expect(yield* fs.exists(file)).toBe(false)
-
-        yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-        yield* fs.writeFileString(file, Bun.YAML.stringify(topic("不同的已确认架构边界")))
-        const conflict = yield* admission.ensure({
-          projectID,
-          projectDirectory: primary,
-          directories: [sandbox],
-          updated: 3,
-        })
-        expect(conflict.diagnostics.map((item) => item.code)).toEqual(["topic.conflict"])
-        expect(conflict.unresolved).toBe(1)
-        expect(yield* fs.exists(file)).toBe(true)
-        expect(yield* store.readTopics(projectID)).toEqual([topic()])
-      }).pipe(Effect.provide(layers(root)))
-    }),
-  )
-
-  it.live("serializes concurrent migration attempts by Project ID", () =>
-    Effect.gen(function* () {
-      const root = yield* tmpdirScoped()
-      const primary = yield* tmpdirScoped({ git: true })
-      const first = yield* tmpdirScoped()
-      const second = yield* tmpdirScoped()
-      yield* Effect.gen(function* () {
-        const fs = yield* FSUtil.Service
-        const admission = yield* MemoryAdmission.Service
-        const store = yield* MemoryStore.Service
-        yield* insertLiveRow(projectID)
-        const firstFile = path.join(MemoryPaths.legacyTopics(first), "project-architecture.yaml")
-        const secondFile = path.join(MemoryPaths.legacyTopics(second), "project-architecture.yaml")
-        yield* fs.makeDirectory(path.dirname(firstFile), { recursive: true })
-        yield* fs.makeDirectory(path.dirname(secondFile), { recursive: true })
-        yield* fs.writeFileString(firstFile, Bun.YAML.stringify(topic("first")))
-        yield* fs.writeFileString(secondFile, Bun.YAML.stringify(topic("second")))
-
-        const results = yield* Effect.all(
-          [
-            admission.ensure({ projectID, projectDirectory: primary, directories: [first], updated: 1 }),
-            admission.ensure({ projectID, projectDirectory: primary, directories: [second], updated: 1 }),
-          ],
-          { concurrency: "unbounded" },
-        )
-
-        expect(results.flatMap((result) => result.diagnostics.map((item) => item.code)).sort()).toEqual([
-          "topic.conflict",
-          "topic.imported",
-        ])
-        expect(yield* store.readTopics(projectID)).toHaveLength(1)
-        expect([yield* fs.exists(firstFile), yield* fs.exists(secondFile)].filter(Boolean)).toHaveLength(1)
-      }).pipe(Effect.provide(layers(root)))
-    }),
-  )
-
   it.live("preserves concurrent updates from separate processes", () =>
     Effect.gen(function* () {
       const root = yield* tmpdirScoped()
@@ -525,7 +435,7 @@ describe("Project-owned MEMORY persistence", () => {
     }),
   )
 
-  it.live("keeps invalid Topics and conflicting sandbox config for repair", () =>
+  it.live("keeps a conflicting sandbox config for repair and removes an exact duplicate", () =>
     Effect.gen(function* () {
       const root = yield* tmpdirScoped()
       const primary = yield* tmpdirScoped({ git: true })
@@ -535,11 +445,9 @@ describe("Project-owned MEMORY persistence", () => {
         const configStore = yield* MemoryConfig.Service
         const admission = yield* MemoryAdmission.Service
         yield* insertLiveRow(projectID)
-        const invalid = path.join(MemoryPaths.legacyTopics(sandbox), "broken.yaml")
-        const sandboxConfig = path.join(sandbox, ".opencode", "memory.jsonc")
-        yield* fs.makeDirectory(path.dirname(invalid), { recursive: true })
+        const sandboxConfig = path.join(sandbox, ".agents", "memory.jsonc")
+        yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
         yield* configStore.writeProject(primary, config)
-        yield* fs.writeFileString(invalid, "{ invalid")
         yield* fs.writeFileString(sandboxConfig, JSON.stringify({ ...config, enabled: false }))
 
         const result = yield* admission.ensure({
@@ -548,9 +456,8 @@ describe("Project-owned MEMORY persistence", () => {
           directories: [primary, sandbox],
           updated: 1,
         })
-        expect(result.diagnostics.map((item) => item.code)).toEqual(["topic.invalid", "config.conflict"])
-        expect(result.unresolved).toBe(2)
-        expect(yield* fs.exists(invalid)).toBe(true)
+        expect(result.diagnostics.map((item) => item.code)).toEqual(["config.conflict"])
+        expect(result.unresolved).toBe(1)
         expect(yield* fs.exists(sandboxConfig)).toBe(true)
 
         yield* fs.writeFileString(sandboxConfig, JSON.stringify(config))
@@ -560,7 +467,7 @@ describe("Project-owned MEMORY persistence", () => {
           directories: [sandbox],
           updated: 2,
         })
-        expect(duplicate.diagnostics.map((item) => item.code)).toEqual(["topic.invalid", "config.duplicate"])
+        expect(duplicate.diagnostics.map((item) => item.code)).toEqual(["config.duplicate"])
         expect(yield* fs.exists(sandboxConfig)).toBe(false)
       }).pipe(Effect.provide(layers(root)))
     }),
@@ -583,7 +490,7 @@ describe("Project-owned MEMORY persistence", () => {
             const fs = yield* FSUtil.Service
             const admission = yield* MemoryAdmission.Service
             yield* insertLiveRow(projectID)
-            const sandboxConfig = path.join(sandbox, ".opencode", "memory.jsonc")
+            const sandboxConfig = path.join(sandbox, ".agents", "memory.jsonc")
             yield* fs.writeFileString(path.join(global, "memory.jsonc"), JSON.stringify(config))
             yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
             yield* fs.writeFileString(sandboxConfig, JSON.stringify(config))
@@ -619,7 +526,7 @@ describe("Project-owned MEMORY persistence", () => {
         const admission = yield* MemoryAdmission.Service
         yield* insertLiveRow(projectID)
         const value = { ...config, topic_limit: 50, topic_limit_floor: 10 }
-        const sandboxConfig = path.join(sandbox, ".opencode", "memory.jsonc")
+        const sandboxConfig = path.join(sandbox, ".agents", "memory.jsonc")
         yield* configStore.writeProject(primary, value)
         yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
         yield* fs.writeFileString(sandboxConfig, JSON.stringify(value))
@@ -1060,15 +967,15 @@ describe("Project-owned MEMORY persistence", () => {
           const fs = yield* FSUtil.Service
           const admission = yield* MemoryAdmission.Service
           yield* insertLiveRow(projectID)
-          const file = path.join(sandbox, ".opencode", "memory", "topics", "broken.yaml")
+          const file = path.join(sandbox, ".agents", "memory.jsonc")
           yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-          yield* fs.writeFileString(file, "id: broken\n")
+          yield* fs.writeFileString(file, "{ invalid")
 
           const snapshot = { projectID, projectDirectory: primary, directories: [primary, sandbox], updated: 1 }
           const first = yield* admission.ensure(snapshot)
           expect(first.unresolved).toBeGreaterThan(0)
 
-          // Repair the legacy file. A cached unresolved result would keep
+          // Repair the sandbox config. A cached unresolved result would keep
           // blocking; the cache rule requires a fresh scan.
           yield* fs.remove(file)
           const second = yield* admission.ensure(snapshot)

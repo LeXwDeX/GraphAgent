@@ -396,7 +396,7 @@ describe("message recovery continuation admission and settlement branches", () =
     await run(undefined, owner.path, undefined, owner.path)
     expect(h.promptDirectories).toEqual([worktree])
     expect(removals).toEqual([owner.path])
-    expect(await fs.readFile(path.join(owner.path, ".opencode/workflow-reports/dag_recovery/n.patch"), "utf8")).toContain(
+    expect(await fs.readFile(path.join(owner.path, ".agents/workflow-reports/dag_recovery/n.patch"), "utf8")).toContain(
       "recovered change",
     )
     expect(h.completed).toHaveLength(1)
@@ -714,7 +714,7 @@ describe("message recovery continuation admission and settlement branches", () =
   for (const staleReceipt of [false, true])
     test(`persists a managed recovery receipt atomically before completion${staleReceipt ? " after rejecting a stale first receipt" : ""}`, async () => {
       await using dir = await tmpdir({ git: true })
-      const reports = path.join(dir.path, ".opencode", "workflow-reports")
+      const reports = path.join(dir.path, ".agents", "workflow-reports")
       const filename = path.join(reports, "result.txt")
       await Bun.write(filename, "immutable recovery evidence")
       const { h, run } = harness({
@@ -736,7 +736,7 @@ describe("message recovery continuation admission and settlement branches", () =
       expect(h.completed).toHaveLength(1)
       expect(authorized).toEqual(staleReceipt ? [filename, filename] : [filename])
       expect(await Bun.file(path.join(dir.path, ".git", "info", "exclude")).text()).toContain(
-        ".opencode/workflow-reports/",
+        ".agents/workflow-reports/",
       )
       expect(await Bun.file(path.join(dir.path, ".gitignore")).exists()).toBe(false)
     })

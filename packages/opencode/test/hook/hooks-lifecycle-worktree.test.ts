@@ -31,13 +31,13 @@ it.instance(
       const target = path.join(directory, "custom-isolation")
       const hook = path.join(directory, "create-hook.ts")
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
         await fs.writeFile(
           hook,
           `await Bun.write(${JSON.stringify(path.join(target, "marker"))}, "hook-created");process.stdout.write(${JSON.stringify(target)})`,
         )
         await fs.writeFile(
-          path.join(directory, ".opencode/hooks.json"),
+          path.join(directory, ".agents/hooks.json"),
           JSON.stringify({
             WorktreeCreate: [{ hooks: [{ type: "command", command: process.execPath, args: [hook] }] }],
           }),
@@ -67,9 +67,9 @@ it.instance(
     Effect.gen(function* () {
       const { directory } = yield* TestInstance
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
         await fs.writeFile(
-          path.join(directory, ".opencode/hooks.json"),
+          path.join(directory, ".agents/hooks.json"),
           JSON.stringify({ WorktreeCreate: [{ hooks: [{ type: "command", command: "exit 2" }] }] }),
         )
       })
@@ -92,7 +92,7 @@ for (const mode of ["exit-zero", "fail-present", "fail-removed"] as const) {
         const createScript = path.join(directory, "create.ts")
         const removeScript = path.join(directory, "remove.ts")
         yield* Effect.promise(async () => {
-          await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
           await fs.writeFile(
             createScript,
             `await Bun.write(${JSON.stringify(path.join(target, "marker"))},"owned");process.stdout.write(${JSON.stringify(target)})`,
@@ -104,7 +104,7 @@ for (const mode of ["exit-zero", "fail-present", "fail-removed"] as const) {
               : `process.exit(${mode === "exit-zero" ? 0 : 7})`,
           )
           await fs.writeFile(
-            path.join(directory, ".opencode/hooks.json"),
+            path.join(directory, ".agents/hooks.json"),
             JSON.stringify({
               WorktreeCreate: [{ hooks: [{ type: "command", command: process.execPath, args: [createScript] }] }],
               WorktreeRemove: [{ hooks: [{ type: "command", command: process.execPath, args: [removeScript] }] }],
@@ -144,13 +144,13 @@ it.instance("a configured hook can isolate a local non-git project", () =>
     const target = path.join(directory, "plain-isolation")
     const script = path.join(directory, "create.ts")
     yield* Effect.promise(async () => {
-      await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+      await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
       await fs.writeFile(
         script,
         `await Bun.write(${JSON.stringify(path.join(target, "marker"))},"plain");process.stdout.write("plain-isolation")`,
       )
       await fs.writeFile(
-        path.join(directory, ".opencode/hooks.json"),
+        path.join(directory, ".agents/hooks.json"),
         JSON.stringify({
           WorktreeCreate: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
         }),
@@ -182,7 +182,7 @@ for (const mode of ["dot-segment", "symlink", "session-ancestor"] as const) {
         const target = path.join(directory, "real-target")
         const alias = path.join(directory, "alias-target")
         yield* Effect.promise(async () => {
-          await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+          await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
           await fs.mkdir(target)
           if (mode === "symlink") await fs.symlink(target, alias, "dir")
           const output =
@@ -190,7 +190,7 @@ for (const mode of ["dot-segment", "symlink", "session-ancestor"] as const) {
           const script = path.join(directory, "unsafe-hook.ts")
           await fs.writeFile(script, `process.stdout.write(${JSON.stringify(output)})`)
           await fs.writeFile(
-            path.join(directory, ".opencode/hooks.json"),
+            path.join(directory, ".agents/hooks.json"),
             JSON.stringify({
               WorktreeCreate: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
             }),
@@ -214,13 +214,13 @@ it.instance(
       const branch = "hook-owned-preserved"
       const script = path.join(directory, "git-create-hook.ts")
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
         await fs.writeFile(
           script,
           `const child=Bun.spawnSync(['git','worktree','add','-b',${JSON.stringify(branch)},${JSON.stringify(target)},'HEAD'],{cwd:${JSON.stringify(directory)},stdout:'pipe',stderr:'pipe'});if(child.exitCode!==0){process.stderr.write(child.stderr);process.exit(child.exitCode)}process.stdout.write(${JSON.stringify(target)});`,
         )
         await fs.writeFile(
-          path.join(directory, ".opencode/hooks.json"),
+          path.join(directory, ".agents/hooks.json"),
           JSON.stringify({
             WorktreeCreate: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
           }),

@@ -9,14 +9,14 @@ import (
 //go:embed config.json
 var configSchemaBytes []byte
 
-// ConfigSchema 是 opencode.ai/config.json 的内嵌副本，用于离线校验生成的配置。
+// ConfigSchema 是 GraphAgent 配置 schema 的内嵌副本，用于离线校验生成的配置。
 var ConfigSchema json.RawMessage
 
 func init() {
 	ConfigSchema = json.RawMessage(configSchemaBytes)
 }
 
-// Validate 对生成的 opencode 配置做基本的顶层键校验。
+// Validate 对生成的 GraphAgent 配置做基本的顶层键校验。
 // 它比对 config schema 的 properties 白名单，拒绝未识别的顶层键。
 func Validate(config map[string]any) error {
 	var schema struct {
@@ -39,7 +39,7 @@ func Validate(config map[string]any) error {
 
 	for key := range config {
 		if !allowed[key] && key != "$schema" {
-			return fmt.Errorf("未识别的顶层键 %q（opencode 配置严格禁止额外属性）", key)
+			return fmt.Errorf("未识别的顶层键 %q（GraphAgent 配置严格禁止额外属性）", key)
 		}
 	}
 	return nil

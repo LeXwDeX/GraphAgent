@@ -117,7 +117,7 @@ func TestRedactSensitive(t *testing.T) {
 }
 
 func TestWriteFileUsesPrivatePermissions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "opencode.json")
+	path := filepath.Join(t.TempDir(), "graphagent.json")
 	if _, err := WriteFile(path, []byte(`{"provider":{}}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestWriteFileUsesPrivatePermissions(t *testing.T) {
 }
 
 func TestWriteFileIfUnchangedRejectsStaleSnapshot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "opencode.json")
+	path := filepath.Join(t.TempDir(), "graphagent.json")
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestWriteFileIfUnchangedRejectsStaleSnapshot(t *testing.T) {
 func TestSubstituteVarsReportsMissingFile(t *testing.T) {
 	_, err := substituteVars(map[string]any{
 		"provider": map[string]any{"options": map[string]any{"apiKey": "{file:missing-key}"}},
-	}, t.TempDir()+"/opencode.json")
+	}, t.TempDir()+"/graphagent.json")
 	if err == nil {
 		t.Fatal("substituteVars() error = nil, want missing file error")
 	}

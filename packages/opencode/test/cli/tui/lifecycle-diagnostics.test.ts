@@ -31,7 +31,7 @@ test("real worker reload/shutdown diagnostics only reach its background file", a
   expect(code).toBe(0)
   expect(stdout).not.toContain("lifecycle.")
   expect(stderr).not.toContain("lifecycle.")
-  const log = await Bun.file(path.join(tmp.path, "opencode", "log", "opencode.log")).text()
+  const log = await Bun.file(path.join(tmp.path, "graphagent", "log", "graphagent.log")).text()
   expect(log).toContain("lifecycle.worker.reload")
   expect(log).toContain("source=worker.rpc.reload")
   expect(log).toContain("lifecycle.worker.shutdown")

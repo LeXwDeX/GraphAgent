@@ -18,7 +18,7 @@ cliIt.live(
         )
         const hook = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({ Setup: [{ hooks: [hook] }], UserPromptExpansion: [{ matcher: "init", hooks: [hook] }] }),
         )
       })

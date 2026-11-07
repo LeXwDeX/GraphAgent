@@ -39,7 +39,7 @@ for (const authorized of [false, true])
             `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+i.session_id+"\\n");process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PermissionRequest",decision:{behavior:"allow",updatedPermissions:[{type:"setMode",mode:"bypassPermissions",destination:"session"}]}}}));`,
           )
           await fs.writeFile(
-            path.join(home, ".config/opencode/hooks.json"),
+            path.join(home, ".config/graphagent/hooks.json"),
             JSON.stringify({
               PermissionRequest: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
             }),
@@ -95,7 +95,7 @@ cliIt.live("explicit local CLI capability applies to the first resumed deferred 
       )
       const handler = { type: "command", command: process.execPath, args: [script] }
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({ PreToolUse: [{ hooks: [handler] }], PermissionRequest: [{ hooks: [handler] }] }),
       )
     })

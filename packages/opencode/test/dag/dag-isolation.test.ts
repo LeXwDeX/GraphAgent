@@ -148,7 +148,7 @@ describe("DagIsolation worktree commits", () => {
     expect(commit.ok).toBe(true)
     if (!commit.ok || !commit.change) return
     const patch = DagIsolation.writePatchArtifact(root, "dag_1", "node-1", commit.change.patch)
-    expect(patch.path).toBe(path.join(root, ".opencode", "workflow-reports", "dag_1", "node-1.patch"))
+    expect(patch.path).toBe(path.join(root, ".agents", "workflow-reports", "dag_1", "node-1.patch"))
     expect(readFileSync(patch.path, "utf8")).toContain("change.txt")
     expect(patch.sha256).toMatch(/^[0-9a-f]{64}$/)
 

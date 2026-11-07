@@ -284,7 +284,7 @@ function writeStandardFiles(dir: string) {
 function writeProjectSkill(dir: string) {
   return FSUtil.Service.use((fs) =>
     fs.writeWithDirs(
-      path.join(dir, ".opencode", "skills", "project-rest-skill", "SKILL.md"),
+      path.join(dir, ".agents", "skills", "project-rest-skill", "SKILL.md"),
       `---
 name: project-rest-skill
 description: A project skill visible to REST API prompts.
@@ -732,7 +732,9 @@ describe("HttpApi SDK", () => {
         const url = new URL(request!.url)
 
         expect(found.response?.status).toBe(200)
-        expect(found.data).toMatchObject({ data: [{ path: "hello.txt", type: "file" }] })
+        // The fuzzy file index may also return other project files (for example
+        // graphagent.json), so assert the expected hit instead of an exact set.
+        expect(found.data?.data).toContainEqual({ path: "hello.txt", type: "file" })
         expect(url.searchParams.get("directory")).toBe(directory)
         expect(url.searchParams.get("workspace")).toBe(workspaceID)
         expect(url.searchParams.get("location[directory]")).toBe(directory)

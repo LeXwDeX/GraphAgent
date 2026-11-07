@@ -39,13 +39,13 @@ it.instance(
       const script = path.join(directory, "cwd-hook.ts")
       yield* Effect.promise(async () => {
         await fs.mkdir(destination)
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
         await fs.writeFile(
           script,
           `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({...i,actual_cwd:process.cwd(),readable:await Bun.file(i.transcript_path).exists()})+'\\n');`,
         )
         await fs.writeFile(
-          path.join(directory, ".opencode/hooks.json"),
+          path.join(directory, ".agents/hooks.json"),
           JSON.stringify({ CwdChanged: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
         )
       })
@@ -83,14 +83,14 @@ function moveWithWatch(input: { cwdOutput?: unknown; seed?: string[] }) {
     const script = path.join(directory, "watch-hook.ts")
     yield* Effect.promise(async () => {
       await fs.mkdir(destination)
-      await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+      await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
       await fs.writeFile(
         script,
         `const i=JSON.parse(await Bun.stdin.text());const fs=await import('node:fs/promises');await fs.appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,path:i.file_path})+'\\n');if(i.hook_event_name==='CwdChanged'&&${JSON.stringify(input.cwdOutput !== undefined)})process.stdout.write(${JSON.stringify(JSON.stringify(input.cwdOutput ?? {}))});`,
       )
       const hook = { type: "command", command: process.execPath, args: [script] }
       await fs.writeFile(
-        path.join(directory, ".opencode/hooks.json"),
+        path.join(directory, ".agents/hooks.json"),
         JSON.stringify({ CwdChanged: [{ hooks: [hook] }], FileChanged: [{ matcher: "watched.*", hooks: [hook] }] }),
       )
     })
@@ -155,7 +155,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
       )
       const hook = { type: "command", command: process.execPath, args: [script] }
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           SessionStart: [{ matcher: "startup", hooks: [hook] }],
           CwdChanged: [{ hooks: [hook] }],

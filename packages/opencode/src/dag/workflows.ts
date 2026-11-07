@@ -10,7 +10,7 @@
  * the original session-relative behavior.
  *
  * Lookup order (first match wins):
- * - project: `.opencode/workflows/<name>.yaml` / `.yml`
+ * - project: `.agents/workflows/<name>.yaml` / `.yml`
  * - global:  `<config dir>/workflows/<name>.yaml` / `.yml`
  * - builtin:  templates compiled into the binary from opencode-dag-config
  *   (the release pipeline injects the snapshot via DAG_TEMPLATES_DIR, so
@@ -27,6 +27,7 @@ import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import { isRecord } from "@/util/record"
 
 // Injected by the build (build.ts define), mirrors GRAPHAGENT_MODELS_DEV.
@@ -148,7 +149,7 @@ async function builtinEntry(name: string, content: string): Promise<Entry> {
 // setups pointing the config dir elsewhere are honored here too.
 function scopes(projectDir: string) {
   return [
-    { scope: "project" as const, dir: path.join(projectDir, ".opencode", DIRECTORY) },
+    { scope: "project" as const, dir: path.join(projectDir, PROJECT_DIR, DIRECTORY) },
     { scope: "global" as const, dir: path.join(Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config, DIRECTORY) },
   ]
 }

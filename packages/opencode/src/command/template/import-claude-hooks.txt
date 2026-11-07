@@ -22,8 +22,8 @@ Read these files and detect any `hooks` field:
 
 Also scan OpenCode's legacy locations for deprecation warnings:
 
-- `.opencode/settings.json`
-- `~/.config/opencode/settings.json`
+- `.agents/settings.json`
+- `~/.config/graphagent/settings.json`
 
 If a `hooks` field is found in OpenCode's settings.json files, log a warning:
 ```
@@ -61,7 +61,7 @@ an identifier derived from that directory; it is not inside the source folder.
 The script may need to create its data directory. Preserve the placeholder
 syntax; verify script paths and dependency assets before rewriting them.
 Do not author `__sourceDir`: OpenCode stamps that metadata when loading the
-file. Never blindly replace `.claude/` with `.opencode/` and assume the script
+file. Never blindly replace `.claude/` with `.agents/` and assume the script
 has moved.
 
 Example migration:
@@ -88,7 +88,7 @@ Example migration:
   ]
 }
 ```
-`${CLAUDE_PLUGIN_ROOT}` is a runtime placeholder. OpenCode expands it from the hook's location. After migration to `.opencode/`, it points there; this example therefore requires `validate.sh` and its dependencies to exist there.
+`${CLAUDE_PLUGIN_ROOT}` is a runtime placeholder. OpenCode expands it from the hook's location. After migration to `.agents/`, it points there; this example therefore requires `validate.sh` and its dependencies to exist there.
 
 #### Command-envelope compatibility (`inputFormat`)
 
@@ -104,8 +104,8 @@ Other handler types do not use the command-only naming adapter. Inspect their ac
 
 Approved hooks go to:
 
-- **Global scope** (from `~/.claude/settings.json`): `${Global.Path.config}/hooks.json` (the XDG config directory, commonly `$XDG_CONFIG_HOME/opencode`, usually `~/.config/opencode`)
-- **Project scope** (from `.claude/settings.json` or `.claude/settings.local.json`): `.opencode/hooks.json`
+- **Global scope** (from `~/.claude/settings.json`): `${Global.Path.config}/hooks.json` (the XDG config directory, commonly `$XDG_CONFIG_HOME/opencode`, usually `~/.config/graphagent`)
+- **Project scope** (from `.claude/settings.json` or `.claude/settings.local.json`): `.agents/hooks.json`
 
 Use top-level event keys. Do not wrap them in `{"hooks": {...}}`. Each event maps to matcher blocks with an optional `matcher` and a `hooks` array:
 
@@ -140,7 +140,7 @@ After migration, report:
 - Any hooks that were edited during migration
 - Number of command hooks tagged `inputFormat: "claude-code"`
 - Which real transports/operations were verified and which remain untested
-- Deprecation warnings (if hooks were found in .opencode/settings.json)
+- Deprecation warnings (if hooks were found in .agents/settings.json)
 - Keep `.claude/settings*.json`, scripts, and skills in place during migration. Remove specific confirmed-unused Claude hook configuration only when the user explicitly requests removal. Do not recommend deleting the entire `.claude/` directory.
 - After the final write, wait at least the 2-second poll interval plus the 500-millisecond debounce before checking reload. The system prompt's **Active Hooks** block confirms loaded configuration only; it does not prove behavior. Trigger each hook and inspect its input/output before calling migration done when behavior validation is requested.
 

@@ -1,17 +1,9 @@
 export * as MemoryPaths from "./paths"
 
-import { join } from "node:path"
-
 /** Worktree-local paths containing durable project memory. */
-export const PROJECT_PATHS = [".opencode/memory.jsonc", ".opencode/memory.json", ".opencode/memory/"] as const
+export const PROJECT_PATHS = [".agents/memory.jsonc", ".agents/memory.json", ".agents/memory/"] as const
 
-export const PROJECT_CONFIG_PATHS = [".opencode/memory.jsonc", ".opencode/memory.json"] as const
-
-export const LEGACY_TOPICS_PATH = ".opencode/memory/topics"
-
-export function legacyTopics(directory: string) {
-  return join(directory, LEGACY_TOPICS_PATH)
-}
+export const PROJECT_CONFIG_PATHS = [".agents/memory.jsonc", ".agents/memory.json"] as const
 
 export function isProjectMemoryPath(input: string) {
   const path = input.replaceAll("\\", "/").replace(/^\.\//, "")

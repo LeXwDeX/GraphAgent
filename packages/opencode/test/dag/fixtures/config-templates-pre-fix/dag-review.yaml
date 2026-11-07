@@ -35,7 +35,7 @@ config:
       prompt_template:
         id: code-explore
         input:
-          target: "packages/opencode/src/dag/templates template system: resolve.ts (template resolution, rendering, interpolation) and sanitize.ts (input sanitization, injection prevention). Map template loading (by ID from .opencode/dag-prompts, inline), variable interpolation mechanics, and the sanitization boundary. Identify trust assumptions and injection vectors."
+          target: "packages/opencode/src/dag/templates template system: resolve.ts (template resolution, rendering, interpolation) and sanitize.ts (input sanitization, injection prevention). Map template loading (by ID from .agents/dag-prompts, inline), variable interpolation mechanics, and the sanitization boundary. Identify trust assumptions and injection vectors."
 
     - id: review-arch
       name: review-arch

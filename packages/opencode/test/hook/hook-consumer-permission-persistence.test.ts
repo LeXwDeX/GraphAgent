@@ -26,13 +26,13 @@ describe("permission updates through real AppLayer and command hooks", () => {
         const cfg = yield* Config.Service
         const permissions = yield* Permission.Service
         const hooks = yield* SessionHooks.Service
-        const originalGlobal = Global.Path.config
+        const originalGlobal = process.env.GRAPHAGENT_TEST_CONFIG_DIR
         const globalDir = path.join(instance.directory, "isolated-global")
         yield* Effect.promise(() => fs.mkdir(globalDir, { recursive: true }))
-        ;(Global.Path as { config: string }).config = globalDir
+        process.env.GRAPHAGENT_TEST_CONFIG_DIR = globalDir
         yield* cfg.invalidate()
         yield* Effect.gen(function* () {
-          const projectFile = path.join(instance.directory, "opencode.jsonc")
+          const projectFile = path.join(instance.directory, "graphagent.jsonc")
           yield* Effect.promise(() =>
             fs.writeFile(projectFile, '{\n  // retain this unrelated comment\n  "username": "fixture-user"\n}\n'),
           )
@@ -119,7 +119,8 @@ describe("permission updates through real AppLayer and command hooks", () => {
         }).pipe(
           Effect.ensuring(
             Effect.gen(function* () {
-              ;(Global.Path as { config: string }).config = originalGlobal
+              if (originalGlobal === undefined) delete process.env.GRAPHAGENT_TEST_CONFIG_DIR
+              else process.env.GRAPHAGENT_TEST_CONFIG_DIR = originalGlobal
               yield* cfg.invalidate().pipe(Effect.orDie)
             }),
           ),
@@ -161,7 +162,7 @@ it.instance("supported session modes govern the real permission dialog and nativ
     expect(Exit.isFailure(yield* permission.ask(request, options).pipe(Effect.exit))).toBe(true)
     expect(
       Exit.isSuccess(
-        yield* permission.ask({ ...request, patterns: [".opencode/plans/fixture.md"] }, options).pipe(Effect.exit),
+        yield* permission.ask({ ...request, patterns: [".agents/plans/fixture.md"] }, options).pipe(Effect.exit),
       ),
     ).toBe(true)
     yield* permission.applyHookUpdates(id, [{ type: "setMode", mode: "bypassPermissions", destination: "session" }])
@@ -197,7 +198,7 @@ it.instance("rule removals and replacements refresh an already cached Agent with
     ])
     expect((yield* cfg.get()).permissions?.some((rule) => rule.action === "old_rule")).toBe(false)
     expect((yield* cfg.get()).permissions).toContainEqual({ action: "new_rule", resource: "*", effect: "allow" })
-    const file = path.join(instance.directory, "opencode.jsonc")
+    const file = path.join(instance.directory, "graphagent.jsonc")
     const before = yield* Effect.promise(() => fs.readFile(file, "utf8"))
     expect(
       Exit.isFailure(
@@ -282,7 +283,7 @@ it.instance("ordered wildcard rules survive mixed-source reload and invalid file
     const instance = yield* TestInstance
     const cfg = yield* Config.Service
     const agent = yield* Agent.Service
-    const file = path.join(instance.directory, "opencode.jsonc")
+    const file = path.join(instance.directory, "graphagent.jsonc")
     yield* Effect.promise(() => fs.writeFile(file, JSON.stringify({ permission: { read: { a: "allow" } } })))
     yield* cfg.invalidate()
     yield* cfg.updateHookPermissions([

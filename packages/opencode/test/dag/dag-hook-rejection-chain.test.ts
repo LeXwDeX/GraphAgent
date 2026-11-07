@@ -32,7 +32,7 @@ for (const mode of ["complete", "cancel", "dispose"] as const) {
         const reportFile = path.join(directory, "report.json")
         const proof = randomBytes(18).toString("hex")
         yield* Effect.promise(async () => {
-          await mkdir(path.join(directory, ".opencode"), { recursive: true })
+          await mkdir(path.join(directory, ".agents"), { recursive: true })
           await writeFile(protectedFile, JSON.stringify({ proof }))
           const guard = path.join(home, "guard with spaces.cjs")
           // Decision depends on the actual tool input and existing filesystem
@@ -45,7 +45,7 @@ const denied = e.tool_name === 'write' && typeof target === 'string' && fs.exist
 console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Existing fixture is protected; read it and write a fresh report instead.'}} : {}));`,
           )
           await writeFile(
-            path.join(directory, ".opencode", "hooks.json"),
+            path.join(directory, ".agents", "hooks.json"),
             JSON.stringify({
               PreToolUse: [
                 {

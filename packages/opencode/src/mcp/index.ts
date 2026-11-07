@@ -11,6 +11,7 @@ import { Config } from "@/config/config"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { withTimeout } from "@/util/timeout"
 import { Process } from "@/util/process"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -69,7 +70,7 @@ type MCPClient = Client
 
 function createClient(directory: string, protocol?: "auto" | "legacy" | "modern") {
   const client = new Client(
-    { name: "opencode", version: InstallationVersion },
+    { name: APP_NAME, version: InstallationVersion },
     {
       ...CLIENT_OPTIONS,
       // Per-server protocol era (#448). Absent/'auto' probes server/discover with
@@ -353,7 +354,7 @@ export const layer = Layer.effect(
         cwd,
         env: {
           ...process.env,
-          ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
+          ...(cmd === APP_NAME ? { BUN_BE_BUN: "1" } : {}),
           ...mcp.environment,
         },
       })

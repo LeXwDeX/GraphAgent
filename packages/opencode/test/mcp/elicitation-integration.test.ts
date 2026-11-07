@@ -174,7 +174,7 @@ describe("mcp elicitation cancellation command hook", () => {
       const script = path.join(directory, "result-hook.ts")
       const audit = path.join(directory, "result.json")
       yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
         await fs.writeFile(
           script,
           `const input = await Bun.stdin.json()
@@ -186,7 +186,7 @@ console.log(JSON.stringify({ hookSpecificOutput: {
 `,
         )
         await fs.writeFile(
-          path.join(directory, ".opencode", "hooks.json"),
+          path.join(directory, ".agents", "hooks.json"),
           JSON.stringify({
             ElicitationResult: [
               {

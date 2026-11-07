@@ -2,6 +2,7 @@ import { Cause, Effect, Exit, FileSystem, Formatter, Logger, Scope, type LogLeve
 import path from "path"
 import { threadId } from "node:worker_threads"
 import { Global } from "../global"
+import { APP_NAME } from "../brand"
 import { runID } from "./shared"
 
 const fileWriters = new WeakSet<object>()
@@ -57,7 +58,7 @@ function ignoreFileFailure<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effe
   )
 }
 
-export function fileLogger(file = path.join(Global.Path.log, "opencode.log"), id: string = runID) {
+export function fileLogger(file = path.join(Global.Path.log, `${APP_NAME}.log`), id: string = runID) {
   return Effect.gen(function* () {
     // Keep one writer and one batching fiber, as Logger.toFile does. Own its
     // finalizers so a failed log close cannot fail application teardown.

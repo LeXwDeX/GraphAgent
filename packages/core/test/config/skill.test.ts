@@ -49,7 +49,7 @@ describe("ConfigSkillPlugin.Plugin", () => {
           Config.Service.of({
             entries: () =>
               Effect.succeed([
-                new Config.Directory({ type: "directory", path: AbsolutePath.make("/repo/.opencode") }),
+                new Config.Directory({ type: "directory", path: AbsolutePath.make("/repo/.agents") }),
                 new Config.Document({
                   type: "document",
                   info: decode({
@@ -64,21 +64,21 @@ describe("ConfigSkillPlugin.Plugin", () => {
       expect(sources).toEqual([
         SkillV2.DirectorySource.make({
           type: "directory",
-          path: AbsolutePath.make(path.join("/repo/.opencode", "skill")),
+          path: AbsolutePath.make(path.join("/repo/.agents", "skill")),
         }),
         SkillV2.DirectorySource.make({
           type: "directory",
-          path: AbsolutePath.make(path.join("/repo/.opencode", "skills")),
+          path: AbsolutePath.make(path.join("/repo/.agents", "skills")),
         }),
         // Register both standard candidates even when the directories do not
         // exist yet, so a hook-created skill can be discovered after reload.
         SkillV2.DirectorySource.make({
           type: "directory",
-          path: AbsolutePath.make(path.join(directory, ".opencode", "skill")),
+          path: AbsolutePath.make(path.join(directory, ".agents", "skill")),
         }),
         SkillV2.DirectorySource.make({
           type: "directory",
-          path: AbsolutePath.make(path.join(directory, ".opencode", "skills")),
+          path: AbsolutePath.make(path.join(directory, ".agents", "skills")),
         }),
         SkillV2.DirectorySource.make({ type: "directory", path: AbsolutePath.make(path.join(directory, "skills")) }),
         SkillV2.DirectorySource.make({

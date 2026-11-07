@@ -54,7 +54,7 @@ const emptyConfigLayer = Layer.mock(Config.Service, {
 })
 const readyAdmissionLayer = Layer.mock(MemoryAdmission.Service, {
   ensure: () =>
-    Effect.succeed(new MemoryAdmission.Result({ diagnostics: [], imported: 0, duplicates: 0, unresolved: 0 })),
+    Effect.succeed(new MemoryAdmission.Result({ diagnostics: [], duplicates: 0, unresolved: 0 })),
   invalidate: () => Effect.void,
 })
 let loadedProjectDirectory: string | undefined
@@ -145,7 +145,6 @@ const unavailableModelIt = testEffect(
             Effect.succeed(
               new MemoryAdmission.Result({
                 diagnostics: [],
-                imported: 0,
                 duplicates: 0,
                 unresolved: migrationUnresolved,
               }),
@@ -248,7 +247,7 @@ function bootstrapFixture() {
             Effect.gen(function* () {
               if (state.loadHook) yield* state.loadHook
               if (state.project)
-                return { config: state.project, path: "/project/.opencode/memory.jsonc", level: "project" as const }
+                return { config: state.project, path: "/project/.agents/memory.jsonc", level: "project" as const }
               return state.global
                 ? { config: state.global, path: "/global/memory.jsonc", level: "global" as const }
                 : undefined
@@ -442,7 +441,7 @@ describe("memory config and YAML store", () => {
     Effect.gen(function* () {
       const memoryConfig = yield* MemoryConfig.Service
       const tmp = yield* tmpdirScoped()
-      const directory = path.join(tmp, ".opencode")
+      const directory = path.join(tmp, ".agents")
       yield* Effect.promise(() => fs.mkdir(directory, { recursive: true }))
       yield* Effect.promise(() =>
         fs.writeFile(path.join(directory, "memory.json"), JSON.stringify({ ...config, enabled: true })),
@@ -1724,10 +1723,10 @@ describe("memory project config Git exclusions", () => {
       const exclude = path.isAbsolute(raw) ? raw : path.resolve(tmp, raw)
       const lines = (yield* Effect.promise(() => fs.readFile(exclude, "utf-8"))).split(/\r?\n/)
 
-      for (const rule of [".opencode/memory.jsonc", ".opencode/memory.json"]) {
+      for (const rule of [".agents/memory.jsonc", ".agents/memory.json"]) {
         expect(lines.filter((line) => line === rule)).toHaveLength(1)
       }
-      expect(lines).not.toContain(".opencode/memory/")
+      expect(lines).not.toContain(".agents/memory/")
       expect(yield* Effect.promise(() => fs.readFile(path.join(tmp, ".gitignore"), "utf-8"))).toBe("keep-me\n")
     }),
   )

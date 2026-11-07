@@ -124,9 +124,77 @@ const CATEGORIES: Category[] = [
     pattern: /opencode\.mode/,
     allow: [],
   },
+  {
+    id: "project-directory",
+    stage: 3,
+    pattern: /\.opencode[\/\\"'`]/,
+    allow: [
+      {
+        file: "packages/opencode/src/ide/index.ts",
+        reason: "upstream IDE extension identity; B5 removes the IDE bridge",
+      },
+    ],
+  },
+  {
+    id: "config-file-name",
+    stage: 3,
+    pattern: /opencode\.jsonc?/,
+    allow: [
+      {
+        file: "packages/tui/src/theme/index.ts",
+        reason: "F1 renames the bundled theme asset",
+      },
+      {
+        file: "packages/tui/src/component/error-component.tsx",
+        reason: "F1 rewrites the theme reference comment",
+      },
+    ],
+  },
+  {
+    id: "database-log-name",
+    stage: 3,
+    pattern: /opencode\.(db|log)/,
+    allow: [],
+  },
+  {
+    id: "remote-config-path",
+    stage: 3,
+    pattern: /\.well-known\/opencode/,
+    allow: [],
+  },
+  {
+    id: "internal-domain",
+    stage: 3,
+    pattern: /opencode\.internal/,
+    allow: [],
+  },
+  {
+    id: "tui-persisted-key",
+    stage: 3,
+    pattern: /opencode\.(default|status)/,
+    allow: [],
+  },
+  {
+    id: "temp-identity",
+    stage: 3,
+    pattern: /opencode-(jdtls|oauth|debug|tmux)/,
+    allow: [],
+  },
+  {
+    id: "global-app-directory",
+    stage: 3,
+    pattern: /\.config[\/\\]opencode\b|\.local[\/\\](share|state)[\/\\]opencode\b|\.cache[\/\\]opencode\b|~\/\.opencode\b/,
+    allow: [],
+  },
+  {
+    id: "legacy-cli-spawn",
+    stage: 3,
+    pattern: /(?:Process\.(?:spawn|text|run)|Bun\.spawn)\(\["opencode"/,
+    allow: [],
+  },
 ]
 
-const CURRENT_STAGE = 2
+const CURRENT_STAGE = 3
 
 type Hit = { category: string; file: string; line: number; text: string }
 

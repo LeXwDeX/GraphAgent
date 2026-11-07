@@ -72,14 +72,14 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
-it.instance("plan agent denies edits except .opencode/plans/*", () =>
+it.instance("plan agent denies edits except .agents/plans/*", () =>
   Effect.gen(function* () {
     const plan = yield* load((svc) => svc.get("plan"))
     expect(plan).toBeDefined()
     // Wildcard is denied
     expect(evalPerm(plan, "edit")).toBe("deny")
     // But specific path is allowed
-    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+    expect(Permission.evaluate("edit", ".agents/plans/foo.md", plan!.permission).action).toBe("allow")
     expect(Permission.evaluate("bash", "touch mutation", plan!.permission).action).toBe("allow")
     expect(plan!.permission.some((rule) => rule.permission === "plan_enter")).toBe(false)
   }),
@@ -611,7 +611,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      const skillDir = path.join(test.directory, ".opencode", "skill", "perm-skill")
+      const skillDir = path.join(test.directory, ".agents", "skill", "perm-skill")
       yield* Effect.promise(() =>
         Bun.write(
           path.join(skillDir, "SKILL.md"),
@@ -770,7 +770,7 @@ it.instance(
 it.instance("retains agent frontmatter hooks with its actual source", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    const source = path.join(test.directory, ".opencode", "agents", "hook-source.md")
+    const source = path.join(test.directory, ".agents", "agents", "hook-source.md")
     yield* Effect.promise(() =>
       Bun.write(
         source,
@@ -801,11 +801,11 @@ fixture agent
 it.instance("global agent hook exemption comes from the real loader root", () =>
   Effect.gen(function* () {
     const { directory } = yield* TestInstance
-    const previous = Global.Path.config
+    const previous = process.env.GRAPHAGENT_TEST_CONFIG_DIR
     const global = path.join(directory, "isolated-global")
     const source = path.join(global, "agents", "global-hook-agent.md")
     const config = yield* Config.Service
-    ;(Global.Path as { config: string }).config = global
+    process.env.GRAPHAGENT_TEST_CONFIG_DIR = global
     yield* Effect.gen(function* () {
       yield* Effect.promise(() =>
         Bun.write(
@@ -821,7 +821,8 @@ it.instance("global agent hook exemption comes from the real loader root", () =>
     }).pipe(
       Effect.ensuring(
         Effect.gen(function* () {
-          ;(Global.Path as { config: string }).config = previous
+          if (previous === undefined) delete process.env.GRAPHAGENT_TEST_CONFIG_DIR
+          else process.env.GRAPHAGENT_TEST_CONFIG_DIR = previous
           yield* config.invalidate().pipe(Effect.orDie)
         }),
       ),

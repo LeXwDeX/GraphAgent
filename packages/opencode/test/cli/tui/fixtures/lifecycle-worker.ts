@@ -12,7 +12,7 @@ client.on("worker.fatal", () => {
 try {
   await client.call("reload", undefined)
   await client.call("shutdown", undefined)
-  const file = path.join(process.env.XDG_DATA_HOME!, "opencode", "log", "opencode.log")
+  const file = path.join(process.env.XDG_DATA_HOME!, "graphagent", "log", "graphagent.log")
   const deadline = Date.now() + 10000
   while (true) {
     const log = await fs.readFile(file, "utf8").catch(() => "")

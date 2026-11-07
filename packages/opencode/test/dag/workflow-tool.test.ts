@@ -188,7 +188,7 @@ const mockNodes = (id: string) =>
           worktreeDirectory: "/repo/.worktrees/status-node-failed",
           worktreeBranch: "opencode/dag-status-node-failed",
           worktreeCommit: "0123456789abcdef",
-          worktreePatchPath: "/repo/.opencode/workflow-reports/dag_status/node_failed.patch",
+          worktreePatchPath: "/repo/.agents/workflow-reports/dag_status/node_failed.patch",
           worktreePatchSha256: "a".repeat(64),
           worktreeState: "kept",
           worktreeConflictsWith: ["node_running"],
@@ -653,8 +653,8 @@ function missingModelProject() {
   return tmpdirScoped({
     init: (directory) =>
       Effect.promise(async () => {
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
-        await Bun.write(path.join(directory, ".opencode", "dag.jsonc"), '{ "model": {} }\n')
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
+        await Bun.write(path.join(directory, ".agents", "dag.jsonc"), '{ "model": {} }\n')
         await Bun.write(
           path.join(directory, "missing-model.yaml"),
           JSON.stringify({
@@ -680,8 +680,8 @@ function missingCatalogModelProject() {
   return tmpdirScoped({
     init: (directory) =>
       Effect.promise(async () => {
-        await fs.mkdir(path.join(directory, ".opencode"), { recursive: true })
-        await Bun.write(path.join(directory, ".opencode", "dag.jsonc"), '{ "model": { "advanced": "ghost/ghost" } }\n')
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
+        await Bun.write(path.join(directory, ".agents", "dag.jsonc"), '{ "model": { "advanced": "ghost/ghost" } }\n')
         await Bun.write(
           path.join(directory, "missing-catalog-model.yaml"),
           JSON.stringify({
@@ -706,9 +706,9 @@ function missingCatalogModelProject() {
 describe("workflow tool schema (negative tests)", () => {
   it("action field accepts start/extend/control/status/result/list/read/guide", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "start", spec_path: ".opencode/workflows/test.yaml" }})).not.toThrow()
+    expect(() => decode({ params: { action: "start", spec_path: ".agents/workflows/test.yaml" }})).not.toThrow()
     expect(() =>
-      decode({ params: { action: "extend", workflow_id: "dag_wf_1", spec_path: ".opencode/workflows/extend.yaml" }}),
+      decode({ params: { action: "extend", workflow_id: "dag_wf_1", spec_path: ".agents/workflows/extend.yaml" }}),
     ).not.toThrow()
     expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "pause" }})).not.toThrow()
     expect(() => decode({ params: { action: "status", workflow_id: "dag_wf_1" }})).not.toThrow()
@@ -804,7 +804,7 @@ describe("workflow tool schema (negative tests)", () => {
     expect(() =>
       decode({ params: {
         action: "start",
-        spec_path: ".opencode/workflows/deep.yaml",
+        spec_path: ".agents/workflows/deep.yaml",
         mode: "deep",
         admission: admissionFor("READY", "CONSUMED"),
         config: {
@@ -813,8 +813,8 @@ describe("workflow tool schema (negative tests)", () => {
         },
       }}),
     ).toThrow()
-    expect(decode({ params: { action: "start", spec_path: ".opencode/workflows/deep.yaml" }})).toEqual({
-      params: { action: "start", spec_path: ".opencode/workflows/deep.yaml" },
+    expect(decode({ params: { action: "start", spec_path: ".agents/workflows/deep.yaml" }})).toEqual({
+      params: { action: "start", spec_path: ".agents/workflows/deep.yaml" },
     })
   })
 
@@ -943,13 +943,13 @@ describe("workflow tool execution", () => {
         toolContext(),
       )
 
-      expect(result.output).toContain(".opencode/workflow-drafts/draft-round-trip.yaml")
+      expect(result.output).toContain(".agents/workflow-drafts/draft-round-trip.yaml")
       expect(result.output).toContain("nodes: ")
 
       // The rendered file round-trips through the same authoring path start
       // uses, and read returns the authored document with draft content.
       const read = yield* workflow.execute(
-        { params: { action: "read", spec_path: ".opencode/workflow-drafts/draft-round-trip.yaml" } },
+        { params: { action: "read", spec_path: ".agents/workflow-drafts/draft-round-trip.yaml" } },
         toolContext(),
       )
       const parsed = JSON.parse(read.output)
@@ -1011,7 +1011,7 @@ describe("workflow tool execution", () => {
       )
 
       expect(result.title).toContain("validation errors")
-      expect(result.output).toContain(".opencode/workflow-drafts/draft-bad-edge.yaml")
+      expect(result.output).toContain(".agents/workflow-drafts/draft-bad-edge.yaml")
       expect(result.output).toContain("ghost")
       expect(published).toHaveLength(0)
     }),
@@ -1037,7 +1037,7 @@ describe("workflow tool execution", () => {
                 Effect.gen(function* () {
                   requests.push(request.permission)
                   if (request.permission !== "edit") return
-                  expect(request.patterns).toEqual([path.join(".opencode", "workflow-drafts", "protected.yaml")])
+                  expect(request.patterns).toEqual([path.join(".agents", "workflow-drafts", "protected.yaml")])
                   const rule = Permission.evaluate("edit", request.patterns[0], [
                     { permission: "edit", pattern: "*", action },
                   ])
@@ -1048,7 +1048,7 @@ describe("workflow tool execution", () => {
           .pipe(Effect.exit)
         expect(Exit.isFailure(result)).toBe(true)
         expect(requests).toEqual(["workflow", "edit"])
-        expect(yield* Effect.promise(() => fs.readdir(directory))).not.toContain(".opencode")
+        expect(yield* Effect.promise(() => fs.readdir(directory))).not.toContain(".agents")
       }
     }),
   )
@@ -1059,7 +1059,7 @@ describe("workflow tool execution", () => {
       const workflow = yield* workflowToolAt(directory)
       const params = { action: "draft", config: { name: "exclusive", nodes: [] } } as const
       yield* workflow.execute({ params }, toolContext())
-      const file = path.join(directory, ".opencode", "workflow-drafts", "exclusive.yaml")
+      const file = path.join(directory, ".agents", "workflow-drafts", "exclusive.yaml")
       const before = yield* Effect.promise(() => Bun.file(file).text())
       const duplicate = yield* workflow.execute({ params: { ...params, title: "replacement" } }, toolContext())
       expect(duplicate.output).toContain("already exists")
@@ -1069,7 +1069,7 @@ describe("workflow tool execution", () => {
       expect(yield* Effect.promise(() => fs.readdir(path.dirname(file)))).toEqual(["exclusive.yaml"])
 
       const blockedDirectory = yield* tmpdirScoped()
-      yield* Effect.promise(() => fs.writeFile(path.join(blockedDirectory, ".opencode"), "not a directory"))
+      yield* Effect.promise(() => fs.writeFile(path.join(blockedDirectory, ".agents"), "not a directory"))
       const blocked = yield* workflowToolAt(blockedDirectory)
       // An expected filesystem error is returned as tool failure feedback,
       // rather than escaping as an Effect defect or claiming a written draft.
@@ -1077,7 +1077,7 @@ describe("workflow tool execution", () => {
       expect(failed.title).toContain("not written")
       expect(failed.hookFailure).toContain("Failed to write workflow draft")
       expect(failed.metadata.blocked).toBe(true)
-      expect(yield* Effect.promise(() => Bun.file(path.join(blockedDirectory, ".opencode")).text())).toBe(
+      expect(yield* Effect.promise(() => Bun.file(path.join(blockedDirectory, ".agents")).text())).toBe(
         "not a directory",
       )
     }),
@@ -1087,7 +1087,7 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const draftDirectory = path.join(directory, ".opencode", "workflow-drafts")
+      const draftDirectory = path.join(directory, ".agents", "workflow-drafts")
       const originalWrite = fs.writeFile
       const write = yield* Effect.acquireRelease(
         Effect.sync(() =>
@@ -1120,7 +1120,7 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const draftDirectory = path.join(directory, ".opencode", "workflow-drafts")
+      const draftDirectory = path.join(directory, ".agents", "workflow-drafts")
       const created = Promise.withResolvers<void>()
       const release = Promise.withResolvers<void>()
       const originalMkdtemp = fs.mkdtemp
@@ -1168,7 +1168,7 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const draftDirectory = path.join(directory, ".opencode", "workflow-drafts")
+      const draftDirectory = path.join(directory, ".agents", "workflow-drafts")
       const writing = Promise.withResolvers<void>()
       const originalWrite = fs.writeFile
       let aborted = false
@@ -3175,7 +3175,7 @@ describe("workflow tool saved workflows", () => {
         published.length = 0
         yield* Effect.promise(() =>
           Bun.write(
-            path.join(workflowSpecDirectory, ".opencode", "workflows", "saved-readable.yaml"),
+            path.join(workflowSpecDirectory, ".agents", "workflows", "saved-readable.yaml"),
             [
               "title: Saved readable route",
               "config:",
@@ -3216,7 +3216,7 @@ describe("workflow tool saved workflows", () => {
         published.length = 0
         yield* Effect.promise(() =>
           Bun.write(
-            path.join(workflowSpecDirectory, ".opencode", "workflows", "saved-project.yaml"),
+            path.join(workflowSpecDirectory, ".agents", "workflows", "saved-project.yaml"),
             savedSpec("saved-project"),
           ),
         )
@@ -3268,7 +3268,7 @@ describe("workflow tool saved workflows", () => {
         if (Exit.isFailure(exit)) {
           const message = Cause.pretty(exit.cause)
           expect(message).toContain('Saved workflow not found: "not-saved"')
-          expect(message).toContain(path.join(workflowSpecDirectory, ".opencode", "workflows"))
+          expect(message).toContain(path.join(workflowSpecDirectory, ".agents", "workflows"))
           expect(message).toContain(path.join(globalDir, "workflows"))
         }
         expect(published).toHaveLength(0)
@@ -3288,7 +3288,7 @@ describe("workflow tool saved workflows", () => {
               "title: block flow title\nconfig:\n  name: block-flow\n  objective: Review a bounded change\n  blocks:\n    - id: decision\n      kind: review\n",
             ),
             Bun.write(
-              path.join(workflowSpecDirectory, ".opencode", "workflows", "shared.yaml"),
+              path.join(workflowSpecDirectory, ".agents", "workflows", "shared.yaml"),
               savedSpec("project-shared"),
             ),
           ]),
@@ -3312,7 +3312,7 @@ describe("workflow tool saved workflows", () => {
       Effect.gen(function* () {
         // A previous case may have seeded the project scope — start clean.
         yield* Effect.promise(() =>
-          fs.rm(path.join(workflowSpecDirectory, ".opencode", "workflows"), { recursive: true, force: true }),
+          fs.rm(path.join(workflowSpecDirectory, ".agents", "workflows"), { recursive: true, force: true }),
         )
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
@@ -3320,7 +3320,7 @@ describe("workflow tool saved workflows", () => {
         const result = yield* workflow.execute({ params: { action: "list" }}, contextWith([]))
 
         expect(result.title).toBe("No saved workflows")
-        expect(result.output).toContain(path.join(workflowSpecDirectory, ".opencode", "workflows"))
+        expect(result.output).toContain(path.join(workflowSpecDirectory, ".agents", "workflows"))
         expect(result.output).toContain(path.join(globalDir, "workflows"))
       }),
     ),
@@ -3411,7 +3411,7 @@ describe("workflow tool saved workflows", () => {
             Bun.write(path.join(globalDir, "workflows", "shared-route.yaml"), routeSpec("global-route")),
             Bun.write(path.join(globalDir, "workflows", "builtin-shadowed.yaml"), routeSpec("file-route")),
             Bun.write(
-              path.join(workflowSpecDirectory, ".opencode", "workflows", "shared-route.yaml"),
+              path.join(workflowSpecDirectory, ".agents", "workflows", "shared-route.yaml"),
               routeSpec("project-route"),
             ),
             Bun.write(path.join(workflowSpecDirectory, "path-route.yaml"), routeSpec("path-route")),

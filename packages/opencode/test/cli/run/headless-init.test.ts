@@ -29,7 +29,7 @@ import { HttpBody, HttpClient } from "effect/http"
 import { cliIt } from "../../lib/cli-process"
 import { pollWithTimeout } from "../../lib/effect"
 
-const dbPath = (home: string) => path.join(home, ".local/share/opencode/opencode-local.db")
+const dbPath = (home: string) => path.join(home, ".local/share/graphagent/graphagent-local.db")
 
 const ProjectRow = Schema.Struct({
   worktree: Schema.String,

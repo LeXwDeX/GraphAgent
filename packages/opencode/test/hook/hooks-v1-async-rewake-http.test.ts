@@ -17,7 +17,7 @@ cliIt.live("V1 PostToolUse asyncRewake exit-2 wakes the legacy session it came f
         `await Bun.stdin.text();await Bun.sleep(100);console.error('V1_ASYNC_REWAKE_CONTEXT');process.exit(2)`,
       )
       await fs.writeFile(
-        path.join(home, ".config/opencode/hooks.json"),
+        path.join(home, ".config/graphagent/hooks.json"),
         JSON.stringify({
           PostToolUse: [
             {

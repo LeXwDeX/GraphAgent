@@ -97,7 +97,7 @@ func New() *app {
 }
 
 func (a *app) Init() tea.Cmd {
-	return tea.SetWindowTitle("配置助手 · opencode config")
+	return tea.SetWindowTitle("配置助手 · GraphAgent config")
 }
 
 func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -222,7 +222,7 @@ func (a *app) View() string {
 func (a *app) viewMenu() string {
 	var b string
 	b += titleStyle.Render("配置助手") + "\n"
-	b += subtitleStyle.Render("opencode 配置管理工具 · 查看 / 生成 opencode.json") + "\n\n"
+	b += subtitleStyle.Render("GraphAgent 配置管理工具 · 查看 / 生成 graphagent.json") + "\n\n"
 	for i, item := range a.menuItem {
 		marker := "  "
 		style := valueStyle

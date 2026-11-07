@@ -23,7 +23,7 @@ test("worker imports and SDK warnings are logged without writing to the TUI term
     new Response(proc.stderr).text(),
   ])
   expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" })
-  const log = await Bun.file(path.join(tmp.path, "opencode", "log", "opencode.log")).text()
+  const log = await Bun.file(path.join(tmp.path, "graphagent", "log", "graphagent.log")).text()
   for (const marker of [
     "worker-import-warning-marker",
     "worker-info-marker",

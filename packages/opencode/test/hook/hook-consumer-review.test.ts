@@ -165,6 +165,6 @@ it.instance("bypass requires an isolated startup capability, retains deny and is
     expect((yield* permissions.hookPolicy(own.id)).mode).not.toBe("bypassPermissions")
     expect((yield* permissions.hookPolicy(other.id)).mode).not.toBe("bypassPermissions")
     const instance = yield* TestInstance
-    expect(yield* Effect.promise(() => Bun.file(path.join(instance.directory, "opencode.jsonc")).exists())).toBe(false)
+    expect(yield* Effect.promise(() => Bun.file(path.join(instance.directory, "graphagent.jsonc")).exists())).toBe(false)
   }),
 )

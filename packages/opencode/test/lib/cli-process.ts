@@ -8,7 +8,7 @@
 // Configuration flows through opencode's built-in test affordances:
 //   - GRAPHAGENT_CONFIG_CONTENT      : provider config inline, no files to find
 //   - GRAPHAGENT_TEST_HOME           : pins os.homedir() → tmpdir
-//   - GRAPHAGENT_DISABLE_PROJECT_CONFIG : skip walking up for opencode.json
+//   - GRAPHAGENT_DISABLE_PROJECT_CONFIG : skip walking up for graphagent.json
 //   - GRAPHAGENT_DISABLE_AUTOCOMPACT / MODELS_FETCH : no background work
 // Plus HOME / XDG_* pointing at the tmpdir for belt-and-suspenders isolation.
 //
@@ -288,7 +288,7 @@ export function withCliFixture<A, E>(
 
     const configJson = JSON.stringify(testProviderConfig(llm.url))
     const env: Readonly<Record<string, string>> = Object.freeze({ ...isolatedEnv(home, configJson) })
-    const memoryConfigDir = path.join(home, ".config/opencode")
+    const memoryConfigDir = path.join(home, ".config/graphagent")
     yield* fs.makeDirectory(memoryConfigDir, { recursive: true })
     // CLI tests own the provider response queue, while dedicated MEMORY tests
     // cover first-run model selection. Seed a valid global config so unrelated

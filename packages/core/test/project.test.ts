@@ -220,13 +220,32 @@ describe("ProjectV2.resolve", () => {
         (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
       )
       yield* Effect.promise(() => initRepo(tmp.path, { commit: true, remote: "git@github.com:owner/repo.git" }))
-      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "opencode"), "old-id"))
+      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "graphagent"), "old-id"))
       const project = yield* ProjectV2.Service
 
       const result = yield* project.resolve(abs(tmp.path))
 
       expect(result.previous).toBe(ProjectV2.ID.make("old-id"))
       expect(result.id).toBe(remoteID("github.com/owner/repo"))
+    }),
+  )
+
+  it.live("ignores the retired cache file without failing or deleting it", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => initRepo(tmp.path, { commit: true, remote: "git@github.com:owner/repo.git" }))
+      const retired = path.join(tmp.path, ".git", "opencode")
+      yield* Effect.promise(() => Bun.write(retired, "legacy-id"))
+      const project = yield* ProjectV2.Service
+
+      const result = yield* project.resolve(abs(tmp.path))
+
+      expect(result.previous).toBeUndefined()
+      expect(result.id).toBe(remoteID("github.com/owner/repo"))
+      expect(yield* Effect.promise(() => Bun.file(retired).exists())).toBe(true)
     }),
   )
 
@@ -241,7 +260,7 @@ describe("ProjectV2.resolve", () => {
 
       yield* project.resolve(abs(tmp.path))
 
-      expect(yield* Effect.promise(() => Bun.file(path.join(tmp.path, ".git", "opencode")).exists())).toBe(false)
+      expect(yield* Effect.promise(() => Bun.file(path.join(tmp.path, ".git", "graphagent")).exists())).toBe(false)
     }),
   )
 
@@ -272,7 +291,7 @@ describe("ProjectV2.resolve", () => {
         Effect.promise(() => $`rm -rf ${worktree}`.quiet().nothrow()).pipe(Effect.ignore),
       )
       yield* Effect.promise(() => initRepo(tmp.path, { commit: true, remote: "git@github.com:owner/repo.git" }))
-      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "opencode"), "old-id"))
+      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "graphagent"), "old-id"))
       yield* Effect.promise(() => $`git worktree add ${worktree} -b test-${Date.now()}`.cwd(tmp.path).quiet())
       const project = yield* ProjectV2.Service
 

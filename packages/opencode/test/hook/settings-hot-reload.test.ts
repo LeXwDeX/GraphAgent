@@ -37,7 +37,7 @@ const settingsFor = (ctx: string) => ({
   SessionStart: [{ hooks: [{ type: "command", command: `printf '%s' '${hookJson(ctx)}'` }] }],
 })
 
-const opencodeDir = (dir: string) => path.join(dir, ".opencode")
+const opencodeDir = (dir: string) => path.join(dir, ".agents")
 const settingsPath = (dir: string) => path.join(opencodeDir(dir), "hooks.json")
 
 const writeSettings = (dir: string, ctx: string) =>
@@ -112,7 +112,7 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
     { init: (dir) => writeSettings(dir, CONTEXT_V1) },
   )
 
-  // F3.2 + cleanup: watchSettings polls .opencode/hooks.json (project + worktree
+  // F3.2 + cleanup: watchSettings polls .agents/hooks.json (project + worktree
   // only) and handle.close() stops all reloads. Direct unit test of the watcher
   // mechanism, independent of the SettingsHook layer. Fixed sleeps are justified
   // here — this test exercises the polling/debounce/throttle timing and proves

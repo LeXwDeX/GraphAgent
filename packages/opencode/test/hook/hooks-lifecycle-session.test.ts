@@ -19,7 +19,7 @@ cliIt.live(
         )
         const hook = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             SessionStart: [{ matcher: "fork", hooks: [hook] }],
             InstructionsLoaded: [{ matcher: "session_start", hooks: [hook] }],
@@ -142,7 +142,7 @@ cliIt.live(
           `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify(i)+'\\n');if(i.source==='startup'&&!i.session_title)process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',sessionTitle:'Hook custom title'}}));`,
         )
         await fs.writeFile(
-          path.join(home, ".config/opencode/hooks.json"),
+          path.join(home, ".config/graphagent/hooks.json"),
           JSON.stringify({
             SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
           }),

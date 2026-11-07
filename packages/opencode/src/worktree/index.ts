@@ -603,7 +603,7 @@ export const layer: Layer.Layer<
             .join(", ")}`
       }
       if (!(yield* hasUnresolvedLegacyMemory(input.directory))) return undefined
-      return "Cannot continue while unresolved legacy project memory remains. Move or back up .opencode/memory* outside this worktree, then retry."
+      return "Cannot continue while unresolved legacy project memory remains. Move or back up .agents/memory* outside this worktree, then retry."
     })
 
     const removeLocked = Effect.fnUntraced(function* (input: RemoveInput, directory: string) {

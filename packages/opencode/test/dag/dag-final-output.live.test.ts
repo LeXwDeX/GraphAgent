@@ -46,7 +46,7 @@ function stringField(value: RecordValue, key: string): string {
 
 function liveConfigPath(): string {
   if (liveConfigSetting === "1" || liveConfigSetting === "true")
-    return path.join(os.homedir(), ".config/opencode/opencode.json")
+    return path.join(os.homedir(), ".config/graphagent/graphagent.json")
   return liveConfigSetting!
 }
 
@@ -368,7 +368,7 @@ test.skipIf(!liveEnabled)(
                   GRAPHAGENT_CONFIG: "",
                   GRAPHAGENT_CONFIG_DIR: "",
                   GRAPHAGENT_CONFIG_CONTENT: configJson,
-                  GRAPHAGENT_DB: path.join(home, "isolated-opencode.db"),
+                  GRAPHAGENT_DB: path.join(home, "isolated-graphagent.db"),
                 }
                 const server = yield* opencode.host({ env: serverEnv })
                 const result = yield* Effect.promise(() =>

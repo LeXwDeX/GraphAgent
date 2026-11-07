@@ -40,7 +40,7 @@ func (a *app) viewView() string {
 				missingStyle.Render("✗ 配置文件解析失败") + "\n\n" +
 					valueStyle.Render(a.viewErr) + "\n\n" +
 					dimText.Render("请先修复该文件的 JSON 语法错误后再操作。") + "\n" +
-					dimText.Render("可用 `opencode debug config` 或 JSON 校验工具检查。"))
+					dimText.Render("可用 `graphagent debug config` 或 JSON 校验工具检查。"))
 		b.WriteString(box + "\n")
 		b.WriteString(hintStyle.Render("q 返回主菜单 · r 重新加载"))
 		return lipgloss.NewStyle().Padding(1, 2).MaxHeight(a.height).Render(b.String())
