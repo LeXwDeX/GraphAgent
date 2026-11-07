@@ -1,4 +1,5 @@
 import os from "os"
+import { APP_NAME } from "../../brand"
 import { InstallationVersion } from "../../installation/version"
 import { Effect } from "effect"
 import { define } from "../internal"
@@ -64,7 +65,7 @@ function sdkOptions(options: Record<string, any>) {
     baseURL: expandAccountId(options.baseURL),
     apiKey: process.env.CLOUDFLARE_API_KEY ?? options.apiKey,
     headers: {
-      "User-Agent": `opencode/${InstallationVersion} cloudflare-workers-ai (${os.platform()} ${os.release()}; ${os.arch()})`,
+      "User-Agent": `${APP_NAME}/${InstallationVersion} cloudflare-workers-ai (${os.platform()} ${os.release()}; ${os.arch()})`,
       ...options.headers,
     },
     name: providerID,

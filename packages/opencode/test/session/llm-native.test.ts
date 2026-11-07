@@ -1122,7 +1122,7 @@ describe("session.llm-native.request", () => {
               text: "<runtime_context>\n\n<project_memory_data>epoch 1</project_memory_data>\n\n</runtime_context>",
             },
           ],
-          providerOptions: { opencode: { context: true, cache: "none" } },
+          providerOptions: { graphagent: { context: true, cache: "none" } },
         },
         {
           role: "user",
@@ -1131,7 +1131,7 @@ describe("session.llm-native.request", () => {
             {
               type: "text",
               text: "[todo reminder] ephemeral",
-              providerOptions: { opencode: { cache: "none" } },
+              providerOptions: { graphagent: { cache: "none" } },
             },
           ],
         },
@@ -1148,14 +1148,14 @@ describe("session.llm-native.request", () => {
         {
           role: "user",
           providerOptions: {
-            opencode: { synthetic: "attachment", cache: "none" },
+            graphagent: { synthetic: "attachment", cache: "none" },
             anthropic: { cacheControl: { type: "ephemeral" } },
           },
           content: [
             {
               type: "text",
               text: "Attached media from tool result:",
-              providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+              providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
             },
             { type: "file", mediaType: "image/png", data: "data:image/png;base64,AA==", filename: "attachment.png" },
           ],
@@ -1170,10 +1170,10 @@ describe("session.llm-native.request", () => {
       const attachment = canonical.messages.find((message) => JSON.stringify(message).includes("Attached media"))!
       expect(attachment.metadata).toEqual({ cache: "none" })
       expect(attachment.native).toMatchObject({ anthropic: { cacheControl: { type: "ephemeral" } } })
-      expect(attachment.native?.opencode).toBeUndefined()
+      expect(attachment.native?.graphagent).toBeUndefined()
       const context = canonical.messages.find((message) => JSON.stringify(message).includes("<project_memory_data>"))!
       expect(context.metadata).toEqual({ cache: "none" })
-      expect(context.native?.opencode).toBeUndefined()
+      expect(context.native?.graphagent).toBeUndefined()
 
        const prepared = yield* prepareNativeRequest<PreparedMessagesBody>({
         model: anthropicModel,
@@ -1191,6 +1191,10 @@ describe("session.llm-native.request", () => {
       const attachmentBody = body.messages.find((message) => JSON.stringify(message).includes("Attached media"))
       expect(attachmentBody).toBeDefined()
       expect(JSON.stringify(attachmentBody)).not.toContain("cache_control")
+      // The internal namespace is not an AI SDK provider name. It must never
+      // reach the provider request body.
+      expect(attachment.native?.graphagent).toBeUndefined()
+      expect(JSON.stringify(body)).not.toContain("graphagent")
     }),
   )
 
@@ -1315,7 +1319,7 @@ describe("session.llm-native.request", () => {
               text: "<runtime_context>\n\n<project_memory_data>epoch 1</project_memory_data>\n\n</runtime_context>",
             },
           ],
-          providerOptions: { opencode: { context: true, cache: "none" } },
+          providerOptions: { graphagent: { context: true, cache: "none" } },
         },
         {
           role: "user",
@@ -1324,7 +1328,7 @@ describe("session.llm-native.request", () => {
             {
               type: "text",
               text: "[todo reminder] ephemeral",
-              providerOptions: { opencode: { cache: "none" } },
+              providerOptions: { graphagent: { cache: "none" } },
             },
           ],
         },
@@ -1341,14 +1345,14 @@ describe("session.llm-native.request", () => {
         {
           role: "user",
           providerOptions: {
-            opencode: { synthetic: "attachment", cache: "none" },
+            graphagent: { synthetic: "attachment", cache: "none" },
             bedrock: { cachePoint: { type: "default" } },
           },
           content: [
             {
               type: "text",
               text: "Attached media from tool result:",
-              providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+              providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
             },
             { type: "file", mediaType: "image/png", data: "data:image/png;base64,AA==", filename: "attachment.png" },
           ],
@@ -1363,7 +1367,7 @@ describe("session.llm-native.request", () => {
       const attachment = canonical.messages.find((message) => JSON.stringify(message).includes("Attached media"))!
       expect(attachment.metadata).toEqual({ cache: "none" })
       expect(attachment.native).toMatchObject({ bedrock: { cachePoint: { type: "default" } } })
-      expect(attachment.native?.opencode).toBeUndefined()
+      expect(attachment.native?.graphagent).toBeUndefined()
       const context = canonical.messages.find((message) => JSON.stringify(message).includes("<project_memory_data>"))!
       expect(context.metadata).toEqual({ cache: "none" })
 
@@ -1383,6 +1387,9 @@ describe("session.llm-native.request", () => {
       const attachmentBody = body.messages.find((message) => JSON.stringify(message).includes("Attached media"))
       expect(attachmentBody).toBeDefined()
       expect(JSON.stringify(attachmentBody)).not.toContain("cachePoint")
+      expect(attachment.native?.graphagent).toBeUndefined()
+      expect(context.native?.graphagent).toBeUndefined()
+      expect(JSON.stringify(body)).not.toContain("graphagent")
     }),
   )
 })

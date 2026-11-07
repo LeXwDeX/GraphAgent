@@ -62,7 +62,7 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
     expect(transformed).toHaveLength(1)
     const content = contentParts(transformed[0])
     expect(anthropicOptions(content[0])?.cacheControl).toEqual({ type: "ephemeral" })
-    expect(providerOptions(content[1])?.opencode).toMatchObject({ cache: "none" })
+    expect(providerOptions(content[1])?.graphagent).toMatchObject({ cache: "none" })
     expect(anthropicOptions(content[1])?.cacheControl).toBeUndefined()
     expect(providerOptions(transformed[0])).toBeUndefined()
   })
@@ -86,12 +86,12 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
         },
         {
           role: "user",
-          providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+          providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
           content: [
             {
               type: "text",
               text: "Attached media from tool result:",
-              providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+              providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
             },
             { type: "file", mediaType: "image/png", data: "AA==", filename: "attachment.png" },
           ],
@@ -106,7 +106,7 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
     expect(anthropicOptions(persisted[1])).toBeUndefined()
     expect(anthropicOptions(transformed[1])).toBeUndefined()
     expect(providerOptions(transformed[4])).toMatchObject({
-      opencode: { synthetic: "attachment", cache: "none" },
+      graphagent: { synthetic: "attachment", cache: "none" },
     })
     expect(anthropicOptions(transformed[4])).toBeUndefined()
     const attachment = contentParts(transformed[4])

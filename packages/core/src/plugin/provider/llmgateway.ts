@@ -1,3 +1,4 @@
+import { APP_NAME, APP_TITLE, HOMEPAGE_URL } from "../../brand"
 import { Effect } from "effect"
 import { define } from "../internal"
 import { Integration } from "../../integration"
@@ -15,9 +16,9 @@ export const LLMGatewayPlugin = define({
           if (item.provider.api.url !== "https://api.llmgateway.io/v1") continue
           if (!(yield* integrations.get(Integration.ID.make(item.provider.id)))) continue
           evt.provider.update(item.provider.id, (provider) => {
-            provider.request.headers["HTTP-Referer"] = "https://opencode.ai/"
-            provider.request.headers["X-Title"] = "opencode"
-            provider.request.headers["X-Source"] = "opencode"
+            provider.request.headers["HTTP-Referer"] = HOMEPAGE_URL
+            provider.request.headers["X-Title"] = APP_TITLE
+            provider.request.headers["X-Source"] = APP_NAME
           })
         }
       }),

@@ -3,6 +3,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
@@ -136,7 +137,7 @@ interface ProcessorContext extends Input {
   attemptToolActivity: boolean
   /**
    * The adapter marked the current attempt's finish metadata with
-   * `opencode.suppressedActivity`: provider activity that is not
+   * `graphagent.suppressedActivity`: provider activity that is not
    * session-visible (files, sources, approvals, denials, aborts). Such an
    * attempt is never treated as an empty response.
    */
@@ -651,8 +652,8 @@ export const layer = Layer.effect(
             ctx.attemptFinish = value.reason
             const suppressed =
               isRecord(value.providerMetadata) &&
-              isRecord(value.providerMetadata.opencode) &&
-              value.providerMetadata.opencode.suppressedActivity === true
+              isRecord(value.providerMetadata[METADATA_NAMESPACE]) &&
+              value.providerMetadata[METADATA_NAMESPACE].suppressedActivity === true
             if (suppressed && !ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
             ctx.attemptSuppressedActivity ||= suppressed
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
@@ -751,8 +752,8 @@ export const layer = Layer.effect(
             if (ctx.attemptFinish === undefined || ctx.attemptFinish === "unknown") ctx.attemptFinish = value.reason
             if (
               isRecord(value.providerMetadata) &&
-              isRecord(value.providerMetadata.opencode) &&
-              value.providerMetadata.opencode.suppressedActivity === true
+              isRecord(value.providerMetadata[METADATA_NAMESPACE]) &&
+              value.providerMetadata[METADATA_NAMESPACE].suppressedActivity === true
             ) {
               if (!ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
               ctx.attemptSuppressedActivity = true

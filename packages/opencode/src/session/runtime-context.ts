@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import type { ModelMessage } from "ai"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { isRecord } from "@/util/record"
 
 // Per-request state (goal progress, memory data, one-shot hook context) changes between requests. Sending it in
@@ -44,8 +45,8 @@ const sent = new WeakSet<ModelMessage>()
 // WeakSet stays as the fast path for the original array.
 const marked = (message: ModelMessage) => {
   const options = isRecord(message.providerOptions) ? message.providerOptions : undefined
-  const opencode = isRecord(options?.opencode) ? options.opencode : undefined
-  return opencode?.context === true
+  const local = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
+  return local?.context === true
 }
 
 /** Whether a message is a runtime-context block that `place` inserted. */
@@ -118,7 +119,7 @@ function insert(input: readonly ModelMessage[], ledger: readonly Entry[]) {
     const message: ModelMessage = {
       role: "user",
       content: entry.content,
-      providerOptions: { opencode: { context: true, cache: "none" } },
+      providerOptions: { [METADATA_NAMESPACE]: { context: true, cache: "none" } },
     }
     sent.add(message)
     messages.splice(entry.index, 0, message)

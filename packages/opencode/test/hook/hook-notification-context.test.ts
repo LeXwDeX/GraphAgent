@@ -43,7 +43,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )
@@ -99,7 +99,7 @@ cliIt.live(
       ).toBe(200)
       yield* pollWithTimeout(
         Effect.promise(async () => {
-          const response = await fetch(server.url + "/session/status", { headers: { "x-opencode-directory": home } })
+          const response = await fetch(server.url + "/session/status", { headers: { "x-graphagent-directory": home } })
           const statuses = await response.json()
           return statuses[session.id] === undefined ? true : undefined
         }),

@@ -19,7 +19,7 @@ const i=JSON.parse(await Bun.stdin.text());
 let nodeStatus;
 if(i.hook_event_name==="SubagentStop") {
   const base=await Bun.file(${JSON.stringify(serverURL)}).text();
-  const headers={"x-opencode-directory":${JSON.stringify(home)}};
+  const headers={"x-graphagent-directory":${JSON.stringify(home)}};
   const workflows=await (await fetch(base+"/dag/session/"+i.session_id,{headers})).json();
   const nodes=await (await fetch(base+"/dag/"+workflows[0].id+"/nodes",{headers})).json();
   nodeStatus=nodes.find(n=>n.child_session_id===i.agent_id)?.status;
@@ -66,7 +66,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
         Effect.promise(async () => {
           const response = await fetch(server.url + route, {
             method: body ? "POST" : "GET",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             ...(body ? { body: JSON.stringify(body) } : {}),
           })
           if (!response.ok) throw new Error(`${route}: ${response.status} ${await response.text()}`)

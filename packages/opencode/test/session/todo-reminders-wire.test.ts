@@ -44,7 +44,7 @@ const cacheMessages = (): ModelMessage[] => {
     {
       role: "user",
       content: [{ type: "text", text: RuntimeContext.render(["<project_memory_data>epoch 1</project_memory_data>"])! }],
-      providerOptions: { opencode: { context: true, cache: "none" } },
+      providerOptions: { graphagent: { context: true, cache: "none" } },
     },
     { role: "user", content: [{ type: "text", text: "persisted user" }] },
     {
@@ -57,12 +57,12 @@ const cacheMessages = (): ModelMessage[] => {
     },
     {
       role: "user",
-      providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+      providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
       content: [
         {
           type: "text",
           text: "Attached media from tool result:",
-          providerOptions: { opencode: { synthetic: "attachment", cache: "none" } },
+          providerOptions: { graphagent: { synthetic: "attachment", cache: "none" } },
         },
         { type: "file", mediaType: "image/png", data: "data:image/png;base64,AA==", filename: "attachment.png" },
       ],
@@ -111,7 +111,7 @@ const prompt = (cacheControl?: CacheMarker, cachePoint?: CacheMarker): LanguageM
       {
         type: "text" as const,
         text: "[todo reminder] ephemeral",
-        providerOptions: { opencode: { cache: "none" } },
+        providerOptions: { graphagent: { cache: "none" } },
       },
     ],
   },

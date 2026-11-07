@@ -1,9 +1,10 @@
 import WebSocket from "ws"
+import { HEADER_PREFIX } from "@opencode-ai/core/brand"
 import { ProviderError } from "@/provider/error"
 import { isRecord } from "@/util/record"
 import { OpenAIWebSocket } from "./ws"
 
-export const TITLE_HEADER = "x-opencode-title"
+export const TITLE_HEADER = `${HEADER_PREFIX}title`
 const titleHeaderConsumers = new WeakSet<object>()
 
 export function registerTitleHeaderConsumer<

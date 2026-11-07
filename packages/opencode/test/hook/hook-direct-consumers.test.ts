@@ -27,7 +27,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         }),
       )
@@ -40,7 +40,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
     }).pipe(Effect.forkScoped)
     const pending = yield* pollWithTimeout(
       Effect.promise(async () => {
-        const response = await fetch(server.url + "/permission", { headers: { "x-opencode-directory": home } })
+        const response = await fetch(server.url + "/permission", { headers: { "x-graphagent-directory": home } })
         const items = await response.json()
         return items.find((item: any) => item.sessionID === session.id)
       }),
@@ -91,7 +91,7 @@ cliIt.live("direct shell respects configured deny and never emits auto-only Perm
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         }),
       )
@@ -133,7 +133,7 @@ cliIt.live("direct shell reports a real spawn failure through PostToolUseFailure
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         }),
       )

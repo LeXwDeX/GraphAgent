@@ -311,7 +311,7 @@ verifyNoRetry("session.processor does not replay after suppressed approval or ab
 
 verifyNoRetry("session.processor treats unclassified suppressed metadata as retry-blocking", [
   LLMEvent.stepStart({ index: 0 }),
-  LLMEvent.stepFinish({ index: 0, reason: "unknown", providerMetadata: { opencode: { suppressedActivity: true } } }),
+  LLMEvent.stepFinish({ index: 0, reason: "unknown", providerMetadata: { graphagent: { suppressedActivity: true } } }),
   networkError,
 ])
 

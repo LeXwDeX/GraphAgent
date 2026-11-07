@@ -42,7 +42,7 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )
@@ -66,7 +66,7 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
       const children = decodeRecords(
         yield* Effect.promise(async () =>
           (
-            await fetch(server.url + `/session/${parent}/children`, { headers: { "x-opencode-directory": home } })
+            await fetch(server.url + `/session/${parent}/children`, { headers: { "x-graphagent-directory": home } })
           ).json(),
         ),
       )
@@ -137,7 +137,7 @@ cliIt.live("UserPromptSubmit session_title appears only for a real custom title"
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           body: JSON.stringify(body),
         }),
       )

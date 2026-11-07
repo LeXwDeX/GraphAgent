@@ -2,6 +2,7 @@ import { ThinkingReplay } from "./thinking-replay"
 import { SessionID, MessageID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { isContextOverflowFailure, LLMError, ProviderErrorEvent, ReasoningCarrier } from "@opencode-ai/llm"
 import {
@@ -458,7 +459,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                 // convertToModelMessages carries it as providerOptions. This is
                 // explicit provenance across the conversion boundary, not a
                 // positional guess.
-                providerMetadata: { opencode: { synthetic: "attachment", cache: "none" } },
+                providerMetadata: { [METADATA_NAMESPACE]: { synthetic: "attachment", cache: "none" } },
               },
               ...media.map((attachment) => ({
                 type: "file" as const,
@@ -495,17 +496,17 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       if (!("providerOptions" in part)) return false
       const options = part.providerOptions
       if (!isRecord(options)) return false
-      const opencode = options.opencode
-      return isRecord(opencode) && opencode.synthetic === "attachment"
+      const local = options[METADATA_NAMESPACE]
+      return isRecord(local) && local.synthetic === "attachment"
     })
     if (!marked) return message
     const options = isRecord(message.providerOptions) ? message.providerOptions : {}
-    const opencode = isRecord(options.opencode) ? options.opencode : {}
+    const local = isRecord(options[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : {}
     return {
       ...message,
       providerOptions: {
         ...options,
-        opencode: { ...opencode, synthetic: "attachment", cache: "none" },
+        [METADATA_NAMESPACE]: { ...local, synthetic: "attachment", cache: "none" },
       },
     }
   })

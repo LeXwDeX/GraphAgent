@@ -89,7 +89,7 @@ async function requestJson(
   const response = await fetch(new URL(route, baseURL), {
     method: input.method ?? "GET",
     headers: {
-      "x-opencode-directory": directory,
+      "x-graphagent-directory": directory,
       ...(input.body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),

@@ -165,7 +165,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
       )
     })
     const server = yield* opencode.host()
-    const headers = { "content-type": "application/json", "x-opencode-directory": home }
+    const headers = { "content-type": "application/json", "x-graphagent-directory": home }
     const session = yield* Effect.promise(async () => {
       const response = await fetch(server.url + "/session", { method: "POST", headers, body: "{}" })
       expect(response.status).toBe(200)
@@ -205,7 +205,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
     yield* Effect.promise(async () => {
       const response = await fetch(server.url + `/session/${session.id}/shell`, {
         method: "POST",
-        headers: { ...headers, "x-opencode-directory": destination },
+        headers: { ...headers, "x-graphagent-directory": destination },
         body: JSON.stringify({
           agent: "build",
           command: 'printf "%s|%s" "${HOOK_OLD_DIRECTORY_VALUE-unset}" "${HOOK_NEW_DIRECTORY_VALUE-unset}"',
@@ -217,7 +217,7 @@ cliIt.live("real HTTP move migrates dynamic FileChanged ownership past old direc
     yield* Effect.promise(async () => {
       const response = await fetch(server.url + "/config", {
         method: "PATCH",
-        headers: { ...headers, "x-opencode-directory": destination },
+        headers: { ...headers, "x-graphagent-directory": destination },
         body: JSON.stringify({ username: "must remain blocked after move" }),
       })
       expect(response.status).toBe(400)

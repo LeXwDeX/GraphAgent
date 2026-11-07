@@ -9384,14 +9384,14 @@ for (const output of ["thinking", "text-only"] as const)
         expect(JSON.stringify(hits.map((hit) => hit.body))).not.toContain("thinkingReplay")
         const stored = yield* sessions.messages({ sessionID: session.id })
         for (const part of saved)
-          if (part.type === "reasoning") part.metadata!.opencode.thinkingReplay.invalidated = true
+          if (part.type === "reasoning") part.metadata!.graphagent.thinkingReplay.invalidated = true
         expect(stored.find((message) => message.info.id === first.info.id)?.parts).toEqual(saved)
         const fork = yield* sessions.fork({ sessionID: session.id })
         const forked = yield* sessions.messages({ sessionID: fork.id })
         const forkedThinking = forked.flatMap((message) => message.parts).filter((part) => part.type === "reasoning")
         expect(
           forkedThinking.find((part) => part.metadata?.anthropic?.signature === "opaque-first-response")?.metadata
-            ?.opencode?.thinkingReplay?.invalidated,
+            ?.graphagent?.thinkingReplay?.invalidated,
         ).toBe(true)
         setThinkingPrefix("Replay fixture instructions before")
         yield* llm.push(thinkingPrefixReply("opaque-restored-response"))
@@ -9483,17 +9483,17 @@ for (const [runtime, runner] of [
           const stored = yield* sessions.messages({ sessionID: session.id })
           expect(
             stored.find((message) => message.info.id === first.info.id)?.parts.find((part) => part.type === "reasoning")
-              ?.metadata?.opencode?.thinkingReplay?.invalidated,
+              ?.metadata?.graphagent?.thinkingReplay?.invalidated,
           ).toBe(true)
           const expected = structuredClone(first.parts)
           for (const item of expected)
-            if (item.type === "reasoning") item.metadata!.opencode.thinkingReplay.invalidated = true
+            if (item.type === "reasoning") item.metadata!.graphagent.thinkingReplay.invalidated = true
           expect(stored.find((message) => message.info.id === first.info.id)?.parts).toEqual(expected)
           const wire = JSON.stringify((yield* llm.hits).map((hit) => hit.body))
           expect(wire).not.toContain("thinkingReplay")
           expect(wire).not.toContain("sourceOrigins")
           for (const item of first.parts.filter((part) => part.type === "reasoning")) {
-            const id = item.metadata?.opencode?.thinkingReplay?.block
+            const id = item.metadata?.graphagent?.thinkingReplay?.block
             if (typeof id !== "string") throw new Error("Missing fixture origin")
             expect(wire).not.toContain(id)
           }
@@ -9551,7 +9551,7 @@ for (const change of ["tools", "history"] as const) {
         stored
           .flatMap((message) => message.parts)
           .filter((part) => part.type === "reasoning")
-          .find((part) => part.metadata?.anthropic?.signature === "before-prefix-change")?.metadata?.opencode
+          .find((part) => part.metadata?.anthropic?.signature === "before-prefix-change")?.metadata?.graphagent
           ?.thinkingReplay?.invalidated,
       ).toBe(true)
     }).pipe(

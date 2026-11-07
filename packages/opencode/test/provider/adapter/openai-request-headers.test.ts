@@ -6,7 +6,7 @@ import { OpenAIWebSocketPool, TITLE_HEADER } from "../../../src/provider/openai-
 const originalHeaders = {
   authorization: "Bearer synthetic-original",
   "x-private": "synthetic-private",
-  "X-Opencode-Title": "original-marker",
+  [TITLE_HEADER]: "original-marker",
 }
 
 function withPreconnect(fn: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {

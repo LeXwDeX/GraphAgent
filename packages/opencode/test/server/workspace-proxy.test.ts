@@ -140,8 +140,8 @@ describe("HttpApi workspace proxy", () => {
       const request = HttpServerRequest.fromWeb(
         new Request("http://localhost/test", {
           headers: {
-            "x-opencode-directory": "/secret/path",
-            "x-opencode-workspace": "ws_123",
+            "x-graphagent-directory": "/secret/path",
+            "x-graphagent-workspace": "ws_123",
             "x-custom": "preserved",
           },
         }),
@@ -149,8 +149,8 @@ describe("HttpApi workspace proxy", () => {
       const httpClient = yield* HttpClient.HttpClient
       yield* HttpApiProxy.http(httpClient, `${url}/test`, { "x-injected": "extra" }, request)
 
-      expect(forwarded["x-opencode-directory"]).toBeUndefined()
-      expect(forwarded["x-opencode-workspace"]).toBeUndefined()
+      expect(forwarded["x-graphagent-directory"]).toBeUndefined()
+      expect(forwarded["x-graphagent-workspace"]).toBeUndefined()
       expect(forwarded["x-custom"]).toBe("preserved")
       expect(forwarded["x-injected"]).toBe("extra")
     }),

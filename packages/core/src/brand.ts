@@ -5,6 +5,8 @@
 // worker console) can import it without pulling in the service graph.
 
 export const APP_NAME = "graphagent"
+export const APP_TITLE = "GraphAgent"
+export const HOMEPAGE_URL = "https://github.com/LeXwDeX/GraphAgent"
 export const PROJECT_DIR = ".agents"
 export const CONFIG_BASENAME = "graphagent"
 export const ENV_PREFIX = "GRAPHAGENT_"

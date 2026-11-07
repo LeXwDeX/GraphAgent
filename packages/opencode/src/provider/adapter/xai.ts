@@ -1,4 +1,5 @@
 import { OAUTH_DUMMY_KEY } from "../../auth"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { createServer } from "http"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { escapeHtml } from "@/util/html"
@@ -95,7 +96,7 @@ function authHeaders() {
   return {
     "Content-Type": "application/x-www-form-urlencoded",
     Accept: "application/json",
-    "User-Agent": `opencode/${InstallationVersion}`,
+    "User-Agent": `${APP_NAME}/${InstallationVersion}`,
   }
 }
 
@@ -635,7 +636,7 @@ export function XaiAdapter(input: AdapterContext, options: XaiAuthPluginOptions 
               }
             }
             headers.set("authorization", `Bearer ${currentAuth.access}`)
-            headers.set("User-Agent", `opencode/${InstallationVersion}`)
+            headers.set("User-Agent", `${APP_NAME}/${InstallationVersion}`)
 
             return fetch(requestInput, { ...init, headers })
           },

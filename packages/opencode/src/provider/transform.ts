@@ -6,6 +6,7 @@ import type * as Provider from "./provider"
 import type * as ModelsDev from "@opencode-ai/core/models-dev"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { iife } from "@/util/iife"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { isRecord } from "@/util/record"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
@@ -387,21 +388,15 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   }
 
   // A request-only part (for example the todo reminder) opts out of cache
-  // coverage with `providerOptions.opencode.cache = "none"`. Put the breakpoint
+  // coverage with `providerOptions.graphagent.cache = "none"`. Put the breakpoint
   // on the last persisted part instead; a message-level marker would otherwise
   // land on the ephemeral tail after the SDK projects it.
   const ephemeral = (part: unknown) => {
     if (typeof part !== "object" || part === null || !("providerOptions" in part)) return false
     const options = part.providerOptions
-    return (
-      typeof options === "object" &&
-      options !== null &&
-      "opencode" in options &&
-      typeof options.opencode === "object" &&
-      options.opencode !== null &&
-      "cache" in options.opencode &&
-      options.opencode.cache === "none"
-    )
+    if (typeof options !== "object" || options === null) return false
+    const local = (options as Record<string, unknown>)[METADATA_NAMESPACE]
+    return isRecord(local) && local.cache === "none"
   }
 
   // An ephemeral part can live outside the last two messages (for example the
@@ -412,14 +407,14 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     if (!Array.isArray(msg.content)) return false
     return msg.content.some((part) => {
       const options = "providerOptions" in part && isRecord(part.providerOptions) ? part.providerOptions : undefined
-      const opencode = isRecord(options?.opencode) ? options.opencode : undefined
-      return opencode?.synthetic === "attachment"
+      const local = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
+      return local?.synthetic === "attachment"
     })
   }
   const uncachedMessage = (msg: ModelMessage) => {
     const options = isRecord(msg.providerOptions) ? msg.providerOptions : undefined
-    const opencode = isRecord(options?.opencode) ? options.opencode : undefined
-    return opencode?.cache === "none"
+    const local = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
+    return local?.cache === "none"
   }
   const ephemeralMessages = msgs.filter((msg) => Array.isArray(msg.content) && msg.content.some(ephemeral))
   // A tool result directly before a synthetic attachment is merged into that

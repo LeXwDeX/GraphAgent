@@ -3,6 +3,7 @@ import type { IntegrationOAuthMethodRegistration } from "../context/integration"
 import { define } from "../context/plugin"
 import { Deferred, Effect } from "effect"
 import type { Scope } from "effect"
+import { APP_NAME } from "../../brand"
 import { Credential } from "../../credential"
 import { InstallationVersion } from "../../installation/version"
 import { Integration } from "../../integration"
@@ -184,7 +185,7 @@ export const OpenAIPlugin = define({
 } satisfies PluginInternal.Plugin<PluginInternal.Requirements | Scope.Scope>)
 
 function headers(contentType: string) {
-  return { "Content-Type": contentType, "User-Agent": `opencode/${InstallationVersion}` }
+  return { "Content-Type": contentType, "User-Agent": `${APP_NAME}/${InstallationVersion}` }
 }
 
 function exchange(code: string, redirect: string, pkce: Pkce) {

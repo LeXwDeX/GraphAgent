@@ -9,6 +9,7 @@ import type { Provider } from "@/provider/provider"
 import type { ProviderAdapters } from "@/provider/adapter/registry"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
+import { APP_NAME } from "@opencode-ai/core/brand"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { DEFAULT_WRITING_STYLE } from "@opencode-ai/core/system-context/writing-style"
 import { Effect, Record } from "effect"
@@ -17,7 +18,7 @@ import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
 import type { ChatParams } from "@/provider/adapter/types"
 import { mergeDeep } from "remeda"
 
-const USER_AGENT = `opencode/${InstallationVersion}`
+const USER_AGENT = `${APP_NAME}/${InstallationVersion}`
 
 type PrepareInput = {
   readonly user: SessionV1.User

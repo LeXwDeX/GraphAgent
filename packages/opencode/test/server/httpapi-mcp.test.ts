@@ -29,7 +29,7 @@ const request = Effect.fnUntraced(function* (
   init?: RequestInit,
 ) {
   const headers = new Headers(init?.headers)
-  headers.set("x-opencode-directory", directory)
+  headers.set("x-graphagent-directory", directory)
   return yield* Effect.promise(() =>
     Promise.resolve(
       handler.handler(
@@ -161,7 +161,7 @@ describe("mcp HttpApi", () => {
       Effect.gen(function* () {
         const tmp = yield* TestInstance
         const dir = tmp.directory
-        const headers = { "x-opencode-directory": dir }
+        const headers = { "x-graphagent-directory": dir }
 
         yield* Effect.forEach(["/mcp/demo/auth", "/mcp/demo/auth/authenticate"], (path) =>
           Effect.gen(function* () {

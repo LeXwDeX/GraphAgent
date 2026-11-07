@@ -1,4 +1,5 @@
 import type { JsonSchema, LLMRequest, ProviderMetadata } from "@opencode-ai/llm"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { LLM, Message, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
 import {
   AmazonBedrock,
@@ -49,15 +50,15 @@ const partProviderMetadata = (part: Record<string, unknown>) =>
 
 const ephemeralPart = (part: Record<string, unknown>) => {
   const options = part.providerOptions
-  if (!isRecord(options) || !isRecord(options.opencode)) return false
-  return options.opencode.cache === "none"
+  if (!isRecord(options) || !isRecord(options[METADATA_NAMESPACE])) return false
+  return options[METADATA_NAMESPACE].cache === "none"
 }
 
 const textPart = (part: Record<string, unknown>) => {
   const providerMetadata = partProviderMetadata(part)
   const filtered =
-    providerMetadata && "opencode" in providerMetadata
-      ? Object.fromEntries(Object.entries(providerMetadata).filter(([key]) => key !== "opencode"))
+    providerMetadata && METADATA_NAMESPACE in providerMetadata
+      ? Object.fromEntries(Object.entries(providerMetadata).filter(([key]) => key !== METADATA_NAMESPACE))
       : providerMetadata
   return {
     type: "text" as const,
@@ -121,18 +122,19 @@ export const convertMessages = (input: readonly ModelMessage[]) => {
   const messages = input.flatMap((message) => {
     if (message.role === "system") return []
     const options = isRecord(message.providerOptions) ? message.providerOptions : undefined
-    const uncached = isRecord(options?.opencode) && options.opencode.cache === "none"
+    const uncached = isRecord(options?.[METADATA_NAMESPACE]) && options[METADATA_NAMESPACE].cache === "none"
     const synthetic =
       Array.isArray(message.content) &&
       message.content.some((part) => {
         const raw = isRecord(part) && "providerOptions" in part ? part.providerOptions : undefined
         const partOptions = isRecord(raw) ? raw : undefined
         return (
-          isRecord(partOptions?.opencode) && partOptions.opencode.synthetic === "attachment"
+          isRecord(partOptions?.[METADATA_NAMESPACE]) &&
+          partOptions[METADATA_NAMESPACE].synthetic === "attachment"
         )
       })
     const native = options
-      ? Object.fromEntries(Object.entries(options).filter(([key]) => key !== "opencode"))
+      ? Object.fromEntries(Object.entries(options).filter(([key]) => key !== METADATA_NAMESPACE))
       : undefined
     return [
       Message.make({

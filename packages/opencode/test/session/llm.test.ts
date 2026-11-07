@@ -362,12 +362,12 @@ describe("session.llm.ai-sdk adapter", () => {
     expect(events[1]).toMatchObject({ type: "step-finish", reason: "stop" })
     const stepFinish = events[1]
     if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
-    expect(stepFinish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
+    expect(stepFinish.providerMetadata?.graphagent?.suppressedActivity).toBe(true)
     // Provider keys already present are preserved, not overwritten.
     expect(stepFinish.providerMetadata?.anthropic).toEqual({ cacheWrite: 1 })
     const finish = events[2]
     if (finish?.type !== "finish") throw new Error("expected finish")
-    expect(finish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
+    expect(finish.providerMetadata?.graphagent?.suppressedActivity).toBe(true)
   })
 
   test("marks suppressed abort and approval activity on synthesized finish metadata", async () => {
@@ -382,7 +382,7 @@ describe("session.llm.ai-sdk adapter", () => {
     const stepFinish = events.at(-1)
     if (stepFinish?.type !== "step-finish") throw new Error("expected step finish")
     expect(stepFinish.type).toBe("step-finish")
-    expect(stepFinish.providerMetadata?.opencode?.suppressedActivity).toBe(true)
+    expect(stepFinish.providerMetadata?.graphagent?.suppressedActivity).toBe(true)
   })
 
   test("classifies suppressed chunks for retry safety even when the stream has no finish", async () => {

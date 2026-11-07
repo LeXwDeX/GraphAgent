@@ -70,7 +70,7 @@ test.skipIf(!setting)(
               const req = async (route: string, body?: unknown) => {
                 const r = await fetch(server.url + route, {
                   method: body ? "POST" : "GET",
-                  headers: { "x-opencode-directory": dir, "content-type": "application/json" },
+                  headers: { "x-graphagent-directory": dir, "content-type": "application/json" },
                   ...(body ? { body: JSON.stringify(body) } : {}),
                 })
                 if (!r.ok) throw Error(`HTTP ${route} ${r.status}`)

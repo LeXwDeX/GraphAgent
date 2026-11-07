@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type { LLMEvent } from "@opencode-ai/llm"
+import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
 import { isRecord } from "@/util/record"
 
 const key = "thinkingReplay"
@@ -14,8 +15,8 @@ type Origin = {
 }
 
 export function origin(metadata: unknown): Origin | undefined {
-  if (!isRecord(metadata) || !isRecord(metadata.opencode)) return undefined
-  const value = metadata.opencode[key]
+  if (!isRecord(metadata) || !isRecord(metadata[METADATA_NAMESPACE])) return undefined
+  const value = metadata[METADATA_NAMESPACE][key]
   if (!isRecord(value) || value.version !== 1) return undefined
   if (typeof value.prefix !== "string" || !digestPattern.test(value.prefix)) return undefined
   if (typeof value.block !== "string" || !digestPattern.test(value.block)) return undefined
@@ -33,7 +34,13 @@ export function origin(metadata: unknown): Origin | undefined {
 
 function local(metadata: unknown, value: Origin) {
   const current = isRecord(metadata) ? metadata : {}
-  return { ...current, opencode: { ...(isRecord(current.opencode) ? current.opencode : {}), [key]: value } }
+  return {
+    ...current,
+    [METADATA_NAMESPACE]: {
+      ...(isRecord(current[METADATA_NAMESPACE]) ? current[METADATA_NAMESPACE] : {}),
+      [key]: value,
+    },
+  }
 }
 
 export function invalidate(metadata: unknown) {
@@ -49,11 +56,11 @@ export function forceInvalidation(metadata: unknown) {
 function withoutLocal(metadata: unknown): unknown {
   if (!isRecord(metadata)) return metadata
   const copy = { ...metadata }
-  if (isRecord(copy.opencode)) {
-    const value = { ...copy.opencode }
+  if (isRecord(copy[METADATA_NAMESPACE])) {
+    const value = { ...copy[METADATA_NAMESPACE] }
     delete value[key]
-    if (Object.keys(value).length) copy.opencode = value
-    else delete copy.opencode
+    if (Object.keys(value).length) copy[METADATA_NAMESPACE] = value
+    else delete copy[METADATA_NAMESPACE]
   }
   return Object.keys(copy).length ? copy : undefined
 }
@@ -130,7 +137,7 @@ function prefixMetadata(value: unknown) {
   if (!isRecord(stripped)) return undefined
   const result = Object.fromEntries(
     Object.entries(stripped).flatMap(([name, item]) => {
-      if (name === "opencode") return []
+      if (name === METADATA_NAMESPACE) return []
       const value = clean(withoutCaching(item))
       return isRecord(value) && Object.keys(value).length === 0 ? [] : [[name, value]]
     }),

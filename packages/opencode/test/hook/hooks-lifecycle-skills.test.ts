@@ -20,7 +20,7 @@ cliIt.live("SessionStart reloadSkills refreshes an already populated real skill 
     const server = yield* opencode.host({ env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0" } })
     const get = () =>
       Effect.promise(async () => {
-        const response = await fetch(server.url + "/skill", { headers: { "x-opencode-directory": home } })
+        const response = await fetch(server.url + "/skill", { headers: { "x-graphagent-directory": home } })
         if (!response.ok) throw new Error(`skill endpoint ${response.status}`)
         return response.json().then(decodeNames)
       })
@@ -28,7 +28,7 @@ cliIt.live("SessionStart reloadSkills refreshes an already populated real skill 
     const created = yield* Effect.promise(() =>
       fetch(server.url + "/session", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-opencode-directory": home },
+        headers: { "content-type": "application/json", "x-graphagent-directory": home },
         body: "{}",
       }),
     )
@@ -38,7 +38,7 @@ cliIt.live("SessionStart reloadSkills refreshes an already populated real skill 
     const forked = yield* Effect.promise(() =>
       fetch(server.url + `/session/${session.id}/fork`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-opencode-directory": home },
+        headers: { "content-type": "application/json", "x-graphagent-directory": home },
         body: "{}",
       }),
     )

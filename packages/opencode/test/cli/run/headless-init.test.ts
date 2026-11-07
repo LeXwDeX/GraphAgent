@@ -109,7 +109,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
         yield* gitInit(home)
         const server = yield* opencode.host({ env: { GRAPHAGENT_DB: "" } })
         const client = yield* HttpClient.HttpClient
-        const headers = { "x-opencode-directory": encodeURIComponent(home) }
+        const headers = { "x-graphagent-directory": encodeURIComponent(home) }
 
         yield* llm.text("AGENTS.md initialized")
         const created = yield* client.post(`${server.url}/session`, { body: HttpBody.jsonUnsafe({}), headers })
@@ -133,7 +133,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
         yield* gitInit(home)
         const server = yield* opencode.host({ env: { GRAPHAGENT_DB: "" } })
         const client = yield* HttpClient.HttpClient
-        const headers = { "x-opencode-directory": encodeURIComponent(home) }
+        const headers = { "x-graphagent-directory": encodeURIComponent(home) }
 
         yield* llm.text("AGENTS.md initialized")
         const created = yield* client.post(`${server.url}/session`, { body: HttpBody.jsonUnsafe({}), headers })

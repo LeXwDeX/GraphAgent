@@ -1,5 +1,6 @@
 import { Layer } from "effect"
 import { OtlpLogger } from "effect/observability"
+import { APP_NAME } from "../brand"
 import { Flag } from "../flag/flag"
 import { InstallationChannel, InstallationVersion } from "../installation/version"
 import { runID } from "./shared"
@@ -35,13 +36,13 @@ function resourceAttributes() {
 
 export function resource(): { serviceName: string; serviceVersion: string; attributes: Record<string, string> } {
   return {
-    serviceName: "opencode",
+    serviceName: APP_NAME,
     serviceVersion: InstallationVersion,
     attributes: {
       ...resourceAttributes(),
       "deployment.environment.name": InstallationChannel,
-      "opencode.client": Flag.GRAPHAGENT_CLIENT,
-      "opencode.run": runID,
+      [`${APP_NAME}.client`]: Flag.GRAPHAGENT_CLIENT,
+      [`${APP_NAME}.run`]: runID,
       "service.instance.id": runID,
     },
   }

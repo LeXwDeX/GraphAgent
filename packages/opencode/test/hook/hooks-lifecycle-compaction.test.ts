@@ -31,7 +31,7 @@ for (const block of [false, true]) {
           Effect.promise(() =>
             fetch(server.url + route, {
               method: "POST",
-              headers: { "content-type": "application/json", "x-opencode-directory": home },
+              headers: { "content-type": "application/json", "x-graphagent-directory": home },
               body: JSON.stringify(body),
             }),
           )
@@ -111,14 +111,14 @@ const blockedCompaction = (
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-opencode-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": home },
             body: JSON.stringify(body),
           }),
         )
       const stream = new AbortController()
       let captured = ""
       const open = yield* Effect.promise(() =>
-        fetch(server.url + "/event", { headers: { "x-opencode-directory": home }, signal: stream.signal }),
+        fetch(server.url + "/event", { headers: { "x-graphagent-directory": home }, signal: stream.signal }),
       )
       void (async () => {
         const reader = open.body!.getReader()

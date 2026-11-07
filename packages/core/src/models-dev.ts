@@ -2,6 +2,7 @@ import path from "path"
 import { Cause, Context, Duration, Effect, Layer, Option, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { ModelsDev } from "@opencode-ai/schema/models-dev"
+import { APP_NAME } from "./brand"
 import { Global } from "./global"
 import { Flag } from "./flag/flag"
 import { Flock } from "./util/flock"
@@ -15,7 +16,7 @@ import { httpClient } from "./effect/layer-node-platform"
 export const CatalogModelStatus = Schema.Literals(["alpha", "beta", "deprecated"])
 export type CatalogModelStatus = typeof CatalogModelStatus.Type
 
-const USER_AGENT = `opencode/${InstallationChannel}/${InstallationVersion}/${Flag.GRAPHAGENT_CLIENT}`
+const USER_AGENT = `${APP_NAME}/${InstallationChannel}/${InstallationVersion}/${Flag.GRAPHAGENT_CLIENT}`
 
 const EXCLUDED_PROVIDERS = new Set(["opencode", "opencode-go"])
 

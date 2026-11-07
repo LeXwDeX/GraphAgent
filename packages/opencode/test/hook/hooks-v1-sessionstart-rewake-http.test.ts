@@ -34,7 +34,7 @@ cliIt.live("V1 SessionStart asyncRewake exit-2 wakes the legacy session", ({ hom
       Effect.promise(async () => {
         const result = await fetch(server.url + route, {
           method: body ? "POST" : "GET",
-          headers: { "content-type": "application/json", "x-opencode-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": home },
           ...(body ? { body: JSON.stringify(body) } : {}),
         })
         if (!result.ok) throw new Error(`${route}: ${result.status} ${await result.text()}`)
