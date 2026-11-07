@@ -1511,6 +1511,34 @@ export type Config = {
     mcp_timeout?: number
     policies?: Array<ConfigV2ExperimentalPolicy>
   }
+  /**
+   * DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning.
+   */
+  dag?: {
+    mode?: "on" | "off"
+    concurrency?: number
+    max_total_nodes?: number
+    budget?: {
+      tokens?: number
+      /**
+       * Usage ratio (0-1) at which a budget warning is shown. Global config only: values from project-level configuration are ignored.
+       */
+      warn_ratio?: number | "Infinity" | "-Infinity" | "NaN"
+    }
+    safety?: {
+      extra?: Array<{
+        /**
+         * Permission name the rule matches
+         */
+        permission: string
+        /**
+         * Pattern the permission applies to
+         */
+        pattern: string
+        reason?: string
+      }>
+    }
+  }
 }
 
 export type GlobalEvent = {
