@@ -1,16 +1,16 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp --help 1`] = `
-"opencode mcp
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent mcp --help 1`] = `
+"graphagent mcp
 
 manage MCP (Model Context Protocol) servers
 
 Commands:
-  opencode mcp add [name]     add an MCP server
-  opencode mcp list           list MCP servers and their status                        [aliases: ls]
-  opencode mcp auth [name]    authenticate with an OAuth-enabled MCP server
-  opencode mcp logout [name]  remove OAuth credentials for an MCP server
-  opencode mcp debug <name>   debug OAuth connection for an MCP server
+  graphagent mcp add [name]     add an MCP server
+  graphagent mcp list           list MCP servers and their status                      [aliases: ls]
+  graphagent mcp auth [name]    authenticate with an OAuth-enabled MCP server
+  graphagent mcp logout [name]  remove OAuth credentials for an MCP server
+  graphagent mcp debug <name>   debug OAuth connection for an MCP server
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -19,10 +19,10 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode run --help 1`] = `
-"opencode run [message..]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent run --help 1`] = `
+"graphagent run [message..]
 
-run opencode with a message
+run graphagent with a message
 
 Positionals:
   message  message to send                                                     [array] [default: []]
@@ -58,25 +58,25 @@ Options:
                                       starting a conversation             [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode debug --help 1`] = `
-"opencode debug
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent debug --help 1`] = `
+"graphagent debug
 
 debugging and troubleshooting tools
 
 Commands:
-  opencode debug config        show resolved configuration
-  opencode debug lsp           LSP debugging utilities
-  opencode debug rg            ripgrep debugging utilities
-  opencode debug file          file system debugging utilities
-  opencode debug scrap         list all known projects
-  opencode debug skill         list all available skills
-  opencode debug snapshot      snapshot debugging utilities
-  opencode debug startup       print startup timing
-  opencode debug agent <name>  show agent configuration details
-  opencode debug v2            debug v2 catalog and built-in provider adapters
-  opencode debug info          show debug information
-  opencode debug paths         show global paths (data, config, cache, state)
-  opencode debug wait          wait indefinitely (for debugging)
+  graphagent debug config        show resolved configuration
+  graphagent debug lsp           LSP debugging utilities
+  graphagent debug rg            ripgrep debugging utilities
+  graphagent debug file          file system debugging utilities
+  graphagent debug scrap         list all known projects
+  graphagent debug skill         list all available skills
+  graphagent debug snapshot      snapshot debugging utilities
+  graphagent debug startup       print startup timing
+  graphagent debug agent <name>  show agent configuration details
+  graphagent debug v2            debug v2 catalog and built-in provider adapters
+  graphagent debug info          show debug information
+  graphagent debug paths         show global paths (data, config, cache, state)
+  graphagent debug wait          wait indefinitely (for debugging)
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -85,15 +85,15 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers --help 1`] = `
-"opencode providers
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent providers --help 1`] = `
+"graphagent providers
 
 manage AI providers and credentials
 
 Commands:
-  opencode providers list               list providers and credentials                 [aliases: ls]
-  opencode providers login [url]        log in to a provider
-  opencode providers logout [provider]  log out from a configured provider
+  graphagent providers list               list providers and credentials               [aliases: ls]
+  graphagent providers login [url]        log in to a provider
+  graphagent providers logout [provider]  log out from a configured provider
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -102,14 +102,14 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent --help 1`] = `
-"opencode agent
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent agent --help 1`] = `
+"graphagent agent
 
 manage agents
 
 Commands:
-  opencode agent create  create a new agent
-  opencode agent list    list all available agents
+  graphagent agent create  create a new agent
+  graphagent agent list    list all available agents
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -118,10 +118,10 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode uninstall --help 1`] = `
-"opencode uninstall
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent uninstall --help 1`] = `
+"graphagent uninstall
 
-uninstall opencode and remove all related files
+uninstall graphagent and remove all related files
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -134,8 +134,8 @@ Options:
   -f, --force        skip confirmation prompts                            [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode models --help 1`] = `
-"opencode models [provider]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent models --help 1`] = `
+"graphagent models [provider]
 
 list all available models
 
@@ -151,8 +151,8 @@ Options:
       --refresh     refresh the models cache from models.dev                               [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode stats --help 1`] = `
-"opencode stats
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent stats --help 1`] = `
+"graphagent stats
 
 show token usage and cost statistics
 
@@ -168,8 +168,8 @@ Options:
       --project     filter by project (default: all projects, empty string: current project)[string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode export --help 1`] = `
-"opencode export [sessionID]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent export --help 1`] = `
+"graphagent export [sessionID]
 
 export session data as JSON
 
@@ -184,8 +184,8 @@ Options:
       --sanitize    redact sensitive transcript and file data                              [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode import --help 1`] = `
-"opencode import <file>
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent import --help 1`] = `
+"graphagent import <file>
 
 import session data from JSON file
 
@@ -199,10 +199,10 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode pr --help 1`] = `
-"opencode pr <number>
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent pr --help 1`] = `
+"graphagent pr <number>
 
-fetch and checkout a GitHub PR branch, then run opencode
+fetch and checkout a GitHub PR branch, then run graphagent
 
 Positionals:
   number  PR number to checkout                                                  [number] [required]
@@ -214,14 +214,14 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session --help 1`] = `
-"opencode session
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent session --help 1`] = `
+"graphagent session
 
 manage sessions
 
 Commands:
-  opencode session list                list sessions
-  opencode session delete <sessionID>  delete a session
+  graphagent session list                list sessions
+  graphagent session delete <sessionID>  delete a session
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -230,16 +230,16 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db --help 1`] = `
-"opencode db
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent db --help 1`] = `
+"graphagent db
 
 database tools
 
 Commands:
-  opencode db [query]     open an interactive sqlite3 shell or run a query                 [default]
-  opencode db path        print the database path
-  opencode db vacuum      convert a database file to full auto_vacuum (FULL -> VACUUM -> truncate
-                          WAL)
+  graphagent db [query]     open an interactive sqlite3 shell or run a query               [default]
+  graphagent db path        print the database path
+  graphagent db vacuum      convert a database file to full auto_vacuum (FULL -> VACUUM -> truncate
+                            WAL)
 
 Positionals:
   query  SQL query to execute                                                               [string]
@@ -252,8 +252,8 @@ Options:
       --format      Output format                 [string] [choices: "json", "tsv"] [default: "tsv"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp list --help 1`] = `
-"opencode mcp list
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent mcp list --help 1`] = `
+"graphagent mcp list
 
 list MCP servers and their status
 
@@ -264,8 +264,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp add --help 1`] = `
-"opencode mcp add [name]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent mcp add --help 1`] = `
+"graphagent mcp add [name]
 
 add an MCP server
 
@@ -282,13 +282,13 @@ Options:
       --header      HTTP header for a remote MCP server (KEY=VALUE)                          [array]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp auth --help 1`] = `
-"opencode mcp auth [name]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent mcp auth --help 1`] = `
+"graphagent mcp auth [name]
 
 authenticate with an OAuth-enabled MCP server
 
 Commands:
-  opencode mcp auth list  list OAuth-capable MCP servers and their auth status         [aliases: ls]
+  graphagent mcp auth list  list OAuth-capable MCP servers and their auth status       [aliases: ls]
 
 Positionals:
   name  name of the MCP server                                                              [string]
@@ -300,8 +300,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp logout --help 1`] = `
-"opencode mcp logout [name]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent mcp logout --help 1`] = `
+"graphagent mcp logout [name]
 
 remove OAuth credentials for an MCP server
 
@@ -315,8 +315,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers list --help 1`] = `
-"opencode providers list
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent providers list --help 1`] = `
+"graphagent providers list
 
 list providers and credentials
 
@@ -327,13 +327,13 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers login --help 1`] = `
-"opencode providers login [url]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent providers login --help 1`] = `
+"graphagent providers login [url]
 
 log in to a provider
 
 Positionals:
-  url  opencode auth provider                                                               [string]
+  url  graphagent auth provider                                                             [string]
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -344,8 +344,8 @@ Options:
   -m, --method      login method label (skips method selection)                             [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers logout --help 1`] = `
-"opencode providers logout [provider]
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent providers logout --help 1`] = `
+"graphagent providers logout [provider]
 
 log out from a configured provider
 
@@ -359,8 +359,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent create --help 1`] = `
-"opencode agent create
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent agent create --help 1`] = `
+"graphagent agent create
 
 create a new agent
 
@@ -378,8 +378,8 @@ Options:
   -m, --model                 model to use in the format of provider/model                  [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent list --help 1`] = `
-"opencode agent list
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent agent list --help 1`] = `
+"graphagent agent list
 
 list all available agents
 
@@ -390,8 +390,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session list --help 1`] = `
-"opencode session list
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent session list --help 1`] = `
+"graphagent session list
 
 list sessions
 
@@ -404,8 +404,8 @@ Options:
       --format      output format             [string] [choices: "table", "json"] [default: "table"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session delete --help 1`] = `
-"opencode session delete <sessionID>
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent session delete --help 1`] = `
+"graphagent session delete <sessionID>
 
 delete a session
 
@@ -419,8 +419,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db path --help 1`] = `
-"opencode db path
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent db path --help 1`] = `
+"graphagent db path
 
 print the database path
 
@@ -431,8 +431,8 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db vacuum --help 1`] = `
-"opencode db vacuum
+exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent db vacuum --help 1`] = `
+"graphagent db vacuum
 
 convert a database file to full auto_vacuum (FULL -> VACUUM -> truncate WAL)
 
@@ -441,6 +441,6 @@ Options:
   -v, --version     show version number                                                    [boolean]
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --db          path to the SQLite database file (print the default with \`opencode db path\`)
+      --db          path to the SQLite database file (print the default with \`graphagent db path\`)
                                                                                  [string] [required]"
 `;

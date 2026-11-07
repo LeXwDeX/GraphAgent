@@ -27,7 +27,7 @@ describe("corresponding source", () => {
     expect(manifest.commit).toBe(result.commit)
     expect(manifest.archive.sha256).toBe(result.sha256)
     expect(manifest.dependencyLocks).toEqual(["bun.lock"])
-    expect(entries).toContain(`opencode-graphagent-1.2.3-dev.4-source-${result.commit.slice(0, 12)}/LICENSE`)
+    expect(entries).toContain(`graphagent-1.2.3-dev.4-source-${result.commit.slice(0, 12)}/LICENSE`)
     expect((await verifyCorrespondingSourceArtifacts(path.dirname(result.archive))).sha256).toBe(result.sha256)
   })
 

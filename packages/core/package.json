@@ -11,9 +11,6 @@
     "test": "bun test --only-failures",
     "typecheck": "tsgo --noEmit"
   },
-  "bin": {
-    "opencode": "./bin/opencode"
-  },
   "exports": {
     "./session/context-folding": "./src/session/context-folding/index.ts",
     "./session/reasoning-distillation": "./src/session/reasoning-distillation/index.ts",

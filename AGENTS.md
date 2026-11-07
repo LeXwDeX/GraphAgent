@@ -50,7 +50,7 @@ When a file operation is denied, record the exact action and error before changi
 
 - The user authorizes necessary isolated development and acceptance calls through the QWEN, GLM and DeepSeek models already present in the system configuration. Discover their current provider/model IDs and reuse the configured endpoint and credential references; do not repeatedly ask the user to select or authorize those models.
 - If a test model is unavailable or quota-limited, continue with an available configured model from those families. This authorization is for model calls, not changing credentials or deploying services.
-- For runtime fixes accepted through the installed `opencode` command, first install the local test build over `/usr/local/bin/opencode`; verify that the command actually runs this binary, its version, and matching build/install SHA-256 hashes before testing. Start a new process; see `packages/opencode/AGENTS.md` for steps. This does not apply to unit tests or `bun dev` development checks and is not a stable release.
+- For runtime fixes accepted through the installed `graphagent` command, first install the local test build over `/usr/local/bin/graphagent`; verify that the command actually runs this binary, its version, and matching build/install SHA-256 hashes before testing. Start a new process; see `packages/opencode/AGENTS.md` for steps. This does not apply to unit tests or `bun dev` development checks and is not a stable release.
 
 ## Development and release workflow
 

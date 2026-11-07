@@ -3,6 +3,7 @@ import { LocalPermissionStartup } from "@/permission/local-startup"
 import { AppRuntime } from "@/effect/app-runtime"
 import { HookClientLifecycle } from "@/hook/client-lifecycle"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { APP_NAME } from "@opencode-ai/core/brand"
 // CLI entry point for `opencode run` and `opencode --mini`.
 //
 // Handles three modes:
@@ -125,7 +126,7 @@ async function toolError(part: ToolPart) {
 
 export const RunCommand = effectCmd({
   command: "run [message..]",
-  describe: "run opencode with a message",
+  describe: `run ${APP_NAME} with a message`,
   // For --dir, load instance for the resolved target dir.
   // The handler also chdirs (preserving the legacy order: chdir → file resolution).
   directory: (args) => (args.dir ? path.resolve(process.cwd(), args.dir) : process.cwd()),

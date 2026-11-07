@@ -5,6 +5,7 @@ import { CliError, effectCmd, fail } from "../effect-cmd"
 import { UI } from "../ui"
 import * as Prompt from "../effect/prompt"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { APP_NAME } from "@opencode-ai/core/brand"
 
 import { map, pipe, sortBy, values } from "remeda"
 import path from "path"
@@ -305,7 +306,7 @@ export const ProvidersLoginCommand = effectCmd({
   builder: (yargs: Argv) =>
     yargs
       .positional("url", {
-        describe: "opencode auth provider",
+        describe: `${APP_NAME} auth provider`,
         type: "string",
       })
       .option("provider", {

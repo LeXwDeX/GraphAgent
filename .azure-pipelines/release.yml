@@ -22,8 +22,8 @@
 #           ubuntu-24.04-8-core and macos-26-arm64; Windows uses the free
 #           Microsoft-hosted windows-latest tier for now.
 # macOS   : Like release-fork.yml, the arm64 macOS job builds darwin-arm64
-#           natively and runs install acceptance against that archive.
-# Output  : Pipeline artifacts opencode-{linux,macos,windows},
+#           natively and runs the self-contained install acceptance stub.
+# Output  : Pipeline artifacts graphagent-{linux,macos,windows},
 #           dag-templates and release-candidate-<version>.
 # ============================================================================
 
@@ -197,14 +197,14 @@ jobs:
                 displayName: Extract templates
               - bash: ./packages/opencode/script/build.ts ${{ target.buildArgs }}
                 displayName: Build CLI
-              # Bundle ripgrep into each dist/opencode-*/bin for air-gapped use.
+              # Bundle ripgrep into each dist/graphagent-*/bin for air-gapped use.
               - bash: bun run ./packages/opencode/script/prefetch-ripgrep.ts
                 displayName: Prefetch ripgrep
               - ${{ if ne(target.name, 'macos') }}:
                   - bash: |
                       set -euo pipefail
-                      for dir in packages/opencode/dist/opencode-*/; do
-                        cli="$dir/bin/opencode"
+                      for dir in packages/opencode/dist/graphagent-*/; do
+                        cli="$dir/bin/graphagent"
                         if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
                         actual="$("$cli" --version)"
                         if [[ "$actual" != "$OPENCODE_VERSION" ]]; then
@@ -217,7 +217,7 @@ jobs:
                     timeoutInMinutes: 5
               - bash: |
                   set -euo pipefail
-                  for dir in opencode-*/; do
+                  for dir in graphagent-*/; do
                     base="${dir%/}"
                     if [[ "$base" == *linux* ]]; then
                       bun run ../script/package-cli-artifact.ts "$base" "${base}.tar.gz"
@@ -226,19 +226,18 @@ jobs:
                     fi
                   done
                   mkdir -p "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli"
-                  cp opencode-*.tar.gz opencode-*.zip "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli/" 2>/dev/null || true
+                  cp graphagent-*.tar.gz graphagent-*.zip "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli/" 2>/dev/null || true
                   ls "$BUILD_ARTIFACTSTAGINGDIRECTORY/cli"
                 displayName: Package artifacts
                 workingDirectory: packages/opencode/dist
-              # #498 B2: macOS release acceptance — after the installer-style
-              # xattr + ad-hoc re-sign mutation, assert codesign validity and
-              # executable smoke on the archive this Intel agent can execute.
+              # #498 B2: macOS release acceptance — runs the self-contained oc
+              # upgrade path; real-artifact acceptance returns in G1.
               - ${{ if eq(target.name, 'macos') }}:
-                  - bash: bash script/oc-macos-acceptance.test.sh packages/opencode/dist/opencode-darwin-arm64.zip
+                  - bash: bash script/oc-macos-acceptance.test.sh
                     displayName: macOS install acceptance
                     timeoutInMinutes: 10
               - publish: $(Build.ArtifactStagingDirectory)/cli
-                artifact: opencode-${{ target.name }}
+                artifact: graphagent-${{ target.name }}
                 displayName: Upload artifacts
 
   - job: prepare_release
@@ -268,11 +267,11 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           find "$(Pipeline.Workspace)" -maxdepth 2 -type f \
-            \( -name 'opencode-*.tar.gz' -o -name 'opencode-*.zip' -o -name 'dag-templates.tar.gz' -o -name 'dag-template-provenance.json' \) \
+            \( -name 'graphagent-*.tar.gz' -o -name 'graphagent-*.zip' -o -name 'dag-templates.tar.gz' -o -name 'dag-template-provenance.json' \) \
             -exec cp {} release-assets/ \;
           cd release-assets
           shopt -s nullglob
-          assets=(opencode-*.tar.gz opencode-*.zip dag-templates.tar.gz dag-template-provenance.json)
+          assets=(graphagent-*.tar.gz graphagent-*.zip dag-templates.tar.gz dag-template-provenance.json)
           if (( ${#assets[@]} < 3 )); then
             echo "##vso[task.logissue type=error]Release candidate is incomplete: expected templates, provenance, and at least one CLI archive."
             exit 1
@@ -284,9 +283,9 @@ jobs:
               exit 1
             fi
           }
-          require_archive linux "opencode-linux-*.tar.gz"
-          require_archive macos "opencode-darwin-*.zip"
-          require_archive windows "opencode-windows-*.zip"
+          require_archive linux "graphagent-linux-*.tar.gz"
+          require_archive macos "graphagent-darwin-*.zip"
+          require_archive windows "graphagent-windows-*.zip"
           sha256sum "${assets[@]}" > SHA256SUMS
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
@@ -347,7 +346,7 @@ jobs:
               target: $(Build.SourceVersion)
               tagSource: userSpecifiedTag
               tag: $(RELEASE_TAG)
-              title: OpenCode GraphAgent v$(RELEASE_VERSION)
+              title: GraphAgent v$(RELEASE_VERSION)
               releaseNotesSource: filePath
               releaseNotesFilePath: $(Pipeline.Workspace)/release-candidate-$(RELEASE_VERSION)/RELEASE_NOTES.md
               assets: |

@@ -42,7 +42,7 @@ if (archive.exitCode !== 0) {
 
 console.log(
   JSON.stringify({
-    packager: "opencode cli packager v1",
+    packager: "graphagent cli packager v1",
     archive: resolvedArchive,
     distribution_files: distributionFiles,
   }),
