@@ -60,7 +60,11 @@ func (a *app) viewStep1() string {
 			style = cursorStyle
 		}
 		b.WriteString(fmt.Sprintf("%s%s\n", marker, style.Render(t.label)))
-		b.WriteString(fmt.Sprintf("   %s\n", pathStyle.Render(t.path)))
+		path := t.path
+		if path == "" {
+			path = "（不可用：项目根为 $HOME 或无可用目录）"
+		}
+		b.WriteString(fmt.Sprintf("   %s\n", pathStyle.Render(path)))
 		if i == 0 && len(a.step2Choices) > 0 {
 			b.WriteString("   " + dimText.Render(fmt.Sprintf("已有 %d 个 provider 可选", len(a.step2Choices))) + "\n")
 		}

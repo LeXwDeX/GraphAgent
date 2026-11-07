@@ -19,7 +19,7 @@ type WriteTarget int
 
 const (
 	TargetGlobal  WriteTarget = iota // ~/.config/graphagent/graphagent.json
-	TargetProject                    // ./graphagent.json
+	TargetProject                    // <root>/.agents/settings.json
 )
 
 // ProviderOpts 是单个 provider 的自定义连接选项。空值表示该项不写入。
@@ -488,7 +488,11 @@ func targetPath(t WriteTarget) (string, error) {
 		}
 		return p, nil
 	case TargetProject:
-		return ProjectPath(), nil
+		p := ProjectPath()
+		if p == "" {
+			return "", fmt.Errorf("无法解析项目根（项目根为 $HOME 或无可用目录），拒绝写入")
+		}
+		return p, nil
 	default:
 		return "", fmt.Errorf("未知写入目标")
 	}
