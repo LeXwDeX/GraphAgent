@@ -11,18 +11,10 @@
 import { stat, open, mkdir, link, unlink, lstat, chmod, realpath } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import path from "node:path"
-import { Effect, Cause } from "effect"
+import { Effect } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { Global } from "@opencode-ai/core/global"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
-import {
-  appendExcludeEntries,
-  canonicalPath,
-  escapeGitIgnorePath,
-  repoLayout,
-  type RepoLayout,
-} from "@/project/git-exclude"
 
 export interface OutputFileRef {
   /** Discriminator against output_schema captured payloads (inline JSON). */
@@ -245,9 +237,25 @@ const SUMMARY_DECODE_BYTES = 4096
 const FILE_REF_MAX_BYTES = 64 * 1024 * 1024
 const MAX_PATH_CHARS = 4096
 
-export const REPORT_AREA = path.join(PROJECT_DIR, "workflow-reports")
-// Git ignore patterns are slash-separated on every platform.
-const REPORT_EXCLUDE_ENTRY = `${PROJECT_DIR}/workflow-reports/`
+/** Durable workflow artifacts live under XDG data, scoped to one project. */
+export function workflowArtifactsRoot(projectID: string) {
+  return path.join(Global.Path.data, "workflow-artifacts", projectID)
+}
+
+/** Draft specs written by the `workflow` tool's `draft` action. */
+export function workflowDraftsArea(projectID: string) {
+  return path.join(workflowArtifactsRoot(projectID), "workflow-drafts")
+}
+
+/** Node reports and isolated-node patches. */
+export function workflowReportsArea(projectID: string) {
+  return path.join(workflowArtifactsRoot(projectID), "workflow-reports")
+}
+
+/** Start/retarget spec YAML authored by the /dag commands. */
+export function workflowDagSpecsArea(projectID: string) {
+  return path.join(workflowArtifactsRoot(projectID), ".dag-specs")
+}
 
 export function isOutputFileRef(value: unknown): value is OutputFileRef {
   if (!isRecord(value)) return false
@@ -309,69 +317,20 @@ export function captureOutputFileRef(rawText: string): Effect.Effect<OutputFileR
 }
 
 /**
- * First-write git-exclude guarantee for the project `.agents/` report area
- * (B4). The entry goes to the repository's shared `info/exclude`, resolved
- * through `git rev-parse --git-common-dir`, so a root `.gitignore` is never
- * edited and every linked worktree is covered at once. The repository-root
- * report area is canonical. A ref under a subdirectory's own `.agents/`
- * report tree is treated as legacy and kept ignored through a
- * repository-relative entry. Non-git directories are skipped. Best-effort — a
- * permission blip must never fail the node completion.
- */
-export function ensureReportAreaGitignore(directory: string, refPath: string): Effect.Effect<void> {
-  // Cheap pre-filter; dot segments are resolved here and symlinks below.
-  if (!path.resolve(refPath).includes(`${path.sep}${REPORT_AREA}${path.sep}`)) return Effect.void
-  return Effect.gen(function* () {
-    const layout = yield* Effect.promise(() => repoLayout(directory))
-    if (!layout) return
-    const root = yield* Effect.promise(() => canonicalPath(layout.root))
-    const execution = yield* Effect.promise(() => canonicalPath(directory))
-    const canonicalRef = yield* Effect.promise(() => canonicalPath(refPath))
-    const entries = new Set<string>()
-    if (FSUtil.contains(path.join(root, REPORT_AREA), canonicalRef)) entries.add(REPORT_EXCLUDE_ENTRY)
-    // Legacy: earlier builds wrote reports under the execution directory's own
-    // `.agents/` tree. Keep those persisted refs ignored, relative to the
-    // repository root, without making that path the canonical new location.
-    if (execution !== root && FSUtil.contains(path.join(execution, REPORT_AREA), canonicalRef)) {
-      const prefix = layout.prefix.length === 0 || layout.prefix.endsWith("/") ? layout.prefix : `${layout.prefix}/`
-      entries.add(`${prefix}${REPORT_EXCLUDE_ENTRY}`)
-    }
-    if (entries.size === 0) return
-    yield* Effect.promise(() =>
-      appendExcludeEntries(path.join(layout.commonDir, "info", "exclude"), [...entries].map(escapeGitIgnorePath)),
-    )
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Cause.hasInterrupts(cause)
-        ? Effect.failCause(cause)
-        : Effect.logWarning("failed to ensure the workflow-reports exclude entry", { directory, cause }),
-    ),
-  )
-}
-
-/**
  * Absolute authoring directive for a node context. The child keeps its
  * execution cwd; this only names the canonical report area so reports do not
- * fragment across subdirectories. Non-git directories get no directive (their
- * reports remain content-addressed under Global data). The path is serialized
- * as JSON data so path bytes cannot add model instructions. Best-effort.
+ * fragment across subdirectories. The area lives under XDG data, so it works
+ * outside git repositories too. The path is serialized as JSON data so path
+ * bytes cannot add model instructions.
  */
-export function reportAreaDirective(
-  directory: string | undefined,
-  resolveLayout: (directory: string) => Promise<RepoLayout | undefined> = repoLayout,
-): Effect.Effect<string | undefined> {
-  if (!directory) return Effect.succeed(undefined)
-  return Effect.gen(function* () {
-    const layout = yield* Effect.promise(() => resolveLayout(directory))
-    if (!layout) return undefined
-    const root = yield* Effect.promise(() => canonicalPath(layout.root))
-    const info = yield* Effect.promise(() => stat(root).catch(() => undefined))
-    if (!info?.isDirectory()) return undefined
-    const area = path.join(root, REPORT_AREA)
-    const payload = JSON.stringify({ report_directory: `${area}${path.sep}` })
-      .replace(/\u2028/g, "\\u2028")
-      .replace(/\u2029/g, "\\u2029")
-    return [
+export function reportAreaDirective(projectID: string | undefined): Effect.Effect<string | undefined> {
+  if (!projectID) return Effect.succeed(undefined)
+  const area = workflowReportsArea(projectID)
+  const payload = JSON.stringify({ report_directory: `${area}${path.sep}` })
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029")
+  return Effect.succeed(
+    [
       "",
       "",
       "[REPORT AREA]",
@@ -379,8 +338,6 @@ export function reportAreaDirective(
       payload,
       "When this node produces a report, write the file under report_directory using an absolute path.",
       "Do not move or rewrite existing report files; legacy report paths remain readable.",
-    ].join("\n")
-  }).pipe(
-    Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(undefined))),
+    ].join("\n"),
   )
 }

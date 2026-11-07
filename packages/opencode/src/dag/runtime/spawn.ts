@@ -74,13 +74,7 @@ import {
   settlePlainTextOutput,
 } from "./capture"
 import { captureFinalResponse, finalAssistantText, outputLimitReason, repairPrompt } from "./final-response"
-import {
-  commitOutputFileRef,
-  ensureReportAreaGitignore,
-  reportAreaDirective,
-  verifyOutputFileRef,
-  type ManagedOutputFileRef,
-} from "./output-ref"
+import { commitOutputFileRef, reportAreaDirective, verifyOutputFileRef, type ManagedOutputFileRef } from "./output-ref"
 import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
 import { completeIsolatedNode } from "./worktree-completion"
 import { Permission } from "@/permission"
@@ -328,7 +322,9 @@ export function makeDeadlineWatcher(
               childSessionID: node.childSessionId,
             })
             yield* boundedCancel(
-              promptSvc.cancel(node.childSessionId as never, { reason: childAbort("deadline-cap", "deadline-watcher") }),
+              promptSvc.cancel(node.childSessionId as never, {
+                reason: childAbort("deadline-cap", "deadline-watcher"),
+              }),
             )
           }
           return
@@ -598,7 +594,10 @@ export function spawnNode(
     // directory assertion below still catches a child that ignored it.
     const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
     const instanceStore = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
-    const inInstance = <A, E, R>(directory: string | undefined, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+    const inInstance = <A, E, R>(
+      directory: string | undefined,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> => {
       const real = directory ? DagLocation.canonicalDirectory(directory) : undefined
       return instanceStore && real && real !== ambientReal ? instanceStore.provide({ directory: real }, effect) : effect
     }
@@ -823,26 +822,13 @@ export function spawnNode(
           // Validate again before the child can consume or read its inputs.
           yield* Effect.forEach(input.inputArtifacts ?? [], verifyOutputFileRef, { discard: true })
           // #946: a failed isolated attempt keeps its worktree for inspection.
-          const nodeFailure = (
-            reason: string,
-            trigger: string,
-            attempt?: NodeExecutionAttempt,
-            errorClass?: string,
-          ) =>
+          const nodeFailure = (reason: string, trigger: string, attempt?: NodeExecutionAttempt, errorClass?: string) =>
             Effect.suspend(() => {
               if (isolatedWorktree) {
                 worktreeHandled = true
                 isolatedWorktree = { ...isolatedWorktree, state: "kept" }
               }
-              return dag.nodeFailed(
-                input.dagID,
-                input.nodeID,
-                reason,
-                trigger,
-                attempt,
-                errorClass,
-                isolatedWorktree,
-              )
+              return dag.nodeFailed(input.dagID, input.nodeID, reason, trigger, attempt, errorClass, isolatedWorktree)
             })
           // #946: isolate at the same point the child session materializes, so
           // a large fan-out never holds more worktrees than max_concurrency.
@@ -904,7 +890,10 @@ export function spawnNode(
           // test harnesses that model only that ambient path therefore pass,
           // while any real fallback to a different directory fails loudly.
           const childDirectory = childSession.directory ?? ambient?.directory
-          if (nodeExecutionReal && (!childDirectory || DagLocation.canonicalDirectory(childDirectory) !== nodeExecutionReal)) {
+          if (
+            nodeExecutionReal &&
+            (!childDirectory || DagLocation.canonicalDirectory(childDirectory) !== nodeExecutionReal)
+          ) {
             return yield* Effect.die(
               new Error(
                 `DAG child session ${childSession.id} has directory "${childDirectory ?? "<missing>"}" but the node is bound to "${nodeDirectory}"`,
@@ -1026,6 +1015,7 @@ export function spawnNode(
                 const completion = yield* completeIsolatedNode({
                   worktree: metadata,
                   ownerDirectory: executionDirectory ?? metadata.directory,
+                  projectID: expectedProject ?? workflow?.projectId ?? "global",
                   dagID: input.dagID,
                   nodeID: input.nodeID,
                   message: `dag: ${input.nodeID} (${input.dagID})`,
@@ -1167,7 +1157,7 @@ export function spawnNode(
             yield* SettingsHook.landSystemMessages(started, { sessionID: childSession.id })
             if (hookStart) for (const text of started.additionalContexts) yield* hookStart.append(childSession.id, text)
           }
-          const reportDirective = yield* reportAreaDirective(executionDirectory)
+          const reportDirective = yield* reportAreaDirective(expectedProject ?? workflow?.projectId)
           const parts: PromptParts = reportDirective
             ? [...input.promptParts, { type: "text", text: reportDirective }]
             : input.promptParts
@@ -1330,11 +1320,7 @@ export function spawnNode(
                               ...settlementAttempt,
                               inputSnapshotID: captured.snapshotID,
                             })
-                          : nodeFailure(
-                              settlement.reason,
-                              "verdict_fail",
-                              settlementAttempt,
-                            )
+                          : nodeFailure(settlement.reason, "verdict_fail", settlementAttempt)
                       ).pipe(
                         Effect.catchIf(isTransitionRejection, () =>
                           Effect.logWarning("output-cap capture settlement guard rejected — node already terminal"),
@@ -1600,12 +1586,11 @@ export function spawnNode(
                         ...settlementAttempt,
                         ...(input.resultProtocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
                       },
+                    ).pipe(
+                      Effect.catchIf(isTransitionRejection, () =>
+                        Effect.logWarning("nodeFailed (empty output) guard rejected — node already terminal"),
+                      ),
                     )
-                      .pipe(
-                        Effect.catchIf(isTransitionRejection, () =>
-                          Effect.logWarning("nodeFailed (empty output) guard rejected — node already terminal"),
-                        ),
-                      )
                     return
                   }
                   const rawText = settlement.output
@@ -1619,13 +1604,13 @@ export function spawnNode(
                       graph_rev: input.graphRev,
                     },
                     (source, symlink, canonical) =>
-                      makeArtifactSourceAuthorizer(
-                        sessions,
-                        agentService,
-                        worktree,
-                        permissionSvc,
-                        boundary,
-                      )(childSession.id, source, agent.name, symlink, canonical),
+                      makeArtifactSourceAuthorizer(sessions, agentService, worktree, permissionSvc, boundary)(
+                        childSession.id,
+                        source,
+                        agent.name,
+                        symlink,
+                        canonical,
+                      ),
                   )
                   if (fileRef && childSessionID) {
                     // Receipt persistence precedes completion. A crash between the
@@ -1653,17 +1638,16 @@ export function spawnNode(
                         return
                       }
                     } else yield* capture
-                    if (executionDirectory) yield* ensureReportAreaGitignore(executionDirectory, fileRef.source_path)
                   }
                   yield* complete(
                     fileRef?.path ?? rawText,
                     { ...settlementAttempt, inputSnapshotID: snapshotID },
                     fileRef,
                   ).pipe(
-                      Effect.catchIf(isTransitionRejection, () =>
-                        Effect.logWarning("nodeCompleted guard rejected — node already terminal"),
-                      ),
-                    )
+                    Effect.catchIf(isTransitionRejection, () =>
+                      Effect.logWarning("nodeCompleted guard rejected — node already terminal"),
+                    ),
+                  )
                 }
               }).pipe(
                 Effect.as(true),

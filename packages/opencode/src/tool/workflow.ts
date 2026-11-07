@@ -17,11 +17,16 @@ import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { createAdmissionRecord } from "@/dag/admission"
-import { isOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
+import {
+  isOutputFileRef,
+  isManagedOutputFileRef,
+  verifyOutputFileRef,
+  workflowArtifactsRoot,
+  workflowDraftsArea,
+} from "@/dag/runtime/output-ref"
 import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
 import type { DagEvent } from "@opencode-ai/schema/dag-event"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { argumentAction, bound, formatSchemaFailures } from "./schema-error"
@@ -178,7 +183,7 @@ const Guide = Schema.Struct({
 const Draft = Schema.Struct({
   action: Schema.Literal("draft").annotate({
     description:
-      "Write a new YAML START spec under .agents/workflow-drafts/ and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
+      "Write a new YAML START spec under the project's workflow drafts area and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
   }),
   title: Schema.optional(Schema.String).annotate({ description: "Optional workflow title" }),
   config: DagValidation.WorkflowGraphSchema.annotate({
@@ -434,9 +439,13 @@ export const WorkflowTool = Tool.define<
               }
             }
             case "draft": {
-              const written = yield* writeDraftSpec(params.config, params.title, callingSession.directory, ctx).pipe(
-                Effect.result,
-              )
+              const written = yield* writeDraftSpec(
+                params.config,
+                params.title,
+                callingSession.projectID,
+                callingSession.directory,
+                ctx,
+              ).pipe(Effect.result)
               if (written._tag === "Failure")
                 return {
                   title: `Workflow draft not written: ${params.config.name}`,
@@ -507,7 +516,12 @@ export const WorkflowTool = Tool.define<
               }
             }
             case "read": {
-              const specFile = yield* loadSpecFile(params.spec_path, callingSession.directory, ctx).pipe(Effect.orDie)
+              const specFile = yield* loadSpecFile(
+                params.spec_path,
+                callingSession.directory,
+                callingSession.projectID,
+                ctx,
+              ).pipe(Effect.orDie)
               const validation = yield* authoring.prepare({
                 action: "start",
                 source: { kind: "yaml", source: specFile.path, content: specFile.content },
@@ -531,7 +545,12 @@ export const WorkflowTool = Tool.define<
               }
             }
             case "validate": {
-              const loaded = yield* loadSpecFile(params.spec_path, callingSession.directory, ctx).pipe(
+              const loaded = yield* loadSpecFile(
+                params.spec_path,
+                callingSession.directory,
+                callingSession.projectID,
+                ctx,
+              ).pipe(
                 Effect.map((file) => ({
                   path: file.path,
                   source: { kind: "yaml" as const, source: file.path, content: file.content },
@@ -821,9 +840,12 @@ export const WorkflowTool = Tool.define<
             }
             case "start": {
               const sessionID = SessionID.make(ctx.sessionID)
-              const source = yield* loadAuthoringSource(params.spec_path, callingSession.directory, ctx).pipe(
-                Effect.orDie,
-              )
+              const source = yield* loadAuthoringSource(
+                params.spec_path,
+                callingSession.directory,
+                callingSession.projectID,
+                ctx,
+              ).pipe(Effect.orDie)
               const result = yield* authoring.prepare({
                 action: "start",
                 source,
@@ -872,9 +894,12 @@ export const WorkflowTool = Tool.define<
               const knownDependencies = (yield* dag.store.getNodes(params.workflow_id).pipe(Effect.orDie)).map(
                 (node) => node.id,
               )
-              const source = yield* loadAuthoringSource(params.spec_path, callingSession.directory, ctx).pipe(
-                Effect.orDie,
-              )
+              const source = yield* loadAuthoringSource(
+                params.spec_path,
+                callingSession.directory,
+                callingSession.projectID,
+                ctx,
+              ).pipe(Effect.orDie)
               const result = yield* authoring.prepare({
                 action: "extend",
                 source,
@@ -995,9 +1020,12 @@ export const WorkflowTool = Tool.define<
                 const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
                 const workflowDefaults = workflowConfig?.node_defaults
                 const knownDependencies = (yield* dag.store.getNodes(wfId).pipe(Effect.orDie)).map((node) => node.id)
-                const source = yield* loadAuthoringSource(params.spec_path, callingSession.directory, ctx).pipe(
-                  Effect.orDie,
-                )
+                const source = yield* loadAuthoringSource(
+                  params.spec_path,
+                  callingSession.directory,
+                  callingSession.projectID,
+                  ctx,
+                ).pipe(Effect.orDie)
                 const result = yield* authoring.prepare({
                   action: "replan",
                   source,
@@ -1236,7 +1264,6 @@ function blockedMetadata(diagnostics: Diagnostic[]): Metadata {
   }
 }
 
-const DRAFT_DIRECTORY = path.join(PROJECT_DIR, "workflow-drafts")
 const DRAFT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9-_]*$/
 
 class DraftWriteError extends Schema.TaggedError<DraftWriteError>()("WorkflowDraftWriteError", {
@@ -1255,6 +1282,7 @@ function authoringWarnings(result: DagValidation.ValidationResult) {
 function writeDraftSpec(
   config: DagValidation.StartGraph,
   title: string | undefined,
+  projectID: string,
   directory: string,
   ctx: Tool.Context,
 ): Effect.Effect<string, DraftWriteError> {
@@ -1267,7 +1295,7 @@ function writeDraftSpec(
         }),
       )
     }
-    const dir = path.join(directory, DRAFT_DIRECTORY)
+    const dir = workflowDraftsArea(projectID)
     const specPath = path.join(dir, `${config.name}.yaml`)
     const content = yamlStringify({ ...(title ? { title } : {}), config })
     const instance = yield* InstanceRef
@@ -1325,9 +1353,9 @@ function readDraftSpec(specPath: string) {
   })
 }
 
-function loadSpecFile(specPath: string, directory: string, ctx: Tool.Context) {
+function loadSpecFile(specPath: string, directory: string, projectID: string, ctx: Tool.Context) {
   return Effect.gen(function* () {
-    const filepath = yield* resolveSpecPath(specPath, directory, ctx)
+    const filepath = yield* resolveSpecPath(specPath, directory, projectID, ctx)
 
     // Builtin templates are compiled into the binary (no backing file).
     if (DagWorkflows.isBuiltinPath(filepath)) {
@@ -1358,9 +1386,10 @@ function loadSpecFile(specPath: string, directory: string, ctx: Tool.Context) {
 function loadAuthoringSource(
   specPath: string,
   directory: string,
+  projectID: string,
   ctx: Tool.Context,
 ): Effect.Effect<AuthoringSource, Error> {
-  return loadSpecFile(specPath, directory, ctx).pipe(
+  return loadSpecFile(specPath, directory, projectID, ctx).pipe(
     Effect.map((file) => ({ kind: "yaml" as const, source: file.path, content: file.content })),
   )
 }
@@ -1373,7 +1402,7 @@ function searchedScopes(directory: string) {
   return scopes.join(" and ")
 }
 
-function resolveSpecPath(specPath: string, directory: string, ctx: Tool.Context) {
+function resolveSpecPath(specPath: string, directory: string, projectID: string, ctx: Tool.Context) {
   return Effect.gen(function* () {
     // A bare name addresses the workflow library. The synthetic
     // `builtin://name` marker list output advertises must round-trip the same
@@ -1393,7 +1422,11 @@ function resolveSpecPath(specPath: string, directory: string, ctx: Tool.Context)
     if (![".yaml", ".yml"].includes(path.extname(filepath).toLowerCase())) {
       return yield* Effect.fail(new Error(`Workflow spec must be a .yaml or .yml file: ${filepath}`))
     }
-    if (!FSUtil.contains(directory, filepath)) {
+    // The project's runtime artifacts (drafts, reports, `.dag-specs`) live
+    // under the user data directory, outside the worktree. They are written by
+    // this project's own workflows, so reading one back needs no external
+    // directory prompt; any other path outside the session directory still does.
+    if (!FSUtil.contains(directory, filepath) && !FSUtil.contains(workflowArtifactsRoot(projectID), filepath)) {
       yield* assertExternalDirectoryEffect(ctx, filepath, {
         bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
       })

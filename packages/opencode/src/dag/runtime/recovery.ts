@@ -47,12 +47,7 @@ import {
 } from "./capture"
 import type { CapturedSettlement } from "./capture"
 import { captureFinalResponse, finalAssistantText, type FinalCaptureResult } from "./final-response"
-import {
-  commitOutputFileRef,
-  ensureReportAreaGitignore,
-  isManagedOutputFileRef,
-  verifyOutputFileRef,
-} from "./output-ref"
+import { commitOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "./output-ref"
 import { recoverIsolatedWorktree, recoverWorktreeMetadata } from "./worktree-completion"
 
 export function reconcileWorkflow(
@@ -137,6 +132,7 @@ export function reconcileWorkflow(
         const completion = yield* recoverIsolatedWorktree({
           node,
           dagID,
+          projectID: workflow?.projectId ?? ambient?.project?.id ?? "global",
           ownerDirectory: owner,
           worktreeSvc,
           remove: (directory) =>
@@ -227,19 +223,23 @@ export function reconcileWorkflow(
       // Checker failures propagate: aborting this reconcile (callers log and
       // retry on next access) beats inventing a nodeFailed from a read error.
       const sessionStatus = yield* checkSessionStatus(node.childSessionId)
-      const session = Option.isSome(messages) && Option.isSome(sessions)
-        ? yield* sessions.value.get(SessionID.make(node.childSessionId)).pipe(
-            Effect.map(Option.some),
-            Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none<Session.Info>())),
-          )
-        : Option.none<Session.Info>()
+      const session =
+        Option.isSome(messages) && Option.isSome(sessions)
+          ? yield* sessions.value.get(SessionID.make(node.childSessionId)).pipe(
+              Effect.map(Option.some),
+              Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none<Session.Info>())),
+            )
+          : Option.none<Session.Info>()
       const nodeConfig = workflowConfig?.nodes.find((config) => config.id === node.id)
       const childDirectory = Option.isSome(session)
         ? session.value.directory
-        : Option.isNone(sessions) ? nodeExecutionDirectory(node, nodeConfig) : undefined
-      const caller = workflow && childDirectory
-        ? { projectID: workflow.projectId, directory: childDirectory, sessionID: node.childSessionId }
-        : undefined
+        : Option.isNone(sessions)
+          ? nodeExecutionDirectory(node, nodeConfig)
+          : undefined
+      const caller =
+        workflow && childDirectory
+          ? { projectID: workflow.projectId, directory: childDirectory, sessionID: node.childSessionId }
+          : undefined
       if (Option.isSome(messages) && !caller && sessionStatus === "completed") {
         continuations.add(node.id)
         continue
@@ -249,12 +249,7 @@ export function reconcileWorkflow(
         const metadata = yield* messages.value.revisions(caller)
         if (metadata.ok && metadata.value.queued > 0) {
           if (node.deadlineMs !== null && (yield* Clock.currentTimeMillis) >= node.deadlineMs) {
-            if (
-              yield* settle(
-                node.id,
-                failNode(node, "deadline exceeded before message recovery", "timeout", attempt),
-              )
-            )
+            if (yield* settle(node.id, failNode(node, "deadline exceeded before message recovery", "timeout", attempt)))
               reconciled++
           } else continuations.add(node.id)
           continue
@@ -432,25 +427,6 @@ export function reconcileWorkflow(
                 ref.provenance?.replan_attempt !== node.replanAttempts
               )
                 return yield* Effect.fail(new Error("Managed DAG artifact belongs to another execution attempt"))
-              // Crash window: the live path persists this receipt before the
-              // report-area exclude update. Repair best-effort from the verified
-              // receipt without reopening the source or re-authorizing it.
-              const reportDirectory =
-                nodeExecution ??
-                workflow?.directory ??
-                (yield* dag.store.getWorkflow(dagID).pipe(
-                  Effect.map((row) => row?.directory ?? undefined),
-                  Effect.catchCause((cause) =>
-                    Cause.hasInterrupts(cause)
-                      ? Effect.failCause(cause)
-                      : Effect.logWarning("DAG recovery could not read the workflow directory for report-area repair", {
-                          dagID,
-                          nodeID: node.id,
-                          cause,
-                        }).pipe(Effect.as(undefined)),
-                  ),
-                ))
-              if (reportDirectory) yield* ensureReportAreaGitignore(reportDirectory, ref.source_path)
               return yield* settle(
                 node.id,
                 completeNode(node, nodeConfig, ref.path, { ...attempt, inputSnapshotID: snapshotID }, ref),
@@ -533,8 +509,6 @@ export function reconcileWorkflow(
                     return yield* Effect.fail(new Error(`Recovered output receipt rejected: ${guarded.reason}`))
                   }
                 } else yield* receipt
-                const reportDirectory = nodeExecution ?? workflow?.directory
-                if (reportDirectory) yield* ensureReportAreaGitignore(reportDirectory, fileRef.source_path)
               }
               return yield* settle(
                 node.id,
@@ -732,7 +706,7 @@ export function continueRecoveredMessageNode(
         return false
       }
       if (
-          DagLocation.canonicalDirectory(resolved.directory) !== DagLocation.canonicalDirectory(ownerExecutionDirectory)
+        DagLocation.canonicalDirectory(resolved.directory) !== DagLocation.canonicalDirectory(ownerExecutionDirectory)
       ) {
         yield* failExecution(
           `workspace_invalid: node "${nodeID}" is bound to "${resolved.directory}", but recovery resolved "${ownerExecutionDirectory}".`,
@@ -809,6 +783,7 @@ export function continueRecoveredMessageNode(
         const completion = yield* recoverIsolatedWorktree({
           node: row,
           dagID,
+          projectID: workflow.projectId,
           ownerDirectory: ownerExecutionDirectory,
           worktreeSvc,
           remove: (directory) => {
@@ -982,7 +957,6 @@ export function continueRecoveredMessageNode(
                   yield* new Dag.StaleMessageInputError({ dagID, nodeID, reason: receipt.reason })
                 yield* Effect.fail(new Error(`Recovered output receipt rejected: ${receipt.reason}`))
               }
-              yield* ensureReportAreaGitignore(boundExecutionDirectory, ref.source_path)
             }
             return yield* completeNode(
               current,

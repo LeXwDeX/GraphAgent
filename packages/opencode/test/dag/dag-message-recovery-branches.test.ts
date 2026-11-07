@@ -13,6 +13,7 @@ import { StaleNodeAttemptError, TerminalViolationError } from "@opencode-ai/core
 import { DagMessages } from "@opencode-ai/core/dag/messages"
 import { DagStore } from "@opencode-ai/core/dag/store"
 import { continueRecoveredMessageNode } from "@/dag/runtime/recovery"
+import { workflowReportsArea } from "@/dag/runtime/output-ref"
 import { hasCaptureSlot } from "@/dag/runtime/capture"
 import { SessionPrompt } from "@/session/prompt"
 import { Worktree } from "@/worktree"
@@ -398,7 +399,7 @@ describe("message recovery continuation admission and settlement branches", () =
     await run(undefined, owner.path, undefined, owner.path)
     expect(h.promptDirectories).toEqual([worktree])
     expect(removals).toEqual([owner.path])
-    expect(await fs.readFile(path.join(owner.path, ".agents/workflow-reports/dag_recovery/n.patch"), "utf8")).toContain(
+    expect(await fs.readFile(path.join(workflowReportsArea("p"), "dag_recovery", "n.patch"), "utf8")).toContain(
       "recovered change",
     )
     expect(h.completed).toHaveLength(1)
@@ -737,9 +738,7 @@ describe("message recovery continuation admission and settlement branches", () =
       expect(h.loops).toBe(staleReceipt ? 2 : 1)
       expect(h.completed).toHaveLength(1)
       expect(authorized).toEqual(staleReceipt ? [filename, filename] : [filename])
-      expect(await Bun.file(path.join(dir.path, ".git", "info", "exclude")).text()).toContain(
-        ".agents/workflow-reports/",
-      )
+      expect(await Bun.file(path.join(dir.path, ".agents", "workflow-reports")).exists()).toBe(false)
       expect(await Bun.file(path.join(dir.path, ".gitignore")).exists()).toBe(false)
     })
   test("runs a recovered continuation with the bound workspace mailbox identity", async () => {

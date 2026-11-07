@@ -25,7 +25,7 @@ or advance the requested result. A review request does not authorize repairs
 or a release phase.
 
 For a selected DAG, draft the spec or write it to a task-local path such as
-`.agents/.dag-specs/<task>.yaml`, use `workflow(action="validate")`, and then
+`${dag_specs}/<task>.yaml`, use `workflow(action="validate")`, and then
 `workflow(action="start")`. A draft or validation response is not execution.
 
 ## Adapt to results
@@ -59,6 +59,6 @@ choosing a route or passing one check proves the requested outcome.
 - Routing decisions live in this conversation; child nodes get concrete
   work, not routing questions.
 - Never write workflow state to local files; local persistence is only the
-  retargeted spec YAML under `.agents/.dag-specs/`.
+  retargeted spec YAML under `${dag_specs}/`.
 - Platform delivery (issues, PRs, CI, merge, release) is out of scope for
   this command; if the user asks for it, name the boundary and stop.

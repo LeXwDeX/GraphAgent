@@ -97,11 +97,14 @@ describe("CommandPlugin.Plugin", () => {
         description: "review changes [commit|branch|pr], defaults to uncommitted",
         subtask: true,
       })
+      // The registered template renders the project's runtime artifact area,
+      // which resolves to the global project for `/repo` (not a git checkout).
       expect(yield* command.get("dag-auto")).toMatchObject({
         name: "dag-auto",
         description: CommandPlugin.DagAutoDescription,
-        template: CommandPlugin.DagAutoContent,
+        template: CommandPlugin.renderDagAutoContent("global"),
       })
+      expect(CommandPlugin.renderDagAutoContent("global")).toContain(CommandPlugin.dagSpecsArea("global"))
       expect(CommandPlugin.DagAutoContent).toContain("$ARGUMENTS")
       expect(CommandPlugin.DagAutoContent).toContain("ultra-flow-route")
       expect(CommandPlugin.DagAutoContent).toContain("not the default")
@@ -248,7 +251,9 @@ describe("CommandPlugin.Plugin", () => {
       expect(CommandPlugin.WorkflowFactsContent).not.toContain('spec_path: "code-review"')
       expect(CommandPlugin.WorkflowFactsContent).toMatch(/Retarget its\s+objective and block instructions/)
       expect(CommandPlugin.WorkflowFactsContent).not.toContain("pass `spec` inline")
-      expect(CommandPlugin.DagAutoContent).toContain(".agents/.dag-specs/")
+      expect(CommandPlugin.DagAutoContent).toContain("${dag_specs}/")
+      expect(CommandPlugin.renderDagAutoContent("proj_test")).toContain(CommandPlugin.dagSpecsArea("proj_test"))
+      expect(CommandPlugin.renderDagAutoContent("proj_test")).not.toContain("${dag_specs}")
       expect(CommandPlugin.DagAutoContent).toContain("retarget")
     }),
   )

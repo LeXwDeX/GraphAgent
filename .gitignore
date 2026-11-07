@@ -70,10 +70,7 @@ tsconfig.tsbuildinfo
 **/.codebase-memory-mcp/
 
 # graphagent local workflow state
-.agents/.dag-specs/
 .agents/dag-init.json
-.agents/workflow-drafts/
-.agents/workflow-reports/
 
 # Retained private migration evidence and legacy delivery records
 /spec_git/

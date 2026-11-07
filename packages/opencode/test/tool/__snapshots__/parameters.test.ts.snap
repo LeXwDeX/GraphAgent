@@ -1056,7 +1056,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
-              "description": "Write a new YAML START spec under .agents/workflow-drafts/ and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
+              "description": "Write a new YAML START spec under the project's workflow drafts area and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
               "enum": [
                 "draft",
               ],

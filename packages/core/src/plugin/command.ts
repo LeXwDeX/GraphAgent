@@ -4,6 +4,8 @@ export * as CommandPlugin from "./command"
 
 import { define } from "./internal"
 import { Effect } from "effect"
+import path from "node:path"
+import { Global } from "../global"
 import { Location } from "../location"
 import PROMPT_INITIALIZE from "./command/initialize.txt"
 import PROMPT_REVIEW from "./command/review.txt"
@@ -23,6 +25,16 @@ export const OrchestrationDomainsContent = orchestrationDomains
 export const WorkflowContent = workflowRouting
 export const DagAutoContent = DAG_AUTO_PROMPT
 
+/** The project-scoped XDG directory for /dag command spec YAML. */
+export function dagSpecsArea(projectID: string) {
+  return path.join(Global.Path.data, "workflow-artifacts", projectID, ".dag-specs")
+}
+
+/** Substitute the run-specific spec directory into the /dag-auto prompt. */
+export function renderDagAutoContent(projectID: string) {
+  return DagAutoContent.replaceAll("${dag_specs}", dagSpecsArea(projectID))
+}
+
 export const Plugin = define({
   id: "command",
   effect: Effect.fn(function* (ctx) {
@@ -38,7 +50,7 @@ export const Plugin = define({
         command.subtask = true
       })
       draft.update("dag-auto", (command) => {
-        command.template = DagAutoContent
+        command.template = renderDagAutoContent(location.project.id)
         command.description = DagAutoDescription
       })
     })
