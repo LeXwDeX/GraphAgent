@@ -14,13 +14,11 @@ import { ConfigPaths } from "@/config/paths"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { FrontmatterError } from "@opencode-ai/core/v1/config/error"
 import { ConfigMarkdown } from "@/config/markdown"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Glob } from "@opencode-ai/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { hasProjectLayer } from "@/project/project-root"
 
-const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
 const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
 const GRAPHAGENT_SKILL_PATTERN = "skills/**/SKILL.md"
@@ -137,7 +135,6 @@ export interface Interface {
  */
 const userSkillRoots = () => [
   Global.Path.config,
-  path.join(Global.Path.home, ".claude"),
   path.join(Global.Path.home, ".agents"),
   ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : []),
 ]
@@ -227,8 +224,6 @@ const discoverSkills = Effect.fnUntraced(function* (
   discovery: Discovery.Interface,
   fsys: FSUtil.Interface,
   global: Global.Interface,
-  disableExternalSkills: boolean,
-  disableClaudeCodeSkills: boolean,
   directory: string,
   /** Project root; project-level scans never escape it. */
   bound: string,
@@ -238,33 +233,28 @@ const discoverSkills = Effect.fnUntraced(function* (
   // user-level directory above, so the project walk is skipped entirely.
   const projectLayer = hasProjectLayer(bound, Global.Path.home)
 
-  const externalDirs: string[] = []
-  if (!disableExternalSkills) {
-    if (!disableClaudeCodeSkills) externalDirs.push(CLAUDE_EXTERNAL_DIR)
-    externalDirs.push(AGENTS_EXTERNAL_DIR)
+  const externalDirs = [AGENTS_EXTERNAL_DIR]
+  for (const dir of externalDirs) {
+    // Read the live path, not the injected Global service: userSkillRoots()
+    // resolves provenance against Global.Path.home too, and an injected
+    // Global layer snapshots home at build time.
+    const root = path.join(Global.Path.home, dir)
+    if (!(yield* fsys.isDir(root))) continue
+    yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
+  }
 
-    for (const dir of externalDirs) {
-      // Read the live path, not the injected Global service: userSkillRoots()
-      // resolves provenance against Global.Path.home too, and an injected
-      // Global layer snapshots home at build time.
-      const root = path.join(Global.Path.home, dir)
-      if (!(yield* fsys.isDir(root))) continue
-      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
-    }
+  const upDirs = projectLayer
+    ? yield* fsys
+        .up({ targets: externalDirs, start: directory, stop: bound })
+        .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+    : []
 
-    const upDirs = projectLayer
-      ? yield* fsys
-          .up({ targets: externalDirs, start: directory, stop: bound })
-          .pipe(Effect.catch(() => Effect.succeed([] as string[])))
-      : []
-
-    for (const root of upDirs) {
-      // `.agents` is a single project layer at the resolved root. Other
-      // `.agents` directories between the instance directory and the root are
-      // not project configuration layers.
-      if (path.basename(root) === AGENTS_EXTERNAL_DIR && path.dirname(root) !== bound) continue
-      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
-    }
+  for (const root of upDirs) {
+    // `.agents` is a single project layer at the resolved root. Other
+    // `.agents` directories between the instance directory and the root are
+    // not project configuration layers.
+    if (path.basename(root) === AGENTS_EXTERNAL_DIR && path.dirname(root) !== bound) continue
+    yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
   }
 
   // SessionStart may install the first .agents directory after configuration was cached.
@@ -324,19 +314,9 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const fsys = yield* FSUtil.Service
     const global = yield* Global.Service
-    const flags = yield* RuntimeFlags.Service
     const discovered = yield* InstanceState.make(
       Effect.fn("Skill.discovery")(function* (ctx) {
-        return yield* discoverSkills(
-          config,
-          discovery,
-          fsys,
-          global,
-          flags.disableExternalSkills,
-          flags.disableClaudeCodeSkills,
-          ctx.directory,
-          ctx.root,
-        )
+        return yield* discoverSkills(config, discovery, fsys, global, ctx.directory, ctx.root)
       }),
     )
     const state = yield* InstanceState.make(
@@ -418,7 +398,6 @@ export const defaultLayer = layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(Global.layer),
-  Layer.provide(RuntimeFlags.defaultLayer),
 )
 
 export function fmt(list: Info[], opts: { verbose: boolean }) {
@@ -448,13 +427,6 @@ export function fmt(list: Info[], opts: { verbose: boolean }) {
   ].join("\n")
 }
 
-export const node = LayerNode.make(layer, [
-  Discovery.node,
-  Config.node,
-  EventV2Bridge.node,
-  FSUtil.node,
-  Global.node,
-  RuntimeFlags.node,
-])
+export const node = LayerNode.make(layer, [Discovery.node, Config.node, EventV2Bridge.node, FSUtil.node, Global.node])
 
 export * as Skill from "."

@@ -14,7 +14,7 @@ import type { DagStore } from "@opencode-ai/core/dag/store"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
 import type { Worktree } from "@/worktree"
 import { DagIsolation } from "../isolation"
-import { ensureReportAreaGitignore } from "./output-ref"
+import { workflowReportsArea } from "./output-ref"
 
 export type IsolatedNodeCompletion =
   { ok: true; worktree?: DagEvent.NodeWorktree; touchedPaths: string[] } | { ok: false; reason: string }
@@ -22,6 +22,7 @@ export type IsolatedNodeCompletion =
 export interface CompleteIsolatedNodeInput {
   worktree: DagEvent.NodeWorktree
   ownerDirectory: string
+  projectID: string
   dagID: string
   nodeID: string
   message: string
@@ -37,7 +38,7 @@ export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.E
       try: () =>
         DagIsolation.completeWorktree({
           worktree: input.worktree,
-          reportRoot: input.ownerDirectory,
+          reportsArea: workflowReportsArea(input.projectID),
           dagID: input.dagID,
           nodeID: input.nodeID,
           message: input.message,
@@ -58,7 +59,6 @@ export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.E
       yield* Effect.logWarning("worktree remove failed; keeping it for inspection", {
         directory: worktree.directory,
       })
-    if (worktree.patchPath) yield* ensureReportAreaGitignore(input.ownerDirectory, worktree.patchPath)
     return {
       ok: true as const,
       worktree: {
@@ -95,6 +95,7 @@ export function recoverWorktreeMetadata(node: DagStore.NodeRow): DagEvent.NodeWo
 export function recoverIsolatedWorktree(input: {
   node: DagStore.NodeRow
   dagID: string
+  projectID: string
   ownerDirectory: string | undefined
   worktreeSvc: Worktree.Interface | undefined
   remove: (directory: string) => Effect.Effect<boolean, unknown>
@@ -110,6 +111,7 @@ export function recoverIsolatedWorktree(input: {
   return completeIsolatedNode({
     worktree,
     ownerDirectory: input.ownerDirectory,
+    projectID: input.projectID,
     dagID: input.dagID,
     nodeID: input.node.id,
     message: `dag: ${input.node.id} (${input.dagID})`,

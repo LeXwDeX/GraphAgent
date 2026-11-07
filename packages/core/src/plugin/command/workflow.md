@@ -24,15 +24,14 @@ checks without a prescribed mode or number of agents.
 
 Before `start`, `extend`, `control(replan)`, or `validate`, write the graph to a
 `.yaml` or `.yml` file and pass only `spec_path`. A one-off graph may use a
-task-local file such as `.agents/workflow-drafts/<name>.yaml`; it does not need to
-become a saved library workflow. After a validation failure, edit that same
-file and retry with the same path. Standalone `validate` accepts start files
-only; `extend` and `control(replan)` validate their own strict envelopes before
-any workflow mutation.
+task-local file; it does not need to become a saved library workflow. After a
+validation failure, edit that same file and retry with the same path. Standalone
+`validate` accepts start files only; `extend` and `control(replan)` validate
+their own strict envelopes before any workflow mutation.
 
-`draft` writes a new file in `.agents/workflow-drafts/` after both workflow
-and edit permission checks. It refuses an existing filename; edit that file
-or choose a different name. Control operations check both `control` and
+`draft` writes a new file in the project's workflow drafts area after both
+workflow and edit permission checks. It refuses an existing filename; edit that
+file or choose a different name. Control operations check both `control` and
 `control:<operation>` permissions. For example, allow `control` and
 `control:pause` while denying `control:cancel` to permit pause but reject cancel.
 A specific operation's allow does not override a legacy `control` deny or ask.

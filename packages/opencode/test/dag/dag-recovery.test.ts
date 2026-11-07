@@ -131,12 +131,8 @@ describe("reconcileWorkflow", () => {
     const checkStatus = () => Effect.succeed("completed" as const)
 
     await Effect.runPromise(
-      reconcileWorkflow(
-        "wf-1",
-        checkStatus,
-        undefined,
-        { nodes: [{ id: "n1" }] },
-        () => Effect.succeed("recovered output"),
+      reconcileWorkflow("wf-1", checkStatus, undefined, { nodes: [{ id: "n1" }] }, () =>
+        Effect.succeed("recovered output"),
       ).pipe(Effect.provide(dagLayer)),
     )
 
@@ -195,7 +191,15 @@ describe("reconcileWorkflow", () => {
         { nodes: [{ id: "n1", workspace: owner }] },
         () => Effect.succeed("done"),
         owner,
-      ).pipe(Effect.provide(Layer.mergeAll(makeDagLayer(nodes, events, undefined, undefined, undefined, workflow), worktreeLayer, instanceStoreLayer))),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            makeDagLayer(nodes, events, undefined, undefined, undefined, workflow),
+            worktreeLayer,
+            instanceStoreLayer,
+          ),
+        ),
+      ),
     )
 
     expect(events).toEqual([expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" })])
@@ -208,7 +212,12 @@ describe("reconcileWorkflow", () => {
     expect(removals).toEqual([worktree])
     expect(contexts).toHaveLength(1)
     expect(await fs.realpath(contexts[0])).toBe(await fs.realpath(owner))
-    expect(await fs.stat(worktree).then(() => false, () => true)).toBe(true)
+    expect(
+      await fs.stat(worktree).then(
+        () => false,
+        () => true,
+      ),
+    ).toBe(true)
   })
 
   it("keeps an isolated worktree when recovery fails the node", async () => {
@@ -407,7 +416,9 @@ describe("reconcileWorkflow", () => {
   it("cancels before failing a running node whose deadline expired during crash", async () => {
     const events: TrackedEvent[] = []
     const actions: string[] = []
-    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", deadlineMs: Date.now() - 10000 })]
+    const nodes = [
+      makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", deadlineMs: Date.now() - 10000 }),
+    ]
     const dagLayer = makeDagLayer(nodes, events, actions)
     const checkStatus = () => Effect.succeed("active" as const)
     const cancelSession = () => Effect.sync(() => actions.push("cancelled"))
@@ -429,7 +440,9 @@ describe("reconcileWorkflow", () => {
   it("cancels and fails an active child with a future deadline after execution ownership is lost", async () => {
     const events: TrackedEvent[] = []
     const cancelled: string[] = []
-    const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", deadlineMs: Date.now() + 60000 })]
+    const nodes = [
+      makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", deadlineMs: Date.now() + 60000 }),
+    ]
     const dagLayer = makeDagLayer(nodes, events)
     const checkStatus = () => Effect.succeed("active" as const)
     const cancelSession = (sessionID: string) => Effect.sync(() => cancelled.push(sessionID))
@@ -558,12 +571,8 @@ describe("reconcileWorkflow", () => {
     const checkStatus = () => Effect.succeed("completed" as const)
 
     const exit = await Effect.runPromiseExit(
-      reconcileWorkflow(
-        "wf-1",
-        checkStatus,
-        undefined,
-        { nodes: [{ id: "n1" }] },
-        () => Effect.succeed("recovered output"),
+      reconcileWorkflow("wf-1", checkStatus, undefined, { nodes: [{ id: "n1" }] }, () =>
+        Effect.succeed("recovered output"),
       ).pipe(Effect.provide(dagLayer)),
     )
 
@@ -581,12 +590,8 @@ describe("reconcileWorkflow", () => {
     const checkStatus = () => Effect.succeed("completed" as const)
 
     const exit = await Effect.runPromiseExit(
-      reconcileWorkflow(
-        "wf-1",
-        checkStatus,
-        undefined,
-        { nodes: [{ id: "n1" }] },
-        () => Effect.succeed("recovered output"),
+      reconcileWorkflow("wf-1", checkStatus, undefined, { nodes: [{ id: "n1" }] }, () =>
+        Effect.succeed("recovered output"),
       ).pipe(Effect.provide(dagLayer)),
     )
 
@@ -693,13 +698,9 @@ describe("rehydration via toSchedulingNodes", () => {
     const verdict = '{"verdict":"replan","reason":"wrong file"}'
 
     await Effect.runPromise(
-      reconcileWorkflow(
-        "wf-1",
-        checkStatus,
-        undefined,
-        { nodes: [{ id: "cp" }] },
-        () => Effect.succeed(verdict),
-      ).pipe(Effect.provide(dagLayer)),
+      reconcileWorkflow("wf-1", checkStatus, undefined, { nodes: [{ id: "cp" }] }, () => Effect.succeed(verdict)).pipe(
+        Effect.provide(dagLayer),
+      ),
     )
 
     expect(events).toContainEqual({ type: "nodeCompleted", nodeID: "cp", output: verdict })
@@ -713,9 +714,9 @@ describe("rehydration via toSchedulingNodes", () => {
     const checkStatus = () => Effect.succeed<"active" | "completed" | "failed" | "unknown">("completed")
 
     await Effect.runPromise(
-      reconcileWorkflow("wf-1", checkStatus, undefined, { nodes: [{ id: "n1" }] }, () => Effect.succeed(undefined)).pipe(
-        Effect.provide(dagLayer),
-      ),
+      reconcileWorkflow("wf-1", checkStatus, undefined, { nodes: [{ id: "n1" }] }, () =>
+        Effect.succeed(undefined),
+      ).pipe(Effect.provide(dagLayer)),
     )
 
     expect(events).toContainEqual({
@@ -787,21 +788,36 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       tmpRoots.push(dir)
       const source = path.join(dir, "secret.md")
       await fs.writeFile(source, `denied checkpoint ${dir}`)
-      const ref = checkpoint ? await Effect.runPromise(commitOutputFileRef(source, {
-        workflow_id: "wf-1", node_id: "n1", child_session_id: "ses_1", replan_attempt: 0,
-      })) : undefined
+      const ref = checkpoint
+        ? await Effect.runPromise(
+            commitOutputFileRef(source, {
+              workflow_id: "wf-1",
+              node_id: "n1",
+              child_session_id: "ses_1",
+              replan_attempt: 0,
+            }),
+          )
+        : undefined
       if (ref) tmpRoots.push(path.dirname(ref.path))
       const events: TrackedEvent[] = []
       const captured: { sid: string; payload: unknown }[] = []
       const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", capturedOutput: ref })]
       const checked: string[] = []
-      await Effect.runPromise(reconcileWorkflow(
-        "wf-1", () => Effect.succeed("completed" as const), undefined, { nodes: [{ id: "n1" }] },
-        () => Effect.succeed(source), dir, () => (_sid, value) => Effect.suspend(() => {
-          checked.push(value)
-          return Effect.fail(new Error("source read denied"))
-        }),
-      ).pipe(Effect.provide(makeDagLayer(nodes, events, undefined, captured))))
+      await Effect.runPromise(
+        reconcileWorkflow(
+          "wf-1",
+          () => Effect.succeed("completed" as const),
+          undefined,
+          { nodes: [{ id: "n1" }] },
+          () => Effect.succeed(source),
+          dir,
+          () => (_sid, value) =>
+            Effect.suspend(() => {
+              checked.push(value)
+              return Effect.fail(new Error("source read denied"))
+            }),
+        ).pipe(Effect.provide(makeDagLayer(nodes, events, undefined, captured))),
+      )
       expect(checked).toEqual([FSUtil.normalizePath(source)])
       expect(captured).toEqual([])
       expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
@@ -815,9 +831,14 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       tmpRoots.push(dir)
       const source = path.join(dir, "report.md")
       await fs.writeFile(source, `recovery checkpoint ${dir}`)
-      const ref = await Effect.runPromise(commitOutputFileRef(source, {
-        workflow_id: "wf-1", node_id: "n1", child_session_id: "ses_1", replan_attempt: 0,
-      }))
+      const ref = await Effect.runPromise(
+        commitOutputFileRef(source, {
+          workflow_id: "wf-1",
+          node_id: "n1",
+          child_session_id: "ses_1",
+          replan_attempt: 0,
+        }),
+      )
       expect(ref).toBeDefined()
       tmpRoots.push(path.dirname(ref!.path))
       await fs.unlink(source)
@@ -827,10 +848,15 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       }
       const events: TrackedEvent[] = []
       const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", capturedOutput: ref })]
-      await Effect.runPromise(reconcileWorkflow(
-        "wf-1", () => Effect.succeed("completed" as const), undefined, { nodes: [{ id: "n1" }] },
-        () => Effect.succeed(source),
-      ).pipe(Effect.provide(makeDagLayer(nodes, events))))
+      await Effect.runPromise(
+        reconcileWorkflow(
+          "wf-1",
+          () => Effect.succeed("completed" as const),
+          undefined,
+          { nodes: [{ id: "n1" }] },
+          () => Effect.succeed(source),
+        ).pipe(Effect.provide(makeDagLayer(nodes, events))),
+      )
       if (damaged) {
         expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
         expect(events).toContainEqual(expect.objectContaining({ type: "nodeFailed", trigger: "exec_failed" }))
@@ -864,26 +890,33 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       ).pipe(Effect.provide(dagLayer)),
     )
 
-    expect(events).toContainEqual({ type: "nodeCompleted", nodeID: "n1", output: expect.stringContaining("workflow-artifacts") })
-    expect(captured).toEqual([{
-      sid: "ses_1",
-      payload: expect.objectContaining({
-        kind: "file_ref",
-        storage: "managed-v1",
-        source_path: FSUtil.normalizePath(reportPath),
-        content_ref: expect.stringContaining("workflow-artifacts"),
-        path: expect.stringContaining("workflow-artifacts"),
-        size: Buffer.byteLength(content),
-        sha256: createHash("sha256").update(content).digest("hex"),
-        summary: content,
-      }),
-    }])
+    expect(events).toContainEqual({
+      type: "nodeCompleted",
+      nodeID: "n1",
+      output: expect.stringContaining("workflow-artifacts"),
+    })
+    expect(captured).toEqual([
+      {
+        sid: "ses_1",
+        payload: expect.objectContaining({
+          kind: "file_ref",
+          storage: "managed-v1",
+          source_path: FSUtil.normalizePath(reportPath),
+          content_ref: expect.stringContaining("workflow-artifacts"),
+          path: expect.stringContaining("workflow-artifacts"),
+          size: Buffer.byteLength(content),
+          sha256: createHash("sha256").update(content).digest("hex"),
+          summary: content,
+        }),
+      },
+    ])
   })
 
-  it("ignores a recovered report area through info/exclude without touching .gitignore", async () => {
+  it("completes a recovered report without touching repository ignore files", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-exclude-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
+    const exclude = path.join(dir, ".git", "info", "exclude")
     const reports = path.join(dir, ".agents", "workflow-reports")
     await fs.mkdir(reports, { recursive: true })
     const reportPath = path.join(reports, "report.md")
@@ -901,9 +934,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       ).pipe(Effect.provide(makeDagLayer(nodes, events))),
     )
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
-    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
-      ".agents/workflow-reports/",
-    )
+    expect(await fs.readFile(exclude, "utf8")).toBe(STANDARD_TEMPLATE_EXCLUDE)
     expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
   })
 
@@ -939,9 +970,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     )
     expect(authorized).toEqual([execution])
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
-    expect(await fs.readFile(path.join(owner, ".git", "info", "exclude"), "utf8")).toContain(
-      ".agents/workflow-reports/",
-    )
+    expect(await fs.readFile(path.join(owner, ".git", "info", "exclude"), "utf8")).toBe(STANDARD_TEMPLATE_EXCLUDE)
   })
 
   it("uses the persisted workflow directory when recovery has no explicit directory", async () => {
@@ -970,13 +999,11 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       ).pipe(Effect.provide(Layer.merge(dagLayer, messages))),
     )
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
-    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
-      ".agents/workflow-reports/",
-    )
+    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toBe(STANDARD_TEMPLATE_EXCLUDE)
     expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
   })
 
-  it("repairs the exclude from a verified receipt after a crash before the live update", async () => {
+  it("completes a recovered verified receipt after a crash before the live update", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-crash-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
@@ -1010,13 +1037,11 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
       ).pipe(Effect.provide(dagLayer)),
     )
     expect(events).toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "n1" }))
-    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toContain(
-      ".agents/workflow-reports/",
-    )
+    expect(await fs.readFile(path.join(dir, ".git", "info", "exclude"), "utf8")).toBe(STANDARD_TEMPLATE_EXCLUDE)
     expect(await Bun.file(path.join(dir, ".gitignore")).exists()).toBe(false)
   })
 
-  it("keeps a verified receipt when the workflow lookup fails during exclude repair", async () => {
+  it("keeps a verified receipt when the workflow lookup fails", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-lookup-fail-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
@@ -1056,7 +1081,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     if (beforeExclude !== undefined) expect(await fs.readFile(exclude)).toEqual(beforeExclude)
   })
 
-  it("propagates interruption from the workflow lookup during exclude repair", async () => {
+  it("propagates interruption from the workflow lookup", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-recovery-lookup-interrupt-"))
     tmpRoots.push(dir)
     await initGitFixture(dir)
@@ -1081,6 +1106,14 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     await fs.unlink(source)
     const events: TrackedEvent[] = []
     const nodes = [makeNodeRow({ id: "n1", status: "running", childSessionId: "ses_1", capturedOutput: ref })]
+    // The workflow lookup only runs when the message store is present, so the
+    // interruption is injected there. `latestSnapshot` is never reached.
+    const dagLayer = Layer.merge(
+      makeDagLayer(nodes, events, undefined, undefined, { workflowInterrupt: true }),
+      Layer.mock(DagMessages.Service, {
+        latestSnapshot: () => Effect.succeed({ ok: true, value: undefined }),
+      }),
+    )
     const exit = await Effect.runPromise(
       Effect.exit(
         reconcileWorkflow(
@@ -1089,7 +1122,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
           undefined,
           { nodes: [{ id: "n1" }] },
           () => Effect.succeed(source),
-        ).pipe(Effect.provide(makeDagLayer(nodes, events, undefined, undefined, { workflowInterrupt: true }))),
+        ).pipe(Effect.provide(dagLayer)),
       ),
     )
     expect(Exit.isFailure(exit)).toBe(true)

@@ -112,8 +112,9 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
     { init: (dir) => writeSettings(dir, CONTEXT_V1) },
   )
 
-  // F3.2 + cleanup: watchSettings polls .agents/hooks.json (project + worktree
-  // only) and handle.close() stops all reloads. Direct unit test of the watcher
+  // F3.2 + cleanup: watchSettings polls .agents/hooks.json and
+  // .agents/hooks.local.json (project scope only) and handle.close() stops all
+  // reloads. Direct unit test of the watcher
   // mechanism, independent of the SettingsHook layer. Fixed sleeps are justified
   // here — this test exercises the polling/debounce/throttle timing and proves
   // absence of reload after close().
@@ -126,7 +127,6 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
     let marker: string | undefined
     const handle = watchSettings(
       dir,
-      undefined,
       () =>
         Effect.sync(() => ({
           hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] },
@@ -163,7 +163,6 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
     let marker: string | undefined
     const handle = watchSettings(
       dir,
-      undefined,
       () => Effect.sync(() => ({ hooks: {} })),
       () => {
         marker = "reloaded"

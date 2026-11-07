@@ -12,14 +12,14 @@
  * remain compatible. Both live capture and crash recovery verify receipts.
  */
 import { afterAll, describe, expect, it } from "bun:test"
-import { $ } from "bun"
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Cause, Effect, Exit, Fiber, Layer, Semaphore } from "effect"
+import { Effect, Fiber, Layer, Semaphore } from "effect"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Dag } from "@/dag/dag"
@@ -31,38 +31,22 @@ import {
   captureOutputFileRef,
   commitOutputFileRef,
   verifyOutputFileRef,
-  ensureReportAreaGitignore,
   reportAreaDirective,
-  REPORT_AREA,
+  workflowArtifactsRoot,
+  workflowDagSpecsArea,
+  workflowDraftsArea,
+  workflowReportsArea,
 } from "@/dag/runtime/output-ref"
 import { makeNodeRow } from "./fixtures"
 import type { DagStore } from "@opencode-ai/core/dag/store"
 
 const tmpRoots: string[] = []
-const STANDARD_TEMPLATE_EXCLUDE = "# task-owned standard template\n# preserved fixture comment\n"
 
 function tmpRoot(prefix: string) {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix)).then((dir) => {
     tmpRoots.push(dir)
     return dir
   })
-}
-
-async function gitTmpRoot(prefix: string, templateKind: "standard" | "empty" = "standard") {
-  const dir = await tmpRoot(prefix)
-  const templateDir = await tmpRoot(`${prefix}template-`)
-  if (templateKind === "standard") {
-    await fs.mkdir(path.join(templateDir, "info"), { recursive: true })
-    await fs.writeFile(path.join(templateDir, "info", "exclude"), STANDARD_TEMPLATE_EXCLUDE)
-  }
-  await $`git init -q --template=${templateDir} ${dir}`.quiet()
-  return dir
-}
-
-const excludePath = (root: string) => path.join(root, ".git", "info", "exclude")
-
-async function isIgnored(root: string, candidate: string) {
-  return (await $`git -C ${root} check-ignore -q -- ${candidate}`.quiet().nothrow()).exitCode === 0
 }
 
 afterAll(async () => {
@@ -95,33 +79,47 @@ function makeEventTracker(options: { capturedFail?: boolean; directory?: string 
       Effect.sync(() => ({
         ...makeNodeRow({ id: nodeID, status: "running", childSessionId: "ses_child" }),
         capturedOutput: capturedStore.get(nodeID),
-      }))),
-    setCapturedOutput: Effect.fn("s")((_childSessionID: string, payload: unknown) =>
-      options.capturedFail ? Effect.die(new Error("receipt persistence failed")) : Effect.sync(() => {
-        capturedCalls.push(payload)
-        capturedStore.set("node-1", payload)
       })),
+    ),
+    setCapturedOutput: Effect.fn("s")((_childSessionID: string, payload: unknown) =>
+      options.capturedFail
+        ? Effect.die(new Error("receipt persistence failed"))
+        : Effect.sync(() => {
+            capturedCalls.push(payload)
+            capturedStore.set("node-1", payload)
+          }),
+    ),
   }
   const dagLayer = Layer.mock(Dag.Service, {
     store: storeStub as DagStore.Interface,
     nodeQueued: Effect.fn("s")((_dagID: string, _nodeID: string) => Effect.void),
     nodeStarted: Effect.fn("s")((_dagID: string, _nodeID: string) => Effect.void),
     nodeCompleted: Effect.fn("s")((_dagID: string, nodeID: string, output: unknown) =>
-      Effect.sync(() => events.push({ type: "nodeCompleted", nodeID, output }))),
+      Effect.sync(() => events.push({ type: "nodeCompleted", nodeID, output })),
+    ),
     nodeFailed: Effect.fn("s")((_dagID: string, nodeID: string, reason: string, trigger?: string) =>
-      Effect.sync(() => events.push({ type: "nodeFailed", nodeID, reason, trigger }))),
+      Effect.sync(() => events.push({ type: "nodeFailed", nodeID, reason, trigger })),
+    ),
     nodeSkipped: Effect.fn("s")((_dagID: string, nodeID: string) =>
-      Effect.sync(() => events.push({ type: "nodeSkipped", nodeID }))),
+      Effect.sync(() => events.push({ type: "nodeSkipped", nodeID })),
+    ),
   })
   return { events, dagLayer }
 }
 
 const agentLayer = Layer.mock(Agent.Service, {
-  get: () => Effect.succeed({
-    name: "build", mode: "all", permission: [{ permission: "*", pattern: "*", action: "allow" }], options: {}, description: "", prompt: "",
-    model: { providerID: "test" as never, modelID: "test-model" as never },
-    tools: {}, hooks: {},
-  }),
+  get: () =>
+    Effect.succeed({
+      name: "build",
+      mode: "all",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      options: {},
+      description: "",
+      prompt: "",
+      model: { providerID: "test" as never, modelID: "test-model" as never },
+      tools: {},
+      hooks: {},
+    }),
   list: () => Effect.succeed([]),
   defaultAgent: () => Effect.succeed("build"),
 })
@@ -137,14 +135,21 @@ const sessionLayer = Layer.mock(Session.Service, {
 function reply(text: string): SessionV1.WithParts {
   return {
     info: {
-      id: MessageID.ascending(), role: "assistant", parentID: MessageID.ascending(),
-      sessionID: "ses_child" as never, mode: "build", agent: "build", cost: 0,
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: MessageID.ascending(),
+      sessionID: "ses_child" as never,
+      mode: "build",
+      agent: "build",
+      cost: 0,
       path: { cwd: "/tmp", root: "/tmp" },
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      modelID: "test-model" as never, providerID: "test" as never,
-      time: { created: Date.now() }, finish: "stop",
+      modelID: "test-model" as never,
+      providerID: "test" as never,
+      time: { created: Date.now() },
+      finish: "stop",
     },
-    parts: text ? [{ type: "text", text }] as never : [],
+    parts: text ? ([{ type: "text", text }] as never) : [],
   }
 }
 
@@ -163,7 +168,9 @@ function makeSpawnInput(
   overrides: Partial<NodeSpawnInput> = {},
 ): NodeSpawnInput {
   return {
-    dagID: "wf-1", nodeID: "node-1", node: makeNodeRow(),
+    dagID: "wf-1",
+    nodeID: "node-1",
+    node: makeNodeRow(),
     parentSessionID: "ses_parent",
     promptParts: [{ type: "text", text: "do the thing" }],
     outputSchema,
@@ -192,8 +199,7 @@ async function runSpawn(
 // Train A cast idiom: the extra `directory` field is cast away pre-feature so
 // the probe compiles against the baseline NodeSpawnInput while offering the
 // post-feature seam (info/exclude guarantee keyed on the execution directory).
-const directoryOverride = (directory: string) =>
-  ({ directory }) as unknown as Partial<NodeSpawnInput>
+const directoryOverride = (directory: string) => ({ directory }) as unknown as Partial<NodeSpawnInput>
 
 describe("submit-time absolute-path capture (Train B, B-p1)", () => {
   it("B-p1(a) captures {content_ref, size, sha256} when the reply IS an existing non-empty absolute path", async () => {
@@ -207,16 +213,18 @@ describe("submit-time absolute-path capture (Train B, B-p1)", () => {
     expect(completed).toBeDefined()
     expect(completed!.output).not.toBe(reportPath)
     expect(capturedCalls).toHaveLength(1)
-    expect(capturedCalls[0]).toEqual(expect.objectContaining({
-      kind: "file_ref",
-      storage: "managed-v1",
-      source_path: FSUtil.normalizePath(reportPath),
-      content_ref: completed!.output,
-      path: completed!.output,
-      size: Buffer.byteLength(content),
-      sha256: createHash("sha256").update(content).digest("hex"),
-      summary: `${content.slice(0, 200)}\u2026`,
-    }))
+    expect(capturedCalls[0]).toEqual(
+      expect.objectContaining({
+        kind: "file_ref",
+        storage: "managed-v1",
+        source_path: FSUtil.normalizePath(reportPath),
+        content_ref: completed!.output,
+        path: completed!.output,
+        size: Buffer.byteLength(content),
+        sha256: createHash("sha256").update(content).digest("hex"),
+        summary: `${content.slice(0, 200)}\u2026`,
+      }),
+    )
     await fs.writeFile(reportPath, "overwritten source")
     expect(await fs.readFile(String(completed!.output), "utf8")).toBe(content)
     await fs.rm(dir, { recursive: true, force: true })
@@ -237,23 +245,42 @@ describe("submit-time absolute-path capture (Train B, B-p1)", () => {
     const dir = await tmpRoot("dag-ref-queued-")
     const source = path.join(dir, "report.md")
     await fs.writeFile(source, `queued artifact ${dir}`)
-    const ref = await Effect.runPromise(commitOutputFileRef(source, {
-      workflow_id: "wf-1", node_id: "producer", child_session_id: "ses_producer", replan_attempt: 0,
-    }))
+    const ref = await Effect.runPromise(
+      commitOutputFileRef(source, {
+        workflow_id: "wf-1",
+        node_id: "producer",
+        child_session_id: "ses_producer",
+        replan_attempt: 0,
+      }),
+    )
     if (!ref) throw new Error("missing input artifact")
     tmpRoots.push(path.dirname(ref.path))
     const { events, dagLayer } = makeEventTracker({ directory: dir })
     const semaphore = Semaphore.makeUnsafe(1)
-    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-      yield* semaphore.take(1)
-      const spawned = yield* spawnNode(semaphore, makeSpawnInput(undefined, { directory: dir, inputArtifacts: [ref] }))
-      yield* Effect.promise(() => fs.chmod(ref.path, 0o600))
-      yield* Effect.promise(() => fs.unlink(ref.path))
-      yield* semaphore.release(1)
-      yield* Fiber.await(spawned.fiber)
-    })).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, makePromptLayer(reply("must not execute")))) ) as Effect.Effect<void, Error>)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* semaphore.take(1)
+          const spawned = yield* spawnNode(
+            semaphore,
+            makeSpawnInput(undefined, { directory: dir, inputArtifacts: [ref] }),
+          )
+          yield* Effect.promise(() => fs.chmod(ref.path, 0o600))
+          yield* Effect.promise(() => fs.unlink(ref.path))
+          yield* semaphore.release(1)
+          yield* Fiber.await(spawned.fiber)
+        }),
+      ).pipe(
+        Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, makePromptLayer(reply("must not execute")))),
+      ) as Effect.Effect<void, Error>,
+    )
     expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)
-    expect(events).toContainEqual(expect.objectContaining({ type: "nodeFailed", reason: expect.stringContaining("Managed DAG artifact unavailable") }))
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "nodeFailed",
+        reason: expect.stringContaining("Managed DAG artifact unavailable"),
+      }),
+    )
   })
 
   it("B-p1(a2) keeps the full text as summary when the file is at most 200 chars", async () => {
@@ -263,9 +290,13 @@ describe("submit-time absolute-path capture (Train B, B-p1)", () => {
     await Bun.write(reportPath, content)
     const { events, dagLayer } = makeEventTracker()
     await runSpawn(dagLayer, makePromptLayer(reply(reportPath)))
-    expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(expect.stringContaining("workflow-artifacts"))
+    expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(
+      expect.stringContaining("workflow-artifacts"),
+    )
     expect(capturedCalls).toHaveLength(1)
-    expect(capturedCalls[0]).toEqual(expect.objectContaining({ summary: "short report", size: Buffer.byteLength(content) }))
+    expect(capturedCalls[0]).toEqual(
+      expect.objectContaining({ summary: "short report", size: Buffer.byteLength(content) }),
+    )
   })
 
   it("B-p1(b) leaves output inline when the absolute path does not exist", async () => {
@@ -323,12 +354,13 @@ describe("output_schema dual track (Train B, B-p2 pin)", () => {
     const schema = { type: "object" as const, required: ["report"] }
     const payload = { report: reportPath }
     const promptLayer = Layer.mock(SessionPrompt.Service, {
-      prompt: () => Effect.gen(function* () {
-        registerCaptureSlot("ses_child", schema)
-        const result = validatePayload("ses_child", payload)
-        if (result.ok) capturedStore.set("node-1", payload)
-        return reply("ignored text")
-      }),
+      prompt: () =>
+        Effect.gen(function* () {
+          registerCaptureSlot("ses_child", schema)
+          const result = validatePayload("ses_child", payload)
+          if (result.ok) capturedStore.set("node-1", payload)
+          return reply("ignored text")
+        }),
     })
     await runSpawn(dagLayer, promptLayer, schema)
     const completed = events.find((event) => event.type === "nodeCompleted")
@@ -337,265 +369,65 @@ describe("output_schema dual track (Train B, B-p2 pin)", () => {
   })
 })
 
-describe("report-area exclude entry (Train B, B-p4)", () => {
-  it("B-p4(a) writes the report-area entry to info/exclude instead of the project .gitignore", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-proj-")
+describe("report area under project-scoped XDG artifacts (B5)", () => {
+  it("B5(a) places drafts, reports, patches and dag specs under the project's workflow-artifacts area", () => {
+    const root = path.join(Global.Path.data, "workflow-artifacts", "proj-b5")
+    expect(workflowArtifactsRoot("proj-b5")).toBe(root)
+    expect(workflowDraftsArea("proj-b5")).toBe(path.join(root, "workflow-drafts"))
+    expect(workflowReportsArea("proj-b5")).toBe(path.join(root, "workflow-reports"))
+    expect(workflowDagSpecsArea("proj-b5")).toBe(path.join(root, ".dag-specs"))
+    for (const area of [
+      workflowDraftsArea("proj-b5"),
+      workflowReportsArea("proj-b5"),
+      workflowDagSpecsArea("proj-b5"),
+    ]) {
+      expect(path.isAbsolute(area)).toBe(true)
+      expect(FSUtil.contains(root, area)).toBe(true)
+    }
+  })
+
+  it("B5(b) omits the directive when the project scope is unknown", async () => {
+    expect(await Effect.runPromise(reportAreaDirective(undefined))).toBeUndefined()
+  })
+
+  it("B5(c) names the project XDG report area as JSON data without touching the tree", async () => {
+    const projectDir = await tmpRoot("dag-ref-proj-")
     await Bun.write(path.join(projectDir, "existing-code.ts"), "export const x = 1\n")
-    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "run-1.md")
-    await Bun.write(reportPath, "# report\n")
-    const { events, dagLayer } = makeEventTracker({ directory: projectDir })
-    await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(projectDir))
-    expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(expect.stringContaining("workflow-artifacts"))
+    const directive = await Effect.runPromise(reportAreaDirective("p"))
+    expect(directive).toBeDefined()
+    const json = directive!.split("\n").find((line) => line.startsWith('{"report_directory"'))
+    expect(json).toBeDefined()
+    const payload = JSON.parse(json!) as { report_directory: string }
+    expect(payload.report_directory).toBe(`${workflowReportsArea("p")}${path.sep}`)
+    expect(payload.report_directory.startsWith(Global.Path.data)).toBe(true)
     expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
-    const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude.split("\n").map((line) => line.trim())).toContain(".agents/workflow-reports/")
-    expect(await isIgnored(projectDir, reportPath)).toBe(true)
-    expect(await $`git -C ${projectDir} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
+    expect(await Bun.file(path.join(projectDir, ".agents")).exists()).toBe(false)
   })
 
-  it("B-p4(b) is append-only and idempotent: pre-existing entries survive, the report entry lands exactly once", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-proj-")
-    await Bun.write(path.join(projectDir, ".gitignore"), "node_modules\n*.log\n")
-    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "run-2.md")
-    await Bun.write(reportPath, "# report 2\n")
-    const { events, dagLayer } = makeEventTracker({ directory: projectDir })
-    await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(projectDir))
-    expect(events.find((event) => event.type === "nodeCompleted")).toBeDefined()
-    const { events: secondEvents, dagLayer: secondDagLayer } = makeEventTracker({ directory: projectDir })
-    await runSpawn(secondDagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(projectDir))
-    expect(secondEvents.find((event) => event.type === "nodeCompleted")).toBeDefined()
-    const exclude = await Bun.file(excludePath(projectDir)).text()
-    const lines = exclude.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
-    expect(lines.filter((line) => line === ".agents/workflow-reports/")).toHaveLength(1)
-    expect(await Bun.file(path.join(projectDir, ".gitignore")).text()).toBe("node_modules\n*.log\n")
+  it("B5(d) serializes a hostile project identifier as JSON data", async () => {
+    const projectID = 'proj" back\\slash\ttab\u001b[31m'
+    const directive = await Effect.runPromise(reportAreaDirective(projectID))
+    expect(directive).toBeDefined()
+    expect(directive).not.toContain("\t")
+    expect(directive).not.toContain("\u001b")
+    const json = directive!.split("\n").find((line) => line.startsWith('{"report_directory"'))
+    expect(json).toBeDefined()
+    const payload = JSON.parse(json!) as { report_directory: string }
+    expect(payload.report_directory).toBe(`${workflowReportsArea(projectID)}${path.sep}`)
+    expect(path.isAbsolute(payload.report_directory)).toBe(true)
   })
 
-  it("B-p4(c) does not touch the tree for refs outside the report area", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-proj-")
-    await Bun.write(path.join(projectDir, ".gitignore"), "node_modules\n")
-    const exclude = excludePath(projectDir)
-    const beforeExcludeExists = await Bun.file(exclude).exists()
-    const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
-    expect(beforeExclude?.toString()).toBe(STANDARD_TEMPLATE_EXCLUDE)
-    const outsideDir = await tmpRoot("dag-ref-outside-")
-    const reportPath = path.join(outsideDir, "elsewhere.md")
-    await Bun.write(reportPath, "# elsewhere\n")
-    const { events, dagLayer } = makeEventTracker({ directory: projectDir })
-    await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(projectDir))
-    expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(expect.stringContaining("workflow-artifacts"))
-    expect(await Bun.file(path.join(projectDir, ".gitignore")).text()).toBe("node_modules\n")
-    expect(await Bun.file(exclude).exists()).toBe(beforeExcludeExists)
-    if (beforeExclude !== undefined) expect(await fs.readFile(exclude)).toEqual(beforeExclude)
-  })
-
-  it("B-p4(d) ignores a subdirectory session's report through the repository-root area", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-repo-")
-    const subdir = path.join(projectDir, "packages", "pkg-a")
-    await fs.mkdir(subdir, { recursive: true })
-    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "run.md")
-    await Bun.write(reportPath, "# canonical root report\n")
-    const { events, dagLayer } = makeEventTracker({ directory: subdir })
-    await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(subdir))
-    expect(events.find((event) => event.type === "nodeCompleted")).toBeDefined()
-    expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
-    const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude).toContain(".agents/workflow-reports/")
-    expect(exclude).not.toContain("packages/pkg-a/")
-    expect(await isIgnored(projectDir, reportPath)).toBe(true)
-    expect(await $`git -C ${projectDir} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
-  })
-
-  it("B-p4(d2) keeps legacy subdirectory report refs ignored with a repository-relative entry", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-legacy-")
-    const subdir = path.join(projectDir, "packages", "pkg-a")
-    const reportArea = path.join(subdir, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "old.md")
+  it("B5(e) accepts legacy in-repo report paths without writing ignore entries", async () => {
+    const projectDir = await tmpRoot("dag-ref-legacy-")
+    const reportPath = path.join(projectDir, ".agents", "workflow-reports", "old.md")
+    await fs.mkdir(path.dirname(reportPath), { recursive: true })
     await Bun.write(reportPath, "# legacy report\n")
-    await Effect.runPromise(ensureReportAreaGitignore(subdir, reportPath))
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain("packages/pkg-a/.agents/workflow-reports/")
-    expect(await isIgnored(projectDir, reportPath)).toBe(true)
-    expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
-  })
-
-  it("B-p4(d3) escapes glob characters in a repository-relative legacy prefix", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-adversarial-")
-    const name =
-      process.platform === "win32" ? "#hash !bang [bracket]" : "#hash !bang *star ?question [bracket] \\slash "
-    const subdir = path.join(projectDir, "packages", name)
-    const reportArea = path.join(subdir, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "report.md")
-    await Bun.write(reportPath, "# adversarial report\n")
-    const decoyName = process.platform === "win32" ? "#hash !bang b" : "#hash !bang xstar xquestion b slash "
-    const decoyArea = path.join(projectDir, "packages", decoyName, ".agents", "workflow-reports")
-    await fs.mkdir(decoyArea, { recursive: true })
-    const decoy = path.join(decoyArea, "decoy.md")
-    await Bun.write(decoy, "# unrelated\n")
-    await fs.mkdir(path.dirname(excludePath(projectDir)), { recursive: true })
-    await Bun.write(excludePath(projectDir), `packages/${name}/.agents/workflow-reports/\n`)
-    expect(await isIgnored(projectDir, decoy)).toBe(true)
-    await Bun.write(excludePath(projectDir), "")
-    await Effect.runPromise(ensureReportAreaGitignore(subdir, reportPath))
-    const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude).toContain("\\[bracket]")
-    if (process.platform !== "win32") {
-      expect(exclude).toContain("\\*star")
-      expect(exclude).toContain("\\?question")
-      expect(exclude).toContain("\\\\slash")
-    }
-    expect(await isIgnored(projectDir, reportPath)).toBe(true)
-    expect(await isIgnored(projectDir, decoy)).toBe(false)
-  })
-
-  it("B-p4(d6) escapes leading # and ! in a repository-relative prefix", async () => {
-    for (const name of ["#hash", "!bang"]) {
-      const projectDir = await gitTmpRoot("dag-ref-leading-")
-      const subdir = path.join(projectDir, name)
-      await fs.mkdir(path.join(subdir, ".agents", "workflow-reports"), { recursive: true })
-      const report = path.join(subdir, ".agents", "workflow-reports", "report.md")
-      await Bun.write(report, "# leading marker\n")
-      await Effect.runPromise(ensureReportAreaGitignore(subdir, report))
-      expect(await Bun.file(excludePath(projectDir)).text()).toContain(`\\${name}/.agents/workflow-reports/`)
-      expect(await isIgnored(projectDir, report)).toBe(true)
-    }
-  })
-
-  it("B-p4(f) directs a subdirectory node to the repository-root report area", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-directive-")
-    const root = await fs.realpath(projectDir)
-    const subdir = path.join(projectDir, "packages", "app")
-    await fs.mkdir(subdir, { recursive: true })
-    const reportArea = path.join(projectDir, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "report.md")
-    await Bun.write(reportPath, "# root report\n")
-    const texts: string[] = []
-    const { events, dagLayer } = makeEventTracker({ directory: subdir })
-    await runSpawn(
-      dagLayer,
-      makePromptLayer(reply(reportPath), (input) => {
-        for (const part of input as { type?: string; text?: string }[]) {
-          if (part.type === "text" && part.text) texts.push(part.text)
-        }
-      }),
-      undefined,
-      directoryOverride(subdir),
+    const { events, dagLayer } = makeEventTracker({ directory: projectDir })
+    await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(projectDir))
+    expect(events.find((event) => event.type === "nodeCompleted")?.output).toEqual(
+      expect.stringContaining("workflow-artifacts"),
     )
-    expect(events.find((event) => event.type === "nodeCompleted")).toBeDefined()
-    const prompt = texts.join("\n")
-    const directive = texts.find((text) => text.includes("[REPORT AREA]"))
-    expect(directive).toBeDefined()
-    const json = directive!.split("\n").find((line) => line.startsWith('{"report_directory"'))
-    expect(json).toBeDefined()
-    const payload = JSON.parse(json!) as { report_directory: string }
-    expect(payload.report_directory).toBe(`${path.join(root, ".agents", "workflow-reports")}${path.sep}`)
-    expect(prompt).not.toContain(path.join(subdir, ".agents", "workflow-reports"))
-    expect(await Bun.file(path.join(subdir, ".gitignore")).exists()).toBe(false)
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".agents/workflow-reports/")
-    expect(await isIgnored(projectDir, reportPath)).toBe(true)
-  })
-
-  it("B-p4(g) serializes hostile repository names as JSON data", async () => {
-    const parent = await tmpRoot("dag-ref-hostile-")
-    // Windows rejects `"`, `\`, and control characters in file names, so its
-    // hostile name uses shell-special characters that are legal on NTFS.
-    const name = process.platform === "win32" ? "quote' back space & semi; paren()" : 'quote" back\\slash\ttab\u001b[31m'
-    const projectDir = path.join(parent, name)
-    await fs.mkdir(projectDir)
-    await $`git init -q ${projectDir}`.quiet()
-    const subdir = path.join(projectDir, "sub")
-    await fs.mkdir(subdir)
-    const directive = await Effect.runPromise(reportAreaDirective(subdir))
-    expect(directive).toBeDefined()
-    if (process.platform !== "win32") {
-      expect(directive).not.toContain("\u001b")
-      expect(directive).not.toContain("\t")
-    }
-    const json = directive!.split("\n").find((line) => line.startsWith('{"report_directory"'))
-    expect(json).toBeDefined()
-    const payload = JSON.parse(json!) as { report_directory: string }
-    const root = path.join(await fs.realpath(parent), name)
-    const expected = `${path.join(root, ".agents", "workflow-reports")}${path.sep}`
-    // On win32 the path separators must survive JSON escaping; elsewhere the
-    // name also carries a quote, a backslash, a tab, and an ESC byte.
-    expect(payload.report_directory).toBe(expected)
-  })
-
-  it("B-p4(h) skips the directive when a repository path breaks git's line protocol", async () => {
-    if (process.platform === "win32") return
-    const parent = await tmpRoot("dag-ref-newline-")
-    const projectDir = path.join(parent, "line\nbreak")
-    await fs.mkdir(projectDir)
-    await $`git init -q ${projectDir}`.quiet()
-    expect(await Effect.runPromise(reportAreaDirective(projectDir))).toBeUndefined()
-  })
-
-  it("B-p4(i) propagates interruption instead of swallowing it", async () => {
-    const dir = await tmpRoot("dag-ref-interrupt-")
-    const exit = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const scope = yield* Effect.scope
-          const fiber = yield* reportAreaDirective(dir, () => new Promise<never>(() => {})).pipe(
-            Effect.forkIn(scope),
-          )
-          yield* Fiber.interrupt(fiber)
-          return yield* Fiber.await(fiber)
-        }),
-      ),
-    )
-    expect(Exit.isFailure(exit)).toBe(true)
-    if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
-  })
-
-  it("B-p4(d4) rejects dot segments that only look like the report area", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-dotdot-")
-    const secret = path.join(projectDir, ".agents", "secret.md")
-    await fs.mkdir(path.dirname(secret), { recursive: true })
-    await Bun.write(secret, "# not a report\n")
-    const disguised = `${path.join(projectDir, REPORT_AREA)}${path.sep}..${path.sep}secret.md`
-    const exclude = excludePath(projectDir)
-    const beforeExcludeExists = await Bun.file(exclude).exists()
-    const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
-    await Effect.runPromise(ensureReportAreaGitignore(projectDir, disguised))
-    expect(await Bun.file(exclude).exists()).toBe(beforeExcludeExists)
-    if (beforeExclude !== undefined) expect(await fs.readFile(exclude)).toEqual(beforeExclude)
-  })
-
-  it("B-p4(d5) canonicalizes dot segments that remain inside the report area", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-dot-")
-    const reportPath = `${path.join(projectDir, REPORT_AREA)}${path.sep}..${path.sep}workflow-reports${path.sep}report.md`
-    await fs.mkdir(path.join(projectDir, REPORT_AREA), { recursive: true })
-    await Bun.write(reportPath, "# report\n")
-    await Effect.runPromise(ensureReportAreaGitignore(projectDir, reportPath))
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".agents/workflow-reports/")
-    expect(await isIgnored(projectDir, path.resolve(reportPath))).toBe(true)
-  })
-
-  it("B-p4(e) ignores linked-worktree reports through the shared common-dir exclude", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-main-")
-    await $`git -C ${projectDir} -c user.name=Test -c user.email=test@opencode.test commit --allow-empty -m root`.quiet()
-    const worktree = await tmpRoot("dag-ref-wt-")
-    await fs.rm(worktree, { recursive: true, force: true })
-    await $`git -C ${projectDir} worktree add --detach ${worktree}`.quiet()
-    const reportArea = path.join(worktree, ".agents", "workflow-reports")
-    await fs.mkdir(reportArea, { recursive: true })
-    const reportPath = path.join(reportArea, "run.md")
-    await Bun.write(reportPath, "# worktree report\n")
-    const { events, dagLayer } = makeEventTracker({ directory: worktree })
-    await runSpawn(dagLayer, makePromptLayer(reply(reportPath)), undefined, directoryOverride(worktree))
-    expect(events.find((event) => event.type === "nodeCompleted")).toBeDefined()
-    expect(await Bun.file(path.join(worktree, ".gitignore")).exists()).toBe(false)
-    expect(await Bun.file(excludePath(projectDir)).text()).toContain(".agents/workflow-reports/")
-    expect(await isIgnored(worktree, reportPath)).toBe(true)
-    expect(await $`git -C ${worktree} status --porcelain`.quiet().text()).not.toContain("workflow-reports")
+    expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
   })
 })
 
@@ -605,7 +437,12 @@ describe("output-ref module rules (Train B, post-feature units)", () => {
     const source = path.join(dir, "report.md")
     const content = `managed integrity ${dir}`
     await fs.writeFile(source, content)
-    const provenance = { workflow_id: "wf-object", node_id: "report", child_session_id: "ses-object", replan_attempt: 0 }
+    const provenance = {
+      workflow_id: "wf-object",
+      node_id: "report",
+      child_session_id: "ses-object",
+      replan_attempt: 0,
+    }
     const first = await Effect.runPromise(commitOutputFileRef(source, provenance))
     const second = await Effect.runPromise(commitOutputFileRef(source, provenance))
     expect(first).toBeDefined()
@@ -624,9 +461,14 @@ describe("output-ref module rules (Train B, post-feature units)", () => {
     const dir = await tmpRoot("dag-managed-missing-")
     const source = path.join(dir, "report.md")
     await fs.writeFile(source, `missing artifact ${dir}`)
-    const ref = await Effect.runPromise(commitOutputFileRef(source, {
-      workflow_id: "wf-missing", node_id: "report", child_session_id: "ses-missing", replan_attempt: 0,
-    }))
+    const ref = await Effect.runPromise(
+      commitOutputFileRef(source, {
+        workflow_id: "wf-missing",
+        node_id: "report",
+        child_session_id: "ses-missing",
+        replan_attempt: 0,
+      }),
+    )
     expect(ref).toBeDefined()
     tmpRoots.push(path.dirname(ref!.path))
     await fs.chmod(ref!.path, 0o600)
@@ -653,87 +495,15 @@ describe("output-ref module rules (Train B, post-feature units)", () => {
     const content = "cross-worktree report"
     await Bun.write(reportPath, content)
     const ref = await Effect.runPromise(captureOutputFileRef(`\n${reportPath}\n`))
-    expect(ref).toEqual(expect.objectContaining({
-      kind: "file_ref",
-      content_ref: reportPath,
-      path: reportPath,
-      size: Buffer.byteLength(content),
-      sha256: createHash("sha256").update(content).digest("hex"),
-      summary: content,
-    }))
-  })
-
-  it("creates a missing info/exclude with only the report-area entry", async () => {
-    for (const templateKind of ["standard", "empty"] as const) {
-      const projectDir = await gitTmpRoot(`dag-ref-proj-${templateKind}-`, templateKind)
-      if (templateKind === "standard") {
-        // Remove only this fixture's copied template file so the missing-file case is explicit.
-        await fs.rm(excludePath(projectDir))
-      }
-      const refPath = path.join(projectDir, REPORT_AREA, "x.md")
-      await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-      expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe(".agents/workflow-reports/\n")
-      expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
-    }
-  })
-
-  it("separates the entry onto its own line when the existing exclude lacks a trailing newline", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-proj-")
-    await fs.mkdir(path.join(projectDir, ".git", "info"), { recursive: true })
-    await Bun.write(excludePath(projectDir), "node_modules")
-    const refPath = path.join(projectDir, REPORT_AREA, "x.md")
-    await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-    expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe("node_modules\n.agents/workflow-reports/\n")
-  })
-
-  it("leaves the exclude file byte-identical when an entry or a slashless variant already exists", async () => {
-    for (const covering of [".agents/workflow-reports/", ".agents/workflow-reports"]) {
-      const projectDir = await gitTmpRoot("dag-ref-proj-")
-      await fs.mkdir(path.join(projectDir, ".git", "info"), { recursive: true })
-      const before = `${covering}\nkeep-me\n`
-      await Bun.write(excludePath(projectDir), before)
-      const refPath = path.join(projectDir, REPORT_AREA, "x.md")
-      await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-      expect(await fs.readFile(excludePath(projectDir), "utf8")).toBe(before)
-    }
-  })
-
-  it("does not create any ignore file for refs outside the report area", async () => {
-    for (const templateKind of ["standard", "empty"] as const) {
-      const projectDir = await gitTmpRoot(`dag-ref-proj-${templateKind}-`, templateKind)
-      const exclude = excludePath(projectDir)
-      const beforeExcludeExists = await Bun.file(exclude).exists()
-      const beforeExclude = beforeExcludeExists ? await fs.readFile(exclude) : undefined
-      const outsideDir = await tmpRoot("dag-ref-outside-")
-      const refPath = path.join(outsideDir, "y.md")
-      await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-      expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
-      expect(await Bun.file(exclude).exists()).toBe(beforeExcludeExists)
-      if (beforeExclude !== undefined) expect(await fs.readFile(exclude)).toEqual(beforeExclude)
-      if (templateKind === "standard") expect(beforeExclude?.toString()).toBe(STANDARD_TEMPLATE_EXCLUDE)
-    }
-  })
-
-  it("skips ignore writes outside a git repository", async () => {
-    const projectDir = await tmpRoot("dag-ref-nongit-")
-    const refPath = path.join(projectDir, REPORT_AREA, "x.md")
-    await fs.mkdir(path.dirname(refPath), { recursive: true })
-    await Bun.write(refPath, "# report\n")
-    await Effect.runPromise(ensureReportAreaGitignore(projectDir, refPath))
-    expect(await Bun.file(path.join(projectDir, ".gitignore")).exists()).toBe(false)
-  })
-
-  it("serializes concurrent captures into one exclude entry", async () => {
-    const projectDir = await gitTmpRoot("dag-ref-concurrent-")
-    const refs = ["a.md", "b.md"].map((name) => path.join(projectDir, REPORT_AREA, name))
-    for (const ref of refs) {
-      await fs.mkdir(path.dirname(ref), { recursive: true })
-      await Bun.write(ref, `# ${path.basename(ref)}\n`)
-    }
-    await Effect.runPromise(
-      Effect.all(refs.map((ref) => ensureReportAreaGitignore(projectDir, ref)), { concurrency: "unbounded" }),
+    expect(ref).toEqual(
+      expect.objectContaining({
+        kind: "file_ref",
+        content_ref: reportPath,
+        path: reportPath,
+        size: Buffer.byteLength(content),
+        sha256: createHash("sha256").update(content).digest("hex"),
+        summary: content,
+      }),
     )
-    const exclude = await Bun.file(excludePath(projectDir)).text()
-    expect(exclude.split("\n").filter((line) => line === ".agents/workflow-reports/")).toHaveLength(1)
   })
 })

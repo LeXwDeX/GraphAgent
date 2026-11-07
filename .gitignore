@@ -39,24 +39,21 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 
-# graphagent runtime-generated local project config (created when running the built binary in a package dir)
-**/.agents/settings.json
-
 # OpenSpec artifacts (local-only, not tracked)
 /openspec/
 
 # Personal thought and design notes (never commit)
 /docs/graph-engineering-template-research.md
 
-# hooks file
+# Agent files. The project layer `<root>/.agents/` holds committable project
+# configuration; only this repository's local glue is ignored here. Product-local
+# files (worktree/, plans/, settings.local.json, hooks.local.json) are excluded
+# through the Git common-dir `info/exclude` at runtime, not in this file.
 .agents/hooks.json
-
-# agent files
-.agents
+.agents/skills/specgit-native/
 .claude
 .husky/
 .qoder
-.agents/workflow-reports/
 
 # CI watcher test for the local .agents hook scaffolding; kept local with its tool
 /packages/opencode/test/hook/repo-ci-watcher.test.ts
@@ -73,10 +70,7 @@ tsconfig.tsbuildinfo
 **/.codebase-memory-mcp/
 
 # graphagent local workflow state
-.agents/.dag-specs/
 .agents/dag-init.json
-.agents/workflow-drafts/
-.agents/workflow-reports/
 
 # Retained private migration evidence and legacy delivery records
 /spec_git/

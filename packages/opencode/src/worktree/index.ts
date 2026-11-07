@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { rmdir } from "node:fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { path } from "@opencode-ai/core/effect/layer-node-platform"
 import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
@@ -14,7 +15,7 @@ import { Slug } from "@opencode-ai/core/util/slug"
 import { errorMessage } from "../util/error"
 import { GlobalBus } from "@/bus/global"
 import { Git } from "@/git"
-import { Context, Effect, FiberMap, Layer, Path, Schema } from "effect"
+import { Context, Cause, Effect, FiberMap, Layer, Path, Schema } from "effect"
 import { ChildProcess } from "effect/process"
 import { NodePath } from "@effect/platform-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -23,7 +24,9 @@ import { InstanceState } from "@/effect/instance-state"
 import { WorktreeEvent } from "@opencode-ai/schema/worktree-event"
 import { SettingsHook } from "@/hook/settings"
 import { assertProjectRootWritable } from "@/project/project-root"
+import { ensureLocalExcludes } from "@/project/git-exclude"
 import { MemoryPaths } from "@/memory/paths"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import * as Option from "effect/Option"
 
 export const Event = WorktreeEvent
@@ -206,6 +209,25 @@ export const layer: Layer.Layer<
       return yield* new NameGenerationFailedError({ message: "Failed to generate a unique worktree name" })
     })
 
+    const findMainCheckout = Effect.fnUntraced(function* (cwd: string) {
+      const result = yield* git(["worktree", "list", "--porcelain"], { cwd })
+      if (result.code !== 0) return undefined
+      const primary = parseWorktreeList(result.text).find((entry) => entry.path && !entry.bare)
+      return primary?.path ? yield* canonical(primary.path) : undefined
+    })
+
+    const mainCheckout = Effect.fn("Worktree.mainCheckout")(function* () {
+      const ctx = yield* InstanceState.context
+      // The main checkout is the first non-bare entry, not the project row's
+      // recorded worktree: that row may have been created from a linked worktree.
+      const found = yield* findMainCheckout(ctx.worktree)
+      if (!found)
+        return yield* new CreateFailedError({
+          message: "Cannot create a worktree because the repository has no non-bare checkout",
+        })
+      return found
+    })
+
     const makeWorktreeInfo = Effect.fn("Worktree.makeWorktreeInfo")(function* (input?: {
       name?: string
       detached?: boolean
@@ -216,8 +238,19 @@ export const layer: Layer.Layer<
       }
       assertProjectRootWritable(ctx.root, Global.Path.home)
 
-      const root = pathSvc.join(Global.Path.data, "worktree", ctx.project.id)
+      // Worktrees live inside the main checkout's project root, flat under
+      // `.agents/worktree/`, regardless of which linked worktree creates them.
+      const main = yield* mainCheckout()
+      const projectRoot = pathSvc.join(main, pathSvc.relative(ctx.worktree, ctx.root))
+      const root = pathSvc.join(projectRoot, PROJECT_DIR, "worktree")
       yield* fs.makeDirectory(root, { recursive: true }).pipe(Effect.orDie)
+      yield* Effect.promise(() => ensureLocalExcludes({ root: ctx.root, directory: ctx.worktree })).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("failed to ensure worktree git excludes", { root: ctx.root, cause }),
+        ),
+      )
 
       return yield* candidate({ root, name: input?.name ? slugify(input.name) : "", detached: input?.detached })
     })
@@ -470,7 +503,7 @@ export const layer: Layer.Layer<
       return text
         .split("\n")
         .map((line) => line.trim())
-        .reduce<{ path?: string; branch?: string; prunable?: boolean }[]>((acc, line) => {
+        .reduce<{ path?: string; branch?: string; prunable?: boolean; bare?: boolean }[]>((acc, line) => {
           if (!line) return acc
           if (line.startsWith("worktree ")) {
             acc.push({ path: line.slice("worktree ".length).trim() })
@@ -482,6 +515,7 @@ export const layer: Layer.Layer<
             current.branch = line.slice("branch ".length).trim()
           }
           if (line.startsWith("prunable ")) current.prunable = true
+          if (line === "bare") current.bare = true
           return acc
         }, [])
     }
@@ -516,8 +550,9 @@ export const layer: Layer.Layer<
       // gitdir links whose directories still exist. Pruning there destroys git
       // admin data and live registrations. Cleanup belongs to remove/reset,
       // which can prove each case.
-      const primary = yield* canonical(ctx.project.worktree)
-      const primaryName = pathSvc.basename(primary).toLowerCase()
+      const primaryEntry = entries.find((entry) => entry.path && !entry.bare)
+      const primary = primaryEntry?.path ? yield* canonical(primaryEntry.path) : undefined
+      const primaryName = pathSvc.basename(primary ?? ctx.project.worktree).toLowerCase()
       return yield* Effect.forEach(entries, (entry) =>
         Effect.gen(function* () {
           if (!entry.path || entry.prunable) return undefined
@@ -560,6 +595,28 @@ export const layer: Layer.Layer<
       })
     }
 
+    /** Remove the now-empty worktree directory and its `.agents/worktree/` parent.
+     * Worktrees live under the main checkout, so resolve the same container
+     * `makeWorktreeInfo` uses. A non-empty directory or one outside the
+     * container is left alone, and `.agents/` itself is never removed. */
+    const cleanupWorktreeParents = Effect.fnUntraced(function* (directory: string) {
+      const ctx = yield* InstanceState.context
+      const main = yield* findMainCheckout(ctx.worktree)
+      if (!main) return
+      const projectRoot = pathSvc.join(main, pathSvc.relative(ctx.worktree, ctx.root))
+      const base = pathSvc.join(projectRoot, PROJECT_DIR, "worktree")
+      const relative = pathSvc.relative(base, directory)
+      if (
+        relative === "" ||
+        relative.startsWith("..") ||
+        pathSvc.isAbsolute(relative) ||
+        relative.includes(pathSvc.sep)
+      )
+        return
+      yield* Effect.tryPromise(() => rmdir(directory)).pipe(Effect.ignore)
+      yield* Effect.tryPromise(() => rmdir(base)).pipe(Effect.ignore)
+    })
+
     const removeLocked = Effect.fnUntraced(function* (input: RemoveInput, directory: string) {
       const ctx = yield* InstanceState.context
       const owned = yield* hookOwned(directory, ctx.project.id)
@@ -573,7 +630,11 @@ export const layer: Layer.Layer<
           Effect.mapError((error) => new RemoveFailedError({ message: error.message })),
         )
 
-      const primary = yield* canonical(ctx.project.worktree)
+      const primary = yield* findMainCheckout(ctx.worktree)
+      if (!primary)
+        return yield* new RemoveFailedError({
+          message: "Cannot remove a worktree because the repository has no non-bare checkout",
+        })
       const current = yield* canonical(ctx.worktree)
       const sessionDirectory = yield* canonical(ctx.directory)
       const relativeSession = pathSvc.relative(directory, sessionDirectory)
@@ -685,6 +746,7 @@ export const layer: Layer.Layer<
           }
         }
         yield* dropRegistrations
+        yield* cleanupWorktreeParents(directory)
         return true
       }
 
@@ -728,6 +790,7 @@ export const layer: Layer.Layer<
 
       yield* dropRegistrations
       if (owned) yield* fs.remove(ownershipFile(directory)).pipe(Effect.ignore)
+      if (!owned) yield* cleanupWorktreeParents(directory)
       return true
     })
 
@@ -799,8 +862,13 @@ export const layer: Layer.Layer<
       )
     })
 
-    const sweep = Effect.fnUntraced(function* (root: string) {
-      const args = ["clean", "-ffdx", ...MemoryPaths.LOCAL_PATHS.flatMap((relative) => ["-e", relative])]
+    const sweep = Effect.fnUntraced(function* (root: string, preserved: string[] = []) {
+      const args = [
+        "clean",
+        "-ffdx",
+        ...MemoryPaths.LOCAL_PATHS.flatMap((relative) => ["-e", relative]),
+        ...preserved.flatMap((relative) => ["-e", relative]),
+      ]
       const first = yield* git(args, { cwd: root })
       if (first.code === 0) return first
 
@@ -817,7 +885,11 @@ export const layer: Layer.Layer<
         return yield* new NotGitError({ message: "Worktrees are only supported for git projects" })
       }
 
-      const primary = yield* canonical(ctx.project.worktree)
+      const primary = yield* findMainCheckout(ctx.worktree)
+      if (!primary)
+        return yield* new ResetFailedError({
+          message: "Cannot reset a worktree because the repository has no non-bare checkout",
+        })
       const current = yield* canonical(ctx.worktree)
       const sessionDirectory = yield* canonical(ctx.directory)
       const relativeSession = pathSvc.relative(directory, sessionDirectory)
@@ -877,7 +949,11 @@ export const layer: Layer.Layer<
         (r) => new ResetFailedError({ message: r.stderr || r.text || "Failed to reset worktree to target" }),
       )
 
-      const cleanResult = yield* sweep(worktreePath)
+      const projectPrefix = pathSvc.relative(ctx.worktree, ctx.root)
+      const cleanResult = yield* sweep(worktreePath, [
+        `${pathSvc.join(projectPrefix, PROJECT_DIR)}${pathSvc.sep}`,
+        `${pathSvc.join(projectPrefix, PROJECT_DIR, "worktree")}${pathSvc.sep}`,
+      ])
       if (cleanResult.code !== 0) {
         return yield* new ResetFailedError({
           message: cleanResult.stderr || cleanResult.text || "Failed to clean worktree",
@@ -902,6 +978,10 @@ export const layer: Layer.Layer<
         (r) => new ResetFailedError({ message: r.stderr || r.text || "Failed to clean submodules" }),
       )
 
+      // `.agents/` is the project layer and is preserved by the sweep above;
+      // its untracked files must not make the reset look dirty. Tracked
+      // modifications under it still surface below.
+      const agentsPath = pathSvc.join(projectPrefix, PROJECT_DIR).split(pathSvc.sep).join("/")
       const status = yield* git(["-c", "core.fsmonitor=false", "status", "--porcelain=v1", "--untracked-files=all"], {
         cwd: worktreePath,
       })
@@ -909,7 +989,13 @@ export const layer: Layer.Layer<
         return yield* new ResetFailedError({ message: status.stderr || status.text || "Failed to read git status" })
       }
 
-      const dirty = status.text.split("\n").filter(Boolean)
+      const dirty = status.text
+        .split("\n")
+        .filter(Boolean)
+        .filter(
+          (line) =>
+            !line.startsWith("?? ") || (line.slice(3) !== agentsPath && !line.slice(3).startsWith(`${agentsPath}/`)),
+        )
       if (dirty.length > 0) {
         return yield* new ResetFailedError({ message: `Worktree reset left local changes:\n${dirty.join("\n")}` })
       }

@@ -225,6 +225,7 @@ export const layer = Layer.effect(
           ...(input.include ? [`--glob=${input.include}`] : []),
           ...(input.context && input.context > 0 ? [`--context=${input.context}`] : []),
           "--glob=!**/.git/**",
+          "--glob=!**/.agents/worktree/**",
           "--",
           input.pattern,
           input.file ?? ".",
@@ -319,6 +320,7 @@ export const layer = Layer.effect(
             ...(input.follow ? ["--follow"] : []),
             `--glob=${input.pattern}`,
             "--glob=!**/.git/**",
+            "--glob=!**/.agents/worktree/**",
             ".",
           ],
           parse: (line) =>
@@ -361,6 +363,7 @@ export const layer = Layer.effect(
             ...(input.follow ? ["--follow"] : []),
             ...(input.pattern === "*" ? [] : [`--glob=${input.pattern}`]),
             "--glob=!**/.git/**",
+            "--glob=!**/.agents/worktree/**",
             ".",
           ],
           parse: (line) => {

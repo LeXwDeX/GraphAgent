@@ -1,24 +1,21 @@
-import { describe, expect, test, beforeEach } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
-import {
-  loadChain,
-  mergeSettings,
-  readJSON,
-  __hasWarnedDeprecated,
-  __resetDeprecatedWarnings,
-  type Settings,
-} from "@/hook/settings"
+import { loadChain, mergeSettings, readJSON, type Settings } from "@/hook/settings"
 import { watchSettings } from "@/hook/extensions"
+import { __watchedFiles } from "@/hook/extensions/hot-reload"
 
-// §4 unit tests for loadChain + hot-reload — previously zero coverage.
+// §4 unit tests for loadChain + hot-reload.
 //
-// Each test builds isolated temp dirs for the global / project / worktree scopes
-// and drives loadChain (or watchSettings) directly. loadChain's optional third
-// arg `globalConfig` points the global layer at an isolated temp dir instead of
-// the real ~/.config/graphagent, so no real-machine state is touched.
+// Each test builds isolated temp dirs for the global and project scopes and
+// drives loadChain (or watchSettings) directly. The project scope is a single
+// `<root>/.agents/` directory holding the committed `hooks.json` plus the local
+// `hooks.local.json`; there is no worktree layer because a linked worktree is
+// itself a project root. loadChain's optional second arg `globalConfig` points
+// the global layer at an isolated temp dir instead of the real
+// ~/.config/graphagent, so no real-machine state is touched.
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -47,6 +44,14 @@ async function writeHooksJson(dir: string, json: unknown): Promise<string> {
   return file
 }
 
+async function writeLocalHooksJson(dir: string, json: unknown): Promise<string> {
+  const opencodeDir = path.join(dir, ".agents")
+  await fs.mkdir(opencodeDir, { recursive: true })
+  const file = path.join(opencodeDir, "hooks.local.json")
+  await fs.writeFile(file, JSON.stringify(json))
+  return file
+}
+
 async function writeGlobalHooksJson(globalDir: string, json: unknown): Promise<string> {
   await fs.mkdir(globalDir, { recursive: true })
   const file = path.join(globalDir, "hooks.json")
@@ -70,29 +75,23 @@ async function writeClaudeSettingsJson(dir: string, json: unknown): Promise<stri
   return file
 }
 
-beforeEach(() => {
-  __resetDeprecatedWarnings()
-})
-
-describe("§4.1 loadChain reads hooks.json from correct paths (global + project + worktree)", () => {
+describe("§4.1 loadChain reads hooks.json from correct paths (global + project + local)", () => {
   test("all three scopes contribute their SessionStart matcher", async () => {
     const globalDir = await mktmp("global")
     const projectDir = await mktmp("project")
-    const worktreeDir = await mktmp("worktree")
     try {
       await writeGlobalHooksJson(globalDir, hooksJsonTopLevel("global"))
       await writeHooksJson(projectDir, hooksJsonTopLevel("project"))
-      await writeHooksJson(worktreeDir, hooksJsonTopLevel("worktree"))
+      await writeLocalHooksJson(projectDir, hooksJsonTopLevel("local"))
 
-      const merged = loadChain(projectDir, worktreeDir, globalDir)
+      const merged = loadChain(projectDir, globalDir)
       const matchers = merged.hooks?.SessionStart ?? []
       expect(matchers.length).toBe(3)
-      expect(matchers.map((m) => m.hooks[0].command)).toEqual(["global", "project", "worktree"])
+      expect(matchers.map((m) => m.hooks[0].command)).toEqual(["global", "project", "local"])
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
         fs.rm(projectDir, { recursive: true, force: true }),
-        fs.rm(worktreeDir, { recursive: true, force: true }),
       ])
     }
   })
@@ -104,7 +103,7 @@ describe("§4.1 loadChain reads hooks.json from correct paths (global + project 
     process.env.GRAPHAGENT_CONFIG_DIR = configDir
     try {
       await writeGlobalHooksJson(configDir, hooksJsonTopLevel("config-dir"))
-      const merged = loadChain(projectDir, projectDir)
+      const merged = loadChain(projectDir)
       expect(merged.hooks?.SessionStart?.map((m) => m.hooks[0].command)).toEqual(["config-dir"])
     } finally {
       if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
@@ -117,36 +116,34 @@ describe("§4.1 loadChain reads hooks.json from correct paths (global + project 
   })
 })
 
-describe("§4.2 merge order is global → project → worktree concat-append (not override)", () => {
+describe("§4.2 merge order is global → project → local concat-append (not override)", () => {
   test("mergeSettings concatenates layers in order", () => {
     const g: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "g" }] }] } }
     const p: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "p" }] }] } }
-    const w: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "w" }] }] } }
-    const out = mergeSettings([g, p, w])
+    const l: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "l" }] }] } }
+    const out = mergeSettings([g, p, l])
     // Three distinct matchers appended — NOT collapsed to a single matcher.
     expect(out.hooks?.SessionStart?.length).toBe(3)
     expect(out.hooks?.SessionStart?.[0].hooks[0].command).toBe("g")
     expect(out.hooks?.SessionStart?.[1].hooks[0].command).toBe("p")
-    expect(out.hooks?.SessionStart?.[2].hooks[0].command).toBe("w")
+    expect(out.hooks?.SessionStart?.[2].hooks[0].command).toBe("l")
   })
 
-  test("loadChain preserves global → project → worktree order on disk", async () => {
+  test("loadChain preserves global → project → local order on disk", async () => {
     const globalDir = await mktmp("global")
     const projectDir = await mktmp("project")
-    const worktreeDir = await mktmp("worktree")
     try {
       await writeGlobalHooksJson(globalDir, hooksJsonTopLevel("g"))
       await writeHooksJson(projectDir, hooksJsonTopLevel("p"))
-      await writeHooksJson(worktreeDir, hooksJsonTopLevel("w"))
+      await writeLocalHooksJson(projectDir, hooksJsonTopLevel("l"))
 
-      const merged = loadChain(projectDir, worktreeDir, globalDir)
+      const merged = loadChain(projectDir, globalDir)
       const cmds = (merged.hooks?.SessionStart ?? []).map((m) => m.hooks[0].command)
-      expect(cmds).toEqual(["g", "p", "w"])
+      expect(cmds).toEqual(["g", "p", "l"])
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
         fs.rm(projectDir, { recursive: true, force: true }),
-        fs.rm(worktreeDir, { recursive: true, force: true }),
       ])
     }
   })
@@ -156,17 +153,16 @@ describe("retired trust options are ignored in every layer", () => {
   test("legacy trust fields do not enter the runtime settings", async () => {
     const globalDir = await mktmp("global")
     const projectDir = await mktmp("project")
-    const worktreeDir = await mktmp("worktree")
     try {
       await writeGlobalHooksJson(globalDir, { requireTrust: true, ...hooksJsonTopLevel("g") })
       await writeHooksJson(projectDir, { allowUntrusted: false, requireTrust: false, ...hooksJsonTopLevel("p") })
-      await writeHooksJson(worktreeDir, { requireTrust: true, allowUntrusted: true, ...hooksJsonTopLevel("w") })
-      const merged = loadChain(projectDir, worktreeDir, globalDir)
+      await writeLocalHooksJson(projectDir, { requireTrust: true, allowUntrusted: true, ...hooksJsonTopLevel("l") })
+      const merged = loadChain(projectDir, globalDir)
       expect(merged).not.toHaveProperty("requireTrust")
       expect(merged).not.toHaveProperty("allowUntrusted")
-      expect(merged.hooks?.SessionStart?.map((group) => group.hooks[0].command)).toEqual(["g", "p", "w"])
+      expect(merged.hooks?.SessionStart?.map((group) => group.hooks[0].command)).toEqual(["g", "p", "l"])
     } finally {
-      await Promise.all([globalDir, projectDir, worktreeDir].map((dir) => fs.rm(dir, { recursive: true, force: true })))
+      await Promise.all([globalDir, projectDir].map((dir) => fs.rm(dir, { recursive: true, force: true })))
     }
   })
 })
@@ -207,7 +203,7 @@ describe("§4.4 wrapper-detection fallback tolerates legacy {hooks: {...}}", () 
     const projectDir = await mktmp("p")
     try {
       await writeHooksJson(projectDir, hooksJsonWrapped("wrapped-project"))
-      const merged = loadChain(projectDir, "", globalDir)
+      const merged = loadChain(projectDir, globalDir)
       expect(merged.hooks?.SessionStart?.[0].hooks[0].command).toBe("wrapped-project")
     } finally {
       await Promise.all([
@@ -229,7 +225,7 @@ describe("P1: readJSON filters non-event keys (e.g. $schema) via VALID_HOOK_EVEN
         Stop: [{ matcher: "*", hooks: [{ type: "command", command: "echo bye" }] }],
         badEvent: "not-an-array",
       })
-      const merged = loadChain(dir, "", dir)
+      const merged = loadChain(dir, dir)
       // Valid events are kept
       expect(merged.hooks?.SessionStart?.length).toBe(1)
       expect(merged.hooks?.Stop?.length).toBe(1)
@@ -254,40 +250,16 @@ describe("P1: readJSON filters non-event keys (e.g. $schema) via VALID_HOOK_EVEN
   })
 })
 
-describe("§4.5 deprecation warning fires when settings.json has a hooks field", () => {
-  test("settings.json hooks field is flagged and NOT loaded into the merge", async () => {
+describe("§4.5 legacy settings.json hook fields are not loaded", () => {
+  test("a hooks field in .agents/settings.json is ignored", async () => {
     const globalDir = await mktmp("g")
     const projectDir = await mktmp("p")
     try {
-      const settingsFile = await writeSettingsJson(projectDir, {
+      await writeSettingsJson(projectDir, {
         hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "stale" }] }] },
       })
-      const merged = loadChain(projectDir, "", globalDir)
-      // Hooks from settings.json are silently ignored (not in the merge)...
+      const merged = loadChain(projectDir, globalDir)
       expect(merged.hooks?.SessionStart ?? []).toEqual([])
-      // ...but the deprecation scan flagged the file.
-      expect(__hasWarnedDeprecated(settingsFile)).toBe(true)
-    } finally {
-      await Promise.all([
-        fs.rm(globalDir, { recursive: true, force: true }),
-        fs.rm(projectDir, { recursive: true, force: true }),
-      ])
-    }
-  })
-
-  test("deprecation is warned once per file across repeated loadChain calls", async () => {
-    const globalDir = await mktmp("g")
-    const projectDir = await mktmp("p")
-    try {
-      const settingsFile = await writeSettingsJson(projectDir, {
-        hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "stale" }] }] },
-      })
-      __resetDeprecatedWarnings()
-      loadChain(projectDir, "", globalDir)
-      expect(__hasWarnedDeprecated(settingsFile)).toBe(true)
-      // Second call must not re-flag (Set dedup simulates hot-reload behavior).
-      loadChain(projectDir, "", globalDir)
-      expect(__hasWarnedDeprecated(settingsFile)).toBe(true)
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
@@ -298,22 +270,69 @@ describe("§4.5 deprecation warning fires when settings.json has a hooks field",
 })
 
 describe("§4.6 .claude/ paths are NOT read", () => {
-  test("hooks in .claude/settings.json do not appear in the merge and are not scanned", async () => {
+  test("hooks in .claude/settings.json do not appear in the merge", async () => {
     const globalDir = await mktmp("g")
     const projectDir = await mktmp("p")
     try {
-      const claudeFile = await writeClaudeSettingsJson(projectDir, {
+      await writeClaudeSettingsJson(projectDir, {
         hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "claude-only" }] }] },
       })
-      const merged = loadChain(projectDir, "", globalDir)
-      // .claude/ hooks never reach the merge...
+      const merged = loadChain(projectDir, globalDir)
       expect(merged.hooks?.SessionStart ?? []).toEqual([])
-      // ...and .claude/ is never scanned for the deprecation warning (silent ignore).
-      expect(__hasWarnedDeprecated(claudeFile)).toBe(false)
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
         fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  })
+})
+
+describe("$HOME is not a project layer", () => {
+  test("loadChain ignores ~/.agents hooks when the root is $HOME", async () => {
+    const globalDir = await mktmp("g")
+    const home = await mktmp("home")
+    const previous = process.env.GRAPHAGENT_TEST_HOME
+    process.env.GRAPHAGENT_TEST_HOME = home
+    try {
+      await writeGlobalHooksJson(globalDir, hooksJsonTopLevel("global-home"))
+      await writeHooksJson(home, hooksJsonTopLevel("home-project"))
+      await writeLocalHooksJson(home, hooksJsonTopLevel("home-local"))
+
+      const merged = loadChain(home, globalDir)
+      expect(merged.hooks?.SessionStart?.map((m) => m.hooks[0].command)).toEqual(["global-home"])
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+      else process.env.GRAPHAGENT_TEST_HOME = previous
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(home, { recursive: true, force: true }),
+      ])
+    }
+  })
+
+  test("the hot-reload watch set omits ~/.agents when the root is $HOME", async () => {
+    const globalDir = await mktmp("g")
+    const home = await mktmp("home")
+    const previous = process.env.GRAPHAGENT_TEST_HOME
+    process.env.GRAPHAGENT_TEST_HOME = home
+    try {
+      expect(__watchedFiles(home, globalDir)).toEqual([path.join(globalDir, "hooks.json")])
+
+      // A real project below $HOME keeps its project layer.
+      const projectDir = path.join(home, "work", "repo")
+      await fs.mkdir(path.join(projectDir, ".agents"), { recursive: true })
+      expect(__watchedFiles(projectDir, globalDir)).toEqual([
+        path.join(globalDir, "hooks.json"),
+        path.join(projectDir, ".agents", "hooks.json"),
+        path.join(projectDir, ".agents", "hooks.local.json"),
+      ])
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+      else process.env.GRAPHAGENT_TEST_HOME = previous
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(home, { recursive: true, force: true }),
       ])
     }
   })
@@ -331,8 +350,7 @@ describe("§4.7 polling reload: modify hooks.json → reload fires with new sett
       let changed: string | undefined
       const handle = watchSettings(
         projectDir,
-        undefined,
-        () => Effect.sync(() => loadChain(projectDir, "", globalDir)),
+        () => Effect.sync(() => loadChain(projectDir, globalDir)),
         (newSettings, changedFile) => {
           reloaded = newSettings
           changed = changedFile
@@ -359,6 +377,40 @@ describe("§4.7 polling reload: modify hooks.json → reload fires with new sett
       ])
     }
   })
+
+  test("local hooks.local.json change triggers onReload", async () => {
+    const globalDir = await mktmp("g")
+    const projectDir = await mktmp("p")
+    try {
+      await writeLocalHooksJson(projectDir, hooksJsonTopLevel("local-v1"))
+
+      let reloaded: Settings | undefined
+      let changed: string | undefined
+      const handle = watchSettings(
+        projectDir,
+        () => Effect.sync(() => loadChain(projectDir, globalDir)),
+        (newSettings, changedFile) => {
+          reloaded = newSettings
+          changed = changedFile
+        },
+        globalDir,
+      )
+
+      await sleep(50)
+      await writeLocalHooksJson(projectDir, hooksJsonTopLevel("local-v2"))
+      await sleep(4000)
+
+      expect(reloaded?.hooks?.SessionStart?.map((m) => m.hooks[0].command)).toContain("local-v2")
+      expect(changed).toBe(path.join(projectDir, ".agents", "hooks.local.json"))
+
+      handle.close()
+    } finally {
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  })
 })
 
 describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
@@ -373,8 +425,7 @@ describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
       let reloadedCommands: string[] = []
       const handle = watchSettings(
         projectDir,
-        undefined,
-        () => Effect.sync(() => loadChain(projectDir, "", globalDir)),
+        () => Effect.sync(() => loadChain(projectDir, globalDir)),
         (settings) => {
           reloadCount += 1
           reloadedCommands = settings.hooks?.SessionStart?.flatMap((m) => m.hooks.map((h) => h.command ?? "")) ?? []
@@ -409,8 +460,7 @@ describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
       let reloadCount = 0
       const handle = watchSettings(
         projectDir,
-        undefined,
-        () => Effect.sync(() => loadChain(projectDir, "", globalDir)),
+        () => Effect.sync(() => loadChain(projectDir, globalDir)),
         () => {
           reloadCount += 1
         },
@@ -443,15 +493,14 @@ describe("P2: deleting hooks.json triggers reload (mtime from >0 to 0)", () => {
       let reloaded: Settings | undefined
       const handle = watchSettings(
         projectDir,
-        undefined,
-        () => Effect.sync(() => loadChain(projectDir, "", globalDir)),
+        () => Effect.sync(() => loadChain(projectDir, globalDir)),
         (s) => {
           reloaded = s
         },
       )
 
       // Verify initial load has the hook
-      const initial = loadChain(projectDir, "", globalDir)
+      const initial = loadChain(projectDir, globalDir)
       expect(initial.hooks?.SessionStart?.[0].hooks[0].command).toBe("before-delete")
 
       // Delete the file

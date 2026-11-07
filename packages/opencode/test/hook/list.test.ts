@@ -6,7 +6,8 @@ import { summarizeChain } from "@/hook/settings"
 
 // Unit tests for summarizeChain — the scope-tagged read surface behind
 // SettingsHook.list(). Mirrors load-chain.test.ts: isolated temp dirs for the
-// global / project / worktree scopes, globalConfig override for determinism.
+// global / project scopes, globalConfig override for determinism. The project
+// scope covers both `<root>/.agents/hooks.json` and `hooks.local.json`.
 
 async function mktmp(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), `hook-list-${prefix}-`))
@@ -35,7 +36,7 @@ describe("summarizeChain — scope tags and ordering", () => {
         Stop: [{ hooks: [{ type: "command", command: "project-stop.sh" }] }],
       })
 
-      const summaries = summarizeChain(projectDir, "", globalDir)
+      const summaries = summarizeChain(projectDir, globalDir)
       expect(summaries.length).toBe(2)
       // Global layer appended first, project after — same order loadChain merges.
       expect(summaries[0].scope).toBe("global")
@@ -54,7 +55,7 @@ describe("summarizeChain — scope tags and ordering", () => {
     const globalDir = await mktmp("empty-g")
     const projectDir = await mktmp("empty-p")
     try {
-      const summaries = summarizeChain(projectDir, "", globalDir)
+      const summaries = summarizeChain(projectDir, globalDir)
       expect(summaries).toEqual([])
     } finally {
       await Promise.all([
@@ -64,21 +65,23 @@ describe("summarizeChain — scope tags and ordering", () => {
     }
   })
 
-  test("worktree layer appends after project when worktree differs", async () => {
-    const globalDir = await mktmp("wt-g")
-    const projectDir = await mktmp("wt-p")
-    const worktreeDir = await mktmp("wt-w")
+  test("local hooks.local.json appends after project hooks.json", async () => {
+    const globalDir = await mktmp("local-g")
+    const projectDir = await mktmp("local-p")
     try {
       await writeHooksJson(projectDir, { Stop: [{ hooks: [{ type: "command", command: "p" }] }] })
-      await writeHooksJson(worktreeDir, { Stop: [{ hooks: [{ type: "command", command: "w" }] }] })
+      await fs.writeFile(
+        path.join(projectDir, ".agents", "hooks.local.json"),
+        JSON.stringify({ Stop: [{ hooks: [{ type: "command", command: "l" }] }] }),
+      )
 
-      const summaries = summarizeChain(projectDir, worktreeDir, globalDir)
-      expect(summaries.map((s) => s.scope)).toEqual(["project", "worktree"])
+      const summaries = summarizeChain(projectDir, globalDir)
+      expect(summaries.map((s) => s.scope)).toEqual(["project", "local"])
+      expect(summaries.map((s) => s.descriptor)).toEqual(["p", "l"])
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
         fs.rm(projectDir, { recursive: true, force: true }),
-        fs.rm(worktreeDir, { recursive: true, force: true }),
       ])
     }
   })
@@ -91,7 +94,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         PreToolUse: [{ hooks: [{ type: "command", command: "echo hello world" }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor).toBe("echo hello world")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -109,7 +112,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
           { hooks: [{ type: "command", command: "node", args: ["--import", "./register.ts", "watch.js"] }] },
         ],
       })
-      const summaries = summarizeChain(projectDir, "", projectDir)
+      const summaries = summarizeChain(projectDir, projectDir)
       expect(summaries[0].descriptor).toBe("bun pr-watch.ts")
       expect(summaries[1].descriptor).toBe("bun")
       expect(summaries[2].descriptor).toBe("bash")
@@ -125,7 +128,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         PostToolUse: [{ hooks: [{ type: "command", command: "bun", args: [`${"x".repeat(80)}.ts`] }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor.length).toBe(60)
       expect(summary.descriptor.startsWith("bun ")).toBe(true)
     } finally {
@@ -140,7 +143,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         PreToolUse: [{ hooks: [{ type: "command", command: longCommand }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor.length).toBe(60)
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -153,7 +156,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         PostToolUse: [{ hooks: [{ type: "http", url: "https://example.com/webhook" }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor).toBe("https://example.com/webhook")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -167,7 +170,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         PostToolUse: [{ hooks: [{ type: "http", url: longUrl }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor.length).toBe(60)
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -180,7 +183,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         PreToolUse: [{ hooks: [{ type: "mcp", command: "my-server__my-tool" }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor).toBe("my-server__my-tool")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -193,7 +196,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         Stop: [{ hooks: [{ type: "prompt", prompt: "Summarize the work done.\nMore detail here." }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor).toBe("Summarize the work done.")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -207,7 +210,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         Stop: [{ hooks: [{ type: "prompt", prompt: longPrompt }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor.length).toBe(60)
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -220,7 +223,7 @@ describe("summarizeChain — descriptor derivation by type", () => {
       await writeHooksJson(projectDir, {
         Stop: [{ hooks: [{ type: "agent", prompt: "Run a final review.\nCheck tests too." }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor).toBe("Run a final review.")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -235,7 +238,7 @@ describe("summarizeChain — matcher handling", () => {
       await writeHooksJson(projectDir, {
         PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "check.sh" }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.matcher).toBe("Bash")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -248,7 +251,7 @@ describe("summarizeChain — matcher handling", () => {
       await writeHooksJson(projectDir, {
         Stop: [{ matcher: "*", hooks: [{ type: "command", command: "stop.sh" }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.matcher).toBeUndefined()
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -269,7 +272,7 @@ describe("summarizeChain — matcher handling", () => {
           },
         ],
       })
-      const [watcher, plain] = summarizeChain(projectDir, "", projectDir)
+      const [watcher, plain] = summarizeChain(projectDir, projectDir)
       expect(watcher.asyncRewake).toBe(true)
       expect(plain.asyncRewake).toBeUndefined()
     } finally {
@@ -285,7 +288,7 @@ describe("summarizeChain — matcher handling", () => {
         StopFailure: [{ hooks: [{ type: "command", command: "fail.sh", asyncRewake: true }] }],
         PostToolUse: [{ hooks: [{ type: "command", command: "watch.sh", asyncRewake: true }] }],
       })
-      const summaries = summarizeChain(projectDir, "", projectDir)
+      const summaries = summarizeChain(projectDir, projectDir)
       const byCommand = (command: string) => summaries.find((summary) => summary.descriptor === command)
       expect(byCommand("end.sh")?.asyncRewake).toBeUndefined()
       expect(byCommand("fail.sh")?.asyncRewake).toBeUndefined()
@@ -301,7 +304,7 @@ describe("summarizeChain — matcher handling", () => {
       await writeHooksJson(projectDir, {
         Stop: [{ hooks: [{ type: "command", command: "stop.sh" }] }],
       })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.matcher).toBeUndefined()
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
@@ -314,7 +317,7 @@ for (const event of ["PermissionDenied", "TeammateIdle"]) {
     const projectDir = await mktmp("inactive")
     try {
       await writeHooksJson(projectDir, { [event]: [{ hooks: [{ type: "command", command: "true" }] }] })
-      const [summary] = summarizeChain(projectDir, "", projectDir)
+      const [summary] = summarizeChain(projectDir, projectDir)
       expect(summary.descriptor).toContain("inactive: this build has no event trigger")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })

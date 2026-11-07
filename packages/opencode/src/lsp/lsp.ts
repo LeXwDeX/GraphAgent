@@ -327,6 +327,9 @@ export const layer = Layer.effect(
 
     const hasClients = Effect.fn("LSP.hasClients")(function* (file: string) {
       const ctx = yield* InstanceState.context
+      // Worktrees and anything else outside the project boundary are served
+      // by their own instance; never advertise or spawn a client here.
+      if (!containsPath(file, ctx)) return false
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file

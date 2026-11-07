@@ -6,11 +6,11 @@ Hooks run a command, MCP tool, HTTP request, prompt, or agent at a local convers
 
 ## Sources and policies
 
-The file chain is `${Global.Path.config}/hooks.json`, project `.agents/hooks.json`, then the separate worktree's `.agents/hooks.json`. The global path follows XDG configuration (usually `~/.config/graphagent`). Event arrays append across layers. Matching foreground handlers run concurrently; identical handlers matched more than once run once per trigger. Files reload after about two seconds of polling plus debounce.
+The file chain is `${Global.Path.config}/hooks.json`, project `.agents/hooks.json`, then project-local `.agents/hooks.local.json`. The global path follows XDG configuration (usually `~/.config/graphagent`). A linked worktree is its own project root and therefore uses its own `.agents/` layer. Event arrays append across layers. Matching foreground handlers run concurrently; identical handlers matched more than once run once per trigger. Files reload after about two seconds of polling plus debounce.
 
 Use top-level event keys. A legacy `{ "hooks": { ... } }` wrapper is accepted. `.claude/settings*.json` and deprecated OpenCode `settings.json` hook fields are not loaded as hook sources; `/import-claude-hooks` migrates them. Skill and agent frontmatter can supply scoped `hooks`; they become active when that skill or agent is actually selected. Plugin contributions retain their real plugin provenance. A project cannot label itself as a trusted user or plugin source.
 
-Workspace trust gating and the built-in `/trust` command have been removed. Hooks from global, project, worktree, skill, and agent sources execute without a trust-list prerequisite. Existing `trusted-workspaces.json` files are neither read nor modified. Tool permissions, `allowedHttpHookUrls`, and `httpHookAllowedEnvVars` retain their existing behavior.
+Workspace trust gating and the built-in `/trust` command have been removed. Hooks from global, project, project-local, skill, and agent sources execute without a trust-list prerequisite. Existing `trusted-workspaces.json` files are neither read nor modified. Tool permissions, `allowedHttpHookUrls`, and `httpHookAllowedEnvVars` retain their existing behavior.
 
 ```json
 {

@@ -1,4 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, expect, spyOn, test } from "bun:test"
@@ -7,13 +6,10 @@ import { EditorContextProvider, useEditorContext, type EditorIntegration } from 
 import { tmpdir } from "../../fixture/fixture"
 import { FakeWebSocket } from "../../lib/websocket"
 import { TestTuiContexts } from "../../fixture/tui-environment"
-import { discoverEditorConnection } from "@opencode-ai/tui/editor"
 
-const originalClaudePort = process.env.CLAUDE_CODE_SSE_PORT
 const originalOpencodePort = process.env.GRAPHAGENT_EDITOR_SSE_PORT
 
 afterEach(() => {
-  process.env.CLAUDE_CODE_SSE_PORT = originalClaudePort
   process.env.GRAPHAGENT_EDITOR_SSE_PORT = originalOpencodePort
 })
 
@@ -21,7 +17,7 @@ function nextTick() {
   return new Promise<void>((resolve) => queueMicrotask(resolve))
 }
 
-function mountEditorContext(WebSocketImpl?: typeof WebSocket) {
+function mountEditorContext(integration: EditorIntegration, WebSocketImpl?: typeof WebSocket) {
   let editor!: ReturnType<typeof useEditorContext>
   let dispose!: () => void
 
@@ -33,10 +29,9 @@ function mountEditorContext(WebSocketImpl?: typeof WebSocket) {
       return null
     }
 
-    const value = process.env.CLAUDE_CODE_SSE_PORT || process.env.GRAPHAGENT_EDITOR_SSE_PORT
     return (
       <TestTuiContexts cwd={process.cwd()} paths={{ home: os.homedir() }}>
-        <EditorContextProvider integration={editorService} WebSocketImpl={WebSocketImpl}>
+        <EditorContextProvider integration={integration} WebSocketImpl={WebSocketImpl}>
           <Consumer />
         </EditorContextProvider>
       </TestTuiContexts>
@@ -49,20 +44,27 @@ function mountEditorContext(WebSocketImpl?: typeof WebSocket) {
   }
 }
 
-const editorService: EditorIntegration = {
-  connection: discoverEditorConnection,
+// The editor connection is supplied by the host integration (or the explicit
+// GRAPHAGENT_EDITOR_SSE_PORT env override). Claude IDE lock files are never
+// read, so tests inject their own discovery function.
+function connectionFor(entries: Record<string, number>): EditorIntegration {
+  return {
+    connection: (directory) => {
+      const port = entries[directory]
+      return port === undefined ? undefined : { url: `ws://127.0.0.1:${port}`, source: "test" }
+    },
+  }
 }
 
 function createWebSocketImpl(...sockets: FakeWebSocket[]) {
   let index = 0
 
   return class {
-    constructor(url: string, options?: { headers?: Record<string, string> }) {
+    constructor(url: string) {
       const socket = sockets[index]
       index += 1
       expect(socket).toBeDefined()
       expect(url).toBe(socket!.url)
-      expect(options).toEqual(socket!.options)
       return socket as unknown as object
     }
   } as unknown as typeof WebSocket
@@ -105,33 +107,14 @@ test("useEditorContext reconnect switches editor server by session directory", a
   await using tmp = await tmpdir()
   const startupDirectory = path.join(tmp.path, "startup")
   const sessionDirectory = path.join(tmp.path, "session")
-  const ideDirectory = path.join(tmp.path, ".claude", "ide")
-  await mkdir(startupDirectory, { recursive: true })
-  await mkdir(sessionDirectory, { recursive: true })
-  await mkdir(ideDirectory, { recursive: true })
-  await writeFile(
-    path.join(ideDirectory, "3001.lock"),
-    JSON.stringify({
-      transport: "ws",
-      workspaceFolders: [startupDirectory],
-    }),
-  )
-  await writeFile(
-    path.join(ideDirectory, "3002.lock"),
-    JSON.stringify({
-      transport: "ws",
-      workspaceFolders: [sessionDirectory],
-    }),
-  )
 
-  process.env.CLAUDE_CODE_SSE_PORT = undefined
   process.env.GRAPHAGENT_EDITOR_SSE_PORT = undefined
   spyOn(process, "cwd").mockImplementation(() => startupDirectory)
-  spyOn(os, "homedir").mockImplementation(() => tmp.path)
   const firstSocket = new FakeWebSocket("ws://127.0.0.1:3001")
   const secondSocket = new FakeWebSocket("ws://127.0.0.1:3002")
+  const integration = connectionFor({ [startupDirectory]: 3001, [sessionDirectory]: 3002 })
 
-  const mounted = mountEditorContext(createWebSocketImpl(firstSocket, secondSocket))
+  const mounted = mountEditorContext(integration, createWebSocketImpl(firstSocket, secondSocket))
   await nextTick()
 
   expect(firstSocket.closed).toBeFalse()
@@ -151,30 +134,28 @@ test("useEditorContext reconnect switches editor server by session directory", a
   mounted.dispose()
 })
 
-test("useEditorContext favors configured port over lock files", async () => {
+test("useEditorContext favors configured port over discovered connections", async () => {
   await using tmp = await tmpdir()
   const startupDirectory = path.join(tmp.path, "startup")
-  const ideDirectory = path.join(tmp.path, ".claude", "ide")
-  await mkdir(startupDirectory, { recursive: true })
-  await mkdir(ideDirectory, { recursive: true })
-  await writeFile(
-    path.join(ideDirectory, "3001.lock"),
-    JSON.stringify({
-      transport: "ws",
-      workspaceFolders: [startupDirectory],
-    }),
-  )
+  let discovered = 0
 
-  process.env.CLAUDE_CODE_SSE_PORT = "4010"
-  process.env.GRAPHAGENT_EDITOR_SSE_PORT = undefined
+  process.env.GRAPHAGENT_EDITOR_SSE_PORT = "4010"
   spyOn(process, "cwd").mockImplementation(() => startupDirectory)
-  spyOn(os, "homedir").mockImplementation(() => tmp.path)
   const socket = new FakeWebSocket("ws://127.0.0.1:4010")
 
-  const mounted = mountEditorContext(createWebSocketImpl(socket))
+  const mounted = mountEditorContext(
+    {
+      connection: () => {
+        discovered += 1
+        return { url: "ws://127.0.0.1:3001", source: "test" }
+      },
+    },
+    createWebSocketImpl(socket),
+  )
   await nextTick()
 
   expect(socket.closed).toBeFalse()
+  expect(discovered).toBe(0)
 
   mounted.dispose()
 })
@@ -182,24 +163,12 @@ test("useEditorContext favors configured port over lock files", async () => {
 test("useEditorContext clears selection when reconnecting", async () => {
   await using tmp = await tmpdir()
   const startupDirectory = path.join(tmp.path, "startup")
-  const ideDirectory = path.join(tmp.path, ".claude", "ide")
-  await mkdir(startupDirectory, { recursive: true })
-  await mkdir(ideDirectory, { recursive: true })
-  await writeFile(
-    path.join(ideDirectory, "3001.lock"),
-    JSON.stringify({
-      transport: "ws",
-      workspaceFolders: [startupDirectory],
-    }),
-  )
 
-  process.env.CLAUDE_CODE_SSE_PORT = undefined
   process.env.GRAPHAGENT_EDITOR_SSE_PORT = undefined
   spyOn(process, "cwd").mockImplementation(() => startupDirectory)
-  spyOn(os, "homedir").mockImplementation(() => tmp.path)
   const socket = new FakeWebSocket("ws://127.0.0.1:3001")
 
-  const mounted = mountEditorContext(createWebSocketImpl(socket))
+  const mounted = mountEditorContext(connectionFor({ [startupDirectory]: 3001 }), createWebSocketImpl(socket))
   await nextTick()
 
   expect(socket.closed).toBeFalse()
@@ -242,24 +211,12 @@ test("useEditorContext clears selection when reconnecting", async () => {
 test("useEditorContext preserves selection for the next reconnect when requested", async () => {
   await using tmp = await tmpdir()
   const startupDirectory = path.join(tmp.path, "startup")
-  const ideDirectory = path.join(tmp.path, ".claude", "ide")
-  await mkdir(startupDirectory, { recursive: true })
-  await mkdir(ideDirectory, { recursive: true })
-  await writeFile(
-    path.join(ideDirectory, "3001.lock"),
-    JSON.stringify({
-      transport: "ws",
-      workspaceFolders: [startupDirectory],
-    }),
-  )
 
-  process.env.CLAUDE_CODE_SSE_PORT = undefined
   process.env.GRAPHAGENT_EDITOR_SSE_PORT = undefined
   spyOn(process, "cwd").mockImplementation(() => startupDirectory)
-  spyOn(os, "homedir").mockImplementation(() => tmp.path)
   const socket = new FakeWebSocket("ws://127.0.0.1:3001")
 
-  const mounted = mountEditorContext(createWebSocketImpl(socket))
+  const mounted = mountEditorContext(connectionFor({ [startupDirectory]: 3001 }), createWebSocketImpl(socket))
   await nextTick()
 
   sendSelection(socket, path.join(startupDirectory, "file.ts"))
@@ -283,12 +240,11 @@ test("useEditorContext preserves selection for the next reconnect when requested
 
 test("useEditorContext connects with GRAPHAGENT_EDITOR_SSE_PORT", async () => {
   await using tmp = await tmpdir()
-  process.env.CLAUDE_CODE_SSE_PORT = undefined
   process.env.GRAPHAGENT_EDITOR_SSE_PORT = "4020"
   spyOn(process, "cwd").mockImplementation(() => tmp.path)
   const socket = new FakeWebSocket("ws://127.0.0.1:4020")
 
-  const mounted = mountEditorContext(createWebSocketImpl(socket))
+  const mounted = mountEditorContext({}, createWebSocketImpl(socket))
   await nextTick()
 
   expect(socket.closed).toBeFalse()

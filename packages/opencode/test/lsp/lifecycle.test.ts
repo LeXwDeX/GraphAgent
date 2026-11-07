@@ -75,6 +75,20 @@ describe("LSP service lifecycle", () => {
     { config: { lsp: { eslint: { disabled: true } } } },
   )
 
+  it.instance(
+    "hasClients() returns false for files in a product worktree",
+    () =>
+      LSP.Service.use((lsp) =>
+        Effect.gen(function* () {
+          const result = yield* lsp.hasClients(
+            path.join((yield* TestInstance).directory, ".agents", "worktree", "wt-01", "test.ts"),
+          )
+          expect(result).toBe(false)
+        }),
+      ),
+    { config: { lsp: true } },
+  )
+
   it.instance("hasClients() returns false for files outside instance", () =>
     LSP.Service.use((lsp) =>
       Effect.gen(function* () {

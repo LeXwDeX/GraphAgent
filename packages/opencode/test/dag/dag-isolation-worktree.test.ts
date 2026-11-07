@@ -59,7 +59,14 @@ afterEach(() => {
 
 interface Completion {
   nodeID: string
-  worktree?: { directory: string; commit?: string; patchPath?: string; touchedPaths: readonly string[]; state: string; conflictsWith: readonly string[] }
+  worktree?: {
+    directory: string
+    commit?: string
+    patchPath?: string
+    touchedPaths: readonly string[]
+    state: string
+    conflictsWith: readonly string[]
+  }
   touchedPaths?: readonly string[]
 }
 
@@ -137,9 +144,7 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
     store: store as DagStore.Interface,
     nodeQueued: Effect.fn("s")(() => Effect.void),
     nodeStarted: Effect.fn("s")((): Effect.Effect<void, TerminalViolationError> =>
-      harness.rejectNodeStarted
-        ? Effect.fail(new TerminalViolationError("node-1", "failed", "started"))
-        : Effect.void,
+      harness.rejectNodeStarted ? Effect.fail(new TerminalViolationError("node-1", "failed", "started")) : Effect.void,
     ),
     nodeCompleted: Effect.fn("s")(
       (
@@ -157,7 +162,10 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
                 worktree.touchedPaths,
                 harness.completed
                   .filter((completion) => completion.worktree)
-                  .map((completion) => ({ id: completion.nodeID, touchedPaths: completion.worktree?.touchedPaths ?? [] })),
+                  .map((completion) => ({
+                    id: completion.nodeID,
+                    touchedPaths: completion.worktree?.touchedPaths ?? [],
+                  })),
               )
             : []
           harness.completed.push({
@@ -170,7 +178,15 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
         }),
     ),
     nodeFailed: Effect.fn("s")(
-      (_dagID: string, nodeID: string, reason: string, _trigger: string, _attempt?: unknown, _errorClass?: unknown, worktree?: DagEvent.NodeWorktree) =>
+      (
+        _dagID: string,
+        nodeID: string,
+        reason: string,
+        _trigger: string,
+        _attempt?: unknown,
+        _errorClass?: unknown,
+        worktree?: DagEvent.NodeWorktree,
+      ) =>
         Effect.gen(function* () {
           harness.failed.push({ nodeID, reason, ...(worktree ? { worktree } : {}) })
           yield* harness.onFailure(reason, worktree)
@@ -241,7 +257,9 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
         if (harness.failRemoval)
           return yield* Effect.fail(new Worktree.RemoveFailedError({ message: "cleanup failed" }))
         if (current && path.resolve(current.directory) === path.resolve(input.directory))
-          return yield* Effect.fail(new Worktree.RemoveFailedError({ message: "Cannot remove the primary or current worktree" }))
+          return yield* Effect.fail(
+            new Worktree.RemoveFailedError({ message: "Cannot remove the primary or current worktree" }),
+          )
         execFileSync("git", ["-C", target, "worktree", "remove", "--force", input.directory])
         harness.removals.push(input.directory)
         return true
@@ -324,24 +342,42 @@ describe("spawn worktree isolation", () => {
   it("records touched paths for non-isolated writers", async () => {
     const target = repo()
     const harness = makeHarness(target)
+    const first = spawnInput(target, "a", "success", harness, false)
+    const second = spawnInput(target, "b", "success", harness, false)
+    // Each concurrent writer owns a distinct path: attribution is per writer,
+    // and two writers racing on the same file would depend on scheduling for
+    // whether the second sees the first's write as pre-existing.
+    const files = new Map([
+      ["ses_child_1", "shared-a.txt"],
+      ["ses_child_2", "shared-b.txt"],
+    ])
+    harness.prompt = (sessionID, directory) => {
+      writeFileSync(path.join(directory, files.get(sessionID) ?? "shared.txt"), `from ${sessionID}\n`)
+    }
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const first = yield* spawnNode(Semaphore.makeUnsafe(2), spawnInput(target, "a", "success", harness, false))
-          const second = yield* spawnNode(Semaphore.makeUnsafe(2), spawnInput(target, "b", "success", harness, false))
-          yield* Fiber.await(first.fiber)
-          yield* Fiber.await(second.fiber)
+          const firstFiber = yield* spawnNode(Semaphore.makeUnsafe(2), first)
+          const secondFiber = yield* spawnNode(Semaphore.makeUnsafe(2), second)
+          yield* Fiber.await(firstFiber.fiber)
+          yield* Fiber.await(secondFiber.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
     )
 
     expect(harness.completed).toHaveLength(2)
     for (const completion of harness.completed) {
-      expect(completion.touchedPaths).toContain("shared.txt")
+      expect(completion.touchedPaths).toHaveLength(1)
+      expect(completion.touchedPaths?.[0]).toMatch(/^shared-[ab]\.txt$/)
       expect(completion.worktree).toBeUndefined()
     }
+    expect(new Set(harness.completed.flatMap((completion) => completion.touchedPaths ?? []))).toEqual(
+      new Set(["shared-a.txt", "shared-b.txt"]),
+    )
     expect(harness.removals).toEqual([])
-    expect(git(target, ["status", "--porcelain"])).toContain("?? shared.txt")
+    const status = git(target, ["status", "--porcelain"])
+    expect(status).toContain("?? shared-a.txt")
+    expect(status).toContain("?? shared-b.txt")
   })
 
   it("does not attribute pre-existing edits to a non-isolated writer", async () => {
@@ -399,64 +435,129 @@ describe("spawn worktree isolation", () => {
           const { db } = yield* Database.Service
           const events = yield* EventV2.Service
           const store = yield* DagStore.Service
-          yield* db.insert(ProjectTable).values({
-            id: Project.ID.make("project-1"), worktree: AbsolutePath.make(target), sandboxes: [],
-          }).run().pipe(Effect.orDie)
-          yield* db.insert(SessionTable).values({
-            id: SessionSchema.ID.make("ses_parent"), project_id: Project.ID.make("project-1"), slug: "parent",
-            directory: AbsolutePath.make(target), title: "Parent", version: "test",
-          }).run().pipe(Effect.orDie)
-          yield* db.insert(WorkflowTable).values({
-            id: "dag_1", project_id: Project.ID.make("project-1"), session_id: SessionSchema.ID.make("ses_parent"),
-            title: "Isolation", status: "running", config: "{}", seq: 0,
-          }).run().pipe(Effect.orDie)
-          yield* db.insert(WorkflowNodeTable).values({
-            id: "a", workflow_id: "dag_1", name: "Node", worker_type: "build", status: "pending",
-            required: true, depends_on: [], seq: 0,
-          }).run().pipe(Effect.orDie)
+          yield* db
+            .insert(ProjectTable)
+            .values({
+              id: Project.ID.make("project-1"),
+              worktree: AbsolutePath.make(target),
+              sandboxes: [],
+            })
+            .run()
+            .pipe(Effect.orDie)
+          yield* db
+            .insert(SessionTable)
+            .values({
+              id: SessionSchema.ID.make("ses_parent"),
+              project_id: Project.ID.make("project-1"),
+              slug: "parent",
+              directory: AbsolutePath.make(target),
+              title: "Parent",
+              version: "test",
+            })
+            .run()
+            .pipe(Effect.orDie)
+          yield* db
+            .insert(WorkflowTable)
+            .values({
+              id: "dag_1",
+              project_id: Project.ID.make("project-1"),
+              session_id: SessionSchema.ID.make("ses_parent"),
+              title: "Isolation",
+              status: "running",
+              config: "{}",
+              seq: 0,
+            })
+            .run()
+            .pipe(Effect.orDie)
+          yield* db
+            .insert(WorkflowNodeTable)
+            .values({
+              id: "a",
+              workflow_id: "dag_1",
+              name: "Node",
+              worker_type: "build",
+              status: "pending",
+              required: true,
+              depends_on: [],
+              seq: 0,
+            })
+            .run()
+            .pipe(Effect.orDie)
           const dagID = DagEvent.DagID.make("dag_1")
           const nodeID = DagEvent.NodeID.make("a")
           yield* events.publish(DagEvent.NodeStarted, {
-            dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"), timestamp: yield* DateTime.now,
+            dagID,
+            nodeID,
+            childSessionID: SessionSchema.ID.make("ses_first"),
+            timestamp: yield* DateTime.now,
             worktree: { directory: first, touchedPaths: [], state: "active", conflictsWith: [] },
           })
           yield* events.publish(DagEvent.NodeRestarted, {
-            dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"), timestamp: yield* DateTime.now,
+            dagID,
+            nodeID,
+            childSessionID: SessionSchema.ID.make("ses_first"),
+            timestamp: yield* DateTime.now,
           })
-          harness.onFailure = (reason, worktree) => Effect.gen(function* () {
-            yield* events.publish(DagEvent.NodeFailed, {
-              dagID, nodeID, reason, trigger: "exec_failed", worktree, timestamp: yield* DateTime.now,
+          harness.onFailure = (reason, worktree) =>
+            Effect.gen(function* () {
+              yield* events.publish(DagEvent.NodeFailed, {
+                dagID,
+                nodeID,
+                reason,
+                trigger: "exec_failed",
+                worktree,
+                timestamp: yield* DateTime.now,
+              })
             })
-          })
           const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
           yield* Fiber.await(result.fiber)
           const status = yield* Effect.gen(function* () {
             const info = yield* WorkflowTool
             const workflow = yield* info.init()
-            return yield* workflow.execute({ params: { action: "status", workflow_id: Dag.ID.make("dag_1") } }, {
-              sessionID: SessionID.make("ses_parent"), messageID: MessageID.ascending(), agent: "build",
-              abort: new AbortController().signal, messages: [], metadata: () => Effect.void, ask: () => Effect.void,
-            })
-          }).pipe(Effect.provide(Layer.mergeAll(
-            Layer.mock(Dag.Service, { store }),
-            Layer.mock(Provider.Service, {}),
-            Layer.mock(Truncate.Service, { output: (content) => Effect.succeed({ content, truncated: false }) }),
-          )))
+            return yield* workflow.execute(
+              { params: { action: "status", workflow_id: Dag.ID.make("dag_1") } },
+              {
+                sessionID: SessionID.make("ses_parent"),
+                messageID: MessageID.ascending(),
+                agent: "build",
+                abort: new AbortController().signal,
+                messages: [],
+                metadata: () => Effect.void,
+                ask: () => Effect.void,
+              },
+            )
+          }).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                Layer.mock(Dag.Service, { store }),
+                Layer.mock(Provider.Service, {}),
+                Layer.mock(Truncate.Service, { output: (content) => Effect.succeed({ content, truncated: false }) }),
+              ),
+            ),
+          )
           const view = JSON.parse(status.output)
-          expect(view.worktrees).toEqual(expect.arrayContaining([
-            expect.objectContaining({ directory: first, state: "active", retired: true }),
-            expect.objectContaining({ directory: harness.worktrees[0], state: "kept" }),
-          ]))
+          expect(view.worktrees).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ directory: first, state: "active", retired: true }),
+              expect.objectContaining({ directory: harness.worktrees[0], state: "kept" }),
+            ]),
+          )
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(harness.layer, database, eventsLayer, storeLayer, projector))) as Effect.Effect<never>,
+      ).pipe(
+        Effect.provide(Layer.mergeAll(harness.layer, database, eventsLayer, storeLayer, projector)),
+      ) as Effect.Effect<never>,
     )
 
     expect(harness.completed).toEqual([])
     expect(harness.failed).toHaveLength(1)
     expect(harness.failed[0]?.reason).toContain("session create failed")
     expect(harness.failed[0]?.worktree).toEqual({
-      directory: harness.worktrees[0], branch: "opencode/dag-dag_1-a", baseHead: git(target, ["rev-parse", "HEAD"]),
-      touchedPaths: [], state: "kept", conflictsWith: [],
+      directory: harness.worktrees[0],
+      branch: "opencode/dag-dag_1-a",
+      baseHead: git(target, ["rev-parse", "HEAD"]),
+      touchedPaths: [],
+      state: "kept",
+      conflictsWith: [],
     })
     expect(existsSync(harness.worktrees[0])).toBe(true)
   })

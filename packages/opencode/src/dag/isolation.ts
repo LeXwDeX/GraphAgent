@@ -17,7 +17,6 @@ import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, normalize, sep } from "node:path"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
 
 export type WorktreeState = "active" | "removed" | "kept"
 
@@ -39,9 +38,7 @@ export interface WorktreeCommit {
   patch: string
 }
 
-export type WorktreeCommitResult =
-  | { ok: true; change?: WorktreeCommit }
-  | { ok: false; reason: string }
+export type WorktreeCommitResult = { ok: true; change?: WorktreeCommit } | { ok: false; reason: string }
 
 export interface TouchedNode {
   readonly id: string
@@ -160,13 +157,7 @@ export function commitWorktree(directory: string, baseHead: string, message: str
   if (!added.ok) return { ok: false, reason: `git add failed: ${added.reason}` }
   const committed = git(directory, ["commit", "-m", message])
   if (!committed.ok) return { ok: false, reason: `git commit failed: ${committed.reason}` }
-  const afterCommit = git(directory, [
-    "-c",
-    "core.quotePath=false",
-    "status",
-    "--porcelain",
-    "--untracked-files=all",
-  ])
+  const afterCommit = git(directory, ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all"])
   if (!afterCommit.ok) return { ok: false, reason: `git status after commit failed: ${afterCommit.reason}` }
   const touchedAfterCommit = mergePaths(touched, parsePorcelain(afterCommit.text))
   if (afterCommit.text.length > 0)
@@ -176,9 +167,7 @@ export function commitWorktree(directory: string, baseHead: string, message: str
   // #946: a child may have committed earlier in this attempt. The completion
   // status only lists what is dirty now, so union the committed range too —
   // conflict detection must see every path this attempt changed.
-  const names = baseHead
-    ? git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"])
-    : undefined
+  const names = baseHead ? git(directory, ["diff", "--name-only", "-z", "--no-renames", baseHead, "HEAD"]) : undefined
   if (names && !names.ok) return { ok: false, reason: `git diff --name-only failed: ${names.reason}` }
   const touchedPaths = names ? mergePaths(touchedAfterCommit, parseNameList(names.text)) : touchedAfterCommit
   const patch = git(directory, ["diff", "--binary", baseHead, "HEAD"])
@@ -202,15 +191,15 @@ function safePathComponent(value: string, label: string): string {
   return value
 }
 
-/** Write an isolated node's patch under the shared report area so it survives
- * the worktree removal. Returns the absolute path and its sha256. */
+/** Write an isolated node's patch under the project's XDG report area so it
+ * survives the worktree removal. Returns the absolute path and its sha256. */
 export function writePatchArtifact(
-  reportRoot: string,
+  reportsArea: string,
   dagID: string,
   nodeID: string,
   patch: string,
 ): { path: string; sha256: string } {
-  const directory = join(reportRoot, PROJECT_DIR, "workflow-reports", safePathComponent(dagID, "workflow ID"))
+  const directory = join(reportsArea, safePathComponent(dagID, "workflow ID"))
   mkdirSync(directory, { recursive: true })
   const path = join(directory, `${safePathComponent(nodeID, "node ID")}.patch`)
   writeFileSync(path, patch)
@@ -222,16 +211,14 @@ export interface WorktreeCompletion {
   touchedPaths: string[]
 }
 
-export type WorktreeCompletionResult =
-  | { ok: true; completion: WorktreeCompletion }
-  | { ok: false; reason: string }
+export type WorktreeCompletionResult = { ok: true; completion: WorktreeCompletion } | { ok: false; reason: string }
 
 /** The shared completion step for an isolated node: commit pending work,
  * persist a patch, and return the metadata the caller records. Removal is the
  * caller's job because it needs the owner instance context. */
 export function completeWorktree(input: {
   worktree: WorktreeMetadata
-  reportRoot: string
+  reportsArea: string
   dagID: string
   nodeID: string
   message: string
@@ -255,7 +242,7 @@ export function completeWorktree(input: {
       },
     }
   try {
-    const artifact = writePatchArtifact(input.reportRoot, input.dagID, input.nodeID, commit.change.patch)
+    const artifact = writePatchArtifact(input.reportsArea, input.dagID, input.nodeID, commit.change.patch)
     return {
       ok: true,
       completion: {

@@ -6,12 +6,11 @@
  * accumulate, they do not replace):
  *
  *   1. ~/.config/graphagent/hooks.json         (global, hot-reloaded)
- *   2. <project>/.agents/hooks.json            (project, hot-reloaded)
- *   3. <worktree>/.agents/hooks.json           (worktree, hot-reloaded, when ≠ project)
+ *   2. <root>/.agents/hooks.json               (project, hot-reloaded)
+ *   3. <root>/.agents/hooks.local.json         (local, hot-reloaded)
  *
- * `.claude/` directories are NOT read for hooks (complete cut); a leftover
- * `hooks` field in GraphAgent-owned settings.json files triggers a one-time
- * deprecation warning pointing at /import-claude-hooks (hooks there are ignored).
+ * A linked worktree is itself a project root, so there is no separate worktree
+ * layer. `.claude/` directories are never read for hooks (complete cut).
  *
  * Supports the Claude Code hook event surface at the protocol/schema layer.
  *
@@ -63,6 +62,7 @@ import * as Log from "@/util/log"
 import { Process } from "@/util/process"
 import { Global } from "@opencode-ai/core/global"
 import { APP_NAME, PROJECT_DIR } from "@opencode-ai/core/brand"
+import { hasProjectLayer } from "@/project/project-root"
 import { InstanceState } from "@/effect/instance-state"
 import { MCP } from "@/mcp"
 import { mcpHookOptions } from "@/mcp/elicitation-binding"
@@ -79,7 +79,6 @@ import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 import { EffectBridge } from "@/effect/bridge"
 import { buildForkHooks, watchSettings } from "./extensions" // [FORK:hook-ext]
-import { hasWorktreeLayer } from "./worktree-layer"
 import { HookTranscript } from "./transcript"
 import { claudeToolResponse } from "./tool-output"
 import { patchFilePaths } from "./file-changes"
@@ -253,7 +252,7 @@ export interface Settings {
   httpHookAllowedEnvVars?: string[]
   /**
    * Temporarily switches every hook off, including session-scoped skill and agent hooks. The
-   * value left after layer precedence applies decides (global, then project, then worktree), so
+   * value left after layer precedence applies decides (global, then project, then local), so
    * a project can override a user-level `true` with `false` (reference 714).
    */
   disableAllHooks?: boolean
@@ -267,7 +266,7 @@ export interface Settings {
  */
 export interface HookSummary {
   event: HookEvent
-  scope: "global" | "project" | "worktree"
+  scope: "global" | "project" | "local"
   type: HookCommand["type"]
   descriptor: string
   matcher?: string
@@ -1205,24 +1204,28 @@ function resolveGlobalConfig(globalConfig?: string): string {
 }
 
 /**
- * Build the hooks.json candidate file list with scope tags. Shared by
- * loadChain (merge) and summarizeChain (scope-tagged summaries) so adding or
- * removing a path layer updates both consumers without a second edit.
+ * Build the hooks.json candidate file list with scope tags. The project layer
+ * is a single directory (`<root>/.agents/`) holding a committed `hooks.json`
+ * and a local `hooks.local.json`; there is no worktree layer because a linked
+ * worktree is itself a project root. Shared by loadChain (merge) and
+ * summarizeChain (scope-tagged summaries) so adding or removing a path layer
+ * updates both consumers without a second edit.
  */
 function chainCandidates(
-  directory: string,
-  worktree: string,
+  root: string,
   globalConfig?: string,
-): Array<{ scope: "global" | "project" | "worktree"; file: string }> {
+): Array<{ scope: "global" | "project" | "local"; file: string }> {
   const globalConfigDir = resolveGlobalConfig(globalConfig)
-  const candidates: Array<{ scope: "global" | "project" | "worktree"; file: string }> = [
+  // When the resolved root is $HOME there is no project layer: `~/.agents` is
+  // the user-level shared directory, so its hooks files must not load as
+  // project hooks. Only the global hooks.json applies.
+  if (!hasProjectLayer(root, Global.Path.home))
+    return [{ scope: "global", file: path.join(globalConfigDir, "hooks.json") }]
+  return [
     { scope: "global", file: path.join(globalConfigDir, "hooks.json") },
-    { scope: "project", file: path.join(directory, PROJECT_DIR, "hooks.json") },
+    { scope: "project", file: path.join(root, PROJECT_DIR, "hooks.json") },
+    { scope: "local", file: path.join(root, PROJECT_DIR, "hooks.local.json") },
   ]
-  if (hasWorktreeLayer(directory, worktree)) {
-    candidates.push({ scope: "worktree", file: path.join(worktree, PROJECT_DIR, "hooks.json") })
-  }
-  return candidates
 }
 
 /**
@@ -1237,14 +1240,13 @@ function chainCandidates(
  * `loadChain`), so both shells surface the same warnings.
  */
 function readChain(
-  directory: string,
-  worktree: string,
+  root: string,
   globalConfig?: string,
 ): { settings: Settings; summaries: HookSummary[]; invalid: string[] } {
   const layers: Settings[] = []
   const summaries: HookSummary[] = []
   const invalid: string[] = []
-  for (const { scope, file } of chainCandidates(directory, worktree, globalConfig)) {
+  for (const { scope, file } of chainCandidates(root, globalConfig)) {
     const read = readJSONFile(file)
     if (read.invalid) invalid.push(file)
     const data = read.settings
@@ -1275,22 +1277,22 @@ function readChain(
 
 /**
  * Produce scope-tagged summaries of the merged hooks chain — one entry per
- * individual hook command, tagged with the layer (global/project/worktree) it
+ * individual hook command, tagged with the layer (global/project/local) it
  * came from. Ordering matches loadChain: global first, then project, then
- * worktree. Used by `SettingsHook.list()` so the Active Hooks block reflects
+ * local. Used by `SettingsHook.list()` so the Active Hooks block reflects
  * live, hot-reloaded state without re-reading files on every call.
  *
  * Exported for unit testing only; not part of the public surface.
  */
-export function summarizeChain(directory: string, worktree: string, globalConfig?: string): HookSummary[] {
-  return readChain(directory, worktree, globalConfig).summaries
+export function summarizeChain(root: string, globalConfig?: string): HookSummary[] {
+  return readChain(root, globalConfig).summaries
 }
 
 // Exported for unit testing only; not part of the public surface.
 // `globalConfig` overrides the resolved GraphAgent global config dir so tests can
 // point it at an isolated temp dir instead of the real ~/.config/graphagent.
-export function loadChain(directory: string, worktree: string, globalConfig?: string): Settings {
-  return loadChainWithSummaries(directory, worktree, globalConfig).settings
+export function loadChain(root: string, globalConfig?: string): Settings {
+  return loadChainWithSummaries(root, globalConfig).settings
 }
 
 /**
@@ -1301,99 +1303,10 @@ export function loadChain(directory: string, worktree: string, globalConfig?: st
  * reopen the transient-inconsistency window `readChain` exists to close.
  */
 export function loadChainWithSummaries(
-  directory: string,
-  worktree: string,
+  root: string,
   globalConfig?: string,
 ): { settings: Settings; summaries: HookSummary[]; invalid: string[] } {
-  const chain = readChain(directory, worktree, globalConfig)
-
-  // Deprecation scan: warn once per OpenCode-owned settings.json that still
-  // carries a `hooks` field (D4). Hooks there are NOT loaded — the warning is
-  // the only signal. `.claude/` files are never scanned (silent ignore per spec).
-  // Lives outside readChain because it reads settings.json (not hooks.json) and
-  // is irrelevant to the summary.
-  const globalConfigDir = resolveGlobalConfig(globalConfig)
-  for (const fp of deprecatedSettingsPaths(globalConfigDir, directory, worktree)) {
-    warnDeprecatedHooksField(fp)
-  }
-
-  return chain
-}
-
-/**
- * Tracks OpenCode-owned `settings.json` files whose deprecated `hooks` field has
- * already been flagged. loadChain's deprecation scan warns once per file so a
- * hot-reload (which re-runs loadChain) does not re-warn the same file. The fork's
- * logger is a noop shim, so Set membership is the only observable signal — used
- * by __hasWarnedDeprecated for tests. `.claude/` files are never scanned (silent
- * ignore per spec); only OpenCode-owned settings.json paths are.
- */
-const warnedDeprecatedHooks = new Set<string>()
-
-/**
- * OpenCode-owned settings.json paths that previously carried a `hooks` field.
- * `.claude/` is deliberately excluded (silent ignore). Used by the deprecation
- * scan so users who had hooks in settings.json learn they moved to hooks.json.
- */
-function deprecatedSettingsPaths(globalConfigDir: string, directory: string, worktree: string): string[] {
-  const paths = [
-    path.join(globalConfigDir, "settings.json"),
-    path.join(directory, PROJECT_DIR, "settings.json"),
-    path.join(directory, PROJECT_DIR, "settings.local.json"),
-  ]
-  if (hasWorktreeLayer(directory, worktree)) {
-    paths.push(
-      path.join(worktree, PROJECT_DIR, "settings.json"),
-      path.join(worktree, PROJECT_DIR, "settings.local.json"),
-    )
-  }
-  return paths
-}
-
-/**
- * True when the JSON object at filepath has a non-empty `hooks` field. Parse or
- * missing-file errors return false silently (unreadable deprecated files are not
- * worth warning about). The value is checked for truthiness so an explicit
- * `"hooks": {}` / `"hooks": null` does not trigger a noisy false alarm.
- */
-function hasHooksField(filepath: string): boolean {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(filepath, "utf8"))
-    return isRecord(parsed) && Boolean(parsed.hooks)
-  } catch {
-    return false
-  }
-}
-
-/**
- * One-time-per-file deprecation warning for a `hooks` field left in an old
- * settings.json. Tracked via warnedDeprecatedHooks so hot-reload (which re-runs
- * loadChain) does not re-warn. The logger is a noop shim in this fork, so Set
- * membership is the observable signal consumed by __hasWarnedDeprecated.
- */
-function warnDeprecatedHooksField(filepath: string): void {
-  if (warnedDeprecatedHooks.has(filepath) || !existsSync(filepath)) return
-  if (!hasHooksField(filepath)) return
-  log.warn(
-    `hooks field found in ${filepath} — hooks are now loaded from hooks.json. Run /import-claude-hooks to migrate.`,
-  )
-  warnedDeprecatedHooks.add(filepath)
-}
-
-/**
- * @internal Test-only: whether a settings.json path was flagged as carrying a
- * deprecated `hooks` field during loadChain's deprecation scan.
- */
-export function __hasWarnedDeprecated(filepath: string): boolean {
-  return warnedDeprecatedHooks.has(filepath)
-}
-
-/**
- * @internal Test-only: reset the deprecation tracking so each test starts from a
- * clean warning state.
- */
-export function __resetDeprecatedWarnings(): void {
-  warnedDeprecatedHooks.clear()
+  return readChain(root, globalConfig)
 }
 
 /**
@@ -1401,12 +1314,6 @@ export function __resetDeprecatedWarnings(): void {
  * can assert which files the chain would read without writing to them.
  */
 export { chainCandidates as __chainCandidates }
-
-/**
- * @internal Test-only: the deprecated settings.json paths scanned for a stale
- * `hooks` field, exported for the same reason as `__chainCandidates`.
- */
-export { deprecatedSettingsPaths as __deprecatedSettingsPaths }
 
 /** Diagnose fields that have no effect for the selected handler type. */
 export function detectUnsupportedFields(
@@ -1487,7 +1394,7 @@ const DRAIN_MS = 500
  * A deleted working directory must not disable hooks for the rest of the
  * session: the reference falls back to the session-start directory, the
  * project root, home, then temp. The instance directory (`cwd`) is already
- * the first candidate; the stable worktree root survives its deletion.
+ * the first candidate; the stable project root survives its deletion.
  */
 function resolveHookCwd(candidates: readonly (string | undefined)[]): string {
   for (const candidate of candidates) {
@@ -2364,8 +2271,6 @@ interface State {
   settings: Settings
   cwd: string
   /** Stable project root; survives deletion of `cwd`, so hooks can fall back to it. */
-  worktree: string
-  /** Project root used for `CLAUDE_PROJECT_DIR` and its template placeholder. */
   root: string
   /**
    * Deduplicated additionalContext strings, bucketed per sessionID. Each
@@ -2412,7 +2317,7 @@ export interface Interface {
   readonly unregisterScoped?: (sessionID: SessionID | string, origin: string) => Effect.Effect<void>
   /**
    * Read-only view of the currently-effective hooks (merged global + project +
-   * worktree chain), one entry per hook command tagged with its source layer.
+   * local chain), one entry per hook command tagged with its source layer.
    * Backed by the same hot-reloaded state `trigger` consults — never re-reads
    * files. Empty when no hooks.json layer defines any hook or when
    * disableAllHooks is on, because no trigger can run them.
@@ -3118,12 +3023,11 @@ export const layer = Layer.effect(
 
     const state = yield* InstanceState.make(
       Effect.fn("SettingsHook.state")(function* (instCtx) {
-        const chain = loadChainWithSummaries(instCtx.directory, instCtx.worktree)
+        const chain = loadChainWithSummaries(instCtx.root)
         const stateObj = {
           settings: chain.settings,
           hooksList: chain.summaries,
           cwd: instCtx.directory,
-          worktree: instCtx.worktree,
           root: instCtx.root,
           seen: new Map<string, Set<string>>(),
           once: new Map<string, WeakSet<HookCommand>>(),
@@ -3154,16 +3058,14 @@ export const layer = Layer.effect(
         // in flight, so a disposed instance can never commit.
         const bridge = yield* EffectBridge.make()
         const reloadCandidate = Effect.fn("SettingsHook.reloadCandidate")(function* (changedFile: string) {
-          const candidate = loadChainWithSummaries(instCtx.directory, instCtx.worktree)
+          const candidate = loadChainWithSummaries(instCtx.root)
           if (candidate.invalid.length > 0) {
             log.warn("hooks.json is not valid JSON; keeping the current hooks", { files: candidate.invalid })
             return undefined
           }
-          const scope = chainCandidates(instCtx.directory, instCtx.worktree).find(
-            (item) => item.file === changedFile,
-          )?.scope
+          const scope = chainCandidates(instCtx.root).find((item) => item.file === changedFile)?.scope
           const source =
-            scope === "global" ? "user_settings" : scope === "worktree" ? "local_settings" : "project_settings"
+            scope === "global" ? "user_settings" : scope === "local" ? "local_settings" : "project_settings"
           // Real sessions of this instance decide first; with none registered, the hooks
           // run once without a session. Failures of the hooks themselves never block.
           const asked: HookConfigChange.Decision = configChange
@@ -3194,8 +3096,7 @@ export const layer = Layer.effect(
           return candidate.settings
         })
         const handle = watchSettings(
-          instCtx.directory,
-          instCtx.worktree,
+          instCtx.root,
           (changedFile) => bridge.run(reloadCandidate(changedFile)),
           () => {},
           Global.Path.config,
@@ -3249,8 +3150,8 @@ export const layer = Layer.effect(
         log.warn("hook working directory unavailable; using fallback", { cwd, fallback: resolvedCwd })
       // CLAUDE_PROJECT_DIR names the project root for the whole session, even
       // when the session was opened in (or moved to) a checkout subdirectory.
-      // A directory outside the project, or a non-VCS "/" worktree, keeps cwd.
-      const hookProjectDir = hasWorktreeLayer(resolvedCwd, projectDir) ? projectDir : resolvedCwd
+      // `root` is resolved at instance creation and always exists.
+      const hookProjectDir = projectDir ?? resolvedCwd
       if (entry.type === "http") {
         const settings = (yield* InstanceState.get(state)).settings
         if (!httpHookUrlAllowed(httpUrl(entry), settings.allowedHttpHookUrls)) {

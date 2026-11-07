@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -15,7 +16,7 @@ type Layer int
 const (
 	LayerManaged Layer = iota // 管理员强制（最高优先级中的文件层）
 	LayerInline               // GRAPHAGENT_CONFIG_CONTENT 环境变量
-	LayerProject              // 项目根 graphagent.json
+	LayerProject              // 项目层 <root>/.agents/settings.json
 	LayerCustom               // GRAPHAGENT_CONFIG 环境变量
 	LayerGlobal               // ~/.config/graphagent/graphagent.json
 )
@@ -120,16 +121,15 @@ func configDir() string {
 	return filepath.Join(home, ".config", "graphagent")
 }
 
-// ProjectPath returns the highest-priority project config file, or the default path.
+// ProjectPath returns the project-layer write target, or an empty string when
+// no writable project root exists. The project layer is the single
+// `<root>/.agents/` directory; the shared settings file is its canonical target.
 func ProjectPath() string {
-	if paths := projectPathCandidates(); len(paths) > 0 {
-		return paths[0]
+	root := projectRoot()
+	if root == "" {
+		return ""
 	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "graphagent.json"
-	}
-	return filepath.Join(dir, "graphagent.json")
+	return filepath.Join(root, projectDirName, "settings.json")
 }
 
 func globalConfigPaths() []string {
@@ -137,39 +137,139 @@ func globalConfigPaths() []string {
 }
 
 func projectConfigPaths() []string {
-	return projectPathCandidates()
-}
-
-func projectPathCandidates() []string {
-	dirs := projectDirs()
-	var result []string
-	for i := len(dirs) - 1; i >= 0; i-- {
-		result = append(result, configFiles(filepath.Join(dirs[i], ".agents"))...)
-	}
-	for _, dir := range dirs {
-		result = append(result, configFiles(dir, "graphagent.jsonc", "graphagent.json")...)
-	}
-	return result
-}
-
-func projectDirs() []string {
-	dir, err := os.Getwd()
-	if err != nil {
+	root := projectRoot()
+	if root == "" {
 		return nil
 	}
-	var result []string
-	for {
-		result = append(result, dir)
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			break
-		}
-		dir = parent
+	return configFiles(filepath.Join(root, projectDirName), "settings.json", "settings.local.json")
+}
+
+const projectDirName = ".agents"
+
+// ProjectRootInput is the pure input for project-root resolution. Tests inject
+// `$HOME`, the git toplevel, and the `.agents/` probe so the shared TS/Go
+// fixture can drive both implementations without touching the real machine.
+type ProjectRootInput struct {
+	Directory   string
+	Home        string
+	Toplevel    string
+	IsDirectory func(string) bool
+}
+
+// ResolveProjectRoot implements the runtime's project-root rule: the nearest
+// directory at or above the instance directory that holds `.agents/`, bounded
+// by the git toplevel. `$HOME` and the filesystem root never become project
+// roots. Without a marker a git repository falls back to its toplevel and
+// everything else to the instance directory — the same rule as
+// packages/opencode/src/project/project-root.ts.
+func ResolveProjectRoot(in ProjectRootInput) string {
+	start := filepath.Clean(in.Directory)
+	home := ""
+	if in.Home != "" {
+		home = filepath.Clean(in.Home)
 	}
-	return result
+	toplevel := ""
+	if in.Toplevel != "" {
+		toplevel = filepath.Clean(in.Toplevel)
+	}
+	root := fsRoot(start)
+	upper := toplevel
+	if upper == "" {
+		if home != "" && within(start, home) {
+			upper = home
+		} else {
+			upper = root
+		}
+	}
+
+	for current := start; ; {
+		if !samePath(current, home) && !samePath(current, root) && in.IsDirectory(filepath.Join(current, projectDirName)) {
+			return current
+		}
+		if samePath(current, upper) {
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	if toplevel != "" {
+		return toplevel
+	}
+	return start
+}
+
+// projectRoot returns the single writable project layer, or "" when there is
+// none. A root that resolves to `$HOME` has no project layer: `~/.agents` is
+// the user-level shared directory, so callers must reject project-layer writes.
+func projectRoot() string {
+	start, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	home := ""
+	if resolved, err := os.UserHomeDir(); err == nil {
+		home = resolved
+	}
+	root := ResolveProjectRoot(ProjectRootInput{
+		Directory:   start,
+		Home:        home,
+		Toplevel:    gitToplevel(start),
+		IsDirectory: isDirectory,
+	})
+	if samePath(root, home) {
+		return ""
+	}
+	return root
+}
+
+func gitToplevel(dir string) string {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	toplevel := strings.TrimSpace(string(output))
+	if toplevel == "" {
+		return ""
+	}
+	return filepath.Clean(toplevel)
+}
+
+func fsRoot(path string) string {
+	for {
+		parent := filepath.Dir(path)
+		if parent == path {
+			return path
+		}
+		path = parent
+	}
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func within(candidate, parent string) bool {
+	relative, err := filepath.Rel(parent, candidate)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func configFiles(dir string, names ...string) []string {

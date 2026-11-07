@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DagIsolation } from "@/dag/isolation"
-import { recoverIsolatedWorktree } from "@/dag/runtime/worktree-completion"
+import { completeIsolatedNode, recoverIsolatedWorktree } from "@/dag/runtime/worktree-completion"
+import { workflowArtifactsRoot, workflowReportsArea } from "@/dag/runtime/output-ref"
 import { Worktree } from "@/worktree"
 import { Effect, Layer } from "effect"
 import { makeNodeRow } from "./fixtures"
@@ -67,7 +68,7 @@ describe("DagIsolation worktree commits", () => {
     const directory = path.join(root, "missing")
     const result = DagIsolation.completeWorktree({
       worktree: { directory, state: "active", touchedPaths: [], conflictsWith: [] },
-      reportRoot: root,
+      reportsArea: path.join(root, "workflow-artifacts"),
       dagID: "dag_1",
       nodeID: "node-1",
       message: "dag: node-1",
@@ -87,6 +88,7 @@ describe("DagIsolation worktree commits", () => {
           return yield* recoverIsolatedWorktree({
             node: makeNodeRow({ worktreeDirectory: directory, worktreeState: state, touchedPaths: ["saved.txt"] }),
             dagID: "dag_1",
+            projectID: "proj-isolation",
             ownerDirectory: root,
             worktreeSvc,
             remove: () =>
@@ -146,15 +148,50 @@ describe("DagIsolation worktree commits", () => {
     writeFileSync(path.join(a, "change.txt"), "change\n")
     const commit = DagIsolation.commitWorktree(a, base, "dag: a")
     expect(commit.ok).toBe(true)
+    const artifacts = mkdtempSync(path.join(tmpdir(), "dag-isolation-artifacts-"))
+    roots.push(artifacts)
+    const reportsArea = path.join(artifacts, "workflow-reports")
     if (!commit.ok || !commit.change) return
-    const patch = DagIsolation.writePatchArtifact(root, "dag_1", "node-1", commit.change.patch)
-    expect(patch.path).toBe(path.join(root, ".agents", "workflow-reports", "dag_1", "node-1.patch"))
+    const patch = DagIsolation.writePatchArtifact(reportsArea, "dag_1", "node-1", commit.change.patch)
+    expect(patch.path).toBe(path.join(reportsArea, "dag_1", "node-1.patch"))
     expect(readFileSync(patch.path, "utf8")).toContain("change.txt")
     expect(patch.sha256).toMatch(/^[0-9a-f]{64}$/)
 
     git(root, ["worktree", "remove", "--force", a])
     expect(existsSync(a)).toBe(false)
     expect(readFileSync(patch.path, "utf8")).toContain("change.txt")
+  })
+
+  it("completes an isolated node into the project's XDG report area", async () => {
+    const root = repo()
+    const a = worktree(root, "a")
+    const base = git(root, ["rev-parse", "HEAD"])
+    writeFileSync(path.join(a, "change.txt"), "change\n")
+    const projectID = `proj-${path.basename(root)}`
+    let removed = false
+    const result = await Effect.runPromise(
+      completeIsolatedNode({
+        worktree: { directory: a, state: "active", touchedPaths: [], conflictsWith: [], baseHead: base },
+        ownerDirectory: root,
+        projectID,
+        dagID: "dag_1",
+        nodeID: "node-1",
+        message: "dag: node-1",
+        remove: () =>
+          Effect.sync(() => {
+            removed = true
+            return true
+          }),
+      }),
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.worktree?.patchPath).toBe(path.join(workflowReportsArea(projectID), "dag_1", "node-1.patch"))
+      expect(result.worktree?.patchPath?.startsWith(workflowArtifactsRoot(projectID))).toBe(true)
+      expect(readFileSync(result.worktree!.patchPath!, "utf8")).toContain("change.txt")
+    }
+    expect(removed).toBe(true)
+    rmSync(workflowArtifactsRoot(projectID), { recursive: true, force: true })
   })
 
   it("a reset in one worktree does not affect another", () => {

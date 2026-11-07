@@ -4,7 +4,7 @@ description: Import hooks from Claude Code config to OpenCode hooks.json
 
 # Import Claude Hooks
 
-Migrate hooks from Claude Code's `.claude/settings.json` files to OpenCode's `hooks.json` format. Hooks are not loaded directly from `.claude/settings*.json`; use this command to migrate them. OpenCode can still load `.claude/skills` by default unless that compatibility loading is disabled.
+Migrate hooks from Claude Code's `.claude/settings.json` files to OpenCode's `hooks.json` format. Hooks are not loaded directly from `.claude/settings*.json`; use this command to migrate them. Skills are not loaded from `.claude/skills` either; move them to `.agents/skills` to keep using them.
 
 Load `configure-hooks` first for the current event, handler, input/output, and
 compatibility contracts. Infer approval already given by the user; present

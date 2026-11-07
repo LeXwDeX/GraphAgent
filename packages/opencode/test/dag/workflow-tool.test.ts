@@ -18,6 +18,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import type { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { Parameters, WorkflowTool } from "@/tool/workflow"
+import { workflowArtifactsRoot, workflowDraftsArea } from "@/dag/runtime/output-ref"
 import { schemaFailures } from "@/tool/schema-error"
 import { testEffect } from "../lib/effect"
 import { fingerprintBrief, type State } from "@/dag/admission"
@@ -35,10 +36,14 @@ let workflowSpecDirectory = ""
 
 beforeAll(async () => {
   workflowSpecDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-spec-"))
+  // Drafts now live in the project-scoped XDG area, which is stable across
+  // processes; start each run from an empty area like the old temp directory.
+  await fs.rm(workflowDraftsArea(projectID), { recursive: true, force: true })
 })
 
 afterAll(async () => {
   await fs.rm(workflowSpecDirectory, { recursive: true, force: true })
+  await fs.rm(workflowDraftsArea(projectID), { recursive: true, force: true })
 })
 
 const admissionBrief = {
@@ -123,142 +128,162 @@ const resultNodes = [
 ]
 const mockNodes = (id: string) =>
   id === "dag_finishable"
-    ? [makeNodeRow({ id: "node_done", workflowId: id, name: "Done node", status: "completed", required: true, output: "done" })]
-    : id === "dag_status"
     ? [
-        {
-          id: "node_running",
-          workflowId: "dag_status",
-          name: "Running node",
-          workerType: "build",
-          status: "running",
+        makeNodeRow({
+          id: "node_done",
+          workflowId: id,
+          name: "Done node",
+          status: "completed",
           required: true,
-          dependsOn: [],
-          modelId: null,
-          modelProviderId: null,
-          childSessionId: "ses_child",
-          directory: "/repo/.worktrees/status",
-          baseHead: "0123456789abcdef",
-          targetFingerprint,
-          worktreeDirectory: "/repo/.worktrees/status-node-running",
-          worktreeBranch: "opencode/dag-status-node-running",
-          worktreeCommit: "fedcba9876543210",
-          worktreeState: "removed",
-          worktreeConflictsWith: ["node_failed"],
-          // #946: a replaced attempt stays visible after its pointer is
-          // overwritten by the current attempt.
-          worktreeHistory: [
-            {
-              directory: "/repo/.worktrees/status-node-retired",
-              branch: "opencode/dag-status-node-retired",
-              touchedPaths: ["src/retired.ts"],
-              state: "kept" as const,
-              conflictsWith: [],
-            },
-          ],
-          touchedPaths: ["src/shared.ts"],
-          output: null,
-          capturedOutput: null,
-          errorReason: null,
-          errorClass: null,
-          deadlineMs: null,
-          wakeEligible: true,
-          wakeReported: false,
-          replanAttempts: 0,
-          seq: 1,
-          timeoutExtensions: 0,
-          escalationPending: false,
-          superseded: false,
-          startedAt: 1,
-          completedAt: null,
-          timeCreated: 1,
-          timeUpdated: 2,
-        },
-        {
-          id: "node_failed",
-          workflowId: "dag_status",
-          name: "Failed node",
-          workerType: "build",
-          status: "failed",
-          required: false,
-          dependsOn: ["node_running"],
-          modelId: null,
-          modelProviderId: null,
-          childSessionId: "ses_failed_child",
-          worktreeDirectory: "/repo/.worktrees/status-node-failed",
-          worktreeBranch: "opencode/dag-status-node-failed",
-          worktreeCommit: "0123456789abcdef",
-          worktreePatchPath: "/repo/.agents/workflow-reports/dag_status/node_failed.patch",
-          worktreePatchSha256: "a".repeat(64),
-          worktreeState: "kept",
-          worktreeConflictsWith: ["node_running"],
-          touchedPaths: ["src/shared.ts"],
-          output: null,
-          capturedOutput: null,
-          errorReason: "node exceeded timeout of 600000ms",
-          errorClass: "timeout",
-          deadlineMs: null,
-          wakeEligible: false,
-          wakeReported: false,
-          replanAttempts: 0,
-          seq: 2,
-          timeoutExtensions: 0,
-          escalationPending: false,
-          superseded: false,
-          startedAt: 1,
-          completedAt: 2,
-          timeCreated: 1,
-          timeUpdated: 2,
-        },
+          output: "done",
+        }),
       ]
-    : id === "dag_step"
+    : id === "dag_status"
       ? [
           {
-            id: "node_ready",
-            workflowId: "dag_step",
-            name: "Ready node",
+            id: "node_running",
+            workflowId: "dag_status",
+            name: "Running node",
             workerType: "build",
-            status: "pending",
+            status: "running",
             required: true,
             dependsOn: [],
             modelId: null,
             modelProviderId: null,
-            childSessionId: null,
+            childSessionId: "ses_child",
+            directory: "/repo/.worktrees/status",
+            baseHead: "0123456789abcdef",
+            targetFingerprint,
+            worktreeDirectory: "/repo/.worktrees/status-node-running",
+            worktreeBranch: "opencode/dag-status-node-running",
+            worktreeCommit: "fedcba9876543210",
+            worktreeState: "removed",
+            worktreeConflictsWith: ["node_failed"],
+            // #946: a replaced attempt stays visible after its pointer is
+            // overwritten by the current attempt.
+            worktreeHistory: [
+              {
+                directory: "/repo/.worktrees/status-node-retired",
+                branch: "opencode/dag-status-node-retired",
+                touchedPaths: ["src/retired.ts"],
+                state: "kept" as const,
+                conflictsWith: [],
+              },
+            ],
+            touchedPaths: ["src/shared.ts"],
             output: null,
             capturedOutput: null,
             errorReason: null,
             errorClass: null,
             deadlineMs: null,
-            wakeEligible: false,
+            wakeEligible: true,
             wakeReported: false,
             replanAttempts: 0,
             seq: 1,
             timeoutExtensions: 0,
             escalationPending: false,
             superseded: false,
-            startedAt: null,
+            startedAt: 1,
             completedAt: null,
             timeCreated: 1,
-            timeUpdated: 1,
+            timeUpdated: 2,
+          },
+          {
+            id: "node_failed",
+            workflowId: "dag_status",
+            name: "Failed node",
+            workerType: "build",
+            status: "failed",
+            required: false,
+            dependsOn: ["node_running"],
+            modelId: null,
+            modelProviderId: null,
+            childSessionId: "ses_failed_child",
+            worktreeDirectory: "/repo/.worktrees/status-node-failed",
+            worktreeBranch: "opencode/dag-status-node-failed",
+            worktreeCommit: "0123456789abcdef",
+            worktreePatchPath: "/repo/.agents/workflow-reports/dag_status/node_failed.patch",
+            worktreePatchSha256: "a".repeat(64),
+            worktreeState: "kept",
+            worktreeConflictsWith: ["node_running"],
+            touchedPaths: ["src/shared.ts"],
+            output: null,
+            capturedOutput: null,
+            errorReason: "node exceeded timeout of 600000ms",
+            errorClass: "timeout",
+            deadlineMs: null,
+            wakeEligible: false,
+            wakeReported: false,
+            replanAttempts: 0,
+            seq: 2,
+            timeoutExtensions: 0,
+            escalationPending: false,
+            superseded: false,
+            startedAt: 1,
+            completedAt: 2,
+            timeCreated: 1,
+            timeUpdated: 2,
           },
         ]
-      : id === "dag_paused"
-        ? [makeNodeRow({ id: "retry", workflowId: id, name: "Retry", status: "failed", required: true })]
-        : id === "dag_retarget"
-          ? [makeNodeRow({ id: "review", workflowId: id, name: "Review", workerType: "review", status: "running", required: true, childSessionId: "ses_review" })]
-          : []
+      : id === "dag_step"
+        ? [
+            {
+              id: "node_ready",
+              workflowId: "dag_step",
+              name: "Ready node",
+              workerType: "build",
+              status: "pending",
+              required: true,
+              dependsOn: [],
+              modelId: null,
+              modelProviderId: null,
+              childSessionId: null,
+              output: null,
+              capturedOutput: null,
+              errorReason: null,
+              errorClass: null,
+              deadlineMs: null,
+              wakeEligible: false,
+              wakeReported: false,
+              replanAttempts: 0,
+              seq: 1,
+              timeoutExtensions: 0,
+              escalationPending: false,
+              superseded: false,
+              startedAt: null,
+              completedAt: null,
+              timeCreated: 1,
+              timeUpdated: 1,
+            },
+          ]
+        : id === "dag_paused"
+          ? [makeNodeRow({ id: "retry", workflowId: id, name: "Retry", status: "failed", required: true })]
+          : id === "dag_retarget"
+            ? [
+                makeNodeRow({
+                  id: "review",
+                  workflowId: id,
+                  name: "Review",
+                  workerType: "review",
+                  status: "running",
+                  required: true,
+                  childSessionId: "ses_review",
+                }),
+              ]
+            : []
 
-const mockWorkflowConfig = (id: string) => JSON.stringify({
-  name: id,
-  nodes: mockNodes(id).map((node) => ({
-    id: node.id,
-    name: node.name,
-    worker_type: node.workerType,
-    depends_on: node.dependsOn,
-    required: node.required,
-    prompt_template: { inline: node.name },
-  })),
-})
+const mockWorkflowConfig = (id: string) =>
+  JSON.stringify({
+    name: id,
+    nodes: mockNodes(id).map((node) => ({
+      id: node.id,
+      name: node.name,
+      worker_type: node.workerType,
+      depends_on: node.dependsOn,
+      required: node.required,
+      prompt_template: { inline: node.name },
+    })),
+  })
 
 const store = Layer.mock(DagStore.Service, {
   getWorkflowFailureReason: (id: string) =>
@@ -297,91 +322,55 @@ const store = Layer.mock(DagStore.Service, {
             timeUpdated: 2,
           }
         : id === "dag_status"
-        ? {
-            id,
-            projectId: projectID,
-            sessionId: "ses_workflow_parent",
-            title: "Status workflow",
-            directory: null,
-            status: "running",
-            config: mockWorkflowConfig(id),
-            targetFingerprint,
-            seq: 1,
-            wakeReported: false,
-            graphRev: 1,
-            startedAt: 1,
-            completedAt: null,
-            timeCreated: 1,
-            timeUpdated: 2,
-          }
-        : id === "dag_result"
           ? {
               id,
               projectId: projectID,
               sessionId: "ses_workflow_parent",
-              title: "Result workflow",
-            directory: null,
-              status: "completed",
+              title: "Status workflow",
+              directory: null,
+              status: "running",
               config: mockWorkflowConfig(id),
+              targetFingerprint,
               seq: 1,
-              wakeReported: true,
+              wakeReported: false,
               graphRev: 1,
               startedAt: 1,
-              completedAt: 2,
+              completedAt: null,
               timeCreated: 1,
               timeUpdated: 2,
             }
-          : id === "dag_paused" || id === "dag_step" || id === "dag_completed" || id === "dag_finishable" || id === "dag_pause_failure" || id === "dag_runtime_failure" || id === "dag_runtime_extend_failure"
+          : id === "dag_result"
             ? {
                 id,
                 projectId: projectID,
                 sessionId: "ses_workflow_parent",
-                title: "Control workflow",
-            directory: null,
-                status: id === "dag_paused" ? "paused" : id === "dag_completed" ? "completed" : "running",
+                title: "Result workflow",
+                directory: null,
+                status: "completed",
                 config: mockWorkflowConfig(id),
                 seq: 1,
-                wakeReported: false,
+                wakeReported: true,
                 graphRev: 1,
                 startedAt: 1,
-                completedAt: null,
+                completedAt: 2,
                 timeCreated: 1,
                 timeUpdated: 2,
               }
-            : id === "dag_retarget"
+            : id === "dag_paused" ||
+                id === "dag_step" ||
+                id === "dag_completed" ||
+                id === "dag_finishable" ||
+                id === "dag_pause_failure" ||
+                id === "dag_runtime_failure" ||
+                id === "dag_runtime_extend_failure"
               ? {
                   id,
                   projectId: projectID,
                   sessionId: "ses_workflow_parent",
-                  title: "Retarget workflow",
-                  directory: "/repo",
-                  status: "running",
+                  title: "Control workflow",
+                  directory: null,
+                  status: id === "dag_paused" ? "paused" : id === "dag_completed" ? "completed" : "running",
                   config: mockWorkflowConfig(id),
-                  graphRev: 1,
-                  seq: 1,
-                  wakeReported: false,
-                  startedAt: 1,
-                  completedAt: null,
-                  timeCreated: 1,
-                  timeUpdated: 2,
-                }
-            : id === "dag_deep_status"
-              ? {
-                  id,
-                  projectId: projectID,
-                  sessionId: "ses_workflow_parent",
-                  title: "Deep status workflow",
-            directory: null,
-                  status: "running",
-                  config: JSON.stringify({
-                    name: "deep-status",
-                    mode: "deep",
-                    admission: {
-                      ...admissionFor("WAIVED"),
-                      state: "CONSUMED",
-                    },
-                    nodes: [],
-                  }),
                   seq: 1,
                   wakeReported: false,
                   graphRev: 1,
@@ -390,39 +379,81 @@ const store = Layer.mock(DagStore.Service, {
                   timeCreated: 1,
                   timeUpdated: 2,
                 }
-              : id === "dag_defaults"
+              : id === "dag_retarget"
                 ? {
                     id,
                     projectId: projectID,
                     sessionId: "ses_workflow_parent",
-                    title: "Configured defaults",
-            directory: null,
+                    title: "Retarget workflow",
+                    directory: "/repo",
                     status: "running",
-                    config: JSON.stringify({
-                      name: "configured-defaults",
-                      node_defaults: {
-                        required: true,
-                        report_to_parent: true,
-                        worker_config: { timeout_ms: 1234 },
-                        model: {
-                          providerID: "local-proxy-compatible",
-                          modelID: "local-proxy-compatible/glm-5.2",
-                        },
-                      },
-                      max_concurrency: 5,
-                      max_node_replan_attempts: 5,
-                      max_total_nodes: 100,
-                      nodes: [],
-                    }),
+                    config: mockWorkflowConfig(id),
+                    graphRev: 1,
                     seq: 1,
                     wakeReported: false,
-                    graphRev: 1,
                     startedAt: 1,
                     completedAt: null,
                     timeCreated: 1,
                     timeUpdated: 2,
                   }
-                : undefined,
+                : id === "dag_deep_status"
+                  ? {
+                      id,
+                      projectId: projectID,
+                      sessionId: "ses_workflow_parent",
+                      title: "Deep status workflow",
+                      directory: null,
+                      status: "running",
+                      config: JSON.stringify({
+                        name: "deep-status",
+                        mode: "deep",
+                        admission: {
+                          ...admissionFor("WAIVED"),
+                          state: "CONSUMED",
+                        },
+                        nodes: [],
+                      }),
+                      seq: 1,
+                      wakeReported: false,
+                      graphRev: 1,
+                      startedAt: 1,
+                      completedAt: null,
+                      timeCreated: 1,
+                      timeUpdated: 2,
+                    }
+                  : id === "dag_defaults"
+                    ? {
+                        id,
+                        projectId: projectID,
+                        sessionId: "ses_workflow_parent",
+                        title: "Configured defaults",
+                        directory: null,
+                        status: "running",
+                        config: JSON.stringify({
+                          name: "configured-defaults",
+                          node_defaults: {
+                            required: true,
+                            report_to_parent: true,
+                            worker_config: { timeout_ms: 1234 },
+                            model: {
+                              providerID: "local-proxy-compatible",
+                              modelID: "local-proxy-compatible/glm-5.2",
+                            },
+                          },
+                          max_concurrency: 5,
+                          max_node_replan_attempts: 5,
+                          max_total_nodes: 100,
+                          nodes: [],
+                        }),
+                        seq: 1,
+                        wakeReported: false,
+                        graphRev: 1,
+                        startedAt: 1,
+                        completedAt: null,
+                        timeCreated: 1,
+                        timeUpdated: 2,
+                      }
+                    : undefined,
     ),
   getNodes: (id: string) =>
     Effect.succeed(
@@ -451,19 +482,31 @@ const store = Layer.mock(DagStore.Service, {
     Effect.succeed(resultNodes.find((node) => node.workflowId === workflowID && node.id === nodeID)),
 })
 const events = Layer.mock(EventV2Bridge.Service, {
-  publishMany: (entries) => Effect.sync(() => {
-    if (entries.some((entry) => entry.definition.type === DagEvent.WorkflowReplanned.type
-      && typeof entry.data === "object" && entry.data !== null
-      && "dagID" in entry.data
-      && (entry.data.dagID === "dag_runtime_failure" || entry.data.dagID === "dag_runtime_extend_failure")))
-      throw new Error("simulated runtime batch write failure")
-    for (const entry of entries) published.push({ type: entry.definition.type, data: entry.data })
-    return []
-  }),
+  publishMany: (entries) =>
+    Effect.sync(() => {
+      if (
+        entries.some(
+          (entry) =>
+            entry.definition.type === DagEvent.WorkflowReplanned.type &&
+            typeof entry.data === "object" &&
+            entry.data !== null &&
+            "dagID" in entry.data &&
+            (entry.data.dagID === "dag_runtime_failure" || entry.data.dagID === "dag_runtime_extend_failure"),
+        )
+      )
+        throw new Error("simulated runtime batch write failure")
+      for (const entry of entries) published.push({ type: entry.definition.type, data: entry.data })
+      return []
+    }),
   publish: (definition, data) =>
     Effect.sync(() => {
-      if (definition.type === DagEvent.WorkflowPaused.type && typeof data === "object" && data !== null &&
-        "dagID" in data && data.dagID === "dag_pause_failure")
+      if (
+        definition.type === DagEvent.WorkflowPaused.type &&
+        typeof data === "object" &&
+        data !== null &&
+        "dagID" in data &&
+        data.dagID === "dag_pause_failure"
+      )
         throw new Error("simulated durable pause write failure")
       published.push({ type: definition.type, data })
       return { id: "event_test", type: definition.type, data } as never
@@ -629,6 +672,13 @@ function toolContext() {
   } satisfies Tool.Context
 }
 
+/** Drafts are written under the project-scoped XDG area, so each temporary
+ * directory gets its own synthetic project ID to keep tests isolated and
+ * leave the shared area clean between cases. */
+function draftProjectID(directory: string) {
+  return ProjectV2.ID.make(`project_${path.basename(directory)}`)
+}
+
 function workflowToolAt(directory: string) {
   return WorkflowTool.pipe(
     Effect.provide(
@@ -637,7 +687,7 @@ function workflowToolAt(directory: string) {
           Effect.succeed({
             id,
             slug: "draft-test",
-            projectID,
+            projectID: draftProjectID(directory),
             directory,
             title: "Draft permissions",
             version: "test",
@@ -706,17 +756,19 @@ function missingCatalogModelProject() {
 describe("workflow tool schema (negative tests)", () => {
   it("action field accepts start/extend/control/status/result/list/read/guide", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "start", spec_path: ".agents/workflows/test.yaml" }})).not.toThrow()
+    expect(() => decode({ params: { action: "start", spec_path: ".agents/workflows/test.yaml" } })).not.toThrow()
     expect(() =>
-      decode({ params: { action: "extend", workflow_id: "dag_wf_1", spec_path: ".agents/workflows/extend.yaml" }}),
+      decode({ params: { action: "extend", workflow_id: "dag_wf_1", spec_path: ".agents/workflows/extend.yaml" } }),
     ).not.toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "pause" }})).not.toThrow()
-    expect(() => decode({ params: { action: "status", workflow_id: "dag_wf_1" }})).not.toThrow()
-    expect(() => decode({ params: { action: "result", workflow_id: "dag_wf_1", node_id: "node-1", limit: 600 }})).not.toThrow()
+    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "pause" } })).not.toThrow()
+    expect(() => decode({ params: { action: "status", workflow_id: "dag_wf_1" } })).not.toThrow()
+    expect(() =>
+      decode({ params: { action: "result", workflow_id: "dag_wf_1", node_id: "node-1", limit: 600 } }),
+    ).not.toThrow()
     // list browses the saved-spec library and needs no workflow_id.
-    expect(() => decode({ params: { action: "list" }})).not.toThrow()
-    expect(() => decode({ params: { action: "read", spec_path: "project-change-route" }})).not.toThrow()
-    expect(() => decode({ params: { action: "guide", topic: "blocks" }})).not.toThrow()
+    expect(() => decode({ params: { action: "list" } })).not.toThrow()
+    expect(() => decode({ params: { action: "read", spec_path: "project-change-route" } })).not.toThrow()
+    expect(() => decode({ params: { action: "guide", topic: "blocks" } })).not.toThrow()
   })
 
   it("rejects inline structured specs and JSON-stringified specs", () => {
@@ -728,92 +780,142 @@ describe("workflow tool schema (negative tests)", () => {
       },
     }
 
-    expect(() => decode({ params: { action: "start", spec }})).toThrow()
-    expect(() => decode({ params: { action: "start", spec: JSON.stringify(spec) }})).toThrow()
+    expect(() => decode({ params: { action: "start", spec } })).toThrow()
+    expect(() => decode({ params: { action: "start", spec: JSON.stringify(spec) } })).toThrow()
   })
 
   it("action field rejects unknown actions", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "delete" }})).toThrow()
+    expect(() => decode({ params: { action: "delete" } })).toThrow()
   })
 
   it("workflow IDs use the durable DAG identity schema", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "status", workflow_id: "workflow-1" }})).toThrow()
-    expect(decode({ params: { action: "status", workflow_id: "dag_workflow_1" }})).toMatchObject({
+    expect(() => decode({ params: { action: "status", workflow_id: "workflow-1" } })).toThrow()
+    expect(decode({ params: { action: "status", workflow_id: "dag_workflow_1" } })).toMatchObject({
       params: { workflow_id: "dag_workflow_1" },
     })
   })
 
   it("no node_complete action exists", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "node_complete" }})).toThrow()
+    expect(() => decode({ params: { action: "node_complete" } })).toThrow()
   })
 
   it("no unsupported read-only actions exist (history/logs)", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "history" }})).toThrow()
-    expect(() => decode({ params: { action: "logs" }})).toThrow()
+    expect(() => decode({ params: { action: "history" } })).toThrow()
+    expect(() => decode({ params: { action: "logs" } })).toThrow()
   })
 
   it("control operation accepts pause/resume/cancel/step/complete", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
     for (const op of ["pause", "resume", "cancel", "step", "complete"]) {
-      expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: op }})).not.toThrow()
+      expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: op } })).not.toThrow()
     }
   })
 
   it("control replan requires a YAML graph source", () => {
     const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
     expect(() =>
-      decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "replan", spec_path: "fragment.yaml" }}),
+      decode({
+        params: { action: "control", workflow_id: "dag_wf_1", operation: "replan", spec_path: "fragment.yaml" },
+      }),
     ).not.toThrow()
     expect(() =>
-      decode({ params: {
-        action: "control",
-        workflow_id: "dag_wf_1",
-        operation: "replan",
-        spec: { fragment: { name: "fragment", nodes: [] } },
-      }}),
+      decode({
+        params: {
+          action: "control",
+          workflow_id: "dag_wf_1",
+          operation: "replan",
+          spec: { fragment: { name: "fragment", nodes: [] } },
+        },
+      }),
     ).toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "replan" }})).toThrow()
+    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "replan" } })).toThrow()
   })
 
   it("control operation rejects unknown operations", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "delete" }})).toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "start" }})).toThrow()
+    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "delete" } })).toThrow()
+    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "start" } })).toThrow()
   })
 
   it("control extend_timeout requires node_id and a positive timeout_ms (P0-A)", () => {
     const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
     expect(() =>
-      decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", node_id: "n1", timeout_ms: 60_000 }}),
+      decode({
+        params: {
+          action: "control",
+          workflow_id: "dag_wf_1",
+          operation: "extend_timeout",
+          node_id: "n1",
+          timeout_ms: 60_000,
+        },
+      }),
     ).not.toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", timeout_ms: 60_000 }})).toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", node_id: "n1" }})).toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", node_id: "n1", timeout_ms: 0 }})).toThrow()
+    expect(() =>
+      decode({
+        params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", timeout_ms: 60_000 },
+      }),
+    ).toThrow()
+    expect(() =>
+      decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", node_id: "n1" } }),
+    ).toThrow()
+    expect(() =>
+      decode({
+        params: {
+          action: "control",
+          workflow_id: "dag_wf_1",
+          operation: "extend_timeout",
+          node_id: "n1",
+          timeout_ms: 0,
+        },
+      }),
+    ).toThrow()
     // Bounds: sub-second extensions (which would instantly re-escalate) and
     // >24h grants are rejected at the schema boundary.
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", node_id: "n1", timeout_ms: 999 }})).toThrow()
-    expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "extend_timeout", node_id: "n1", timeout_ms: 86_400_001 }})).toThrow()
+    expect(() =>
+      decode({
+        params: {
+          action: "control",
+          workflow_id: "dag_wf_1",
+          operation: "extend_timeout",
+          node_id: "n1",
+          timeout_ms: 999,
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      decode({
+        params: {
+          action: "control",
+          workflow_id: "dag_wf_1",
+          operation: "extend_timeout",
+          node_id: "n1",
+          timeout_ms: 86_400_001,
+        },
+      }),
+    ).toThrow()
   })
 
   it("keeps workflow graph and admission fields inside the YAML file", () => {
     const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
     expect(() =>
-      decode({ params: {
-        action: "start",
-        spec_path: ".agents/workflows/deep.yaml",
-        mode: "deep",
-        admission: admissionFor("READY", "CONSUMED"),
-        config: {
-          name: "deep-schema",
-          nodes: [],
+      decode({
+        params: {
+          action: "start",
+          spec_path: ".agents/workflows/deep.yaml",
+          mode: "deep",
+          admission: admissionFor("READY", "CONSUMED"),
+          config: {
+            name: "deep-schema",
+            nodes: [],
+          },
         },
-      }}),
+      }),
     ).toThrow()
-    expect(decode({ params: { action: "start", spec_path: ".agents/workflows/deep.yaml" }})).toEqual({
+    expect(decode({ params: { action: "start", spec_path: ".agents/workflows/deep.yaml" } })).toEqual({
       params: { action: "start", spec_path: ".agents/workflows/deep.yaml" },
     })
   })
@@ -835,13 +937,28 @@ describe("workflow tool schema (negative tests)", () => {
     expect(decode({ params: draft })).toMatchObject({ params: { action: "draft" } })
     // The high-frequency drift shapes die at the schema boundary.
     expect(() =>
-      decode({ params: { action: "draft", config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker: "general" }] } } }),
+      decode({
+        params: {
+          action: "draft",
+          config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker: "general" }] },
+        },
+      }),
     ).toThrow()
     expect(() =>
-      decode({ params: { action: "draft", config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker_timeout: 5000 }] } } }),
+      decode({
+        params: {
+          action: "draft",
+          config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker_timeout: 5000 }] },
+        },
+      }),
     ).toThrow()
     expect(() =>
-      decode({ params: { action: "draft", config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker_config: { foo: 1 } }] } } }),
+      decode({
+        params: {
+          action: "draft",
+          config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker_config: { foo: 1 } }] },
+        },
+      }),
     ).toThrow()
     expect(() => decode({ params: { action: "draft", objective: "top level" } })).toThrow()
     expect(() => decode({ params: { action: "draft" } })).toThrow()
@@ -853,15 +970,17 @@ describe("workflow tool schema (negative tests)", () => {
     // the compiled authoring check owns the blocks-xor-nodes rule, exercised
     // in the execution tests below.
     expect(() =>
-      decode({ params: {
-        action: "draft",
-        config: {
-          name: "mixed",
-          objective: "Both sources at once.",
-          blocks: [{ id: "a", kind: "coding" }],
-          nodes: [],
+      decode({
+        params: {
+          action: "draft",
+          config: {
+            name: "mixed",
+            objective: "Both sources at once.",
+            blocks: [{ id: "a", kind: "coding" }],
+            nodes: [],
+          },
         },
-      }}),
+      }),
     ).not.toThrow()
   })
 })
@@ -873,7 +992,7 @@ describe("workflow tool execution", () => {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const exit = yield* workflow
-        .execute({ params: { action: "list" }}, { ...toolContext(), sessionID: SessionID.make("ses_workflow_child") })
+        .execute({ params: { action: "list" } }, { ...toolContext(), sessionID: SessionID.make("ses_workflow_child") })
         .pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
@@ -906,8 +1025,8 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
-      const index = yield* workflow.execute({ params: { action: "guide" }}, toolContext())
-      const blocks = yield* workflow.execute({ params: { action: "guide", topic: "blocks" }}, toolContext())
+      const index = yield* workflow.execute({ params: { action: "guide" } }, toolContext())
+      const blocks = yield* workflow.execute({ params: { action: "guide", topic: "blocks" } }, toolContext())
 
       // The description is the routing guide alone. Keep a tight entry-form
       // budget so removed manuals and inline examples cannot creep back in.
@@ -943,15 +1062,13 @@ describe("workflow tool execution", () => {
         toolContext(),
       )
 
-      expect(result.output).toContain(".agents/workflow-drafts/draft-round-trip.yaml")
+      const draftPath = path.join(workflowDraftsArea(projectID), "draft-round-trip.yaml")
+      expect(result.output).toContain(draftPath)
       expect(result.output).toContain("nodes: ")
 
       // The rendered file round-trips through the same authoring path start
       // uses, and read returns the authored document with draft content.
-      const read = yield* workflow.execute(
-        { params: { action: "read", spec_path: ".agents/workflow-drafts/draft-round-trip.yaml" } },
-        toolContext(),
-      )
+      const read = yield* workflow.execute({ params: { action: "read", spec_path: draftPath } }, toolContext())
       const parsed = JSON.parse(read.output)
       expect(parsed.validation.valid).toBe(true)
       expect(parsed.spec.config.name).toBe("draft-round-trip")
@@ -1011,7 +1128,7 @@ describe("workflow tool execution", () => {
       )
 
       expect(result.title).toContain("validation errors")
-      expect(result.output).toContain(".agents/workflow-drafts/draft-bad-edge.yaml")
+      expect(result.output).toContain(path.join(workflowDraftsArea(projectID), "draft-bad-edge.yaml"))
       expect(result.output).toContain("ghost")
       expect(published).toHaveLength(0)
     }),
@@ -1037,7 +1154,12 @@ describe("workflow tool execution", () => {
                 Effect.gen(function* () {
                   requests.push(request.permission)
                   if (request.permission !== "edit") return
-                  expect(request.patterns).toEqual([path.join(".agents", "workflow-drafts", "protected.yaml")])
+                  expect(request.patterns).toEqual([
+                    path.relative(
+                      directory,
+                      path.join(workflowDraftsArea(draftProjectID(directory)), "protected.yaml"),
+                    ),
+                  ])
                   const rule = Permission.evaluate("edit", request.patterns[0], [
                     { permission: "edit", pattern: "*", action },
                   ])
@@ -1058,18 +1180,23 @@ describe("workflow tool execution", () => {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
       const params = { action: "draft", config: { name: "exclusive", nodes: [] } } as const
+      const draftArea = workflowDraftsArea(draftProjectID(directory))
       yield* workflow.execute({ params }, toolContext())
-      const file = path.join(directory, ".agents", "workflow-drafts", "exclusive.yaml")
+      const file = path.join(draftArea, "exclusive.yaml")
       const before = yield* Effect.promise(() => Bun.file(file).text())
       const duplicate = yield* workflow.execute({ params: { ...params, title: "replacement" } }, toolContext())
       expect(duplicate.output).toContain("already exists")
       expect(duplicate.hookFailure).toContain("not overwritten")
       expect(duplicate.metadata.blocked).toBe(true)
       expect(yield* Effect.promise(() => Bun.file(file).text())).toBe(before)
-      expect(yield* Effect.promise(() => fs.readdir(path.dirname(file)))).toEqual(["exclusive.yaml"])
+      expect(yield* Effect.promise(() => fs.readdir(draftArea))).toEqual(["exclusive.yaml"])
 
       const blockedDirectory = yield* tmpdirScoped()
-      yield* Effect.promise(() => fs.writeFile(path.join(blockedDirectory, ".agents"), "not a directory"))
+      const blockedArea = workflowDraftsArea(draftProjectID(blockedDirectory))
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.dirname(blockedArea), { recursive: true })
+        await fs.writeFile(blockedArea, "not a directory")
+      })
       const blocked = yield* workflowToolAt(blockedDirectory)
       // An expected filesystem error is returned as tool failure feedback,
       // rather than escaping as an Effect defect or claiming a written draft.
@@ -1077,8 +1204,11 @@ describe("workflow tool execution", () => {
       expect(failed.title).toContain("not written")
       expect(failed.hookFailure).toContain("Failed to write workflow draft")
       expect(failed.metadata.blocked).toBe(true)
-      expect(yield* Effect.promise(() => Bun.file(path.join(blockedDirectory, ".agents")).text())).toBe(
-        "not a directory",
+      expect(yield* Effect.promise(() => Bun.file(blockedArea).text())).toBe("not a directory")
+
+      yield* Effect.promise(() => fs.rm(draftArea, { recursive: true, force: true }))
+      yield* Effect.promise(() =>
+        fs.rm(workflowArtifactsRoot(draftProjectID(blockedDirectory)), { recursive: true, force: true }),
       )
     }),
   )
@@ -1087,7 +1217,7 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const draftDirectory = path.join(directory, ".agents", "workflow-drafts")
+      const draftDirectory = workflowDraftsArea(draftProjectID(directory))
       const originalWrite = fs.writeFile
       const write = yield* Effect.acquireRelease(
         Effect.sync(() =>
@@ -1113,6 +1243,9 @@ describe("workflow tool execution", () => {
       const saved = yield* Effect.promise(() => Bun.file(path.join(draftDirectory, "recoverable.yaml")).text())
       expect(saved).toContain("name: recoverable")
       expect(saved).not.toContain("name: partial")
+      yield* Effect.promise(() =>
+        fs.rm(workflowArtifactsRoot(draftProjectID(directory)), { recursive: true, force: true }),
+      )
     }),
   )
 
@@ -1120,22 +1253,24 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const draftDirectory = path.join(directory, ".agents", "workflow-drafts")
+      const draftDirectory = workflowDraftsArea(draftProjectID(directory))
       const created = Promise.withResolvers<void>()
       const release = Promise.withResolvers<void>()
       const originalMkdtemp = fs.mkdtemp
       yield* Effect.acquireRelease(
         Effect.sync(() =>
-          spyOn(fs, "mkdtemp").mockImplementation(new Proxy(originalMkdtemp, {
-            async apply(target, receiver, args) {
-              const staging = await Reflect.apply(target, receiver, args)
-              if (String(args[0]).startsWith(draftDirectory + path.sep)) {
-                created.resolve()
-                await release.promise
-              }
-              return staging
-            },
-          })),
+          spyOn(fs, "mkdtemp").mockImplementation(
+            new Proxy(originalMkdtemp, {
+              async apply(target, receiver, args) {
+                const staging = await Reflect.apply(target, receiver, args)
+                if (String(args[0]).startsWith(draftDirectory + path.sep)) {
+                  created.resolve()
+                  await release.promise
+                }
+                return staging
+              },
+            }),
+          ),
         ),
         (mock) => Effect.sync(() => mock.mockRestore()),
       )
@@ -1160,6 +1295,9 @@ describe("workflow tool execution", () => {
         expect(Exit.isFailure(exit)).toBe(true)
         if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
         expect(yield* Effect.promise(() => fs.readdir(draftDirectory))).toEqual([])
+        yield* Effect.promise(() =>
+          fs.rm(workflowArtifactsRoot(draftProjectID(directory)), { recursive: true, force: true }),
+        )
       }).pipe(Effect.ensuring(Effect.sync(() => release.resolve())))
     }),
   )
@@ -1168,7 +1306,7 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const draftDirectory = path.join(directory, ".agents", "workflow-drafts")
+      const draftDirectory = workflowDraftsArea(draftProjectID(directory))
       const writing = Promise.withResolvers<void>()
       const originalWrite = fs.writeFile
       let aborted = false
@@ -1211,6 +1349,9 @@ describe("workflow tool execution", () => {
       yield* Fiber.interrupt(fiber)
       expect(aborted).toBe(true)
       expect(yield* Effect.promise(() => fs.readdir(draftDirectory))).toEqual([])
+      yield* Effect.promise(() =>
+        fs.rm(workflowArtifactsRoot(draftProjectID(directory)), { recursive: true, force: true }),
+      )
     }),
   )
 
@@ -1244,10 +1385,12 @@ describe("workflow tool execution", () => {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: {
-          action: "status",
-          workflow_id: Dag.ID.make("dag_status"),
-        }},
+        {
+          params: {
+            action: "status",
+            workflow_id: Dag.ID.make("dag_status"),
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -1321,31 +1464,35 @@ describe("workflow tool execution", () => {
       const decode = Schema.decodeUnknownSync(Parameters)
       const first = JSON.parse(
         (yield* workflow.execute(
-                  decode({ params: { action: "result", workflow_id: "dag_result", node_id: "node_result", limit: 600 }}),
+          decode({ params: { action: "result", workflow_id: "dag_result", node_id: "node_result", limit: 600 } }),
           toolContext(),
         )).output,
       )
       const second = JSON.parse(
         (yield* workflow.execute(
-                  decode({ params: {
-            action: "result",
-            workflow_id: "dag_result",
-            node_id: "node_result",
-            cursor: first.next_cursor,
-            limit: 600,
-          }}),
+          decode({
+            params: {
+              action: "result",
+              workflow_id: "dag_result",
+              node_id: "node_result",
+              cursor: first.next_cursor,
+              limit: 600,
+            },
+          }),
           toolContext(),
         )).output,
       )
       const third = JSON.parse(
         (yield* workflow.execute(
-                  decode({ params: {
-            action: "result",
-            workflow_id: "dag_result",
-            node_id: "node_result",
-            cursor: second.next_cursor,
-            limit: 600,
-          }}),
+          decode({
+            params: {
+              action: "result",
+              workflow_id: "dag_result",
+              node_id: "node_result",
+              cursor: second.next_cursor,
+              limit: 600,
+            },
+          }),
           toolContext(),
         )).output,
       )
@@ -1366,23 +1513,27 @@ describe("workflow tool execution", () => {
 
       const mismatched = yield* workflow
         .execute(
-                  decode({ params: {
-            action: "result",
-            workflow_id: "dag_result",
-            node_id: "node_other",
-            cursor: first.next_cursor,
-          }}),
+          decode({
+            params: {
+              action: "result",
+              workflow_id: "dag_result",
+              node_id: "node_other",
+              cursor: first.next_cursor,
+            },
+          }),
           toolContext(),
         )
         .pipe(Effect.exit)
       const malformed = yield* workflow
         .execute(
-                  decode({ params: {
-            action: "result",
-            workflow_id: "dag_result",
-            node_id: "node_result",
-            cursor: "not-a-result-cursor",
-          }}),
+          decode({
+            params: {
+              action: "result",
+              workflow_id: "dag_result",
+              node_id: "node_result",
+              cursor: "not-a-result-cursor",
+            },
+          }),
           toolContext(),
         )
         .pipe(Effect.exit)
@@ -1400,7 +1551,7 @@ describe("workflow tool execution", () => {
       const workflow = yield* info.init()
       const exit = yield* workflow
         .execute(
-          { params: { action: "control", workflow_id: Dag.ID.make("dag_status"), operation: "pause" }},
+          { params: { action: "control", workflow_id: Dag.ID.make("dag_status"), operation: "pause" } },
           {
             ...toolContext(),
             ask: (request) => {
@@ -1520,27 +1671,29 @@ describe("workflow tool execution", () => {
       } satisfies Tool.Context
 
       const statusExit = yield* Effect.exit(
-        workflow.execute({ params: { action: "status", workflow_id: Dag.ID.make("dag_status") }}, foreignContext),
+        workflow.execute({ params: { action: "status", workflow_id: Dag.ID.make("dag_status") } }, foreignContext),
       )
       const resultExit = yield* Effect.exit(
         workflow.execute(
-                  Schema.decodeUnknownSync(Parameters)({ params: {
-            action: "result",
-            workflow_id: "dag_result",
-            node_id: "node_result",
-          }}),
+          Schema.decodeUnknownSync(Parameters)({
+            params: {
+              action: "result",
+              workflow_id: "dag_result",
+              node_id: "node_result",
+            },
+          }),
           foreignContext,
         ),
       )
       const extendExit = yield* Effect.exit(
         workflow.execute(
-          { params: { action: "extend", workflow_id: Dag.ID.make("dag_defaults"), spec_path: "foreign.yaml" }},
+          { params: { action: "extend", workflow_id: Dag.ID.make("dag_defaults"), spec_path: "foreign.yaml" } },
           foreignContext,
         ),
       )
       const controlExit = yield* Effect.exit(
         workflow.execute(
-          { params: { action: "control", workflow_id: Dag.ID.make("dag_status"), operation: "pause" }},
+          { params: { action: "control", workflow_id: Dag.ID.make("dag_status"), operation: "pause" } },
           foreignContext,
         ),
       )
@@ -1580,11 +1733,13 @@ describe("workflow tool execution", () => {
         Effect.gen(function* () {
           published.length = 0
           yield* workflow.execute(
-            { params: {
-              action: "control",
-              workflow_id: control.workflowID,
-              operation: control.operation,
-            }},
+            {
+              params: {
+                action: "control",
+                workflow_id: control.workflowID,
+                operation: control.operation,
+              },
+            },
             toolContext(),
           )
           return published.find((event) => event.type.startsWith("dag.workflow."))?.type ?? "missing"
@@ -1605,15 +1760,25 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       published.length = 0
       const workflow = yield* (yield* WorkflowTool).init()
-      const result = yield* workflow.execute({ params: {
-        action: "control", workflow_id: Dag.ID.make("dag_paused"), operation: "recover",
-        node_ids: [DagEvent.NodeID.make("retry")], expected_graph_rev: 1,
-      } }, toolContext())
+      const result = yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_paused"),
+            operation: "recover",
+            node_ids: [DagEvent.NodeID.make("retry")],
+            expected_graph_rev: 1,
+          },
+        },
+        toolContext(),
+      )
       expect(result.title).toContain("Workflow recovered: 1 new attempts")
       expect(result.output).toContain('"graph_rev": 2')
       expect(result.output).toContain('"previous": "retry"')
       expect(published.map((event) => event.type)).toEqual([
-        DagEvent.WorkflowReplanned.type, DagEvent.NodeRegistered.type, DagEvent.WorkflowConfigUpdated.type,
+        DagEvent.WorkflowReplanned.type,
+        DagEvent.NodeRegistered.type,
+        DagEvent.WorkflowConfigUpdated.type,
       ])
     }),
   )
@@ -1701,10 +1866,12 @@ describe("workflow tool execution", () => {
         },
       })
       const result = yield* workflow.execute(
-                Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "start",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "start",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -1731,10 +1898,12 @@ describe("workflow tool execution", () => {
         },
       })
       const result = yield* workflow.execute(
-                Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "start",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "start",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -1773,11 +1942,13 @@ describe("workflow tool execution", () => {
         ],
       })
       const result = yield* workflow.execute(
-                Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "extend",
-          workflow_id: "dag_defaults",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "extend",
+            workflow_id: "dag_defaults",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -1798,11 +1969,13 @@ describe("workflow tool execution", () => {
         blocks: [{ id: "repair", kind: "coding", depends_on: ["node_running"] }],
       })
       const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "extend",
-          workflow_id: "dag_status",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "extend",
+            workflow_id: "dag_status",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -1833,12 +2006,14 @@ describe("workflow tool execution", () => {
         },
       })
       const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "control",
-          workflow_id: "dag_defaults",
-          operation: "replan",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "control",
+            workflow_id: "dag_defaults",
+            operation: "replan",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -1854,17 +2029,32 @@ describe("workflow tool execution", () => {
       published.length = 0
       const workflow = yield* (yield* WorkflowTool).init()
       const spec_path = yield* writeWorkflowSpec("runtime-replan-failure", {
-        fragment: { name: "runtime-replan-failure", nodes: [{
-          id: "repair", name: "Repair", worker_type: "general", depends_on: [],
-          prompt_template: { inline: "repair" },
-        }] },
+        fragment: {
+          name: "runtime-replan-failure",
+          nodes: [
+            {
+              id: "repair",
+              name: "Repair",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "repair" },
+            },
+          ],
+        },
       })
-      const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "control", workflow_id: "dag_runtime_failure", operation: "replan", spec_path,
-        } }),
-        toolContext(),
-      ).pipe(Effect.exit)
+      const result = yield* workflow
+        .execute(
+          Schema.decodeUnknownSync(Parameters)({
+            params: {
+              action: "control",
+              workflow_id: "dag_runtime_failure",
+              operation: "replan",
+              spec_path,
+            },
+          }),
+          toolContext(),
+        )
+        .pipe(Effect.exit)
       expect(Exit.isFailure(result)).toBe(true)
       if (Exit.isFailure(result)) {
         expect(String(Cause.squash(result.cause))).toContain("simulated runtime batch write failure")
@@ -1879,17 +2069,28 @@ describe("workflow tool execution", () => {
       published.length = 0
       const workflow = yield* (yield* WorkflowTool).init()
       const spec_path = yield* writeWorkflowSpec("runtime-extend-failure", {
-        nodes: [{
-          id: "additional", name: "Additional", worker_type: "general", depends_on: [],
-          prompt_template: { inline: "additional" },
-        }],
+        nodes: [
+          {
+            id: "additional",
+            name: "Additional",
+            worker_type: "general",
+            depends_on: [],
+            prompt_template: { inline: "additional" },
+          },
+        ],
       })
-      const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "extend", workflow_id: "dag_runtime_extend_failure", spec_path,
-        } }),
-        toolContext(),
-      ).pipe(Effect.exit)
+      const result = yield* workflow
+        .execute(
+          Schema.decodeUnknownSync(Parameters)({
+            params: {
+              action: "extend",
+              workflow_id: "dag_runtime_extend_failure",
+              spec_path,
+            },
+          }),
+          toolContext(),
+        )
+        .pipe(Effect.exit)
       expect(Exit.isFailure(result)).toBe(true)
       if (Exit.isFailure(result)) {
         expect(String(Cause.squash(result.cause))).toContain("simulated runtime batch write failure")
@@ -1912,12 +2113,14 @@ describe("workflow tool execution", () => {
       })
       const exit = yield* workflow
         .execute(
-          Schema.decodeUnknownSync(Parameters)({ params: {
-            action: "control",
-            workflow_id: "dag_defaults",
-            operation: "replan",
-            spec_path,
-          }}),
+          Schema.decodeUnknownSync(Parameters)({
+            params: {
+              action: "control",
+              workflow_id: "dag_defaults",
+              operation: "replan",
+              spec_path,
+            },
+          }),
           toolContext(),
         )
         .pipe(Effect.exit)
@@ -1948,12 +2151,19 @@ describe("workflow tool execution", () => {
       published.length = 0
       const workflow = yield* (yield* WorkflowTool).init()
       const specPath = yield* writeWorkflowSpec("pause-failure-replan", { nodes: [] })
-      const exit = yield* workflow.execute({ params: {
-        action: "control",
-        operation: "replan",
-        workflow_id: Dag.ID.make("dag_pause_failure"),
-        spec_path: specPath,
-      }}, toolContext()).pipe(Effect.exit)
+      const exit = yield* workflow
+        .execute(
+          {
+            params: {
+              action: "control",
+              operation: "replan",
+              workflow_id: Dag.ID.make("dag_pause_failure"),
+              spec_path: specPath,
+            },
+          },
+          toolContext(),
+        )
+        .pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
@@ -1972,11 +2182,18 @@ describe("workflow tool execution", () => {
       published.length = 0
       const workflow = yield* (yield* WorkflowTool).init()
       const specPath = yield* writeWorkflowSpec("terminal-invalid-extend", { nodes: [{ id: "missing-fields" }] })
-      const exit = yield* workflow.execute({ params: {
-        action: "extend",
-        workflow_id: Dag.ID.make("dag_completed"),
-        spec_path: specPath,
-      }}, toolContext()).pipe(Effect.exit)
+      const exit = yield* workflow
+        .execute(
+          {
+            params: {
+              action: "extend",
+              workflow_id: Dag.ID.make("dag_completed"),
+              spec_path: specPath,
+            },
+          },
+          toolContext(),
+        )
+        .pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
@@ -2011,13 +2228,15 @@ describe("workflow tool execution", () => {
       // (The extended / no_escalation / escalation_undelivered / cap_exhausted verdicts are covered
       // against the real store in dag-deadline-extended.test.ts.)
       const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "control",
-          workflow_id: "dag_defaults",
-          operation: "extend_timeout",
-          node_id: "node_missing",
-          timeout_ms: 60_000,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "control",
+            workflow_id: "dag_defaults",
+            operation: "extend_timeout",
+            node_id: "node_missing",
+            timeout_ms: 60_000,
+          },
+        }),
         toolContext(),
       )
       expect(result.title).toContain("Node not running")
@@ -2048,12 +2267,14 @@ describe("workflow tool execution", () => {
         },
       })
       const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "control",
-          workflow_id: "dag_paused",
-          operation: "replan",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "control",
+            workflow_id: "dag_paused",
+            operation: "replan",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -2080,11 +2301,13 @@ describe("workflow tool execution", () => {
         ],
       })
       const result = yield* workflow.execute(
-        Schema.decodeUnknownSync(Parameters)({ params: {
-          action: "extend",
-          workflow_id: "dag_paused",
-          spec_path,
-        }}),
+        Schema.decodeUnknownSync(Parameters)({
+          params: {
+            action: "extend",
+            workflow_id: "dag_paused",
+            spec_path,
+          },
+        }),
         toolContext(),
       )
 
@@ -2200,13 +2423,30 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const workflow = yield* (yield* WorkflowTool).init()
       const ctx: Tool.Context = {
-        sessionID: SessionID.make("ses_synthetic"), messageID: MessageID.ascending(), agent: "build",
-        abort: new AbortController().signal, messages: [], metadata: () => Effect.void, ask: () => Effect.void,
+        sessionID: SessionID.make("ses_synthetic"),
+        messageID: MessageID.ascending(),
+        agent: "build",
+        abort: new AbortController().signal,
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
       }
-      const params = { action: "draft", config: { name: "test", nodes: [{
-        id: "a", name: "a", worker_type: "general", depends_on: [], prompt_template: { inline: "test" },
-        input_mapping: { SYNTHETIC_KEY_952: 7 },
-      }] } }
+      const params = {
+        action: "draft",
+        config: {
+          name: "test",
+          nodes: [
+            {
+              id: "a",
+              name: "a",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "test" },
+              input_mapping: { SYNTHETIC_KEY_952: 7 },
+            },
+          ],
+        },
+      }
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- malformed value tests the real tool decoder
       const exit = yield* Effect.exit(workflow.execute({ params } as any, ctx))
       expect(Exit.isFailure(exit)).toBe(true)
@@ -2224,10 +2464,17 @@ describe("workflow tool execution", () => {
       const logs = JSON.stringify(yield* logLines)
       expect(logs).toContain("tool arguments repaired")
       expect(logs).not.toContain("SYNTHETIC_KEY_952")
-      const valid = { ...params, config: { ...params.config, nodes: [{ ...params.config.nodes[0], input_mapping: { source: "value" } }] } }
+      const valid = {
+        ...params,
+        config: { ...params.config, nodes: [{ ...params.config.nodes[0], input_mapping: { source: "value" } }] },
+      }
       const decoded = Schema.decodeUnknownResult(Parameters)({ params: valid })
       expect(decoded._tag).toBe("Success")
-      if (decoded._tag === "Success" && decoded.success.params.action === "draft" && "nodes" in decoded.success.params.config)
+      if (
+        decoded._tag === "Success" &&
+        decoded.success.params.action === "draft" &&
+        "nodes" in decoded.success.params.config
+      )
         expect(decoded.success.params.config.nodes[0].input_mapping).toEqual({ source: "value" })
     }),
   )
@@ -2242,16 +2489,17 @@ describe("workflow tool execution", () => {
     expect(JSON.stringify(failures)).not.toContain("SECRET_OTHER")
   })
 
-
   runtime.effect("status and recovery reads retain consumed deep admission audit fields", () =>
     Effect.gen(function* () {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: {
-          action: "status",
-          workflow_id: Dag.ID.make("dag_deep_status"),
-        }},
+        {
+          params: {
+            action: "status",
+            workflow_id: Dag.ID.make("dag_deep_status"),
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -2315,10 +2563,12 @@ config:
       } satisfies Tool.Context
       const invalid = yield* workflow
         .execute(
-          { params: {
-            action: "start",
-            spec_path: "deep.yaml",
-          }},
+          {
+            params: {
+              action: "start",
+              spec_path: "deep.yaml",
+            },
+          },
           context,
         )
         .pipe(Effect.exit)
@@ -2362,10 +2612,12 @@ config:
       )
 
       const result = yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: "deep.yaml",
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: "deep.yaml",
+          },
+        },
         context,
       )
 
@@ -2396,10 +2648,12 @@ config:
       const workflow = yield* info.init()
       const exit = yield* workflow
         .execute(
-          { params: {
-            action: "start",
-            spec_path: specPath,
-          }},
+          {
+            params: {
+              action: "start",
+              spec_path: specPath,
+            },
+          },
           {
             sessionID: SessionID.make("ses_workflow_parent"),
             messageID: MessageID.ascending(),
@@ -2434,10 +2688,12 @@ config:
       })
 
       const result = yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: parentID,
           messageID: MessageID.ascending(),
@@ -2471,10 +2727,12 @@ config:
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: "missing-model.yaml",
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: "missing-model.yaml",
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -2505,11 +2763,13 @@ config:
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: {
-          action: "validate",
-          spec_path: "missing-model.yaml",
-          profile: "environment",
-        }},
+        {
+          params: {
+            action: "validate",
+            spec_path: "missing-model.yaml",
+            profile: "environment",
+          },
+        },
         toolContext(),
       )
 
@@ -2533,11 +2793,13 @@ config:
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: {
-          action: "validate",
-          spec_path: "missing-catalog-model.yaml",
-          profile: "environment",
-        }},
+        {
+          params: {
+            action: "validate",
+            spec_path: "missing-catalog-model.yaml",
+            profile: "environment",
+          },
+        },
         toolContext(),
       )
 
@@ -2547,7 +2809,7 @@ config:
         expect.objectContaining({ code: "model.unavailable", path: "nodes[worker]" }),
       )
       const started = yield* workflow.execute(
-        { params: { action: "start", spec_path: "missing-catalog-model.yaml" }},
+        { params: { action: "start", spec_path: "missing-catalog-model.yaml" } },
         toolContext(),
       )
       expect(started.title).toBe("Workflow not started: model required")
@@ -2577,16 +2839,21 @@ config:
       )
 
       const extendExit = yield* workflow
-        .execute({ params: { action: "extend", workflow_id: Dag.ID.make("dag_paused"), spec_path: extendPath }}, toolContext())
+        .execute(
+          { params: { action: "extend", workflow_id: Dag.ID.make("dag_paused"), spec_path: extendPath } },
+          toolContext(),
+        )
         .pipe(Effect.exit)
       const replanExit = yield* workflow
         .execute(
-          { params: {
-            action: "control",
-            operation: "replan",
-            workflow_id: Dag.ID.make("dag_paused"),
-            spec_path: replanPath,
-          }},
+          {
+            params: {
+              action: "control",
+              operation: "replan",
+              workflow_id: Dag.ID.make("dag_paused"),
+              spec_path: replanPath,
+            },
+          },
           toolContext(),
         )
         .pipe(Effect.exit)
@@ -2616,34 +2883,36 @@ config:
       yield* Effect.promise(() => Bun.write(extendPath, JSON.stringify({ nodes: [node] })))
 
       const extended = yield* workflow.execute(
-        { params: { action: "extend", workflow_id: Dag.ID.make("dag_defaults"), spec_path: extendPath }},
+        { params: { action: "extend", workflow_id: Dag.ID.make("dag_defaults"), spec_path: extendPath } },
         toolContext(),
       )
       const replanned = yield* workflow.execute(
-        { params: {
-          action: "control",
-          operation: "replan",
-          workflow_id: Dag.ID.make("dag_paused"),
-          spec_path: yield* Effect.promise(() =>
-            Bun.write(
-              path.join(missingModelDirectory, "modeled-replan.yaml"),
-              JSON.stringify({
-                fragment: {
-                  name: "modeled-replan",
-                  nodes: [
-                    {
-                      ...node,
-                      model: {
-                        providerID: "local-proxy-compatible",
-                        modelID: "local-proxy-compatible/glm-5.2",
+        {
+          params: {
+            action: "control",
+            operation: "replan",
+            workflow_id: Dag.ID.make("dag_paused"),
+            spec_path: yield* Effect.promise(() =>
+              Bun.write(
+                path.join(missingModelDirectory, "modeled-replan.yaml"),
+                JSON.stringify({
+                  fragment: {
+                    name: "modeled-replan",
+                    nodes: [
+                      {
+                        ...node,
+                        model: {
+                          providerID: "local-proxy-compatible",
+                          modelID: "local-proxy-compatible/glm-5.2",
+                        },
                       },
-                    },
-                  ],
-                },
-              }),
-            ).then(() => path.join(missingModelDirectory, "modeled-replan.yaml")),
-          ),
-        }},
+                    ],
+                  },
+                }),
+              ).then(() => path.join(missingModelDirectory, "modeled-replan.yaml")),
+            ),
+          },
+        },
         toolContext(),
       )
 
@@ -2666,10 +2935,12 @@ config:
         },
       })
       yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -2717,10 +2988,12 @@ config:
         },
       })
       yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -2791,10 +3064,12 @@ config:
         const specPath = yield* writeWorkflowSpec(`blocked-${item.name}`, item.value)
         const exit = yield* workflow
           .execute(
-            { params: {
-              action: "start",
-              spec_path: specPath,
-            }},
+            {
+              params: {
+                action: "start",
+                spec_path: specPath,
+              },
+            },
             {
               sessionID: SessionID.make("ses_workflow_parent"),
               messageID: MessageID.ascending(),
@@ -2834,10 +3109,12 @@ config:
       })
 
       yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -2891,10 +3168,12 @@ config:
       })
 
       yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -2957,10 +3236,12 @@ config:
       })
 
       yield* workflow.execute(
-        { params: {
-          action: "start",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "start",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -3005,11 +3286,13 @@ config:
       })
 
       yield* workflow.execute(
-        { params: {
-          action: "extend",
-          workflow_id: Dag.ID.make("dag_defaults"),
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "extend",
+            workflow_id: Dag.ID.make("dag_defaults"),
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -3064,12 +3347,14 @@ config:
       })
 
       yield* workflow.execute(
-        { params: {
-          action: "control",
-          workflow_id: Dag.ID.make("dag_defaults"),
-          operation: "replan",
-          spec_path: specPath,
-        }},
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_defaults"),
+            operation: "replan",
+            spec_path: specPath,
+          },
+        },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
           messageID: MessageID.ascending(),
@@ -3110,11 +3395,13 @@ config:
       // strict parameter decode rejects a project_id supplied by the caller.
       const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
       expect(() =>
-        decode({ params: {
-          action: "start",
-          project_id: "project_other",
-          spec_path: "project-id-mismatch.yaml",
-        }}),
+        decode({
+          params: {
+            action: "start",
+            project_id: "project_other",
+            spec_path: "project-id-mismatch.yaml",
+          },
+        }),
       ).toThrow()
     }),
   )
@@ -3123,11 +3410,13 @@ config:
     Effect.gen(function* () {
       const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
       expect(() =>
-        decode({ params: {
-          action: "start",
-          session_id: "ses_other_parent",
-          spec_path: "foreign-parent.yaml",
-        }}),
+        decode({
+          params: {
+            action: "start",
+            session_id: "ses_other_parent",
+            spec_path: "foreign-parent.yaml",
+          },
+        }),
       ).toThrow()
     }),
   )
@@ -3192,7 +3481,10 @@ describe("workflow tool saved workflows", () => {
         const workflow = yield* info.init()
         const asked: unknown[] = []
 
-        const result = yield* workflow.execute({ params: { action: "read", spec_path: "saved-readable" }}, contextWith(asked))
+        const result = yield* workflow.execute(
+          { params: { action: "read", spec_path: "saved-readable" } },
+          contextWith(asked),
+        )
 
         expect(result.title).toBe("Workflow spec: saved-readable")
         const payload = JSON.parse(result.output)
@@ -3224,7 +3516,10 @@ describe("workflow tool saved workflows", () => {
         const workflow = yield* info.init()
         const asked: unknown[] = []
 
-        const result = yield* workflow.execute({ params: { action: "start", spec_path: "saved-project" }}, contextWith(asked))
+        const result = yield* workflow.execute(
+          { params: { action: "start", spec_path: "saved-project" } },
+          contextWith(asked),
+        )
 
         expect(result.output).toContain('state="running"')
         expect(result.title).toBe("Workflow started: saved-project")
@@ -3244,7 +3539,10 @@ describe("workflow tool saved workflows", () => {
         const workflow = yield* info.init()
         const asked: unknown[] = []
 
-        const result = yield* workflow.execute({ params: { action: "start", spec_path: "saved-global" }}, contextWith(asked))
+        const result = yield* workflow.execute(
+          { params: { action: "start", spec_path: "saved-global" } },
+          contextWith(asked),
+        )
 
         expect(result.title).toBe("Workflow started: saved-global")
         // The library's two scopes are curated config, so a resolved name never
@@ -3261,7 +3559,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
         const exit = yield* workflow
-          .execute({ params: { action: "start", spec_path: "not-saved" }}, contextWith([]))
+          .execute({ params: { action: "start", spec_path: "not-saved" } }, contextWith([]))
           .pipe(Effect.exit)
 
         expect(Exit.isFailure(exit)).toBe(true)
@@ -3296,7 +3594,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" }}, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
 
         expect(result.output).toContain("shared [project] — project-shared title")
         expect(result.output).toContain("global-only [global] — global-only title")
@@ -3317,7 +3615,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" }}, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
 
         expect(result.title).toBe("No saved workflows")
         expect(result.output).toContain(path.join(workflowSpecDirectory, ".agents", "workflows"))
@@ -3337,11 +3635,13 @@ describe("workflow tool saved workflows", () => {
       })
 
       const result = yield* workflow.execute(
-        { params: {
-          action: "validate",
-          profile: "portable",
-          spec_path,
-        }},
+        {
+          params: {
+            action: "validate",
+            profile: "portable",
+            spec_path,
+          },
+        },
         toolContext(),
       )
 
@@ -3382,11 +3682,13 @@ describe("workflow tool saved workflows", () => {
       })
 
       const result = yield* workflow.execute(
-        { params: {
-          action: "validate",
-          profile: "environment",
-          spec_path,
-        }},
+        {
+          params: {
+            action: "validate",
+            profile: "environment",
+            spec_path,
+          },
+        },
         toolContext(),
       )
 
@@ -3427,16 +3729,22 @@ describe("workflow tool saved workflows", () => {
           const workflow = yield* info.init()
 
           // project beats global
-          const projectRead = yield* workflow.execute({ params: { action: "read", spec_path: "shared-route" }}, contextWith([]))
+          const projectRead = yield* workflow.execute(
+            { params: { action: "read", spec_path: "shared-route" } },
+            contextWith([]),
+          )
           expect(JSON.parse(projectRead.output).spec.title).toContain("project-route")
 
           // global fills names the project scope does not own
-          const globalRead = yield* workflow.execute({ params: { action: "read", spec_path: "builtin-shadowed" }}, contextWith([]))
+          const globalRead = yield* workflow.execute(
+            { params: { action: "read", spec_path: "builtin-shadowed" } },
+            contextWith([]),
+          )
           expect(JSON.parse(globalRead.output).spec.title).toContain("file-route")
 
           // builtin fills names no file scope owns
           const builtinValidate = yield* workflow.execute(
-            { params: { action: "validate", spec_path: "builtin-only-route" }},
+            { params: { action: "validate", spec_path: "builtin-only-route" } },
             contextWith([]),
           )
           const builtinResult = JSON.parse(builtinValidate.output)
@@ -3446,10 +3754,12 @@ describe("workflow tool saved workflows", () => {
 
           // explicit path source validates under the environment profile by default
           const pathValidate = yield* workflow.execute(
-            { params: {
-              action: "validate",
-              spec_path: "path-route.yaml",
-            }},
+            {
+              params: {
+                action: "validate",
+                spec_path: "path-route.yaml",
+              },
+            },
             contextWith([]),
           )
           const pathResult = JSON.parse(pathValidate.output)
@@ -3461,11 +3771,14 @@ describe("workflow tool saved workflows", () => {
           // start succeeds from the same name, and mutating the file changes
           // both views consistently.
           const beforeStart = yield* workflow.execute(
-            { params: { action: "validate", spec_path: "shared-route" }},
+            { params: { action: "validate", spec_path: "shared-route" } },
             contextWith([]),
           )
           expect(JSON.parse(beforeStart.output).valid).toBe(true)
-          const started = yield* workflow.execute({ params: { action: "start", spec_path: "shared-route" }}, contextWith([]))
+          const started = yield* workflow.execute(
+            { params: { action: "start", spec_path: "shared-route" } },
+            contextWith([]),
+          )
           expect(started.title).toBe("Workflow started: project-route")
           expect(published.some((event) => event.type === DagEvent.WorkflowCreated.type)).toBe(true)
         } finally {
@@ -3494,21 +3807,21 @@ describe("workflow tool saved workflows", () => {
 
           // the synthetic builtin:// marker resolves by name through the library
           const builtinRead = yield* workflow.execute(
-            { params: { action: "read", spec_path: "builtin://marker-builtin" }},
+            { params: { action: "read", spec_path: "builtin://marker-builtin" } },
             contextWith([]),
           )
           expect(JSON.parse(builtinRead.output).spec.title).toContain("marker-builtin-route")
 
           // the marker resolves through the same shadowing chain as a bare name
           const shadowed = yield* workflow.execute(
-            { params: { action: "validate", spec_path: "builtin://marker-route" }},
+            { params: { action: "validate", spec_path: "builtin://marker-route" } },
             contextWith([]),
           )
           expect(JSON.parse(shadowed.output).source).toBe(path.join(globalDir, "workflows", "marker-route.yaml"))
 
           // unknown builtin names fail as a library lookup, not a path extension error
           const missingExit = yield* Effect.exit(
-            workflow.execute({ params: { action: "read", spec_path: "builtin://missing-route" }}, contextWith([])),
+            workflow.execute({ params: { action: "read", spec_path: "builtin://missing-route" } }, contextWith([])),
           )
           expect(Exit.isFailure(missingExit)).toBe(true)
           if (Exit.isFailure(missingExit)) {
@@ -3537,7 +3850,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" }}, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
 
         expect(result.output).toContain("broken-route [global] [invalid — not startable]")
         expect(result.output).toContain("block.compile_failed")
@@ -3560,7 +3873,10 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "read", spec_path: "uncompilable-route" }}, contextWith([]))
+        const result = yield* workflow.execute(
+          { params: { action: "read", spec_path: "uncompilable-route" } },
+          contextWith([]),
+        )
 
         const payload = JSON.parse(result.output)
         // The editable source survives untouched so the parent can repair it.
@@ -3590,7 +3906,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" }}, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
 
         expect(result.output).toContain("broken-syntax [global] [invalid — not startable]")
         expect(result.output).toContain("[schema.invalid]")
@@ -3609,7 +3925,7 @@ describe("workflow tool saved workflows", () => {
         const workflow = yield* info.init()
 
         const result = yield* workflow.execute(
-          { params: { action: "validate", spec_path: "broken-validate", profile: "portable" }},
+          { params: { action: "validate", spec_path: "broken-validate", profile: "portable" } },
           contextWith([]),
         )
 

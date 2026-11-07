@@ -1,11 +1,13 @@
 /**
  * [FORK:hook-ext] Hooks config hot reload — not in upstream
  *
- * Polls the global (`~/.config/graphagent/hooks.json`), project, and (when
- * distinct) worktree `.agents/hooks.json` files for mtime changes and
- * triggers a reload when a modification is detected.
+ * Polls the global (`~/.config/graphagent/hooks.json`) and the project's
+ * `<root>/.agents/hooks.json` plus `<root>/.agents/hooks.local.json` for mtime
+ * changes and triggers a reload when a modification is detected.
  *
- * Scope: global + project + worktree. `.claude/` directories are never read.
+ * Scope: global + project (committed and local). There is no worktree layer —
+ * a linked worktree is itself a project root. `.claude/` directories are never
+ * read.
  *
  * Strategy: interval polling (mtime check every POLL_INTERVAL_MS), not fs.watch.
  * Rationale: inotify events are unreliable on WSL2 DrvFs mounts (`/mnt/*`) and
@@ -24,9 +26,10 @@ import { statSync } from "fs"
 import path from "path"
 import { Effect } from "effect"
 import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { Global } from "@opencode-ai/core/global"
+import { hasProjectLayer } from "@/project/project-root"
 import * as Log from "@/util/log"
 import type { Settings } from "../settings"
-import { hasWorktreeLayer } from "../worktree-layer"
 
 const log = Log.create({ service: "hook.extensions.hot-reload" })
 
@@ -34,20 +37,18 @@ const log = Log.create({ service: "hook.extensions.hot-reload" })
 const POLL_INTERVAL_MS = 2000
 
 /**
- * hooks.json files polled for changes: global + project + worktree. `.claude/`
- * is never read. Global is included so editing `~/.config/graphagent/hooks.json`
- * takes effect without a restart (previously startup-only).
+ * hooks.json files polled for changes: global + the project's committed and
+ * local files under `<root>/.agents/`. `.claude/` is never read. Global is
+ * included so editing `~/.config/graphagent/hooks.json` takes effect without a
+ * restart (previously startup-only).
  */
-function watchedFiles(projectDir: string, worktree: string | undefined, globalConfigDir?: string): string[] {
+function watchedFiles(root: string, globalConfigDir?: string): string[] {
   const files: string[] = []
   if (globalConfigDir) files.push(path.join(globalConfigDir, "hooks.json"))
-  files.push(path.join(projectDir, PROJECT_DIR, "hooks.json"))
-  // A non-VCS project reports the drive/filesystem root as its worktree, which
-  // is not a workspace-owned layer: polling `<root>/.agents/hooks.json` would
-  // watch a file shared by every session on the machine.
-  if (hasWorktreeLayer(projectDir, worktree)) {
-    files.push(path.join(worktree, PROJECT_DIR, "hooks.json"))
-  }
+  // `$HOME/.agents` is the user-level shared directory, not a project layer.
+  if (!hasProjectLayer(root, Global.Path.home)) return files
+  files.push(path.join(root, PROJECT_DIR, "hooks.json"))
+  files.push(path.join(root, PROJECT_DIR, "hooks.local.json"))
   return files
 }
 
@@ -81,13 +82,13 @@ function mtimeOrZero(file: string): number {
 }
 
 /**
- * Poll `hooks.json` (global + project + worktree) for mtime changes. On a
+ * Poll `hooks.json` (global + project committed/local) for mtime changes. On a
  * change, call the reload callback which should re-run loadChain() and update
  * the state. `onReload` mutates the cached state object in place (same contract
  * as the prior fs.watch implementation).
  *
- * @param projectDir - Project root directory
- * @param worktree - Optional git worktree root; its .agents/hooks.json is polled too
+ * @param root - Project root (`ctx.root`); `<root>/.agents/hooks.json` and
+ *   `<root>/.agents/hooks.local.json` are polled
  * @param reload - Effect that builds the candidate settings for the changed file. It may run the
  *   ConfigChange gate against the CURRENT settings first; resolving to `undefined` rejects the
  *   candidate and the current settings stay in force.
@@ -97,8 +98,7 @@ function mtimeOrZero(file: string): number {
  *   global hooks edits hot-reload without a restart.
  */
 export function watchSettings(
-  projectDir: string,
-  worktree: string | undefined,
+  root: string,
   reload: (changedFile: string) => Effect.Effect<Settings | undefined>,
   onReload: (newSettings: Settings, changedFile: string) => void,
   globalConfigDir?: string,
@@ -112,7 +112,7 @@ export function watchSettings(
   let running = false
   let pending: string | undefined
 
-  const files = watchedFiles(projectDir, worktree, globalConfigDir)
+  const files = watchedFiles(root, globalConfigDir)
   // Seed mtime snapshots so a pre-existing file does not fire on the first poll.
   const mtimes = new Map<string, number>(files.map((f) => [f, mtimeOrZero(f)]))
   log.info("polling hooks.json files", { files })
