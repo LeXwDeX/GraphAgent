@@ -11,7 +11,7 @@ await test("CI keeps the required gate names", () => {
   for (const name of [
     "displayName: Typecheck\n",
     "displayName: Unit Tests (workspace)\n",
-    "displayName: Unit Tests (opencode ${{ shard }}/${{ length(parameters.shards) }})\n",
+    "displayName: Unit Tests (graphagent ${{ shard }}/${{ length(parameters.shards) }})\n",
     "displayName: Unit Tests (HttpAPI)\n",
     "displayName: Unit Tests (linux)\n",
   ])
@@ -29,7 +29,7 @@ await test("every main PR and main push runs the full suite", () => {
 await test("the unit aggregate fails unless every unit job succeeded", () => {
   const aggregate = ci.slice(ci.indexOf("\n  - job: unit_tests"))
   assert(aggregate.includes("condition: always()"), "aggregate runs after failed or skipped dependencies")
-  for (const job of ["unit_workspace", "unit_httpapi", "unit_opencode_${{ shard }}"]) {
+  for (const job of ["unit_workspace", "unit_httpapi", "unit_graphagent_${{ shard }}"]) {
     assert(aggregate.includes(`- ${job}\n`), `depends on ${job}`)
     assert(aggregate.includes(`$[ dependencies.${job}.result ]`), `reads ${job} result`)
   }
@@ -47,7 +47,7 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
     "bun run --cwd packages/core migration --check",
     "bun run test:dag-core",
     "bash script/oc-install-boundary.test.sh && bash script/oc-path-priority.test.sh",
-    "bun turbo test --concurrency=1 --filter='!opencode'",
+    "bun turbo test --concurrency=1 --filter='!graphagent'",
     "go test ./...",
     "bun run check:generated",
     "--shard=${{ shard }}/${{ length(parameters.shards) }} --timings=test/ci-timings.json",
@@ -74,7 +74,7 @@ await test("Azure Pipelines runs development CI and GitHub Actions runs release 
   const release = read(".azure-pipelines/release.yml")
   assert.match(release, /\ntrigger: none\npr: none\n/, "the Azure release fallback is manual only")
   const windows = read(".github/workflows/windows-e2e.yml")
-  assert.match(windows, /name: Verify DAG artifact storage on Windows\n\s+working-directory: packages\/opencode/)
+  assert.match(windows, /name: Verify DAG artifact storage on Windows\n\s+working-directory: packages\/graphagent/)
   for (const file of ["dag-output-ref", "dag-output-ref-result", "dag-input-mapping-runtime", "dag-artifact-permissions"])
     assert(windows.includes(`test/dag/${file}.test.ts`), file)
   const nix = read(".azure-pipelines/nix-verify.yml")

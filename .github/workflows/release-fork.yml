@@ -93,7 +93,7 @@ jobs:
 
       - name: Resolve Version
         id: release-version
-        run: bun run ./packages/opencode/script/release-version.ts
+        run: bun run ./packages/graphagent/script/release-version.ts
 
   # Package the latest reference templates from the dedicated config repo
   # (LeXwDeX/opencode-dag-config) into a release asset. main does not manage
@@ -133,7 +133,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Validate and Package Templates (fail closed)
-        working-directory: packages/opencode
+        working-directory: packages/graphagent
         run: |
           set -o pipefail
           echo "Packaging config commit $(git -C "$GITHUB_WORKSPACE/dag-config" rev-parse HEAD) with runtime commit $(git rev-parse HEAD)"
@@ -211,7 +211,7 @@ jobs:
 
       # Embed a models.dev catalog snapshot into the binary so air-gapped
       # users can start opencode without reaching https://models.dev at
-      # runtime (see packages/opencode/script/generate.ts fallback order).
+      # runtime (see packages/graphagent/script/generate.ts fallback order).
       - name: Fetch models.dev Snapshot
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         run: |
@@ -228,7 +228,7 @@ jobs:
             echo "models.dev download failed (attempt $attempt), retrying..."
             sleep 5
           done
-          echo "::warning::Failed to download models.dev api.json; build will fall back to @opencode-ai/models snapshot or an empty catalog"
+          echo "::warning::Failed to download models.dev api.json; build will fall back to @graphagent/models snapshot or an empty catalog"
 
       # Embed the latest DAG reference templates into the binary so air-gapped
       # installs ship the curated workflows (see dag/workflows.ts builtin scope
@@ -253,7 +253,7 @@ jobs:
 
       - name: Build CLI
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
-        run: ./packages/opencode/script/build.ts --single --skip-install
+        run: ./packages/graphagent/script/build.ts --single --skip-install
         env:
           GRAPHAGENT_CHANNEL: latest
           GRAPHAGENT_VERSION: ${{ needs.version.outputs.version }}
@@ -262,12 +262,12 @@ jobs:
       # hit the runtime download in packages/core/src/ripgrep/binary.ts.
       - name: Prefetch Ripgrep
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
-        run: bun run ./packages/opencode/script/prefetch-ripgrep.ts
+        run: bun run ./packages/graphagent/script/prefetch-ripgrep.ts
 
       - name: Verify CLI executable
         if: matrix.name != 'macos' && (inputs.platforms == '' || contains(inputs.platforms, matrix.name))
         run: |
-          for dir in packages/opencode/dist/graphagent-*/; do
+          for dir in packages/graphagent/dist/graphagent-*/; do
             cli="$dir/bin/graphagent"
             if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
             actual="$("$cli" --version)"
@@ -281,7 +281,7 @@ jobs:
 
       - name: Package Artifacts
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
-        working-directory: packages/opencode/dist
+        working-directory: packages/graphagent/dist
         run: |
           for dir in graphagent-*/; do
             base="${dir%/}"
@@ -311,8 +311,8 @@ jobs:
         with:
           name: graphagent-${{ matrix.name }}
           path: |
-            packages/opencode/dist/*.tar.gz
-            packages/opencode/dist/*.zip
+            packages/graphagent/dist/*.tar.gz
+            packages/graphagent/dist/*.zip
 
   prepare-release:
     name: Prepare Release Candidate
@@ -383,7 +383,7 @@ jobs:
       # artifact as acceptance evidence, then consumed by publish-release.
       - name: Render Release Notes (fail closed)
         run: |
-          bun run ./packages/opencode/script/release-notes.ts \
+          bun run ./packages/graphagent/script/release-notes.ts \
             --notes-dir ".github/releases" \
             --version "${{ needs.version.outputs.version }}" \
             --channel "${{ needs.version.outputs.channel }}" \

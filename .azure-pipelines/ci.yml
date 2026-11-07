@@ -7,9 +7,9 @@
 # Jobs    : Typecheck               — private-host scan, its unit test, lint,
 #                                     typecheck, database baseline, DAG core
 #                                     gate, oc tests
-#           Unit Tests (workspace)  — workspace tests except opencode, Go,
+#           Unit Tests (workspace)  — workspace tests except graphagent, Go,
 #                                     and generated-code checks
-#           Unit Tests (opencode N/4) — opencode tests in parallel shards
+#           Unit Tests (graphagent N/4) — graphagent tests in parallel shards
 #           Unit Tests (HttpAPI)    — HttpAPI exerciser gates
 #           Unit Tests (linux)      — aggregate; succeeds only when every
 #                                     unit job succeeded
@@ -40,7 +40,7 @@ pr:
 
 parameters:
   - name: shards
-    displayName: opencode unit test shards
+    displayName: graphagent unit test shards
     type: object
     default: [1, 2, 3, 4]
 
@@ -76,7 +76,7 @@ jobs:
         displayName: Check database baseline
       - bash: bun run test:dag-core
         displayName: Run DAG core behavior and coverage gate
-        workingDirectory: packages/opencode
+        workingDirectory: packages/graphagent
         timeoutInMinutes: 10
       # #498 B1: archive integrity boundary of the `oc` installer — SHA256SUMS
       # must be verified before extraction and fail closed on mismatch.
@@ -106,9 +106,9 @@ jobs:
             turbo | "$(Agent.OS)" | turbo.json | package.json | bun.lock
             turbo | "$(Agent.OS)"
           path: .turbo/cache
-      # opencode:test runs in the sharded jobs below. Workspace tasks run one
+      # graphagent:test runs in the sharded jobs below. Workspace tasks run one
       # at a time to avoid CPU contention timing out 250ms Node workers.
-      - bash: bun turbo test --concurrency=1 --filter='!opencode'
+      - bash: bun turbo test --concurrency=1 --filter='!graphagent'
         displayName: Run workspace unit tests
         timeoutInMinutes: 20
         env:
@@ -121,8 +121,8 @@ jobs:
         workingDirectory: packages/sdk/js
 
   - ${{ each shard in parameters.shards }}:
-      - job: unit_opencode_${{ shard }}
-        displayName: Unit Tests (opencode ${{ shard }}/${{ length(parameters.shards) }})
+      - job: unit_graphagent_${{ shard }}
+        displayName: Unit Tests (graphagent ${{ shard }}/${{ length(parameters.shards) }})
         pool:
           name: GitHub-hosted Agents
           vmImage: ubuntu-24.04-8-core
@@ -134,22 +134,22 @@ jobs:
             parameters:
               ripgrep: true
               gitIdentity: true
-          # Mirrors opencode#test's ^build dependency in turbo.json.
-          - bash: bun turbo run build --filter='opencode^...'
-            displayName: Build opencode test dependencies
+          # Mirrors graphagent#test's ^build dependency in turbo.json.
+          - bash: bun turbo run build --filter='graphagent^...'
+            displayName: Build graphagent test dependencies
           - ${{ if eq(shard, 1) }}:
               - bash: >-
                   bun test --timeout 30000 --only-failures test/session/prompt.test.ts
                   --test-name-pattern '^(runs builtin read/grep/glob settlement through stored history into the next (AI SDK|Native) request|automatically compacts (AI SDK|Native) folded history at the token threshold|recovers (AI SDK|Native) overflow through an unprojected summary and a continued turn|terminates (AI SDK|Native) overflow when the full compaction request is also rejected)$'
                 displayName: Run context-folding lifecycle preflight
-                workingDirectory: packages/opencode
+                workingDirectory: packages/graphagent
                 timeoutInMinutes: 3
           # --shard splits the suite's files into disjoint subsets; --timings
           # balances them by recorded per-file durations. Refresh
           # test/ci-timings.json with --update-timings when shards drift apart.
           - bash: bun test --timeout 30000 --only-failures --shard=${{ shard }}/${{ length(parameters.shards) }} --timings=test/ci-timings.json
-            displayName: Run opencode unit test shard
-            workingDirectory: packages/opencode
+            displayName: Run graphagent unit test shard
+            workingDirectory: packages/graphagent
             timeoutInMinutes: 20
             env:
               GRAPHAGENT_DISABLE_FILEWATCHER: "false"
@@ -167,15 +167,15 @@ jobs:
         parameters:
           ripgrep: true
           gitIdentity: true
-      - bash: bun turbo run build --filter='opencode^...'
-        displayName: Build opencode test dependencies
+      - bash: bun turbo run build --filter='graphagent^...'
+        displayName: Build graphagent test dependencies
       # The exerciser prints its report in one flush, so this step is silent
       # while it runs. --progress arms an out-of-process watchdog that kills
       # the runner after 120s without progress and names the last scenario;
       # the step timeout is the final backstop (slowest passing runs ~15m).
       - bash: bun run test:httpapi:ci
         displayName: Run HttpAPI exerciser gates
-        workingDirectory: packages/opencode
+        workingDirectory: packages/graphagent
         timeoutInMinutes: 25
 
   # Aggregate required check. It runs even when a unit job failed or was
@@ -187,7 +187,7 @@ jobs:
       - unit_workspace
       - unit_httpapi
       - ${{ each shard in parameters.shards }}:
-          - unit_opencode_${{ shard }}
+          - unit_graphagent_${{ shard }}
     condition: always()
     pool:
       name: GitHub-hosted Agents
@@ -197,7 +197,7 @@ jobs:
       UNIT_RESULT_WORKSPACE: $[ dependencies.unit_workspace.result ]
       UNIT_RESULT_HTTPAPI: $[ dependencies.unit_httpapi.result ]
       ${{ each shard in parameters.shards }}:
-        UNIT_RESULT_GRAPHAGENT_${{ shard }}: $[ dependencies.unit_opencode_${{ shard }}.result ]
+        UNIT_RESULT_GRAPHAGENT_${{ shard }}: $[ dependencies.unit_graphagent_${{ shard }}.result ]
     steps:
       - checkout: none
       - bash: |

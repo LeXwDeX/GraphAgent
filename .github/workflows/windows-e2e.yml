@@ -40,11 +40,11 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Build opencode test dependencies
-        run: bun turbo run build --filter='opencode^...'
+      - name: Build graphagent test dependencies
+        run: bun turbo run build --filter='graphagent^...'
 
       - name: Verify DAG artifact storage on Windows
-        working-directory: packages/opencode
+        working-directory: packages/graphagent
         run: >-
           bun test --timeout 30000 --only-failures
           test/dag/dag-output-ref.test.ts
