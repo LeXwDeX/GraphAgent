@@ -1,11 +1,11 @@
 export * as MemoryPaths from "./paths"
 
-/** Worktree-local paths containing durable project memory. */
-export const PROJECT_PATHS = [".agents/memory.jsonc", ".agents/memory.json", ".agents/memory/"] as const
+/**
+ * Project memory policy is the `memory` section of the product-owned local
+ * settings file. It is never a standalone `memory.json(c)` any more.
+ */
+export const PROJECT_LOCAL_SETTINGS = ".agents/settings.local.json"
 
-export const PROJECT_CONFIG_PATHS = [".agents/memory.jsonc", ".agents/memory.json"] as const
-
-export function isProjectMemoryPath(input: string) {
-  const path = input.replaceAll("\\", "/").replace(/^\.\//, "")
-  return PROJECT_PATHS.some((candidate) => (candidate.endsWith("/") ? path.startsWith(candidate) : path === candidate))
-}
+/** Worktree-local paths containing durable project data that `git clean`
+ * must preserve. Entries are relative to the git repository root. */
+export const LOCAL_PATHS = [PROJECT_LOCAL_SETTINGS] as const

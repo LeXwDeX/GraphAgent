@@ -8,7 +8,6 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Config } from "@/config/config"
 import { Git } from "@/git"
-import { MemoryAdmission } from "@/memory/admission"
 import { MemoryConfig } from "@/memory/config"
 import { MemoryHome } from "@/memory/home"
 import { MemoryIdentityFence } from "@/memory/identity-fence"
@@ -52,13 +51,7 @@ let writtenProjectConfig: MemorySchema.Config | undefined
 const emptyConfigLayer = Layer.mock(Config.Service, {
   get: () => Effect.succeed({}),
 })
-const readyAdmissionLayer = Layer.mock(MemoryAdmission.Service, {
-  ensure: () =>
-    Effect.succeed(new MemoryAdmission.Result({ diagnostics: [], duplicates: 0, unresolved: 0 })),
-  invalidate: () => Effect.void,
-})
 let loadedProjectDirectory: string | undefined
-let migrationUnresolved = 0
 
 function topic(id = "architecture-boundaries") {
   return {
@@ -139,17 +132,6 @@ const unavailableModelIt = testEffect(
             Effect.sync(() => {
               writtenProjectConfig = next
             }),
-        }),
-        Layer.mock(MemoryAdmission.Service, {
-          ensure: () =>
-            Effect.succeed(
-              new MemoryAdmission.Result({
-                diagnostics: [],
-                duplicates: 0,
-                unresolved: migrationUnresolved,
-              }),
-            ),
-          invalidate: () => Effect.void,
         }),
         MemoryLock.defaultLayer,
         Layer.mock(MemoryModel.Service, {
@@ -247,7 +229,11 @@ function bootstrapFixture() {
             Effect.gen(function* () {
               if (state.loadHook) yield* state.loadHook
               if (state.project)
-                return { config: state.project, path: "/project/.agents/memory.jsonc", level: "project" as const }
+                return {
+                  config: state.project,
+                  path: "/project/.agents/settings.local.json",
+                  level: "project" as const,
+                }
               return state.global
                 ? { config: state.global, path: "/global/memory.jsonc", level: "global" as const }
                 : undefined
@@ -273,7 +259,6 @@ function bootstrapFixture() {
               throw new Error("bootstrap must not call a model")
             }),
         }),
-        readyAdmissionLayer,
         MemoryLock.defaultLayer,
         Layer.mock(MemoryStore.Service, {
           readTopics: () => Effect.succeed([]),
@@ -373,7 +358,6 @@ function recallFixture() {
               return { actions: [{ type: "no_change" }] }
             }),
         }),
-        readyAdmissionLayer,
         MemoryLock.defaultLayer,
         Layer.mock(MemoryStore.Service, {
           readTopics: () =>
@@ -437,56 +421,46 @@ describe("memory config and YAML store", () => {
     { git: true },
   )
 
-  it.live("uses the first existing project config and never falls through when it is invalid", () =>
+  it.live("reads the project config from the memory section of settings.local.json", () =>
     Effect.gen(function* () {
       const memoryConfig = yield* MemoryConfig.Service
       const tmp = yield* tmpdirScoped()
       const directory = path.join(tmp, ".agents")
+      const file = path.join(directory, "settings.local.json")
       yield* Effect.promise(() => fs.mkdir(directory, { recursive: true }))
-      yield* Effect.promise(() =>
-        fs.writeFile(path.join(directory, "memory.json"), JSON.stringify({ ...config, enabled: true })),
-      )
-      yield* Effect.promise(() =>
-        fs.writeFile(
-          path.join(directory, "memory.jsonc"),
-          `// project override\n${JSON.stringify({ ...config, enabled: false })}`,
-        ),
-      )
 
+      yield* Effect.promise(() =>
+        fs.writeFile(file, JSON.stringify({ theme: "keep", memory: { ...config, enabled: true } })),
+      )
       const loaded = yield* memoryConfig.load(tmp)
       expect(loaded?.level).toBe("project")
-      expect(loaded?.path).toBe(path.join(directory, "memory.jsonc"))
-      expect(loaded?.config.enabled).toBe(false)
+      expect(loaded?.path).toBe(file)
+      expect(loaded?.config.enabled).toBe(true)
 
-      yield* Effect.promise(() => fs.writeFile(path.join(directory, "memory.jsonc"), "{ invalid"))
+      yield* Effect.promise(() => fs.writeFile(file, "{ invalid"))
       expect(yield* memoryConfig.load(tmp)).toBeUndefined()
 
-      yield* Effect.promise(() =>
-        fs.writeFile(path.join(directory, "memory.jsonc"), `${JSON.stringify(config)} trailing-garbage`),
-      )
+      yield* Effect.promise(() => fs.writeFile(file, `${JSON.stringify({ memory: config })} trailing-garbage`))
       expect(yield* memoryConfig.load(tmp)).toBeUndefined()
 
-      // topic_limit_floor was removed — legacy files still carrying it decode
+      // A valid local settings file without a memory section carries no project
+      // policy; load falls through to the global configuration instead.
+      yield* Effect.promise(() => fs.writeFile(file, JSON.stringify({ theme: "keep" })))
+      expect((yield* memoryConfig.load(tmp))?.level).not.toBe("project")
+
+      // topic_limit_floor was removed — legacy sections still carrying it decode
       // normally (extra property tolerated); the decoded config never has it,
       // and load never rewrites the file.
-      yield* Effect.promise(() =>
-        fs.writeFile(path.join(directory, "memory.jsonc"), JSON.stringify({ ...config, topic_limit_floor: 50 })),
-      )
+      yield* Effect.promise(() => fs.writeFile(file, JSON.stringify({ memory: { ...config, topic_limit_floor: 50 } })))
       expect((yield* memoryConfig.load(tmp))?.config.topic_limit).toBe(10)
 
       yield* Effect.promise(() =>
-        fs.writeFile(
-          path.join(directory, "memory.jsonc"),
-          JSON.stringify({ ...config, topic_limit: 50, topic_limit_floor: 10 }),
-        ),
+        fs.writeFile(file, JSON.stringify({ memory: { ...config, topic_limit: 50, topic_limit_floor: 10 } })),
       )
       expect((yield* memoryConfig.load(tmp))?.config).toMatchObject({ topic_limit: 50 })
 
       yield* Effect.promise(() =>
-        fs.writeFile(
-          path.join(directory, "memory.jsonc"),
-          JSON.stringify({ ...config, topic_limit: 20, topic_limit_floor: 50 }),
-        ),
+        fs.writeFile(file, JSON.stringify({ memory: { ...config, topic_limit: 20, topic_limit_floor: 50 } })),
       )
       expect((yield* memoryConfig.load(tmp))?.config.topic_limit).toBe(20)
     }),
@@ -1713,6 +1687,9 @@ describe("memory project config Git exclusions", () => {
       const tmp = yield* tmpdirScoped({ git: true })
       const git = yield* Git.Service
       const configStore = yield* MemoryConfig.Service
+      const settings = path.join(tmp, ".agents", "settings.local.json")
+      yield* Effect.promise(() => fs.mkdir(path.dirname(settings), { recursive: true }))
+      yield* Effect.promise(() => fs.writeFile(settings, JSON.stringify({ theme: "keep" })))
       yield* Effect.promise(() => fs.writeFile(path.join(tmp, ".gitignore"), "keep-me\n"))
 
       yield* configStore.writeProject(tmp, config)
@@ -1723,11 +1700,15 @@ describe("memory project config Git exclusions", () => {
       const exclude = path.isAbsolute(raw) ? raw : path.resolve(tmp, raw)
       const lines = (yield* Effect.promise(() => fs.readFile(exclude, "utf-8"))).split(/\r?\n/)
 
-      for (const rule of [".agents/memory.jsonc", ".agents/memory.json"]) {
-        expect(lines.filter((line) => line === rule)).toHaveLength(1)
-      }
+      expect(lines.filter((line) => line === "/.agents/settings.local.json")).toHaveLength(1)
       expect(lines).not.toContain(".agents/memory/")
       expect(yield* Effect.promise(() => fs.readFile(path.join(tmp, ".gitignore"), "utf-8"))).toBe("keep-me\n")
+      // In-place edit keeps unrelated settings untouched.
+      const settingsText = yield* Effect.promise(() => fs.readFile(settings, "utf-8"))
+      expect(JSON.parse(settingsText)).toEqual({
+        theme: "keep",
+        memory: config,
+      })
     }),
   )
 })
@@ -2248,28 +2229,12 @@ describe("memory enablement", () => {
         writtenGlobalConfig = undefined
         writtenProjectConfig = undefined
         loadedProjectDirectory = undefined
-        migrationUnresolved = 0
         const memory = yield* Memory.Service
         yield* memory.init()
         expect(writtenGlobalConfig).toMatchObject({ model: "test/replacement" })
         expect(yield* memory.setEnabled(true)).toBe("Memory on")
         expect(writtenProjectConfig).toMatchObject({ enabled: true, model: "test/replacement" })
         expect(String(loadedProjectDirectory)).toBe("/unused")
-      }),
-    { git: true },
-  )
-
-  unavailableModelIt.instance(
-    "keeps MEMORY inert until Project admission succeeds",
-    () =>
-      Effect.gen(function* () {
-        loadedProjectDirectory = undefined
-        migrationUnresolved = 1
-        const memory = yield* Memory.Service
-
-        expect(yield* memory.context(SessionID.make("ses_memory_unresolved"))).toEqual([])
-        expect(loadedProjectDirectory).toBeUndefined()
-        migrationUnresolved = 0
       }),
     { git: true },
   )
@@ -2328,7 +2293,6 @@ function statusFixture() {
           writeGlobal: () => Effect.succeed(true),
           writeProject: () => Effect.void,
         }),
-        readyAdmissionLayer,
         MemoryLock.defaultLayer,
         Layer.mock(MemoryModel.Service, {
           generate: () => Effect.die(new Error("status surfaces must not call a model")),

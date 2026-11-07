@@ -11,6 +11,7 @@ import { Git } from "../../src/git"
 import { SettingsHook } from "../../src/hook/settings"
 import { InstanceLayer } from "../../src/project/instance-layer"
 import { InstanceState } from "../../src/effect/instance-state"
+import { MemoryConfig } from "../../src/memory/config"
 import { MemoryStore } from "../../src/memory/store"
 import { Project } from "../../src/project/project"
 import { Worktree } from "../../src/worktree"
@@ -25,6 +26,7 @@ const it = testEffect(
     CrossSpawnSpawner.defaultLayer,
     Git.defaultLayer,
     MemoryStore.defaultLayer,
+    MemoryConfig.defaultLayer,
   ),
 )
 const wintest = process.platform !== "win32" ? it.instance : it.instance.skip
@@ -358,60 +360,6 @@ describe("Worktree", () => {
     )
 
     it.instance(
-      "refuses to remove a worktree while project memory would be destroyed",
-      () =>
-        withCreatedWorktree(undefined, ({ info }) =>
-          Effect.gen(function* () {
-            const fs = yield* FSUtil.Service
-            const svc = yield* Worktree.Service
-            const ctx = yield* InstanceState.context
-            const project = yield* Project.Service
-            yield* project.setInitialized(ctx.project.id)
-            const memory = path.join(info.directory, ".agents", "memory.jsonc")
-            yield* fs.makeDirectory(path.dirname(memory), { recursive: true })
-            yield* fs.writeFileString(memory, "{ invalid")
-
-            const exit = yield* svc.remove({ directory: info.directory }).pipe(Effect.exit)
-            const preserved = yield* fs.exists(memory).pipe(Effect.orDie)
-
-            // Let the fixture's release remove the worktree after the assertion
-            // signal has been captured.
-            yield* fs.remove(path.join(info.directory, ".agents"), { recursive: true }).pipe(Effect.ignore)
-
-            expect(Exit.isFailure(exit)).toBe(true)
-            if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("config.invalid")
-            expect(preserved).toBe(true)
-          }),
-        ),
-      { git: true },
-    )
-
-    it.instance(
-      "migrates valid legacy memory before removing a worktree",
-      () =>
-        withCreatedWorktree(undefined, ({ info }) =>
-          Effect.gen(function* () {
-            const ctx = yield* InstanceState.context
-            const fs = yield* FSUtil.Service
-            const project = yield* Project.Service
-            const svc = yield* Worktree.Service
-            yield* project.setInitialized(ctx.project.id)
-            const sandboxConfig = path.join(info.directory, ".agents", "memory.jsonc")
-            const projectConfig = path.join(ctx.project.worktree, ".agents", "memory.jsonc")
-            yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
-            yield* fs.writeFileString(sandboxConfig, JSON.stringify(memoryConfig()))
-
-            expect(yield* svc.remove({ directory: info.directory })).toBe(true)
-            expect(yield* fs.exists(info.directory).pipe(Effect.orDie)).toBe(false)
-            expect(JSON.parse(yield* fs.readFileString(projectConfig))).toEqual(memoryConfig())
-            expect(yield* fs.exists(sandboxConfig).pipe(Effect.orDie)).toBe(false)
-            expect((yield* project.get(ctx.project.id))?.sandboxes).not.toContain(info.directory)
-          }),
-        ),
-      { git: true },
-    )
-
-    it.instance(
       "create returns after setup and fires Event.Ready after bootstrap",
       () =>
         withCreatedWorktree(undefined, ({ info, ready }) =>
@@ -553,7 +501,7 @@ describe("Worktree", () => {
 
   describe("reset", () => {
     it.instance(
-      "migrates project memory before removing other untracked files",
+      "preserves project-local settings while removing other untracked files",
       () =>
         withCreatedWorktree(undefined, ({ info }) =>
           Effect.gen(function* () {
@@ -561,45 +509,19 @@ describe("Worktree", () => {
             const ctx = yield* InstanceState.context
             const svc = yield* Worktree.Service
             const project = yield* Project.Service
+            const configStore = yield* MemoryConfig.Service
             yield* project.setInitialized(ctx.project.id)
-            const sandboxConfig = path.join(info.directory, ".agents", "memory.jsonc")
-            const projectConfig = path.join(ctx.project.worktree, ".agents", "memory.jsonc")
+            const settings = path.join(info.directory, ".agents", "settings.local.json")
             const disposable = path.join(info.directory, ".agents", "disposable.tmp")
-            yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
-            yield* fs.writeFileString(sandboxConfig, JSON.stringify(memoryConfig()))
+            // The supported writer installs the checkout's info/exclude rule
+            // before writing the file; reset must preserve exactly that file.
+            yield* configStore.writeProject(info.directory, memoryConfig())
             yield* fs.writeFileString(disposable, "remove me\n")
 
             yield* svc.reset({ directory: info.directory })
 
-            expect(JSON.parse(yield* fs.readFileString(projectConfig))).toEqual(memoryConfig())
-            expect(yield* fs.exists(sandboxConfig).pipe(Effect.orDie)).toBe(false)
+            expect(JSON.parse(yield* fs.readFileString(settings))).toEqual({ memory: memoryConfig() })
             expect(yield* fs.exists(disposable).pipe(Effect.orDie)).toBe(false)
-          }),
-        ),
-      { git: true },
-    )
-
-    it.instance(
-      "migrates modified tracked legacy memory before hard reset",
-      () =>
-        withCreatedWorktree(undefined, ({ info }) =>
-          Effect.gen(function* () {
-            const ctx = yield* InstanceState.context
-            const fs = yield* FSUtil.Service
-            const svc = yield* Worktree.Service
-            const project = yield* Project.Service
-            yield* project.setInitialized(ctx.project.id)
-            const sandboxConfig = path.join(info.directory, ".agents", "memory.jsonc")
-            const projectConfig = path.join(ctx.project.worktree, ".agents", "memory.jsonc")
-            yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
-            yield* fs.writeFileString(sandboxConfig, JSON.stringify(memoryConfig("test/committed")))
-            yield* git(info.directory, ["add", ".agents/memory.jsonc"])
-            yield* git(info.directory, ["commit", "-m", "test: add legacy memory config"])
-            yield* fs.writeFileString(sandboxConfig, JSON.stringify(memoryConfig("test/modified-before-reset")))
-
-            yield* svc.reset({ directory: info.directory })
-
-            expect(JSON.parse(yield* fs.readFileString(projectConfig))).toEqual(memoryConfig("test/modified-before-reset"))
           }),
         ),
       { git: true },

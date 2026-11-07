@@ -7,13 +7,15 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Git } from "@/git"
+import { ConfigPaths } from "@/config/paths"
+import { assertProjectRootWritable, resolveProjectRoot } from "@/project/project-root"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import { dirname, isAbsolute, join, resolve } from "node:path"
-import { parse, type ParseError } from "jsonc-parser"
+import { statSync } from "node:fs"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import { MemoryFile } from "./file"
 import { MemoryPaths } from "./paths"
 import { MemorySchema } from "./schema"
-import { assertProjectRootWritable } from "@/project/project-root"
 
 export type Loaded = {
   readonly config: MemorySchema.Config
@@ -27,7 +29,6 @@ export interface Interface {
   readonly writeProject: (
     projectDir: string,
     config: MemorySchema.Config,
-    existingPath?: string,
   ) => Effect.Effect<void, FSUtil.Error | EffectFlock.LockError>
   readonly writeGlobal: (
     config: MemorySchema.Config,
@@ -44,18 +45,37 @@ export const layer = Layer.effect(
     const git = yield* Git.Service
     const flock = yield* EffectFlock.Service
 
-    const ensureProjectExclude = Effect.fnUntraced(function* (projectDir: string) {
-      const result = yield* git.run(["rev-parse", "--git-path", "info/exclude"], { cwd: projectDir })
+    const projectRoot = Effect.fnUntraced(function* (directory: string) {
+      const result = yield* git.run(["rev-parse", "--show-toplevel"], { cwd: directory })
+      const toplevel = result.exitCode === 0 ? result.text().trim() || undefined : undefined
+      return {
+        root: resolveProjectRoot(directory, {
+          home: Global.Path.home,
+          toplevel,
+          isDirectory: (candidate) => {
+            try {
+              return statSync(candidate).isDirectory()
+            } catch {
+              return false
+            }
+          },
+        }),
+        toplevel,
+      }
+    })
+
+    const ensureProjectExclude = Effect.fnUntraced(function* (root: string, toplevel: string | undefined) {
+      const result = yield* git.run(["rev-parse", "--git-path", "info/exclude"], { cwd: root })
       if (result.exitCode !== 0) return
       const raw = result.text().trim()
       if (!raw) return
-      const file = isAbsolute(raw) ? raw : resolve(projectDir, raw)
+      const file = isAbsolute(raw) ? raw : resolve(root, raw)
+      const relative = pathJoinRelative(toplevel ?? root, join(root, MemoryPaths.PROJECT_LOCAL_SETTINGS))
+      const rule = relative.startsWith("..") ? MemoryPaths.PROJECT_LOCAL_SETTINGS : `/${relative}`
       const current = (yield* fs.readFileStringSafe(file)) ?? ""
-      const lines = new Set(current.split(/\r?\n/).map((line) => line.trim()))
-      const missing = MemoryPaths.PROJECT_CONFIG_PATHS.filter((rule) => !lines.has(rule))
-      if (missing.length === 0) return
+      if (current.split(/\r?\n/).some((line) => line.trim() === rule)) return
       const prefix = current.length === 0 || current.endsWith("\n") ? current : current + "\n"
-      yield* MemoryFile.atomicWrite(fs, file, prefix + missing.join("\n") + "\n")
+      yield* MemoryFile.atomicWrite(fs, file, prefix + rule + "\n")
     })
 
     const readFirst = Effect.fnUntraced(function* (paths: string[]) {
@@ -66,7 +86,7 @@ export const layer = Layer.effect(
       return undefined
     })
 
-    const readConfig = Effect.fnUntraced(function* (found: { path: string; text: string }) {
+    const readGlobal = Effect.fnUntraced(function* (found: { path: string; text: string }) {
       const decoded = decodeConfig(found.text)
       if (Option.isNone(decoded)) {
         yield* Effect.logWarning("memory config is invalid — ignoring", { path: found.path })
@@ -75,39 +95,54 @@ export const layer = Layer.effect(
       return decoded.value
     })
 
-    const load = Effect.fn("MemoryConfig.load")(function* (projectDir: string) {
-      const found = yield* readFirst(candidates(projectDir))
-      if (!found) return undefined
-      const config = yield* readConfig(found)
-      if (!config) return undefined
-      return {
-        config,
-        path: found.path,
-        level: projectCandidates(projectDir).includes(found.path) ? ("project" as const) : ("global" as const),
-      }
-    })
-
     const loadGlobal = Effect.fn("MemoryConfig.loadGlobal")(function* () {
       const found = yield* readFirst(globalCandidates())
       if (!found) return undefined
-      const config = yield* readConfig(found)
+      const config = yield* readGlobal(found)
       return config ? { config, path: found.path, level: "global" as const } : undefined
+    })
+
+    const load = Effect.fn("MemoryConfig.load")(function* (projectDir: string) {
+      const root = (yield* projectRoot(projectDir)).root
+      const file = localSettingsPath(root)
+      const text = yield* fs.readFileStringSafe(file)
+      if (text !== undefined) {
+        const decoded = decodeSection(text)
+        // A malformed document or an invalid `memory` section never falls
+        // through to the global fallback: the project explicitly owns policy
+        // here, so failing closed keeps a broken edit from silently changing
+        // which configuration is in effect.
+        if (Option.isNone(decoded)) {
+          yield* Effect.logWarning("memory config is invalid — ignoring", { path: file })
+          return undefined
+        }
+        if (decoded.value !== undefined) return { config: decoded.value, path: file, level: "project" as const }
+      }
+      // The local settings file may exist for other reasons (hooks,
+      // permissions) or not exist at all; in both cases the global Memory
+      // configuration remains the fallback.
+      return yield* loadGlobal()
     })
 
     const writeProject = Effect.fn("MemoryConfig.writeProject")(function* (
       projectDir: string,
       config: MemorySchema.Config,
-      existingPath?: string,
     ) {
-      assertProjectRootWritable(projectDir, Global.Path.home)
-      yield* ensureProjectExclude(projectDir)
-      // One Project = one shared policy file, written by several paths
-      // (/memory on|off, admission promotion, normalization rewrites) from
-      // multiple worktrees and processes. Serialize the writes on the target
-      // file so atomicWrite's byte-atomicity is not undermined by
-      // whole-document last-writer-wins.
-      const target = existingPath ?? projectPath(projectDir)
-      yield* flock.withLock(MemoryFile.atomicWrite(fs, target, serialize(config)), writeLockKey(target))
+      const location = yield* projectRoot(projectDir)
+      assertProjectRootWritable(location.root, Global.Path.home)
+      yield* ensureProjectExclude(location.root, location.toplevel)
+      const target = localSettingsPath(location.root)
+      // One Project = one shared local settings file, written by several paths
+      // (/memory on|off and permission updates) from multiple worktrees and
+      // processes. `settings.local.json` is edited in place, so serialize the
+      // read-modify-write on the same file key HookPermissions.update uses.
+      yield* flock.withLock(
+        Effect.gen(function* () {
+          const existing = (yield* fs.readFileStringSafe(target)) ?? "{}\n"
+          yield* MemoryFile.atomicWrite(fs, target, patchMemorySection(existing, config))
+        }),
+        writeLockKey(target),
+      )
     })
 
     const writeGlobal = Effect.fn("MemoryConfig.writeGlobal")(function* (
@@ -121,7 +156,7 @@ export const layer = Layer.effect(
       const file = join(globalConfigDir(), "memory.jsonc")
       const found = yield* readFirst(globalCandidates())
       if (found) {
-        const existing = yield* readConfig(found)
+        const existing = yield* readGlobal(found)
         if (existing) {
           yield* Effect.logWarning("global MEMORY config write declined — preserving existing valid config", {
             path: found.path,
@@ -152,25 +187,20 @@ export const defaultLayer = layer.pipe(
 
 export const node = LayerNode.make(layer, [FSUtil.node, EffectFlock.node, Git.node])
 
-/** Cross-process serialization key for writes to one MEMORY config file. */
+/** Cross-process serialization key for writes to one settings file. Shared
+ * with HookPermissions.update so both editors of `settings.local.json`
+ * serialize their read-modify-write. */
 export function writeLockKey(file: string) {
-  return `memory-config:${file}`
+  return file
 }
 
-export function projectPath(projectDir: string) {
-  return join(projectDir, MemoryPaths.PROJECT_CONFIG_PATHS[0])
-}
-
-export function candidates(projectDir: string) {
-  return [...projectCandidates(projectDir), ...globalCandidates()]
+/** `<root>/.agents/settings.local.json` — the only project memory location. */
+export function localSettingsPath(root: string) {
+  return ConfigPaths.projectLocalSettingsFile(root)
 }
 
 export function globalConfigDir() {
   return Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config
-}
-
-export function projectCandidates(projectDir: string) {
-  return MemoryPaths.PROJECT_CONFIG_PATHS.map((relative) => join(projectDir, relative))
 }
 
 function globalCandidates() {
@@ -181,6 +211,23 @@ function serialize(config: MemorySchema.Config) {
   return JSON.stringify(config, null, 2) + "\n"
 }
 
+function patchMemorySection(input: string, config: MemorySchema.Config) {
+  const source = input.trim() ? input : "{}\n"
+  const edits = modify(source, ["memory"], JSON.parse(JSON.stringify(config)), {
+    formattingOptions: {
+      insertSpaces: true,
+      tabSize: 2,
+    },
+  })
+  const next = applyEdits(source, edits)
+  return next.endsWith("\n") ? next : next + "\n"
+}
+
+function pathJoinRelative(from: string, to: string) {
+  return relative(from, to).split("\\").join("/")
+}
+
+/** Decode a global memory.json(c) document. */
 export function decodeConfig(text: string) {
   const errors: ParseError[] = []
   const value = parse(text, errors, { allowTrailingComma: true })
@@ -189,4 +236,19 @@ export function decodeConfig(text: string) {
   // Struct decoding tolerates the extra property, so such files stay valid
   // and the dead value is simply dropped on the next write.
   return Schema.decodeUnknownOption(MemorySchema.Config)(value ?? {})
+}
+
+/**
+ * Decode the `memory` section of a project `settings.local.json`. A valid
+ * document without the section is `Some(undefined)`; malformed JSONC or an
+ * invalid section is `None` so callers keep the previous state.
+ */
+export function decodeSection(text: string) {
+  const errors: ParseError[] = []
+  const value = parse(text, errors, { allowTrailingComma: true })
+  if (errors.length > 0) return Option.none<MemorySchema.Config | undefined>()
+  if (value === null || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, "memory"))
+    return Option.some(undefined)
+  const decoded = Schema.decodeUnknownOption(MemorySchema.Config)((value as Record<string, unknown>).memory)
+  return Option.isNone(decoded) ? Option.none<MemorySchema.Config | undefined>() : Option.some(decoded.value)
 }
