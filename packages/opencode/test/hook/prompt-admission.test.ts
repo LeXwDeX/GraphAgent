@@ -205,18 +205,10 @@ it.live("resume does not wait on cancellation while holding the admission commit
       yield* lifecycle.queueInitial(session.id, "initial")
       const gate: ChatMessageGate = { entered: false, open: () => {} }
       chatMessageGates.set(session.id, gate)
-      const requested = Deferred.makeUnsafe<void>()
-      const request = SessionCancellation.request
-      const spy = spyOn(SessionCancellation, "request").mockImplementation((id) => {
-        const result = request(id)
-        if (id === session.id) Deferred.doneUnsafe(requested, Effect.void)
-        return result
-      })
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           gate.open()
           chatMessageGates.delete(session.id)
-          spy.mockRestore()
         }),
       )
       const resumed = yield* prompt.resume({ sessionID: session.id, hookMode: "noninteractive" }).pipe(Effect.forkChild)
@@ -226,12 +218,14 @@ it.live("resume does not wait on cancellation while holding the admission commit
       )
       const abort = SessionCancellation.begin(session.id)
       yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
-      gate.open()
-      yield* awaitWithTimeout(Deferred.await(requested), "resume did not reach runner admission")
+      // Cancel while resume is parked inside the plugin callback. The admission
+      // fences the registered owner without waiting for the callback, and the
+      // resumed turn must observe the cancellation once the callback returns.
       const cancelled = yield* SessionCancellation.admissions
         .cancel(session.id, Effect.sync(abort.finish))
         .pipe(Effect.forkChild)
       yield* awaitWithTimeout(Fiber.join(cancelled), "cancel waited on the resume commit lock")
+      gate.open()
       expect(Exit.isFailure(yield* Fiber.await(resumed))).toBe(true)
       expect(yield* llm.calls).toBe(0)
     }),

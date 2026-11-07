@@ -57,7 +57,7 @@ describe("plugin.openai.ws", () => {
         url: server.wsUrl,
         headers: {},
       }),
-    ).rejects.toThrow("Expected 101 status code")
+    ).rejects.toThrow("Unexpected server response: 401")
   })
 
   test("enforces websocket send idle timeout", async () => {
@@ -1446,6 +1446,9 @@ async function createDelayedWebSocketServer() {
   http.server.on("connection", (socket) => {
     sockets.add(socket)
     socket.once("close", () => sockets.delete(socket))
+    // Bun keeps HTTP upgrade sockets half-open after the client aborts. Mirror
+    // Node's allowHalfOpen=false so the fixture observes the client teardown.
+    socket.once("end", () => socket.destroy())
   })
   const server = new WebSocketServer({
     server: http.server,

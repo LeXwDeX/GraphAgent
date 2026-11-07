@@ -8,10 +8,7 @@ import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
-import {
-  WorkspaceRoutingMiddleware,
-  WorkspaceRoutingQueryFields,
-} from "../middleware/workspace-routing"
+import { WorkspaceRoutingMiddleware, WorkspaceRoutingQueryFields } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -185,7 +182,9 @@ export const ExperimentalApi = HttpApi.make("experimental")
         HttpApiEndpoint.post("worktreeCreate", ExperimentalPaths.worktree, {
           disableCodecs: true,
           query: WorkspaceRoutingQueryFields,
-          payload: [HttpApiSchema.NoContent, Worktree.CreateInput],
+          // Effect 4.1.2 decodes `null` against Void, so NoContent would accept
+          // an explicit JSON null body. Undefined accepts only an absent body.
+          payload: [Schema.Undefined, Worktree.CreateInput],
           success: described(Worktree.Info, "Worktree created"),
           error: WorktreeApiError,
         }).annotateMerge(
@@ -261,7 +260,7 @@ export const ExperimentalApi = HttpApi.make("experimental")
         }),
       )
       .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
+      .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(
     OpenApi.annotations({

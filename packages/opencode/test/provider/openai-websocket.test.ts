@@ -407,7 +407,7 @@ it.live("custom provider preserves the existing WS retry budget and sticky POST/
             const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("relay") })
             expect(SessionV1.APIError.isInstance(parsed)).toBe(true)
             if (!SessionV1.APIError.isInstance(parsed)) throw new Error("Expected APIError")
-            expect(parsed.data.message).toContain("WebSocket connection")
+            expect(parsed.data.message).toContain("Unexpected server response: 400")
             expect(parsed.data.isRetryable).toBe(true)
             expect(parsed.data.statusCode).toBeUndefined()
             expect(posts).toBe(0)

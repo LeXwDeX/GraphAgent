@@ -7,8 +7,10 @@ import { serializeArrayParam, serializeObjectParam, serializePrimitiveParam } fr
 import { getUrl } from "../core/utils.gen.js"
 import type { Client, ClientOptions, Config, RequestOptions } from "./types.gen.js"
 
-export const createQuerySerializer = <T = unknown>({ parameters = {}, ...args }: QuerySerializerOptions = {}) => {
-  const querySerializer = (queryParams: T) => {
+export const createQuerySerializer = <T = unknown>({ parameters = {}, ...args }: QuerySerializerOptions = {}): ((
+  queryParams: T,
+) => string) => {
+  const querySerializer = (queryParams: T): string => {
     const search: string[] = []
     if (queryParams && typeof queryParams === "object") {
       for (const name in queryParams) {

@@ -173,19 +173,27 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       entry.closing = undefined
     }
 
+    // Scope.close becomes uninterruptible once a child runs uninterruptibly, so
+    // wrapping it in a timeout cannot bound it. Close in the application
+    // cleanup scope instead and bound only the wait: a stuck child must not
+    // keep the entry tombstone (and the caller waiting on it) alive forever.
     const closeEntryScope = (entry: Entry) =>
-      Scope.close(entry.scope, Exit.void).pipe(
-        Effect.timeoutOption("1 second"),
-        Effect.tap((result) =>
-          Option.isNone(result)
-            ? Effect.logWarning("instance entry scope close timed out", { directory: entry.directory })
-            : Effect.void,
-        ),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("instance entry scope close failed", { directory: entry.directory, cause }),
-        ),
-        Effect.asVoid,
-      )
+      Effect.gen(function* () {
+        const fiber = yield* Scope.close(entry.scope, Exit.void).pipe(
+          Effect.forkIn(cleanupScope, { startImmediately: true }),
+        )
+        const closed = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("1 second"))
+        if (Option.isNone(closed)) {
+          yield* Effect.logWarning("instance entry scope close timed out", { directory: entry.directory })
+          return
+        }
+        if (Exit.isFailure(closed.value)) {
+          yield* Effect.logWarning("instance entry scope close failed", {
+            directory: entry.directory,
+            cause: closed.value.cause,
+          })
+        }
+      })
 
     const beginUse = (entry: Entry) => {
       if (entry.active === 0) entry.idle = Deferred.makeUnsafe<void>()
