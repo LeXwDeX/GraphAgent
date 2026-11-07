@@ -14,12 +14,9 @@ import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionTable } from "@opencode-ai/core/session/sql"
-import { SessionStore } from "@opencode-ai/core/session/store"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -29,21 +26,39 @@ const project = Project.layer.pipe(
   Layer.provide(Git.defaultLayer),
   Layer.provide(ProjectDirectories.defaultLayer),
 )
-const sessions = SessionV2.layer.pipe(
-  Layer.provide(LocationServiceMap.layer),
-  Layer.provide(Database.defaultLayer),
-  Layer.provide(EventV2.defaultLayer),
-  Layer.provide(project),
-  Layer.provide(SessionStore.defaultLayer),
-  Layer.provide(SessionExecution.noopLayer),
-)
+const lookup = Layer.effect(
+  MoveSession.SessionLookup,
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    return MoveSession.SessionLookup.of({
+      get: Effect.fn("MoveSessionTest.lookup")(function* (sessionID) {
+        const row = yield* db
+          .select({
+            directory: SessionTable.directory,
+            workspaceID: SessionTable.workspace_id,
+            projectID: SessionTable.project_id,
+          })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        if (!row) return yield* new MoveSession.SessionNotFoundError({ sessionID })
+        return {
+          directory: AbsolutePath.make(row.directory),
+          workspaceID: row.workspaceID ?? undefined,
+          projectID: Project.ID.make(row.projectID),
+        }
+      }),
+    })
+  }),
+).pipe(Layer.provide(Database.defaultLayer))
 const layer = MoveSession.layer.pipe(
   Layer.provide(Database.defaultLayer),
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(Git.defaultLayer),
   Layer.provide(EventV2.defaultLayer),
   Layer.provide(project),
-  Layer.provide(sessions),
+  Layer.provide(lookup),
 )
 const it = testEffect(
   Layer.mergeAll(
@@ -53,9 +68,6 @@ const it = testEffect(
     ProjectDirectories.defaultLayer,
     project,
     SessionProjector.defaultLayer,
-    SessionStore.defaultLayer,
-    SessionExecution.noopLayer,
-    sessions,
   ),
 )
 
@@ -94,7 +106,7 @@ describe("MoveSession", () => {
       yield* Effect.promise(() => fs.writeFile(path.join(source, "untracked.txt"), "new\n"))
 
       const projectID = (yield* Project.Service.use((service) => service.resolve(source))).id
-      const sessionID = SessionV2.ID.make("ses_move")
+      const sessionID = SessionSchema.ID.make("ses_move")
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
@@ -167,7 +179,7 @@ describe("MoveSession", () => {
       yield* Effect.promise(() => fs.writeFile(path.join(source, "untracked.txt"), "new\n"))
 
       const projectID = (yield* Project.Service.use((service) => service.resolve(source))).id
-      const sessionID = SessionV2.ID.make("ses_move_nested")
+      const sessionID = SessionSchema.ID.make("ses_move_nested")
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
@@ -233,7 +245,7 @@ describe("MoveSession", () => {
       yield* Effect.promise(() => fs.writeFile(path.join(source, "untracked.txt"), "unrelated\n"))
 
       const projectID = (yield* Project.Service.use((service) => service.resolve(source))).id
-      const sessionID = SessionV2.ID.make("ses_move_nested_checkout")
+      const sessionID = SessionSchema.ID.make("ses_move_nested_checkout")
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)

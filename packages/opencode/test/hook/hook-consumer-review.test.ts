@@ -1,5 +1,5 @@
 import { expect } from "bun:test"
-import { DateTime, Effect, Layer, Exit, Fiber, Schema } from "effect"
+import { Effect, Layer, Exit, Fiber } from "effect"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { consumerContext } from "@/hook/consumer-context"
@@ -11,13 +11,6 @@ import { SessionHooks } from "@/hook/session-hooks"
 import { Permission } from "@/permission"
 import { MessageID, PartID } from "@/session/schema"
 import { HookTranscript } from "@/hook/transcript"
-import { SessionConversationHooks } from "@opencode-ai/core/session/conversation-hooks"
-import { SessionMessage } from "@opencode-ai/core/session/message"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
-import { Database } from "@opencode-ai/core/database/database"
-import { Location } from "@opencode-ai/core/location"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { location } from "../../../core/test/fixture/location"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 
@@ -85,75 +78,32 @@ it.instance("raw permission and DirectoryAdded hooks receive actual JSONL, envir
   }),
 )
 
-it.instance("derives effort from the V2 session model when the transcript prompt carries none", () =>
+it.instance("derives effort from the session model when the transcript prompt carries none", () =>
   Effect.gen(function* () {
     const sessions = yield* Session.Service
     const session = yield* sessions.create({
       model: { id: ModelV2.ID.make("fixture"), providerID: ProviderV2.ID.make("fixture"), variant: "high" },
     })
-    // V2 durable user rows carry no model; only the session row keeps the variant.
-    const id = SessionMessage.ID.make("msg_session_effort")
-    const {
-      id: _,
-      type,
-      ...data
-    } = Schema.encodeSync(SessionMessage.Message)(
-      SessionMessage.User.make({
-        id,
-        type: "user",
-        text: "SESSION_EFFORT_PROMPT",
-        time: { created: DateTime.makeUnsafe(0) },
-      }),
-    )
-    const { db } = yield* Database.Service
-    yield* db
-      .insert(SessionMessageTable)
-      .values({ id, session_id: session.id, type, seq: 1, time_created: 0, time_updated: 0, data })
-      .run()
-      .pipe(Effect.orDie)
+    const id = MessageID.ascending()
+    yield* sessions.updateMessage({
+      id,
+      sessionID: session.id,
+      role: "user",
+      time: { created: Date.now() },
+      agent: "build",
+      model: { providerID: ProviderV2.ID.make("fixture"), modelID: ModelV2.ID.make("fixture") },
+    })
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      sessionID: session.id,
+      messageID: id,
+      type: "text",
+      text: "SESSION_EFFORT_PROMPT",
+    })
 
     const context = yield* consumerContext(session.id)
     expect(context.promptID).toBe(id)
     expect(context.effort).toBe("high")
-  }),
-)
-
-it.instance("V2 stop wins over defer without waiting for its tool batch", () =>
-  Effect.gen(function* () {
-    const instance = yield* TestInstance
-    const session = yield* (yield* Session.Service).create({})
-    yield* (yield* SessionHooks.Service).add(session.id, {
-      event: "PreToolUse",
-      hooks: [
-        {
-          type: "command",
-          command: `printf '%s' '{"continue":false,"stopReason":"combined-stop","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"defer","updatedInput":{"path":"changed"}}}'`,
-        },
-      ],
-    })
-    let batches = 0
-    const hooks = yield* SessionConversationHooks.Service
-    const result = yield* hooks
-      .beforeTool({
-        sessionID: session.id,
-        toolCallID: "combined",
-        toolName: "write",
-        toolInput: { path: "original" },
-        isSingle: () => {
-          batches++
-          return Promise.resolve(true)
-        },
-      })
-      .pipe(
-        Effect.provideService(
-          Location.Service,
-          Location.Service.of(location({ directory: AbsolutePath.make(instance.directory) })),
-        ),
-      )
-    expect(result.stopped).toBe("combined-stop")
-    expect(result.deferred).toBeUndefined()
-    expect(result.toolInput).toEqual({ path: "original" })
-    expect(batches).toBe(0)
   }),
 )
 

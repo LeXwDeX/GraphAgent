@@ -14,7 +14,6 @@ import { TestLLMServer } from "../lib/llm-server"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MessageID, PartID, type SessionID } from "@/session/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -128,7 +127,6 @@ const it = testEffect(
     replacements: [
       LayerNode.replace(MCP.node, mcp),
       LayerNode.replace(LSP.node, lsp),
-      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
       LayerNode.replace(SettingsHook.node, settingsHook),
     ],
   }),

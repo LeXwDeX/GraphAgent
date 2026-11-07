@@ -8,7 +8,6 @@ import { Prompt, type PromptRef } from "../../src/component/prompt"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
-import { DataProvider } from "../../src/context/data"
 import { EditorContextProvider } from "../../src/context/editor"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
@@ -96,11 +95,11 @@ async function mount(handler: (request: Request) => Promise<Response>, onPrompt?
           <OpencodeKeymapProvider keymap={keymap}><ArgsProvider><KVProvider><ToastProvider>
             <RouteProvider initialRoute={{ type: "home" }}><TuiConfigProvider config={config}>
               <PluginRuntimeProvider value={createPluginRuntime()}><SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
-                <ProjectProvider><SyncProvider><DataProvider><ThemeProvider mode="dark"><Toast /><LocalProvider>
+                <ProjectProvider><SyncProvider><ThemeProvider mode="dark"><Toast /><LocalProvider>
                   <PromptStashProvider><DialogProvider><FrecencyProvider><PromptHistoryProvider><PromptRefProvider>
                     <EditorContextProvider integration={{}}><LocationProvider><Content /></LocationProvider></EditorContextProvider>
                   </PromptRefProvider></PromptHistoryProvider></FrecencyProvider></DialogProvider></PromptStashProvider>
-                </LocalProvider></ThemeProvider></DataProvider></SyncProvider></ProjectProvider>
+                </LocalProvider></ThemeProvider></SyncProvider></ProjectProvider>
               </SDKProvider></PluginRuntimeProvider>
             </TuiConfigProvider></RouteProvider>
           </ToastProvider></KVProvider></ArgsProvider></OpencodeKeymapProvider>

@@ -1,5 +1,4 @@
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
-import { SessionV2 } from "@opencode-ai/core/session"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { RootHttpApi } from "../api"
@@ -28,7 +27,7 @@ export const controlPlaneHandlers = HttpApiBuilder.group(RootHttpApi, "controlPl
 )
 
 function message(error: MoveSession.Error) {
-  if (error instanceof SessionV2.NotFoundError) return `Session not found: ${error.sessionID}`
+  if (error instanceof MoveSession.SessionNotFoundError) return `Session not found: ${error.sessionID}`
   if (error instanceof MoveSession.DestinationProjectMismatchError)
     return "Destination directory belongs to another project"
   if (error instanceof MoveSession.ApplyChangesError)

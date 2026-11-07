@@ -20,8 +20,6 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
 
 import { NotFoundError } from "@/storage/storage"
 import { eq } from "drizzle-orm"
@@ -36,6 +34,7 @@ import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
 import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
@@ -463,6 +462,12 @@ export interface Interface {
     source?: "custom" | "generated"
   }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
+  readonly setAgent: (input: { sessionID: SessionID; agent: string; timestamp?: number }) => Effect.Effect<void>
+  readonly setModelSelection: (input: {
+    sessionID: SessionID
+    model: NonNullable<Info["model"]>
+    timestamp?: number
+  }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type, guard?: (current: Info) => boolean) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
   readonly setRevert: (input: {
@@ -965,7 +970,6 @@ export const layer: Layer.Layer<
                     messageID: cloned.id,
                     sessionID: session.id,
                   }
-                  if (p.type === "reasoning") delete p.v2
                   if (p.type === "compaction" && p.tail_start_id) {
                     p.tail_start_id = idMap.get(p.tail_start_id)
                   }
@@ -1053,6 +1057,30 @@ export const layer: Layer.Layer<
 
     const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
       yield* patch(input.sessionID, { time: { archived: input.time } }).pipe(Effect.orDie)
+    })
+
+    const setAgent = Effect.fn("Session.setAgent")(function* (input: {
+      sessionID: SessionID
+      agent: string
+      timestamp?: number
+    }) {
+      yield* events.publish(SessionV1.Event.AgentSwitched, {
+        sessionID: input.sessionID,
+        agent: input.agent,
+        timestamp: input.timestamp ?? Date.now(),
+      })
+    })
+
+    const setModelSelection = Effect.fn("Session.setModelSelection")(function* (input: {
+      sessionID: SessionID
+      model: NonNullable<Info["model"]>
+      timestamp?: number
+    }) {
+      yield* events.publish(SessionV1.Event.ModelSwitched, {
+        sessionID: input.sessionID,
+        model: input.model,
+        timestamp: input.timestamp ?? Date.now(),
+      })
     })
 
     const setMetadata = Effect.fn("Session.setMetadata")(function* (
@@ -1207,6 +1235,8 @@ export const layer: Layer.Layer<
       get,
       setTitle,
       setArchived,
+      setAgent,
+      setModelSelection,
       setMetadata,
       setPermission,
       setRevert,
@@ -1232,10 +1262,15 @@ export const layer: Layer.Layer<
 export const defaultLayer = layer.pipe(
   Layer.provide(BackgroundJob.defaultLayer),
   Layer.provide(Database.defaultLayer),
+  // Session.create/update/remove publish SessionV1 events and read the rows
+  // back through Session.get/list, so the projector that writes those rows is
+  // part of this layer (same shape as Dag.defaultLayer → DagProjector). It used
+  // to arrive transitively through the removed V2 session service, so every
+  // composition of Session.defaultLayer — AppLayer, the HTTP server app,
+  // workspaces and tests — now needs it explicitly here.
+  Layer.provide(SessionProjector.defaultLayer),
   Layer.provide(DagMessages.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
-  Layer.provide(SessionExecution.noopLayer),
-  Layer.provide(SessionV2.defaultLayer),
   Layer.provide(RuntimeFlags.defaultLayer),
   // GOAL-FP-01-05/-06: self-provide the remove() cleanup dependencies so the
   // cleanup runs in EVERY composition of Session.defaultLayer (AppLayer

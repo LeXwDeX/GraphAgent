@@ -157,7 +157,6 @@ const root = LayerNode.group([
 ])
 const replacements = [
   LayerNode.replace(SessionSummary.node, summary),
-  LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
 ]
 const env = LayerNode.buildLayer(LayerNode.group([root, LayerNode.make(TestLLMServer.layer, [])]), { replacements })
 
@@ -169,7 +168,7 @@ const _native = testEffect(
       LayerNode.replace(SessionSummary.node, summary),
       LayerNode.replace(
         RuntimeFlags.node,
-        RuntimeFlags.layer({ experimentalEventSystem: true, experimentalNativeLlm: true }),
+        RuntimeFlags.layer({ experimentalNativeLlm: true }),
       ),
     ],
   }),

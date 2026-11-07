@@ -14,8 +14,6 @@ import { resolveHostAttentionSoundPaths } from "@/config/tui-host-attention"
 import { internalTuiPlugins, type InternalTuiPlugin } from "./internal"
 import type { HostPluginApi, HostSlots } from "@opencode-ai/tui/plugin/slots"
 import { createCommandShim } from "@opencode-ai/tui/plugin/command-shim"
-import { RuntimeFlags } from "@/effect/runtime-flags"
-import { Effect } from "effect"
 import { createPluginRuntime, type PluginRuntime, type TuiPluginHost } from "@opencode-ai/tui/plugin/runtime"
 
 ensureRuntimePluginSupport({ additional: keymapRuntimeModules })
@@ -468,13 +466,7 @@ async function load(input: {
   }
   runtime = next
   try {
-    const flags = await Effect.runPromise(
-      Effect.gen(function* () {
-        return yield* RuntimeFlags.Service
-      }).pipe(Effect.provide(RuntimeFlags.defaultLayer)),
-    )
-
-    for (const item of internalTuiPlugins(flags)) {
+    for (const item of internalTuiPlugins()) {
       const entry = loadInternalPlugin(item)
       addPluginEntry(next, {
         id: entry.id,

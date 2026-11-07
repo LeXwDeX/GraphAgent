@@ -1,9 +1,6 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { Part } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
-import { SessionMessageTable } from "@opencode-ai/core/session/sql"
-import { SessionMessage } from "@opencode-ai/core/session/message"
-import { eq } from "drizzle-orm"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
@@ -22,10 +19,8 @@ import { Provider } from "@/provider/provider"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -140,7 +135,6 @@ const root = LayerNode.group([
 ])
 const replacements = [
   LayerNode.replace(SessionSummary.node, summary),
-  LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
 ]
 
 /**
@@ -683,11 +677,6 @@ opaqueReasoningUnknown.it.effect(
         const parts = yield* MessageV2.parts(msg.id)
         expect(parts.some((part) => part.type === "reasoning")).toBe(false)
         expect(JSON.stringify(parts)).not.toContain("test-encrypted-state")
-        const { db } = yield* Database.Service
-        const v2 = yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.session_id, chat.id)).all()
-        const projected = JSON.stringify(v2.filter((row) => row.type === "assistant"))
-        expect(projected).toContain("failedAttempt")
-        expect(projected).not.toContain("test-encrypted-state")
       }),
     { config: cfg },
   ),
@@ -1013,12 +1002,8 @@ exhausted.it.effect(
         const { processors, session, provider } = yield* boot()
         const events = yield* EventV2Bridge.Service
         const sts = yield* SessionStatus.Service
-        const retried: number[] = []
         const errors: string[] = []
         const off = yield* events.listen((event) => {
-          if (event.type === SessionEvent.Retried.type && Schema.is(SessionEvent.Retried.data)(event.data)) {
-            retried.push(event.data.attempt)
-          }
           if (event.type === Session.Event.Error.type && Schema.is(Session.Event.Error.data)(event.data)) {
             if (event.data.error) errors.push(event.data.error.name)
           }
@@ -1039,7 +1024,6 @@ exhausted.it.effect(
 
         expect(result).toBe("stop")
         expect(exhausted.count()).toBe(6)
-        expect(retried).toStrictEqual([1, 2, 3, 4, 5])
         expect(errors).toContain("APIError")
         expect(handle.message.error).toBeDefined()
         expect(handle.message.error?.name).toBe("APIError")
@@ -1097,21 +1081,6 @@ alternatingExhaustion.it.effect(
         }
         const parts = yield* MessageV2.parts(msg.id)
         expect(parts.some((part) => part.type === "reasoning")).toBe(false)
-        const { db } = yield* Database.Service
-        const v2 = yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.session_id, chat.id)).all()
-        const reasoning = v2
-          .filter((row) => row.type === "assistant")
-          .flatMap((row) =>
-            Schema.decodeUnknownSync(SessionMessage.Assistant)({
-              ...row.data,
-              id: row.id,
-              type: row.type,
-            }).content.filter((item) => item.type === "reasoning"),
-          )
-        expect(reasoning).toHaveLength(3)
-        expect(
-          reasoning.every((item) => item.text === "" && item.providerMetadata?.opencode?.failedAttempt === true),
-        ).toBe(true)
       }),
     { config: cfg },
   ),

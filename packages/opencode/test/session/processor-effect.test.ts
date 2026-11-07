@@ -24,7 +24,6 @@ import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -178,7 +177,6 @@ const root = LayerNode.group([
 ])
 const replacements = [
   LayerNode.replace(SessionSummary.node, summary),
-  LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
 ]
 const env = LayerNode.buildLayer(LayerNode.group([root, LayerNode.make(TestLLMServer.layer, [])]), { replacements })
 
@@ -190,7 +188,7 @@ const native = testEffect(
       LayerNode.replace(SessionSummary.node, summary),
       LayerNode.replace(
         RuntimeFlags.node,
-        RuntimeFlags.layer({ experimentalEventSystem: true, experimentalNativeLlm: true }),
+        RuntimeFlags.layer({ experimentalNativeLlm: true }),
       ),
     ],
   }),
@@ -1557,17 +1555,11 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
     (dir) =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
-        const events = yield* EventV2Bridge.Service
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "provider tool error")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-        const settlements: Array<typeof SessionEvent.Tool.Failed.Type> = []
-        const off = yield* events.listen((event) => {
-          if (Schema.is(SessionEvent.Tool.Failed)(event)) settlements.push(event)
-          return Effect.void
-        })
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
 
         yield* handle.process({
@@ -1586,19 +1578,14 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
           messages: [{ role: "user", content: "provider tool error" }],
           tools: {},
         })
-        yield* off
 
         const parts = yield* MessageV2.parts(msg.id)
         const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
         expect(call?.state.status).toBe("error")
-        if (call?.state.status === "error") expect(call.state.error).toBe("provider boom")
-        expect(settlements).toHaveLength(1)
-        expect(settlements[0]?.data).toMatchObject({
-          callID: "call-1",
-          error: { type: "unknown", message: "provider boom" },
-          result: { type: "error", value: "provider boom" },
-          provider: { executed: true },
-        })
+        expect(call?.metadata).toMatchObject({ providerExecuted: true })
+        if (call?.state.status === "error") {
+          expect(call.state.error).toBe("provider boom")
+        }
       }),
     { config: cfg },
   ),
@@ -1609,23 +1596,11 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
     (dir) =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
-        const events = yield* EventV2Bridge.Service
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "provider failure")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-        const seen: string[] = []
-        let text: string | undefined
-        let reasoning: string | undefined
-        const off = yield* events.listen((event) => {
-          seen.push(event.type)
-          if (event.type === SessionEvent.Text.Ended.type)
-            text = (event.data as typeof SessionEvent.Text.Ended.data.Type).text
-          if (event.type === SessionEvent.Reasoning.Ended.type)
-            reasoning = (event.data as typeof SessionEvent.Reasoning.Ended.data.Type).text
-          return Effect.void
-        })
         const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
 
         expect(
@@ -1646,14 +1621,13 @@ itFragmentFailure.live("session.processor effect tests flush partial v2 fragment
             tools: {},
           }),
         ).toBe("stop")
-        yield* off
 
-        const failed = seen.indexOf(SessionEvent.Step.Failed.type)
-        expect(failed).toBeGreaterThan(-1)
-        expect(seen.indexOf(SessionEvent.Text.Ended.type)).toBeLessThan(failed)
-        expect(seen.indexOf(SessionEvent.Reasoning.Ended.type)).toBeLessThan(failed)
-        expect(text).toBe("partial")
-        expect(reasoning).toBe("thinking")
+        const parts = yield* MessageV2.parts(msg.id)
+        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const reasoning = parts.find((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
+        expect(text?.text).toBe("partial")
+        expect(reasoning?.text).toBe("thinking")
+        expect(parts.indexOf(text!)).toBeLessThan(parts.indexOf(reasoning!))
       }),
     { config: cfg },
   ),

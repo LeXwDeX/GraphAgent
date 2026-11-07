@@ -23,17 +23,14 @@ import { DagStore } from "@opencode-ai/core/dag/store"
 
 import { Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
-import * as DateTime from "effect/DateTime"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow, measured, triggerLimit, usable } from "./overflow"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionEvent } from "@opencode-ai/core/session/event"
-import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { buildPrompt } from "@opencode-ai/core/session/compaction"
+import { buildPrompt } from "@opencode-ai/core/session/compaction-prompt"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
 import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult } from "@/hook/settings"
 import { HookStartContext } from "@/hook/start-context"
@@ -542,15 +539,11 @@ export const layer = Layer.effect(
       let msg: SessionV1.Assistant = template
       let processor: SessionProcessor.Handle
       let result: SessionProcessor.Result
-      let recent = ""
       let selected: { head: SessionV1.WithParts[]; tail_start_id: MessageID | undefined }
       while (true) {
         const candidate = models[attempt]
         selected = yield* select({ messages: filteredHistory, cfg, model: candidate, conversationModel })
         const msgs = structuredClone(selected.head)
-        const tailIndex = selected.tail_start_id
-          ? history.findIndex((message) => message.info.id === selected.tail_start_id)
-          : -1
         msg = {
           ...template,
           id: MessageID.ascending(),
@@ -566,16 +559,6 @@ export const layer = Layer.effect(
           reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
           stripOpaqueReasoning: true,
         })
-        recent =
-          tailIndex < 0
-            ? ""
-            : JSON.stringify(
-                yield* MessageV2.toModelMessagesEffect(history.slice(tailIndex), candidate, {
-                  stripMedia: true,
-                  toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-                  reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
-                }),
-              )
         result = yield* processor.process({
           user: userMessage,
           agent,
@@ -720,17 +703,6 @@ export const layer = Layer.effect(
 
       if (processor.message.error) return "stop"
       if (result === "continue") {
-        if (flags.experimentalEventSystem) {
-          if (summary)
-            yield* events.publish(SessionEvent.Compaction.Ended, {
-              sessionID: input.sessionID,
-              messageID: SessionMessage.ID.make(input.parentID),
-              timestamp: DateTime.makeUnsafe(Date.now()),
-              reason: input.auto ? "auto" : "manual",
-              text: summary ?? "",
-              recent,
-            })
-        }
         yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
         // The committed summary drops earlier context; the next system prompt reloads instruction files.
         if (instruction) yield* instruction.markCompacted(input.sessionID)
@@ -855,14 +827,6 @@ export const layer = Layer.effect(
         auto: input.auto,
         overflow: input.overflow,
       })
-      if (flags.experimentalEventSystem) {
-        yield* events.publish(SessionEvent.Compaction.Started, {
-          sessionID: input.sessionID,
-          messageID: SessionMessage.ID.make(msg.id),
-          timestamp: DateTime.makeUnsafe(Date.now()),
-          reason: input.auto ? "auto" : "manual",
-        })
-      }
     })
 
     return Service.of({

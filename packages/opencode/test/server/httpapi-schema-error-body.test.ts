@@ -111,7 +111,7 @@ describe("schema-rejection wire shape", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const res = yield* requestInDirectory("/api/session?limit=0", test.directory)
+        const res = yield* requestInDirectory("/api/fs/find?query=foo&limit=0", test.directory)
         const parsed = JSON.parse(yield* text(res))
         expect(res.status).toBe(400)
         expect(parsed).toMatchObject({ _tag: "InvalidRequestError", kind: "Query" })

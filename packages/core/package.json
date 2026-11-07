@@ -15,10 +15,8 @@
     "opencode": "./bin/opencode"
   },
   "exports": {
-    "./session/runner": "./src/session/runner/index.ts",
     "./session/context-folding": "./src/session/context-folding/index.ts",
     "./session/reasoning-distillation": "./src/session/reasoning-distillation/index.ts",
-    "./system-context": "./src/system-context/index.ts",
     "./runtime-asset": "./src/runtime-asset/index.ts",
     "./runtime-asset/catalog/*": "./src/runtime-asset/catalog/*.ts",
     "./dag/core/*": "./src/dag/core/*.ts",

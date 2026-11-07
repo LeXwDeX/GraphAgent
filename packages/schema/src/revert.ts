@@ -18,6 +18,5 @@ export const State = Schema.Struct({
   partID: Schema.String.pipe(Schema.optional),
   snapshot: Schema.String.pipe(Schema.optional),
   diff: Schema.String.pipe(Schema.optional),
-  files: Schema.Array(FileDiff).pipe(Schema.optional),
 })
 export type State = typeof State.Type

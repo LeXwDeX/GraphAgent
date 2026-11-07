@@ -7,7 +7,7 @@ import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
@@ -35,7 +35,7 @@ function seed() {
     yield* db
       .insert(SessionTable)
       .values({
-        id: SessionV2.ID.make("ses_parent"),
+        id: SessionSchema.ID.make("ses_parent"),
         project_id: Project.ID.make("project-1"),
         slug: "parent",
         directory: AbsolutePath.make(process.cwd()),
@@ -49,7 +49,7 @@ function seed() {
       .values({
         id: "dag_history",
         project_id: Project.ID.make("project-1"),
-        session_id: SessionV2.ID.make("ses_parent"),
+        session_id: SessionSchema.ID.make("ses_parent"),
         title: "Worktree history",
         status: "running",
         config: "{}",
@@ -87,7 +87,7 @@ describe("DAG worktree history projection (#946)", () => {
         yield* events.publish(DagEvent.NodeStarted, {
           dagID,
           nodeID,
-          childSessionID: SessionV2.ID.make("ses_first"),
+          childSessionID: SessionSchema.ID.make("ses_first"),
           worktree: {
             directory: "/repo/.worktrees/first",
             branch: "opencode/dag-node-first",
@@ -100,7 +100,7 @@ describe("DAG worktree history projection (#946)", () => {
         yield* events.publish(DagEvent.NodeRestarted, {
           dagID,
           nodeID,
-          childSessionID: SessionV2.ID.make("ses_first"),
+          childSessionID: SessionSchema.ID.make("ses_first"),
           timestamp: yield* DateTime.now,
         })
         // NodeRestarted keeps the pointer; the replacement start is the seam
@@ -110,7 +110,7 @@ describe("DAG worktree history projection (#946)", () => {
         yield* events.publish(DagEvent.NodeStarted, {
           dagID,
           nodeID,
-          childSessionID: SessionV2.ID.make("ses_second"),
+          childSessionID: SessionSchema.ID.make("ses_second"),
           worktree: {
             directory: "/repo/.worktrees/second",
             branch: "opencode/dag-node-second",
@@ -158,14 +158,14 @@ describe("DAG worktree history projection (#946)", () => {
         yield* events.publish(DagEvent.NodeStarted, {
           dagID,
           nodeID,
-          childSessionID: SessionV2.ID.make("ses_first"),
+          childSessionID: SessionSchema.ID.make("ses_first"),
           worktree,
           timestamp: yield* DateTime.now,
         })
         yield* events.publish(DagEvent.NodeStarted, {
           dagID,
           nodeID,
-          childSessionID: SessionV2.ID.make("ses_second"),
+          childSessionID: SessionSchema.ID.make("ses_second"),
           worktree,
           timestamp: yield* DateTime.now,
         })
@@ -200,11 +200,11 @@ describe("DAG worktree history projection (#946)", () => {
           conflictsWith: [],
         }
         yield* events.publish(DagEvent.NodeStarted, {
-          dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"),
+          dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"),
           baseHead: first.baseHead, worktree: first, timestamp: yield* DateTime.now,
         })
         yield* events.publish(DagEvent.NodeRestarted, {
-          dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), timestamp: yield* DateTime.now,
+          dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"), timestamp: yield* DateTime.now,
         })
         const failure = {
           dagID, nodeID, reason: "session create and cleanup failed", trigger: "exec_failed" as const,
@@ -239,7 +239,7 @@ describe("DAG worktree history projection (#946)", () => {
           directory: "/repo/.worktrees/same", touchedPaths: [], state: "active", conflictsWith: [],
         }
         yield* events.publish(DagEvent.NodeStarted, {
-          dagID, nodeID, childSessionID: SessionV2.ID.make("ses_first"), worktree, timestamp: yield* DateTime.now,
+          dagID, nodeID, childSessionID: SessionSchema.ID.make("ses_first"), worktree, timestamp: yield* DateTime.now,
         })
         yield* events.publish(DagEvent.NodeFailed, {
           dagID, nodeID, reason: "failed", trigger: "exec_failed", worktree: { ...worktree, state: "kept" },

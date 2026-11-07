@@ -30,7 +30,7 @@ import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { TodoReminders } from "../../src/session/todo-reminders"
 import { Session } from "@/session/session"
-import { SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -44,8 +44,6 @@ import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionAbortReason } from "../../src/session/abort-reason"
 import { SessionStatus } from "../../src/session/status"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { RuntimeContext } from "../../src/session/runtime-context"
@@ -349,7 +347,6 @@ function memoryContext(input?: PromptLayerOptions) {
 
 function makePrompt(input?: PromptLayerOptions) {
   const flags = RuntimeFlags.layer({
-    experimentalEventSystem: true,
     experimentalBackgroundSubagents: input?.experimentalBackgroundSubagents ?? false,
     ...input?.runtimeFlags,
   })
@@ -375,7 +372,7 @@ function makePrompt(input?: PromptLayerOptions) {
          Layer.provide(
           LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
         ),
-        Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true, experimentalNativeLlm: true })),
+        Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
       )
     : LLM.defaultLayer
   const llmLayer = input?.organizer
@@ -3005,52 +3002,6 @@ backgroundUnix(
       expect(calls === 3 || calls === 4).toBe(true)
     }),
   30_000,
-)
-
-noLLMServer.instance.skip(
-  "prompt emits v2 prompted and synthetic events (v2 projector disabled)",
-  () =>
-    Effect.gen(function* () {
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({ title: "Pinned" })
-
-      yield* prompt.prompt({
-        sessionID: chat.id,
-        agent: "build",
-        noReply: true,
-        parts: [
-          { type: "text", text: "hello v2" },
-          {
-            type: "file",
-            mime: "text/plain",
-            filename: "note.txt",
-            url: "data:text/plain;base64,bm90ZSBjb250ZW50",
-          },
-        ],
-      })
-
-      const messages = yield* SessionV2.Service.use((session) => session.messages({ sessionID: chat.id })).pipe(
-        Effect.provide(SessionExecution.noopLayer),
-        Effect.provide(SessionV2.defaultLayer),
-      )
-      const { db } = yield* Database.Service
-      const row = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(eq(SessionMessageTable.session_id, chat.id))
-        .get()
-        .pipe(Effect.orDie)
-      expect(messages.find((message) => message.type === "user")).toMatchObject({ type: "user", text: "hello v2" })
-      expect(typeof row?.data.time.created).toBe("number")
-      expect(messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: "synthetic", text: expect.stringContaining("Called the Read tool") }),
-          expect.objectContaining({ type: "synthetic", text: "note content" }),
-        ]),
-      )
-    }),
-  { config: cfg },
 )
 
 it.instance("static loop returns assistant text through local provider", () =>
@@ -7858,11 +7809,9 @@ noLLMServer.instance(
         .select({ type: EventTable.type })
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, session.id))
-      const switches = before.filter((event) => event.type.startsWith("session.next.model.switched"))
+      const switches = before.filter((event) => event.type.startsWith("session.model.switched"))
       expect(switches.length).toBeGreaterThan(0)
-      expect(after.filter((event) => event.type.startsWith("session.next.model.switched"))).toHaveLength(
-        switches.length,
-      )
+      expect(after.filter((event) => event.type.startsWith("session.model.switched"))).toHaveLength(switches.length)
 
       yield* prompt.prompt({
         sessionID: session.id,

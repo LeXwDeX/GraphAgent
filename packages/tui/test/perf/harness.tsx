@@ -7,7 +7,6 @@ import { onCleanup, onMount } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
-import { DataProvider } from "../../src/context/data"
 import { EditorContextProvider } from "../../src/context/editor"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
@@ -147,7 +146,6 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
                             >
                               <ProjectProvider>
                                 <SyncProvider>
-                                  <DataProvider>
                                     <ThemeProvider mode="dark">
                                       <LocalProvider>
                                         <PromptStashProvider>
@@ -167,7 +165,6 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
                                         </PromptStashProvider>
                                       </LocalProvider>
                                     </ThemeProvider>
-                                  </DataProvider>
                                 </SyncProvider>
                               </ProjectProvider>
                             </SDKProvider>

@@ -168,7 +168,7 @@ const status = SessionStatus.layer.pipe(Layer.provideMerge(EventV2Bridge.default
 const run = SessionRunState.layer.pipe(Layer.provide(status))
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
 
-const flags = RuntimeFlags.layer({ experimentalEventSystem: true })
+const flags = RuntimeFlags.layer()
 
 const deps = Layer.mergeAll(
   hookRecorderLayer,

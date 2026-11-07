@@ -68,9 +68,9 @@ export const rpc = {
     const body = await response.text()
     const url = new URL(input.url)
     const directory = request.headers.get("x-opencode-directory") ?? url.searchParams.get("directory") ?? process.cwd()
-    const existing = url.pathname.match(/\/(?:session|chat)\/([^/]+)\/(?:message|prompt|command|shell)$/)
+    const existing = url.pathname.match(/\/session\/([^/]+)\/(?:message|prompt|command|shell)$/)
     if (input.method.toUpperCase() === "POST" && existing) localSessions.set(decodeURIComponent(existing[1]), directory)
-    if (input.method.toUpperCase() === "POST" && /\/(?:session|chat)\/?$/.test(url.pathname) && response.ok) {
+    if (input.method.toUpperCase() === "POST" && /\/session\/?$/.test(url.pathname) && response.ok) {
       try {
         const parsed = JSON.parse(body)
         const created = parsed?.data ?? parsed

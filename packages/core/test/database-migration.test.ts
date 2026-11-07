@@ -76,32 +76,19 @@ describe("DatabaseMigration", () => {
         expect(yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session'`)).toEqual({
           name: "session",
         })
+        // The V2 executor removal drops the event-sourced session tables; the
+        // canonical V1 message/part tables remain the only projection.
         expect(
-          yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_input'`),
-        ).toEqual({ name: "session_input" })
-        expect(
-          yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_context_epoch'`),
-        ).toEqual({ name: "session_context_epoch" })
-        expect(
-          yield* db.get(
-            sql`SELECT name FROM pragma_table_info('session_context_epoch') WHERE name IN ('agent', 'replacement_seq', 'revision')`,
+          yield* db.all(
+            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session_input', 'session_message', 'session_context_epoch')`,
           ),
-        ).toBeUndefined()
+        ).toEqual([])
         expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
         expect(
           yield* db.all(
             sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('event_aggregate_seq_idx', 'event_aggregate_type_seq_idx', 'session_input_session_pending_seq_idx', 'session_input_session_pending_delivery_seq_idx', 'session_input_session_admitted_seq_idx', 'session_input_session_promoted_seq_idx', 'session_message_session_idx', 'session_message_session_type_idx', 'session_message_session_seq_idx', 'session_message_session_type_seq_idx', 'session_message_session_time_created_id_idx') ORDER BY name`,
           ),
-        ).toEqual([
-          { name: "event_aggregate_seq_idx" },
-          { name: "event_aggregate_type_seq_idx" },
-          { name: "session_input_session_admitted_seq_idx" },
-          { name: "session_input_session_pending_delivery_seq_idx" },
-          { name: "session_input_session_promoted_seq_idx" },
-          { name: "session_message_session_seq_idx" },
-          { name: "session_message_session_time_created_id_idx" },
-          { name: "session_message_session_type_seq_idx" },
-        ])
+        ).toEqual([{ name: "event_aggregate_seq_idx" }, { name: "event_aggregate_type_seq_idx" }])
       }),
     )
   })
@@ -418,6 +405,18 @@ describe("DatabaseMigration", () => {
         const db = yield* makeDb
         yield* db.run(sql`PRAGMA foreign_keys = ON`)
         yield* DatabaseMigration.apply(db)
+        // apply() materializes the latest schema, which no longer contains the
+        // V2 tables this upgrade path historically cleared. Recreate their
+        // legacy shapes so the simplify migration can be replayed in isolation.
+        yield* db.run(
+          sql`CREATE TABLE session_input (id text PRIMARY KEY, session_id text NOT NULL, prompt text NOT NULL, delivery text NOT NULL, admitted_seq integer NOT NULL, promoted_seq integer, time_created integer NOT NULL)`,
+        )
+        yield* db.run(
+          sql`CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)`,
+        )
+        yield* db.run(
+          sql`CREATE TABLE session_context_epoch (session_id text PRIMARY KEY, baseline text NOT NULL, snapshot text NOT NULL, baseline_seq integer NOT NULL)`,
+        )
         yield* db.run(
           sql`INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) VALUES ('global', '/project', 1, 1, '[]')`,
         )

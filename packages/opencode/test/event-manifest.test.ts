@@ -10,8 +10,8 @@ describe("public event manifest", () => {
     expect(EventManifest.Definitions).toBe(SchemaEventManifest.Definitions)
     expect(EventManifest.Latest).toBe(SchemaEventManifest.Latest)
     expect(EventManifest.Durable).toBe(SchemaEventManifest.Durable)
-    expect(EventManifest.Latest.size).toBe(96)
-    expect(EventManifest.Latest.get("session.next.step.ended")).toBe(SessionEvent.Step.Ended)
+    expect(EventManifest.Latest.size).toBe(62)
+    expect(EventManifest.Latest.get("session.next.moved")).toBe(SessionEvent.Moved)
     expect(EventManifest.Latest.get("todo.updated")).toBe(Todo.Event.Updated)
     expect(EventManifest.Latest.get("goal.updated")).toBe(SessionGoal.Event.Updated)
     expect(EventManifest.Latest.get("goal.cleared")).toBe(SessionGoal.Event.Cleared)
@@ -20,8 +20,8 @@ describe("public event manifest", () => {
     expect(EventManifest.Latest.has("global.disposed")).toBe(true)
   })
 
-  test("contains only the current step settlement versions", () => {
-    expect(EventManifest.Durable.has("session.next.step.ended.1")).toBe(false)
-    expect(EventManifest.Durable.get("session.next.step.ended.2")).toBe(SessionEvent.Step.Ended)
+  test("contains only the current session-next durable versions", () => {
+    expect(EventManifest.Durable.has("session.next.step.ended.2")).toBe(false)
+    expect(EventManifest.Durable.get("session.next.moved.1")).toBe(SessionEvent.Moved)
   })
 })

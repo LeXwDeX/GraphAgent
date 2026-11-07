@@ -237,7 +237,7 @@ describe("opencode run (non-interactive subprocess)", () => {
   )
 
   cliIt.concurrent(
-    "--format json records recovery after a mid-stream provider error without replaying the completed tool",
+    "--format json records recovery after an unknown stream finish without replaying the completed tool",
     ({ home, llm, opencode }) =>
       Effect.gen(function* () {
         yield* llm.push(
@@ -258,26 +258,28 @@ describe("opencode run (non-interactive subprocess)", () => {
 
         const events = opencode.parseJsonEvents(result.stdout)
         expect(result.exitCode).toBe(0)
-        // The failed request surfaces as a retryable provider error before a
-        // step-finish. Whether that attempt emits its own step-start first
-        // depends on retry timing, so only the leading step-starts of the
-        // recovered segment are allowed to vary; the completed tool must not
-        // be replayed and the recovered text must follow them.
-        const types = events.map((event) => event.type)
-        expect(types.slice(0, 4)).toEqual(["step_start", "text", "tool_use", "step_finish"])
-        const recovered = events.slice(4)
-        const recoveredText = recovered.findIndex((event) => event.type === "text")
-        expect(recoveredText).toBeGreaterThan(0)
-        expect(recovered.slice(0, recoveredText).every((event) => event.type === "step_start")).toBe(true)
-        expect(recovered.slice(recoveredText).map((event) => event.type)).toEqual(["text", "step_finish"])
+        // The clean SSE end closes the request as an "unknown" step finish.
+        // The prompt loop then continues with a new step; the completed tool
+        // must not be replayed and the recovered text must follow the new
+        // step boundary.
+        expect(events.map((event) => event.type)).toEqual([
+          "step_start",
+          "text",
+          "tool_use",
+          "step_finish",
+          "step_start",
+          "step_finish",
+          "step_start",
+          "text",
+          "step_finish",
+        ])
         expect(events[1]?.part).toEqual(expect.objectContaining({ type: "text", text: "partial json" }))
         expect(events[2]?.part).toEqual(
           expect.objectContaining({ type: "tool", state: expect.objectContaining({ status: "completed" }) }),
         )
         expect(events[3]?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "tool-calls" }))
-        expect(recovered[recoveredText]?.part).toEqual(
-          expect.objectContaining({ type: "text", text: "recovered json" }),
-        )
+        expect(events[5]?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "unknown" }))
+        expect(events[7]?.part).toEqual(expect.objectContaining({ type: "text", text: "recovered json" }))
         expect(events.at(-1)?.part).toEqual(expect.objectContaining({ type: "step-finish", reason: "stop" }))
         expectRetriedToolContinuation(yield* llm.inputs, "partial json")
         expect(yield* Effect.promise(() => Bun.file(`${home}/tool-count`).text())).toBe("x")
