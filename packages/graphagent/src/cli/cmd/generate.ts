@@ -18,7 +18,7 @@ export const GenerateCommand = {
           {
             lang: "js",
             source: [
-              `import { createOpencodeClient } from "@graphagent/sdk`,
+              `import { createOpencodeClient } from "@graphagent/sdk"`,
               ``,
               `const client = createOpencodeClient()`,
               `await client.${operation.operationId}({`,
