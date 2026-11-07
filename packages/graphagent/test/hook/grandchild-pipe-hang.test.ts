@@ -6,7 +6,7 @@ import path from "path"
 import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { testEffect } from "../lib/effect"
 
 // #500: a hook command that spawns a grandchild holding the stdio pipes and

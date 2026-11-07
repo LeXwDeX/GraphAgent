@@ -1,9 +1,9 @@
 import { ThinkingReplay } from "./thinking-replay"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Image } from "@/image/image"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
@@ -35,8 +35,8 @@ import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Database } from "@opencode-ai/core/database/database"
-import { LLMError, Usage, type LLMEvent } from "@opencode-ai/llm"
+import { Database } from "@graphagent/core/database/database"
+import { LLMError, Usage, type LLMEvent } from "@graphagent/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
@@ -169,7 +169,7 @@ function hasReasoningMetadata(value: unknown): boolean {
   return false
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionProcessor") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionProcessor") {}
 
 export const layer = Layer.effect(
   Service,

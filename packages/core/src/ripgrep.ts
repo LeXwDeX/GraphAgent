@@ -2,7 +2,7 @@ export * as Ripgrep from "./ripgrep"
 
 import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
 import { ChildProcess } from "effect/process"
-import { Entry, Match } from "@opencode-ai/schema/filesystem"
+import { Entry, Match } from "@graphagent/schema/filesystem"
 import { LayerNode } from "./effect/layer-node"
 import { AppProcess, collectStream, waitForAbort } from "./process"
 import { NonNegativeInt, PositiveInt, RelativePath } from "./schema"
@@ -125,7 +125,7 @@ export interface Interface {
   readonly grepContext: (input: GrepContextInput) => Effect.Effect<readonly GrepRow[], Error | InvalidPatternError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Ripgrep") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/Ripgrep") {}
 
 const failure = (message: string, cause?: unknown) => new Error({ message, cause })
 

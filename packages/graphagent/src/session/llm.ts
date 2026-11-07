@@ -1,18 +1,18 @@
 import type { ToolBatch } from "@/hook/tool-batch"
 import { randomUUID } from "node:crypto"
-import { Logging } from "@opencode-ai/core/observability/logging"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { llmClient } from "@opencode-ai/core/effect/layer-node-platform"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { Logging } from "@graphagent/core/observability/logging"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { llmClient } from "@graphagent/core/effect/layer-node-platform"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Provider } from "@/provider/provider"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import { InvalidToolInputError, streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
-import { type LLMEvent } from "@opencode-ai/llm"
-import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
-import type { LLMClientService } from "@opencode-ai/llm/route"
+import { type LLMEvent } from "@graphagent/llm"
+import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
+import type { LLMClientService } from "@graphagent/llm/route"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
@@ -31,15 +31,15 @@ import {
   type HistorySnapshot as ContextFoldingHistorySnapshot,
   type RequestPurpose,
 } from "./context-folding"
-import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { contextFoldingDiagnostic, type ContextFoldingProjectionPlan } from "@opencode-ai/core/session/context-folding"
+import { ConfigCompaction } from "@graphagent/core/config/compaction"
+import { Flag } from "@graphagent/core/flag/flag"
+import { contextFoldingDiagnostic, type ContextFoldingProjectionPlan } from "@graphagent/core/session/context-folding"
 import {
   engineOrganizerCall,
   ReasoningDistillationPolicy,
   type OrganizeCall,
-} from "@opencode-ai/core/session/reasoning-distillation"
-import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
+} from "@graphagent/core/session/reasoning-distillation"
+import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
 /** Provider-SDK organizer transport; the timeout measures response start and idle gaps. */
 export const sdkOrganizerCall =
@@ -183,7 +183,7 @@ export interface Interface {
   readonly stream: (input: StreamInput) => Stream.Stream<LLMEvent, unknown>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/LLM") {}
 
 export const use = serviceUse(Service)
 
@@ -318,7 +318,7 @@ const live: Layer.Layer<
           })
         : undefined
 
-      // Runtime seam: native is an opt-in adapter over @opencode-ai/llm. It
+      // Runtime seam: native is an opt-in adapter over @graphagent/llm. It
       // either returns a ready LLMEvent stream or a concrete fallback reason.
       if (flags.experimentalNativeLlm) {
         const native = yield* LLMNativeRuntime.stream({

@@ -5,7 +5,7 @@ import path from "path"
 import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { evaluate } from "@/hook/extensions/condition-filter"
 import { testEffect } from "../lib/effect"
 

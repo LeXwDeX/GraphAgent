@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { Flag } from "@graphagent/core/flag/flag"
 import path from "path"
 import type { CachedApp } from "./backend"
 

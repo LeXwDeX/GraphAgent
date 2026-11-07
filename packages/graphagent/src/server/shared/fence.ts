@@ -1,9 +1,9 @@
-import { HEADER_PREFIX } from "@opencode-ai/core/brand"
-import { Database } from "@opencode-ai/core/database/database"
+import { HEADER_PREFIX } from "@graphagent/core/brand"
+import { Database } from "@graphagent/core/database/database"
 import { inArray } from "drizzle-orm"
-import { EventSequenceTable } from "@opencode-ai/core/event/sql"
+import { EventSequenceTable } from "@graphagent/core/event/sql"
 import { Workspace } from "@/control-plane/workspace"
-import type { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import type { WorkspaceV2 } from "@graphagent/core/workspace"
 import { Effect } from "effect"
 
 export const HEADER = `${HEADER_PREFIX}sync`

@@ -1,7 +1,7 @@
 export * as GoalState from "./state"
 
 import { Effect, Schema } from "effect"
-import { NonNegativeInt } from "@opencode-ai/schema/schema"
+import { NonNegativeInt } from "@graphagent/schema/schema"
 
 export const Status = Schema.Literals(["active", "waiting", "paused", "done"])
 export type Status = Schema.Schema.Type<typeof Status>

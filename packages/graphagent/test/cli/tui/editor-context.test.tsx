@@ -2,15 +2,15 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { createRoot } from "solid-js"
-import { EditorContextProvider, useEditorContext, type EditorIntegration } from "@opencode-ai/tui/context/editor"
+import { EditorContextProvider, useEditorContext, type EditorIntegration } from "@graphagent/tui/context/editor"
 import { tmpdir } from "../../fixture/fixture"
 import { FakeWebSocket } from "../../lib/websocket"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 
-const originalOpencodePort = process.env.GRAPHAGENT_EDITOR_SSE_PORT
+const originalGraphagentPort = process.env.GRAPHAGENT_EDITOR_SSE_PORT
 
 afterEach(() => {
-  process.env.GRAPHAGENT_EDITOR_SSE_PORT = originalOpencodePort
+  process.env.GRAPHAGENT_EDITOR_SSE_PORT = originalGraphagentPort
 })
 
 function nextTick() {

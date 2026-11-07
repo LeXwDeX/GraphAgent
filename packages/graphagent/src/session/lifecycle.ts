@@ -6,7 +6,7 @@ import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
 import { HookTranscript } from "@/hook/transcript"
 import { HookLifecycle } from "@/hook/lifecycle"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
@@ -20,7 +20,7 @@ export interface Interface {
   readonly create: (input?: Session.CreateInput) => Effect.Effect<Session.Info>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionLifecycle") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionLifecycle") {}
 
 export const layer = Layer.effect(
   Service,

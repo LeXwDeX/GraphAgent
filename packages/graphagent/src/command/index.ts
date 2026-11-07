@@ -1,4 +1,4 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
 import type { InstanceContext } from "@/project/instance-context"
@@ -10,8 +10,8 @@ import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 import PROMPT_IMPORT_HOOKS from "./template/import-claude-hooks.txt"
 import PROMPT_CREATE_HOOK from "./template/create-hook.txt"
-import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
-import { CommandPlugin } from "@opencode-ai/core/plugin/command"
+import { LegacyEvent } from "@graphagent/schema/legacy-event"
+import { CommandPlugin } from "@graphagent/core/plugin/command"
 
 type State = {
   commands: Record<string, Info>
@@ -61,7 +61,7 @@ export interface Interface {
   readonly list: () => Effect.Effect<Info[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Command") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Command") {}
 
 export const layer = Layer.effect(
   Service,

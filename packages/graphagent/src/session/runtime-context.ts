@@ -1,6 +1,6 @@
 import { createHash } from "crypto"
 import type { ModelMessage } from "ai"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { isRecord } from "@/util/record"
 
 // Per-request state (goal progress, memory data, one-shot hook context) changes between requests. Sending it in

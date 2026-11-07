@@ -8,8 +8,8 @@ import {
   ReasoningDistillationPolicy,
   organizeReasoning,
   type OrganizeResult,
-} from "@opencode-ai/core/session/reasoning-distillation"
-import { replaceCanonicalReasoning } from "@opencode-ai/core/session/reasoning-distillation/canonical"
+} from "@graphagent/core/session/reasoning-distillation"
+import { replaceCanonicalReasoning } from "@graphagent/core/session/reasoning-distillation/canonical"
 import { checkFixtureSemantics } from "./reasoning-distillation-quality"
 
 if (!process.env.DISTILLATION_ACCEPTANCE_CONFIG || !process.env.DISTILLATION_ACCEPTANCE_OUTPUT) {
@@ -95,7 +95,7 @@ const fixtures = [
     id: "negative-check",
     text:
       noise.repeat(10) +
-      "已检查 packages/core/src/retry.ts 和 packages/core/src/backoff.ts，两处都没有调用 sleepWithJitter。这里的“旧调度器”指 LegacyScheduler（packages/core/src/legacy/scheduler.ts）。下一步只读检查 packages/opencode/src/session/prompt.ts。\n" +
+      "已检查 packages/core/src/retry.ts 和 packages/core/src/backoff.ts，两处都没有调用 sleepWithJitter。这里的“旧调度器”指 LegacyScheduler（packages/core/src/legacy/scheduler.ts）。下一步只读检查 packages/graphagent/src/session/prompt.ts。\n" +
       noise.repeat(8),
     required: [
       "packages/core/src/retry.ts",
@@ -103,7 +103,7 @@ const fixtures = [
       "sleepWithJitter",
       "LegacyScheduler",
       "packages/core/src/legacy/scheduler.ts",
-      "packages/opencode/src/session/prompt.ts",
+      "packages/graphagent/src/session/prompt.ts",
     ],
     forbidden: ["重说一遍"],
   },

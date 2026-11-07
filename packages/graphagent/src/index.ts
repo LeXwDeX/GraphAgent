@@ -8,7 +8,7 @@ import { UpgradeCommand } from "./cli/cmd/upgrade"
 import { UninstallCommand } from "./cli/cmd/uninstall"
 import { ModelsCommand } from "./cli/cmd/models"
 import { UI } from "./cli/ui"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { InstallationVersion } from "@graphagent/core/installation/version"
 import { FormatError } from "./cli/error"
 import { DebugCommand } from "./cli/cmd/debug"
 import { StatsCommand } from "./cli/cmd/stats"
@@ -22,7 +22,7 @@ import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { Heap } from "./cli/heap"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { APP_NAME } from "@graphagent/core/brand"
 
 const args = hideBin(process.argv)
 

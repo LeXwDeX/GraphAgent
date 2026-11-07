@@ -2,7 +2,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { Config, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http"
 import { layerWebSocketConstructorGlobal } from "effect/socket/Socket"
-import type { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import type { LayerNode } from "@graphagent/core/effect/layer-node"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 
 /** Builds the served app with app-graph node replacements (e.g. a fake ProviderAdapters). */

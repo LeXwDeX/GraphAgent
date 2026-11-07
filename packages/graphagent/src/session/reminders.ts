@@ -1,8 +1,8 @@
 import path from "path"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect } from "effect"
 import { Agent } from "@/agent/agent"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { PartID } from "./schema"
@@ -10,7 +10,7 @@ import { Session } from "./session"
 import PROMPT_PLAN from "./prompt/plan.txt"
 import BUILD_SWITCH from "./prompt/build-switch.txt"
 import PLAN_MODE from "./prompt/plan-mode.txt"
-import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 
 export function planModePrompt(input: { plan: string; exists: boolean; tools: readonly string[] }) {
   return PLAN_MODE.replace(

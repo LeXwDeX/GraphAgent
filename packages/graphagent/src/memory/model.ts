@@ -1,6 +1,6 @@
 export * as MemoryModel from "./model"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Context, Duration, Effect, Layer, Schema } from "effect"
 import { streamObject } from "ai"
 import { Provider } from "@/provider/provider"
@@ -62,7 +62,7 @@ export class GenerateError extends Schema.TaggedError<GenerateError>()("MemoryMo
 
 export type ModelError = TimeoutError | GenerateError | Provider.ModelNotFoundError
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryModel") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MemoryModel") {}
 
 export function make(input: {
   readonly execute: (request: Request) => Effect.Effect<unknown, ModelError>

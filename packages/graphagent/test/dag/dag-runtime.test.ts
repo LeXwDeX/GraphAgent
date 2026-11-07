@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test"
 import { conditionReference, evaluateCondition, resolveInputMapping } from "@/dag/runtime/eval"
-import { planReplan } from "@opencode-ai/core/dag/core/replan"
-import { WorkflowRuntime, buildGraph } from "@opencode-ai/core/dag/core/scheduling"
-import { CycleError } from "@opencode-ai/core/dag/core/graph"
-import { NodeStatus, WorkflowStatus, assertValidWorkflowTransition, TerminalViolationError } from "@opencode-ai/core/dag/core/types"
+import { planReplan } from "@graphagent/core/dag/core/replan"
+import { WorkflowRuntime, buildGraph } from "@graphagent/core/dag/core/scheduling"
+import { CycleError } from "@graphagent/core/dag/core/graph"
+import { NodeStatus, WorkflowStatus, assertValidWorkflowTransition, TerminalViolationError } from "@graphagent/core/dag/core/types"
 
 describe("evaluateCondition", () => {
   it("returns ok:true value:true when condition is empty/undefined", () => {

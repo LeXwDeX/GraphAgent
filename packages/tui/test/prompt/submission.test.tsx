@@ -21,7 +21,7 @@ import { RouteProvider, useRoute } from "../../src/context/route"
 import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
-import { OpencodeKeymapProvider, registerOpencodeKeymap } from "../../src/keymap"
+import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../src/plugin/runtime"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
@@ -198,14 +198,14 @@ async function mountRoute(
     const renderer = useRenderer()
     keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createTuiResolvedConfig()
-    onCleanup(registerOpencodeKeymap(keymap, renderer, config))
+    onCleanup(registerGraphagentKeymap(keymap, renderer, config))
 
     return (
       <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
         <ExitProvider exit={() => {}}>
           <EpilogueProvider set={() => {}}>
             <ClipboardProvider>
-              <OpencodeKeymapProvider keymap={keymap}>
+              <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
                     <ToastProvider>
@@ -273,7 +273,7 @@ async function mountRoute(
                     </ToastProvider>
                   </KVProvider>
                 </ArgsProvider>
-              </OpencodeKeymapProvider>
+              </GraphagentKeymapProvider>
             </ClipboardProvider>
           </EpilogueProvider>
         </ExitProvider>

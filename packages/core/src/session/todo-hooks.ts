@@ -21,7 +21,7 @@ export class Blocked extends Schema.TaggedError<Blocked>()("TodoHookBlocked", { 
 export interface Interface {
   readonly check: (change: Change) => Effect.Effect<Decision>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionTodoHooks") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionTodoHooks") {}
 
 // Shared by v1 and v2 adapters; hooks never execute while holding a database transaction.
 const mutex = KeyedMutex.makeUnsafe<string>()

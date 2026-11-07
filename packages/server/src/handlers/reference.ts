@@ -1,4 +1,4 @@
-import { Reference } from "@opencode-ai/core/reference"
+import { Reference } from "@graphagent/core/reference"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../api"
 import { response } from "../location"

@@ -5,7 +5,7 @@ import { Goal } from "@/goal/goal"
 import { GoalPrompts } from "@/goal/prompts"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatus } from "@/session/status"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 

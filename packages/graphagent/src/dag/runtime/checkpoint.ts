@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { DagStore } from "@graphagent/core/dag/store"
 import type { WorkflowConfig } from "../dag"
 import { verdictField } from "./verdict"
 

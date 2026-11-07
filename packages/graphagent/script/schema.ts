@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 import { Config } from "@/config/config"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { TuiConfig } from "@opencode-ai/tui/config"
-import { ThemeConfig } from "@opencode-ai/tui/theme/schema"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { TuiConfig } from "@graphagent/tui/config"
+import { ThemeConfig } from "@graphagent/tui/theme/schema"
 import { Schema } from "effect"
 
 type JsonSchema = Record<string, unknown>

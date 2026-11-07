@@ -23,10 +23,10 @@ async function loadModelsData() {
     return response.text()
   }
 
-  const snapshotSpecifier = "@opencode-ai/models/snapshot"
+  const snapshotSpecifier = "@graphagent/models/snapshot"
   const snapshot = await import(snapshotSpecifier).catch(() => undefined)
   if (snapshot) {
-    console.log("Loaded models.dev snapshot from @opencode-ai/models")
+    console.log("Loaded models.dev snapshot from @graphagent/models")
     return JSON.stringify(snapshot.providers)
   }
 

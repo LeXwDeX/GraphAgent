@@ -2,10 +2,10 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { disposeInstance } from "@/effect/instance-registry"
 import { InstanceStore } from "@/project/instance-store"
 import { createHash } from "node:crypto"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Database } from "@opencode-ai/core/database/database"
-import { EventTable } from "@opencode-ai/core/event/sql"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { Database } from "@graphagent/core/database/database"
+import { EventTable } from "@graphagent/core/event/sql"
 import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/http"
@@ -13,7 +13,7 @@ import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
-import { NamedError } from "@opencode-ai/core/util/error"
+import { NamedError } from "@graphagent/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { Command } from "../../src/command"
@@ -30,10 +30,10 @@ import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { TodoReminders } from "../../src/session/todo-reminders"
 import { Session } from "@/session/session"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { SessionCompaction } from "../../src/session/compaction"
 import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
@@ -47,12 +47,12 @@ import { SessionStatus } from "../../src/session/status"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { RuntimeContext } from "../../src/session/runtime-context"
-import { Shell } from "@opencode-ai/core/shell"
+import { Shell } from "@graphagent/core/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Dag } from "@/dag/dag"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagMessages } from "@graphagent/core/dag/messages"
+import { DagStore } from "@graphagent/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
@@ -61,23 +61,23 @@ import { Truncate } from "@/tool/truncate"
 import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook/settings"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { HookTranscript } from "@/hook/transcript"
-import { Global } from "@opencode-ai/core/global"
-import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { Global } from "@graphagent/core/global"
+import { LegacyEvent } from "@graphagent/schema/legacy-event"
 import { decodeRecord, decodeRecords, decodeString } from "../lib/hook-json"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { httpError, raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Memory } from "@/memory/memory"
 import { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { Auth } from "@/auth"
-import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
+import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
 import { jsonSchema, tool as aiTool, type Tool as AITool } from "ai"
 
 const summary = Layer.succeed(
@@ -4895,7 +4895,7 @@ const contextFoldingClosedLoop = (runtime: "ai-sdk" | "native") =>
     expect(compacted.info.role).toBe("assistant")
     const compactionHits = (yield* llm.hits).slice(preCompactionHits)
     expect(compactionHits).toHaveLength(1)
-    expectBoundedOriginalOpenCodeSummary(compactionHits[0]?.body ?? {}, {
+    expectBoundedOriginalGraphagentSummary(compactionHits[0]?.body ?? {}, {
       read: "read-body-abcdefghij",
       grep: "needle-0-",
       glob: "context-folding-",
@@ -5130,7 +5130,7 @@ const contextFoldingDisabledClosedLoop = (runtime: "ai-sdk" | "native") =>
 
 const occurrences = (value: string, marker: string) => value.split(marker).length - 1
 
-const expectBoundedOriginalOpenCodeSummary = (body: unknown, markers: { read: string; grep: string; glob: string }) => {
+const expectBoundedOriginalGraphagentSummary = (body: unknown, markers: { read: string; grep: string; glob: string }) => {
   const text = JSON.stringify(body)
   expect(text).not.toContain("Duplicate tool output folded")
   expect(occurrences(text, markers.read)).toBeGreaterThanOrEqual(2)
@@ -5170,7 +5170,7 @@ const lifecycleLedger = (file: string) =>
     ),
   )
 
-const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle")(function* (input: {
+const seedFoldedGraphagentLifecycle = Effect.fn("test.seedFoldedGraphagentLifecycle")(function* (input: {
   runtime: "ai-sdk" | "native"
 }) {
   const { dir, llm } = yield* useServerConfig(foldingAutoProviderCfg)
@@ -5308,7 +5308,7 @@ const seedFoldedOpenCodeLifecycle = Effect.fn("test.seedFoldedOpenCodeLifecycle"
   return { llm, prompt, sessions, session, ledger, markers, persisted }
 })
 
-const assertOpenCodeLifecycleDurability = Effect.fn("test.assertOpenCodeLifecycleDurability")(function* (input: {
+const assertGraphagentLifecycleDurability = Effect.fn("test.assertGraphagentLifecycleDurability")(function* (input: {
   sessions: Session.Interface
   sessionID: SessionID
   ledger: string
@@ -5320,7 +5320,7 @@ const assertOpenCodeLifecycleDurability = Effect.fn("test.assertOpenCodeLifecycl
 
 const contextFoldingAutomaticLifecycle = (runtime: "ai-sdk" | "native") =>
   Effect.gen(function* () {
-    const fixture = yield* seedFoldedOpenCodeLifecycle({ runtime })
+    const fixture = yield* seedFoldedGraphagentLifecycle({ runtime })
     const before = (yield* fixture.llm.hits).length
     yield* fixture.prompt.prompt({
       sessionID: fixture.session.id,
@@ -5336,7 +5336,7 @@ const contextFoldingAutomaticLifecycle = (runtime: "ai-sdk" | "native") =>
 
     expect(hits).toHaveLength(3)
     expect(JSON.stringify(hits[0]?.body ?? {})).toContain("Duplicate tool output folded")
-    expectBoundedOriginalOpenCodeSummary(hits[1]?.body ?? {}, fixture.markers)
+    expectBoundedOriginalGraphagentSummary(hits[1]?.body ?? {}, fixture.markers)
     expect(JSON.stringify(hits[2]?.body ?? {})).toContain(`s08-threshold-summary-${runtime}`)
     expect(JSON.stringify(hits[2]?.body ?? {})).not.toContain("Duplicate tool output folded")
     expect(result.info.role).toBe("assistant")
@@ -5346,7 +5346,7 @@ const contextFoldingAutomaticLifecycle = (runtime: "ai-sdk" | "native") =>
         (message) => message.info.role === "assistant" && message.info.summary === true,
       ),
     ).toBe(true)
-    yield* assertOpenCodeLifecycleDurability({
+    yield* assertGraphagentLifecycleDurability({
       sessions: fixture.sessions,
       sessionID: fixture.session.id,
       ledger: fixture.ledger,
@@ -5357,7 +5357,7 @@ const contextFoldingAutomaticLifecycle = (runtime: "ai-sdk" | "native") =>
 
 const contextFoldingOverflowLifecycle = (runtime: "ai-sdk" | "native", recovery: "success" | "terminal") =>
   Effect.gen(function* () {
-    const fixture = yield* seedFoldedOpenCodeLifecycle({ runtime })
+    const fixture = yield* seedFoldedGraphagentLifecycle({ runtime })
     yield* fixture.prompt.prompt({
       sessionID: fixture.session.id,
       agent: "build",
@@ -5378,7 +5378,7 @@ const contextFoldingOverflowLifecycle = (runtime: "ai-sdk" | "native", recovery:
     expect(JSON.stringify(hits[0]?.body ?? {})).toContain("Duplicate tool output folded")
     if (recovery === "success") {
       expect(hits).toHaveLength(3)
-      expectBoundedOriginalOpenCodeSummary(hits[1]?.body ?? {}, fixture.markers)
+      expectBoundedOriginalGraphagentSummary(hits[1]?.body ?? {}, fixture.markers)
       expect(JSON.stringify(hits[2]?.body ?? {})).toContain(`s08-auto-summary-${runtime}`)
       expect(JSON.stringify(hits[2]?.body ?? {})).not.toContain("Duplicate tool output folded")
       expect(result.info.role).toBe("assistant")
@@ -5393,7 +5393,7 @@ const contextFoldingOverflowLifecycle = (runtime: "ai-sdk" | "native", recovery:
       ).toBe(true)
     } else {
       expect(hits).toHaveLength(2)
-      expectBoundedOriginalOpenCodeSummary(hits[1]?.body ?? {}, fixture.markers)
+      expectBoundedOriginalGraphagentSummary(hits[1]?.body ?? {}, fixture.markers)
       expect(result.info.role).toBe("assistant")
       const terminal = (yield* fixture.sessions.messages({ sessionID: fixture.session.id })).findLast(
         (message) => message.info.role === "assistant" && message.info.summary === true,
@@ -5404,7 +5404,7 @@ const contextFoldingOverflowLifecycle = (runtime: "ai-sdk" | "native", recovery:
         expect(terminal.info.error?.name).toBe("ContextOverflowError")
       }
     }
-    yield* assertOpenCodeLifecycleDurability({
+    yield* assertGraphagentLifecycleDurability({
       sessions: fixture.sessions,
       sessionID: fixture.session.id,
       ledger: fixture.ledger,
@@ -7599,7 +7599,7 @@ it.instance("does not loop empty assistant turns for a simple reply", () =>
     const sessions = yield* Session.Service
     const session = yield* sessions.create({ title: "Prompt regression" })
 
-    yield* llm.text("packages/opencode/src/session/processor.ts")
+    yield* llm.text("packages/graphagent/src/session/processor.ts")
 
     const result = yield* prompt.prompt({
       sessionID: session.id,

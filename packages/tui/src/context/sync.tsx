@@ -21,7 +21,7 @@ import type {
   SnapshotFileDiff,
   Goal,
   DagWorkflowSummary,
-} from "@opencode-ai/sdk/v2"
+} from "@graphagent/sdk/v2"
 
 export type { DagWorkflowSummary }
 import { createStore, produce, reconcile } from "solid-js/store"

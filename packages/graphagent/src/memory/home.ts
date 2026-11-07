@@ -1,9 +1,9 @@
 export * as MemoryHome from "./home"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Global } from "@opencode-ai/core/global"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { Hash } from "@opencode-ai/core/util/hash"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Global } from "@graphagent/core/global"
+import { ProjectV2 } from "@graphagent/core/project"
+import { Hash } from "@graphagent/core/util/hash"
 import { Context, Layer } from "effect"
 import { join } from "node:path"
 
@@ -15,7 +15,7 @@ export interface Interface {
   readonly locks: string
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryHome") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MemoryHome") {}
 
 export function make(dataRoot: string): Interface {
   const directory = (projectID: ProjectV2.ID) =>

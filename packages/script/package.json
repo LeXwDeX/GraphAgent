@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package",
-  "name": "@opencode-ai/script",
+  "name": "@graphagent/script",
   "license": "MIT",
   "dependencies": {},
   "devDependencies": {

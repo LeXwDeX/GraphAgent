@@ -3,7 +3,7 @@ import { watch, statSync, type FSWatcher } from "node:fs"
 import path from "node:path"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 
 export interface Interface {
   readonly replace: (
@@ -16,7 +16,7 @@ export interface Interface {
   readonly refreshStatic: (paths: readonly string[]) => Effect.Effect<void>
   readonly clear: (sessionID: string) => Effect.Effect<void>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/HookFileWatch") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/HookFileWatch") {}
 function signature(file: string) {
   try {
     const s = statSync(file)

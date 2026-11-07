@@ -5,7 +5,7 @@ import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { MCP } from "@/mcp"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 

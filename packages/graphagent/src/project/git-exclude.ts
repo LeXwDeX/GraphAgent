@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { appendFile, mkdir, readFile, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 
 export interface RepoLayout {
   root: string

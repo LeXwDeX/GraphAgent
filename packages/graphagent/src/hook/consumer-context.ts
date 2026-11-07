@@ -1,6 +1,6 @@
 import type { TriggerContext } from "./settings"
 import { Effect, Option } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { HookTranscript, type Message } from "./transcript"

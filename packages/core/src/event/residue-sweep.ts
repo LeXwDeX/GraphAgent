@@ -37,7 +37,7 @@ export interface Interface {
   readonly sweepOnce: () => Effect.Effect<number>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/EventResidueSweep") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/EventResidueSweep") {}
 
 /**
  * Selection half of the sweep pass. Exported as the seam that lets tests

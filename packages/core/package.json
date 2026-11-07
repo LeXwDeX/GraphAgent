@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "version": "1.17.11",
-  "name": "@opencode-ai/core",
+  "name": "@graphagent/core",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -50,7 +50,7 @@
     "@parcel/watcher-linux-x64-musl": "catalog:",
     "@parcel/watcher-win32-arm64": "catalog:",
     "@parcel/watcher-win32-x64": "catalog:",
-    "@opencode-ai/http-recorder": "workspace:*",
+    "@graphagent/http-recorder": "workspace:*",
     "drizzle-kit": "catalog:"
   },
   "dependencies": {
@@ -81,9 +81,9 @@
     "@ff-labs/fff-bun": "catalog:",
     "@npmcli/arborist": "catalog:",
     "@npmcli/config": "11.2.0",
-    "@opencode-ai/effect-drizzle-sqlite": "workspace:*",
-    "@opencode-ai/llm": "workspace:*",
-    "@opencode-ai/schema": "workspace:*",
+    "@graphagent/effect-drizzle-sqlite": "workspace:*",
+    "@graphagent/llm": "workspace:*",
+    "@graphagent/schema": "workspace:*",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/context-async-hooks": "catalog:",
     "@opentelemetry/exporter-trace-otlp-http": "catalog:",

@@ -6,15 +6,15 @@ import { Cause, Context, Effect, Layer } from "effect"
 import { ConfigParse } from "@/config/parse"
 import * as ConfigPaths from "@/config/paths"
 import { resolveHostAttentionSoundPaths } from "./tui-host-attention"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { isRecord } from "@opencode-ai/tui/util/record"
-import { Global } from "@opencode-ai/core/global"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { TuiKeybind } from "@opencode-ai/tui/config/keybind"
-import { makeRuntime } from "@opencode-ai/core/effect/runtime"
+import { Flag } from "@graphagent/core/flag/flag"
+import { isRecord } from "@graphagent/tui/util/record"
+import { Global } from "@graphagent/core/global"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { TuiKeybind } from "@graphagent/tui/config/keybind"
+import { makeRuntime } from "@graphagent/core/effect/runtime"
 import { ConfigVariable } from "@/config/variable"
 import { FormatError, FormatUnknownError } from "@/cli/error"
-import { TuiConfig } from "@opencode-ai/tui/config"
+import { TuiConfig } from "@graphagent/tui/config"
 
 export const Info = TuiConfig.Info
 export type Info = TuiConfig.Info
@@ -25,7 +25,7 @@ export interface Interface {
   readonly get: () => Effect.Effect<Resolved>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/TuiConfig") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/TuiConfig") {}
 
 function normalize(raw: Record<string, unknown>) {
   const data = { ...raw }

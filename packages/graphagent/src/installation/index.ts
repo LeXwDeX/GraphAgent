@@ -1,11 +1,11 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Effect, Layer, Schema, Context } from "effect"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import path from "path"
-import { makeRuntime } from "@opencode-ai/core/effect/runtime"
-import { APP_NAME } from "@opencode-ai/core/brand"
-import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
-import { InstallationEvent } from "@opencode-ai/schema/installation-event"
+import { makeRuntime } from "@graphagent/core/effect/runtime"
+import { APP_NAME } from "@graphagent/core/brand"
+import { InstallationChannel, InstallationVersion } from "@graphagent/core/installation/version"
+import { InstallationEvent } from "@graphagent/schema/installation-event"
 
 export type Method = "curl" | "npm" | "yarn" | "pnpm" | "bun" | "brew" | "scoop" | "choco" | "unknown"
 
@@ -48,7 +48,7 @@ export interface Interface {
   readonly upgrade: (method: Method, target: string) => Effect.Effect<void, UpgradeFailedError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Installation") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Installation") {}
 
 export const use = serviceUse(Service)
 

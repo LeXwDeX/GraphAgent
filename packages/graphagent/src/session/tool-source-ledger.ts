@@ -1,8 +1,8 @@
-import { Hash } from "@opencode-ai/core/util/hash"
-import type { ToolSourceIdentity, ToolSourceKind } from "@opencode-ai/core/session/context-folding"
+import { Hash } from "@graphagent/core/util/hash"
+import type { ToolSourceIdentity, ToolSourceKind } from "@graphagent/core/session/context-folding"
 import { InstanceState } from "@/effect/instance-state"
 import { Context, Effect, Layer } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 
 const MAX_IDENTITIES = 4_096
 const MAX_SESSIONS = 1_024
@@ -36,7 +36,7 @@ export interface Interface {
   readonly clearSession: (sessionID: string) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ToolSourceLedger") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ToolSourceLedger") {}
 
 export const unavailable: Interface = {
   activate: () => Effect.succeed("unavailable"),

@@ -1,6 +1,6 @@
 export * as MemoryFile from "./file"
 
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { Effect } from "effect"
 import { randomUUID } from "node:crypto"
 import { dirname } from "node:path"

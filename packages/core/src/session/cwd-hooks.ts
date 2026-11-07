@@ -10,7 +10,7 @@ export interface Change {
 export interface Interface {
   readonly changed: (change: Change) => Effect.Effect<void>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCwdHooks") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionCwdHooks") {}
 
 /** Observes an already committed move; hook failures cannot undo its durable location. */
 export const changed = Effect.fn("SessionCwdHooks.changed")(function* (change: Change) {

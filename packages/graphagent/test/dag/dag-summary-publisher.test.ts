@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import type { WorkflowSummary } from "@opencode-ai/core/dag/store"
+import type { WorkflowSummary } from "@graphagent/core/dag/store"
 
 /**
  * Summary publisher contract tests.

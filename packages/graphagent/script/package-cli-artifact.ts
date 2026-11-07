@@ -16,7 +16,7 @@ const distributionFiles = [
   "NOTICE",
   "LICENSE",
   "packages/core/src/dag/LICENSE",
-  "packages/opencode/src/dag/LICENSE",
+  "packages/graphagent/src/dag/LICENSE",
   "third_party/mattpocock-skills/LICENSE",
   "third_party/mattpocock-skills/SOURCE.md",
 ] as const

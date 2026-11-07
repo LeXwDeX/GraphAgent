@@ -3,9 +3,9 @@ import { HttpClient } from "effect/http"
 import * as Tool from "./tool"
 import * as McpWebSearch from "./mcp-websearch"
 import DESCRIPTION from "./websearch.txt"
-import { APP_NAME } from "@opencode-ai/core/brand"
-import { checksum } from "@opencode-ai/core/util/encode"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { APP_NAME } from "@graphagent/core/brand"
+import { checksum } from "@graphagent/core/util/encode"
+import { InstallationVersion } from "@graphagent/core/installation/version"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
 export const Parameters = Schema.Struct({

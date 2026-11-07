@@ -1,12 +1,12 @@
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { Database } from "@opencode-ai/core/database/database"
-import { Project } from "@opencode-ai/core/project"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { Flag } from "@graphagent/core/flag/flag"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { Database } from "@graphagent/core/database/database"
+import { Project } from "@graphagent/core/project"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { DagMessages } from "@graphagent/core/dag/messages"
 import { Cause, Duration, Effect, Layer, Scope } from "effect"
 import { TestLLMServer } from "../../lib/llm-server"
 
@@ -24,8 +24,8 @@ import type {
   SeededContext,
   DagNodeSeed,
 } from "./types"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 
 export function runScenario(options: Options) {
   return (scenario: Scenario) => {

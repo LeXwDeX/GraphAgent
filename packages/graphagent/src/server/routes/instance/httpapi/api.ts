@@ -1,10 +1,10 @@
 import { Schema } from "effect"
 import { HttpApi } from "effect/http-api"
-import { EventV2 } from "@opencode-ai/core/event"
+import { EventV2 } from "@graphagent/core/event"
 import { EventManifest } from "@/event-manifest"
-import { Credential } from "@opencode-ai/core/credential"
-import { Integration } from "@opencode-ai/core/integration"
-import { SkillV2 } from "@opencode-ai/core/skill"
+import { Credential } from "@graphagent/core/credential"
+import { Integration } from "@graphagent/core/integration"
+import { SkillV2 } from "@graphagent/core/skill"
 import { InstanceDisposed } from "@/server/event"
 import { Question } from "@/question"
 import { ConfigApi } from "./groups/config"
@@ -24,8 +24,8 @@ import { SessionApi } from "./groups/session"
 import { SyncApi } from "./groups/sync"
 import { DagApi } from "./groups/dag"
 import { WorkspaceApi } from "./groups/workspace"
-import { makeApi } from "@opencode-ai/protocol/api"
-import { LocationMiddleware } from "@opencode-ai/server/location"
+import { makeApi } from "@graphagent/protocol/api"
+import { LocationMiddleware } from "@graphagent/server/location"
 import { GlobalApi } from "./groups/global"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
@@ -70,7 +70,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(WorkspaceApi)
   .middleware(SchemaErrorMiddleware)
 
-export const OpenCodeHttpApi = HttpApi.make("opencode")
+export const GraphagentHttpApi = HttpApi.make("opencode")
   .addHttpApi(RootHttpApi)
   .addHttpApi(EventApi)
   .addHttpApi(InstanceHttpApi)

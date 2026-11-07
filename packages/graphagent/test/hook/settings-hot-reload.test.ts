@@ -6,7 +6,7 @@ import path from "path"
 import { SettingsHook } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { watchSettings } from "@/hook/extensions"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -37,12 +37,12 @@ const settingsFor = (ctx: string) => ({
   SessionStart: [{ hooks: [{ type: "command", command: `printf '%s' '${hookJson(ctx)}'` }] }],
 })
 
-const opencodeDir = (dir: string) => path.join(dir, ".agents")
-const settingsPath = (dir: string) => path.join(opencodeDir(dir), "hooks.json")
+const graphagentDir = (dir: string) => path.join(dir, ".agents")
+const settingsPath = (dir: string) => path.join(graphagentDir(dir), "hooks.json")
 
 const writeSettings = (dir: string, ctx: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(opencodeDir(dir), { recursive: true })
+    await fs.mkdir(graphagentDir(dir), { recursive: true })
     await fs.writeFile(settingsPath(dir), JSON.stringify(settingsFor(ctx)))
   })
 
@@ -121,7 +121,7 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
   test("watchSettings reloads on hooks.json change and stops after close", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hot-reload-"))
     const file = settingsPath(dir)
-    await fs.mkdir(opencodeDir(dir), { recursive: true })
+    await fs.mkdir(graphagentDir(dir), { recursive: true })
     await fs.writeFile(file, JSON.stringify({}))
 
     let marker: string | undefined
@@ -157,7 +157,7 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
   test("watchSettings reloads when mtime decreases (cp -p / touch -t)", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hot-reload-mtime-dec-"))
     const file = settingsPath(dir)
-    await fs.mkdir(opencodeDir(dir), { recursive: true })
+    await fs.mkdir(graphagentDir(dir), { recursive: true })
     await fs.writeFile(file, JSON.stringify({}))
 
     let marker: string | undefined

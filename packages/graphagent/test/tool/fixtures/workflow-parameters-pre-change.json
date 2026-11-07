@@ -1,6 +1,6 @@
 {
   "note": "Immutable red evidence captured before the discriminated-union switch (task 1.1). Never regenerate: the pre-change flat Parameters no longer exist.",
-  "captured_from": "packages/opencode/src/tool/workflow.ts (flat Parameters, 11 optional fields)",
+  "captured_from": "packages/graphagent/src/tool/workflow.ts (flat Parameters, 11 optional fields)",
   "schema_bytes": 1987,
   "spec_wire_shape": {
     "type": "object",

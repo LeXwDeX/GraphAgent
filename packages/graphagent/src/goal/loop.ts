@@ -1,8 +1,8 @@
 export * as GoalLoop from "./loop"
 
 import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration, Schedule } from "effect"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatus } from "@/session/status"
@@ -39,7 +39,7 @@ export interface Interface {
   ) => Effect.Effect<boolean>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/GoalLoop") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/GoalLoop") {}
 
 /**
  * Test-only injection point for the judge LLM call. When provided in the
@@ -55,7 +55,7 @@ export interface GoalLoopJudgeLLMInterface {
 }
 
 export class GoalLoopJudgeLLM extends Context.Service<GoalLoopJudgeLLM, GoalLoopJudgeLLMInterface>()(
-  "@opencode/GoalLoop/JudgeLLM",
+  "@graphagent/GoalLoop/JudgeLLM",
 ) {}
 
 /**

@@ -1,4 +1,4 @@
-import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { Effect, Layer, Scope } from "effect"
 import type { TestInstance } from "../../fixture/fixture"
 import type { Counters } from "../../lib/engine-probe"

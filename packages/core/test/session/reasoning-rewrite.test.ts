@@ -1,8 +1,8 @@
 import { describe, expect } from "bun:test"
-import { LLMEvent, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
-import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
-import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
-import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
+import { LLMEvent, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@graphagent/llm"
+import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
+import * as OpenAIChat from "@graphagent/llm/protocols/openai-chat"
+import * as OpenAIResponses from "@graphagent/llm/protocols/openai-responses"
 import { Deferred, Duration, Effect, Fiber, Layer, Stream } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/http"
 import {

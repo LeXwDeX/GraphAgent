@@ -1,7 +1,7 @@
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import path from "path"
 import { InvalidResponseDataError, InvalidToolInputError, tool, type ModelMessage } from "ai"
 import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
@@ -9,13 +9,13 @@ import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import z from "zod"
 import { LLM, strictJSON } from "../../src/session/llm"
-import { LLMClient, RequestExecutor, WebSocketExecutor } from "@opencode-ai/llm/route"
-import { LLMEvent } from "@opencode-ai/llm"
+import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
+import { LLMEvent } from "@graphagent/llm"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
-import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { ModelsDev } from "@graphagent/core/models-dev"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 
 import { testEffect } from "../lib/effect"
@@ -25,12 +25,12 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMAISDK } from "@/session/llm/ai-sdk"
 import { Session as SessionNs } from "@/session/session"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 import { ProviderError } from "@/provider/error"
 import { ContextFolding } from "@/session/context-folding"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
+import { Flag } from "@graphagent/core/flag/flag"
+import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
@@ -1142,7 +1142,7 @@ const organizeOnce = (prompt: string, signal = new AbortController().signal, onR
 
 describe("session.llm.stream", () => {
   const vivgridFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
-  const opencodeFixture = { providerID: "opencode-test", modelID: vivgridFixture.modelID }
+  const graphagentFixture = { providerID: "opencode-test", modelID: vivgridFixture.modelID }
 
   it.instance(
     "sends the parent session header for opencode providers",
@@ -1158,8 +1158,8 @@ describe("session.llm.stream", () => {
           }),
         )
         const resolved = yield* Provider.use.getModel(
-          ProviderV2.ID.make(opencodeFixture.providerID),
-          ModelV2.ID.make(opencodeFixture.modelID),
+          ProviderV2.ID.make(graphagentFixture.providerID),
+          ModelV2.ID.make(graphagentFixture.modelID),
         )
         const sessionID = SessionID.make("session-child")
         const parentSessionID = SessionID.make("session-parent")
@@ -1176,7 +1176,7 @@ describe("session.llm.stream", () => {
           time: { created: Date.now() },
           agent: agent.name,
           model: {
-            providerID: ProviderV2.ID.make(opencodeFixture.providerID),
+            providerID: ProviderV2.ID.make(graphagentFixture.providerID),
             modelID: resolved.id,
           },
         } satisfies SessionV1.User
@@ -1198,9 +1198,9 @@ describe("session.llm.stream", () => {
       config: () => {
         const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
         return {
-          enabled_providers: [opencodeFixture.providerID],
+          enabled_providers: [graphagentFixture.providerID],
           provider: {
-            [opencodeFixture.providerID]: {
+            [graphagentFixture.providerID]: {
               name: "OpenCode Test",
               npm: "@ai-sdk/openai-compatible",
               models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },

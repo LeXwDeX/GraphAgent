@@ -1,5 +1,5 @@
 import path from "node:path"
-import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { PermissionUpdate } from "@/hook/trigger-result"
 
 export interface SessionPolicy {

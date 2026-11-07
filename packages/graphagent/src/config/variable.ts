@@ -1,1 +1,1 @@
-export { ConfigVariable, substitute } from "@opencode-ai/core/config/variable"
+export { ConfigVariable, substitute } from "@graphagent/core/config/variable"

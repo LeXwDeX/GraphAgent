@@ -13,20 +13,20 @@
  * status.
  *
  * The end-to-end canonical proof lives in
- * packages/opencode/test/dag/dag-escalation-clear-flag.test.ts:130-148; this
+ * packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148; this
  * core-level test mirrors it without depending on the opencode Dag command
  * layer.
  */
 import { describe, expect, test } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { EventV2 } from "@opencode-ai/core/event"
-import { DagProjector } from "@opencode-ai/core/dag/projector"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { Database } from "@graphagent/core/database/database"
+import { EventV2 } from "@graphagent/core/event"
+import { DagProjector } from "@graphagent/core/dag/projector"
+import { DagStore } from "@graphagent/core/dag/store"
+import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { DagEvent } from "@graphagent/schema/dag-event"
 
 function projectorLayer() {
   const database = Database.layerFromPath(":memory:")

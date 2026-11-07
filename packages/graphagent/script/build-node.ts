@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { Script } from "@opencode-ai/script"
+import { Script } from "@graphagent/script"
 import path from "path"
 import { fileURLToPath } from "url"
 import { buildNodeSchemaWorker, NODE_SCHEMA_WORKER_DEFINES } from "./schema-worker-build"

@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { DagValidation } from "@/dag/validation"
@@ -151,7 +151,7 @@ describe("release packaging smoke test", () => {
         "NOTICE",
         "LICENSE",
         "packages/core/src/dag/LICENSE",
-        "packages/opencode/src/dag/LICENSE",
+        "packages/graphagent/src/dag/LICENSE",
         "third_party/mattpocock-skills/LICENSE",
         "third_party/mattpocock-skills/SOURCE.md",
       ]) {

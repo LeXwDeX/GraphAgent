@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
-import type { LLMEvent } from "@opencode-ai/llm"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
+import type { LLMEvent } from "@graphagent/llm"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { isRecord } from "@/util/record"
 
 const key = "thinkingReplay"

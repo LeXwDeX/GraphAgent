@@ -1,5 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect, Layer } from "effect"
 import { HttpClientResponse } from "effect/http"
 import { Session as SessionNs } from "@/session/session"
@@ -7,8 +7,8 @@ import { Session as SessionNs } from "@/session/session"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
 const it = testEffect(Layer.mergeAll(SessionNs.defaultLayer, httpApiLayer))

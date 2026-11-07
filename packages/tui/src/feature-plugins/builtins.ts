@@ -1,4 +1,4 @@
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/tui/plugin-api"
+import type { TuiPlugin, TuiPluginModule } from "@graphagent/tui/plugin-api"
 import HomeFooter from "./home/footer"
 import HomeTips from "./home/tips"
 import SidebarContext from "./sidebar/context"

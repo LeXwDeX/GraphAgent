@@ -83,4 +83,4 @@ describe("projector from-guards vs declared transition tables", () => {
 // node-level "cancelled" target is what this alignment rules out. The
 // cancellation marker rides on error_reason ("cancelled via replan"), locked
 // by dag-node-cancelled-projection.test.ts and the opencode canonical proof
-// at packages/opencode/test/dag/dag-escalation-clear-flag.test.ts:130-148.
+// at packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.

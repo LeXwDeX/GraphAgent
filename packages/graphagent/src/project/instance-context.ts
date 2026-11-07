@@ -1,7 +1,7 @@
 import { LocalContext } from "@/util/local-context"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import path from "path"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { PROJECT_DIR } from "@graphagent/core/brand"
 import type * as Project from "./project"
 
 export interface InstanceContext {

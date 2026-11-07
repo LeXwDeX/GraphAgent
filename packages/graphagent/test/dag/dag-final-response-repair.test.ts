@@ -1,8 +1,8 @@
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Synthetic branded IDs and narrow Effect service mocks exercise only the runtime surface used by these tests.
 import { describe, expect, it } from "bun:test"
 import { Effect, Fiber, Layer, Semaphore } from "effect"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
-import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { SessionV1 } from "@graphagent/core/v1/session"
+import type { DagStore } from "@graphagent/core/dag/store"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
 import { Provider } from "@/provider/provider"

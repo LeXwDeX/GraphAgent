@@ -2,7 +2,7 @@
 import * as path from "path"
 import * as ts from "typescript"
 
-const BASE_DIR = "/home/thdxr/dev/projects/anomalyco/opencode/packages/opencode"
+const BASE_DIR = "/home/thdxr/dev/projects/anomalyco/opencode/packages/graphagent"
 
 // Get entry file from command line arg or use default
 const ENTRY_FILE = process.argv[2] || "src/plugin/tui/runtime.ts"

@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, Scope } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"

@@ -1,4 +1,4 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import { Format } from "../format"
 import { LSP } from "@/lsp/lsp"

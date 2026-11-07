@@ -4,10 +4,10 @@ import { Effect, Option } from "effect"
 import { mergeDeep } from "remeda"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
-import type { ModelsDev } from "@opencode-ai/core/models-dev"
+import type { ModelsDev } from "@graphagent/core/models-dev"
 import type { Message as HistoryMessage } from "./transcript"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 
 type Cost = NonNullable<ModelsDev.Model["cost"]>
 export interface Input {
@@ -197,7 +197,7 @@ export const forSession = Effect.fn("HookModelMetrics.forSession")(function* (in
       import("@/provider/provider"),
       import("@/agent/agent"),
       import("@/config/config"),
-      import("@opencode-ai/core/models-dev"),
+      import("@graphagent/core/models-dev"),
     ]),
   )
   const providers = Option.getOrUndefined(yield* Effect.serviceOption(Provider.Service))

@@ -26,9 +26,9 @@ import { Effect, Option, Schema } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { parse as parseJsonc } from "jsonc-parser"
-import { Global } from "@opencode-ai/core/global"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { Global } from "@graphagent/core/global"
+import { Flag } from "@graphagent/core/flag/flag"
+import { PROJECT_DIR } from "@graphagent/core/brand"
 import { isReviewWorker } from "./review-lifecycle"
 
 export const Info = Schema.Struct({

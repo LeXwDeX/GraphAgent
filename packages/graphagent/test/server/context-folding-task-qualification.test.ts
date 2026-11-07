@@ -1,6 +1,6 @@
 import { expect } from "bun:test"
-import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { createOpencodeClient } from "@graphagent/sdk/v2"
 import { Effect } from "effect"
 import { mkdir } from "node:fs/promises"
 import path from "path"

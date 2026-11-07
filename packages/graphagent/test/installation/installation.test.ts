@@ -3,8 +3,8 @@ import { Effect, Layer, Redacted, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { Installation } from "../../src/installation"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { AppProcess } from "@opencode-ai/core/process"
+import { InstallationVersion } from "@graphagent/core/installation/version"
+import { AppProcess } from "@graphagent/core/process"
 import { testEffect } from "../lib/effect"
 
 const encoder = new TextEncoder()

@@ -1,9 +1,9 @@
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { DagStore } from "@graphagent/core/dag/store"
+import { LegacyEvent } from "@graphagent/schema/legacy-event"
 import { decodeRecord, decodeString } from "../lib/hook-json"
 import { Question } from "@/question"
 import { handleElicitation } from "@/mcp/elicitation"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { expect } from "bun:test"
 import { Effect, Fiber, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
@@ -334,8 +334,8 @@ const { AppLayer } = await import("@/effect/app-runtime")
 const { Session } = await import("@/session/session")
 const { SessionPrompt } = await import("@/session/prompt")
 const { SessionHooks } = await import("@/hook/session-hooks")
-const { ModelV2 } = await import("@opencode-ai/core/model")
-const { ProviderV2 } = await import("@opencode-ai/core/provider")
+const { ModelV2 } = await import("@graphagent/core/model")
+const { ProviderV2 } = await import("@graphagent/core/provider")
 const fs = await import("node:fs/promises")
 const path = await import("node:path")
 const appIt = testEffect(

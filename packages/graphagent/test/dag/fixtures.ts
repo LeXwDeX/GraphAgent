@@ -1,4 +1,4 @@
-import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { DagStore } from "@graphagent/core/dag/store"
 
 export function makeWorkflowRow(overrides: Partial<DagStore.WorkflowRow> = {}): DagStore.WorkflowRow {
   return {

@@ -1,4 +1,4 @@
-import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
+import { MoveSession } from "@graphagent/core/control-plane/move-session"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { RootHttpApi } from "../api"

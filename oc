@@ -63,7 +63,7 @@ _resolve_oc_script_dir() {
 
 # 本地包目录候选（按顺序尝试）：
 #   1) $OC_LOCAL_DIR  显式指定
-#   2) oc 脚本所在目录（仓内 packages/opencode/ 直接执行场景）
+#   2) oc 脚本所在目录（仓内 packages/graphagent/ 直接执行场景）
 #   3) ~/.cache/oc    在线下载产物缓存
 # 目录里需含 VERSION 文件（BUNDLED_VERSION + SHA256_*）和对应平台压缩包
 OC_SCRIPT_DIR="$(_resolve_oc_script_dir)"

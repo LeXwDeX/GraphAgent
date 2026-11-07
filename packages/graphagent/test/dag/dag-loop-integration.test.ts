@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test"
 import {
   type SchedulingNode,
   WorkflowRuntime,
-} from "@opencode-ai/core/dag/core/scheduling"
+} from "@graphagent/core/dag/core/scheduling"
 
 function makeNodes(ids: string[], deps: Record<string, string[]> = {}, required: Set<string> = new Set()): SchedulingNode[] {
   return ids.map((id) => ({

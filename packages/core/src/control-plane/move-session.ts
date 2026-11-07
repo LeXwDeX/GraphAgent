@@ -43,7 +43,7 @@ export interface SessionLookupInterface {
 }
 
 export class SessionLookup extends Context.Service<SessionLookup, SessionLookupInterface>()(
-  "@opencode/ControlPlaneSessionLookup",
+  "@graphagent/ControlPlaneSessionLookup",
 ) {}
 
 export class DestinationProjectMismatchError extends Schema.TaggedError<DestinationProjectMismatchError>()(
@@ -85,7 +85,7 @@ export interface Interface {
   readonly moveSession: (input: Input) => Effect.Effect<void, Error>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ControlPlaneMoveSession") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ControlPlaneMoveSession") {}
 
 export const layer = Layer.effect(
   Service,

@@ -2,9 +2,9 @@ import path from "path"
 import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Fiber, Layer, Stream } from "effect"
 import type { Scope } from "effect/Scope"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { EventV2 } from "@graphagent/core/event"
+import { Flag } from "@graphagent/core/flag/flag"
+import { ModelsDev } from "@graphagent/core/models-dev"
 
 const eventLayer = EventV2.defaultLayer
 const layer = ModelsDev.defaultLayer.pipe(Layer.provideMerge(eventLayer))

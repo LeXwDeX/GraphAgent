@@ -1,9 +1,9 @@
 export * as MemoryStore from "./store"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { ProjectV2 } from "@opencode-ai/core/project"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { ProjectV2 } from "@graphagent/core/project"
 import { Context, Effect, Layer, Option, Schema, Types } from "effect"
 import { basename, join } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -155,7 +155,7 @@ export class CommitConflictError extends Schema.TaggedError<CommitConflictError>
   actual_revision: Schema.Number,
 }) {}
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryStore") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MemoryStore") {}
 
 const Manifest = Schema.Struct({
   schema_version: Schema.Literal(1),

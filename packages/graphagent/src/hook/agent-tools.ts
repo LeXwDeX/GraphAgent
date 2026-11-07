@@ -4,7 +4,7 @@ import { Effect, Stream } from "effect"
 import { ChildProcess } from "effect/process"
 import type { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { type Tool, tool, jsonSchema } from "ai"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { HookEvaluatorOutputSchema, type HookEvaluatorOutput } from "./schema"
 import { FORBIDDEN_META, parseReadonlyCommand, readonlyExecutable, whitelistReject } from "./readonly-command"
 

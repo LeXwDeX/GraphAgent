@@ -1,11 +1,11 @@
 export * as MemoryConfig from "./config"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
+import { Flag } from "@graphagent/core/flag/flag"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
 import { Git } from "@/git"
 import { ConfigPaths } from "@/config/paths"
 import { assertProjectRootWritable, hasProjectLayer, resolveProjectRoot } from "@/project/project-root"
@@ -36,7 +36,7 @@ export interface Interface {
   ) => Effect.Effect<boolean, FSUtil.Error | EffectFlock.LockError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryConfig") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MemoryConfig") {}
 
 export const layer = Layer.effect(
   Service,

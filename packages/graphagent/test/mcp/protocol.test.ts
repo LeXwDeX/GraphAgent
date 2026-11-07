@@ -1,6 +1,6 @@
 import { describe, expect, mock, test, beforeEach } from "bun:test"
 import { Effect, Schema } from "effect"
-import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
+import { ConfigMCPV1 } from "@graphagent/core/v1/config/mcp"
 import { testEffect } from "../lib/effect"
 
 // Captures the options passed to each Client constructor

@@ -1,12 +1,12 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import type { AuthHook, AuthOAuthResult } from "@/provider/adapter/types"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import { Option } from "effect"
 import { Auth } from "@/auth"
 import { InstanceState } from "@/effect/instance-state"
-import { optionalOmitUndefined } from "@opencode-ai/core/schema"
+import { optionalOmitUndefined } from "@graphagent/core/schema"
 import { ProviderAdapters } from "./adapter/registry"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { Effect, Layer, Record, Context, Schema } from "effect"
 
 const When = Schema.Struct({
@@ -103,7 +103,7 @@ interface State {
   pending: Map<ProviderV2.ID, AuthOAuthResult>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ProviderAuth") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ProviderAuth") {}
 
 export const use = serviceUse(Service)
 

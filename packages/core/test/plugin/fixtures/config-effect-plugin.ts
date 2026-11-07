@@ -1,4 +1,4 @@
-import { define } from "@opencode-ai/core/plugin/context/index"
+import { define } from "@graphagent/core/plugin/context/index"
 import { Effect } from "effect"
 
 export default define({

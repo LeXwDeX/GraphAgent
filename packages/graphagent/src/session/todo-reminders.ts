@@ -23,8 +23,8 @@
  *
  * State is per instance and cleaned on instance disposal or session deletion.
  */
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import type { ModelMessage } from "ai"
 import { Cause, Context, Effect, Layer, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -76,10 +76,10 @@ export function append(messages: ModelMessage[], reminder: string | undefined): 
   // persisted turn; use the runtime-context provenance instead.
   const synthetic = (message: ModelMessage) => {
     const messageOptions = isRecord(message.providerOptions) ? message.providerOptions : undefined
-    const messageOpencode = isRecord(messageOptions?.[METADATA_NAMESPACE])
+    const messageGraphagent = isRecord(messageOptions?.[METADATA_NAMESPACE])
       ? messageOptions[METADATA_NAMESPACE]
       : undefined
-    if (messageOpencode?.synthetic === "attachment") return true
+    if (messageGraphagent?.synthetic === "attachment") return true
     if (!Array.isArray(message.content)) return false
     return message.content.some((part) => {
       const options = "providerOptions" in part && isRecord(part.providerOptions) ? part.providerOptions : undefined
@@ -129,7 +129,7 @@ export function append(messages: ModelMessage[], reminder: string | undefined): 
   return next
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionTodoReminders") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionTodoReminders") {}
 
 function uncompletedOf(todos: Todo.Info[]): Todo.Info[] {
   return todos.filter((item) => item.status !== "completed" && item.status !== "cancelled")

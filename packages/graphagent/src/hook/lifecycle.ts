@@ -1,7 +1,7 @@
-import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
+import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 
 export interface Interface {
   /** Claim a live child attempt. Recovery must not call this for a historical attempt. */
@@ -25,7 +25,7 @@ export interface Interface {
   readonly attached: () => Effect.Effect<readonly string[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/HookLifecycle") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/HookLifecycle") {}
 
 export const layer = Layer.effect(
   Service,

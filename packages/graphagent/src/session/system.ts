@@ -1,4 +1,4 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Context, Effect, Layer, Option } from "effect"
 
 import { InstanceState } from "@/effect/instance-state"
@@ -8,19 +8,19 @@ import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { Location } from "@opencode-ai/core/location"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { Reference } from "@opencode-ai/core/reference"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { Location } from "@graphagent/core/location"
+import { LocationServiceMap } from "@graphagent/core/location-layer"
+import { Reference } from "@graphagent/core/reference"
 import { MCP } from "@/mcp"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Goal } from "@/goal/goal"
 import { GoalPrompts } from "@/goal/prompts"
 import { SettingsHook } from "@/hook/settings"
 import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
-import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 
 /**
  * Every model receives the same prompt. The only substitution is the editing
@@ -52,7 +52,7 @@ export interface Interface {
   }) => Effect.Effect<string[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SystemPrompt") {}
 
 // Entry-form practice for asyncRewake hooks, rendered inside Active Hooks so it
 // costs nothing when no hooks are configured. The full recipe lives in the

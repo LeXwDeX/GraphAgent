@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionAbortReason } from "@/session/abort-reason"
 
 type AssistantError = Extract<SessionV1.Info, { role: "assistant" }>["error"]

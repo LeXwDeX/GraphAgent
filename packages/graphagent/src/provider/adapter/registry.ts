@@ -1,4 +1,4 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { EffectBridge } from "@/effect/bridge"
@@ -41,7 +41,7 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ProviderAdapters") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ProviderAdapters") {}
 
 export const loadAdapters = Effect.fn("ProviderAdapters.loadAdapters")(function* (
   factories: readonly ProviderAdapterFactory[],

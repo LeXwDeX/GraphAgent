@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Context, Deferred, Effect, Layer, Schema } from "effect"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { DagMessages } from "@graphagent/core/dag/messages"
+import { DagStore } from "@graphagent/core/dag/store"
+import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
-import { Hash } from "@opencode-ai/core/util/hash"
+import { Hash } from "@graphagent/core/util/hash"
 import { nodeLocationView } from "./location"
 import {
   bumpPollState,
@@ -50,7 +50,7 @@ export interface Interface {
   send: (input: SendInput) => Effect.Effect<unknown>
   receive: (input: ReceiveInput) => Effect.Effect<unknown>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/DagAgentMessages") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/DagAgentMessages") {}
 
 class ObservationCursor extends Schema.Class<ObservationCursor>("AgentObservationCursor")({
   workflowID: Schema.String,

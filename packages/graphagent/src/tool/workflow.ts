@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Tool } from "./tool"
-import { CommandPlugin } from "@opencode-ai/core/plugin/command"
+import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { Cause, Effect, Exit, Option, Schema } from "effect"
 import { Dag } from "@/dag/dag"
 import { DagReviewLifecycle } from "@/dag/review-lifecycle"
@@ -24,9 +24,9 @@ import {
   workflowArtifactsRoot,
   workflowDraftsArea,
 } from "@/dag/runtime/output-ref"
-import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
-import type { DagEvent } from "@opencode-ai/schema/dag-event"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
+import type { DagEvent } from "@graphagent/schema/dag-event"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { argumentAction, bound, formatSchemaFailures } from "./schema-error"

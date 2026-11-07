@@ -19,25 +19,25 @@ import {
   Exit,
   Deferred,
 } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
-import { SessionEvent } from "@opencode-ai/schema/session-event"
-import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
-import { Hash } from "@opencode-ai/core/util/hash"
-import { Database } from "@opencode-ai/core/database/database"
+import { DagEvent } from "@graphagent/schema/dag-event"
+import { SessionEvent } from "@graphagent/schema/session-event"
+import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
+import { DagStore } from "@graphagent/core/dag/store"
+import { DagMessages } from "@graphagent/core/dag/messages"
+import { Hash } from "@graphagent/core/util/hash"
+import { Database } from "@graphagent/core/database/database"
 import { DagLocation } from "../location"
-import { WorkflowRuntime, toSchedulingNodes } from "@opencode-ai/core/dag/core/scheduling"
+import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
 import {
   isNodeTerminalStatus,
   isTransitionRejection,
   isWorkflowTerminalStatus,
   isTerminalWorkflowStatusValue,
-} from "@opencode-ai/core/dag/core/types"
+} from "@graphagent/core/dag/core/types"
 import { Dag, type WorkflowConfig, parseWorkflowConfig, resultProtocol } from "../dag"
 import { staleUpstreamNodes, staleUpstreamNote } from "../recovery-plan"
 import { DagFanOut } from "../fan-out"
@@ -78,7 +78,7 @@ import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-delivery"
-import { Logging } from "@opencode-ai/core/observability/logging"
+import { Logging } from "@graphagent/core/observability/logging"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
@@ -150,7 +150,7 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/DagLoop") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/DagLoop") {}
 
 interface WorkflowEntry {
   runtime: WorkflowRuntime

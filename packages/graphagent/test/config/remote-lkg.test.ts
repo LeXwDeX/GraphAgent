@@ -1,5 +1,5 @@
 import { expect } from "bun:test"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import { Effect, Layer, Schema } from "effect"
 import { logLines } from "effect/testing/TestConsole"
 import { readdir, stat } from "fs/promises"

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
-import { RipgrepBinary } from "@opencode-ai/core/ripgrep/binary"
-import { RuntimeAsset } from "@opencode-ai/core/runtime-asset"
-import { RipgrepAsset } from "@opencode-ai/core/runtime-asset/catalog/ripgrep"
+import { RipgrepBinary } from "@graphagent/core/ripgrep/binary"
+import { RuntimeAsset } from "@graphagent/core/runtime-asset"
+import { RipgrepAsset } from "@graphagent/core/runtime-asset/catalog/ripgrep"
 
 describe("RipgrepBinary", () => {
   RuntimeAsset.sources.forEach((selected) => {

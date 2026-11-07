@@ -1,7 +1,7 @@
 export * as HookCwd from "./cwd"
 
 import { Effect, Layer } from "effect"
-import { SessionCwdHooks } from "@opencode-ai/core/session/cwd-hooks"
+import { SessionCwdHooks } from "@graphagent/core/session/cwd-hooks"
 import { SettingsHook } from "./settings"
 import { SessionHooks } from "./session-hooks"
 import { Session } from "@/session/session"

@@ -2,8 +2,8 @@ import { APICallError } from "ai"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
-import type { ProviderV2 } from "@opencode-ai/core/provider"
-import { isContextOverflow } from "@opencode-ai/llm"
+import type { ProviderV2 } from "@graphagent/core/provider"
+import { isContextOverflow } from "@graphagent/llm"
 
 export class HeaderTimeoutError extends Error {
   public override readonly name = "ProviderHeaderTimeoutError"

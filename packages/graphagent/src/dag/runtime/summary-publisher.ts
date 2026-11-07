@@ -4,11 +4,11 @@
 export * as DagSummaryPublisher from "./summary-publisher"
 
 import { Cause, Effect, Exit, Layer, Scope, Context } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagEvent } from "@graphagent/schema/dag-event"
+import { DagStore } from "@graphagent/core/dag/store"
 import { GlobalBus } from "@/bus/global"
 
 /**
@@ -64,7 +64,7 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/DagSummaryPublisher") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/DagSummaryPublisher") {}
 
 export const layer = Layer.effect(
   Service,

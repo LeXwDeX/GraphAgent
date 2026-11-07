@@ -1,6 +1,6 @@
 import { Deferred, Effect } from "effect"
-import { SessionAdmission } from "@opencode-ai/core/session/admission"
-import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
+import { SessionAdmission } from "@graphagent/core/session/admission"
+import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 
 type Owner = {
   readonly epoch: number

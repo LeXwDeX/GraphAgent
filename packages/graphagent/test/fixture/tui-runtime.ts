@@ -1,5 +1,5 @@
-import { resolve, type Info, type Resolved } from "@opencode-ai/tui/config"
-import { TuiKeybind } from "@opencode-ai/tui/config/keybind"
+import { resolve, type Info, type Resolved } from "@graphagent/tui/config"
+import { TuiKeybind } from "@graphagent/tui/config/keybind"
 
 type ResolvedInput = Omit<Info, "attention" | "keybinds" | "leader_timeout"> & {
   attention?: Partial<Resolved["attention"]>

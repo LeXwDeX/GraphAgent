@@ -1,6 +1,6 @@
 import path from "path"
 import { Effect, Option, Schema } from "effect"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Skill } from "../skill"
 import { SettingsHook } from "@/hook/settings"
 import * as Tool from "./tool"

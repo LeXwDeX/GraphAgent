@@ -7,7 +7,7 @@ import { LayerNode } from "../effect/layer-node"
 import { AbsolutePath, optionalOmitUndefined } from "../schema"
 import { ProjectSchema } from "./schema"
 import { ProjectDirectoryTable } from "./sql"
-import type { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
+import type { EffectDrizzleSqlite } from "@graphagent/effect-drizzle-sqlite"
 
 export interface Directory {
   readonly directory: AbsolutePath
@@ -55,7 +55,7 @@ export interface Interface {
   readonly remove: (input: RemoveInput, tx?: Transaction) => Effect.Effect<boolean>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ProjectDirectories") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ProjectDirectories") {}
 
 export const layer = Layer.effect(
   Service,

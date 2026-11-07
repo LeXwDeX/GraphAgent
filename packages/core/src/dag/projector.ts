@@ -8,7 +8,7 @@ import { DateTime, Effect, Layer } from "effect"
 import { Database } from "../database/database"
 import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { WorkflowNodeTable, WorkflowTable } from "./sql"
 
 type WorkflowStatus = DagEvent.WorkflowStatus
@@ -579,7 +579,7 @@ export const layer = Layer.effectDiscard(
     // the adjudication flag (cancel is itself an adjudication). A node row can
     // therefore never hold status="cancelled"; see NodeStatusProjection.cancelled
     // above and the canonical proof in
-    // packages/opencode/test/dag/dag-escalation-clear-flag.test.ts:130-148.
+    // packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.
     //
     // Rev-view (v1.0.15 Train A): a cancelled node leaves the current graph
     // revision — the projection also sets the superseded marker so view and

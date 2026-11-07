@@ -1,5 +1,5 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { BackgroundJob as CoreBackgroundJob } from "@opencode-ai/core/background-job"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { BackgroundJob as CoreBackgroundJob } from "@graphagent/core/background-job"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionCancellation } from "@/session/cancellation"
 import { Effect, Layer, Scope } from "effect"
@@ -13,7 +13,7 @@ export {
   type Status,
   type WaitInput,
   type WaitResult,
-} from "@opencode-ai/core/background-job"
+} from "@graphagent/core/background-job"
 
 const coordinated = new WeakSet<object>()
 

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test"
 import { formatImportFileError } from "../../src/cli/cmd/import"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { PlatformError } from "effect"
 
 test("formats import file errors", () => {

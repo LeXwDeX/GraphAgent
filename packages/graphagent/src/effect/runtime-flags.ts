@@ -8,7 +8,7 @@ const positiveInteger = (name: string) =>
     Config.orElse(() => Config.succeed(undefined)),
   )
 
-export class Service extends ConfigService.Service<Service>()("@opencode/RuntimeFlags", {
+export class Service extends ConfigService.Service<Service>()("@graphagent/RuntimeFlags", {
   disableDefaultPlugins: bool("GRAPHAGENT_DISABLE_DEFAULT_PLUGINS"),
   disableLspDownload: bool("GRAPHAGENT_DISABLE_LSP_DOWNLOAD"),
   enableExa: bool("GRAPHAGENT_ENABLE_EXA"),
@@ -51,4 +51,4 @@ export const defaultLayer = Service.defaultLayer.pipe(Layer.orDie)
 export const node = LayerNode.make(defaultLayer, [])
 
 export * as RuntimeFlags from "./runtime-flags"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"

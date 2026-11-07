@@ -1,12 +1,12 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { httpClient, path } from "@opencode-ai/core/effect/layer-node-platform"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { httpClient, path } from "@graphagent/core/effect/layer-node-platform"
 import { NodePath } from "@effect/platform-node"
 import { Effect, Layer, Path, Schema, Context } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { withTransientReadRetry } from "@/util/effect-http-client"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
+import { APP_NAME } from "@graphagent/core/brand"
 
 const skillConcurrency = 4
 const fileConcurrency = 8
@@ -25,7 +25,7 @@ export interface Interface {
   readonly pull: (url: string) => Effect.Effect<string[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SkillDiscovery") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SkillDiscovery") {}
 
 export const layer: Layer.Layer<Service, never, FSUtil.Service | Path.Path | HttpClient.HttpClient> = Layer.effect(
   Service,

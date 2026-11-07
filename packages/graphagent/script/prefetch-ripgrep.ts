@@ -5,8 +5,8 @@
 import fs from "fs"
 import path from "path"
 import { Effect } from "effect"
-import { RuntimeAsset } from "@opencode-ai/core/runtime-asset"
-import { RipgrepAsset } from "@opencode-ai/core/runtime-asset/catalog/ripgrep"
+import { RuntimeAsset } from "@graphagent/core/runtime-asset"
+import { RipgrepAsset } from "@graphagent/core/runtime-asset/catalog/ripgrep"
 
 const packageDirectory = path.resolve(import.meta.dir, "..")
 const arguments_ = process.argv.slice(2)

@@ -84,7 +84,7 @@ export async function runDagCoreCoverageGate() {
 
     yieldMessage("OpenCode DAG public API and runtime seams")
     await runCoverageSuite({
-      cwd: path.join(root, "packages/opencode"),
+      cwd: path.join(root, "packages/graphagent"),
       output: path.join(output, "opencode"),
       tests: ["test/dag"],
       thresholds: [

@@ -1,9 +1,9 @@
-import { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, type ToolResultValue as ToolResultValueType } from "@opencode-ai/llm"
+import { FinishReason, LLMEvent, ProviderMetadata, ToolResultValue, type ToolResultValue as ToolResultValueType } from "@graphagent/llm"
 import { Effect, Schema } from "effect"
 import { InvalidResponseDataError, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
 import { ProviderError } from "@/provider/error"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { isRecord } from "@/util/record"
 
 type Result = Awaited<ReturnType<typeof streamText>>
@@ -78,7 +78,7 @@ function providerMetadata(value: unknown): ProviderMetadata | undefined {
 }
 
 // Temporary AI SDK bridge: Copilot billing survives only in raw provider chunks here.
-// Move this extraction into @opencode-ai/llm when Copilot is handled by the native runtime.
+// Move this extraction into @graphagent/llm when Copilot is handled by the native runtime.
 function copilotTotalNanoAiu(value: unknown): number | undefined {
   if (!isRecord(value)) return undefined
   const response = isRecord(value.response) ? value.response : undefined

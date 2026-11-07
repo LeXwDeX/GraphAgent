@@ -23,7 +23,7 @@
  * wanting persistent hooks should use the on-disk hooks.json chain.
  */
 import { Context, Effect, Layer, Schema } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
 import type { HookEvent, HookJSONOutput, HookCommand } from "./settings"
@@ -110,7 +110,7 @@ export interface Interface {
   readonly clear: (sessionID: SessionID) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionHooks") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionHooks") {}
 
 export const layer = Layer.effect(
   Service,

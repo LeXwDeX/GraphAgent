@@ -2,7 +2,7 @@ import { Cause, Effect, Option } from "effect"
 import { SessionStatus } from "@/session/status"
 import { SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 
 export function withIdleAdmission<Error, Value extends object>(
   service: Value & {

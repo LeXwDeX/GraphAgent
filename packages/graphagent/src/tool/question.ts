@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect"
 import * as Tool from "./tool"
 import { Question } from "../question"
 import { Goal } from "../goal/goal"
-import * as QuestionGuidance from "@opencode-ai/core/question-guidance"
+import * as QuestionGuidance from "@graphagent/core/question-guidance"
 
 export const Parameters = Schema.Struct({
   questions: Schema.mutable(Schema.Array(Question.Prompt)).annotate({ description: "Questions to ask" }),

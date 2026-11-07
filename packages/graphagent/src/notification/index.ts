@@ -1,6 +1,6 @@
 import { SessionAttention } from "./attention"
 /** Non-blocking internal hook delivery. Producers own the business timing and cancellation. */
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Effect, Layer, Context, Option } from "effect"
 
 export interface NotifyInput {
@@ -21,7 +21,7 @@ export interface Interface {
   readonly notify: (input: NotifyInput) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Notification") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Notification") {}
 
 export const layer = Layer.effect(
   Service,

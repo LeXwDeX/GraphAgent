@@ -4,7 +4,7 @@ import {
   TuiStartupProvider,
   TuiTerminalEnvironmentProvider,
   type TuiPaths,
-} from "@opencode-ai/tui/context/runtime"
+} from "@graphagent/tui/context/runtime"
 import type { ParentProps } from "solid-js"
 
 export function TestTuiContexts(
@@ -17,7 +17,7 @@ export function TestTuiContexts(
   return (
     <TuiPathsProvider
       value={{
-        cwd: props.cwd ?? props.directory ?? "/tmp/opencode/packages/opencode",
+        cwd: props.cwd ?? props.directory ?? "/tmp/opencode/packages/graphagent",
         home: "/tmp/opencode/home",
         state: "/tmp/opencode/state",
         worktree: "/tmp/opencode",

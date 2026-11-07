@@ -1,4 +1,4 @@
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { APP_NAME } from "@graphagent/core/brand"
 import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { Parser } from "htmlparser2"

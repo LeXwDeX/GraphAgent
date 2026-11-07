@@ -1,8 +1,8 @@
 export * as ConfigAgent from "./agent"
 
 import path from "path"
-import { Glob } from "@opencode-ai/core/util/glob"
-import { ConfigAgentV1 } from "@opencode-ai/core/v1/config/agent"
+import { Glob } from "@graphagent/core/util/glob"
+import { ConfigAgentV1 } from "@graphagent/core/v1/config/agent"
 import { configEntryNameFromPath } from "./entry-name"
 import * as ConfigMarkdown from "./markdown"
 import { ConfigParse } from "./parse"

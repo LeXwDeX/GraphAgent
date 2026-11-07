@@ -30,7 +30,7 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { validateReviewExecutionInput, unresolvedReviewOutcomes } from "@/dag/review-lifecycle"
-import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { DagStore } from "@graphagent/core/dag/store"
 import { makeNodeRow } from "./fixtures"
 
 type TrackedEvent = { type: string; nodeID: string; output?: unknown; reason?: string; trigger?: string }

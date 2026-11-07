@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { makeFakeProvider, textScript } from "../../lib/fake-provider"

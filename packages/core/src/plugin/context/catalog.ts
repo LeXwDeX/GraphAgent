@@ -1,4 +1,4 @@
-import type { ModelV2Info, ProviderV2Info } from "@opencode-ai/sdk/v2/types"
+import type { ModelV2Info, ProviderV2Info } from "@graphagent/sdk/v2/types"
 import type { Hooks } from "./registration"
 
 export interface CatalogProviderRecord {

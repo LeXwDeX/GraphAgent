@@ -23,7 +23,7 @@ export function skill(info: object) {
   return skills.get(info)
 }
 
-export const CurrentPlugin = Context.Reference<string | undefined>("@opencode/HookSourcePlugin", {
+export const CurrentPlugin = Context.Reference<string | undefined>("@graphagent/HookSourcePlugin", {
   defaultValue: () => undefined,
 })
 const skillSources = new WeakMap<object, Provenance>()

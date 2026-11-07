@@ -38,9 +38,9 @@ import { HookLifecycle } from "@/hook/lifecycle"
 import { SettingsHook } from "@/hook/settings"
 import { HookTranscript } from "@/hook/transcript"
 import { HookStartContext } from "@/hook/start-context"
-import { Logging } from "@opencode-ai/core/observability/logging"
+import { Logging } from "@graphagent/core/observability/logging"
 import { Effect, Semaphore, Scope, Fiber, Option, Clock, Cause, Exit } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionID, MessageID, PartID } from "@/session/schema"
@@ -49,7 +49,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
 import type { ResultProtocol } from "../dag"
 import { isReviewWorker, type VerdictEvidence } from "../review-lifecycle"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
 import { DagIsolation } from "../isolation"
@@ -59,10 +59,10 @@ import {
   isTransitionRejection,
   isNodeTerminalStatus,
   isTerminalWorkflowStatusValue,
-} from "@opencode-ai/core/dag/core/types"
-import type { DagStore } from "@opencode-ai/core/dag/store"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+} from "@graphagent/core/dag/core/types"
+import type { DagStore } from "@graphagent/core/dag/store"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
@@ -82,7 +82,7 @@ import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import type { DagEvent } from "@opencode-ai/schema/dag-event"
+import type { DagEvent } from "@graphagent/schema/dag-event"
 
 type PromptParts = SessionPrompt.PromptInput["parts"]
 type TargetFingerprint = ReturnType<typeof DagLocation.fingerprintTarget>

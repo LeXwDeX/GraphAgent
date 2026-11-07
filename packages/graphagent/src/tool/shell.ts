@@ -10,11 +10,11 @@ import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
 import { Language, type Node } from "web-tree-sitter"
 
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { Shell } from "@opencode-ai/core/shell"
+import { Shell } from "@graphagent/core/shell"
 import { ShellID } from "./shell/id"
 
 import * as Truncate from "./truncate"

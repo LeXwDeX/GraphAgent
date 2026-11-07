@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { APP_NAME } from "@graphagent/core/brand"
 import { UI } from "../ui"
 import { effectCmd, fail } from "../effect-cmd"
 import { Git } from "@/git"
@@ -99,10 +99,10 @@ export const PrCommand = effectCmd({
     UI.println(`Starting ${APP_NAME}...`)
     UI.println()
 
-    const opencodeArgs = sessionId ? ["-s", sessionId] : []
+    const graphagentArgs = sessionId ? ["-s", sessionId] : []
     const code = yield* Effect.promise(
       () =>
-        Process.spawn([APP_NAME, ...opencodeArgs], {
+        Process.spawn([APP_NAME, ...graphagentArgs], {
           stdin: "inherit",
           stdout: "inherit",
           stderr: "inherit",

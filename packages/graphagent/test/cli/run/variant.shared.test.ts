@@ -1,9 +1,9 @@
 import path from "path"
 import { NodeFileSystem } from "@effect/platform-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { describe, expect, test } from "bun:test"
 import { Effect, FileSystem, Layer } from "effect"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import {
   createVariantRuntime,
   cycleVariant,

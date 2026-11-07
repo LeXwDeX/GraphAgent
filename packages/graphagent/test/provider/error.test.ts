@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { APICallError } from "ai"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { ProviderError } from "@/provider/error"
 
 function wrappedSuccessResponse(cause: unknown) {

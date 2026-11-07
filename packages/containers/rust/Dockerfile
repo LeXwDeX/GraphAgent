@@ -11,4 +11,4 @@ RUN set -euo pipefail; \
   curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"; \
   rustc --version; \
   cargo --version; \
-  node /opt/opencode-toolchain/script/toolchain.mjs check --rust
+  node /opt/graphagent-toolchain/script/toolchain.mjs check --rust

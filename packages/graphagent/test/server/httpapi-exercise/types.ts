@@ -1,6 +1,6 @@
 import type { Duration, Effect } from "effect"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import type { Project } from "../../../src/project/project"
 import type { Worktree } from "../../../src/worktree"
 import type { SessionID } from "../../../src/session/schema"

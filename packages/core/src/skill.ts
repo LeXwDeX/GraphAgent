@@ -4,7 +4,7 @@ import path from "path"
 import { Global } from "./global"
 import { SourceProvenance } from "./session/source-provenance"
 import { Context, Effect, Layer, Schema, Types, Option } from "effect"
-import { Skill } from "@opencode-ai/schema/skill"
+import { Skill } from "@graphagent/schema/skill"
 import { AgentV2 } from "./agent"
 import { ConfigMarkdown } from "./config/markdown"
 import { FSUtil } from "./fs-util"
@@ -53,7 +53,7 @@ export interface Interface extends State.Transformable<Draft> {
   readonly list: () => Effect.Effect<Info[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Skill") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/Skill") {}
 
 export const layer = Layer.effect(
   Service,
@@ -104,7 +104,7 @@ export const layer = Layer.effect(
             content: markdown.content,
           }
           // Operator-owned roots, matching the V1 classifier in
-          // packages/opencode/src/skill/index.ts. Everything else — including a
+          // packages/graphagent/src/skill/index.ts. Everything else — including a
           // repository's own `.agents` when the project is the home directory —
           // stays project-owned so its frontmatter hooks are gated by trust.
           const sourcePath = source.type === "directory" ? source.path : undefined

@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import { createTestRenderer, MockTreeSitterClient } from "@opentui/core/testing"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import { registerOpencodeKeymap } from "@opencode-ai/tui/keymap"
+import { registerGraphagentKeymap } from "@graphagent/tui/keymap"
 import { RunFooter } from "@/cli/cmd/run/footer"
 import { RUN_THEME_FALLBACK } from "@/cli/cmd/run/theme"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -18,7 +18,7 @@ test("mini actual keypress and visible subagent panels report attention without 
   })
   const keymap = createDefaultOpenTuiKeymap(app.renderer)
   const tuiConfig = createTuiResolvedConfig({ keybinds: { session_child_first: "ctrl+g", editor_open: "none" } })
-  const off = registerOpencodeKeymap(keymap, app.renderer, tuiConfig)
+  const off = registerGraphagentKeymap(keymap, app.renderer, tuiConfig)
   const activity: unknown[][] = []
   const views: boolean[] = []
   const selected: Array<string | undefined> = []

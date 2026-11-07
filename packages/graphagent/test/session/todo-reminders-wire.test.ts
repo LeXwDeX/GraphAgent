@@ -14,8 +14,8 @@ import { ProviderTransform } from "@/provider/transform"
 import { RuntimeContext } from "@/session/runtime-context"
 import { TodoReminders } from "@/session/todo-reminders"
 import type { Provider } from "@/provider/provider"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 
 const model = (input: { id: string; providerID: string; npm: string; url: string }): Provider.Model => ({
   id: ModelV2.ID.make(input.id),

@@ -12,9 +12,9 @@ import { stat, open, mkdir, link, unlink, lstat, chmod, realpath } from "node:fs
 import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { Effect } from "effect"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Hash } from "@opencode-ai/core/util/hash"
-import { Global } from "@opencode-ai/core/global"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Hash } from "@graphagent/core/util/hash"
+import { Global } from "@graphagent/core/global"
 
 export interface OutputFileRef {
   /** Discriminator against output_schema captured payloads (inline JSON). */

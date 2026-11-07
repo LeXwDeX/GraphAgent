@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { APICallError, TypeValidationError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionAbortReason } from "../../src/session/abort-reason"
@@ -9,8 +9,8 @@ import type { Provider } from "@/provider/provider"
 
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 import {
   AuthenticationReason,
   HttpContext,
@@ -21,7 +21,7 @@ import {
   LLMEvent,
   ProviderInternalReason,
   TransportReason,
-} from "@opencode-ai/llm"
+} from "@graphagent/llm"
 import { SessionRetry } from "../../src/session/retry"
 
 const sessionID = SessionID.make("session")

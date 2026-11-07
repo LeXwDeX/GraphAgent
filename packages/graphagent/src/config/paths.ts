@@ -1,7 +1,7 @@
 export * as ConfigPaths from "./paths"
 
 import path from "path"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { PROJECT_DIR } from "@graphagent/core/brand"
 
 /** Shared project settings inside `<root>/.agents/`. */
 export const PROJECT_SETTINGS = "settings.json"

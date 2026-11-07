@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 
 import { Identifier } from "@/id/id"
-import { withStatics } from "@opencode-ai/core/schema"
+import { withStatics } from "@graphagent/core/schema"
 
 const toolIdSchema = Schema.String.check(Schema.isStartingWith("tool")).pipe(Schema.brand("ToolID"))
 

@@ -119,9 +119,9 @@ cliIt.live(
     }),
 )
 
-import type { OpencodeCli } from "../lib/cli-process"
+import type { GraphagentCli } from "../lib/cli-process"
 
-const instructionSetup = (home: string, opencode: OpencodeCli, source: string, args: string[] = []) =>
+const instructionSetup = (home: string, opencode: GraphagentCli, source: string, args: string[] = []) =>
   Effect.gen(function* () {
     const audit = path.join(home, "instructions-audit.jsonl")
     const script = path.join(home, "instructions-audit.ts")

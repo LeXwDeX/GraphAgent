@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceState } from "../../src/effect/instance-state"

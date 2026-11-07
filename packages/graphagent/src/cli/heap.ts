@@ -1,8 +1,8 @@
 import path from "path"
 import * as fs from "fs/promises"
 import { writeHeapSnapshot } from "node:v8"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { Global } from "@opencode-ai/core/global"
+import { Flag } from "@graphagent/core/flag/flag"
+import { Global } from "@graphagent/core/global"
 const MINUTE = 60_000
 const LIMIT = 2 * 1024 * 1024 * 1024
 // Each snapshot is hundreds of MB and RSS storms re-arm; keep only the newest

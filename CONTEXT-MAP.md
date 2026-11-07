@@ -4,9 +4,9 @@ Read the context documents relevant to the code or decision under review. Do not
 
 | Context | Domain document | Primary areas |
 | --- | --- | --- |
-| Session Runtime | [`CONTEXT.md`](CONTEXT.md) | `packages/opencode/src/session`, `packages/opencode/src/system-context`, `packages/sdk/js` |
-| Workflow Orchestration | [`packages/opencode/src/dag/CONTEXT.md`](packages/opencode/src/dag/CONTEXT.md) | `packages/opencode/src/dag`, workflow tool, DAG template validation and packaging |
-| Project Memory | [`packages/opencode/src/memory/CONTEXT.md`](packages/opencode/src/memory/CONTEXT.md) | `packages/opencode/src/memory`, Memory-owned worktree lifecycle integration |
+| Session Runtime | [`CONTEXT.md`](CONTEXT.md) | `packages/graphagent/src/session`, `packages/graphagent/src/system-context`, `packages/sdk/js` |
+| Workflow Orchestration | [`packages/graphagent/src/dag/CONTEXT.md`](packages/graphagent/src/dag/CONTEXT.md) | `packages/graphagent/src/dag`, workflow tool, DAG template validation and packaging |
+| Project Memory | [`packages/graphagent/src/memory/CONTEXT.md`](packages/graphagent/src/memory/CONTEXT.md) | `packages/graphagent/src/memory`, Memory-owned worktree lifecycle integration |
 
 ## Contexts created lazily
 

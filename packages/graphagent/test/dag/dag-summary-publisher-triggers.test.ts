@@ -6,8 +6,8 @@
 //   - WorkflowStepped moves running -> stepping       -> summary.status changes
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
-import { DagStore, type WorkflowRow, type WorkflowSummary } from "@opencode-ai/core/dag/store"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import { DagStore, type WorkflowRow, type WorkflowSummary } from "@graphagent/core/dag/store"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { GlobalBus } from "@/bus/global"

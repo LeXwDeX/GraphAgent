@@ -1,4 +1,4 @@
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { Flag } from "@graphagent/core/flag/flag"
 import { Effect } from "effect"
 import { mkdirSync } from "fs"
 import path from "path"

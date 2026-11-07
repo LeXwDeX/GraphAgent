@@ -1,12 +1,12 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import path from "path"
 import { randomUUID } from "node:crypto"
 import { Effect, Layer, Record, Result, Schema, Context } from "effect"
-import { NonNegativeInt } from "@opencode-ai/core/schema"
-import { Global } from "@opencode-ai/core/global"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { NonNegativeInt } from "@graphagent/core/schema"
+import { Global } from "@graphagent/core/global"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
+import { APP_NAME } from "@graphagent/core/brand"
 
 export const OAUTH_DUMMY_KEY = `${APP_NAME}-oauth-dummy-key`
 
@@ -48,7 +48,7 @@ export interface Interface {
   readonly remove: (key: string) => Effect.Effect<void, AuthError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Auth") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Auth") {}
 
 export const layer = Layer.effect(
   Service,

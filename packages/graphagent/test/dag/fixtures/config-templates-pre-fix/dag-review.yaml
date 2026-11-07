@@ -17,7 +17,7 @@ config:
       prompt_template:
         id: code-explore
         input:
-          target: "packages/opencode/src/dag core lifecycle files: dag.ts, config.ts, model.ts, admission.ts, review-lifecycle.ts. Map workflow state machine transitions, locking strategy (withWorkflowLock), node lifecycle (spawn/complete/fail/cancel/pause/resume/step), config normalization, model resolution, and admission QA protocol. Identify state ownership, concurrency guards, and cross-module contracts."
+          target: "packages/graphagent/src/dag core lifecycle files: dag.ts, config.ts, model.ts, admission.ts, review-lifecycle.ts. Map workflow state machine transitions, locking strategy (withWorkflowLock), node lifecycle (spawn/complete/fail/cancel/pause/resume/step), config normalization, model resolution, and admission QA protocol. Identify state ownership, concurrency guards, and cross-module contracts."
 
     - id: explore-runtime
       name: explore-runtime
@@ -26,7 +26,7 @@ config:
       prompt_template:
         id: code-explore
         input:
-          target: "packages/opencode/src/dag/runtime execution engine: loop.ts (scheduling loop, layer computation, concurrency control), spawn.ts (child session creation), recovery.ts (crash recovery, reconciliation), eval.ts (condition evaluation, input mapping), capture.ts (output schema validation, submit_result), summary-publisher.ts (event emission). Map the scheduling algorithm, session lifecycle, error propagation, and recovery invariants."
+          target: "packages/graphagent/src/dag/runtime execution engine: loop.ts (scheduling loop, layer computation, concurrency control), spawn.ts (child session creation), recovery.ts (crash recovery, reconciliation), eval.ts (condition evaluation, input mapping), capture.ts (output schema validation, submit_result), summary-publisher.ts (event emission). Map the scheduling algorithm, session lifecycle, error propagation, and recovery invariants."
 
     - id: explore-templates
       name: explore-templates
@@ -35,7 +35,7 @@ config:
       prompt_template:
         id: code-explore
         input:
-          target: "packages/opencode/src/dag/templates template system: resolve.ts (template resolution, rendering, interpolation) and sanitize.ts (input sanitization, injection prevention). Map template loading (by ID from .agents/dag-prompts, inline), variable interpolation mechanics, and the sanitization boundary. Identify trust assumptions and injection vectors."
+          target: "packages/graphagent/src/dag/templates template system: resolve.ts (template resolution, rendering, interpolation) and sanitize.ts (input sanitization, injection prevention). Map template loading (by ID from .agents/dag-prompts, inline), variable interpolation mechanics, and the sanitization boundary. Identify trust assumptions and injection vectors."
 
     - id: review-arch
       name: review-arch
@@ -65,7 +65,7 @@ config:
       required: true
       prompt_template:
         inline: |
-          You are a claim verifier. Three reviewers produced findings and unverified_claims about the DAG module (packages/opencode/src/dag/).
+          You are a claim verifier. Three reviewers produced findings and unverified_claims about the DAG module (packages/graphagent/src/dag/).
 
           Your job: take EVERY item listed under `unverified_claims` from all three reviews and check it against the actual source code. For each claim:
           1. Open the cited file(s) and read the relevant code.
@@ -124,7 +124,7 @@ config:
                 items: { type: string }
       prompt_template:
         inline: |
-          You are the arbiter for a deep review of the DAG workflow engine (packages/opencode/src/dag/).
+          You are the arbiter for a deep review of the DAG workflow engine (packages/graphagent/src/dag/).
 
           Three reviewers (architecture, logic, style) produced findings. A verification node then checked all unverified_claims against the actual code.
 

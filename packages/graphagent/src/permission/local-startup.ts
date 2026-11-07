@@ -15,7 +15,7 @@ export function take(source: unknown, sessionID?: string): boolean {
   return true
 }
 export const Grant = Context.Reference<((sessionID: string) => Effect.Effect<void>) | undefined>(
-  "@opencode/LocalPermissionStartup",
+  "@graphagent/LocalPermissionStartup",
   { defaultValue: () => undefined },
 )
 export function once(grant: (sessionID: string) => Effect.Effect<void>) {

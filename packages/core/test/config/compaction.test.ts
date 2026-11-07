@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
+import { ConfigCompaction } from "@graphagent/core/config/compaction"
 
 describe("ConfigCompaction.resolveDynamic", () => {
   test.each([

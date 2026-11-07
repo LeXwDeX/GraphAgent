@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { BackgroundJob } from "@/background/job"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagStore } from "@graphagent/core/dag/store"
 import { HookTurnContext } from "@/hook/turn-context"
 
 test("Stop task context includes only current-session active work and bounds descriptions", async () => {

@@ -1,14 +1,14 @@
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { Cause, Effect } from "effect"
 import { isDeepStrictEqual } from "node:util"
-import { EventV2 } from "@opencode-ai/core/event"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { EventV2 } from "@graphagent/core/event"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import {
   adoptionProvenance,
   type ReasoningReplacement,
-} from "@opencode-ai/core/session/reasoning-distillation/adoption"
-import { replaceCanonicalReasoning } from "@opencode-ai/core/session/reasoning-distillation/canonical"
-import { assessRewriteControl } from "@opencode-ai/core/session/reasoning-distillation/control-markup"
+} from "@graphagent/core/session/reasoning-distillation/adoption"
+import { replaceCanonicalReasoning } from "@graphagent/core/session/reasoning-distillation/canonical"
+import { assessRewriteControl } from "@graphagent/core/session/reasoning-distillation/control-markup"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "./session"
 import { MessageV2 } from "./message-v2"

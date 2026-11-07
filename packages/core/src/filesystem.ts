@@ -7,8 +7,8 @@ import { Location } from "./location"
 import { PositiveInt, RelativePath } from "./schema"
 import { FileSystemSearch } from "./filesystem/search"
 import { Ignore } from "./filesystem/ignore"
-import { Entry, FileSystem, FindInput, Match } from "@opencode-ai/schema/filesystem"
-export { Entry, Match, Submatch } from "@opencode-ai/schema/filesystem"
+import { Entry, FileSystem, FindInput, Match } from "@graphagent/schema/filesystem"
+export { Entry, Match, Submatch } from "@graphagent/schema/filesystem"
 
 export const ReadInput = Schema.Struct({
   path: RelativePath,
@@ -54,7 +54,7 @@ export interface Interface {
   readonly grep: (input: GrepInput) => Effect.Effect<readonly Match[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/FileSystem") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/FileSystem") {}
 
 const baseLayer = Layer.effect(
   Service,

@@ -1,14 +1,14 @@
-import { Logging } from "@opencode-ai/core/observability/logging"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Global } from "@opencode-ai/core/global"
+import { Logging } from "@graphagent/core/observability/logging"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Global } from "@graphagent/core/global"
 import { statSync } from "fs"
 import { GlobalBus } from "@/bus/global"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
 import { disposeInstance as runDisposers } from "@/effect/instance-registry"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { Context, Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Scope, Semaphore } from "effect"
 import { type InstanceContext } from "./instance-context"
 import { hasProjectLayer, resolveProjectRoot } from "./project-root"
@@ -40,7 +40,7 @@ export interface Interface {
   ) => Effect.Effect<Option.Option<A>, E, R>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/InstanceStore") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/InstanceStore") {}
 
 export const use = serviceUse(Service)
 
@@ -67,7 +67,7 @@ interface Entry {
   scopeClosed?: boolean
 }
 
-const entryRef = Context.Reference<Entry | undefined>("~opencode/InstanceStoreEntry", {
+const entryRef = Context.Reference<Entry | undefined>("~graphagent/InstanceStoreEntry", {
   defaultValue: () => undefined,
 })
 

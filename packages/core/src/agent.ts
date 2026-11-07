@@ -1,7 +1,7 @@
 export * as AgentV2 from "./agent"
 
 import { Array, Context, Effect, Layer, Types } from "effect"
-import { Agent } from "@opencode-ai/schema/agent"
+import { Agent } from "@graphagent/schema/agent"
 import { State } from "./state"
 
 export const ID = Agent.ID
@@ -39,7 +39,7 @@ export interface Interface extends State.Transformable<Draft> {
   readonly all: () => Effect.Effect<Info[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Agent") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/Agent") {}
 
 export const layer = Layer.effect(
   Service,

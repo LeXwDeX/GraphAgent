@@ -1,6 +1,6 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { httpClient } from "@graphagent/core/effect/layer-node-platform"
+import { Ripgrep } from "@graphagent/core/ripgrep"
 import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
@@ -10,7 +10,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { GoalTool } from "./goal"
 import { MemorySearch } from "./memory-search"
@@ -38,23 +38,23 @@ import { usesApplyPatch } from "./editing-tools"
 import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
 import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import type { ToolSourceKind } from "@opencode-ai/core/session/context-folding"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import type { ToolSourceKind } from "@graphagent/core/session/context-folding"
 
 export function webSearchEnabled(flags = { exa: false, parallel: false }) {
   return flags.exa || flags.parallel
@@ -101,7 +101,7 @@ export type RegisteredTool = Readonly<{
   registrationID: string
 }>
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ToolRegistry") {}
 
 export const layer = Layer.effect(
   Service,

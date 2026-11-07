@@ -3,10 +3,10 @@ import type { ModelMessage, ToolResultPart } from "ai"
 import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
-import type * as ModelsDev from "@opencode-ai/core/models-dev"
-import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import type * as ModelsDev from "@graphagent/core/models-dev"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { iife } from "@/util/iife"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
 import { isRecord } from "@/util/record"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]

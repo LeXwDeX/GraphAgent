@@ -1,10 +1,10 @@
 import { ThinkingReplay } from "./thinking-replay"
 import { SessionID, MessageID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { METADATA_NAMESPACE } from "@opencode-ai/core/brand"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { isContextOverflowFailure, LLMError, ProviderErrorEvent, ReasoningCarrier } from "@opencode-ai/llm"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { METADATA_NAMESPACE } from "@graphagent/core/brand"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { isContextOverflowFailure, LLMError, ProviderErrorEvent, ReasoningCarrier } from "@graphagent/llm"
 import {
   APIError,
   AbortedError,
@@ -18,12 +18,12 @@ import {
   SubtaskPart,
   User,
   WithParts,
-} from "@opencode-ai/core/v1/session"
+} from "@graphagent/core/v1/session"
 
-import { NamedError } from "@opencode-ai/core/util/error"
+import { NamedError } from "@graphagent/core/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
-import { Database } from "@opencode-ai/core/database/database"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
 import { desc } from "drizzle-orm"
@@ -31,7 +31,7 @@ import { eq } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
-import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { MessageTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
 import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
@@ -145,7 +145,7 @@ function providerMeta(metadata: Record<string, any> | undefined) {
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
-import { reasoningForReplay } from "@opencode-ai/core/session/reasoning-distillation/canonical"
+import { reasoningForReplay } from "@graphagent/core/session/reasoning-distillation/canonical"
 
 // Compaction changes the signed conversation prefix. Only these native carriers
 // are known to encode Claude thinking/redacted_thinking blocks; other reasoning

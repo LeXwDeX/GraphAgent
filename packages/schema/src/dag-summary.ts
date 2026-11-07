@@ -32,7 +32,7 @@ export type WorkflowSummary = typeof WorkflowSummary.Type
 
 /**
  * Ephemeral (non-durable) event emitted by the stateless summary publisher
- * (packages/opencode/src/dag/runtime/summary-publisher.ts). Carries the full
+ * (packages/graphagent/src/dag/runtime/summary-publisher.ts). Carries the full
  * `WorkflowSummary[]` for a session, recomputed fresh from DagStore on every
  * emission. NOT registered in the durable-event manifest — consumers must
  * tolerate missed events during disconnects (the TUI re-fetches on bootstrap

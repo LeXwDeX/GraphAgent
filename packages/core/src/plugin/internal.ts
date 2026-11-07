@@ -58,7 +58,7 @@ export function define<R>(plugin: Plugin<R>) {
 
 /** Completion of the configured plugins for this Location, including agent permission rules. */
 export class Ready extends Context.Service<Ready, { readonly awaitReady: Effect.Effect<void> }>()(
-  "@opencode/v2/PluginInternal/Ready",
+  "@graphagent/v2/PluginInternal/Ready",
 ) {}
 
 export const locationLayer = Layer.effect(

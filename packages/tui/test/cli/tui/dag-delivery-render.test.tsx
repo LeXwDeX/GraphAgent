@@ -2,7 +2,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { AssistantMessage, TextPart, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, TextPart, UserMessage } from "@graphagent/sdk/v2"
 import { onCleanup } from "solid-js"
 import { TuiConfigProvider } from "../../../src/config"
 import { ArgsProvider } from "../../../src/context/args"
@@ -19,7 +19,7 @@ import { RouteProvider } from "../../../src/context/route"
 import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
-import { registerOpencodeKeymap, OpencodeKeymapProvider } from "../../../src/keymap"
+import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
@@ -146,13 +146,13 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
       const renderer = useRenderer()
       const keymap = createDefaultOpenTuiKeymap(renderer)
       const config = createTuiResolvedConfig()
-      onCleanup(registerOpencodeKeymap(keymap, renderer, config))
+      onCleanup(registerGraphagentKeymap(keymap, renderer, config))
       return (
         <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
           <ExitProvider exit={() => {}}>
             <EpilogueProvider set={() => {}}>
               <ClipboardProvider>
-                <OpencodeKeymapProvider keymap={keymap}>
+                <GraphagentKeymapProvider keymap={keymap}>
                   <ArgsProvider>
                     <KVProvider>
                       <ToastProvider>
@@ -195,7 +195,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                       </ToastProvider>
                     </KVProvider>
                   </ArgsProvider>
-                </OpencodeKeymapProvider>
+                </GraphagentKeymapProvider>
               </ClipboardProvider>
             </EpilogueProvider>
           </ExitProvider>

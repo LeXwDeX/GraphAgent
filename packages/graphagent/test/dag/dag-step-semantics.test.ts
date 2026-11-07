@@ -1,25 +1,25 @@
 import { describe, expect, it } from "bun:test"
 import { DateTime, Effect, Exit, Layer } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { EventV2 } from "@opencode-ai/core/event"
-import { DagProjector } from "@opencode-ai/core/dag/projector"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
-import { Project } from "@opencode-ai/core/project"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Database } from "@graphagent/core/database/database"
+import { EventV2 } from "@graphagent/core/event"
+import { DagProjector } from "@graphagent/core/dag/projector"
+import { DagStore } from "@graphagent/core/dag/store"
+import { DagEvent } from "@graphagent/schema/dag-event"
+import { Project } from "@graphagent/core/project"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { AbsolutePath } from "@graphagent/core/schema"
 import {
   WorkflowStatus,
   getValidNextWorkflowStatuses,
   isWorkflowTerminalStatus,
   assertValidWorkflowTransition,
-} from "@opencode-ai/core/dag/core/types"
-import { WorkflowRuntime } from "@opencode-ai/core/dag/core/scheduling"
-import { transitionToWorkflowEvent } from "@opencode-ai/core/dag/core/transitions"
+} from "@graphagent/core/dag/core/types"
+import { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
+import { transitionToWorkflowEvent } from "@graphagent/core/dag/core/transitions"
 import { Dag } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { InvalidTransitionError } from "@opencode-ai/core/dag/core/types"
+import { InvalidTransitionError } from "@graphagent/core/dag/core/types"
 
 const testLayer = Layer.mergeAll(
   Database.defaultLayer,

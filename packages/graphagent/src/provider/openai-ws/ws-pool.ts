@@ -1,5 +1,5 @@
 import WebSocket from "ws"
-import { HEADER_PREFIX } from "@opencode-ai/core/brand"
+import { HEADER_PREFIX } from "@graphagent/core/brand"
 import { ProviderError } from "@/provider/error"
 import { isRecord } from "@/util/record"
 import { OpenAIWebSocket } from "./ws"

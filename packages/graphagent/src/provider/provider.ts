@@ -1,41 +1,41 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import os from "os"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import fuzzysort from "fuzzysort"
 import { Config } from "@/config/config"
 import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
 import { NoSuchModelError, type Provider as SDK } from "ai"
-import { Npm } from "@opencode-ai/core/npm"
-import { Hash } from "@opencode-ai/core/util/hash"
+import { Npm } from "@graphagent/core/npm"
+import { Hash } from "@graphagent/core/util/hash"
 import { ProviderAdapters } from "./adapter/registry"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import { type LanguageModelV3 } from "@ai-sdk/provider"
-import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { ModelsDev } from "@graphagent/core/models-dev"
 import { Auth } from "../auth"
 import { Env } from "../env"
-import { APP_NAME, APP_TITLE, HOMEPAGE_URL } from "@opencode-ai/core/brand"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { APP_NAME, APP_TITLE, HOMEPAGE_URL } from "@graphagent/core/brand"
+import { InstallationVersion } from "@graphagent/core/installation/version"
 import { iife } from "@/util/iife"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context, Schema, Stream, Types } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectPromise } from "@/effect/promise"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { isRecord } from "@/util/record"
-import { optionalOmitUndefined } from "@opencode-ai/core/schema"
+import { optionalOmitUndefined } from "@graphagent/core/schema"
 import { ProviderTransform } from "./transform"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 import { OpenAIWebSocketPool } from "./openai-ws/ws-pool"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { SessionCompactionEvent } from "@graphagent/schema/session-compaction-event"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
 
@@ -166,7 +166,7 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
   "@ai-sdk/vercel": () => import("@ai-sdk/vercel").then((m) => m.createVercel),
   "@ai-sdk/alibaba": () => import("@ai-sdk/alibaba").then((m) => m.createAlibaba),
   "@ai-sdk/github-copilot": () =>
-    import("@opencode-ai/core/github-copilot/copilot-provider").then((m) => m.createOpenaiCompatible),
+    import("@graphagent/core/github-copilot/copilot-provider").then((m) => m.createOpenaiCompatible),
   "venice-ai-sdk-provider": () => import("venice-ai-sdk-provider").then((m) => m.createVenice),
 }
 
@@ -1039,7 +1039,7 @@ interface State {
   varsLoaders: Record<string, CustomVarsLoader>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Provider") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Provider") {}
 
 export const use = serviceUse(Service)
 

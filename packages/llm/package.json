@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "version": "1.17.11",
-  "name": "@opencode-ai/llm",
+  "name": "@graphagent/llm",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -37,7 +37,7 @@
   "devDependencies": {
     "@clack/prompts": "catalog:",
     "@effect/platform-node": "catalog:",
-    "@opencode-ai/http-recorder": "workspace:*",
+    "@graphagent/http-recorder": "workspace:*",
     "@tsconfig/bun": "catalog:",
     "@types/bun": "catalog:",
     "@typescript/native-preview": "catalog:"
@@ -45,7 +45,7 @@
   "dependencies": {
     "@smithy/eventstream-codec": "catalog:",
     "@smithy/util-utf8": "catalog:",
-    "@opencode-ai/schema": "workspace:*",
+    "@graphagent/schema": "workspace:*",
     "aws4fetch": "catalog:",
     "effect": "catalog:"
   }

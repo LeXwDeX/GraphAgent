@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { LLMError, LLMEvent, ToolFailure } from "@opencode-ai/llm"
-import { LLMClient, RequestExecutor, WebSocketExecutor, type LLMClientShape } from "@opencode-ai/llm/route"
+import { LLMError, LLMEvent, ToolFailure } from "@graphagent/llm"
+import { LLMClient, RequestExecutor, WebSocketExecutor, type LLMClientShape } from "@graphagent/llm/route"
 import { jsonSchema, tool, type ModelMessage, type Tool } from "ai"
 import { Effect, Fiber, Layer, Stream } from "effect"
 import { FetchHttpClient } from "effect/http"
@@ -12,9 +12,9 @@ import type { Provider } from "@/provider/provider"
 
 import { OAUTH_DUMMY_KEY } from "@/auth"
 import { testEffect } from "../lib/effect"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { engineOrganizerCall } from "@opencode-ai/core/session/reasoning-distillation"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { engineOrganizerCall } from "@graphagent/core/session/reasoning-distillation"
 
 const baseModel: Provider.Model = {
   id: ModelV2.ID.make("gpt-5-mini"),
@@ -321,7 +321,7 @@ describe("session.llm-native.request", () => {
           options: {
             apiKey: OAUTH_DUMMY_KEY,
             experimentalWebSockets: true,
-            headers: { "X-Opencode-Title": "true", "x-provider": "provider-header" },
+            headers: { "X-Graphagent-Title": "true", "x-provider": "provider-header" },
             fetch: ordinaryFetch,
           },
         },
@@ -360,7 +360,7 @@ describe("session.llm-native.request", () => {
           options: {
             ...providerInfo.options,
             experimentalWebSockets: true,
-            headers: { "X-Opencode-Title": "true", "x-provider": "provider-header" },
+            headers: { "X-Graphagent-Title": "true", "x-provider": "provider-header" },
           },
         },
         auth: undefined,

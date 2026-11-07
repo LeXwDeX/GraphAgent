@@ -1,4 +1,4 @@
-import { EventV2 } from "@opencode-ai/core/event"
+import { EventV2 } from "@graphagent/core/event"
 import { Effect, Stream } from "effect"
 import { HttpServerResponse } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"

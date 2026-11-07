@@ -15,10 +15,10 @@
 // Today only the `run` builder is fully wired. The shape supports adding more
 // builders (`host(opts)`, `acp(opts)`, `auth(...)`) without changing the fixture.
 // Long-lived commands like `host` will need a
-// different return shape — see the TODO at the bottom of OpencodeCli.
+// different return shape — see the TODO at the bottom of GraphagentCli.
 import { test, type TestOptions } from "bun:test"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { AppProcess } from "@opencode-ai/core/process"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { AppProcess } from "@graphagent/core/process"
 import { Deferred, Duration, Effect, Layer, Queue, Schedule, Scope, Stream } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess } from "effect/process"
@@ -30,8 +30,8 @@ import { TestLLMServer } from "./llm-server"
 import { testProviderConfig } from "./test-provider"
 import { it } from "./effect"
 
-const opencodeRoot = path.resolve(import.meta.dir, "../../")
-const cliEntry = path.join(opencodeRoot, "src/index.ts")
+const graphagentRoot = path.resolve(import.meta.dir, "../../")
+const cliEntry = path.join(graphagentRoot, "src/index.ts")
 
 export const testModelID = "test/test-model"
 
@@ -227,7 +227,7 @@ export type AcpHandle = {
   readonly exited: Promise<number>
 }
 
-export type OpencodeCli = {
+export type GraphagentCli = {
   readonly target: ResolvedCliTarget
   // High-level: run a single prompt against the test model. Short-lived.
   readonly run: (message: string, opts?: RunOpts) => Effect.Effect<RunResult>
@@ -256,7 +256,7 @@ export type CliFixture = {
   readonly llm: TestLLMServer["Service"]
   readonly home: string
   readonly env: Readonly<Record<string, string>>
-  readonly opencode: OpencodeCli
+  readonly opencode: GraphagentCli
   readonly target: ResolvedCliTarget
 }
 
@@ -567,7 +567,7 @@ export function withCliFixture<A, E>(
       } satisfies AcpHandle
     })
 
-    const opencode: OpencodeCli = { target, run, startRun, host, acp, spawn, expectExit, parseJsonEvents }
+    const opencode: GraphagentCli = { target, run, startRun, host, acp, spawn, expectExit, parseJsonEvents }
 
     return yield* fn({ llm, home, env, opencode, target })
     // FetchHttpClient is provided so test bodies can `yield* HttpClient.HttpClient`

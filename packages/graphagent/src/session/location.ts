@@ -28,8 +28,8 @@ export * as SessionLocation from "./location"
 
 import { eq } from "drizzle-orm"
 import { Effect, Option } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { Database } from "@graphagent/core/database/database"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionID } from "@/session/schema"
 
 export const sessionDirectory = (sessionID: SessionID): Effect.Effect<Option.Option<string>> =>

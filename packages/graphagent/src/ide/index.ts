@@ -1,7 +1,7 @@
 import { Schema } from "effect"
-import { NamedError } from "@opencode-ai/core/util/error"
+import { NamedError } from "@graphagent/core/util/error"
 import { Process } from "@/util/process"
-import { IdeEvent } from "@opencode-ai/schema/ide-event"
+import { IdeEvent } from "@graphagent/schema/ide-event"
 
 const SUPPORTED_IDES = [
   { name: "Windsurf" as const, cmd: "windsurf" },

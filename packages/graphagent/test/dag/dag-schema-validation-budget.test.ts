@@ -10,7 +10,7 @@ import {
 } from "@/dag/runtime/capture"
 import { validateInWorker } from "@/dag/runtime/schema-validation"
 import { SubmitResultTool } from "@/tool/submit_result"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagStore } from "@graphagent/core/dag/store"
 import { Agent } from "@/agent/agent"
 import { Truncate } from "@/tool/truncate"
 import { MessageID, SessionID } from "@/session/schema"

@@ -1,8 +1,8 @@
-import { Logging } from "@opencode-ai/core/observability/logging"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
+import { Logging } from "@graphagent/core/observability/logging"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { InstanceState } from "@/effect/instance-state"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
 import { Cause, Deferred, Effect, Exit, Latch, Layer, Option, Scope, Context } from "effect"
@@ -48,7 +48,7 @@ export interface Interface {
   ) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRunState") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionRunState") {}
 
 export const layer = Layer.effect(
   Service,

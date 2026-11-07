@@ -1,5 +1,5 @@
-import { APP_NAME } from "@opencode-ai/core/brand"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { APP_NAME } from "@graphagent/core/brand"
+import { InstallationVersion } from "@graphagent/core/installation/version"
 import { setTimeout as sleep } from "node:timers/promises"
 import { CopilotModels } from "./models"
 import { MessageV2 } from "@/session/message-v2"

@@ -1,5 +1,5 @@
-import { APP_NAME } from "@opencode-ai/core/brand"
-import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
+import { APP_NAME } from "@graphagent/core/brand"
+import { InstallationChannel, InstallationVersion } from "@graphagent/core/installation/version"
 import { OAUTH_DUMMY_KEY } from "../../auth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"

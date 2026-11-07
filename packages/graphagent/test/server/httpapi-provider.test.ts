@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Effect, Layer } from "effect"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import type { ProviderAdapter } from "@/provider/adapter/types"

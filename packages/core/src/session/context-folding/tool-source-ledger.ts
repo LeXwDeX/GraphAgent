@@ -47,7 +47,7 @@ export interface Interface {
   readonly clearSession: (sessionID: string) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ContextFoldingToolSourceLedger") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/ContextFoldingToolSourceLedger") {}
 
 type State = {
   readonly nonce: string

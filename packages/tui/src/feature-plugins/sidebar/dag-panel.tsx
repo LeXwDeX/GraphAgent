@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/tui/plugin-api"
-import type { DagNode, DagWorkflowSummary } from "@opencode-ai/sdk/v2"
+import type { TuiPlugin, TuiPluginApi } from "@graphagent/tui/plugin-api"
+import type { DagNode, DagWorkflowSummary } from "@graphagent/sdk/v2"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { Spinner } from "../../component/spinner"

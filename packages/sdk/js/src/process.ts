@@ -1,8 +1,8 @@
 import { type ChildProcess, spawnSync } from "node:child_process"
 
-// Duplicated from `packages/opencode/src/util/process.ts` because the SDK cannot
+// Duplicated from `packages/graphagent/src/util/process.ts` because the SDK cannot
 // import `opencode` without creating a cycle (`opencode` depends on
-// `@opencode-ai/sdk`). Keep both copies in sync, including the grace constant.
+// `@graphagent/sdk`). Keep both copies in sync, including the grace constant.
 const STOP_TERM_GRACE_MS = 3_000
 
 export function stop(proc: ChildProcess) {

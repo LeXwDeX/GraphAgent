@@ -8,7 +8,7 @@ export namespace RipgrepBinary {
     readonly filepath: Effect.Effect<string, Error>
   }
 
-  export class Service extends Context.Service<Service, Interface>()("@opencode/RipgrepBinary") {}
+  export class Service extends Context.Service<Service, Interface>()("@graphagent/RipgrepBinary") {}
 
   export const layer = Layer.effect(
     Service,

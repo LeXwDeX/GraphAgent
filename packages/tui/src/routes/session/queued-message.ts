@@ -1,4 +1,4 @@
-import type { Part, TextPart, UserMessage } from "@opencode-ai/sdk/v2"
+import type { Part, TextPart, UserMessage } from "@graphagent/sdk/v2"
 
 export function orderedBefore(
   a: { id: string; time: { created: number } },

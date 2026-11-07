@@ -2,8 +2,8 @@ import { describe, expect } from "bun:test"
 import { Effect, Fiber, Layer } from "effect"
 import * as fs from "fs/promises"
 import path from "path"
-import { Database } from "@opencode-ai/core/database/database"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { Database } from "@graphagent/core/database/database"
+import { SessionProjector } from "@graphagent/core/session/projector"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -16,8 +16,8 @@ import { Permission } from "@/permission"
 import { Notification } from "@/notification"
 import { Instruction } from "@/session/instruction"
 import { Config } from "@/config/config"
-import { Global } from "@opencode-ai/core/global"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@graphagent/core/global"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { FetchHttpClient } from "effect/http"
 import { SettingsHook, type HookPayload } from "@/hook/settings"
 import { SessionHooks } from "@/hook/session-hooks"
@@ -247,8 +247,8 @@ const settingsEnv = SettingsHook.layer.pipe(
 
 const settingsIt = testEffect(settingsEnv)
 
-const opencodeDir = (dir: string) => path.join(dir, ".agents")
-const hooksPath = (dir: string) => path.join(opencodeDir(dir), "hooks.json")
+const graphagentDir = (dir: string) => path.join(dir, ".agents")
+const hooksPath = (dir: string) => path.join(graphagentDir(dir), "hooks.json")
 const markerPath = (dir: string) => path.join(dir, "configchange-fired")
 
 const configChangeSettings = (dir: string, version: string) => ({
@@ -259,7 +259,7 @@ const configChangeSettings = (dir: string, version: string) => ({
 
 const writeHooks = (dir: string, version: string) =>
   Effect.promise(async () => {
-    await fs.mkdir(opencodeDir(dir), { recursive: true })
+    await fs.mkdir(graphagentDir(dir), { recursive: true })
     await fs.writeFile(hooksPath(dir), JSON.stringify(configChangeSettings(dir, version)))
   })
 

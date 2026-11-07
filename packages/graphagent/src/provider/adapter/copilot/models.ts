@@ -1,6 +1,6 @@
 import type { Provider } from "@/provider/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { Option, Schema } from "effect"
 
 const item = Schema.Struct({

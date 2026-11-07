@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { GraphAgentPrompt } from "@opencode-ai/core/system-context/graphagent"
+import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 
 describe("GraphAgentPrompt", () => {
   test("renders one identity with the hooks and DAG entry points", () => {

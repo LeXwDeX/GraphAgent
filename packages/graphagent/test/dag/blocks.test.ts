@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { WorkflowRuntime } from "@opencode-ai/core/dag/core/scheduling"
+import { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import { DagBlocks } from "@/dag/blocks"
 import { DagConfig } from "@/dag/config"
 

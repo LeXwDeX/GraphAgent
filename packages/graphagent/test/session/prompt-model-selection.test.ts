@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { selectPromptModel } from "../../src/session/prompt"
 
 const providerID = ProviderV2.ID.make("test")

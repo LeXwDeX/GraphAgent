@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagStore } from "@graphagent/core/dag/store"
 import { Effect, Layer } from "effect"
 import { Agent } from "@/agent/agent"
 import { clearCaptureSlot, registerCaptureSlot } from "@/dag/runtime/capture"

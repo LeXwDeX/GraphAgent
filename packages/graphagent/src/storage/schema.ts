@@ -1,3 +1,3 @@
-export { ProjectTable } from "@opencode-ai/core/project/sql"
-export { SessionTable, MessageTable, PartTable, TodoTable } from "@opencode-ai/core/session/sql"
-export { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
+export { ProjectTable } from "@graphagent/core/project/sql"
+export { SessionTable, MessageTable, PartTable, TodoTable } from "@graphagent/core/session/sql"
+export { WorkspaceTable } from "@graphagent/core/control-plane/workspace.sql"

@@ -1,6 +1,6 @@
 import { expect } from "bun:test"
-import { Identifier } from "@opencode-ai/core/id/id"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { Identifier } from "@graphagent/core/id/id"
+import { createOpencodeClient } from "@graphagent/sdk/v2"
 import { Cause, Effect, Exit } from "effect"
 import { chmod, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"

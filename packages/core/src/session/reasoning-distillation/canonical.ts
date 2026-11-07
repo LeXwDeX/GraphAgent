@@ -1,4 +1,4 @@
-import { ReasoningCarrier } from "@opencode-ai/llm"
+import { ReasoningCarrier } from "@graphagent/llm"
 import { Hash } from "../../util/hash"
 import { assessRewriteControl, detectToolCallEnvelope } from "./control-markup"
 

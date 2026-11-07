@@ -1,10 +1,10 @@
 import { SessionAttention } from "@/notification/attention"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context, Fiber, Scope, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
+import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { Notification } from "@/notification"
 import { BackgroundJob } from "@/background/job"
 
@@ -18,7 +18,7 @@ export interface Interface {
   readonly settle?: (sessionID: SessionID) => Effect.Effect<void>
   readonly clear?: (sessionID: SessionID) => Effect.Effect<void>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionStatus") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionStatus") {}
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -77,7 +77,7 @@ export const layer = Layer.effect(
           const fiber = yield* Effect.gen(function* () {
             if (yield* hasParent(sessionID)) return
             yield* Effect.sleep("60 seconds")
-            const { DagStore } = yield* Effect.promise(() => import("@opencode-ai/core/dag/store"))
+            const { DagStore } = yield* Effect.promise(() => import("@graphagent/core/dag/store"))
             const { HookTurnContext } = yield* Effect.promise(() => import("@/hook/turn-context"))
             const workflows = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))
             const active = jobs ? yield* HookTurnContext.backgroundTasks(sessionID, { jobs, workflows }) : []

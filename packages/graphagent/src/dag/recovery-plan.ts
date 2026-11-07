@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { DagStore } from "@opencode-ai/core/dag/store"
-import type { DagEvent } from "@opencode-ai/schema/dag-event"
+import type { DagStore } from "@graphagent/core/dag/store"
+import type { DagEvent } from "@graphagent/schema/dag-event"
 import type { NodeConfig, WorkflowConfig } from "./dag"
 import { DagLocation } from "./location"
 import { conditionReference, parseInputMappingReference } from "./runtime/eval"

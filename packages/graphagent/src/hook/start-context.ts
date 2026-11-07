@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
 
@@ -22,7 +22,7 @@ export interface Interface {
   readonly claimResume: (sessionID: SessionID) => Effect.Effect<boolean>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/HookStartContext") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/HookStartContext") {}
 
 export const layer = Layer.effect(
   Service,

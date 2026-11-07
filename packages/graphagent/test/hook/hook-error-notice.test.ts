@@ -5,9 +5,9 @@ import { SettingsHook, type HookCommand, type HookPayload } from "@/hook/setting
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { MCP } from "@/mcp"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { SessionID } from "@/session/schema"
-import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { LegacyEvent } from "@graphagent/schema/legacy-event"
 import { decodeRecord, decodeString } from "../lib/hook-json"
 import { testEffect } from "../lib/effect"
 

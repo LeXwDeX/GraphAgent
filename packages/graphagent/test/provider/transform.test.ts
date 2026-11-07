@@ -4,11 +4,11 @@ import { ProviderTransform } from "@/provider/transform"
 import { LLMRequestPrep } from "@/session/llm/request"
 import { TodoReminders } from "@/session/todo-reminders"
 import { RuntimeContext } from "@/session/runtime-context"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
 import type { Provider } from "@/provider/provider"
-import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ModelsDev } from "@opencode-ai/core/models-dev"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { ModelV2 } from "@graphagent/core/model"
+import { ModelsDev } from "@graphagent/core/models-dev"
 import { generateText, jsonSchema, type ModelMessage } from "ai"
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
@@ -2937,7 +2937,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
   })
 
   test("preserves metadata using providerID key when store is false", () => {
-    const opencodeModel = {
+    const graphagentModel = {
       ...openaiModel,
       providerID: "opencode",
       api: {
@@ -2964,14 +2964,14 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
       },
     ] as any[]
 
-    const result = ProviderTransform.message(msgs, opencodeModel, { store: false }) as any[]
+    const result = ProviderTransform.message(msgs, graphagentModel, { store: false }) as any[]
 
     expect(result[0].content[0].providerOptions?.opencode?.itemId).toBe("msg_123")
     expect(result[0].content[0].providerOptions?.opencode?.otherOption).toBe("value")
   })
 
   test("preserves itemId across all providerOptions keys", () => {
-    const opencodeModel = {
+    const graphagentModel = {
       ...openaiModel,
       providerID: "opencode",
       api: {
@@ -3002,7 +3002,7 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
       },
     ] as any[]
 
-    const result = ProviderTransform.message(msgs, opencodeModel, { store: false }) as any[]
+    const result = ProviderTransform.message(msgs, graphagentModel, { store: false }) as any[]
 
     expect(result[0].providerOptions?.openai?.itemId).toBe("msg_root")
     expect(result[0].providerOptions?.opencode?.itemId).toBe("msg_opencode")

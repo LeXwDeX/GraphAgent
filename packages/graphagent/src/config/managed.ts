@@ -4,7 +4,7 @@ import { existsSync } from "fs"
 import os from "os"
 import path from "path"
 import { Process } from "@/util/process"
-import { APP_NAME, MANAGED_PLIST_DOMAIN } from "@opencode-ai/core/brand"
+import { APP_NAME, MANAGED_PLIST_DOMAIN } from "@graphagent/core/brand"
 
 // Keys injected by macOS/MDM into the managed plist that are not OpenCode config
 const PLIST_META = new Set([

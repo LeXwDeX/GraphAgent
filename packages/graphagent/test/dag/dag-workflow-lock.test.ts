@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer, Option } from "effect"
 import * as TestClock from "effect/testing/TestClock"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagStore } from "@graphagent/core/dag/store"
 import { Dag } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 

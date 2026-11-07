@@ -10,8 +10,8 @@
  */
 
 import { Effect, Cause } from "effect"
-import type { DagStore } from "@opencode-ai/core/dag/store"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
+import type { DagStore } from "@graphagent/core/dag/store"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import type { Worktree } from "@/worktree"
 import { DagIsolation } from "../isolation"
 import { workflowReportsArea } from "./output-ref"

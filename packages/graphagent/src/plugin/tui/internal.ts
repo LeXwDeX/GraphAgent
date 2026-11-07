@@ -1,4 +1,4 @@
-import { createBuiltinPlugins, type BuiltinTuiPlugin } from "@opencode-ai/tui/builtins"
+import { createBuiltinPlugins, type BuiltinTuiPlugin } from "@graphagent/tui/builtins"
 
 export type InternalTuiPlugin = BuiltinTuiPlugin
 

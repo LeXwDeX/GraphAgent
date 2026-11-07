@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import type { FoldRef } from "@opencode-ai/core/session/context-folding"
+import type { FoldRef } from "@graphagent/core/session/context-folding"
 import { jsonSchema, tool, type ModelMessage } from "ai"
 import { ContextFolding, type HistorySnapshot, type Snapshot } from "@/session/context-folding"
 import { LLMNative } from "@/session/llm/native-request"
 import { ProviderTransform } from "@/provider/transform"
 import { ProviderTest } from "../fake/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 
 const source: FoldRef = { messageID: "msg_source", partID: "prt_source", callID: "call:source" }
 const witness: FoldRef = { messageID: "msg_witness", partID: "prt_witness", callID: "call:witness" }

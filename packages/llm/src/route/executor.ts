@@ -30,16 +30,16 @@ export interface Interface {
   ) => Effect.Effect<HttpClientResponse.HttpClientResponse, LLMError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/LLM/RequestExecutor") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/LLM/RequestExecutor") {}
 
-export const RetryTimeouts = Context.Reference<boolean>("@opencode/LLM/RequestExecutor/RetryTimeouts", {
+export const RetryTimeouts = Context.Reference<boolean>("@graphagent/LLM/RequestExecutor/RetryTimeouts", {
   defaultValue: () => true,
 })
 
 const BODY_LIMIT = 16_384
 const MAX_RETRIES = 2
 /** Request-local retry budget. Callers can disable retries without changing shared executor defaults. */
-export const MaxRetries = Context.Reference<number>("@opencode/LLM/RequestExecutor/MaxRetries", {
+export const MaxRetries = Context.Reference<number>("@graphagent/LLM/RequestExecutor/MaxRetries", {
   defaultValue: () => MAX_RETRIES,
 })
 const BASE_DELAY_MS = 500

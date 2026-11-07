@@ -14,25 +14,25 @@
 // human-readable reason now carries the durable error.name.
 import { describe, expect, it } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import path from "node:path"
 import { Effect as Effect2, Layer as Layer2, Stream } from "effect"
 import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { SessionProcessor } from "../../src/session/processor"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
 import {
   reconcileWorkflow,
   makeSessionStatusChecker,
@@ -40,7 +40,7 @@ import {
 } from "../../src/dag/runtime/recovery"
 import { childFailureReason } from "../../src/dag/runtime/child-failure-reason"
 import { Dag } from "@/dag/dag"
-import { DagStore } from "@opencode-ai/core/dag/store"
+import { DagStore } from "@graphagent/core/dag/store"
 import { makeNodeRow } from "./fixtures"
 
 type TrackedEvent = {

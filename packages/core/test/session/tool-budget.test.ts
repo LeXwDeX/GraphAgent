@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ToolBudget } from "@opencode-ai/core/session/tool-budget"
+import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
 describe("ToolBudget", () => {
   test("uses the shared default and rejects invalid limits", () => {

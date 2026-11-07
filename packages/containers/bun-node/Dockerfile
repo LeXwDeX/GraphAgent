@@ -9,10 +9,10 @@ ARG BUN_VERSION
 ENV BUN_INSTALL=/opt/bun
 ENV PATH=/opt/bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-COPY package.json .node-version /opt/opencode-toolchain/
-COPY config_assistant/go.mod /opt/opencode-toolchain/config_assistant/go.mod
-COPY packages/containers/rust-toolchain.toml /opt/opencode-toolchain/packages/containers/rust-toolchain.toml
-COPY script/toolchain.mjs /opt/opencode-toolchain/script/toolchain.mjs
+COPY package.json .node-version /opt/graphagent-toolchain/
+COPY config_assistant/go.mod /opt/graphagent-toolchain/config_assistant/go.mod
+COPY packages/containers/rust-toolchain.toml /opt/graphagent-toolchain/packages/containers/rust-toolchain.toml
+COPY script/toolchain.mjs /opt/graphagent-toolchain/script/toolchain.mjs
 
 RUN set -euo pipefail; \
   arch=$(uname -m); \
@@ -27,4 +27,4 @@ RUN set -euo pipefail; \
   bun --version; \
   node --version; \
   npm --version; \
-  node /opt/opencode-toolchain/script/toolchain.mjs check
+  node /opt/graphagent-toolchain/script/toolchain.mjs check

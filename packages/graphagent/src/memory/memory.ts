@@ -1,10 +1,10 @@
 export * as Memory from "./memory"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { ProjectV2 } from "@graphagent/core/project"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Ref, Schema, Scope, Semaphore } from "effect"
 import path from "node:path"
 import { stringify } from "yaml"
@@ -68,7 +68,7 @@ export interface Interface {
   readonly status: () => Effect.Effect<string>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Memory") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Memory") {}
 
 export class ControllerError extends Schema.TaggedError<ControllerError>()("Memory.ControllerError", {
   message: Schema.String,

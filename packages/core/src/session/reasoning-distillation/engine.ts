@@ -1,5 +1,5 @@
-import { LLM, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
-import { RequestExecutor } from "@opencode-ai/llm/route"
+import { LLM, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@graphagent/llm"
+import { RequestExecutor } from "@graphagent/llm/route"
 import { Duration, Effect, Stream } from "effect"
 import type { OrganizeCall } from "./organize"
 import { ReasoningDistillationPolicy } from "./policy"
@@ -37,7 +37,7 @@ const effortBody = (protocol: string, effort: "none" | "low") =>
       : undefined
 
 /**
- * Organizer transport over the `@opencode-ai/llm` engine: one request, no tools, temperature 0, no automatic retries.
+ * Organizer transport over the `@graphagent/llm` engine: one request, no tools, temperature 0, no automatic retries.
  * Provider SDKs are not involved; the routed protocol lowers the request.
  */
 export const engineOrganizerCall = (input: {

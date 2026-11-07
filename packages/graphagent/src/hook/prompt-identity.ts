@@ -17,7 +17,7 @@
  */
 import type { HookEffort } from "./settings"
 import type { Message } from "./transcript"
-import { variantToEffort } from "@opencode-ai/core/session/effort"
+import { variantToEffort } from "@graphagent/core/session/effort"
 
 /**
  * Map a model variant to CC's effort level. Shared with every other consumer

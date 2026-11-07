@@ -306,7 +306,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 只用 token。组件里禁止写颜色字面量。检查：`grep -rnE "#[0-9a-fA-F]{6}\b|RGBA\.from" packages/tui/src --include=*.ts --include=*.tsx | grep -v "^packages/tui/src/theme/"` 为空。主区变暗遮罩的 `RGBA(0,0,0,alpha)`（F1 3.1）是唯一例外，集中在 `shell/` 一处实现。
 - 默认主题 `graphagent`（`DEFAULT_THEME` 常量），位于 `theme/assets/graphagent.json`，深浅两版同一个 JSON。不保留 `opencode` 旧主题，读不到已保存主题名时回到 `graphagent`，不迁移旧值。
-- 新增 token 的流程（F1 1.2）：`ThemeJson` 里加可选字段 → `theme/index.ts` 的 `resolveTheme` 里给回退值（照 `backgroundMenu`、`selectedListItemText`）→ `Theme` 类型加同名必填字段 → 旧主题不改。`generateSystem` 走回退值，不显式写。`packages/opencode/src/cli/cmd/run/theme.ts` 的重复实现要复用 TUI 的 `resolveTheme` 或补同一组回退值，并有一致性测试。
+- 新增 token 的流程（F1 1.2）：`ThemeJson` 里加可选字段 → `theme/index.ts` 的 `resolveTheme` 里给回退值（照 `backgroundMenu`、`selectedListItemText`）→ `Theme` 类型加同名必填字段 → 旧主题不改。`generateSystem` 走回退值，不显式写。`packages/graphagent/src/cli/cmd/run/theme.ts` 的重复实现要复用 TUI 的 `resolveTheme` 或补同一组回退值，并有一致性测试。
 - 现有可选 token：`textDim`、`backgroundSelected`、`backgroundUser`、`borderWarning`、`logoFace`、`logoAccent`、`logoShadow`、`statusRunning`、`statusQueued`、`statusPaused`。已完成用 `success`（灰），失败用 `error`，不再新增。
 - 品牌色 `primary`（深 `#4fa3f0`，浅 `#1f6fc4`）白名单，其余位置一律用灰：
   1. logo 的 AGENT 字面和顶栏小标记的 `◆`。
@@ -355,7 +355,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ## 10. 测试约定
 
-- 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/opencode && bun run typecheck && bun test test/cli/cmd/run`。
+- 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/graphagent && bun run typecheck && bun test test/cli/cmd/run`。
 - 渲染测试用 `testRender`（`@opentui/solid`）。快照尺寸：面板、状态带、抽屉、页脚等组件 80×24 与 120×40；骨架测试 80×24、100×30、140×40；宽 < 60 或高 < 12 断言只渲染"终端太小"。
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
 - 时间用 `@opentui/core` 的 `ManualClock` 推进，不用真实睡眠。`grep -n "setTimeout\|sleep" packages/tui/test/perf/scenarios.ts` 为空。
@@ -388,7 +388,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不新增全局 store 或 context，F1/F2/F3 定义的除外（`FrameClockProvider`、`EventGateProvider`、ticker、`PanelHost`、语言 signal）。审阅：PR 差异里出现新的 `createContext(` 需在描述里说明并经维护者批准。
 - 不引入新的 UI 或状态库依赖。审阅：`packages/tui/package.json` 的依赖差异；新增依赖需维护者批准。
 - 不在 TUI 里实现任何 DAG 或子 agent 控制。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn "dag_[a-z_]*" packages/tui/src/config/keybind.ts` 为空。
-- 不恢复旧插件槽 API。`grep -rn "@opencode-ai/plugin" packages/tui` 为空；`grep -rn "pluginRuntime\|api.slots\|Slot name=" packages/tui/src` 为空；`packages/tui/src/plugin/` 与 `feature-plugins/builtins.ts` 不存在。
+- 不恢复旧插件槽 API。`grep -rn "@graphagent/plugin" packages/tui` 为空；`grep -rn "pluginRuntime\|api.slots\|Slot name=" packages/tui/src` 为空；`packages/tui/src/plugin/` 与 `feature-plugins/builtins.ts` 不存在。
 - 不加 `plugin` 路由；路由类型只有 `home`、`session`、`diff`；`app.tsx` 不用 `<Show … keyed>` 包 Session。
 - 不写颜色字面量（第 7 节 grep）。
 - 不在组件内计时：`grep -rln "setInterval\|setTimeout" packages/tui/src` 只命中 `context/ticker.ts`、`context/frame-clock.ts`、`terminal-win32.ts`。
@@ -429,7 +429,7 @@ F1–F6 以及此后任何触及 `packages/tui` 的 PR，描述里逐条勾选�
 - [ ] cd packages/tui && bun test 通过
 - [ ] cd packages/tui && bun run bench:tui（F2a 基准）通过，对照表附描述；渲染路径改动必附
 - [ ] bun run check:hosts 通过（S1 #1037 落地后）
-- [ ] 涉及 run 模式消费点时：cd packages/opencode && bun run typecheck && bun test test/cli/cmd/run 通过
+- [ ] 涉及 run 模式消费点时：cd packages/graphagent && bun run typecheck && bun test test/cli/cmd/run 通过
 - [ ] 描述与提交信息无私有地址、本机路径、AI 署名
 ```
 

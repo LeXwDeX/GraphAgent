@@ -1,5 +1,5 @@
-import { Global } from "@opencode-ai/core/global"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { Global } from "@graphagent/core/global"
+import { InstallationVersion } from "@graphagent/core/installation/version"
 import os from "os"
 import { Duration, Effect } from "effect"
 import { effectCmd } from "../../effect-cmd"

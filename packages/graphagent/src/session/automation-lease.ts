@@ -1,8 +1,8 @@
 export * as SessionAutomationLease from "./automation-lease"
 
 import { Context, Effect, Layer, Option, type Scope } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
 
@@ -43,7 +43,7 @@ export interface Interface {
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionAutomationLease") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionAutomationLease") {}
 
 // S-3: SessionStatus is a HARD requirement of the lease layer. The
 // dag-release re-trigger (GOAL-FP-01-02) must never silently degrade — a

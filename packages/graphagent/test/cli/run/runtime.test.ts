@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { type SessionAttentionUpdate, OpencodeClient } from "@opencode-ai/sdk/v2"
+import { type SessionAttentionUpdate, OpencodeClient } from "@graphagent/sdk/v2"
 import { runInteractiveLocalMode, runInteractiveMode } from "@/cli/cmd/run/runtime"
 import type { FooterApi, RunPrompt, RunProvider } from "@/cli/cmd/run/types"
 

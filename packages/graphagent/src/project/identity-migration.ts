@@ -1,8 +1,8 @@
 export * as ProjectIdentityMigration from "./identity-migration"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
-import { ProjectV2 } from "@opencode-ai/core/project"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
+import { ProjectV2 } from "@graphagent/core/project"
 import { Context, Effect, Layer } from "effect"
 import { MemoryHome } from "@/memory/home"
 import { MemoryIdentityFence } from "@/memory/identity-fence"
@@ -25,7 +25,7 @@ export interface Interface {
   ) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ProjectIdentityMigration") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ProjectIdentityMigration") {}
 
 export const layer = Layer.effect(
   Service,

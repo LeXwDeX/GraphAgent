@@ -1,9 +1,9 @@
 export * as MemoryIdentityMigration from "./identity-migration"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { ProjectV2 } from "@graphagent/core/project"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { Context, Effect, Layer, Schema } from "effect"
 import { join } from "node:path"
 import { MemoryHome } from "./home"
@@ -25,7 +25,7 @@ export interface Interface {
   >
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryIdentityMigration") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MemoryIdentityMigration") {}
 
 export class ConflictError extends Schema.TaggedError<ConflictError>()("MemoryIdentityMigration.Conflict", {
   topic_ids: Schema.Array(Schema.String),

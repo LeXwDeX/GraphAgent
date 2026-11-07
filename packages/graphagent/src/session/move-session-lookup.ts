@@ -1,5 +1,5 @@
-import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { MoveSession } from "@graphagent/core/control-plane/move-session"
+import { AbsolutePath } from "@graphagent/core/schema"
 import { Effect, Layer } from "effect"
 import { Session } from "./session"
 

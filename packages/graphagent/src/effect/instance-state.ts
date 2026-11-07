@@ -4,7 +4,7 @@ import { InstanceRef, WorkspaceRef } from "./instance-ref"
 import { registerDisposer } from "./instance-registry"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
 
-const TypeId = "~opencode/InstanceState"
+const TypeId = "~graphagent/InstanceState"
 
 export class Closing extends Error {
   constructor(readonly directory: string) {
@@ -18,7 +18,7 @@ export interface ClosingToken {
   readonly done: Deferred.Deferred<void>
 }
 
-const generationRef = Context.Reference<object | undefined>("~opencode/InstanceStateGeneration", {
+const generationRef = Context.Reference<object | undefined>("~graphagent/InstanceStateGeneration", {
   defaultValue: () => undefined,
 })
 
@@ -29,7 +29,7 @@ export interface GenerationCell {
   current: object | undefined
 }
 
-const generationCellRef = Context.Reference<GenerationCell | undefined>("~opencode/InstanceStateGenerationCell", {
+const generationCellRef = Context.Reference<GenerationCell | undefined>("~graphagent/InstanceStateGenerationCell", {
   defaultValue: () => undefined,
 })
 

@@ -3,9 +3,9 @@ import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promise
 import os from "node:os"
 import path from "node:path"
 import { Deferred, Effect, Fiber, Layer } from "effect"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { Auth } from "../../src/auth"
 
 async function isolated(body: (dir: string) => Promise<void>) {

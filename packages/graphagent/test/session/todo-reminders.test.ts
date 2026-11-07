@@ -8,9 +8,9 @@
  * unchanged cached prefix and each request carries at most one reminder.
  */
 import { describe, expect } from "bun:test"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { SessionV1 } from "@graphagent/core/v1/session"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Effect, Layer } from "effect"
 import { MessageID, PartID, SessionID } from "@/session/schema"

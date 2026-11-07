@@ -1,18 +1,18 @@
 import { createHash } from "node:crypto"
 import { HookTranscript } from "@/hook/transcript"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { httpClient } from "@graphagent/core/effect/layer-node-platform"
 import path from "path"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect, Layer, Context, Option, Scope } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { Config } from "@/config/config"
 import { SettingsHook } from "@/hook/settings"
 import { InstanceState } from "@/effect/instance-state"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Flag } from "@graphagent/core/flag/flag"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import { hasProjectLayer } from "@/project/project-root"
 import type { MessageID } from "./schema"
 
@@ -47,7 +47,7 @@ export interface Interface {
   ) => Effect.Effect<{ filepath: string; content: string }[], FSUtil.Error>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Instruction") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Instruction") {}
 
 export const layer: Layer.Layer<
   Service,

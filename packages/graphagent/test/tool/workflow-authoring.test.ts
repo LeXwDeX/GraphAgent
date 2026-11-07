@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Result, Schema } from "effect"
-import { CommandPlugin } from "@opencode-ai/core/plugin/command"
+import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { Parameters } from "../../src/tool/workflow"
 import { DagBlocks } from "../../src/dag/blocks"
 

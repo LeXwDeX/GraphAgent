@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
 import {
   CodexAdapter,
   parseJwtClaims,
@@ -266,7 +266,7 @@ describe("plugin.codex", () => {
         { id: ProviderV2.ID.make("openai"), name: "OpenAI", source: "api", env: [], options: {}, models: {} },
       )
       oauth = false
-      const headers = { "X-Opencode-Title": "true", "x-ordinary": "preserved", "x-session-affinity": "session-1" }
+      const headers = { "X-Graphagent-Title": "true", "x-ordinary": "preserved", "x-session-affinity": "session-1" }
       const input = form.startsWith("request")
         ? new Request(server.url, { method: "POST", headers, body: "{}" })
         : server.url

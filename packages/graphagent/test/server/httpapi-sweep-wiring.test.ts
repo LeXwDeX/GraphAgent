@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Effect, Layer, Option } from "effect"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { HttpApiApp } from "@/server/routes/instance/httpapi/server"

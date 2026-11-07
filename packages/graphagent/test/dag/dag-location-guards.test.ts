@@ -35,20 +35,20 @@
  */
 import { afterAll, describe, expect, it } from "bun:test"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Logger, Scope } from "effect"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
-import { SessionV1 as SessionV1Events } from "@opencode-ai/core/v1/session"
-import { Database } from "@opencode-ai/core/database/database"
-import { DagProjector } from "@opencode-ai/core/dag/projector"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { WorkflowTable, WorkflowNodeTable } from "@opencode-ai/core/dag/sql"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { EventV2 } from "@opencode-ai/core/event"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
-import { Location } from "@opencode-ai/schema/location"
-import { SessionEvent } from "@opencode-ai/schema/session-event"
-import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
+import type { SessionV1 } from "@graphagent/core/v1/session"
+import { SessionV1 as SessionV1Events } from "@graphagent/core/v1/session"
+import { Database } from "@graphagent/core/database/database"
+import { DagProjector } from "@graphagent/core/dag/projector"
+import { SessionProjector } from "@graphagent/core/session/projector"
+import { WorkflowTable, WorkflowNodeTable } from "@graphagent/core/dag/sql"
+import { DagStore } from "@graphagent/core/dag/store"
+import { EventV2 } from "@graphagent/core/event"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { DagEvent } from "@graphagent/schema/dag-event"
+import { Location } from "@graphagent/schema/location"
+import { SessionEvent } from "@graphagent/schema/session-event"
+import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
@@ -69,7 +69,7 @@ import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { makeNodeRow } from "./fixtures"
 import { eq } from "drizzle-orm"
-import { EventTable } from "@opencode-ai/core/event/sql"
+import { EventTable } from "@graphagent/core/event/sql"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -783,7 +783,7 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
 // ---------------------------------------------------------------------------
 
 describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
-  const opencodeDagSrc = path.resolve(import.meta.dir, "../../src/dag")
+  const graphagentDagSrc = path.resolve(import.meta.dir, "../../src/dag")
   const coreDagSrc = path.resolve(import.meta.dir, "../../../../packages/core/src/dag")
 
   function readDagSources(root: string): Array<{ file: string; source: string }> {
@@ -798,7 +798,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
   }
 
   it("keys every adoption/wake guard on the directory and never on the session directory column", () => {
-    const sources = [...readDagSources(opencodeDagSrc), ...readDagSources(coreDagSrc)]
+    const sources = [...readDagSources(graphagentDagSrc), ...readDagSources(coreDagSrc)]
     expect(sources.length).toBeGreaterThan(20)
 
     // Negative half: the dag sources must not read the session's directory
@@ -872,7 +872,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
   // by #269's own wording, not a weakening), and every revalidation site that
   // acts on a possibly-stale in-memory entry carries the ownership authority.
   it("R7-ext: the stamp is write-once and every revalidation site carries the authority", () => {
-    const sources = [...readDagSources(opencodeDagSrc), ...readDagSources(coreDagSrc)]
+    const sources = [...readDagSources(graphagentDagSrc), ...readDagSources(coreDagSrc)]
     expect(sources.length).toBeGreaterThan(20)
     const codeLines = (source: string) =>
       source.split("\n").filter((line) => !line.trim().startsWith("//"))

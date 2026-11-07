@@ -1,5 +1,5 @@
 import { Clock, Context, Deferred, Effect, Layer } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 
 export interface Update {
@@ -29,7 +29,7 @@ export interface Interface {
   readonly viewing: (sessionID: string) => Effect.Effect<boolean>
   readonly clear: (sessionID: string) => Effect.Effect<void>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionAttention") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionAttention") {}
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {

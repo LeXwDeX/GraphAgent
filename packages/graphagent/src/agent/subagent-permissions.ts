@@ -1,4 +1,4 @@
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { Agent } from "./agent"
 
 const DEFAULT_DENIED_TOOLS = ["todowrite", "task"] as const

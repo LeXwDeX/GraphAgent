@@ -4,13 +4,13 @@
 export * as DagSupervisionSweep from "./supervision-sweep"
 
 import { Cause, Context, Effect, Fiber, Layer, Scope } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Database } from "@opencode-ai/core/database/database"
-import { Logging } from "@opencode-ai/core/observability/logging"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { WorkflowNodeTable } from "@opencode-ai/core/dag/sql"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { isTransitionRejection, isTerminalWorkflowStatusValue } from "@opencode-ai/core/dag/core/types"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
+import { Logging } from "@graphagent/core/observability/logging"
+import { DagStore } from "@graphagent/core/dag/store"
+import { WorkflowNodeTable } from "@graphagent/core/dag/sql"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { isTransitionRejection, isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
 import { and, eq, sql } from "drizzle-orm"
 import { Dag, parseWorkflowConfig } from "@/dag/dag"
 import { DagLocation } from "@/dag/location"
@@ -65,7 +65,7 @@ export interface Interface {
   readonly sweepOnce: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/DagSupervisionSweep") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/DagSupervisionSweep") {}
 
 export const SWEEP_INTERVAL = "60 seconds"
 const SWEEP_INTERVAL_MS = 60_000

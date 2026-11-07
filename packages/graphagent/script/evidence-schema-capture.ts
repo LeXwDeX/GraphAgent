@@ -28,7 +28,7 @@ type JsonSchemaNode = {
 }
 
 const evidence: Record<string, unknown> = {
-  captured_from: "packages/opencode/src/tool/workflow.ts (discriminated-union Parameters)",
+  captured_from: "packages/graphagent/src/tool/workflow.ts (discriminated-union Parameters)",
   schema_bytes: Buffer.byteLength(flat, "utf8"),
   branch_count: (schema.anyOf ?? []).length,
   session_id_exposed: flat.includes('"session_id"'),

@@ -12,9 +12,9 @@ import {
   type WireCallMapping,
   type WireProjectionSnapshot,
   type WireResultMapping,
-} from "@opencode-ai/core/session/context-folding"
-import { Token } from "@opencode-ai/core/util/token"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+} from "@graphagent/core/session/context-folding"
+import { Token } from "@graphagent/core/util/token"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { isRecord } from "@/util/record"

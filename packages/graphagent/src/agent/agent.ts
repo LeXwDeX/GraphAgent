@@ -1,8 +1,8 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Config } from "@/config/config"
 import { agentHookProvenance } from "@/config/agent-hooks"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import { Provider } from "@/provider/provider"
 
 import { generateObject, streamObject, type ModelMessage } from "ai"
@@ -17,21 +17,21 @@ import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
-import { Global } from "@opencode-ai/core/global"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { Global } from "@graphagent/core/global"
+import { PROJECT_DIR } from "@graphagent/core/brand"
 import path from "path"
 import { Skill } from "../skill"
 import { Effect, Context, Layer, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/OtelTracer"
-import { AbsolutePath, type DeepMutable } from "@opencode-ai/core/schema"
-import { ProviderV2 } from "@opencode-ai/core/provider"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { Reference } from "@opencode-ai/core/reference"
-import { Location } from "@opencode-ai/core/location"
-import { PluginV2 } from "@opencode-ai/core/plugin"
+import { AbsolutePath, type DeepMutable } from "@graphagent/core/schema"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { LocationServiceMap } from "@graphagent/core/location-layer"
+import { Reference } from "@graphagent/core/reference"
+import { Location } from "@graphagent/core/location"
+import { PluginV2 } from "@graphagent/core/plugin"
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -91,7 +91,7 @@ export interface Interface {
 
 type State = Omit<Interface, "generate">
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Agent") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Agent") {}
 
 export const use = serviceUse(Service)
 

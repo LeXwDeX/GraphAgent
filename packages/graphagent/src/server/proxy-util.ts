@@ -1,4 +1,4 @@
-import { HEADER_PREFIX } from "@opencode-ai/core/brand"
+import { HEADER_PREFIX } from "@graphagent/core/brand"
 
 const hop = new Set([
   "connection",

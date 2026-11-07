@@ -1,6 +1,6 @@
 import { Effect, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
+import { LegacyEvent } from "@graphagent/schema/legacy-event"
 import { SessionID } from "@/session/schema"
 
 /** Ephemeral UI notifications; clients may ignore them in non-interactive runs. */

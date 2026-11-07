@@ -1,10 +1,10 @@
 export * as MemoryIdentityFence from "./identity-fence"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Database } from "@opencode-ai/core/database/database"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { ProjectV2 } from "@graphagent/core/project"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { Context, Effect, Layer, Option } from "effect"
 import { eq } from "drizzle-orm"
 import { MemoryHome } from "./home"
@@ -40,7 +40,7 @@ export interface Interface {
 
 export const key = (id: ProjectV2.ID) => `memory-identity:${id}`
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MemoryIdentityFence") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MemoryIdentityFence") {}
 
 export const layer = Layer.effect(
   Service,

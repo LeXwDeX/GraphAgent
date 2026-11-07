@@ -1,9 +1,9 @@
 import { Cause, Context, Effect, Layer, Schema } from "effect"
 import path from "node:path"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { PROJECT_DIR } from "@graphagent/core/brand"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 export interface Change {
   readonly path: string
   readonly source: "user_settings" | "project_settings" | "local_settings" | "skills"
@@ -30,7 +30,7 @@ export interface Interface {
    */
   readonly checkInstance: (change: Change) => Effect.Effect<Decision>
 }
-export class Service extends Context.Service<Service, Interface>()("@opencode/HookConfigChange") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/HookConfigChange") {}
 const PROJECT_SETTINGS_FILES = new Set(["settings.json", "settings.local.json"])
 /**
  * Project settings are shared by every session in the project, not only those whose

@@ -1,7 +1,7 @@
 import { OAUTH_DUMMY_KEY } from "../../auth"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { APP_NAME } from "@graphagent/core/brand"
 import { createServer } from "http"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { InstallationVersion } from "@graphagent/core/installation/version"
 import { escapeHtml } from "@/util/html"
 import type { AdapterContext, ProviderAdapter } from "./types"
 

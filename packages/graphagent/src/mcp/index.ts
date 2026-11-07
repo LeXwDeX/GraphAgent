@@ -1,20 +1,20 @@
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { type Tool } from "ai"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
 import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client"
 import type { ClientOptions, LoggingMessageNotification, Tool as MCPToolDef } from "@modelcontextprotocol/client"
 import { Config } from "@/config/config"
-import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
-import { NamedError } from "@opencode-ai/core/util/error"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { ConfigMCPV1 } from "@graphagent/core/v1/config/mcp"
+import { NamedError } from "@graphagent/core/util/error"
+import { InstallationVersion } from "@graphagent/core/installation/version"
+import { APP_NAME } from "@graphagent/core/brand"
 import { withTimeout } from "@/util/timeout"
 import { Process } from "@/util/process"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { McpOAuthProvider, OAUTH_CALLBACK_PATH } from "./oauth-provider"
 import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
@@ -26,9 +26,9 @@ import { Cause, Effect, Exit, Layer, Option, Context, Schema, Stream } from "eff
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
-import { McpEvent } from "@opencode-ai/schema/mcp-event"
+import { McpEvent } from "@graphagent/schema/mcp-event"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -212,7 +212,7 @@ export interface Interface {
   readonly getAuthStatus: (mcpName: string) => Effect.Effect<AuthStatus>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/MCP") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/MCP") {}
 
 export const use = serviceUse(Service)
 

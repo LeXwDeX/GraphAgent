@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect } from "effect"
 import { MessageV2 } from "@/session/message-v2"
 import { ToolSourceLedger, type Interface as Ledger } from "@/session/tool-source-ledger"

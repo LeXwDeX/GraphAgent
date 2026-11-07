@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { CommandPlugin } from "@opencode-ai/core/plugin/command"
+import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { Effect, Layer } from "effect"
 import { Command } from "@/command"
 import { Config } from "@/config/config"

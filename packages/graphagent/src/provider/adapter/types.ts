@@ -1,9 +1,9 @@
-import type { Payload as EventPayload } from "@opencode-ai/core/event"
+import type { Payload as EventPayload } from "@graphagent/core/event"
 import type { Auth } from "@/auth"
 import type { Project } from "@/project/project"
 import type { Provider } from "@/provider/provider"
 import type { Session } from "@/session/session"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 
 export type ProviderContext = Provider.Info
 

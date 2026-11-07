@@ -1,20 +1,20 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context, Schema } from "effect"
-import { NamedError } from "@opencode-ai/core/util/error"
+import { NamedError } from "@graphagent/core/util/error"
 import type { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
-import { Global } from "@opencode-ai/core/global"
-import { SkillPlugin } from "@opencode-ai/core/plugin/skill"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@graphagent/core/global"
+import { SkillPlugin } from "@graphagent/core/plugin/skill"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { Config } from "@/config/config"
 import { ConfigPaths } from "@/config/paths"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { FrontmatterError } from "@opencode-ai/core/v1/config/error"
+import { Flag } from "@graphagent/core/flag/flag"
+import { FrontmatterError } from "@graphagent/core/v1/config/error"
 import { ConfigMarkdown } from "@/config/markdown"
-import { Glob } from "@opencode-ai/core/util/glob"
+import { Glob } from "@graphagent/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { hasProjectLayer } from "@/project/project-root"
@@ -30,8 +30,8 @@ const SKILL_PATTERN = "**/SKILL.md"
 // when the model is asked to touch opencode's own config files gives it the
 // actual schemas instead of guesses.
 const CUSTOMIZE_OPENCODE_SKILL_NAME = "customize-opencode"
-const CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION = SkillPlugin.CustomizeOpencodeDescription
-const CUSTOMIZE_OPENCODE_SKILL_BODY = SkillPlugin.CustomizeOpencodeContent
+const CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION = SkillPlugin.CustomizeGraphagentDescription
+const CUSTOMIZE_OPENCODE_SKILL_BODY = SkillPlugin.CustomizeGraphagentContent
 
 // Built-in skill. Agents have no innate knowledge of opencode's hooks system
 // (events, hooks.json format, handler types) — without this skill they either
@@ -304,7 +304,7 @@ const loadSkills = Effect.fnUntraced(function* (
   yield* Effect.logInfo("init", { count: Object.keys(state.skills).length })
 })
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Skill") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Skill") {}
 
 export const layer = Layer.effect(
   Service,

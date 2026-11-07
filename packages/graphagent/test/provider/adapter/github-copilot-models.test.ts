@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, test } from "bun:test"
-import { ModelV2 } from "@opencode-ai/core/model"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { CopilotModels } from "@/provider/adapter/copilot/models"
 import { CopilotAdapter } from "@/provider/adapter/copilot/copilot"
 import type { AdapterContext } from "@/provider/adapter/types"

@@ -1,6 +1,6 @@
 export * as RemoteLkg from "./remote-lkg"
 
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import { DateTime, Effect, Option, Schema } from "effect"
 import { chmod, rename, rm } from "fs/promises"
 import path from "path"

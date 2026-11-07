@@ -44,7 +44,7 @@ import { existsSync, readFileSync, lstatSync, statSync, writeFileSync } from "fs
 import { spawn } from "child_process"
 import { createHash } from "crypto"
 import { Effect, Layer, Context, Option, Scope, Exit, Fiber, Cause } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import {
@@ -56,12 +56,12 @@ import {
   type PermissionUpdate,
 } from "./schema"
 import { generateObject, generateText, type ModelMessage } from "ai"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import * as Log from "@/util/log"
 import { Process } from "@/util/process"
-import { Global } from "@opencode-ai/core/global"
-import { APP_NAME, PROJECT_DIR } from "@opencode-ai/core/brand"
+import { Global } from "@graphagent/core/global"
+import { APP_NAME, PROJECT_DIR } from "@graphagent/core/brand"
 import { hasProjectLayer } from "@/project/project-root"
 import { InstanceState } from "@/effect/instance-state"
 import { MCP } from "@/mcp"
@@ -2341,7 +2341,7 @@ export interface Interface {
   readonly validateStopRewakeChain?: (sessionID: SessionID | string, token: unknown) => Effect.Effect<boolean>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SettingsHook") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/SettingsHook") {}
 
 // ── HookHandler abstraction (WP-4A) ─────────────────────────────
 //

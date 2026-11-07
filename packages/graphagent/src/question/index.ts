@@ -1,10 +1,10 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Clock, Deferred, Effect, Layer, Schema, Context, Option as EffectOption } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "@/session/schema"
 import { QuestionID } from "./schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { QuestionV1 } from "@opencode-ai/schema/question-v1"
+import { QuestionV1 } from "@graphagent/schema/question-v1"
 import { Config } from "@/config/config"
 
 export const DEFAULT_TIMEOUT_SECONDS = 60
@@ -74,7 +74,7 @@ export interface Interface {
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Question") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Question") {}
 
 export const layer = Layer.effect(
   Service,

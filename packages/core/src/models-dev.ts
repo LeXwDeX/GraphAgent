@@ -1,7 +1,7 @@
 import path from "path"
 import { Cause, Context, Duration, Effect, Layer, Option, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
-import { ModelsDev } from "@opencode-ai/schema/models-dev"
+import { ModelsDev } from "@graphagent/schema/models-dev"
 import { APP_NAME } from "./brand"
 import { Global } from "./global"
 import { Flag } from "./flag/flag"
@@ -127,7 +127,7 @@ export interface Interface {
   readonly refresh: (force?: boolean) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ModelsDev") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/ModelsDev") {}
 
 export const layer = Layer.effect(
   Service,

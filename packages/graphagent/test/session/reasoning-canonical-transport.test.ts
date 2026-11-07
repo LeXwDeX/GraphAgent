@@ -3,7 +3,7 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import {
   assessCanonicalReasoning,
   replaceCanonicalReasoning,
-} from "@opencode-ai/core/session/reasoning-distillation/canonical"
+} from "@graphagent/core/session/reasoning-distillation/canonical"
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)

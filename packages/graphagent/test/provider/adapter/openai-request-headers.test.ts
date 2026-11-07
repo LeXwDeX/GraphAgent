@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { CodexAdapter } from "../../../src/provider/adapter/codex"
 import { OpenAIWebSocketPool, TITLE_HEADER } from "../../../src/provider/openai-ws/ws-pool"
 
@@ -26,7 +26,7 @@ function headerCase(name: string) {
       : name === "inherited clean"
         ? { "x-ordinary": "retained" }
         : originalHeaders
-  const marker: Record<string, string> = name.startsWith("marker") ? { "X-Opencode-Title": "true" } : {}
+  const marker: Record<string, string> = name.startsWith("marker") ? { "X-Graphagent-Title": "true" } : {}
   const headers: HeadersInit | undefined = name.endsWith("record")
     ? marker
     : name.endsWith("Headers")

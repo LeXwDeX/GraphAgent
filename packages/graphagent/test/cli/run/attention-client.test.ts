@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createSessionAttention, type SessionAttentionUpdate } from "@opencode-ai/sdk/v2"
+import { createSessionAttention, type SessionAttentionUpdate } from "@graphagent/sdk/v2"
 
 test("attention has no anonymous updates and ignores work after close", async () => {
   const rows: SessionAttentionUpdate[] = []

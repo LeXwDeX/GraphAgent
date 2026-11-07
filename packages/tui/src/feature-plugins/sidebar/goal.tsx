@@ -1,4 +1,4 @@
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/tui/plugin-api"
+import type { TuiPlugin, TuiPluginApi } from "@graphagent/tui/plugin-api"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, Show } from "solid-js"
 

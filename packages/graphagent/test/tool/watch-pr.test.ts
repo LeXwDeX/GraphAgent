@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Deferred, Duration, Effect, Fiber, Layer, Ref, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import * as TestClock from "effect/testing/TestClock"
-import { ProjectV2 } from "@opencode-ai/core/project"
+import { ProjectV2 } from "@graphagent/core/project"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
@@ -11,7 +11,7 @@ import { SessionCancellation } from "@/session/cancellation"
 import { MessageID, SessionID } from "@/session/schema"
 import { Tool } from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import {
   classify,
   makeProcessRunner,

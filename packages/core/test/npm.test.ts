@@ -3,10 +3,10 @@ import path from "path"
 import { describe, expect, test } from "bun:test"
 import { NodeFileSystem } from "@effect/platform-node"
 import { Effect, Layer, Option } from "effect"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
-import { Npm } from "@opencode-ai/core/npm"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
+import { Npm } from "@graphagent/core/npm"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { tmpdir } from "./fixture/tmpdir"
 
 // CI runners blackhole the registry audit POST that arborist.reify issues,
@@ -37,8 +37,8 @@ const npmLayer = (cache: string) =>
 
 describe("Npm.sanitize", () => {
   test("keeps normal scoped package specs unchanged", () => {
-    expect(Npm.sanitize("@opencode/acme")).toBe("@opencode/acme")
-    expect(Npm.sanitize("@opencode/acme@1.0.0")).toBe("@opencode/acme@1.0.0")
+    expect(Npm.sanitize("@graphagent/acme")).toBe("@graphagent/acme")
+    expect(Npm.sanitize("@graphagent/acme@1.0.0")).toBe("@graphagent/acme@1.0.0")
     expect(Npm.sanitize("prettier")).toBe("prettier")
   })
 

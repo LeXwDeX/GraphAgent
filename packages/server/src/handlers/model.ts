@@ -1,4 +1,4 @@
-import { Catalog } from "@opencode-ai/core/catalog"
+import { Catalog } from "@graphagent/core/catalog"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../api"

@@ -1,5 +1,5 @@
-import { FileSystem } from "@opencode-ai/core/filesystem"
-import { RelativePath } from "@opencode-ai/core/schema"
+import { FileSystem } from "@graphagent/core/filesystem"
+import { RelativePath } from "@graphagent/core/schema"
 import { Effect } from "effect"
 import { HttpServerResponse } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"

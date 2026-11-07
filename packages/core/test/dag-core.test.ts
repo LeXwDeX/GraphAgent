@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
-import { CycleError, DependencyGraph, NodeNotFoundError } from "@opencode-ai/core/dag/core/graph"
-import { planReplan } from "@opencode-ai/core/dag/core/replan"
+import { CycleError, DependencyGraph, NodeNotFoundError } from "@graphagent/core/dag/core/graph"
+import { planReplan } from "@graphagent/core/dag/core/replan"
 import {
   assertValidNodeTransition,
   assertValidWorkflowTransition,
@@ -14,21 +14,21 @@ import {
   StaleNodeAttemptError,
   TerminalViolationError,
   WorkflowStatus,
-} from "@opencode-ai/core/dag/core/types"
+} from "@graphagent/core/dag/core/types"
 import {
   aggregateBranchStatus,
   DEFAULT_FALLBACK_TRIGGER,
   transitionToNodeEvent,
   transitionToWorkflowEvent,
-} from "@opencode-ai/core/dag/core/transitions"
-import { FallbackTrigger } from "@opencode-ai/core/dag/core/types"
-import { validateRequiredNodes } from "@opencode-ai/core/dag/core/required-validator"
+} from "@graphagent/core/dag/core/transitions"
+import { FallbackTrigger } from "@graphagent/core/dag/core/types"
+import { validateRequiredNodes } from "@graphagent/core/dag/core/required-validator"
 import {
   buildGraph,
   toSchedulingNodes,
   type SchedulingNode,
   WorkflowRuntime,
-} from "@opencode-ai/core/dag/core/scheduling"
+} from "@graphagent/core/dag/core/scheduling"
 
 describe("DependencyGraph", () => {
   it("adds nodes and edges", () => {

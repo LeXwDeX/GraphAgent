@@ -3,19 +3,19 @@
 
 export * as Dag from "./dag"
 
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { DateTime, Effect, Layer, Context, Schema, Option, Clock } from "effect"
-import { DagEvent } from "@opencode-ai/schema/dag-event"
-import { DagProjector } from "@opencode-ai/core/dag/projector"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { DagEvent } from "@graphagent/schema/dag-event"
+import { DagProjector } from "@graphagent/core/dag/projector"
+import { DagStore } from "@graphagent/core/dag/store"
+import { DagMessages } from "@graphagent/core/dag/messages"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import type { BatchEvent } from "@opencode-ai/core/event"
-import { Database } from "@opencode-ai/core/database/database"
-import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
+import type { BatchEvent } from "@graphagent/core/event"
+import { Database } from "@graphagent/core/database/database"
+import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { isRecord } from "@/util/record"
-import { WorkflowRuntime, toSchedulingNodes } from "@opencode-ai/core/dag/core/scheduling"
-import { planReplan } from "@opencode-ai/core/dag/core/replan"
+import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
+import { planReplan } from "@graphagent/core/dag/core/replan"
 import {
   getValidNextWorkflowStatuses,
   getValidNextNodeStatuses,
@@ -28,7 +28,7 @@ import {
   TerminalViolationError,
   WorkflowStatus,
   NodeStatus,
-} from "@opencode-ai/core/dag/core/types"
+} from "@graphagent/core/dag/core/types"
 import { AdmissionRecord, ExecutionMode, transitionAdmission, validateAdmission } from "./admission"
 import { unresolvedReviewOutcomes, targetSensitiveNode } from "./review-lifecycle"
 import { ReplanDefinition } from "./replan-definition"
@@ -694,7 +694,7 @@ export interface Interface {
   ) => Effect.Effect<ExtendTimeoutVerdict, Error>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Dag") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Dag") {}
 
 // The per-workflow KeyedMutex is single-permit and NOT reentrant: a guarded
 // command invoked without the lock races its status guards, and one invoked

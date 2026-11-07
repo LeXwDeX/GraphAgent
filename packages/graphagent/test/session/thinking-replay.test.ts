@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { LLMEvent } from "@opencode-ai/llm"
+import { LLMEvent } from "@graphagent/llm"
 import { ThinkingReplay } from "../../src/session/thinking-replay"
 
 const user = { role: "user", content: [{ type: "text", text: "fixture" }] }

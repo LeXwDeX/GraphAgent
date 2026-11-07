@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test"
 import { tmpdir } from "../../../fixture/fixture"
 import { directory, mount, wait, json } from "./sync-fixture"
 import { produce } from "solid-js/store"
-import type { GlobalEvent } from "@opencode-ai/sdk/v2"
-import type { DagWorkflowSummary } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { DagWorkflowSummary } from "@graphagent/sdk/v2"
 
 const sid = "ses_dag_1"
 

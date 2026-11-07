@@ -1,6 +1,6 @@
 import type { ToolBatch } from "@/hook/tool-batch"
 import { randomUUID } from "node:crypto"
-import { Logging } from "@opencode-ai/core/observability/logging"
+import { Logging } from "@graphagent/core/observability/logging"
 import type { Auth } from "@/auth"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -19,9 +19,9 @@ import {
   toDefinitions,
   type JsonSchema,
   type LLMEvent,
-} from "@opencode-ai/llm"
-import type { LLMClientShape } from "@opencode-ai/llm/route"
-import { RequestExecutor } from "@opencode-ai/llm/route"
+} from "@graphagent/llm"
+import type { LLMClientShape } from "@graphagent/llm/route"
+import { RequestExecutor } from "@graphagent/llm/route"
 import { LLMNative } from "./native-request"
 import { ThinkingReplay } from "../thinking-replay"
 import {
@@ -29,8 +29,8 @@ import {
   type HistorySnapshot as ContextFoldingHistorySnapshot,
   type RequestPurpose,
 } from "../context-folding"
-import type { SystemTransmission } from "@opencode-ai/core/session/context-folding"
-import type { ContextFoldingProjectionPlan } from "@opencode-ai/core/session/context-folding"
+import type { SystemTransmission } from "@graphagent/core/session/context-folding"
+import type { ContextFoldingProjectionPlan } from "@graphagent/core/session/context-folding"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
@@ -105,7 +105,7 @@ export function stream(input: StreamInput): Effect.Effect<StreamResult> {
     const current = statusWithFetch(input, fetch)
     if (current.type === "unsupported") return current
 
-    // Integration point with @opencode-ai/llm: native-request lowers session data
+    // Integration point with @graphagent/llm: native-request lowers session data
     // into an LLMRequest, then LLMClient handles route selection and transport.
     //
     // ProviderTransform.providerOptions builds AI-SDK-shaped options for the
@@ -356,7 +356,7 @@ export function nativeTools(tools: Record<string, Tool>, input: Pick<StreamInput
     Object.entries(tools).map(([name, item]) => [
       name,
       // Tool execution remains opencode-owned. The native runtime only adapts
-      // the @opencode-ai/llm tool call back into the AI SDK Tool.execute shape.
+      // the @graphagent/llm tool call back into the AI SDK Tool.execute shape.
       NativeTool.make({
         description: item.description ?? "",
         jsonSchema: nativeSchema(item.inputSchema),

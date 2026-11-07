@@ -29,7 +29,7 @@ export interface Interface {
   }) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/HookRewake") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/HookRewake") {}
 
 export function bind(
   submit: (input: { sessionID: SessionID; text: string; stopChain?: unknown }) => Effect.Effect<unknown, unknown>,

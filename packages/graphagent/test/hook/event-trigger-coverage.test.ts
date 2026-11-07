@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync, statSync } from "fs"
 import path from "path"
 import { VALID_HOOK_EVENTS } from "@/hook/settings"
-import { ConfigureHooksDescription } from "@opencode-ai/core/plugin/skill"
+import { ConfigureHooksDescription } from "@graphagent/core/plugin/skill"
 
 /**
  * Regression guard (hook-event-wiring D4): every event declared in the
  * HookEvent union must have at least one real trigger call site in non-test
  * source, so declaration-only events cannot ship silently.
  *
- * Textual scan: counts `event: "<name>"` occurrences under packages/opencode/src and packages/core/src,
+ * Textual scan: counts `event: "<name>"` occurrences under packages/graphagent/src and packages/core/src,
  * excluding hook/settings.ts itself (its payload type union and envelope builder
  * mention every event by construction).
  */

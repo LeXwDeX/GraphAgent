@@ -1,4 +1,4 @@
-import { AbortedError, type SessionV1 } from "@opencode-ai/core/v1/session"
+import { AbortedError, type SessionV1 } from "@graphagent/core/v1/session"
 
 /**
  * Assistant messages with a provider-level error are omitted from the model wire unless the error is an abort that

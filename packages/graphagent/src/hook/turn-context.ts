@@ -3,7 +3,7 @@ export * as HookTurnContext from "./turn-context"
 
 import { Effect } from "effect"
 import type { BackgroundJob } from "@/background/job"
-import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { DagStore } from "@graphagent/core/dag/store"
 
 const clipped = (value: string) =>
   value.length <= 1000 ? value : `${value.slice(0, 1000)}… [+${value.length - 1000} chars]`

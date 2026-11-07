@@ -16,9 +16,9 @@ import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
-import { InvalidTransitionError, TerminalViolationError } from "@opencode-ai/core/dag/core/types"
-import type { DagStore } from "@opencode-ai/core/dag/store"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
+import { InvalidTransitionError, TerminalViolationError } from "@graphagent/core/dag/core/types"
+import type { DagStore } from "@graphagent/core/dag/store"
+import { DagMessages } from "@graphagent/core/dag/messages"
 
 /** Map a DAG control op's typed transition failure into a 409 Conflict, not a 500 defect. */
 function mapTransitionConflict<Success>(effect: Effect.Effect<Success, Error>) {

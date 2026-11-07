@@ -7,7 +7,7 @@ import { SessionTools } from "@/session/tools"
 import { SessionHooks } from "@/hook/session-hooks"
 import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
@@ -24,7 +24,7 @@ import { hookToolStop } from "@/hook/trigger-result"
 import { Agent } from "@/agent/agent"
 import { QuestionTool } from "@/tool/question"
 import { Question } from "@/question"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 
 const hookLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),

@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { createOpencodeClient } from "@graphagent/sdk/v2"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { chmod, mkdir } from "node:fs/promises"

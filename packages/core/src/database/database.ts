@@ -1,6 +1,6 @@
 export * as Database from "./database"
 
-import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
+import { EffectDrizzleSqlite } from "@graphagent/effect-drizzle-sqlite"
 import { layer as sqliteLayer } from "#sqlite"
 import { Cause, Context, Effect, Layer } from "effect"
 import { sql } from "drizzle-orm"
@@ -19,7 +19,7 @@ export interface Interface {
   db: DatabaseShape
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/storage/Database") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/storage/Database") {}
 
 export const layer = Layer.effect(
   Service,

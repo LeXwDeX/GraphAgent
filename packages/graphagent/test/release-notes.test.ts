@@ -60,7 +60,7 @@ function defaultSections(): Section[] {
       heading: headings[5],
       body: "```\nrelease-notes: 12 pass\ntotal: 12 tests, 0 failures\ntypecheck: 1/1 packages green\n```",
     },
-    { heading: headings[6], body: "Rendered with bun test from packages/opencode and mutation-checked rule by rule." },
+    { heading: headings[6], body: "Rendered with bun test from packages/graphagent and mutation-checked rule by rule." },
   ]
 }
 

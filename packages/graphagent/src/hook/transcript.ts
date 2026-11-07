@@ -7,7 +7,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import { Effect, FileSystem, Option } from "effect"
 import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 
 export interface Message {
   readonly info: {

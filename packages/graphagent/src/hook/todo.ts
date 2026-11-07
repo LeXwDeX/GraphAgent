@@ -1,7 +1,7 @@
 export * as HookTodo from "./todo"
 
 import { Effect, Layer } from "effect"
-import { SessionTodoHooks } from "@opencode-ai/core/session/todo-hooks"
+import { SessionTodoHooks } from "@graphagent/core/session/todo-hooks"
 import { SettingsHook } from "./settings"
 import { Session } from "@/session/session"
 import { InstanceStore } from "@/project/instance-store"

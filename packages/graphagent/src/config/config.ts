@@ -1,27 +1,27 @@
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
-import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { httpClient } from "@graphagent/core/effect/layer-node-platform"
+import { serviceUse } from "@graphagent/core/effect/service-use"
 import path from "path"
 import { pathToFileURL } from "url"
 import os from "os"
 import { mergeDeep, unique } from "remeda"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import { assertProjectRootWritable, hasProjectLayer } from "@/project/project-root"
 import fsNode from "fs/promises"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { Flag } from "@graphagent/core/flag/flag"
 import { Auth } from "../auth"
 import { applyEdits, modify } from "jsonc-parser"
 import { existsSync } from "fs"
 import { isRecord } from "@/util/record"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { FSUtil } from "@graphagent/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
 import { Context, Duration, Effect, Layer, Option, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
+import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { InvalidError as ConfigInvalidError, RemoteAuthError } from "@opencode-ai/core/v1/config/error"
-import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
+import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { InvalidError as ConfigInvalidError, RemoteAuthError } from "@graphagent/core/v1/config/error"
+import { ConfigPermissionV1 } from "@graphagent/core/v1/config/permission"
 import { ConfigAgent } from "./agent"
 import { setAgentHookOrigins, type AgentHookProvenance } from "./agent-hooks"
 import { ConfigCommand } from "./command"
@@ -34,7 +34,7 @@ import { ConfigPaths } from "./paths"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
 import { withTransientReadRetry } from "@/util/effect-http-client"
-import { CONFIG_BASENAME, PROJECT_DIR } from "@opencode-ai/core/brand"
+import { CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
 
 // Written into user config files so editors resolve the schema published from
 // this repository instead of the upstream URL.
@@ -153,7 +153,7 @@ export interface Interface {
   readonly waitForDependencies: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Config") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Config") {}
 
 export const use = serviceUse(Service)
 

@@ -1,4 +1,4 @@
-import { ProjectV2 } from "@opencode-ai/core/project"
+import { ProjectV2 } from "@graphagent/core/project"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { InstanceContextMiddleware } from "../middleware/instance-context"

@@ -1,32 +1,32 @@
 import { createHash } from "node:crypto"
 import { rmdir } from "node:fs/promises"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { path } from "@opencode-ai/core/effect/layer-node-platform"
-import { KeyedMutex } from "@opencode-ai/core/effect/keyed-mutex"
-import { Global } from "@opencode-ai/core/global"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { path } from "@graphagent/core/effect/layer-node-platform"
+import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
+import { Global } from "@graphagent/core/global"
 import { InstanceLayer } from "@/project/instance-layer"
 import { InstanceStore } from "@/project/instance-store"
 import { Project } from "@/project/project"
-import { Database } from "@opencode-ai/core/database/database"
+import { Database } from "@graphagent/core/database/database"
 import { eq } from "drizzle-orm"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import type { ProjectV2 } from "@opencode-ai/core/project"
-import { Slug } from "@opencode-ai/core/util/slug"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import type { ProjectV2 } from "@graphagent/core/project"
+import { Slug } from "@graphagent/core/util/slug"
 import { errorMessage } from "../util/error"
 import { GlobalBus } from "@/bus/global"
 import { Git } from "@/git"
 import { Context, Cause, Effect, FiberMap, Layer, Path, Schema } from "effect"
 import { ChildProcess } from "effect/process"
 import { NodePath } from "@effect/platform-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { AppProcess } from "@opencode-ai/core/process"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { AppProcess } from "@graphagent/core/process"
 import { InstanceState } from "@/effect/instance-state"
-import { WorktreeEvent } from "@opencode-ai/schema/worktree-event"
+import { WorktreeEvent } from "@graphagent/schema/worktree-event"
 import { SettingsHook } from "@/hook/settings"
 import { assertProjectRootWritable } from "@/project/project-root"
 import { ensureLocalExcludes } from "@/project/git-exclude"
 import { MemoryPaths } from "@/memory/paths"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { PROJECT_DIR } from "@graphagent/core/brand"
 import * as Option from "effect/Option"
 
 export const Event = WorktreeEvent
@@ -136,7 +136,7 @@ export interface Interface {
   readonly reset: (input: ResetInput) => Effect.Effect<boolean, Error>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Worktree") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Worktree") {}
 
 type GitResult = { code: number; text: string; stderr: string }
 

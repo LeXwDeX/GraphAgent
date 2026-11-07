@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
-import { Global } from "@opencode-ai/core/global"
+import { Global } from "@graphagent/core/global"
 import { LLM, type StreamInput } from "@/session/llm"
-import { LLMEvent } from "@opencode-ai/llm"
+import { LLMEvent } from "@graphagent/llm"
 import { Effect, Layer, Stream } from "effect"
 import { markStep, touch } from "./engine-probe"
 

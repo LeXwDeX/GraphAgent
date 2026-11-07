@@ -46,7 +46,7 @@
 // known. Idle polling also covers receipts committed by another process whose
 // events do not reach this subscription. Engine stalls remain watchdog-bounded.
 
-import type { Event, OpencodeClient, TextPart } from "@opencode-ai/sdk/v2"
+import type { Event, OpencodeClient, TextPart } from "@graphagent/sdk/v2"
 import { parseWorkflowConfig } from "@/dag/dag"
 import { reportIdentity } from "@/dag/report-identity"
 import { isRecord } from "@/util/record"

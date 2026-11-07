@@ -23,7 +23,7 @@ export interface Interface {
   readonly wait: (id: ID) => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Plugin") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/v2/Plugin") {}
 
 export const layer = Layer.effect(
   Service,

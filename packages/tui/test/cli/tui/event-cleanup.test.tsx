@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { Event, GlobalEvent } from "@opencode-ai/sdk/v2"
+import type { Event, GlobalEvent } from "@graphagent/sdk/v2"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { Prompt } from "../../../src/component/prompt"
 import { TuiConfigProvider } from "../../../src/config"
@@ -21,7 +21,7 @@ import { RouteProvider } from "../../../src/context/route"
 import { SDKProvider, useSDK } from "../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
-import { OpencodeKeymapProvider, registerOpencodeKeymap } from "../../../src/keymap"
+import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
@@ -248,14 +248,14 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createTuiResolvedConfig()
-    onCleanup(registerOpencodeKeymap(keymap, renderer, config))
+    onCleanup(registerGraphagentKeymap(keymap, renderer, config))
 
     return (
       <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
         <ExitProvider exit={() => {}}>
           <EpilogueProvider set={() => {}}>
             <ClipboardProvider>
-              <OpencodeKeymapProvider keymap={keymap}>
+              <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
                     <ToastProvider>
@@ -311,7 +311,7 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
                     </ToastProvider>
                   </KVProvider>
                 </ArgsProvider>
-              </OpencodeKeymapProvider>
+              </GraphagentKeymapProvider>
             </ClipboardProvider>
           </EpilogueProvider>
         </ExitProvider>

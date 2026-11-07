@@ -3,7 +3,7 @@ import { Provider } from "../../src/provider/provider"
 
 import { Effect, Layer } from "effect"
 import { testEffect } from "../lib/effect"
-import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 
 const DIGITALOCEAN = ProviderV2.ID.make("digitalocean")

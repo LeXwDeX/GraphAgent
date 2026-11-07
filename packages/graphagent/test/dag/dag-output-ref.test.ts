@@ -17,9 +17,9 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Effect, Fiber, Layer, Semaphore } from "effect"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
+import type { SessionV1 } from "@graphagent/core/v1/session"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Dag } from "@/dag/dag"
@@ -38,7 +38,7 @@ import {
   workflowReportsArea,
 } from "@/dag/runtime/output-ref"
 import { makeNodeRow } from "./fixtures"
-import type { DagStore } from "@opencode-ai/core/dag/store"
+import type { DagStore } from "@graphagent/core/dag/store"
 
 const tmpRoots: string[] = []
 

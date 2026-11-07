@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Effect, Option, Scheduler } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { DagMessages } from "@opencode-ai/core/dag/messages"
-import type { DagStore } from "@opencode-ai/core/dag/store"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Database } from "@graphagent/core/database/database"
+import { DagMessages } from "@graphagent/core/dag/messages"
+import type { DagStore } from "@graphagent/core/dag/store"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import {
   isCaptureValidationCurrent,
   validatePayloadAsync,

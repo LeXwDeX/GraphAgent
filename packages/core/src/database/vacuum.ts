@@ -3,7 +3,7 @@
 
 export * as Vacuum from "./vacuum"
 
-import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
+import { EffectDrizzleSqlite } from "@graphagent/effect-drizzle-sqlite"
 import { NodeFileSystem } from "@effect/platform-node"
 import { Effect, FileSystem, Schema } from "effect"
 import { sql } from "drizzle-orm"

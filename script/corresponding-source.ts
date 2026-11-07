@@ -11,7 +11,7 @@ export const requiredSourceFiles = [
   "package.json",
   "bun.lock",
   "script/corresponding-source.ts",
-  "packages/opencode/script/build.ts",
+  "packages/graphagent/script/build.ts",
 ] as const
 
 export type CorrespondingSourceInput = {

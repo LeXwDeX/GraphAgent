@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Hash } from "@opencode-ai/core/util/hash"
+import { Hash } from "@graphagent/core/util/hash"
 import { MessageID, PartID } from "@/session/schema"
 
 /** A durable workflow event sequence identifies one completion across graph revisions. */

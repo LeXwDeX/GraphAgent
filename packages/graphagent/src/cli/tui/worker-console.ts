@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs"
 import path from "node:path"
 import { formatWithOptions } from "node:util"
 import { xdgData } from "xdg-basedir"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { APP_NAME } from "@graphagent/core/brand"
 
 // Keep this first-import module synchronous. Global has top-level await, which
 // lets sibling dependencies emit warnings before console interception is ready.

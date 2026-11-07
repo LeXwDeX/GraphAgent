@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { WorkflowNodeTable, WorkflowTable } from "@opencode-ai/core/dag/sql"
-import { DagStore } from "@opencode-ai/core/dag/store"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { Database } from "@graphagent/core/database/database"
+import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
+import { DagStore } from "@graphagent/core/dag/store"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
 
 function storeLayer() {
   const database = Database.layerFromPath(":memory:")

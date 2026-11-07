@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { NO_USEFUL_REASONING_TEXT } from "@opencode-ai/core/session/reasoning-distillation"
+import { NO_USEFUL_REASONING_TEXT } from "@graphagent/core/session/reasoning-distillation"
 import { checkFixtureSemantics } from "../../script/reasoning-distillation-quality"
 
 const valid: Record<string, string[]> = {
@@ -18,7 +18,7 @@ const valid: Record<string, string[]> = {
     "- 连接池上限为 20。\n- 连接池耗尽已排除：`/var/log/app.log` 显示连接池等待时间始终低于 5ms，活跃连接最高 12，未达到上限 20。\n- 根因仍未确定；下一步只读检查锁等待。",
   ],
   "negative-check": [
-    "- 已检查 `packages/core/src/retry.ts` 和 `packages/core/src/backoff.ts`：两处都没有调用 `sleepWithJitter`。\n- “旧调度器”指 `LegacyScheduler`（`packages/core/src/legacy/scheduler.ts`）。\n- 下一步：只读检查 `packages/opencode/src/session/prompt.ts`。",
+    "- 已检查 `packages/core/src/retry.ts` 和 `packages/core/src/backoff.ts`：两处都没有调用 `sleepWithJitter`。\n- “旧调度器”指 `LegacyScheduler`（`packages/core/src/legacy/scheduler.ts`）。\n- 下一步：只读检查 `packages/graphagent/src/session/prompt.ts`。",
   ],
   "all-noise": [NO_USEFUL_REASONING_TEXT.zh],
   "short-reasoning": [

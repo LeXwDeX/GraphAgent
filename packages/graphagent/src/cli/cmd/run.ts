@@ -2,8 +2,8 @@ import { isRecord } from "@/util/record"
 import { LocalPermissionStartup } from "@/permission/local-startup"
 import { AppRuntime } from "@/effect/app-runtime"
 import { HookClientLifecycle } from "@/hook/client-lifecycle"
-import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
+import { APP_NAME } from "@graphagent/core/brand"
 // CLI entry point for `opencode run` and `opencode --mini`.
 //
 // Handles three modes:
@@ -23,7 +23,7 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
-import { createOpencodeClient, type OpencodeClient, type TextPart, type ToolPart } from "@opencode-ai/sdk/v2"
+import { createOpencodeClient, type OpencodeClient, type TextPart, type ToolPart } from "@graphagent/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { DagHold } from "./run/dag-hold"
@@ -761,11 +761,11 @@ export const RunCommand = effectCmd({
             process.exitCode = 1
           }
           function deferred(
-            result: { info: import("@opencode-ai/sdk/v2").Message; parts: Array<unknown> } | null | undefined,
+            result: { info: import("@graphagent/sdk/v2").Message; parts: Array<unknown> } | null | undefined,
           ) {
             const reason = result?.info.role === "assistant" ? result.info.finish : undefined
             if (!result || (reason !== "tool_deferred" && reason !== "tool_deferred_unavailable")) return false
-            const part = result.parts.find((value): value is import("@opencode-ai/sdk/v2").ToolPart => {
+            const part = result.parts.find((value): value is import("@graphagent/sdk/v2").ToolPart => {
               return (
                 isRecord(value) &&
                 value.type === "tool" &&

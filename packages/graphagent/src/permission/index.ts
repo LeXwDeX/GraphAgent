@@ -1,8 +1,8 @@
 import { SessionAttention } from "@/notification/attention"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { ConfigPermissionV1 } from "@graphagent/core/v1/config/permission"
 import { InstanceState } from "@/effect/instance-state"
-import { Wildcard } from "@opencode-ai/core/util/wildcard"
+import { Wildcard } from "@graphagent/core/util/wildcard"
 import { Deferred, Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
 import os from "os"
@@ -10,7 +10,7 @@ import path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { emptyPolicy, updateSessionPolicy, type SessionPolicy } from "./session-policy"
 import type { PermissionUpdate } from "@/hook/trigger-result"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { type TriggerResult } from "@/hook/trigger-result"
 import { SettingsHook } from "@/hook/settings"
@@ -20,7 +20,7 @@ import { consumerContext } from "@/hook/consumer-context"
 import { HookPermissions } from "@/config/permissions"
 import { HookPermissionInterrupt } from "./hook-control"
 import { Notification } from "@/notification"
-import { PermissionV1Event } from "@opencode-ai/schema/permission-v1"
+import { PermissionV1Event } from "@graphagent/schema/permission-v1"
 
 export const Event = PermissionV1Event
 
@@ -146,7 +146,7 @@ function hookToolInput(args: Record<string, unknown> | undefined, legacy: Record
   return { ...args, ...legacy }
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Permission") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Permission") {}
 
 export const layer = Layer.effect(
   Service,

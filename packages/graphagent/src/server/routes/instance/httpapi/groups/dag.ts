@@ -3,8 +3,8 @@
 
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
-import { DagSummary } from "@opencode-ai/schema/dag-summary"
-import { NonNegativeInt } from "@opencode-ai/schema/schema"
+import { DagSummary } from "@graphagent/schema/dag-summary"
+import { NonNegativeInt } from "@graphagent/schema/schema"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { ApiNotFoundError, ConflictError } from "../errors"

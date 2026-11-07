@@ -10,7 +10,7 @@
  * UserPromptSubmit hooks internally, so rewake prompts are guarded.
  */
 import { Effect, Layer, Option } from "effect"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { HookRewake } from "./rewake"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"

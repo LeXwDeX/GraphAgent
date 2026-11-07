@@ -4,7 +4,7 @@
 // wrapper: each row is one CLI run's poll sequence with the expected idle
 // decisions. Real-CLI lifecycle coverage lives in run-dag-hold-process.test.ts.
 import { describe, expect, test } from "bun:test"
-import type { Event, OpencodeClient } from "@opencode-ai/sdk/v2"
+import type { Event, OpencodeClient } from "@graphagent/sdk/v2"
 import { reportIdentity } from "@/dag/report-identity"
 import { DagHold } from "../../../src/cli/cmd/run/dag-hold"
 

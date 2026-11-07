@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Agent } from "@/agent/agent"
-import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Permission } from "@/permission"
 import { testEffect } from "../lib/effect"
 

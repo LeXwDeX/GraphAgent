@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { Effect, Layer } from "effect"
-import type { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SettingsHook } from "@/hook/settings"

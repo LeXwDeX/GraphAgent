@@ -1,4 +1,4 @@
-import { CommandV2 } from "@opencode-ai/core/command"
+import { CommandV2 } from "@graphagent/core/command"
 import { HttpApiBuilder } from "effect/http-api"
 import { Api } from "../api"
 import { response } from "../location"

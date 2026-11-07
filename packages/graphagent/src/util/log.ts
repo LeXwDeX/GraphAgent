@@ -8,8 +8,8 @@
  */
 import { appendFileSync } from "node:fs"
 import path from "node:path"
-import { Global } from "@opencode-ai/core/global"
-import { APP_NAME } from "@opencode-ai/core/brand"
+import { Global } from "@graphagent/core/global"
+import { APP_NAME } from "@graphagent/core/brand"
 
 type Level = "debug" | "info" | "warn" | "error"
 

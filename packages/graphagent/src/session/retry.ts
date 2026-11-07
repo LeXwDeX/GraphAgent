@@ -1,5 +1,5 @@
-import { NamedError } from "@opencode-ai/core/util/error"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { NamedError } from "@graphagent/core/util/error"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { Cause, Clock, Duration, Effect, Schedule, Schema } from "effect"
 import { isRecord } from "@/util/record"
 import { REASONING_STATE_MESSAGE } from "@/provider/error"

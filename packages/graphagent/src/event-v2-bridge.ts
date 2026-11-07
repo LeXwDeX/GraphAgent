@@ -1,15 +1,15 @@
-// Opencode publish boundary for core events. Attach routed instance location
+// Graphagent publish boundary for core events. Attach routed instance location
 // so direct EventV2 consumers can isolate directory/workspace streams.
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { GlobalBus } from "@/bus/global"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Location } from "@opencode-ai/core/location"
-import { Project } from "@opencode-ai/core/project"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { EventV2 } from "@graphagent/core/event"
+import { Location } from "@graphagent/core/location"
+import { Project } from "@graphagent/core/project"
+import { AbsolutePath } from "@graphagent/core/schema"
 import { Cause, Context, Effect, Layer, Stream } from "effect"
 
-export class Service extends Context.Service<Service, EventV2.Interface>()("@opencode/EventV2Bridge") {}
+export class Service extends Context.Service<Service, EventV2.Interface>()("@graphagent/EventV2Bridge") {}
 
 function projectIDFromLocation(location: Location.Ref | undefined) {
   if (!location || !("project" in location)) return undefined

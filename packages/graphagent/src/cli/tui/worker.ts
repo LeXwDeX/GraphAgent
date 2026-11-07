@@ -1,6 +1,6 @@
 import "./worker-console"
 import { HookClientLifecycle } from "@/hook/client-lifecycle"
-import { Logging } from "@opencode-ai/core/observability/logging"
+import { Logging } from "@graphagent/core/observability/logging"
 
 import { Server } from "@/server/server"
 import { InstanceRuntime } from "@/project/instance-runtime"
@@ -12,8 +12,8 @@ import { Heap } from "@/cli/heap"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
-import { Global } from "@opencode-ai/core/global"
-import { APP_NAME, HEADER_PREFIX } from "@opencode-ai/core/brand"
+import { Global } from "@graphagent/core/global"
+import { APP_NAME, HEADER_PREFIX } from "@graphagent/core/brand"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 

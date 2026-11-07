@@ -2,12 +2,12 @@ export * as Goal from "./goal"
 
 import { Effect, Layer, Context, Schema, Fiber, Cause, Exit } from "effect"
 import { desc, eq, sql } from "drizzle-orm"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Database } from "@opencode-ai/core/database/database"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GoalState } from "./state"
-import { GoalOutcomeTable, GoalStateTable } from "@opencode-ai/core/goal/sql"
+import { GoalOutcomeTable, GoalStateTable } from "@graphagent/core/goal/sql"
 import { GoalEvent } from "./events"
 import { GoalPrompts } from "./prompts"
 import { SessionID } from "@/session/schema"
@@ -232,7 +232,7 @@ export interface Interface {
     readonly isTurnDriven: (sessionID: SessionID) => Effect.Effect<boolean>
   }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Goal") {}
+export class Service extends Context.Service<Service, Interface>()("@graphagent/Goal") {}
 
 const serviceLayer = Layer.effect(
   Service,

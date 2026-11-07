@@ -48,7 +48,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，�
 - **在步骤边界采用。** 已完成的改写用于后续请求，不修改正在发送的请求内容。
 - **失败回退。** 整理失败、超时或没有可用的小模型时保留原文；整理任务失败不会导致主回合失败。
 - **可还原。** 原文和原始 metadata 随思考一起保存；关闭功能后回放的就是原文。
-- **走引擎层。** 整理请求通过内置的 `@opencode-ai/llm` 引擎发送，不带工具，推理档位用 `none`/`low`。长输入被错误判为噪声时允许一次有界重试；只有整理结果确实更省 token 才会采用。
+- **走引擎层。** 整理请求通过内置的 `@graphagent/llm` 引擎发送，不带工具，推理档位用 `none`/`low`。长输入被错误判为噪声时允许一次有界重试；只有整理结果确实更省 token 才会采用。
 
 ```jsonc
 // opencode.json
@@ -225,7 +225,7 @@ config:
 
 ## 引擎
 
-引擎位于 [`packages/core/src/dag`](./packages/core/src/dag)（状态机、依赖图、调度、事件投影、SQLite 读模型）和 [`packages/opencode/src/dag`](./packages/opencode/src/dag)（工作流服务、执行循环、节点生成、准入、审查生命周期、崩溃恢复、模板）。智能体通过单个 `workflow` 工具驱动它；人通过 TUI 或 HTTP API 观察和控制它。
+引擎位于 [`packages/core/src/dag`](./packages/core/src/dag)（状态机、依赖图、调度、事件投影、SQLite 读模型）和 [`packages/graphagent/src/dag`](./packages/graphagent/src/dag)（工作流服务、执行循环、节点生成、准入、审查生命周期、崩溃恢复、模板）。智能体通过单个 `workflow` 工具驱动它；人通过 TUI 或 HTTP API 观察和控制它。
 
 ### 图定义
 
@@ -354,7 +354,7 @@ bun dev              # TUI
 bun dev serve        # headless API 服务（端口 4096）
 
 # 独立二进制
-./packages/opencode/script/build.ts --single
+./packages/graphagent/script/build.ts --single
 ```
 
 > 本 fork 未发布到 npm/brew/scoop。上游的 `opencode-ai` 包安装的是上游 opencode，不是本 fork。
@@ -373,7 +373,7 @@ bun dev serve        # headless API 服务（端口 4096）
 | 内容                           | 许可证            | 文本                                                                                                                                           |
 | ------------------------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | 上游 opencode 代码（绝大多数） | MIT               | [`LICENSE`](./LICENSE)                                                                                                                         |
-| DAG 工作流引擎（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/opencode/src/dag/LICENSE`](./packages/opencode/src/dag/LICENSE) |
+| DAG 工作流引擎（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
 | 便携运行时资源（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                           |
 
 精确的文件边界列在 [`NOTICE`](./NOTICE) 中。AGPL 覆盖这些模块及其衍生品，包括网络服务部署；其他文件保持原有许可证。
@@ -382,7 +382,7 @@ bun dev serve        # headless API 服务（端口 4096）
 
 - [`docs/architecture.md`](./docs/architecture.md) —— 系统总览、客户端/API 边界与源码索引
 - [`docs/功能清单.md`](./docs/功能清单.md)：功能与源码入口索引（非完整上游差异报告）
-- [`packages/opencode/src/memory/CONTEXT.md`](./packages/opencode/src/memory/CONTEXT.md) —— 项目 Memory 的模型与不变量
+- [`packages/graphagent/src/memory/CONTEXT.md`](./packages/graphagent/src/memory/CONTEXT.md) —— 项目 Memory 的模型与不变量
 - [hooks 指南](./packages/core/src/plugin/skill/configure-hooks.md) —— 事件、schema 与验证方法
 - [存盘工作流编写指南](./packages/core/src/plugin/skill/create-dag-workflow.md) —— `create-dag-workflow` skill 正文
 - [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) —— 精选工作流、可组合块与 worker prompt

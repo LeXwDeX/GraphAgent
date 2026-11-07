@@ -18,7 +18,7 @@ import type { Scenario, ScenarioID } from "./scenarios/types"
 // last pass's counters, request count and request shapes against
 // `engine-baseline.json`.
 //
-// Rules (see the "Baseline updates" section in packages/opencode/AGENTS.md):
+// Rules (see the "Baseline updates" section in packages/graphagent/AGENTS.md):
 //   - a metric may not exceed `perTurn + Σdeclared`;
 //   - a PR that is designed to change a count adds a `declared` entry in the
 //     same PR, with the reason;

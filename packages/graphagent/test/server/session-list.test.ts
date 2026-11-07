@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { Database } from "@opencode-ai/core/database/database"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { Database } from "@graphagent/core/database/database"
+import { SessionProjector } from "@graphagent/core/session/projector"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
 import { SessionAutomationLease } from "@/session/automation-lease"
@@ -9,7 +9,7 @@ import { Dag } from "@/dag/dag"
 import { disposeAllInstances, provideInstance, TestInstance } from "../fixture/fixture"
 import { mkdir } from "fs/promises"
 import path from "path"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { eq } from "drizzle-orm"
 import { testEffect } from "../lib/effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -181,7 +181,7 @@ describe("session.list", () => {
         const pathIDs = (yield* SessionNs.Service.use((session) =>
           session.list({
             directory: path.join(test.directory, "packages", "app"),
-            path: "packages/opencode/src",
+            path: "packages/graphagent/src",
           }),
         )).map((session) => session.id)
         expect(pathIDs).not.toContain(parent.id)
@@ -234,7 +234,7 @@ describe("session.list", () => {
         const pathIDs = (yield* SessionNs.Service.use((session) =>
           session.list({
             directory: path.join(test.directory, "packages", "opencode", "src"),
-            path: "packages/opencode/src",
+            path: "packages/graphagent/src",
           }),
         )).map((session) => session.id)
         expect(pathIDs).toContain(current.id)

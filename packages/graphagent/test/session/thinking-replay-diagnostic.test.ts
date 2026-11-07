@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { LLMEvent } from "@opencode-ai/llm"
+import { LLMEvent } from "@graphagent/llm"
 import { ThinkingReplay } from "../../src/session/thinking-replay"
 
 const user = { role: "user", content: [{ type: "text", text: "PRIVATE_PROMPT_SENTINEL" }] }
@@ -86,7 +86,7 @@ for (const mode of ["default", "debug", "without-layer"] as const)
       import { Effect, References } from ${JSON.stringify(import.meta.resolve("effect"))}
       import { Logging } from ${JSON.stringify(path.join(root, "packages/core/src/observability/logging.ts"))}
       import { Observability } from ${JSON.stringify(path.join(root, "packages/core/src/observability.ts"))}
-      import { ThinkingReplay } from ${JSON.stringify(path.join(root, "packages/opencode/src/session/thinking-replay.ts"))}
+      import { ThinkingReplay } from ${JSON.stringify(path.join(root, "packages/graphagent/src/session/thinking-replay.ts"))}
       const original = { statusCode: 400, message: "PRIVATE_SIGNATURE bound to a different conversation PRIVATE_PROMPT PRIVATE_KEY" }
       const effect = Effect.fail(original).pipe(
         Effect.tapError(error => Logging.backgroundDebug("thinking replay error", { clientOperationID: "fixture-operation", scope: "llm-stream", ...ThinkingReplay.errorDiagnostic(error) })),
@@ -162,12 +162,12 @@ for (const runtime of ["sdk", "native"] as const)
         script,
         `
       import { Effect, Stream, Exit, Cause } from ${JSON.stringify(import.meta.resolve("effect"))}
-      import { AppRuntime } from ${JSON.stringify(path.join(root, "packages/opencode/src/effect/app-runtime.ts"))}
-      import { InstanceStore } from ${JSON.stringify(path.join(root, "packages/opencode/src/project/instance-store.ts"))}
-      import { Provider } from ${JSON.stringify(path.join(root, "packages/opencode/src/provider/provider.ts"))}
+      import { AppRuntime } from ${JSON.stringify(path.join(root, "packages/graphagent/src/effect/app-runtime.ts"))}
+      import { InstanceStore } from ${JSON.stringify(path.join(root, "packages/graphagent/src/project/instance-store.ts"))}
+      import { Provider } from ${JSON.stringify(path.join(root, "packages/graphagent/src/provider/provider.ts"))}
       import { ProviderV2 } from ${JSON.stringify(path.join(root, "packages/core/src/provider.ts"))}
       import { ModelV2 } from ${JSON.stringify(path.join(root, "packages/core/src/model.ts"))}
-      import { LLM } from ${JSON.stringify(path.join(root, "packages/opencode/src/session/llm.ts"))}
+      import { LLM } from ${JSON.stringify(path.join(root, "packages/graphagent/src/session/llm.ts"))}
       let calls = 0
       const message = "PRIVATE_SIGNATURE bound to a different conversation PRIVATE_PROMPT PRIVATE_KEY"
       const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => {
@@ -189,7 +189,7 @@ for (const runtime of ["sdk", "native"] as const)
     `,
       )
       const child = Bun.spawn([process.execPath, script], {
-        cwd: path.join(root, "packages/opencode"),
+        cwd: path.join(root, "packages/graphagent"),
         stdout: "pipe",
         stderr: "pipe",
         env: {

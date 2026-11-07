@@ -37,17 +37,17 @@ const hooksJsonWrapped = (marker: string) => ({
 })
 
 async function writeHooksJson(dir: string, json: unknown): Promise<string> {
-  const opencodeDir = path.join(dir, ".agents")
-  await fs.mkdir(opencodeDir, { recursive: true })
-  const file = path.join(opencodeDir, "hooks.json")
+  const graphagentDir = path.join(dir, ".agents")
+  await fs.mkdir(graphagentDir, { recursive: true })
+  const file = path.join(graphagentDir, "hooks.json")
   await fs.writeFile(file, JSON.stringify(json))
   return file
 }
 
 async function writeLocalHooksJson(dir: string, json: unknown): Promise<string> {
-  const opencodeDir = path.join(dir, ".agents")
-  await fs.mkdir(opencodeDir, { recursive: true })
-  const file = path.join(opencodeDir, "hooks.local.json")
+  const graphagentDir = path.join(dir, ".agents")
+  await fs.mkdir(graphagentDir, { recursive: true })
+  const file = path.join(graphagentDir, "hooks.local.json")
   await fs.writeFile(file, JSON.stringify(json))
   return file
 }
@@ -60,9 +60,9 @@ async function writeGlobalHooksJson(globalDir: string, json: unknown): Promise<s
 }
 
 async function writeSettingsJson(dir: string, json: unknown): Promise<string> {
-  const opencodeDir = path.join(dir, ".agents")
-  await fs.mkdir(opencodeDir, { recursive: true })
-  const file = path.join(opencodeDir, "settings.json")
+  const graphagentDir = path.join(dir, ".agents")
+  await fs.mkdir(graphagentDir, { recursive: true })
+  const file = path.join(graphagentDir, "settings.json")
   await fs.writeFile(file, JSON.stringify(json))
   return file
 }

@@ -7,14 +7,14 @@ import {
   type TuiPluginModule,
   type TuiPluginMeta,
   type TuiSlotPlugin,
-} from "@opencode-ai/tui/plugin-api"
+} from "@graphagent/tui/plugin-api"
 import { TuiConfig } from "@/config/tui"
-import { errorData, errorMessage } from "@opencode-ai/tui/util/error"
+import { errorData, errorMessage } from "@graphagent/tui/util/error"
 import { resolveHostAttentionSoundPaths } from "@/config/tui-host-attention"
 import { internalTuiPlugins, type InternalTuiPlugin } from "./internal"
-import type { HostPluginApi, HostSlots } from "@opencode-ai/tui/plugin/slots"
-import { createCommandShim } from "@opencode-ai/tui/plugin/command-shim"
-import { createPluginRuntime, type PluginRuntime, type TuiPluginHost } from "@opencode-ai/tui/plugin/runtime"
+import type { HostPluginApi, HostSlots } from "@graphagent/tui/plugin/slots"
+import { createCommandShim } from "@graphagent/tui/plugin/command-shim"
+import { createPluginRuntime, type PluginRuntime, type TuiPluginHost } from "@graphagent/tui/plugin/runtime"
 
 ensureRuntimePluginSupport({ additional: keymapRuntimeModules })
 
