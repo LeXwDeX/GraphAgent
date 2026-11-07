@@ -23,14 +23,14 @@ ts-dist
 /result
 refs
 Session.vim
-/opencode.json
+/graphagent.json
 a.out
 target
 .scripts
 .direnv/
 
 # Local dev files
-opencode-dev
+graphagent-dev
 packages/opencode/script/config.json
 UPCOMING_CHANGELOG.md
 # Test machine / review host addresses (public repo: never track)
@@ -39,8 +39,8 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 
-# opencode runtime-generated local project config (created when running the built binary in a package dir)
-**/.opencode/settings.json
+# graphagent runtime-generated local project config (created when running the built binary in a package dir)
+**/.agents/settings.json
 
 # OpenSpec artifacts (local-only, not tracked)
 /openspec/
@@ -49,17 +49,16 @@ tsconfig.tsbuildinfo
 /docs/graph-engineering-template-research.md
 
 # hooks file
-.opencode/hooks.json
+.agents/hooks.json
 
 # agent files
 .agents
 .claude
-.opencode/
 .husky/
 .qoder
-.opencode/workflow-reports/
+.agents/workflow-reports/
 
-# CI watcher test for the local .opencode hook scaffolding; kept local with its tool
+# CI watcher test for the local .agents hook scaffolding; kept local with its tool
 /packages/opencode/test/hook/repo-ci-watcher.test.ts
 
 # Local-only agent tooling: SpecGit integration and MCP plugin resources.
@@ -73,11 +72,11 @@ tsconfig.tsbuildinfo
 **/.codebase-memory/
 **/.codebase-memory-mcp/
 
-# opencode local workflow state
-.opencode/.dag-specs/
-.opencode/dag-init.json
-.opencode/workflow-drafts/
-.opencode/workflow-reports/
+# graphagent local workflow state
+.agents/.dag-specs/
+.agents/dag-init.json
+.agents/workflow-drafts/
+.agents/workflow-reports/
 
 # Retained private migration evidence and legacy delivery records
 /spec_git/

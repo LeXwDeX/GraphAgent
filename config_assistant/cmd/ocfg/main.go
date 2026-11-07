@@ -23,7 +23,7 @@ func main() {
 		fmt.Println("  2. 从 models.dev 浏览模型并自动生成 provider 配置块")
 		fmt.Println()
 		fmt.Println("模型数据来源: https://models.dev/api.json （24h 本地缓存）")
-		fmt.Println("配置 schema:   https://opencode.ai/config.json （内嵌离线校验）")
+		fmt.Println("配置 schema:   https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json （内嵌离线校验）")
 		return
 	}
 

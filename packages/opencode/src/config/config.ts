@@ -35,6 +35,28 @@ import { ConfigVariable } from "./variable"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { CONFIG_BASENAME, PROJECT_DIR } from "@opencode-ai/core/brand"
 
+// Written into user config files so editors resolve the schema published from
+// this repository instead of the upstream URL.
+const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"
+
+// #884: DAG settings that only the global layer may set. Project-level values
+// are stripped before merging. The warning is deduplicated per process because
+// every directory instance re-reads the same project files.
+const PROJECT_SCOPED_DAG_KEYS = ["mode", "concurrency", "max_total_nodes", "budget", "safety"] as const
+const warnedProjectDagKeys = new Set<string>()
+
+function stripProjectDagKeys(source: string, next: Info): Array<(typeof PROJECT_SCOPED_DAG_KEYS)[number]> {
+  if (!next.dag) return []
+  const stripped: Array<(typeof PROJECT_SCOPED_DAG_KEYS)[number]> = []
+  for (const key of PROJECT_SCOPED_DAG_KEYS) {
+    if (!Object.hasOwn(next.dag, key)) continue
+    delete next.dag[key]
+    stripped.push(key)
+  }
+  if (Object.keys(next.dag).length === 0) delete next.dag
+  return stripped
+}
+
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
 function mergeConfig(target: Info, source: Info): Info {
@@ -282,8 +304,8 @@ export const layer = Layer.effect(
       if (!("path" in options)) return data
 
       if (!data.$schema) {
-        data.$schema = "https://opencode.ai/config.json"
-        const updated = text.replace(/^\s*\{/, '{\n  "$schema": "https://opencode.ai/config.json",')
+        data.$schema = CONFIG_SCHEMA_URL
+        const updated = text.replace(/^\s*\{/, `{\n  "$schema": "${CONFIG_SCHEMA_URL}",`)
         yield* fs.writeFileString(options.path, updated).pipe(Effect.catch(() => Effect.void))
       }
       return data
@@ -304,7 +326,7 @@ export const layer = Layer.effect(
         const file = globalConfigFile()
         if (!existsSync(file)) {
           yield* fs
-            .writeWithDirs(file, JSON.stringify({ $schema: "https://opencode.ai/config.json" }, null, 2))
+            .writeWithDirs(file, JSON.stringify({ $schema: CONFIG_SCHEMA_URL }, null, 2))
             .pipe(Effect.catch(() => Effect.void))
         }
       }
@@ -319,7 +341,7 @@ export const layer = Layer.effect(
             .then(async (mod) => {
               const { provider, model, ...rest } = mod.default
               if (provider && model) result.model = `${provider}/${model}`
-              result["$schema"] = "https://opencode.ai/config.json"
+              result["$schema"] = CONFIG_SCHEMA_URL
               result = mergeConfig(result, rest)
               await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
               await fsNode.unlink(legacy)
@@ -368,10 +390,23 @@ export const layer = Layer.effect(
         }
         const authEnv: Record<string, string> = {}
 
-        const merge = (source: string, next: Info) => {
+        // `kind` marks the config source layer: project-level sources may not
+        // set the DAG keys reserved for the global layer (#884).
+        const merge = Effect.fnUntraced(function* (source: string, next: Info, kind: "global" | "project") {
+          if (kind === "project") {
+            for (const key of stripProjectDagKeys(source, next)) {
+              const warningKey = `${source}\u0000${key}`
+              if (warnedProjectDagKeys.has(warningKey)) continue
+              warnedProjectDagKeys.add(warningKey)
+              yield* Effect.logWarning("ignoring DAG setting from project configuration", {
+                path: source,
+                key: `dag.${key}`,
+              })
+            }
+          }
           rememberAgentHooks(next, source)
           result = mergeConfigConcatArrays(result, next)
-        }
+        })
 
         for (const [key, value] of Object.entries(auth)) {
           if (value.type === "wellknown") {
@@ -430,7 +465,7 @@ export const layer = Layer.effect(
               isRecord(wellknown.data.config) ? wellknown.data.config : {},
               fetched.config,
             )
-            if (!remoteConfig.$schema) remoteConfig.$schema = "https://opencode.ai/config.json"
+            if (!remoteConfig.$schema) remoteConfig.$schema = CONFIG_SCHEMA_URL
             const source = wellknownURL
             const next = yield* loadConfig(
               JSON.stringify(remoteConfig),
@@ -444,7 +479,9 @@ export const layer = Layer.effect(
               yield* RemoteLkg.write({ url: wellknownURL, role: "well-known", body: wellknown.body })
             }
             if (fetched.cache) yield* RemoteLkg.write(fetched.cache)
-            merge(source, next)
+            // Remote well-known config is organisation-level policy, so it
+            // belongs to the global layer.
+            yield* merge(source, next, "global")
             yield* Effect.logDebug("loaded remote config from well-known", {
               digest: RemoteLkg.digest(wellknownURL),
               role: "well-known",
@@ -453,16 +490,18 @@ export const layer = Layer.effect(
         }
 
         const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
-        merge(Global.Path.config, global)
+        yield* merge(Global.Path.config, global, "global")
 
         if (Flag.GRAPHAGENT_CONFIG) {
-          merge(Flag.GRAPHAGENT_CONFIG, yield* loadFile(Flag.GRAPHAGENT_CONFIG, authEnv))
+          yield* merge(Flag.GRAPHAGENT_CONFIG, yield* loadFile(Flag.GRAPHAGENT_CONFIG, authEnv), "global")
           yield* Effect.logDebug("loaded custom config", { path: Flag.GRAPHAGENT_CONFIG })
         }
 
         if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            merge(file, yield* loadFile(file, authEnv))
+          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.worktree).pipe(
+            Effect.orDie,
+          )) {
+            yield* merge(file, yield* loadFile(file, authEnv), "project")
           }
         }
 
@@ -480,7 +519,13 @@ export const layer = Layer.effect(
             for (const file of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
-              merge(source, yield* loadFile(source, authEnv))
+              // GRAPHAGENT_CONFIG_DIR is explicitly global; .agents directories
+              // found upward from the project are the project layer.
+              yield* merge(
+                source,
+                yield* loadFile(source, authEnv),
+                dir === Flag.GRAPHAGENT_CONFIG_DIR ? "global" : "project",
+              )
               result.agent ??= {}
               result.mode ??= {}
             }
@@ -505,7 +550,7 @@ export const layer = Layer.effect(
             dir: ctx.directory,
             source,
           })
-          merge(source, next)
+          yield* merge(source, next, "global")
           yield* Effect.logDebug("loaded custom config from GRAPHAGENT_CONFIG_CONTENT")
         }
 
@@ -513,7 +558,7 @@ export const layer = Layer.effect(
         if (existsSync(managedDir)) {
           for (const file of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
             const source = path.join(managedDir, file)
-            merge(source, yield* loadFile(source))
+            yield* merge(source, yield* loadFile(source), "global")
           }
         }
 

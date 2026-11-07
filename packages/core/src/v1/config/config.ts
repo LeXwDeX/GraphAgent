@@ -30,6 +30,65 @@ const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate
   description: "Log level",
 })
 
+/**
+ * DAG workflow settings declared by #884. The values are read from the global
+ * layer only; `packages/opencode/src/config/config.ts` strips the same keys
+ * from project-level sources before merging and warns once per file and key.
+ */
+export const Dag = Schema.Struct({
+  mode: Schema.optional(Schema.Literals(["on", "off"])).annotate({
+    description:
+      "Default DAG mode for new sessions. Global config only: values from project-level configuration are ignored.",
+  }),
+  concurrency: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 64 }))).annotate({
+    description:
+      "Maximum number of workflow nodes running at the same time across all workflows in this process (1-64). Global config only: values from project-level configuration are ignored.",
+  }),
+  max_total_nodes: Schema.optional(PositiveInt).annotate({
+    description:
+      "User hard cap on the number of nodes in a single workflow; the model can only choose a smaller number. Global config only: values from project-level configuration are ignored.",
+  }),
+  budget: Schema.optional(
+    Schema.Struct({
+      tokens: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
+        description:
+          "Token limit across all DAG nodes under one main session; null means unlimited. Global config only: values from project-level configuration are ignored.",
+      }),
+      warn_ratio: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))).annotate({
+        description:
+          "Usage ratio (0-1) at which a budget warning is shown. Global config only: values from project-level configuration are ignored.",
+      }),
+    }),
+  ).annotate({
+    description: "DAG token budget. Global config only: values from project-level configuration are ignored.",
+  }),
+  safety: Schema.optional(
+    Schema.Struct({
+      extra: Schema.optional(
+        Schema.mutable(
+          Schema.Array(
+            Schema.Struct({
+              permission: Schema.String.annotate({ description: "Permission name the rule matches" }),
+              pattern: Schema.String.annotate({ description: "Pattern the permission applies to" }),
+              reason: Schema.optional(Schema.String).annotate({
+                description: "Optional reason shown when the rule denies an action",
+              }),
+            }),
+          ),
+        ),
+      ).annotate({
+        description:
+          "Additional safety rules. They can only deny, never allow. Global config only: values from project-level configuration are ignored.",
+      }),
+    }),
+  ).annotate({
+    description: "DAG safety rules. Global config only: values from project-level configuration are ignored.",
+  }),
+}).annotate({
+  description:
+    "DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning.",
+})
+
 export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String).annotate({
     description: "JSON schema reference for configuration validation",
@@ -195,6 +254,7 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  dag: Schema.optional(Dag),
 }).annotate({ identifier: "Config" })
 
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>

@@ -1,10 +1,25 @@
 import { expect, test } from "bun:test"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
+import { Schema } from "effect"
 import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
+import { ThemeConfig } from "../src/theme/schema"
 import { discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
+
+test("bundled themes match the published theme schema", async () => {
+  const assets = path.join(import.meta.dir, "../src/theme/assets")
+  const files = (await readdir(assets)).filter((file) => file.endsWith(".json"))
+  expect(files.length).toBeGreaterThan(0)
+  for (const file of files) {
+    const theme = await Bun.file(path.join(assets, file)).json()
+    expect(
+      () => Schema.decodeUnknownSync(ThemeConfig.Info)(theme),
+      `${file} should match ThemeConfig.Info`,
+    ).not.toThrow()
+  }
+})
 
 test("addTheme writes into module theme store", () => {
   const name = `plugin-theme-${Date.now()}`

@@ -31,7 +31,7 @@ https://github.com/anomalyco/models.dev
 
 ## Developing OpenCode
 
-- Requirements: Bun 1.3+
+- Requirements: Bun 1.4.4
 - Install dependencies and start the dev server from the repo root:
 
   ```bash
@@ -64,7 +64,7 @@ To compile a standalone executable:
 Then run it with:
 
 ```bash
-./packages/opencode/dist/opencode-<platform>/bin/opencode
+./packages/opencode/dist/graphagent-<platform>/bin/graphagent
 ```
 
 Replace `<platform>` with your platform (e.g., `darwin-arm64`, `linux-x64`).
@@ -75,9 +75,9 @@ Replace `<platform>` with your platform (e.g., `darwin-arm64`, `linux-x64`).
   - `packages/sdk/js`: The JavaScript SDK
   - `packages/plugin`: Tool definition helpers for config-scoped custom tools
 
-### Understanding bun dev vs opencode
+### Understanding bun dev vs graphagent
 
-During development, `bun dev` is the local equivalent of the built `opencode` command. Both run the same CLI interface:
+During development, `bun dev` is the local equivalent of the built `graphagent` command. Both run the same CLI interface:
 
 ```bash
 # Development (from project root)
@@ -86,9 +86,9 @@ bun dev serve            # Start headless API server
 bun dev <directory>      # Start TUI in specific directory
 
 # Production
-opencode --help          # Show all available commands
-opencode serve           # Start headless API server
-opencode <directory>     # Start TUI in specific directory
+graphagent --help          # Show all available commands
+graphagent serve           # Start headless API server
+graphagent <directory>     # Start TUI in specific directory
 ```
 
 ### Running the API Server
@@ -123,7 +123,7 @@ Caveats:
   the usual `bun dev`. This is because `bun dev` runs the server in a worker thread and breakpoints might not work there.
 - If `spawn` does not work for you, you can debug the server separately:
   - Debug server: `bun run --inspect=ws://localhost:6499/ --cwd packages/opencode ./src/index.ts serve --port 4096`,
-    then attach TUI with `opencode attach http://localhost:4096`
+    then attach TUI with `graphagent attach http://localhost:4096`
   - Debug TUI: `bun run --inspect=ws://localhost:6499/ --cwd packages/opencode --conditions=browser ./src/index.ts`
 
 Other tips and tricks:

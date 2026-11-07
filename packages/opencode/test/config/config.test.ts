@@ -3,6 +3,7 @@ import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Cause, Effect, Exit, Layer } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
@@ -23,6 +24,7 @@ import {
   tmpdirScoped,
   withTestInstance,
   provideInstanceEffect,
+  reloadInstance,
   testInstanceStoreLayer,
 } from "../fixture/fixture"
 import { InstanceRuntime } from "@/project/instance-runtime"
@@ -114,7 +116,8 @@ const layer = configLayer()
 const it = testEffect(layer)
 const configIt = (options?: Parameters<typeof configLayer>[0]) => testEffect(configLayer(options))
 
-const schemaConfig = (config: object) => ({ $schema: "https://opencode.ai/config.json", ...config })
+const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"
+const schemaConfig = (config: object) => ({ $schema: CONFIG_SCHEMA_URL, ...config })
 
 const provideCurrentInstance = <A, E, R>(effect: Effect.Effect<A, E, R>, ctx: InstanceContext) =>
   effect.pipe(Effect.provideService(InstanceRef, ctx))
@@ -317,7 +320,7 @@ it.effect("creates global jsonc config with schema when no global configs exist"
       yield* Config.use.get().pipe(provideInstanceEffect(dir))
 
       const content = yield* FSUtil.use.readFileString(path.join(dir, "graphagent.jsonc"))
-      expect(content).toContain('"$schema": "https://opencode.ai/config.json"')
+      expect(content).toContain(`"$schema": "${CONFIG_SCHEMA_URL}"`)
     }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
   ),
 )
@@ -1726,6 +1729,150 @@ describe("GRAPHAGENT_CONFIG_CONTENT token substitution", () => {
   )
 })
 
+// #884: DAG settings are machine-wide policy. Only the global layer may set
+// them; project files are stripped before the merge and reported once.
+describe("DAG settings are read from the global layer only", () => {
+  const dagConfig = {
+    mode: "on" as const,
+    concurrency: 7,
+    max_total_nodes: 40,
+    budget: { tokens: null, warn_ratio: 0.5 },
+    safety: { extra: [{ permission: "bash", pattern: "rm -rf /", reason: "destructive" }] },
+  }
+
+  const warning = "ignoring DAG setting from project configuration"
+  const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1
+
+  it.effect("loads every DAG key from the global config directory", () =>
+    withConfigTree(
+      { global: { dag: dagConfig } },
+      Effect.gen(function* () {
+        expect((yield* Config.use.get()).dag).toEqual(dagConfig)
+      }),
+    ),
+  )
+
+  it.effect("ignores DAG settings from the project config file and warns once per key", () =>
+    withConfigTree(
+      {
+        global: { dag: { concurrency: 7 } },
+        project: {
+          dag: {
+            mode: "on",
+            concurrency: 9,
+            max_total_nodes: 50,
+            budget: { tokens: 10 },
+            safety: { extra: [{ permission: "edit", pattern: "*" }] },
+          },
+        },
+      },
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        expect((yield* Config.use.get()).dag).toEqual({ concurrency: 7 })
+        const logs = JSON.stringify(yield* logLines)
+        expect(logs).toContain(warning)
+        expect(logs).toContain(path.join(test.directory, "graphagent.json"))
+        expect(logs).toContain("dag.concurrency")
+        expect(logs).toContain("dag.safety")
+        // A reload re-reads the same project file; the warning is per file and
+        // key per process, so the key must not be reported a second time.
+        const before = occurrences(logs, "dag.concurrency")
+        yield* reloadInstance({ directory: test.directory })
+        expect((yield* Config.use.get()).dag).toEqual({ concurrency: 7 })
+        expect(occurrences(JSON.stringify(yield* logLines), "dag.concurrency")).toBe(before)
+      }),
+    ),
+  )
+
+  it.effect("ignores DAG settings from .agents project directories", () =>
+    withConfigTree(
+      { local: { dag: { concurrency: 12 } } },
+      Effect.gen(function* () {
+        expect((yield* Config.use.get()).dag).toBeUndefined()
+        const logs = JSON.stringify(yield* logLines)
+        expect(logs).toContain(warning)
+        expect(logs).toContain(path.join(".agents", "graphagent.json"))
+        expect(logs).toContain("dag.concurrency")
+      }),
+    ),
+  )
+
+  it.effect("treats GRAPHAGENT_CONFIG as the global layer", () =>
+    Effect.gen(function* () {
+      const file = yield* tmpdirScoped({ config: { dag: { concurrency: 11 } } })
+      // Flag values are snapshotted at import time, so runtime changes must
+      // update the flag itself rather than the environment.
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previous = Flag.GRAPHAGENT_CONFIG
+          Flag.GRAPHAGENT_CONFIG = path.join(file, "graphagent.json")
+          return previous
+        }),
+        () =>
+          withConfigTree(
+            {},
+            Effect.gen(function* () {
+              expect((yield* Config.use.get()).dag?.concurrency).toBe(11)
+            }),
+          ),
+        (previous) =>
+          Effect.sync(() => {
+            Flag.GRAPHAGENT_CONFIG = previous
+          }),
+      )
+    }),
+  )
+
+  it.effect("treats GRAPHAGENT_CONFIG_CONTENT as the global layer", () =>
+    withConfigTree(
+      {},
+      withProcessEnv(
+        "GRAPHAGENT_CONFIG_CONTENT",
+        JSON.stringify({ dag: { concurrency: 13 } }),
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).dag?.concurrency).toBe(13)
+        }),
+      ),
+    ),
+  )
+
+  it.effect("treats GRAPHAGENT_CONFIG_DIR as the global layer", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ config: { dag: { concurrency: 14 } } })
+      yield* withConfigTree(
+        {},
+        withProcessEnv(
+          "GRAPHAGENT_CONFIG_DIR",
+          dir,
+          Effect.gen(function* () {
+            expect((yield* Config.use.get()).dag?.concurrency).toBe(14)
+          }),
+        ),
+      )
+    }),
+  )
+
+  it.effect("treats the managed configuration directory as the global layer", () =>
+    withConfigTree(
+      {},
+      Effect.gen(function* () {
+        yield* writeManagedSettingsEffect({ dag: { concurrency: 15 } })
+        expect((yield* Config.use.get()).dag?.concurrency).toBe(15)
+      }),
+    ),
+  )
+
+  it.effect("rejects invalid DAG values instead of silently coercing them", () =>
+    withConfigTree(
+      { global: { dag: { concurrency: "x" } } },
+      Effect.gen(function* () {
+        const exit = yield* Config.use.get().pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+      }),
+    ),
+  )
+})
+
 // parseManagedPlist unit tests — pure function, no OS interaction
 
 test("parseManagedPlist strips MDM metadata keys", async () => {
@@ -1805,12 +1952,12 @@ test("parseManagedPlist handles empty config", async () => {
   const config = ConfigParse.schema(
     ConfigV1.Info,
     ConfigParse.jsonc(
-      await ConfigManaged.parseManagedPlist(JSON.stringify({ $schema: "https://opencode.ai/config.json" })),
+      await ConfigManaged.parseManagedPlist(JSON.stringify({ $schema: CONFIG_SCHEMA_URL })),
       "test:mobileconfig",
     ),
     "test:mobileconfig",
   )
-  expect(config.$schema).toBe("https://opencode.ai/config.json")
+  expect(config.$schema).toBe(CONFIG_SCHEMA_URL)
 })
 
 for (const enabled of [true, false]) {
