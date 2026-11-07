@@ -51,7 +51,9 @@ Use this skill.
       yield* Effect.promise(() => Bun.write(path.join(skill, "scripts", "demo.txt"), "demo"))
 
       const home = process.env.GRAPHAGENT_TEST_HOME
-      process.env.GRAPHAGENT_TEST_HOME = dir
+      // Keep the isolated user home distinct from the project root: a root
+      // that equals $HOME carries no project layer.
+      process.env.GRAPHAGENT_TEST_HOME = path.join(dir, ".home")
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           process.env.GRAPHAGENT_TEST_HOME = home
@@ -97,7 +99,9 @@ Use this skill.
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory
       const home = process.env.GRAPHAGENT_TEST_HOME
-      process.env.GRAPHAGENT_TEST_HOME = dir
+      // Keep the isolated user home distinct from the project root: a root
+      // that equals $HOME carries no project layer.
+      process.env.GRAPHAGENT_TEST_HOME = path.join(dir, ".home")
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           process.env.GRAPHAGENT_TEST_HOME = home

@@ -154,8 +154,11 @@ Instructions here.
   it.live("returns skill directories from Skill.dirs", () =>
     provideTmpdirInstance(
       (dir) =>
+        // Keep the isolated user home distinct from the project root: a root
+        // that equals $HOME carries no project layer, which this fixture does
+        // not model.
         withHome(
-          dir,
+          path.join(dir, ".home"),
           Effect.gen(function* () {
             yield* Effect.promise(() =>
               Bun.write(

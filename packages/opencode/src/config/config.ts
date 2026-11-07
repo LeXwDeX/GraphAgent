@@ -6,6 +6,7 @@ import { pathToFileURL } from "url"
 import os from "os"
 import { mergeDeep } from "remeda"
 import { Global } from "@opencode-ai/core/global"
+import { assertProjectRootWritable, hasProjectLayer } from "@/project/project-root"
 import fsNode from "fs/promises"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Auth } from "../auth"
@@ -497,8 +498,10 @@ export const layer = Layer.effect(
           yield* Effect.logDebug("loaded custom config", { path: Flag.GRAPHAGENT_CONFIG })
         }
 
-        if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.worktree).pipe(
+        const projectLayer = hasProjectLayer(ctx.root, Global.Path.home)
+
+        if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && projectLayer) {
+          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.root).pipe(
             Effect.orDie,
           )) {
             yield* merge(file, yield* loadFile(file, authEnv), "project")
@@ -508,7 +511,12 @@ export const layer = Layer.effect(
         result.agent = result.agent || {}
         result.mode = result.mode || {}
 
-        const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
+        // `$HOME` carries no project layer: `~/.agents` is user-level even when
+        // the root walk terminates there. GRAPHAGENT_CONFIG_DIR stays global.
+        const homeAgents = path.join(Global.Path.home, PROJECT_DIR)
+        const directories = (yield* ConfigPaths.directories(ctx.directory, ctx.root)).filter(
+          (dir) => projectLayer || dir === Flag.GRAPHAGENT_CONFIG_DIR || dir !== homeAgents,
+        )
 
         if (Flag.GRAPHAGENT_CONFIG_DIR) {
           yield* Effect.logDebug("loading config from GRAPHAGENT_CONFIG_DIR", { path: Flag.GRAPHAGENT_CONFIG_DIR })
@@ -655,10 +663,12 @@ export const layer = Layer.effect(
     })
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
-      const dir = yield* InstanceState.directory
-      const file = path.join(dir, "config.json")
+      const ctx = yield* InstanceState.context
+      const file = path.join(ctx.directory, "config.json")
       const existing = yield* loadFile(file)
+      // Hook vetoes take precedence over the project-root guard so policies see the write first.
       yield* checkConfigChange(file, "project_settings")
+      assertProjectRootWritable(ctx.root, Global.Path.home)
       yield* fs
         .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
         .pipe(Effect.orDie)
@@ -673,14 +683,15 @@ export const layer = Layer.effect(
       )
       if (!effectiveUpdates.length) return yield* InstanceState.use(state, (current) => current.config)
       const ctx = yield* InstanceState.context
+      const projectWrite = effectiveUpdates.some((entry) => entry.destination !== "userSettings")
       for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
         if (!effectiveUpdates.some((entry) => entry.destination === destination)) continue
         const file =
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.directory, `${CONFIG_BASENAME}.jsonc`)
-              : HookPermissions.localFile(ctx.directory)
+              ? path.join(ctx.root, `${CONFIG_BASENAME}.jsonc`)
+              : HookPermissions.localFile(ctx.root)
         yield* checkConfigChange(
           file,
           destination === "userSettings"
@@ -690,6 +701,7 @@ export const layer = Layer.effect(
               : "project_settings",
         )
       }
+      if (projectWrite) assertProjectRootWritable(ctx.root, Global.Path.home)
       for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
         const entries = effectiveUpdates.filter((entry) => entry.destination === destination)
         if (!entries.length) continue
@@ -697,9 +709,9 @@ export const layer = Layer.effect(
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.directory, `${CONFIG_BASENAME}.jsonc`)
-              : HookPermissions.localFile(ctx.directory)
-        yield* HookPermissions.update(file, entries, ctx.directory).pipe(
+              ? path.join(ctx.root, `${CONFIG_BASENAME}.jsonc`)
+              : HookPermissions.localFile(ctx.root)
+        yield* HookPermissions.update(file, entries, ctx.root).pipe(
           Effect.provideService(FSUtil.Service, fs),
           Effect.provide(EffectFlock.defaultLayer),
           Effect.orDie,

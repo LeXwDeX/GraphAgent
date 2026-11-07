@@ -199,7 +199,12 @@ describe("MEM-PR01-R1-03: memory is inert once the identity row is retired", () 
             expect(stamped?.time.initialized).toBeDefined()
             yield* db.delete(ProjectTable).where(eq(ProjectTable.id, info.id)).run().pipe(Effect.orDie)
 
-            yield* Effect.provideService(InstanceRef, { directory: dir, worktree: info.worktree, project: stamped! })(
+            yield* Effect.provideService(InstanceRef, {
+              directory: dir,
+              worktree: info.worktree,
+              root: info.worktree,
+              project: stamped!,
+            })(
               Effect.gen(function* () {
                 const retired = yield* memory.search({ sessionID, messages: [userMessage(sessionID)], query: "任意查询" })
                 expect(retired.status).toBe("unavailable")
@@ -252,6 +257,7 @@ describe("MEM-PR01-R1-07: /memory writes the Project config to the primary direc
             yield* Effect.provideService(InstanceRef, {
               directory: elsewhere,
               worktree: elsewhere,
+              root: elsewhere,
               project: stamped,
             })(
               Effect.gen(function* () {

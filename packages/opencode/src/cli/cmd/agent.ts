@@ -11,6 +11,7 @@ import { EOL } from "os"
 import type { Argv } from "yargs"
 import { Effect } from "effect"
 import { effectCmd } from "../effect-cmd"
+import { assertProjectRootWritable } from "@/project/project-root"
 
 type AgentMode = "all" | "primary" | "subagent"
 
@@ -97,7 +98,7 @@ const AgentCreateCommand = effectCmd({
               {
                 label: "Current project",
                 value: "project" as const,
-                hint: ctx.worktree,
+                hint: ctx.root,
               },
               {
                 label: "Global",
@@ -109,8 +110,9 @@ const AgentCreateCommand = effectCmd({
           if (prompts.isCancel(scopeResult)) throw new UI.CancelledError()
           scope = scopeResult
         }
+        if (scope === "project") assertProjectRootWritable(ctx.root, Global.Path.home)
         targetPath = path.join(
-          scope === "global" ? Global.Path.config : path.join(ctx.worktree, PROJECT_DIR),
+          scope === "global" ? Global.Path.config : path.join(ctx.root, PROJECT_DIR),
           "agents",
         )
       }

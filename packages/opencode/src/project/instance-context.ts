@@ -5,6 +5,8 @@ import type * as Project from "./project"
 export interface InstanceContext {
   directory: string
   worktree: string
+  /** Project root: nearest directory at or above `directory` (bounded by the git toplevel) holding `.agents/`. */
+  root: string
   project: Project.Info
 }
 

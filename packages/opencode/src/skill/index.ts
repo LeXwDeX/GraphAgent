@@ -18,6 +18,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Glob } from "@opencode-ai/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
+import { hasProjectLayer } from "@/project/project-root"
 
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
@@ -229,9 +230,13 @@ const discoverSkills = Effect.fnUntraced(function* (
   disableExternalSkills: boolean,
   disableClaudeCodeSkills: boolean,
   directory: string,
-  worktree: string,
+  /** Project root; project-level scans never escape it. */
+  bound: string,
 ) {
   const state: ScanState = { matches: new Set(), dirs: new Set() }
+  // `$HOME` carries no project layer: `~/.agents` is already scanned as the
+  // user-level directory above, so the project walk is skipped entirely.
+  const projectLayer = hasProjectLayer(bound, Global.Path.home)
 
   const externalDirs: string[] = []
   if (!disableExternalSkills) {
@@ -247,9 +252,11 @@ const discoverSkills = Effect.fnUntraced(function* (
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
     }
 
-    const upDirs = yield* fsys
-      .up({ targets: externalDirs, start: directory, stop: worktree })
-      .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+    const upDirs = projectLayer
+      ? yield* fsys
+          .up({ targets: externalDirs, start: directory, stop: bound })
+          .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+      : []
 
     for (const root of upDirs) {
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
@@ -259,10 +266,12 @@ const discoverSkills = Effect.fnUntraced(function* (
   // SessionStart may install the first .agents directory after configuration was cached.
   const configDirs = new Set([
     ...(yield* config.directories()),
-    ...(yield* ConfigPaths.directories(directory, worktree).pipe(
-      Effect.provideService(FSUtil.Service, fsys),
-      Effect.orDie,
-    )),
+    ...(projectLayer
+      ? yield* ConfigPaths.directories(directory, bound).pipe(
+          Effect.provideService(FSUtil.Service, fsys),
+          Effect.orDie,
+        )
+      : []),
   ])
   for (const dir of configDirs) {
     yield* scan(state, dir, GRAPHAGENT_SKILL_PATTERN)
@@ -327,7 +336,7 @@ export const layer = Layer.effect(
           flags.disableExternalSkills,
           flags.disableClaudeCodeSkills,
           ctx.directory,
-          ctx.worktree,
+          ctx.root,
         )
       }),
     )

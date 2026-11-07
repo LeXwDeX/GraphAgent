@@ -231,6 +231,7 @@ function harness(
         Effect.provideService(InstanceRef, {
           directory: load.directory,
           worktree: load.directory,
+          root: load.directory,
           project: {
             id: Project.ID.make("p"),
             worktree: load.directory,
@@ -276,6 +277,7 @@ function harness(
             Effect.provideService(InstanceRef, {
               directory,
               worktree: directory,
+              root: directory,
               project: {
                 id: Project.ID.make("p"),
                 worktree: directory,

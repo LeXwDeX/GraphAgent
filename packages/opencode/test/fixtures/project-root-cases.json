@@ -1,0 +1,124 @@
+[
+  {
+    "name": "git repository without .agents falls back to toplevel",
+    "directory": "$HOME/projects/repo/src",
+    "home": "$HOME",
+    "toplevel": "$HOME/projects/repo",
+    "agents": [],
+    "expected": "$HOME/projects/repo"
+  },
+  {
+    "name": "git repository with .agents at the toplevel",
+    "directory": "$HOME/projects/repo/src",
+    "home": "$HOME",
+    "toplevel": "$HOME/projects/repo",
+    "agents": ["$HOME/projects/repo/.agents"],
+    "expected": "$HOME/projects/repo"
+  },
+  {
+    "name": "non-git directory uses the nearest ancestor with .agents",
+    "directory": "$HOME/work/app/src",
+    "home": "$HOME",
+    "agents": ["$HOME/work/app/.agents"],
+    "expected": "$HOME/work/app"
+  },
+  {
+    "name": "non-git directory without .agents uses the instance directory",
+    "directory": "$HOME/work/app/src",
+    "home": "$HOME",
+    "agents": [],
+    "expected": "$HOME/work/app/src"
+  },
+  {
+    "name": "non-git directory above $HOME stops before the filesystem root",
+    "directory": "/tmp/agent-probe/src",
+    "home": "$HOME",
+    "agents": ["/.agents"],
+    "expected": "/tmp/agent-probe/src"
+  },
+  {
+    "name": "non-git directory above $HOME finds a marker in its own tree",
+    "directory": "/tmp/agent-probe/src",
+    "home": "$HOME",
+    "agents": ["/tmp/agent-probe/.agents"],
+    "expected": "/tmp/agent-probe"
+  },
+  {
+    "name": "~/.agents is never a project root for a home-rooted git repo",
+    "directory": "$HOME/projects/repo/src",
+    "home": "$HOME",
+    "toplevel": "$HOME/projects/repo",
+    "agents": ["$HOME/.agents"],
+    "expected": "$HOME/projects/repo"
+  },
+  {
+    "name": "~/.agents is never a project root for a non-git directory",
+    "directory": "$HOME/work/src",
+    "home": "$HOME",
+    "agents": ["$HOME/.agents"],
+    "expected": "$HOME/work/src"
+  },
+  {
+    "name": "monorepo subdirectory with its own .agents wins",
+    "directory": "$HOME/repo/pkg/a/src",
+    "home": "$HOME",
+    "toplevel": "$HOME/repo",
+    "agents": ["$HOME/repo/.agents", "$HOME/repo/pkg/a/.agents"],
+    "expected": "$HOME/repo/pkg/a"
+  },
+  {
+    "name": "monorepo falls back to the repository root marker",
+    "directory": "$HOME/repo/pkg/a/src",
+    "home": "$HOME",
+    "toplevel": "$HOME/repo",
+    "agents": ["$HOME/repo/.agents"],
+    "expected": "$HOME/repo"
+  },
+  {
+    "name": "lookup never crosses the git toplevel",
+    "directory": "$HOME/repo/pkg/a/src",
+    "home": "$HOME",
+    "toplevel": "$HOME/repo",
+    "agents": ["$HOME/.agents"],
+    "expected": "$HOME/repo"
+  },
+  {
+    "name": "a worktree with its own .agents is its own project root",
+    "directory": "$HOME/repo/.agents/worktree/x/sub",
+    "home": "$HOME",
+    "toplevel": "$HOME/repo/.agents/worktree/x",
+    "agents": ["$HOME/repo/.agents/worktree/x/.agents"],
+    "expected": "$HOME/repo/.agents/worktree/x"
+  },
+  {
+    "name": "a worktree without .agents falls back to its toplevel and does not escape",
+    "directory": "$HOME/repo/.agents/worktree/x/sub",
+    "home": "$HOME",
+    "toplevel": "$HOME/repo/.agents/worktree/x",
+    "agents": ["$HOME/repo/.agents"],
+    "expected": "$HOME/repo/.agents/worktree/x"
+  },
+  {
+    "name": "$HOME itself as a git repository has no project layer",
+    "directory": "$HOME",
+    "home": "$HOME",
+    "toplevel": "$HOME",
+    "agents": [],
+    "expected": "$HOME"
+  },
+  {
+    "name": "$HOME itself as a non-git directory has no project layer",
+    "directory": "$HOME",
+    "home": "$HOME",
+    "agents": ["$HOME/.agents"],
+    "expected": "$HOME"
+  },
+  {
+    "name": "a marker below the toplevel is found from a nested directory",
+    "directory": "$HOME/repo/pkg/a/src/deep",
+    "home": "$HOME",
+    "toplevel": "$HOME/repo",
+    "agents": ["$HOME/repo/pkg/a/.agents"],
+    "expected": "$HOME/repo/pkg/a"
+  }
+]

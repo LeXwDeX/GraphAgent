@@ -247,6 +247,7 @@ function runLeaseTest<A>(
       Effect.provideService(InstanceRef, {
         directory: process.cwd(),
         worktree: process.cwd(),
+        root: process.cwd(),
         project: {
           id: Project.ID.make(PROJECT_ID),
           worktree: process.cwd(),

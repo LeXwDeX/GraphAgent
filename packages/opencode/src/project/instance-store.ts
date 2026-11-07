@@ -1,5 +1,7 @@
 import { Logging } from "@opencode-ai/core/observability/logging"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Global } from "@opencode-ai/core/global"
+import { statSync } from "fs"
 import { GlobalBus } from "@/bus/global"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
@@ -9,6 +11,7 @@ import { disposeInstance as runDisposers } from "@/effect/instance-registry"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Scope, Semaphore } from "effect"
 import { type InstanceContext } from "./instance-context"
+import { resolveProjectRoot } from "./project-root"
 import { InstanceBootstrap } from "./bootstrap-service"
 import { InstanceBootstrap as InstanceBootstrapGraph } from "./bootstrap"
 import * as Project from "./project"
@@ -96,13 +99,9 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
 
     const boot = (input: LoadInput & { directory: string }) =>
       Effect.gen(function* () {
-        const ctx: InstanceContext =
+        const resolved =
           input.project && input.worktree
-            ? {
-                directory: input.directory,
-                worktree: input.worktree,
-                project: input.project,
-              }
+            ? { directory: input.directory, worktree: input.worktree, project: input.project }
             : yield* project.fromDirectory(input.directory).pipe(
                 Effect.map((result) => ({
                   directory: input.directory,
@@ -110,6 +109,20 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
                   project: result.project,
                 })),
               )
+        const ctx: InstanceContext = {
+          ...resolved,
+          root: resolveProjectRoot(resolved.directory, {
+            home: Global.Path.home,
+            toplevel: resolved.project.vcs === "git" ? resolved.worktree : undefined,
+            isDirectory: (candidate) => {
+              try {
+                return statSync(candidate).isDirectory()
+              } catch {
+                return false
+              }
+            },
+          }),
+        }
         yield* bootstrap.run.pipe(Effect.provideService(InstanceRef, ctx))
         return ctx
       }).pipe(Effect.withSpan("InstanceStore.boot"))

@@ -280,6 +280,7 @@ function runWakeTest<A>(
       Effect.provideService(InstanceRef, {
         directory: process.cwd(),
         worktree: process.cwd(),
+        root: process.cwd(),
         project: { id: "project-1" },
       } as never),
       Effect.scoped,
@@ -481,6 +482,7 @@ describe("DagLoop atomic wake integration", () => {
           Effect.provideService(InstanceRef, {
             directory: process.cwd(),
             worktree: process.cwd(),
+            root: process.cwd(),
             project: {
               id: Project.ID.make("project-1"),
               worktree: AbsolutePath.make(process.cwd()),
@@ -1751,6 +1753,7 @@ describe("DagLoop atomic wake integration", () => {
           Effect.provideService(InstanceRef, {
             directory: process.cwd(),
             worktree: process.cwd(),
+            root: process.cwd(),
             project: {
               id: Project.ID.make("project-1"),
               worktree: process.cwd(),

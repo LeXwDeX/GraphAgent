@@ -246,7 +246,12 @@ describe("DAG message recovery initial pause race", () => {
             expect(node?.replanAttempts).toBe(0)
           }).pipe(
             Effect.provide(recoveryLayer(probe)),
-            Effect.provideService(InstanceRef, { directory: test.directory, worktree: test.directory, project }),
+            Effect.provideService(InstanceRef, {
+              directory: test.directory,
+              worktree: test.directory,
+              root: test.directory,
+              project,
+            }),
             Effect.scoped,
           )
         }),

@@ -14,14 +14,16 @@ cliIt.live(
       const hostValue = process.env.INSTRUCTION_SESSION_VALUE
       const audit = path.join(home, "instructions-environment.jsonl")
       const script = path.join(home, "instructions-environment.ts")
-      let nested = path.join(home, "nested", "value.txt")
+      const project = path.join(home, "project")
+      let nested = path.join(project, "nested", "value.txt")
       yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(project, ".agents"), { recursive: true })
         await fs.mkdir(path.dirname(nested), { recursive: true })
         await fs.writeFile(
           path.join(home, ".config/graphagent/AGENTS.md"),
           "# Root instruction\nUse fixture conventions.\n",
         )
-        await fs.writeFile(path.join(home, "nested/AGENTS.md"), "# Nested instruction\nRead this local fixture.\n")
+        await fs.writeFile(path.join(project, "nested/AGENTS.md"), "# Nested instruction\nRead this local fixture.\n")
         await fs.writeFile(nested, "ACTUAL_NESTED_INPUT")
         await fs.writeFile(
           script,
@@ -41,7 +43,7 @@ cliIt.live(
         Effect.promise(() =>
           fetch(server.url + route, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-graphagent-directory": home },
+            headers: { "content-type": "application/json", "x-graphagent-directory": project },
             body: JSON.stringify(body),
           }),
         )
@@ -68,7 +70,7 @@ cliIt.live(
             decodeRecords(
               await (
                 await fetch(server.url + `/session/${id}/message`, {
-                  headers: { "x-graphagent-directory": home },
+                  headers: { "x-graphagent-directory": project },
                 })
               ).json(),
             ),
@@ -123,15 +125,17 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
   Effect.gen(function* () {
     const audit = path.join(home, "instructions-audit.jsonl")
     const script = path.join(home, "instructions-audit.ts")
+    const project = path.join(home, "project")
     yield* Effect.promise(async () => {
       await $`git init`.cwd(home).quiet()
       await $`git config commit.gpgsign false`.cwd(home).quiet()
       await $`git -c user.name=Test -c user.email=test@example.test commit --allow-empty -m fixture`.cwd(home).quiet()
-      await fs.mkdir(path.join(home, "nested"), { recursive: true })
+      await fs.mkdir(path.join(project, ".agents"), { recursive: true })
+      await fs.mkdir(path.join(project, "nested"), { recursive: true })
       await fs.writeFile(path.join(home, ".config/graphagent/AGENTS.md"), "# Global instruction\n")
-      await fs.writeFile(path.join(home, "AGENTS.md"), "# Project instruction\n")
-      await fs.writeFile(path.join(home, "nested/AGENTS.md"), "# Nested instruction\n")
-      await fs.writeFile(path.join(home, "nested/value.txt"), "NESTED_VALUE")
+      await fs.writeFile(path.join(project, "AGENTS.md"), "# Project instruction\n")
+      await fs.writeFile(path.join(project, "nested/AGENTS.md"), "# Nested instruction\n")
+      await fs.writeFile(path.join(project, "nested/value.txt"), "NESTED_VALUE")
       await fs.writeFile(script, source.replaceAll("__AUDIT__", JSON.stringify(audit)))
       await fs.writeFile(
         path.join(home, ".config/graphagent/hooks.json"),
@@ -145,7 +149,7 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
       Effect.promise(() =>
         fetch(server.url + route, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-graphagent-directory": home },
+          headers: { "content-type": "application/json", "x-graphagent-directory": project },
           body: JSON.stringify(payload),
         }),
       )
@@ -158,7 +162,7 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
         .filter(Boolean)
         .map((line) => decodeRecord(JSON.parse(line))),
     )
-    const nested = yield* Effect.promise(() => fs.realpath(path.join(home, "nested/value.txt")))
+    const nested = yield* Effect.promise(() => fs.realpath(path.join(project, "nested/value.txt")))
     const turn = (text: string) =>
       Effect.gen(function* () {
         const response = yield* post(`/session/${id}/message`, {
@@ -239,7 +243,9 @@ cliIt.live(
       yield* llm.text("AFTER_COMPACT")
       yield* fixture.turn("after")
       const rows = yield* pollWithTimeout(
-        fixture.rows.pipe(Effect.map((items) => (items.some((row) => row.reason === "compact") ? items : undefined))),
+        fixture.rows.pipe(
+          Effect.map((items) => (items.filter((row) => row.reason === "compact").length >= 2 ? items : undefined)),
+        ),
         "compact reload rows",
         "10 seconds",
       )

@@ -13,6 +13,7 @@ import { parse, type ParseError } from "jsonc-parser"
 import { MemoryFile } from "./file"
 import { MemoryPaths } from "./paths"
 import { MemorySchema } from "./schema"
+import { assertProjectRootWritable } from "@/project/project-root"
 
 export type Loaded = {
   readonly config: MemorySchema.Config
@@ -98,6 +99,7 @@ export const layer = Layer.effect(
       config: MemorySchema.Config,
       existingPath?: string,
     ) {
+      assertProjectRootWritable(projectDir, Global.Path.home)
       yield* ensureProjectExclude(projectDir)
       // One Project = one shared policy file, written by several paths
       // (/memory on|off, admission promotion, normalization rewrites) from

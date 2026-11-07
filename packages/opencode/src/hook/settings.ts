@@ -2365,6 +2365,8 @@ interface State {
   cwd: string
   /** Stable project root; survives deletion of `cwd`, so hooks can fall back to it. */
   worktree: string
+  /** Project root used for `CLAUDE_PROJECT_DIR` and its template placeholder. */
+  root: string
   /**
    * Deduplicated additionalContext strings, bucketed per sessionID. Each
    * session sees every distinct context once; a second session is NOT
@@ -3122,6 +3124,7 @@ export const layer = Layer.effect(
           hooksList: chain.summaries,
           cwd: instCtx.directory,
           worktree: instCtx.worktree,
+          root: instCtx.root,
           seen: new Map<string, Set<string>>(),
           once: new Map<string, WeakSet<HookCommand>>(),
           onceRunning: new Map<string, WeakMap<HookCommand, string>>(),
@@ -3638,7 +3641,7 @@ export const layer = Layer.effect(
             ctx.environmentFile,
             ctx.environment,
             ctx.canonicalToolName,
-            s.worktree,
+            s.root,
             ctx.effort,
             payload.event === "PostToolUse" ? payload.toolOutput : undefined,
           ).pipe(
