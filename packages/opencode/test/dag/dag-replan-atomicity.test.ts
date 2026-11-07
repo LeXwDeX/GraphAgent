@@ -36,6 +36,7 @@ const workspaceID = WorkspaceV2.ID.make("wrk_1")
 const instance = {
   directory,
   worktree: directory,
+  root: directory,
   project: {
     id: projectID,
     worktree: AbsolutePath.make(directory),

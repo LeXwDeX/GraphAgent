@@ -57,7 +57,7 @@ function dropUnknownKeybinds(input: Record<string, unknown>) {
   }
 }
 
-const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: string }) {
+const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: string; root?: string }) {
   const afs = yield* FSUtil.Service
   let appliedOrder = 0
 
@@ -119,11 +119,13 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       acc.result = mergeDeep(acc.result, data)
     })
 
-  // Every config dir we may read from: global config dir, any `.agents`
-  // folders between cwd and home, and GRAPHAGENT_CONFIG_DIR.
-  const directories = yield* ConfigPaths.directories(ctx.directory)
+  // Every config dir we may read from: global config dir, `.agents` folders
+  // between cwd and the project root, and GRAPHAGENT_CONFIG_DIR.
+  const directories = yield* ConfigPaths.directories(ctx.directory, ctx.root)
 
-  const projectFiles = Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG ? [] : yield* ConfigPaths.files("tui", ctx.directory)
+  const projectFiles = Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG
+    ? []
+    : yield* ConfigPaths.files("tui", ctx.directory, ctx.root)
 
   const acc: { result: Info } = { result: {} }
 

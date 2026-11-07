@@ -6,6 +6,7 @@ import { pathToFileURL } from "url"
 import os from "os"
 import { mergeDeep } from "remeda"
 import { Global } from "@opencode-ai/core/global"
+import { assertProjectRootWritable } from "@/project/project-root"
 import fsNode from "fs/promises"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Auth } from "../auth"
@@ -498,7 +499,7 @@ export const layer = Layer.effect(
         }
 
         if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.worktree).pipe(
+          for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.root).pipe(
             Effect.orDie,
           )) {
             yield* merge(file, yield* loadFile(file, authEnv), "project")
@@ -508,7 +509,7 @@ export const layer = Layer.effect(
         result.agent = result.agent || {}
         result.mode = result.mode || {}
 
-        const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
+        const directories = yield* ConfigPaths.directories(ctx.directory, ctx.root)
 
         if (Flag.GRAPHAGENT_CONFIG_DIR) {
           yield* Effect.logDebug("loading config from GRAPHAGENT_CONFIG_DIR", { path: Flag.GRAPHAGENT_CONFIG_DIR })
@@ -655,8 +656,9 @@ export const layer = Layer.effect(
     })
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
-      const dir = yield* InstanceState.directory
-      const file = path.join(dir, "config.json")
+      const ctx = yield* InstanceState.context
+      assertProjectRootWritable(ctx.root, Global.Path.home)
+      const file = path.join(ctx.directory, "config.json")
       const existing = yield* loadFile(file)
       yield* checkConfigChange(file, "project_settings")
       yield* fs
@@ -673,14 +675,16 @@ export const layer = Layer.effect(
       )
       if (!effectiveUpdates.length) return yield* InstanceState.use(state, (current) => current.config)
       const ctx = yield* InstanceState.context
+      if (effectiveUpdates.some((entry) => entry.destination !== "userSettings"))
+        assertProjectRootWritable(ctx.root, Global.Path.home)
       for (const destination of ["userSettings", "projectSettings", "localSettings"] as const) {
         if (!effectiveUpdates.some((entry) => entry.destination === destination)) continue
         const file =
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.directory, `${CONFIG_BASENAME}.jsonc`)
-              : HookPermissions.localFile(ctx.directory)
+              ? path.join(ctx.root, `${CONFIG_BASENAME}.jsonc`)
+              : HookPermissions.localFile(ctx.root)
         yield* checkConfigChange(
           file,
           destination === "userSettings"
@@ -697,9 +701,9 @@ export const layer = Layer.effect(
           destination === "userSettings"
             ? globalConfigFile()
             : destination === "projectSettings"
-              ? path.join(ctx.directory, `${CONFIG_BASENAME}.jsonc`)
-              : HookPermissions.localFile(ctx.directory)
-        yield* HookPermissions.update(file, entries, ctx.directory).pipe(
+              ? path.join(ctx.root, `${CONFIG_BASENAME}.jsonc`)
+              : HookPermissions.localFile(ctx.root)
+        yield* HookPermissions.update(file, entries, ctx.root).pipe(
           Effect.provideService(FSUtil.Service, fs),
           Effect.provide(EffectFlock.defaultLayer),
           Effect.orDie,

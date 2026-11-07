@@ -137,6 +137,7 @@ describe("DAG deadline watcher abort reason", () => {
     const instance: InstanceContext = {
       directory: "/tmp",
       worktree: "/tmp",
+      root: "/tmp",
       project: {
         id: Project.ID.make("project-1"),
         worktree: "/tmp",

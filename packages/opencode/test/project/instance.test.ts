@@ -1,4 +1,6 @@
 import { describe, expect } from "bun:test"
+import { mkdir } from "node:fs/promises"
+import path from "node:path"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
@@ -46,6 +48,21 @@ describe("InstanceStore", () => {
 
       expect(ctx.directory).toBe(dir)
       expect(ctx.worktree).toBe(dir)
+      expect(ctx.root).toBe(dir)
+    }),
+  )
+
+  it.live("anchors the project root at the nearest .agents directory", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const nested = path.join(dir, "packages", "app")
+      yield* Effect.promise(() => mkdir(path.join(nested, ".agents"), { recursive: true }))
+      const store = yield* InstanceStore.Service
+      const ctx = yield* store.load({ directory: nested })
+
+      expect(ctx.directory).toBe(nested)
+      expect(ctx.worktree).toBe(dir)
+      expect(ctx.root).toBe(nested)
     }),
   )
 

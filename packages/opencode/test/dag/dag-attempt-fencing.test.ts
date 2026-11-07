@@ -24,6 +24,7 @@ const sessionID = SessionID.make("ses_attempt_fence")
 const instance = {
   directory,
   worktree: directory,
+  root: directory,
   project: {
     id: projectID,
     worktree: AbsolutePath.make(directory),

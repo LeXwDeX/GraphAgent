@@ -256,6 +256,7 @@ describe("DAG wake admission-to-mark crash boundary (#697/B4)", () => {
         const instance = {
           directory: test.directory,
           worktree: test.directory,
+          root: test.directory,
           project: {
             id: Project.ID.make("project-1"),
             worktree: AbsolutePath.make(test.directory),

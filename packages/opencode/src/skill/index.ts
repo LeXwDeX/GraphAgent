@@ -229,7 +229,8 @@ const discoverSkills = Effect.fnUntraced(function* (
   disableExternalSkills: boolean,
   disableClaudeCodeSkills: boolean,
   directory: string,
-  worktree: string,
+  /** Project root; project-level scans never escape it. */
+  bound: string,
 ) {
   const state: ScanState = { matches: new Set(), dirs: new Set() }
 
@@ -248,7 +249,7 @@ const discoverSkills = Effect.fnUntraced(function* (
     }
 
     const upDirs = yield* fsys
-      .up({ targets: externalDirs, start: directory, stop: worktree })
+      .up({ targets: externalDirs, start: directory, stop: bound })
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
     for (const root of upDirs) {
@@ -259,7 +260,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   // SessionStart may install the first .agents directory after configuration was cached.
   const configDirs = new Set([
     ...(yield* config.directories()),
-    ...(yield* ConfigPaths.directories(directory, worktree).pipe(
+    ...(yield* ConfigPaths.directories(directory, bound).pipe(
       Effect.provideService(FSUtil.Service, fsys),
       Effect.orDie,
     )),

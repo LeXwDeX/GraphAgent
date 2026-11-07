@@ -23,6 +23,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { WorktreeEvent } from "@opencode-ai/schema/worktree-event"
 import { SettingsHook } from "@/hook/settings"
 import { MemoryAdmission } from "@/memory/admission"
+import { assertProjectRootWritable } from "@/project/project-root"
 import { MemoryPaths } from "@/memory/paths"
 import * as Option from "effect/Option"
 
@@ -215,6 +216,7 @@ export const layer: Layer.Layer<
       if (ctx.project.vcs !== "git") {
         return yield* new NotGitError({ message: "Worktrees are only supported for git projects" })
       }
+      assertProjectRootWritable(ctx.root, Global.Path.home)
 
       const root = pathSvc.join(Global.Path.data, "worktree", ctx.project.id)
       yield* fs.makeDirectory(root, { recursive: true }).pipe(Effect.orDie)

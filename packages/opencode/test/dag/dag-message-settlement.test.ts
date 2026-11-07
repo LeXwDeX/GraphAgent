@@ -444,6 +444,7 @@ describe("message settlement through durable DAG events", () => {
         Effect.provideService(InstanceRef, {
           directory: process.cwd(),
           worktree: process.cwd(),
+          root: process.cwd(),
           project: {
             id: ProjectV2.ID.make("p"),
             worktree: process.cwd(),
@@ -508,6 +509,7 @@ describe("message settlement through durable DAG events", () => {
         Effect.provideService(InstanceRef, {
           directory: process.cwd(),
           worktree: process.cwd(),
+          root: process.cwd(),
           project: {
             id: ProjectV2.ID.make("p"),
             worktree: process.cwd(),
@@ -636,6 +638,7 @@ describe("message settlement through durable DAG events", () => {
           Effect.provideService(InstanceRef, {
             directory: process.cwd(),
             worktree: process.cwd(),
+            root: process.cwd(),
             project: {
               id: ProjectV2.ID.make("p"),
               worktree: process.cwd(),

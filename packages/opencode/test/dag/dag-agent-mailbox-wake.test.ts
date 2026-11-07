@@ -92,6 +92,7 @@ function run<A>(probe: MailboxProbe, work: Effect.Effect<A, Error, DagLoop.Servi
       Effect.provideService(InstanceRef, {
         directory: process.cwd(),
         worktree: process.cwd(),
+        root: process.cwd(),
         project: {
           id: Project.ID.make("project-1"),
           worktree: process.cwd(),

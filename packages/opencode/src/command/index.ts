@@ -80,7 +80,7 @@ export const layer = Layer.effect(
         description: "guided AGENTS.md setup",
         source: "command",
         get template() {
-          return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
+          return PROMPT_INITIALIZE.replace("${path}", ctx.root)
         },
         hints: hints(PROMPT_INITIALIZE),
       }

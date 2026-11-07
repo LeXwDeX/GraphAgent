@@ -199,6 +199,7 @@ function runLoop<A>(
       Effect.provideService(InstanceRef, {
         directory,
         worktree: directory,
+        root: directory,
         project: {
           id: ProjectV2.ID.make("project-retarget-loop"),
           worktree: directory,

@@ -105,7 +105,7 @@ export const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
         return yield* fs
-          .globUp(instruction, ctx.directory, ctx.worktree)
+          .globUp(instruction, ctx.directory, ctx.root)
           .pipe(Effect.catch(() => Effect.succeed([] as string[])))
       }
       return yield* fs
@@ -152,7 +152,7 @@ export const layer: Layer.Layer<
       if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
         for (const file of instructionFiles) {
           const matches = yield* fs
-            .findUp(file, ctx.directory, ctx.worktree)
+            .findUp(file, ctx.directory, ctx.root)
             .pipe(Effect.catch(() => Effect.succeed([])))
           if (matches.length > 0) {
             matches.forEach((item) => paths.add(path.resolve(item)))
@@ -267,7 +267,7 @@ export const layer: Layer.Layer<
       const already = extract(messages)
       const results: { filepath: string; content: string }[] = []
       const s = yield* InstanceState.get(state)
-      const root = path.resolve(yield* InstanceState.directory)
+      const root = path.resolve((yield* InstanceState.context).root)
 
       const target = path.resolve(filepath)
       let current = path.dirname(target)
