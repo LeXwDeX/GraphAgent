@@ -6,7 +6,7 @@ import { pathToFileURL } from "url"
 import os from "os"
 import { mergeDeep } from "remeda"
 import { Global } from "@opencode-ai/core/global"
-import { assertProjectRootWritable } from "@/project/project-root"
+import { assertProjectRootWritable, hasProjectLayer } from "@/project/project-root"
 import fsNode from "fs/promises"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Auth } from "../auth"
@@ -498,7 +498,9 @@ export const layer = Layer.effect(
           yield* Effect.logDebug("loaded custom config", { path: Flag.GRAPHAGENT_CONFIG })
         }
 
-        if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
+        const projectLayer = hasProjectLayer(ctx.root, Global.Path.home)
+
+        if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && projectLayer) {
           for (const file of yield* ConfigPaths.files(CONFIG_BASENAME, ctx.directory, ctx.root).pipe(
             Effect.orDie,
           )) {
@@ -509,7 +511,12 @@ export const layer = Layer.effect(
         result.agent = result.agent || {}
         result.mode = result.mode || {}
 
-        const directories = yield* ConfigPaths.directories(ctx.directory, ctx.root)
+        // `$HOME` carries no project layer: `~/.agents` is user-level even when
+        // the root walk terminates there. GRAPHAGENT_CONFIG_DIR stays global.
+        const homeAgents = path.join(Global.Path.home, PROJECT_DIR)
+        const directories = (yield* ConfigPaths.directories(ctx.directory, ctx.root)).filter(
+          (dir) => projectLayer || dir === Flag.GRAPHAGENT_CONFIG_DIR || dir !== homeAgents,
+        )
 
         if (Flag.GRAPHAGENT_CONFIG_DIR) {
           yield* Effect.logDebug("loading config from GRAPHAGENT_CONFIG_DIR", { path: Flag.GRAPHAGENT_CONFIG_DIR })

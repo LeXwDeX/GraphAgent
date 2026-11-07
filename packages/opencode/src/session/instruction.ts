@@ -14,6 +14,7 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@opencode-ai/core/global"
+import { hasProjectLayer } from "@/project/project-root"
 import type { MessageID } from "./schema"
 
 function extract(messages: SessionV1.WithParts[]) {
@@ -103,7 +104,7 @@ export const layer: Layer.Layer<
 
     const relative = Effect.fnUntraced(function* (instruction: string) {
       const ctx = yield* InstanceState.context
-      if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
+      if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && hasProjectLayer(ctx.root, global.home)) {
         return yield* fs
           .globUp(instruction, ctx.directory, ctx.root)
           .pipe(Effect.catch(() => Effect.succeed([] as string[])))
@@ -149,7 +150,8 @@ export const layer: Layer.Layer<
       }
 
       // The first project-level match wins so we don't stack AGENTS.md/CLAUDE.md from every ancestor.
-      if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
+      // `$HOME` carries no project layer, so a root that resolves there reads no project instructions.
+      if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && hasProjectLayer(ctx.root, global.home)) {
         for (const file of instructionFiles) {
           const matches = yield* fs
             .findUp(file, ctx.directory, ctx.root)
@@ -268,6 +270,9 @@ export const layer: Layer.Layer<
       const results: { filepath: string; content: string }[] = []
       const s = yield* InstanceState.get(state)
       const root = path.resolve((yield* InstanceState.context).root)
+
+      // No project layer: nested project instruction files are not read either.
+      if (!hasProjectLayer(root, global.home)) return results
 
       const target = path.resolve(filepath)
       let current = path.dirname(target)

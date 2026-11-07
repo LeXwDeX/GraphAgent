@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { assertProjectRootWritable, HOME_ROOT_ERROR, resolveProjectRoot } from "@/project/project-root"
+import { assertProjectRootWritable, hasProjectLayer, HOME_ROOT_ERROR, resolveProjectRoot } from "@/project/project-root"
 
 type Case = {
   name: string
@@ -40,5 +40,15 @@ describe("assertProjectRootWritable", () => {
 
   test("allows a project root below $HOME", () => {
     expect(() => assertProjectRootWritable(path.join(HOME, "repo"), HOME)).not.toThrow()
+  })
+})
+
+describe("hasProjectLayer", () => {
+  test("treats $HOME as carrying no project layer", () => {
+    expect(hasProjectLayer(HOME, HOME)).toBe(false)
+  })
+
+  test("treats a directory below $HOME as a project layer", () => {
+    expect(hasProjectLayer(path.join(HOME, "repo"), HOME)).toBe(true)
   })
 })

@@ -54,7 +54,9 @@ const withFiles = <A, E, R>(files: Record<string, string>, self: (dir: string) =
   provideTmpdirInstance((dir) =>
     Effect.gen(function* () {
       yield* writeFiles(dir, files)
-      return yield* self(dir).pipe(provideInstruction({ home: dir, config: dir }))
+      // Keep the isolated user home distinct from the project root: a root that
+      // equals $HOME carries no project layer, which these fixtures do not model.
+      return yield* self(dir).pipe(provideInstruction({ home: path.join(dir, ".home"), config: dir }))
     }),
   )
 

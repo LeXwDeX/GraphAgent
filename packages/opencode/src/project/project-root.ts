@@ -44,7 +44,12 @@ function isWithin(candidate: string, parent: string) {
 export const HOME_ROOT_ERROR =
   "Refusing to write project files because the project root resolves to $HOME. Start from a project directory that contains a .agents/ directory."
 
+/** True when the resolved project root carries a project layer (it is not `$HOME`). */
+export function hasProjectLayer(root: string, home: string) {
+  return path.resolve(root) !== path.resolve(home)
+}
+
 /** Project-layer writes are rejected when the project root is `$HOME`. */
 export function assertProjectRootWritable(root: string, home: string) {
-  if (path.resolve(root) === path.resolve(home)) throw new Error(HOME_ROOT_ERROR)
+  if (!hasProjectLayer(root, home)) throw new Error(HOME_ROOT_ERROR)
 }
