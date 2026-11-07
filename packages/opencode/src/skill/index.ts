@@ -22,7 +22,7 @@ import { isRecord } from "@/util/record"
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
 const EXTERNAL_SKILL_PATTERN = "skills/**/SKILL.md"
-const OPENCODE_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
+const GRAPHAGENT_SKILL_PATTERN = "{skill,skills}/**/SKILL.md"
 const SKILL_PATTERN = "**/SKILL.md"
 
 // Built-in skill that ships with opencode. The model's intuition for what an
@@ -139,7 +139,7 @@ const userSkillRoots = () => [
   path.join(Global.Path.home, ".opencode"),
   path.join(Global.Path.home, ".claude"),
   path.join(Global.Path.home, ".agents"),
-  ...(Flag.OPENCODE_CONFIG_DIR ? [Flag.OPENCODE_CONFIG_DIR] : []),
+  ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : []),
 ]
 
 const skillHookSource = (match: string) => {
@@ -263,7 +263,7 @@ const discoverSkills = Effect.fnUntraced(function* (
     )),
   ])
   for (const dir of configDirs) {
-    yield* scan(state, dir, OPENCODE_SKILL_PATTERN)
+    yield* scan(state, dir, GRAPHAGENT_SKILL_PATTERN)
   }
 
   const cfg = yield* config.get()

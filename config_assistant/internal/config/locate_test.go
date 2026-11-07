@@ -8,7 +8,7 @@ import (
 
 func TestGlobalPathUsesConfigDirAndExistingFile(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("OPENCODE_CONFIG_DIR", dir)
+	t.Setenv("GRAPHAGENT_CONFIG_DIR", dir)
 	path := filepath.Join(dir, "opencode.jsonc")
 	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -21,7 +21,7 @@ func TestGlobalPathUsesConfigDirAndExistingFile(t *testing.T) {
 
 func TestDiscoverIncludesGlobalConfigCandidates(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("OPENCODE_CONFIG_DIR", dir)
+	t.Setenv("GRAPHAGENT_CONFIG_DIR", dir)
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)

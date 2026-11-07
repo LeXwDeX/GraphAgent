@@ -86,7 +86,7 @@ cliIt.live("direct shell respects configured deny and never emits auto-only Perm
         }),
       ),
     )
-    const server = yield* opencode.host({ env: { OPENCODE_PERMISSION: JSON.stringify({ bash: "deny" }) } })
+    const server = yield* opencode.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "deny" }) } })
     const post = (route: string, body: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

@@ -20,8 +20,8 @@ const cli = yargs(hideBin(process.argv))
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
   .middleware((opts) => {
-    if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
-    if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
+    if (opts.printLogs) process.env.GRAPHAGENT_PRINT_LOGS = "1"
+    if (opts.logLevel) process.env.GRAPHAGENT_LOG_LEVEL = opts.logLevel
   })
   .command(TuiThreadCommand)
   .parse()

@@ -267,7 +267,7 @@ describe("spawn final-response protocol", () => {
     expect(result.events[0]?.type).toBe("failed")
     expect(result.events[0]?.reason).toContain("output token cap (384000; reasoning 31115, text 885)")
     expect(result.events[0]?.reason).toContain("limit.output")
-    expect(result.events[0]?.reason).toContain("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
+    expect(result.events[0]?.reason).toContain("GRAPHAGENT_OUTPUT_TOKEN_MAX")
   })
 })
 

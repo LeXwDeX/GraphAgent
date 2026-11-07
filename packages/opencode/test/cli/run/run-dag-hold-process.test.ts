@@ -23,8 +23,8 @@ import {
   type RunResult,
 } from "../../lib/cli-process"
 
-const artifactExecutable = process.env.OPENCODE_TEST_ARTIFACT_EXECUTABLE
-const artifactEvidenceDir = process.env.OPENCODE_TEST_ARTIFACT_EVIDENCE_DIR
+const artifactExecutable = process.env.GRAPHAGENT_TEST_ARTIFACT_EXECUTABLE
+const artifactEvidenceDir = process.env.GRAPHAGENT_TEST_ARTIFACT_EVIDENCE_DIR
 if (artifactEvidenceDir && !path.isAbsolute(artifactEvidenceDir)) {
   throw new Error(`artifact CLI evidence directory must be an absolute path: ${artifactEvidenceDir}`)
 }
@@ -535,7 +535,7 @@ describe("opencode run DAG hold (issue 614)", () => {
   //   subprocess paused bound).
   //   run 2 (--continue) adopts the paused workflow at boot, resumes it by id,
   //   and must hold through the resumed running phase to the completion wake.
-  // The package test preload forces OPENCODE_DB=":memory:" and the CLI harness
+  // The package test preload forces GRAPHAGENT_DB=":memory:" and the CLI harness
   // leaks it into every subprocess (each run would see a fresh database), so
   // both runs pin a file DB inside the isolated home through the harness env
   // override — the only way a durable workflow can cross process boundaries
@@ -549,7 +549,7 @@ describe("opencode run DAG hold (issue 614)", () => {
       Effect.gen(function* () {
         const spec = path.join(home, "wf-adopt.yaml")
         yield* writeSpec(home, "wf-adopt.yaml", checkpointSpec)
-        const dbEnv = { OPENCODE_DB: path.join(home, "opencode-adopt-test.db") }
+        const dbEnv = { GRAPHAGENT_DB: path.join(home, "opencode-adopt-test.db") }
 
         yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
         yield* llm.pushMatch(

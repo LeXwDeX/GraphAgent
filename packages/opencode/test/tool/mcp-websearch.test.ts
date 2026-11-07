@@ -40,11 +40,11 @@ it.instance("Exa keys are read per request, sent only in redacted headers, and s
   Effect.acquireUseRelease(
     Effect.sync(() => {
       requests.length = 0
-      return { key: process.env.EXA_API_KEY, provider: process.env.OPENCODE_WEBSEARCH_PROVIDER }
+      return { key: process.env.EXA_API_KEY, provider: process.env.GRAPHAGENT_WEBSEARCH_PROVIDER }
     }),
     () =>
       Effect.gen(function* () {
-        process.env.OPENCODE_WEBSEARCH_PROVIDER = "exa"
+        process.env.GRAPHAGENT_WEBSEARCH_PROVIDER = "exa"
         const info = yield* WebSearchTool
         const tool = yield* info.init()
         for (const key of ["synthetic-first/key", "synthetic-second+key"]) {
@@ -90,8 +90,8 @@ it.instance("Exa keys are read per request, sent only in redacted headers, and s
       Effect.sync(() => {
         if (original.key === undefined) delete process.env.EXA_API_KEY
         else process.env.EXA_API_KEY = original.key
-        if (original.provider === undefined) delete process.env.OPENCODE_WEBSEARCH_PROVIDER
-        else process.env.OPENCODE_WEBSEARCH_PROVIDER = original.provider
+        if (original.provider === undefined) delete process.env.GRAPHAGENT_WEBSEARCH_PROVIDER
+        else process.env.GRAPHAGENT_WEBSEARCH_PROVIDER = original.provider
       }),
   ),
 )

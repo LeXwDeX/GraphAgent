@@ -112,9 +112,9 @@ function candidates(projectDir: string) {
 }
 
 // Same redirect the Global service applies in make(), so tests and managed
-// setups that point OPENCODE_CONFIG_DIR elsewhere are honored here too.
+// setups that point GRAPHAGENT_CONFIG_DIR elsewhere are honored here too.
 function globalConfigDir() {
-  return Flag.OPENCODE_CONFIG_DIR ?? Global.Path.config
+  return Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config
 }
 
 async function readFirst(paths: string[]) {

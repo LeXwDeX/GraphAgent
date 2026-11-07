@@ -33,7 +33,7 @@ interface Logger {
 const ranks: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 }
 
 function minimumLevel(): number {
-  const value = process.env.OPENCODE_LOG_LEVEL?.toUpperCase()
+  const value = process.env.GRAPHAGENT_LOG_LEVEL?.toUpperCase()
   if (value === "DEBUG") return ranks.debug
   if (value === "WARN") return ranks.warn
   if (value === "ERROR") return ranks.error

@@ -277,8 +277,8 @@ function fakeLlmConfig(url: string): Partial<ConfigV1.Info> {
 
 const resetState = Effect.promise(async () => {
   const modules = await runtime()
-  Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
-  Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
+  Flag.GRAPHAGENT_SERVER_PASSWORD = original.GRAPHAGENT_SERVER_PASSWORD
+  Flag.GRAPHAGENT_SERVER_USERNAME = original.GRAPHAGENT_SERVER_USERNAME
   // This runs from Effect.ensuring, i.e. uninterruptibly — a single promise
   // that never resolves here used to hang the whole runner with zero output
   // (the 2026-07-27 CI incident). Bound every step independently so a stuck

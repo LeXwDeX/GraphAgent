@@ -23,9 +23,9 @@ placeholder and are never restored, used as duplicate witnesses, or rewritten by
 | `compaction.prune` only       | Deprecated compatibility alias for `dynamic`; it does not enable folding by itself. |
 | both fields                   | `dynamic` wins.                                                            |
 | `compaction.auto: false`      | Automatic full compaction is disabled; dynamic folding is unchanged.       |
-| `OPENCODE_DISABLE_PRUNE=true` | Emergency kill switch for dynamic folding; it has highest priority.        |
+| `GRAPHAGENT_DISABLE_PRUNE=true` | Emergency kill switch for dynamic folding; it has highest priority.        |
 
-`OPENCODE_DISABLE_AUTOCOMPACT` remains independent and controls only automatic full compaction. No settings page was
+`GRAPHAGENT_DISABLE_AUTOCOMPACT` remains independent and controls only automatic full compaction. No settings page was
 added because this repository has no existing context-folding settings surface.
 
 Automatic full compaction starts when the context reaches the current model's usable input limit; there is no separate
@@ -79,7 +79,7 @@ inputs.
 
 ## Rollback
 
-The non-destructive rollback is `compaction.dynamic: false` or `OPENCODE_DISABLE_PRUNE=true`; restart the instance so
+The non-destructive rollback is `compaction.dynamic: false` or `GRAPHAGENT_DISABLE_PRUNE=true`; restart the instance so
 the effective configuration is unambiguous. Full compaction remains usable.
 
 Before reverting to a binary that still contains the old persistent prune job, also set both `dynamic: false` and

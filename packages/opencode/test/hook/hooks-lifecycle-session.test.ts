@@ -26,14 +26,14 @@ cliIt.live(
           }),
         )
       })
-      const cfg = JSON.parse(env.OPENCODE_CONFIG_CONTENT)
+      const cfg = JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT)
       cfg.provider.test.models.alias = {
         ...cfg.provider.test.models["test-model"],
         id: "test-model",
         cost: { input: 1, output: 5, cache_write: 2 },
       }
       const server = yield* opencode.host({
-        env: { OPENCODE_DISABLE_PROJECT_CONFIG: "0", OPENCODE_CONFIG_CONTENT: JSON.stringify(cfg) },
+        env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0", GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(cfg) },
       })
       const post = (route: string, body: object) =>
         Effect.promise(() =>

@@ -545,9 +545,9 @@ export const layer = Layer.effect(
         .pipe(Effect.orDie)
 
       const env = {
-        OPENCODE_AUTH_CONTENT: JSON.stringify(yield* auth.all()),
-        OPENCODE_WORKSPACE_ID: config.id,
-        OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
+        GRAPHAGENT_AUTH_CONTENT: JSON.stringify(yield* auth.all()),
+        GRAPHAGENT_WORKSPACE_ID: config.id,
+        GRAPHAGENT_WORKSPACES: "true",
         OTEL_EXPORTER_OTLP_HEADERS: process.env.OTEL_EXPORTER_OTLP_HEADERS,
         OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
         OTEL_RESOURCE_ATTRIBUTES: process.env.OTEL_RESOURCE_ATTRIBUTES,

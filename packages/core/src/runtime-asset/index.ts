@@ -193,9 +193,9 @@ export namespace RuntimeAsset {
     Service.of(
       managed({
         platform: { os: process.platform, arch: process.arch },
-        cacheDirectory: process.env.OPENCODE_RUNTIME_ASSET_CACHE ?? path.join(Global.Path.bin, "runtime-assets"),
-        packagedDirectory: process.env.OPENCODE_RUNTIME_ASSETS_DIR,
-        mirrorBaseURL: process.env.OPENCODE_RUNTIME_ASSET_MIRROR,
+        cacheDirectory: process.env.GRAPHAGENT_RUNTIME_ASSET_CACHE ?? path.join(Global.Path.bin, "runtime-assets"),
+        packagedDirectory: process.env.GRAPHAGENT_RUNTIME_ASSETS_DIR,
+        mirrorBaseURL: process.env.GRAPHAGENT_RUNTIME_ASSET_MIRROR,
       }),
     ),
   )

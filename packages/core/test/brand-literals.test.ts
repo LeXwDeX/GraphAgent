@@ -5,8 +5,8 @@ import path from "path"
 
 const REPO = path.resolve(import.meta.dir, "../../..")
 
-const GUARDED_ROOTS = ["packages", "script", "nix", "config_assistant", "oc", ".github", ".azure-pipelines"]
-const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".turbo"])
+const GUARDED_ROOTS = ["packages", "patches", "script", "nix", "config_assistant", "oc", ".github", ".azure-pipelines"]
+const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".turbo", ".artifacts"])
 const SKIP_PATHS = [".github/releases"]
 // The guard lists the forbidden literals as regular expressions, so it must not
 // scan itself.
@@ -38,6 +38,58 @@ const OC_BINARY_PATH_ALLOW: Allow[] = [
   },
 ]
 
+// Every entry below is a closed, itemised exception from #884. The four
+// OPENCODE_DISABLE_CLAUDE_CODE* / OPENCODE_DISABLE_EXTERNAL_SKILLS names are
+// deleted together with their readers by B5; the remaining entries are either
+// the G0b photon patch key or negative tests proving a retired name is ignored.
+const LEGACY_ENV_ALLOW: Allow[] = [
+  { file: "oc", reason: "G1 switches OC_OPENCODE_NAME together with the installer assets" },
+  {
+    file: "script/oc-install-boundary.test.sh",
+    reason: "boundary tests pin OC_OPENCODE_NAME until G1",
+  },
+  {
+    file: "script/oc-macos-acceptance.test.sh",
+    reason: "macOS acceptance pins OC_OPENCODE_NAME until G1",
+  },
+  {
+    file: "packages/opencode/src/effect/runtime-flags.ts",
+    reason: "G3b variables keep the upstream prefix until B5 deletes their readers",
+  },
+  {
+    file: "packages/opencode/test/effect/runtime-flags.test.ts",
+    reason: "covers the G3b variables that B5 deletes",
+  },
+  {
+    file: "packages/core/src/plugin/skill/customize-opencode.md",
+    reason: "documents the G3b variables and the B4 skill constants",
+  },
+  {
+    file: "packages/opencode/src/skill/index.ts",
+    reason: "CUSTOMIZE_OPENCODE_SKILL_* constants are renamed by B4",
+  },
+  {
+    file: "packages/opencode/src/image/image.ts",
+    reason: "G0b: the photon-node patch reads __OPENCODE_PHOTON_WASM_PATH",
+  },
+  {
+    file: "patches/@silvia-odwyer%2Fphoton-node@0.3.4.patch",
+    reason: "G0b: the patch defines __OPENCODE_PHOTON_WASM_PATH",
+  },
+  {
+    file: "packages/opencode/test/hook/workspace-trust.test.ts",
+    reason: "negative test: the retired HOOKS_REQUIRE_TRUST name is ignored",
+  },
+  {
+    file: "packages/opencode/test/hook/scoped-frontmatter.test.ts",
+    reason: "negative test: legacy trust values no longer filter hooks",
+  },
+  {
+    file: "packages/core/test/flag.test.ts",
+    reason: "negative test: proves the legacy OPENCODE_ variables are not read",
+  },
+]
+
 // #884 lands the rename in stages. A category only takes effect once its stage
 // is reached, so every stage keeps the repository green while later surfaces
 // still carry the upstream name.
@@ -60,9 +112,21 @@ const CATEGORIES: Category[] = [
     pattern: /opencode cli packager/,
     allow: [],
   },
+  {
+    id: "legacy-env-prefix",
+    stage: 2,
+    pattern: /OPENCODE_/,
+    allow: LEGACY_ENV_ALLOW,
+  },
+  {
+    id: "tui-mode-key",
+    stage: 2,
+    pattern: /opencode\.mode/,
+    allow: [],
+  },
 ]
 
-const CURRENT_STAGE = 1
+const CURRENT_STAGE = 2
 
 type Hit = { category: string; file: string; line: number; text: string }
 
@@ -117,13 +181,15 @@ describe("brand literals", () => {
     await mkdir(path.join(root, "script"), { recursive: true })
     await writeFile(
       path.join(root, "script", "build.ts"),
-      'const out = "dist/opencode-linux-x64/bin/graphagent"\nconst rel = "bin/opencode"\n',
+      'const out = "dist/opencode-linux-x64/bin/graphagent"\nconst rel = "bin/opencode"\nconst legacy = process.env.OPENCODE_CONFIG\nconst mode = "opencode.mode"\n',
     )
 
     const hits = await scan(await listFiles([root]), active())
     expect(hits.map((hit) => hit.category)).toContain("release-asset-name")
     expect(hits.map((hit) => hit.category)).toContain("distribution-path")
-    expect(hits.map((hit) => hit.line)).toEqual([1, 1, 2])
+    expect(hits.map((hit) => hit.category)).toContain("legacy-env-prefix")
+    expect(hits.map((hit) => hit.category)).toContain("tui-mode-key")
+    expect(hits.map((hit) => hit.line)).toEqual([1, 1, 2, 3, 4])
   })
 
   test("the scan skips immutable release notes and dependency directories", async () => {

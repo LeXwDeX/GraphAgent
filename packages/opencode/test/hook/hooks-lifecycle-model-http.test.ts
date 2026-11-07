@@ -97,13 +97,13 @@ for (const transport of ["command", "http"] as const) {
             }),
           ),
         )
-        const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT)
+        const config = JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT)
         config.provider.test.models.other = {
           ...config.provider.test.models["test-model"],
           id: "wire-other",
           cost: { input: 2, output: 3, cache_write: 4 },
         }
-        const server = yield* opencode.host({ env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } })
+        const server = yield* opencode.host({ env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) } })
         const request = (route: string, body: object) =>
           Effect.promise(async () => {
             const result = await fetch(server.url + route, {
@@ -170,7 +170,7 @@ cliIt.live("V1 process restart restores model context once without a model chang
     })
     const opts = {
       format: "json",
-      env: { ...env, OPENCODE_DB: path.join(home, "resume-model.sqlite") },
+      env: { ...env, GRAPHAGENT_DB: path.join(home, "resume-model.sqlite") },
     } satisfies RunOpts
     yield* llm.text("BEFORE_RESTART", { usage: { input: 80, output: 20 } })
     const initial = yield* opencode.run("first input", opts)

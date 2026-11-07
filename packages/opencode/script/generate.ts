@@ -9,7 +9,7 @@ const dir = path.resolve(__dirname, "..")
 
 process.chdir(dir)
 
-const modelsUrl = process.env.OPENCODE_MODELS_URL || "https://models.dev"
+const modelsUrl = process.env.GRAPHAGENT_MODELS_URL || "https://models.dev"
 
 async function loadModelsData() {
   if (process.env.MODELS_DEV_API_JSON) {

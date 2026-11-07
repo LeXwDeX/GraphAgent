@@ -12,10 +12,10 @@ async function run(level: string, printLogs: string, mode = "normal") {
       {
         env: {
           ...process.env,
-          OPENCODE_LOG_LEVEL: level,
-          OPENCODE_PRINT_LOGS: printLogs,
+          GRAPHAGENT_LOG_LEVEL: level,
+          GRAPHAGENT_PRINT_LOGS: printLogs,
           DIAGNOSTIC_TEST_MODE: mode,
-          OPENCODE_TEST_HOME: root,
+          GRAPHAGENT_TEST_HOME: root,
           XDG_DATA_HOME: root,
           XDG_CONFIG_HOME: path.join(root, "config"),
           XDG_STATE_HOME: path.join(root, "state"),

@@ -5428,7 +5428,7 @@ describe("ProviderTransform.maxOutputTokens", () => {
     expect(ProviderTransform.maxOutputTokens(model(128_000))).toBe(32_000)
   })
 
-  test("keeps OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX as the highest-priority override", () => {
+  test("keeps GRAPHAGENT_OUTPUT_TOKEN_MAX as the highest-priority override", () => {
     expect(ProviderTransform.maxOutputTokens(model(384_000), 48_000, 384_000)).toBe(48_000)
     expect(ProviderTransform.maxOutputTokens(model(384_000), 500_000, 384_000)).toBe(384_000)
     expect(ProviderTransform.maxOutputTokens(model(16_000), 48_000)).toBe(16_000)

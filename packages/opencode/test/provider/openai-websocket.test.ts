@@ -86,14 +86,14 @@ for (const providerID of ["relay", "openai"] as const) {
       Effect.gen(function* () {
         yield* Effect.acquireRelease(
           Effect.sync(() => {
-            const previous = process.env.OPENCODE_AUTH_CONTENT
-            process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ openai: { type: "api", key: "test-provider-key" } })
+            const previous = process.env.GRAPHAGENT_AUTH_CONTENT
+            process.env.GRAPHAGENT_AUTH_CONTENT = JSON.stringify({ openai: { type: "api", key: "test-provider-key" } })
             return previous
           }),
           (previous) =>
             Effect.sync(() => {
-              if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
-              else process.env.OPENCODE_AUTH_CONTENT = previous
+              if (previous === undefined) delete process.env.GRAPHAGENT_AUTH_CONTENT
+              else process.env.GRAPHAGENT_AUTH_CONTENT = previous
             }),
         )
         let upgrades = 0

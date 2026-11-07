@@ -17,7 +17,7 @@ const proc = spawn(command, args, {
   cols: 100,
   rows: 30,
   cwd: process.cwd(),
-  env: { ...process.env, OPENCODE_FAST_BOOT: "1" } as Record<string, string>,
+  env: { ...process.env, GRAPHAGENT_FAST_BOOT: "1" } as Record<string, string>,
 })
 const data = proc.onData((chunk) => {
   output += chunk

@@ -16,7 +16,7 @@
  *   (the release pipeline injects the snapshot via DAG_TEMPLATES_DIR, so
  *   air-gapped installs still ship the curated templates)
  *
- * Mirrors config.ts: same two-level scope, same OPENCODE_CONFIG_DIR redirect,
+ * Mirrors config.ts: same two-level scope, same GRAPHAGENT_CONFIG_DIR redirect,
  * read lazily so edits apply on the next call and startup stays untouched.
  */
 
@@ -29,8 +29,8 @@ import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { isRecord } from "@/util/record"
 
-// Injected by the build (build.ts define), mirrors OPENCODE_MODELS_DEV.
-declare const OPENCODE_DAG_TEMPLATES: Record<string, string> | undefined
+// Injected by the build (build.ts define), mirrors GRAPHAGENT_MODELS_DEV.
+declare const GRAPHAGENT_DAG_TEMPLATES: Record<string, string> | undefined
 
 const DIRECTORY = "workflows"
 const EXTENSIONS = [".yaml", ".yml"]
@@ -58,8 +58,8 @@ export interface Entry {
 export function builtinTemplates(): Record<string, string> {
   // The build replaces the identifier via define; bare source/test runs have
   // no global binding, so guard instead of throwing a ReferenceError.
-  if (typeof OPENCODE_DAG_TEMPLATES === "undefined") return {}
-  return OPENCODE_DAG_TEMPLATES
+  if (typeof GRAPHAGENT_DAG_TEMPLATES === "undefined") return {}
+  return GRAPHAGENT_DAG_TEMPLATES
 }
 
 const BUILTIN_PREFIX = "builtin://"
@@ -144,12 +144,12 @@ async function builtinEntry(name: string, content: string): Promise<Entry> {
 }
 
 // Resolution order, project first. The global directory applies the same
-// OPENCODE_CONFIG_DIR redirect the Global service applies in make(), so managed
+// GRAPHAGENT_CONFIG_DIR redirect the Global service applies in make(), so managed
 // setups pointing the config dir elsewhere are honored here too.
 function scopes(projectDir: string) {
   return [
     { scope: "project" as const, dir: path.join(projectDir, ".opencode", DIRECTORY) },
-    { scope: "global" as const, dir: path.join(Flag.OPENCODE_CONFIG_DIR ?? Global.Path.config, DIRECTORY) },
+    { scope: "global" as const, dir: path.join(Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config, DIRECTORY) },
   ]
 }
 

@@ -30,14 +30,14 @@ import { testEffect } from "../lib/effect"
 // Pin a private config dir per file so the global file can never be
 // contaminated by earlier files.
 const pinnedConfigDir = path.join(os.tmpdir(), `opencode-memory-selfheal-${process.pid}`)
-const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
+const previousConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 beforeAll(() => {
   fs.mkdirSync(pinnedConfigDir, { recursive: true })
-  process.env.OPENCODE_CONFIG_DIR = pinnedConfigDir
+  process.env.GRAPHAGENT_CONFIG_DIR = pinnedConfigDir
 })
 afterAll(() => {
-  if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
-  else process.env.OPENCODE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+  else process.env.GRAPHAGENT_CONFIG_DIR = previousConfigDir
 })
 
 // #415: the /init stamp is written by a Command.Event.Executed listener that can

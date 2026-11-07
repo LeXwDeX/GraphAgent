@@ -20,7 +20,7 @@ cliIt.live("a real pending permission emits Notification through a command hook"
         JSON.stringify({ Notification: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
       )
     })
-    const server = yield* opencode.host({ env: { OPENCODE_PERMISSION: JSON.stringify({ bash: "ask" }) } })
+    const server = yield* opencode.host({ env: { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "ask" }) } })
     const headers = { "content-type": "application/json", "x-opencode-directory": home }
     const post = (route: string, body: object) =>
       Effect.promise(() => fetch(server.url + route, { method: "POST", headers, body: JSON.stringify(body) }))

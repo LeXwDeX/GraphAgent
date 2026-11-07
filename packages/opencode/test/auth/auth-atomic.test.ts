@@ -130,8 +130,8 @@ test("mutation preserves filesystem defects", () =>
 
 test("environment override retains existing read and mutation behavior", () =>
   isolated(async (dir) => {
-    const previous = process.env.OPENCODE_AUTH_CONTENT
-    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ fromEnv: { type: "api", key: "synthetic" } })
+    const previous = process.env.GRAPHAGENT_AUTH_CONTENT
+    process.env.GRAPHAGENT_AUTH_CONTENT = JSON.stringify({ fromEnv: { type: "api", key: "synthetic" } })
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
@@ -146,8 +146,8 @@ test("environment override retains existing read and mutation behavior", () =>
       expect(persisted.new).toBeDefined()
       expect(persisted["new/"]).toBeUndefined()
     } finally {
-      if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
-      else process.env.OPENCODE_AUTH_CONTENT = previous
+      if (previous === undefined) delete process.env.GRAPHAGENT_AUTH_CONTENT
+      else process.env.GRAPHAGENT_AUTH_CONTENT = previous
     }
   }))
 
@@ -159,7 +159,7 @@ test(
         Bun.spawn([process.execPath, path.join(import.meta.dir, "fixtures", "auth-writer.ts"), provider], {
           env: {
             ...process.env,
-            OPENCODE_AUTH_CONTENT: "",
+            GRAPHAGENT_AUTH_CONTENT: "",
             XDG_DATA_HOME: path.join(dir, "data"),
             XDG_STATE_HOME: path.join(dir, "state"),
             XDG_CONFIG_HOME: path.join(dir, "config"),

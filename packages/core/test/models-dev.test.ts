@@ -9,9 +9,9 @@ import { ModelsDev } from "@opencode-ai/core/models-dev"
 const eventLayer = EventV2.defaultLayer
 const layer = ModelsDev.defaultLayer.pipe(Layer.provideMerge(eventLayer))
 const original = {
-  path: Flag.OPENCODE_MODELS_PATH,
-  url: Flag.OPENCODE_MODELS_URL,
-  disabled: Flag.OPENCODE_DISABLE_MODELS_FETCH,
+  path: Flag.GRAPHAGENT_MODELS_PATH,
+  url: Flag.GRAPHAGENT_MODELS_URL,
+  disabled: Flag.GRAPHAGENT_DISABLE_MODELS_FETCH,
 }
 
 const fixture = {
@@ -36,9 +36,9 @@ const fixture = {
 } satisfies Record<string, ModelsDev.Provider>
 
 afterEach(() => {
-  Flag.OPENCODE_MODELS_PATH = original.path
-  Flag.OPENCODE_MODELS_URL = original.url
-  Flag.OPENCODE_DISABLE_MODELS_FETCH = original.disabled
+  Flag.GRAPHAGENT_MODELS_PATH = original.path
+  Flag.GRAPHAGENT_MODELS_URL = original.url
+  Flag.GRAPHAGENT_DISABLE_MODELS_FETCH = original.disabled
 })
 
 describe("ModelsDev", () => {
@@ -126,8 +126,8 @@ function runWithFlags<A, E, R>(
   next: { path: string | undefined; url: string | undefined; disabled: boolean },
   effect: Effect.Effect<A, E, EventV2.Service | ModelsDev.Service | Scope>,
 ) {
-  Flag.OPENCODE_MODELS_PATH = next.path
-  Flag.OPENCODE_MODELS_URL = next.url
-  Flag.OPENCODE_DISABLE_MODELS_FETCH = next.disabled
+  Flag.GRAPHAGENT_MODELS_PATH = next.path
+  Flag.GRAPHAGENT_MODELS_URL = next.url
+  Flag.GRAPHAGENT_DISABLE_MODELS_FETCH = next.disabled
   return run(effect)
 }

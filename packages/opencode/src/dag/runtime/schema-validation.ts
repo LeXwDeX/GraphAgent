@@ -4,8 +4,8 @@
 import { Worker } from "node:worker_threads"
 import type { SchemaValidationFix } from "./schema-validator"
 
-declare const OPENCODE_SCHEMA_VALIDATION_WORKER_PATH: string | URL
-declare const OPENCODE_SCHEMA_VALIDATION_WORKER_RELATIVE: boolean
+declare const GRAPHAGENT_SCHEMA_VALIDATION_WORKER_PATH: string | URL
+declare const GRAPHAGENT_SCHEMA_VALIDATION_WORKER_RELATIVE: boolean
 
 // Host resource budget, including worker startup and both provider spellings.
 // This is independent of the workflow's model deadline.
@@ -41,11 +41,11 @@ export function validateInWorker(
     )
     try {
       const configured =
-        typeof OPENCODE_SCHEMA_VALIDATION_WORKER_PATH !== "undefined"
-          ? OPENCODE_SCHEMA_VALIDATION_WORKER_PATH
+        typeof GRAPHAGENT_SCHEMA_VALIDATION_WORKER_PATH !== "undefined"
+          ? GRAPHAGENT_SCHEMA_VALIDATION_WORKER_PATH
           : new URL("./schema-validation-worker.ts", import.meta.url)
       const target =
-        typeof OPENCODE_SCHEMA_VALIDATION_WORKER_RELATIVE !== "undefined" && OPENCODE_SCHEMA_VALIDATION_WORKER_RELATIVE
+        typeof GRAPHAGENT_SCHEMA_VALIDATION_WORKER_RELATIVE !== "undefined" && GRAPHAGENT_SCHEMA_VALIDATION_WORKER_RELATIVE
           ? new URL(configured, import.meta.url)
           : configured
       worker = new Worker(workerTarget ?? target, { execArgv: [] })

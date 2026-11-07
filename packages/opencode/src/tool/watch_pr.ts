@@ -72,7 +72,7 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-export function allowedHosts(value = process.env.OPENCODE_WATCH_PR_HOSTS) {
+export function allowedHosts(value = process.env.GRAPHAGENT_WATCH_PR_HOSTS) {
   const extra = (value ?? "")
     .split(",")
     .map((host) => host.trim().toLowerCase())

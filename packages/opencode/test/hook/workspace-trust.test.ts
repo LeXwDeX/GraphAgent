@@ -1,3 +1,4 @@
+// brand-guard: legacy-name-negative-test
 import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import fs from "node:fs/promises"
@@ -12,10 +13,8 @@ import { SessionID } from "@/session/schema"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
 
-const original = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
 afterEach(() => {
-  if (original === undefined) delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
-  else process.env.OPENCODE_HOOKS_REQUIRE_TRUST = original
+  delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
 })
 const it = testEffect(
   SettingsHook.layer.pipe(

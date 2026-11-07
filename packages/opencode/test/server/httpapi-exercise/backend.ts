@@ -152,10 +152,10 @@ function app(modules: Runtime, options: CallOptions) {
           Layer.provide(
             ConfigProvider.layer(
               ConfigProvider.fromUnknown({
-                OPENCODE_SERVER_PASSWORD: password,
-                OPENCODE_SERVER_USERNAME: username,
-                OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: process.env.OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER,
-                OPENCODE_EXPERIMENTAL_FILEWATCHER: process.env.OPENCODE_EXPERIMENTAL_FILEWATCHER,
+                GRAPHAGENT_SERVER_PASSWORD: password,
+                GRAPHAGENT_SERVER_USERNAME: username,
+                GRAPHAGENT_DISABLE_FILEWATCHER: process.env.GRAPHAGENT_DISABLE_FILEWATCHER,
+                GRAPHAGENT_FILEWATCHER: process.env.GRAPHAGENT_FILEWATCHER,
               }),
             ),
           ),

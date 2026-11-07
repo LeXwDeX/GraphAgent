@@ -42,7 +42,7 @@ export function outputLimitReason(input: {
   const cap = input.cap === undefined ? "configured output limit" : String(input.cap)
   return `child turn hit the output token cap (${cap}; reasoning ${input.reasoning}, text ${text})${
     input.continued ? " after one continuation" : ""
-  }. Raise this model's limit.output or OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX, or use a lower reasoning variant.`
+  }. Raise this model's limit.output or GRAPHAGENT_OUTPUT_TOKEN_MAX, or use a lower reasoning variant.`
 }
 
 export type ParsedFinalResponse = { ok: true; payload: unknown } | { ok: false; reason: string }

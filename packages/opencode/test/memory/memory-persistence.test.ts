@@ -572,11 +572,11 @@ describe("Project-owned MEMORY persistence", () => {
       const primary = yield* tmpdirScoped({ git: true })
       const sandbox = yield* tmpdirScoped()
       const global = yield* tmpdirScoped()
-      const previous = process.env.OPENCODE_CONFIG_DIR
+      const previous = process.env.GRAPHAGENT_CONFIG_DIR
 
       yield* Effect.acquireUseRelease(
         Effect.sync(() => {
-          process.env.OPENCODE_CONFIG_DIR = global
+          process.env.GRAPHAGENT_CONFIG_DIR = global
         }),
         () =>
           Effect.gen(function* () {
@@ -601,8 +601,8 @@ describe("Project-owned MEMORY persistence", () => {
           }).pipe(Effect.provide(layers(root))),
         () =>
           Effect.sync(() => {
-            if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR
-            else process.env.OPENCODE_CONFIG_DIR = previous
+            if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+            else process.env.GRAPHAGENT_CONFIG_DIR = previous
           }),
       )
     }),

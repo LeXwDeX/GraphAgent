@@ -46,7 +46,7 @@ export type EnableResolution = Readonly<{
 }>
 
 export type EnableInput = Readonly<{
-  /** An environment kill-switch (e.g. OPENCODE_DISABLE_REASONING_DISTILLATION) overrides everything. */
+  /** An environment kill-switch (e.g. GRAPHAGENT_DISABLE_REASONING_DISTILLATION) overrides everything. */
   disabledByEnvironment: boolean
   /** The user's config value, when present. */
   enabled?: boolean

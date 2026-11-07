@@ -1,3 +1,4 @@
+// brand-guard: legacy-name-negative-test
 import { afterEach, describe, expect } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -17,10 +18,8 @@ const testLayer = SettingsHook.layer.pipe(
 )
 const it = testEffect(testLayer)
 // Legacy environment values must no longer filter scoped hook registration.
-const PRELOAD_REQUIRE_TRUST = process.env.OPENCODE_HOOKS_REQUIRE_TRUST
 afterEach(() => {
-  if (PRELOAD_REQUIRE_TRUST === undefined) delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
-  else process.env.OPENCODE_HOOKS_REQUIRE_TRUST = PRELOAD_REQUIRE_TRUST
+  delete process.env.OPENCODE_HOOKS_REQUIRE_TRUST
 })
 
 describe("scoped frontmatter hooks", () => {

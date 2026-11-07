@@ -53,8 +53,8 @@ function fixture(
     Layer.provide(
       ConfigProvider.layer(
         ConfigProvider.fromUnknown({
-          OPENCODE_EXPERIMENTAL_FILEWATCHER: "true",
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false",
+          GRAPHAGENT_FILEWATCHER: "true",
+          GRAPHAGENT_DISABLE_FILEWATCHER: "false",
         }),
       ),
     ),

@@ -10,17 +10,17 @@ process.env.XDG_DATA_HOME = path.join(directory, "share")
 process.env.XDG_CACHE_HOME = path.join(directory, "cache")
 process.env.XDG_CONFIG_HOME = path.join(directory, "config")
 process.env.XDG_STATE_HOME = path.join(directory, "state")
-process.env.OPENCODE_CONFIG_DIR = path.join(directory, "config", "opencode")
-process.env.OPENCODE_TEST_HOME = path.join(directory, "home")
-process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR = path.join(directory, "managed")
-delete process.env.OPENCODE_CONFIG
-delete process.env.OPENCODE_CONFIG_CONTENT
-await fs.mkdir(process.env.OPENCODE_TEST_HOME, { recursive: true })
+process.env.GRAPHAGENT_CONFIG_DIR = path.join(directory, "config", "opencode")
+process.env.GRAPHAGENT_TEST_HOME = path.join(directory, "home")
+process.env.GRAPHAGENT_TEST_MANAGED_CONFIG_DIR = path.join(directory, "managed")
+delete process.env.GRAPHAGENT_CONFIG
+delete process.env.GRAPHAGENT_CONFIG_CONTENT
+await fs.mkdir(process.env.GRAPHAGENT_TEST_HOME, { recursive: true })
 
 afterAll(async () => {
   await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
-process.env.OPENCODE_DB = ":memory:"
-process.env.OPENCODE_MODELS_PATH = path.join(import.meta.dir, "plugin", "fixtures", "models-dev.json")
-process.env.OPENCODE_DISABLE_MODELS_FETCH = "true"
+process.env.GRAPHAGENT_DB = ":memory:"
+process.env.GRAPHAGENT_MODELS_PATH = path.join(import.meta.dir, "plugin", "fixtures", "models-dev.json")
+process.env.GRAPHAGENT_DISABLE_MODELS_FETCH = "true"

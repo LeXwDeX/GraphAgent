@@ -2,8 +2,8 @@ import { fileURLToPath } from "node:url"
 
 export const NODE_SCHEMA_WORKER_NAME = "schema-validation-worker.mjs"
 export const NODE_SCHEMA_WORKER_DEFINES = {
-  OPENCODE_SCHEMA_VALIDATION_WORKER_PATH: `./${NODE_SCHEMA_WORKER_NAME}`,
-  OPENCODE_SCHEMA_VALIDATION_WORKER_RELATIVE: "true",
+  GRAPHAGENT_SCHEMA_VALIDATION_WORKER_PATH: `./${NODE_SCHEMA_WORKER_NAME}`,
+  GRAPHAGENT_SCHEMA_VALIDATION_WORKER_RELATIVE: "true",
 }
 
 /** Self-contained so Electron can copy it beside its rolled-up backend chunk. */

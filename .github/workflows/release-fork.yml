@@ -255,8 +255,8 @@ jobs:
         if: inputs.platforms == '' || contains(inputs.platforms, matrix.name)
         run: ./packages/opencode/script/build.ts --single --skip-install
         env:
-          OPENCODE_CHANNEL: latest
-          OPENCODE_VERSION: ${{ needs.version.outputs.version }}
+          GRAPHAGENT_CHANNEL: latest
+          GRAPHAGENT_VERSION: ${{ needs.version.outputs.version }}
 
       # Bundle ripgrep into each dist/graphagent-*/bin so air-gapped users do not
       # hit the runtime download in packages/core/src/ripgrep/binary.ts.

@@ -140,7 +140,7 @@ const instructionSetup = (home: string, opencode: OpencodeCli, source: string, a
         }),
       )
     })
-    const server = yield* opencode.host({ env: { OPENCODE_DISABLE_PROJECT_CONFIG: "" } })
+    const server = yield* opencode.host({ env: { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "" } })
     const post = (route: string, payload: object) =>
       Effect.promise(() =>
         fetch(server.url + route, {

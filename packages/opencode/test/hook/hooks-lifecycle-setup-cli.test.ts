@@ -46,7 +46,7 @@ cliIt.live(
       const audit = yield* auditLayer(home)
       yield* llm.text("OK")
       const result = yield* opencode.spawn(["run", "hello"], {
-        env: { PWD: home, OPENCODE_DB: "" },
+        env: { PWD: home, GRAPHAGENT_DB: "" },
       })
       opencode.expectExit(result, 0)
       expect(yield* rows(audit)).toEqual([])
@@ -61,7 +61,7 @@ cliIt.live(
       const audit = yield* auditLayer(home)
       yield* llm.text("INITIALIZED")
       const result = yield* opencode.spawn(["run", "--init", "hello"], {
-        env: { PWD: home, OPENCODE_DB: "" },
+        env: { PWD: home, GRAPHAGENT_DB: "" },
       })
       opencode.expectExit(result, 0)
       const events = yield* rows(audit)
@@ -80,7 +80,7 @@ cliIt.live(
       const audit = yield* auditLayer(home)
       yield* llm.text("MAINTAINED")
       const result = yield* opencode.spawn(["run", "--maintenance", "hello"], {
-        env: { PWD: home, OPENCODE_DB: "" },
+        env: { PWD: home, GRAPHAGENT_DB: "" },
       })
       opencode.expectExit(result, 0)
       const events = yield* rows(audit)
@@ -95,7 +95,7 @@ cliIt.live(
     Effect.gen(function* () {
       const audit = yield* auditLayer(home)
       const result = yield* opencode.spawn(["run", "--init-only"], {
-        env: { PWD: home, OPENCODE_DB: "" },
+        env: { PWD: home, GRAPHAGENT_DB: "" },
       })
       opencode.expectExit(result, 0)
       const events = yield* rows(audit)

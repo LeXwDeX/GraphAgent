@@ -55,8 +55,8 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
       yield* llm.text("FINAL_DAG_REPORT")
       const server = yield* opencode.host({
         env: {
-          OPENCODE_CONFIG_CONTENT: JSON.stringify({
-            ...JSON.parse(env.OPENCODE_CONFIG_CONTENT),
+          GRAPHAGENT_CONFIG_CONTENT: JSON.stringify({
+            ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT),
             permission: { "*": "allow" },
           }),
         },

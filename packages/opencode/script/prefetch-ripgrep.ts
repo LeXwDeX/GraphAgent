@@ -37,7 +37,7 @@ if (!directories.length) {
 
 const cacheDirectory = path.join(distDirectory, ".rg-cache")
 const runtimes = new Map<string, RuntimeAsset.Interface>()
-const sources: RuntimeAsset.Source[] = process.env.OPENCODE_RUNTIME_ASSET_MIRROR
+const sources: RuntimeAsset.Source[] = process.env.GRAPHAGENT_RUNTIME_ASSET_MIRROR
   ? ["cache", "mirror", "public"]
   : ["cache", "public"]
 const results = await Promise.all(
@@ -50,7 +50,7 @@ const results = await Promise.all(
       RuntimeAsset.managed({
         platform,
         cacheDirectory,
-        mirrorBaseURL: process.env.OPENCODE_RUNTIME_ASSET_MIRROR,
+        mirrorBaseURL: process.env.GRAPHAGENT_RUNTIME_ASSET_MIRROR,
       })
     runtimes.set(key, runtime)
     console.log(`[prefetch-ripgrep] ${directory} -> ${key}`)

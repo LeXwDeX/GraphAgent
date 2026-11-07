@@ -1631,10 +1631,10 @@ const liveAgentIt = testEffect(
   }),
 )
 for (const modelID of ["qwen-max", "glm", "deepseek"]) {
-  const runLive = process.env.OPENCODE_DAG_LIVE_CONFIG ? liveAgentIt.instance : liveAgentIt.instance.skip
+  const runLive = process.env.GRAPHAGENT_DAG_LIVE_CONFIG ? liveAgentIt.instance : liveAgentIt.instance.skip
   runLive(`DAG configured ${modelID} accepts the agent tool and sends to the observed attempt`, () =>
     Effect.gen(function* () {
-      const configPath = process.env.OPENCODE_DAG_LIVE_CONFIG!
+      const configPath = process.env.GRAPHAGENT_DAG_LIVE_CONFIG!
       const configured = yield* Effect.promise(() => Bun.file(configPath).json()).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(ConfigV1.Info)),
       )
@@ -1683,9 +1683,9 @@ for (const modelID of ["qwen-max", "glm", "deepseek"]) {
                   : [],
             ),
         }
-        if (process.env.OPENCODE_DAG_LIVE_EVIDENCE)
+        if (process.env.GRAPHAGENT_DAG_LIVE_EVIDENCE)
           yield* Effect.promise(() =>
-            Bun.write(process.env.OPENCODE_DAG_LIVE_EVIDENCE!, JSON.stringify(evidence, null, 2)),
+            Bun.write(process.env.GRAPHAGENT_DAG_LIVE_EVIDENCE!, JSON.stringify(evidence, null, 2)),
           )
       }
       expect(received).toMatchObject({ ok: true, value: [{ content, state: "queued" }] })

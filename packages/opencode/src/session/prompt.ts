@@ -407,7 +407,7 @@ export const layer = Layer.effect(
         Effect.map(
           (cfg) =>
             ConfigReasoningDistillation.resolveEnabled({
-              disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
+              disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_REASONING_DISTILLATION,
               enabled: cfg.reasoningDistillation?.enabled,
               modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
             }).enabled,
@@ -3483,7 +3483,7 @@ export const layer = Layer.effect(
             // built-in dynamic folding is enabled for this request.
             const foldingConfig = (yield* config.get()).compaction
             const folding = ConfigCompaction.resolveDynamic({
-              disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
+              disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
               dynamic: foldingConfig?.dynamic,
               prune: foldingConfig?.prune,
             })

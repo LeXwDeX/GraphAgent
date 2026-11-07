@@ -13,9 +13,9 @@ import {
   type RunResult,
 } from "../../lib/cli-process"
 
-const artifactExecutable = process.env.OPENCODE_TEST_ARTIFACT_EXECUTABLE
-const sourceEnabled = process.env.OPENCODE_TEST_DAG_PROMPTS_SOURCE === "1"
-const evidenceDir = process.env.OPENCODE_TEST_DAG_PROMPTS_EVIDENCE_DIR
+const artifactExecutable = process.env.GRAPHAGENT_TEST_ARTIFACT_EXECUTABLE
+const sourceEnabled = process.env.GRAPHAGENT_TEST_DAG_PROMPTS_SOURCE === "1"
+const evidenceDir = process.env.GRAPHAGENT_TEST_DAG_PROMPTS_EVIDENCE_DIR
 const enabled = !!artifactExecutable || sourceEnabled
 const target = artifactExecutable ? artifactCliTarget(artifactExecutable) : sourceCliTarget
 const cliIt = cliItFor(target)
@@ -24,7 +24,7 @@ if (evidenceDir && !path.isAbsolute(evidenceDir)) {
   throw new Error(`DAG prompt evidence directory must be absolute: ${evidenceDir}`)
 }
 if (artifactExecutable && !evidenceDir) {
-  throw new Error("artifact DAG prompt checks require OPENCODE_TEST_DAG_PROMPTS_EVIDENCE_DIR")
+  throw new Error("artifact DAG prompt checks require GRAPHAGENT_TEST_DAG_PROMPTS_EVIDENCE_DIR")
 }
 
 function strings(value: unknown): string[] {

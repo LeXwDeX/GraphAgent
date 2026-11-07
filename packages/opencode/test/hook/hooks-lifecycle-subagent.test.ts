@@ -34,14 +34,14 @@ cliIt.live(
           `---\n${JSON.stringify({ mode: "subagent", description: "local lifecycle child", hooks: { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script, "agent"] }] }] } })}\n---\nRespond once.`,
         )
       })
-      const config = { ...JSON.parse(env.OPENCODE_CONFIG_CONTENT), permission: { "*": "allow" } }
+      const config = { ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT), permission: { "*": "allow" } }
       yield* llm.tool("task", { description: "Local child", prompt: "respond once", subagent_type: "lifecycle_child" })
       yield* llm.text("REAL_CHILD_RESPONSE")
       yield* llm.text("REAL_PARENT_FINISHED")
       const result = yield* opencode.run("delegate one local child", {
         format: "json",
         extraArgs: ["--variant", "high"],
-        env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+        env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) },
       })
       opencode.expectExit(result, 0)
       expect(result.stdout).toContain("REAL_PARENT_FINISHED")

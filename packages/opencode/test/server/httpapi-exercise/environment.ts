@@ -3,9 +3,9 @@ import { Effect } from "effect"
 import { mkdirSync } from "fs"
 import path from "path"
 
-const preserveExerciseGlobalRoot = !!process.env.OPENCODE_HTTPAPI_EXERCISE_GLOBAL
+const preserveExerciseGlobalRoot = !!process.env.GRAPHAGENT_HTTPAPI_EXERCISE_GLOBAL
 export const exerciseGlobalRoot =
-  process.env.OPENCODE_HTTPAPI_EXERCISE_GLOBAL ??
+  process.env.GRAPHAGENT_HTTPAPI_EXERCISE_GLOBAL ??
   path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-global-${process.pid}`)
 process.env.XDG_DATA_HOME = path.join(exerciseGlobalRoot, "data")
 process.env.XDG_CONFIG_HOME = path.join(exerciseGlobalRoot, "config")
@@ -38,16 +38,16 @@ export const invokingWorktrees = () => {
     .map((line) => line.slice("worktree ".length))
 }
 
-const preserveExerciseDatabase = !!process.env.OPENCODE_HTTPAPI_EXERCISE_DB
+const preserveExerciseDatabase = !!process.env.GRAPHAGENT_HTTPAPI_EXERCISE_DB
 export const exerciseDatabasePath =
-  process.env.OPENCODE_HTTPAPI_EXERCISE_DB ??
+  process.env.GRAPHAGENT_HTTPAPI_EXERCISE_DB ??
   path.join(process.env.TMPDIR ?? "/tmp", `opencode-httpapi-exercise-${process.pid}.db`)
-process.env.OPENCODE_DB = exerciseDatabasePath
-Flag.OPENCODE_DB = exerciseDatabasePath
+process.env.GRAPHAGENT_DB = exerciseDatabasePath
+Flag.GRAPHAGENT_DB = exerciseDatabasePath
 
 export const original = {
-  OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
-  OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
+  GRAPHAGENT_SERVER_PASSWORD: Flag.GRAPHAGENT_SERVER_PASSWORD,
+  GRAPHAGENT_SERVER_USERNAME: Flag.GRAPHAGENT_SERVER_USERNAME,
 }
 
 export const cleanupExercisePaths = Effect.promise(async () => {

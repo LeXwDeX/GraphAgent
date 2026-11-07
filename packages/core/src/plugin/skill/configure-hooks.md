@@ -10,7 +10,7 @@ The file chain is `${Global.Path.config}/hooks.json`, project `.opencode/hooks.j
 
 Use top-level event keys. A legacy `{ "hooks": { ... } }` wrapper is accepted. `.claude/settings*.json` and deprecated OpenCode `settings.json` hook fields are not loaded as hook sources; `/import-claude-hooks` migrates them. Skill and agent frontmatter can supply scoped `hooks`; they become active when that skill or agent is actually selected. Plugin contributions retain their real plugin provenance. A project cannot label itself as a trusted user or plugin source.
 
-Workspace trust gating and the built-in `/trust` command have been removed. Hooks from global, project, worktree, skill, and agent sources execute without a trust-list prerequisite. Legacy `requireTrust`, `allowUntrusted`, and `OPENCODE_HOOKS_REQUIRE_TRUST` values are ignored. Existing `trusted-workspaces.json` files are neither read nor modified. Tool permissions, `allowedHttpHookUrls`, and `httpHookAllowedEnvVars` retain their existing behavior.
+Workspace trust gating and the built-in `/trust` command have been removed. Hooks from global, project, worktree, skill, and agent sources execute without a trust-list prerequisite. Existing `trusted-workspaces.json` files are neither read nor modified. Tool permissions, `allowedHttpHookUrls`, and `httpHookAllowedEnvVars` retain their existing behavior.
 
 ```json
 {

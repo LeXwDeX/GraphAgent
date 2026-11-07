@@ -41,9 +41,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   '';
 
   env.MODELS_DEV_API_JSON = "${models-dev}/dist/_api.json";
-  env.OPENCODE_DISABLE_MODELS_FETCH = true;
-  env.OPENCODE_VERSION = finalAttrs.version;
-  env.OPENCODE_CHANNEL = "dev";
+  env.GRAPHAGENT_DISABLE_MODELS_FETCH = true;
+  env.GRAPHAGENT_VERSION = finalAttrs.version;
+  env.GRAPHAGENT_CHANNEL = "dev";
 
   buildPhase = ''
     runHook preBuild
@@ -88,7 +88,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     writableTmpDirAsHomeHook
   ];
   doInstallCheck = true;
-  versionCheckKeepEnvironment = [ "HOME" "OPENCODE_DISABLE_MODELS_FETCH" ];
+  versionCheckKeepEnvironment = [ "HOME" "GRAPHAGENT_DISABLE_MODELS_FETCH" ];
   versionCheckProgramArg = "--version";
 
   passthru = {

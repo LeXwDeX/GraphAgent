@@ -217,16 +217,16 @@ describe("resolveTemplate", () => {
     await fs.rm(tmpDir, { recursive: true })
   })
 
-  it("resolves a global template from a redirected OPENCODE_CONFIG_DIR", async () => {
+  it("resolves a global template from a redirected GRAPHAGENT_CONFIG_DIR", async () => {
     // #380: the global dag-prompts lookup must honor the same
-    // OPENCODE_CONFIG_DIR redirect the Global service applies, not a
+    // GRAPHAGENT_CONFIG_DIR redirect the Global service applies, not a
     // hardcoded ~/.config/opencode path.
     const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-global-"))
     const promptsDir = path.join(globalDir, "dag-prompts")
     await fs.mkdir(promptsDir, { recursive: true })
     await fs.writeFile(path.join(promptsDir, "redirected-tmpl.md"), "Global {{scope}} template!", "utf-8")
-    const previous = process.env.OPENCODE_CONFIG_DIR
-    process.env.OPENCODE_CONFIG_DIR = globalDir
+    const previous = process.env.GRAPHAGENT_CONFIG_DIR
+    process.env.GRAPHAGENT_CONFIG_DIR = globalDir
     try {
       const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-proj-"))
       const result = await Effect.runPromise(
@@ -235,8 +235,8 @@ describe("resolveTemplate", () => {
       expect(result).toBe("Global redirected template!")
       await fs.rm(projectDir, { recursive: true })
     } finally {
-      if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR
-      else process.env.OPENCODE_CONFIG_DIR = previous
+      if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+      else process.env.GRAPHAGENT_CONFIG_DIR = previous
       await fs.rm(globalDir, { recursive: true })
     }
   })

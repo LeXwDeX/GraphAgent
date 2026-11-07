@@ -36,12 +36,12 @@ describe("SettingsHook http handler", () => {
       const store = yield* SessionHooks.Service
       const hook = yield* SettingsHook.Service
       const id = SessionID.descending()
-      const previous = process.env.OPENCODE_HOOK_HEADER_TEST
-      process.env.OPENCODE_HOOK_HEADER_TEST = "fixture-value"
+      const previous = process.env.GRAPHAGENT_HOOK_HEADER_TEST
+      process.env.GRAPHAGENT_HOOK_HEADER_TEST = "fixture-value"
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          if (previous === undefined) delete process.env.OPENCODE_HOOK_HEADER_TEST
-          else process.env.OPENCODE_HOOK_HEADER_TEST = previous
+          if (previous === undefined) delete process.env.GRAPHAGENT_HOOK_HEADER_TEST
+          else process.env.GRAPHAGENT_HOOK_HEADER_TEST = previous
         }),
       )
       let seen: Headers | undefined
@@ -58,10 +58,10 @@ describe("SettingsHook http handler", () => {
                 {
                   type: "http",
                   url,
-                  allowedEnvVars: ["OPENCODE_HOOK_HEADER_TEST"],
+                  allowedEnvVars: ["GRAPHAGENT_HOOK_HEADER_TEST"],
                   headers: {
-                    "x-allowed": "Bearer ${OPENCODE_HOOK_HEADER_TEST}",
-                    "x-bare": "$OPENCODE_HOOK_HEADER_TEST",
+                    "x-allowed": "Bearer ${GRAPHAGENT_HOOK_HEADER_TEST}",
+                    "x-bare": "$GRAPHAGENT_HOOK_HEADER_TEST",
                     "x-denied": "value:${HOME}",
                   },
                 },

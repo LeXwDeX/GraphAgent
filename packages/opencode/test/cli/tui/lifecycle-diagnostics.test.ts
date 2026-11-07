@@ -11,10 +11,9 @@ test("real worker reload/shutdown diagnostics only reach its background file", a
       cwd: tmp.path,
       env: {
         ...process.env,
-        OPENCODE_LOG_LEVEL: "DEBUG",
-        OPENCODE_PRINT_LOGS: "1",
-        OPENCODE_TEST_HOME: tmp.path,
-        OPENCODE_TEST_PURE: "1",
+        GRAPHAGENT_LOG_LEVEL: "DEBUG",
+        GRAPHAGENT_PRINT_LOGS: "1",
+        GRAPHAGENT_TEST_HOME: tmp.path,
         XDG_DATA_HOME: tmp.path,
         XDG_CONFIG_HOME: path.join(tmp.path, "config"),
         XDG_CACHE_HOME: path.join(tmp.path, "cache"),

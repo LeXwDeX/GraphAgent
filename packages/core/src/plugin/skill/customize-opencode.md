@@ -364,11 +364,11 @@ the `plan` agent's permission ruleset (`edit: deny *`).
 
 When a user's config is broken and opencode won't start, these env vars help:
 
-- `OPENCODE_DISABLE_PROJECT_CONFIG=1`: skip the project's local `opencode.json`
+- `GRAPHAGENT_DISABLE_PROJECT_CONFIG=1`: skip the project's local `opencode.json`
   and start from globals only. Run from the project directory, opencode loads,
   the user edits the broken file, then they restart without the flag.
-- `OPENCODE_CONFIG=/path/to/file.json`: load an additional explicit config.
-- `OPENCODE_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json"}'`:
+- `GRAPHAGENT_CONFIG=/path/to/file.json`: load an additional explicit config.
+- `GRAPHAGENT_CONFIG_CONTENT='{"$schema":"https://opencode.ai/config.json"}'`:
   inject inline JSON as a final local-scope merge.
 - `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`,
   `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1`: skip the external skill scans under

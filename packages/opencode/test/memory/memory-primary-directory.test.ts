@@ -30,14 +30,14 @@ import { testEffect } from "../lib/effect"
 
 // Private global config dir so other test files cannot leak a global memory.jsonc in.
 const pinnedConfigDir = path.join(os.tmpdir(), `opencode-memory-primary-${process.pid}`)
-const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
+const previousConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 beforeAll(() => {
   fs.mkdirSync(pinnedConfigDir, { recursive: true })
-  process.env.OPENCODE_CONFIG_DIR = pinnedConfigDir
+  process.env.GRAPHAGENT_CONFIG_DIR = pinnedConfigDir
 })
 afterAll(() => {
-  if (previousConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
-  else process.env.OPENCODE_CONFIG_DIR = previousConfigDir
+  if (previousConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+  else process.env.GRAPHAGENT_CONFIG_DIR = previousConfigDir
 })
 
 const base = Layer.mergeAll(

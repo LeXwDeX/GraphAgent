@@ -23,7 +23,7 @@ cliIt.live(
           }),
         )
       })
-      const options = { env: { OPENCODE_DB: path.join(home, "cold-model.sqlite") } }
+      const options = { env: { GRAPHAGENT_DB: path.join(home, "cold-model.sqlite") } }
       const first = yield* opencode.host(options)
       const post = (url: string, route: string, body: object) =>
         Effect.promise(() =>
@@ -94,8 +94,8 @@ for (const deny of [false, true]) {
         })
         const server = yield* opencode.host({
           env: {
-            OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: {}, enabled_providers: [] }),
-            ...(deny ? { OPENCODE_PERMISSION: JSON.stringify({ bash: "deny" }) } : {}),
+            GRAPHAGENT_CONFIG_CONTENT: JSON.stringify({ provider: {}, enabled_providers: [] }),
+            ...(deny ? { GRAPHAGENT_PERMISSION: JSON.stringify({ bash: "deny" }) } : {}),
           },
         })
         const request = (route: string, body?: object) =>

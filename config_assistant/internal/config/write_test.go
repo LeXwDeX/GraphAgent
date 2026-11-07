@@ -157,7 +157,7 @@ func TestSubstituteVarsReportsMissingFile(t *testing.T) {
 }
 
 func TestTargetGlobalRejectsEmptyHome(t *testing.T) {
-	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("GRAPHAGENT_CONFIG_DIR", "")
 	home, hadHome := os.LookupEnv("HOME")
 	t.Setenv("HOME", "")
 	defer func() {

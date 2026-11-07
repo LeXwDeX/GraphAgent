@@ -8,8 +8,8 @@ import { cliItFor, sourceCliTarget, type CliFixture, type ResolvedCliTarget } fr
 import { raw, reply } from "../../lib/llm-server"
 import { testProviderConfig } from "../../lib/test-provider"
 
-const sourceEnabled = process.env.OPENCODE_TEST_CONTEXT_FOLDING_SOURCE === "1"
-const evidenceDir = process.env.OPENCODE_TEST_CONTEXT_FOLDING_EVIDENCE_DIR
+const sourceEnabled = process.env.GRAPHAGENT_TEST_CONTEXT_FOLDING_SOURCE === "1"
+const evidenceDir = process.env.GRAPHAGENT_TEST_CONTEXT_FOLDING_EVIDENCE_DIR
 const enabled = sourceEnabled
 const cliIt = cliItFor(sourceCliTarget)
 
@@ -218,7 +218,7 @@ const runArm =
 
       const server = yield* opencode.host({
         readyTimeoutMs: 30_000,
-        env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(providerConfig(llm.url, dynamic)) },
+        env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(providerConfig(llm.url, dynamic)) },
       })
       const sdk = createOpencodeClient({ baseUrl: server.url, directory: home })
       const health = yield* Effect.promise(() => sdk.global.health())

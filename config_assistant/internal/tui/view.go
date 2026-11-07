@@ -125,9 +125,9 @@ func renderCheckResult(check config.CheckResult) string {
 func discoverAll() []sourceDisplay {
 	return []sourceDisplay{
 		{Label: "Managed", Path: managedDisplay(), Exists: fileExists(managedDisplay())},
-		{Label: "Inline", Path: "", Exists: envNonEmpty("OPENCODE_CONFIG_CONTENT")},
+		{Label: "Inline", Path: "", Exists: envNonEmpty("GRAPHAGENT_CONFIG_CONTENT")},
 		{Label: "Project", Path: "(当前目录向上查找)", Exists: false},
-		{Label: "Custom", Path: envVal("OPENCODE_CONFIG"), Exists: fileExists(envVal("OPENCODE_CONFIG"))},
+		{Label: "Custom", Path: envVal("GRAPHAGENT_CONFIG"), Exists: fileExists(envVal("GRAPHAGENT_CONFIG"))},
 		{Label: "Global", Path: globalDisplay(), Exists: fileExists(globalDisplay())},
 	}
 }

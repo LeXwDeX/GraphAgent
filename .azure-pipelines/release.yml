@@ -155,8 +155,8 @@ jobs:
                 vmImage: ${{ target.image }}
             timeoutInMinutes: 60
             variables:
-              OPENCODE_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
-              OPENCODE_CHANNEL: latest
+              GRAPHAGENT_VERSION: $[ dependencies.version.outputs['resolve.version'] ]
+              GRAPHAGENT_CHANNEL: latest
             steps:
               - checkout: self
                 fetchDepth: 0
@@ -207,7 +207,7 @@ jobs:
                         cli="$dir/bin/graphagent"
                         if [[ -f "$cli.exe" ]]; then cli="$cli.exe"; fi
                         actual="$("$cli" --version)"
-                        if [[ "$actual" != "$OPENCODE_VERSION" ]]; then
+                        if [[ "$actual" != "$GRAPHAGENT_VERSION" ]]; then
                           echo "Unexpected CLI version: $actual" >&2
                           exit 1
                         fi

@@ -133,7 +133,7 @@ const clearEffect = (wait = false) =>
     )
 const clear = (wait = false) => Effect.runPromise(clearEffect(wait))
 // Get managed config directory from environment (set in preload.ts)
-const managedConfigDir = process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR!
+const managedConfigDir = process.env.GRAPHAGENT_TEST_MANAGED_CONFIG_DIR!
 const originalTestToken = process.env.TEST_TOKEN
 
 beforeEach(async () => {
@@ -320,12 +320,12 @@ it.effect("creates global jsonc config with schema when no global configs exist"
   ),
 )
 
-it.effect("does not create global config when OPENCODE_CONFIG_DIR is set", () =>
+it.effect("does not create global config when GRAPHAGENT_CONFIG_DIR is set", () =>
   Effect.gen(function* () {
     const custom = yield* tmpdirScoped()
     yield* withGlobalConfig({}, ({ dir }) =>
       withProcessEnv(
-        "OPENCODE_CONFIG_DIR",
+        "GRAPHAGENT_CONFIG_DIR",
         custom,
         Effect.gen(function* () {
           yield* Config.use.get().pipe(provideInstanceEffect(dir))
@@ -854,7 +854,7 @@ it.instance("gets config directories", () =>
   }),
 )
 
-it.effect("does not try to install dependencies in read-only OPENCODE_CONFIG_DIR", () =>
+it.effect("does not try to install dependencies in read-only GRAPHAGENT_CONFIG_DIR", () =>
   Effect.gen(function* () {
     if (process.platform === "win32") return
 
@@ -864,7 +864,7 @@ it.effect("does not try to install dependencies in read-only OPENCODE_CONFIG_DIR
     yield* FSUtil.use.chmod(readonly, 0o555)
     yield* Effect.addFinalizer(() => FSUtil.use.chmod(readonly, 0o755).pipe(Effect.ignore))
 
-    yield* withProcessEnv("OPENCODE_CONFIG_DIR", readonly, Config.use.get().pipe(provideInstanceEffect(dir)))
+    yield* withProcessEnv("GRAPHAGENT_CONFIG_DIR", readonly, Config.use.get().pipe(provideInstanceEffect(dir)))
   }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
 )
 
@@ -880,7 +880,7 @@ it.effect("global config remains global when project config is disabled", () =>
       local: { model: "local/model" },
     },
     withProcessEnv(
-      "OPENCODE_DISABLE_PROJECT_CONFIG",
+      "GRAPHAGENT_DISABLE_PROJECT_CONFIG",
       "true",
       Effect.gen(function* () {
         const config = yield* Config.use.get()
@@ -955,11 +955,11 @@ describe("dynamic compaction configuration", () => {
   )
 
   it.instance(
-    "lets OPENCODE_DISABLE_PRUNE override explicit dynamic enablement",
+    "lets GRAPHAGENT_DISABLE_PRUNE override explicit dynamic enablement",
     Effect.acquireUseRelease(
       Effect.sync(() => {
-        const previous = Flag.OPENCODE_DISABLE_PRUNE
-        Flag.OPENCODE_DISABLE_PRUNE = true
+        const previous = Flag.GRAPHAGENT_DISABLE_PRUNE
+        Flag.GRAPHAGENT_DISABLE_PRUNE = true
         return previous
       }),
       () =>
@@ -967,7 +967,7 @@ describe("dynamic compaction configuration", () => {
           const config = yield* Config.use.get()
           expect(config.compaction).toMatchObject({ dynamic: false, prune: false })
         }),
-      (previous) => Effect.sync(() => void (Flag.OPENCODE_DISABLE_PRUNE = previous)),
+      (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_PRUNE = previous)),
     ),
     { config: { compaction: { dynamic: true, prune: true } } },
   )
@@ -983,11 +983,11 @@ describe("dynamic compaction configuration", () => {
   )
 
   it.instance(
-    "keeps OPENCODE_DISABLE_AUTOCOMPACT independent from dynamic folding",
+    "keeps GRAPHAGENT_DISABLE_AUTOCOMPACT independent from dynamic folding",
     Effect.acquireUseRelease(
       Effect.sync(() => {
-        const previous = Flag.OPENCODE_DISABLE_AUTOCOMPACT
-        Flag.OPENCODE_DISABLE_AUTOCOMPACT = true
+        const previous = Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT
+        Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT = true
         return previous
       }),
       () =>
@@ -996,7 +996,7 @@ describe("dynamic compaction configuration", () => {
           expect(config.compaction).toMatchObject({ auto: false, dynamic: true })
           expect(resolve(config)).toMatchObject({ enabled: true, source: "dynamic" })
         }),
-      (previous) => Effect.sync(() => void (Flag.OPENCODE_DISABLE_AUTOCOMPACT = previous)),
+      (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT = previous)),
     ),
     { config: { compaction: { auto: true, dynamic: true } } },
   )
@@ -1100,7 +1100,7 @@ it.instance("migrates legacy write tool to edit permission", () =>
 )
 
 // Managed settings tests
-// Note: preload.ts sets OPENCODE_TEST_MANAGED_CONFIG which Global.Path.managedConfig uses
+// Note: preload.ts sets GRAPHAGENT_TEST_MANAGED_CONFIG which Global.Path.managedConfig uses
 
 it.instance(
   "managed settings override user settings",
@@ -1592,12 +1592,12 @@ loginPageWellKnown.it.instance(
     }),
 )
 
-describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
+describe("GRAPHAGENT_DISABLE_PROJECT_CONFIG", () => {
   it.instance(
     "skips project config files when flag is set",
     () =>
       withProcessEnv(
-        "OPENCODE_DISABLE_PROJECT_CONFIG",
+        "GRAPHAGENT_DISABLE_PROJECT_CONFIG",
         "true",
         Effect.gen(function* () {
           const config = yield* Config.use.get()
@@ -1610,7 +1610,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
 
   it.instance("skips project .opencode/ directories when flag is set", () =>
     withProcessEnv(
-      "OPENCODE_DISABLE_PROJECT_CONFIG",
+      "GRAPHAGENT_DISABLE_PROJECT_CONFIG",
       "true",
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -1626,7 +1626,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
 
   it.instance("still loads global config when flag is set", () =>
     withProcessEnv(
-      "OPENCODE_DISABLE_PROJECT_CONFIG",
+      "GRAPHAGENT_DISABLE_PROJECT_CONFIG",
       "true",
       Effect.gen(function* () {
         const config = yield* Config.use.get()
@@ -1640,7 +1640,7 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
     "skips relative instructions with warning when flag is set but no config dir",
     () =>
       withProcessEnvs(
-        { OPENCODE_CONFIG_DIR: undefined, OPENCODE_DISABLE_PROJECT_CONFIG: "true" },
+        { GRAPHAGENT_CONFIG_DIR: undefined, GRAPHAGENT_DISABLE_PROJECT_CONFIG: "true" },
         Effect.gen(function* () {
           const test = yield* TestInstance
           yield* FSUtil.use.writeWithDirs(path.join(test.directory, "CUSTOM.md"), "# Custom Instructions")
@@ -1653,12 +1653,12 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
   )
 
   it.instance(
-    "OPENCODE_CONFIG_DIR still works when flag is set",
+    "GRAPHAGENT_CONFIG_DIR still works when flag is set",
     () =>
       Effect.gen(function* () {
         const configDir = yield* tmpdirScoped({ config: { model: "configdir/model" } })
         yield* withProcessEnvs(
-          { OPENCODE_DISABLE_PROJECT_CONFIG: "true", OPENCODE_CONFIG_DIR: configDir },
+          { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "true", GRAPHAGENT_CONFIG_DIR: configDir },
           Effect.gen(function* () {
             const config = yield* Config.use.get()
             expect(config.model).toBe("configdir/model")
@@ -1669,13 +1669,13 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
   )
 })
 
-// Regression for #28206: malformed OPENCODE_PERMISSION JSON used to crash
+// Regression for #28206: malformed GRAPHAGENT_PERMISSION JSON used to crash
 // the app on startup with an unhandled SyntaxError. Loading the config with
 // an invalid JSON value in this env var should not throw.
-describe("OPENCODE_PERMISSION env var", () => {
-  it.instance("does not crash when OPENCODE_PERMISSION contains invalid JSON", () =>
+describe("GRAPHAGENT_PERMISSION env var", () => {
+  it.instance("does not crash when GRAPHAGENT_PERMISSION contains invalid JSON", () =>
     withProcessEnv(
-      "OPENCODE_PERMISSION",
+      "GRAPHAGENT_PERMISSION",
       "{invalid",
       Effect.gen(function* () {
         const config = yield* Config.use.get()
@@ -1686,13 +1686,13 @@ describe("OPENCODE_PERMISSION env var", () => {
   )
 })
 
-describe("OPENCODE_CONFIG_CONTENT token substitution", () => {
-  it.instance("substitutes {env:} tokens in OPENCODE_CONFIG_CONTENT", () =>
+describe("GRAPHAGENT_CONFIG_CONTENT token substitution", () => {
+  it.instance("substitutes {env:} tokens in GRAPHAGENT_CONFIG_CONTENT", () =>
     withProcessEnv(
       "TEST_CONFIG_VAR",
       "test_api_key_12345",
       withProcessEnv(
-        "OPENCODE_CONFIG_CONTENT",
+        "GRAPHAGENT_CONFIG_CONTENT",
         JSON.stringify({
           $schema: "https://opencode.ai/config.json",
           username: "{env:TEST_CONFIG_VAR}",
@@ -1705,12 +1705,12 @@ describe("OPENCODE_CONFIG_CONTENT token substitution", () => {
     ),
   )
 
-  it.instance("substitutes {file:} tokens in OPENCODE_CONFIG_CONTENT", () =>
+  it.instance("substitutes {file:} tokens in GRAPHAGENT_CONFIG_CONTENT", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       yield* FSUtil.use.writeWithDirs(path.join(test.directory, "api_key.txt"), "secret_key_from_file")
       yield* withProcessEnv(
-        "OPENCODE_CONFIG_CONTENT",
+        "GRAPHAGENT_CONFIG_CONTENT",
         JSON.stringify({
           $schema: "https://opencode.ai/config.json",
           username: "{file:./api_key.txt}",

@@ -2,7 +2,7 @@ process.env.AGENT = "1"
 process.env.OPENCODE = "1"
 // Tests assert failure reporting through `stderrTail()`, so the host must
 // mirror the file logger to stderr under the same switch the CLI uses.
-process.env.OPENCODE_PRINT_LOGS = "1"
+process.env.GRAPHAGENT_PRINT_LOGS = "1"
 
 const { Server } = await import("../../src/server/server")
 

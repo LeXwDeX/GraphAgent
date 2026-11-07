@@ -29,10 +29,10 @@ cliIt.live("real child tool work resets the consecutive SubagentStop feedback ca
       yield* llm.text(`CHILD_CONTINUATION_${step}`)
     }
     yield* llm.text("PARENT_AFTER_ALL_CONTINUATIONS")
-    const config = { ...JSON.parse(env.OPENCODE_CONFIG_CONTENT), permission: { "*": "allow" } }
+    const config = { ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT), permission: { "*": "allow" } }
     const result = yield* opencode.run("delegate the child work", {
       format: "json",
-      env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+      env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) },
     })
     opencode.expectExit(result, 0)
     expect(yield* Effect.promise(() => fs.readFile(counter, "utf8"))).toBe("10")

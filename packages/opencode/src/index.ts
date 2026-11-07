@@ -54,14 +54,14 @@ const cli = yargs(args)
     choices: ["DEBUG", "INFO", "WARN", "ERROR"],
   })
   .middleware(async (opts) => {
-    if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
-    if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
+    if (opts.printLogs) process.env.GRAPHAGENT_PRINT_LOGS = "1"
+    if (opts.logLevel) process.env.GRAPHAGENT_LOG_LEVEL = opts.logLevel
 
     Heap.start()
 
     process.env.AGENT = "1"
-    process.env.OPENCODE = "1"
-    process.env.OPENCODE_PID = String(process.pid)
+    process.env.GRAPHAGENT = "1"
+    process.env.GRAPHAGENT_PID = String(process.pid)
   })
   .usage("")
   .completion("completion", "generate shell completion script")
