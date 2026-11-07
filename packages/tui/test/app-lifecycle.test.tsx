@@ -1,5 +1,5 @@
 import { expect, mock, test } from "bun:test"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiPluginApi } from "@opencode-ai/tui/plugin-api"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
@@ -31,7 +31,7 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
       run({
         url: "http://test",
         directory,
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: createTuiResolvedConfig(),
         fetch: calls.fetch,
         events: events.source,
         args: {},
@@ -97,7 +97,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
       run({
         url: "http://test",
         directory,
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: createTuiResolvedConfig(),
         fetch: calls.fetch,
         events: events.source,
         args: { continue: true },

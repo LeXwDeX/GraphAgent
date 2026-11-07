@@ -75,9 +75,6 @@ export const Flag = {
   get OPENCODE_PERMISSION() {
     return process.env["OPENCODE_PERMISSION"]
   },
-  get OPENCODE_PLUGIN_META_FILE() {
-    return process.env["OPENCODE_PLUGIN_META_FILE"]
-  },
   get OPENCODE_CLIENT() {
     return process.env["OPENCODE_CLIENT"] ?? "cli"
   },

@@ -5,7 +5,6 @@ import { Effect, Layer } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Config } from "@/config/config"
-import { ConfigPlugin } from "@/config/plugin"
 import { CurrentWorkingDirectory } from "@/config/tui-cwd"
 import { TuiConfig } from "../../src/config/tui"
 import { TestInstance } from "../fixture/fixture"
@@ -71,37 +70,6 @@ const getTuiConfig = (directory: string) =>
   TuiConfig.Service.use((svc) => svc.get()).pipe(
     Effect.provide(TuiConfig.defaultLayer.pipe(Layer.provide(Layer.succeed(CurrentWorkingDirectory, directory)))),
   )
-
-const getTuiPluginOrigins = (directory: string) =>
-  TuiConfig.Service.use((svc) => svc.pluginOrigins()).pipe(
-    Effect.provide(TuiConfig.defaultLayer.pipe(Layer.provide(Layer.succeed(CurrentWorkingDirectory, directory)))),
-  )
-
-it.instance("merges tui plugin origins with later entries winning", () =>
-  withCleanState(
-    Effect.gen(function* () {
-      const fs = yield* FSUtil.Service
-      const test = yield* TestInstance
-      const local = path.join(test.directory, ".opencode")
-      yield* fs.makeDirectory(local, { recursive: true })
-
-      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
-        plugin: [["shared-plugin@1.0.0", { source: "global" }], "global-only@1.0.0"],
-      })
-      yield* fs.writeJson(path.join(local, "tui.json"), {
-        plugin: [["shared-plugin@2.0.0", { source: "local" }], "local-only@1.0.0"],
-      })
-
-      const tui = yield* getTuiConfig(test.directory)
-      const tuiOrigins = yield* getTuiPluginOrigins(test.directory)
-      const tuiPlugins = (tui.plugin ?? []).map((item) => ConfigPlugin.pluginSpecifier(item))
-
-      expect(tuiPlugins).toContain("shared-plugin@2.0.0")
-      expect(tuiPlugins).not.toContain("shared-plugin@1.0.0")
-      expect(tuiOrigins.map((item) => ConfigPlugin.pluginSpecifier(item.spec))).toEqual(tuiPlugins)
-    }),
-  ),
-)
 
 it.instance("loads tui config with the same precedence order as server config paths", () =>
   withCleanState(
@@ -468,7 +436,6 @@ it.instance("resolves keybind lookup from canonical keybinds", () =>
           "dialog.prompt.submit": "ctrl+s",
           "dialog.mcp.toggle": "ctrl+t",
           model_favorite_toggle: "ctrl+f",
-          "dialog.plugins.install": "shift+i",
         },
         leader_timeout: 1234,
       })
@@ -491,10 +458,6 @@ it.instance("resolves keybind lookup from canonical keybinds", () =>
       expect(config.keybinds.get("dialog.prompt.submit")?.[0]?.key).toBe("ctrl+s")
       expect(config.keybinds.get("dialog.mcp.toggle")?.[0]?.key).toBe("ctrl+t")
       expect(config.keybinds.get("model.dialog.favorite")?.[0]?.key).toBe("ctrl+f")
-      expect(config.keybinds.get("dialog.plugins.install")?.[0]?.key).toBe("shift+i")
-      expect(
-        config.keybinds.gather("plugins.dialog", ["dialog.plugins.install"]).map((binding) => binding.cmd),
-      ).toEqual(["dialog.plugins.install"])
     }),
   ),
 )
@@ -509,7 +472,6 @@ it.instance("keybinds accept OpenTUI binding specs", () =>
           command_list: [{ key: "alt+p", preventDefault: false }],
           editor_open: { key: { name: "e", ctrl: true }, group: "Explicit" },
           "prompt.autocomplete.next": false,
-          plugin_manager: "ctrl+shift+p",
         },
       })
 
@@ -523,7 +485,6 @@ it.instance("keybinds accept OpenTUI binding specs", () =>
         group: "Explicit",
       })
       expect(config.keybinds.get("prompt.autocomplete.next")).toEqual([])
-      expect(config.keybinds.get("plugins.list")?.[0]?.key).toBe("ctrl+shift+p")
     }),
   ),
 )
@@ -718,121 +679,6 @@ it.instance("loads .opencode/tui.json", () =>
 
       const config = yield* getTuiConfig(test.directory)
       expect(config.diff_style).toBe("stacked")
-    }),
-  ),
-)
-
-it.instance("supports tuple plugin specs with options in tui.json", () =>
-  withCleanState(
-    Effect.gen(function* () {
-      const fs = yield* FSUtil.Service
-      const test = yield* TestInstance
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
-        plugin: [["acme-plugin@1.2.3", { enabled: true, label: "demo" }]],
-      })
-
-      const config = yield* getTuiConfig(test.directory)
-      const origins = yield* getTuiPluginOrigins(test.directory)
-      expect(config.plugin).toEqual([["acme-plugin@1.2.3", { enabled: true, label: "demo" }]])
-      expect(origins).toEqual([
-        {
-          spec: ["acme-plugin@1.2.3", { enabled: true, label: "demo" }],
-          scope: "local",
-          source: path.join(test.directory, "tui.json"),
-        },
-      ])
-    }),
-  ),
-)
-
-it.instance("deduplicates tuple plugin specs by name with higher precedence winning", () =>
-  withCleanState(
-    Effect.gen(function* () {
-      const fs = yield* FSUtil.Service
-      const test = yield* TestInstance
-      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
-        plugin: [["acme-plugin@1.0.0", { source: "global" }]],
-      })
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
-        plugin: [
-          ["acme-plugin@2.0.0", { source: "project" }],
-          ["second-plugin@3.0.0", { source: "project" }],
-        ],
-      })
-
-      const config = yield* getTuiConfig(test.directory)
-      const origins = yield* getTuiPluginOrigins(test.directory)
-      expect(config.plugin).toEqual([
-        ["acme-plugin@2.0.0", { source: "project" }],
-        ["second-plugin@3.0.0", { source: "project" }],
-      ])
-      expect(origins).toEqual([
-        {
-          spec: ["acme-plugin@2.0.0", { source: "project" }],
-          scope: "local",
-          source: path.join(test.directory, "tui.json"),
-        },
-        {
-          spec: ["second-plugin@3.0.0", { source: "project" }],
-          scope: "local",
-          source: path.join(test.directory, "tui.json"),
-        },
-      ])
-    }),
-  ),
-)
-
-it.instance("tracks global and local plugin metadata in merged tui config", () =>
-  withCleanState(
-    Effect.gen(function* () {
-      const fs = yield* FSUtil.Service
-      const test = yield* TestInstance
-      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), { plugin: ["global-plugin@1.0.0"] })
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), { plugin: ["local-plugin@2.0.0"] })
-
-      const config = yield* getTuiConfig(test.directory)
-      const origins = yield* getTuiPluginOrigins(test.directory)
-      expect(config.plugin).toEqual(["global-plugin@1.0.0", "local-plugin@2.0.0"])
-      expect(origins).toEqual([
-        {
-          spec: "global-plugin@1.0.0",
-          scope: "global",
-          source: path.join(Global.Path.config, "tui.json"),
-        },
-        {
-          spec: "local-plugin@2.0.0",
-          scope: "local",
-          source: path.join(test.directory, "tui.json"),
-        },
-      ])
-    }),
-  ),
-)
-
-it.instance("merges plugin_enabled flags across config layers", () =>
-  withCleanState(
-    Effect.gen(function* () {
-      const fs = yield* FSUtil.Service
-      const test = yield* TestInstance
-      yield* fs.writeJson(path.join(Global.Path.config, "tui.json"), {
-        plugin_enabled: {
-          "internal:sidebar-context": false,
-          "demo.plugin": true,
-        },
-      })
-      yield* fs.writeJson(path.join(test.directory, "tui.json"), {
-        plugin_enabled: {
-          "demo.plugin": false,
-          "local.plugin": true,
-        },
-      })
-
-      const config = yield* getTuiConfig(test.directory)
-      expect(config.plugin_enabled).toEqual({
-        "internal:sidebar-context": false,
-        "demo.plugin": false,
-        "local.plugin": true,
-      })
     }),
   ),
 )

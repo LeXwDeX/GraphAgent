@@ -2,12 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/tui/plugin-api"
 import type { DagNode, DagWorkflowSummary } from "@opencode-ai/sdk/v2"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
 import { Spinner } from "../../component/spinner"
-import { computeWaves, dagEscalationLabel, dagNodeGlyph, dagStatusColor, formatDagProgress } from "../system/dag-inspector-utils"
+import {
+  computeWaves,
+  dagEscalationLabel,
+  dagNodeGlyph,
+  dagStatusColor,
+  formatDagProgress,
+} from "../system/dag-inspector-utils"
 
 const id = "internal:sidebar-dag-panel"
 

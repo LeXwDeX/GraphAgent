@@ -232,14 +232,10 @@ export const Definitions = {
   "prompt.autocomplete.select": keybind("return", "Select autocomplete item"),
   "prompt.autocomplete.complete": keybind("tab", "Complete autocomplete item"),
   "permission.prompt.fullscreen": keybind("ctrl+f", "Toggle permission prompt fullscreen"),
-  "plugins.toggle": keybind("space", "Toggle plugin"),
-  "dialog.plugins.install": keybind("shift+i", "Install plugin from plugin dialog"),
 
   terminal_suspend: keybind("ctrl+z", "Suspend terminal"),
   terminal_title_toggle: keybind("none", "Toggle terminal title"),
   tips_toggle: keybind("<leader>h", "Toggle tips on home screen"),
-  plugin_manager: keybind("none", "Open plugin manager dialog"),
-  plugin_install: keybind("none", "Install plugin"),
 
   which_key_toggle: keybind("ctrl+alt+k", "Toggle which-key panel"),
   which_key_layout_toggle: keybind("ctrl+alt+shift+k", "Switch which-key layout"),
@@ -428,8 +424,6 @@ export const CommandMap = {
   terminal_suspend: "terminal.suspend",
   terminal_title_toggle: "terminal.title.toggle",
   tips_toggle: "tips.toggle",
-  plugin_manager: "plugins.list",
-  plugin_install: "plugins.install",
   which_key_toggle: "which-key.toggle",
   which_key_layout_toggle: "which-key.layout.toggle",
   which_key_pending_toggle: "which-key.pending.toggle",

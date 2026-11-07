@@ -37,6 +37,7 @@
     "./plugin/runtime": "./src/plugin/runtime.tsx",
     "./plugin/slots": "./src/plugin/slots.tsx",
     "./plugin/command-shim": "./src/plugin/command-shim.ts",
+    "./plugin-api": "./src/plugin-api.ts",
     "./parsers-config": "./src/parsers-config.ts",
     "./util/error": "./src/util/error.ts",
     "./util/locale": "./src/util/locale.ts",
@@ -50,7 +51,6 @@
   },
   "dependencies": {
     "@opencode-ai/core": "workspace:*",
-    "@opencode-ai/plugin": "workspace:*",
     "@opencode-ai/sdk": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",

@@ -37,9 +37,7 @@ const layer = Layer.mergeAll(
   EventV2Bridge.defaultLayer,
 )
 const it = testEffect(layer)
-const plainTransport = testEffect(
-  layer,
-)
+const plainTransport = testEffect(layer)
 
 const events = [
   { type: "response.created", response: { id: "resp_test", model: "test-model", created_at: 0 } },
@@ -84,144 +82,142 @@ for (const providerID of ["relay", "openai"] as const) {
   const transport = it
   for (const configured of [undefined, false, true]) {
     if (providerID === "openai" && configured === undefined) continue
-    transport.live(
-      `${providerID} transport with experimentalWebSockets=${configured}`,
-      () =>
-        Effect.gen(function* () {
-          yield* Effect.acquireRelease(
+    transport.live(`${providerID} transport with experimentalWebSockets=${configured}`, () =>
+      Effect.gen(function* () {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const previous = process.env.OPENCODE_AUTH_CONTENT
+            process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ openai: { type: "api", key: "test-provider-key" } })
+            return previous
+          }),
+          (previous) =>
             Effect.sync(() => {
-              const previous = process.env.OPENCODE_AUTH_CONTENT
-              process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ openai: { type: "api", key: "test-provider-key" } })
-              return previous
+              if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+              else process.env.OPENCODE_AUTH_CONTENT = previous
             }),
-            (previous) =>
-              Effect.sync(() => {
-                if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
-                else process.env.OPENCODE_AUTH_CONTENT = previous
-              }),
-          )
-          let upgrades = 0
-          let posts = 0
-          let closed = 0
-          const closeEvents = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
-          const server = yield* Effect.acquireRelease(
-            Effect.sync(() =>
-              Bun.serve({
-                hostname: "127.0.0.1",
-                port: 0,
-                websocket: {
-                  close() {
-                    closeEvents[closed++]?.resolve()
-                  },
-                  message(socket, message) {
-                    const body = JSON.parse(String(message))
-                    expect(body.type).toBe("response.create")
-                    expect(body.experimentalWebSockets).toBeUndefined()
-                    for (const event of events) socket.send(JSON.stringify(event))
-                  },
+        )
+        let upgrades = 0
+        let posts = 0
+        let closed = 0
+        const closeEvents = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+        const server = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Bun.serve({
+              hostname: "127.0.0.1",
+              port: 0,
+              websocket: {
+                close() {
+                  closeEvents[closed++]?.resolve()
                 },
-                async fetch(request, server): Promise<Response | undefined> {
-                  expect(request.headers.get("authorization")).toBe("Bearer test-provider-key")
-                  expect(new URL(request.url).pathname).toBe("/v1/responses")
-                  expect(request.headers.has(TITLE_HEADER)).toBe(false)
-                  if (request.headers.get("upgrade") === "websocket") {
-                    upgrades++
-                    expect(request.headers.get("openai-beta")).toBe("responses_websockets=2026-02-06")
-                    if (server.upgrade(request)) return undefined
-                    return new Response(null, { status: 400 })
-                  }
-                  posts++
-                  expect(request.method).toBe("POST")
-                  expect((await request.json()).experimentalWebSockets).toBeUndefined()
-                  return new Response(sse, { headers: { "content-type": "text/event-stream" } })
+                message(socket, message) {
+                  const body = JSON.parse(String(message))
+                  expect(body.type).toBe("response.create")
+                  expect(body.experimentalWebSockets).toBeUndefined()
+                  for (const event of events) socket.send(JSON.stringify(event))
                 },
-              }),
-            ),
-            (server) => Effect.sync(() => server.stop(true)),
-          )
-
-          yield* provideTmpdirInstance(
-            () =>
-              Effect.gen(function* () {
-                 const provider = yield* Provider.Service
-                 const adapters = yield* ProviderAdapters.Service
-                const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
-                const language = yield* provider.getLanguage(model)
-                const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
-                const session = yield* Session.use.create({})
-                 const flags = yield* RuntimeFlags.Service
-                for (const title of [false, false, true]) {
-                  const agent = title ? "title" : "build"
-                  const input = { model, provider: info, sessionID: session.id, agent }
-                  const { headers } = yield* LLMRequestPrep.prepare({
-                    ...input,
-                    agent: { name: agent, mode: "primary", permission: [], options: {} },
-                    user: {
-                      id: SessionV1.MessageID.make("msg_test"),
-                      sessionID: session.id,
-                      role: "user",
-                      time: { created: 0 },
-                      agent,
-                      model: { providerID: model.providerID, modelID: model.id },
-                    },
-                    auth: undefined,
-                     adapters,
-                    flags,
-                    isWorkflow: false,
-                    messages: [{ role: "user", content: "hello" }],
-                    system: [],
-                    tools: {},
-                  })
-                  expect(new Headers(headers).get(TITLE_HEADER)).toBe(configured === true && title ? "true" : null)
-                  if (providerID === "relay") {
-                     const params = yield* adapters.chatParams(input as never, {
-                       temperature: undefined,
-                       topP: undefined,
-                       topK: undefined,
-                       maxOutputTokens: 1000,
-                       options: {},
-                     })
-                    expect(params.maxOutputTokens).toBe(1000)
-                  }
-                  const result = streamText({
-                    model: language,
-                    messages: [{ role: "user", content: "hello" }],
-                    headers: {
-                      "x-session-affinity": session.id,
-                      ...headers,
-                    },
-                    maxRetries: 0,
-                  })
-                  expect(yield* Effect.promise(() => result.text)).toBe("ok")
+              },
+              async fetch(request, server): Promise<Response | undefined> {
+                expect(request.headers.get("authorization")).toBe("Bearer test-provider-key")
+                expect(new URL(request.url).pathname).toBe("/v1/responses")
+                expect(request.headers.has(TITLE_HEADER)).toBe(false)
+                if (request.headers.get("upgrade") === "websocket") {
+                  upgrades++
+                  expect(request.headers.get("openai-beta")).toBe("responses_websockets=2026-02-06")
+                  if (server.upgrade(request)) return undefined
+                  return new Response(null, { status: 400 })
                 }
-                expect(upgrades).toBe(configured === true ? 1 : 0)
-                expect(posts).toBe(configured === true ? 1 : 3)
-                if (configured !== true) return
+                posts++
+                expect(request.method).toBe("POST")
+                expect((await request.json()).experimentalWebSockets).toBeUndefined()
+                return new Response(sse, { headers: { "content-type": "text/event-stream" } })
+              },
+            }),
+          ),
+          (server) => Effect.sync(() => server.stop(true)),
+        )
 
-                yield* Session.use.remove(session.id)
-                yield* awaitWithTimeout(
-                  Effect.promise(() => closeEvents[0].promise),
-                  "session deletion must close its WS",
-                )
-                const next = yield* Session.use.create({})
+        yield* provideTmpdirInstance(
+          () =>
+            Effect.gen(function* () {
+              const provider = yield* Provider.Service
+              const adapters = yield* ProviderAdapters.Service
+              const model = yield* provider.getModel(ProviderV2.ID.make(providerID), ModelV2.ID.make("test-model"))
+              const language = yield* provider.getLanguage(model)
+              const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
+              const session = yield* Session.use.create({})
+              const flags = yield* RuntimeFlags.Service
+              for (const title of [false, false, true]) {
+                const agent = title ? "title" : "build"
+                const input = { model, provider: info, sessionID: session.id, agent }
+                const { headers } = yield* LLMRequestPrep.prepare({
+                  ...input,
+                  agent: { name: agent, mode: "primary", permission: [], options: {} },
+                  user: {
+                    id: SessionV1.MessageID.make("msg_test"),
+                    sessionID: session.id,
+                    role: "user",
+                    time: { created: 0 },
+                    agent,
+                    model: { providerID: model.providerID, modelID: model.id },
+                  },
+                  auth: undefined,
+                  adapters,
+                  flags,
+                  isWorkflow: false,
+                  messages: [{ role: "user", content: "hello" }],
+                  system: [],
+                  tools: {},
+                })
+                expect(new Headers(headers).get(TITLE_HEADER)).toBe(configured === true && title ? "true" : null)
+                if (providerID === "relay") {
+                  const params = yield* adapters.chatParams(input as never, {
+                    temperature: undefined,
+                    topP: undefined,
+                    topK: undefined,
+                    maxOutputTokens: 1000,
+                    options: {},
+                  })
+                  expect(params.maxOutputTokens).toBe(1000)
+                }
                 const result = streamText({
                   model: language,
                   messages: [{ role: "user", content: "hello" }],
-                  headers: { "x-session-affinity": next.id },
+                  headers: {
+                    "x-session-affinity": session.id,
+                    ...headers,
+                  },
                   maxRetries: 0,
                 })
                 expect(yield* Effect.promise(() => result.text)).toBe("ok")
-                expect(upgrades).toBe(2)
-                yield* disposeAllInstancesEffect
-                yield* awaitWithTimeout(
-                  Effect.promise(() => closeEvents[1].promise),
-                  "instance disposal must close its WS",
-                )
-                expect(closed).toBe(2)
-              }),
-            { config: providerConfig(new URL("/v1", server.url).toString(), configured, providerID) },
-          )
-        }),
+              }
+              expect(upgrades).toBe(configured === true ? 1 : 0)
+              expect(posts).toBe(configured === true ? 1 : 3)
+              if (configured !== true) return
+
+              yield* Session.use.remove(session.id)
+              yield* awaitWithTimeout(
+                Effect.promise(() => closeEvents[0].promise),
+                "session deletion must close its WS",
+              )
+              const next = yield* Session.use.create({})
+              const result = streamText({
+                model: language,
+                messages: [{ role: "user", content: "hello" }],
+                headers: { "x-session-affinity": next.id },
+                maxRetries: 0,
+              })
+              expect(yield* Effect.promise(() => result.text)).toBe("ok")
+              expect(upgrades).toBe(2)
+              yield* disposeAllInstancesEffect
+              yield* awaitWithTimeout(
+                Effect.promise(() => closeEvents[1].promise),
+                "instance disposal must close its WS",
+              )
+              expect(closed).toBe(2)
+            }),
+          { config: providerConfig(new URL("/v1", server.url).toString(), configured, providerID) },
+        )
+      }),
     )
   }
 }

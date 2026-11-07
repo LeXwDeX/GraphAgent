@@ -33,11 +33,9 @@ import { testEffect } from "../lib/effect"
 import path from "path"
 import fs from "fs/promises"
 import os from "os"
-import { pathToFileURL } from "url"
 import { Global } from "@opencode-ai/core/global"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { Filesystem } from "@/util/filesystem"
-import { ConfigPlugin } from "@/config/plugin"
 import { AccountTest } from "../fake/account"
 import { AuthTest } from "../fake/auth"
 import { NpmTest } from "../fake/npm"
@@ -1645,123 +1643,6 @@ loginPageWellKnown.it.instance(
       expect((error as { data?: { url?: string } }).data?.url).toBe("https://example.com")
     }),
 )
-
-describe("resolvePluginSpec", () => {
-  test("keeps package specs unchanged", async () => {
-    await using tmp = await tmpdir()
-    const file = path.join(tmp.path, "opencode.json")
-    expect(await ConfigPlugin.resolvePluginSpec("oh-my-opencode@2.4.3", file)).toBe("oh-my-opencode@2.4.3")
-    expect(await ConfigPlugin.resolvePluginSpec("@scope/pkg", file)).toBe("@scope/pkg")
-  })
-
-  test("resolves windows-style relative plugin directory specs", async () => {
-    if (process.platform !== "win32") return
-
-    await using tmp = await tmpdir({
-      init: async (dir) => {
-        const plugin = path.join(dir, "plugin")
-        await fs.mkdir(plugin, { recursive: true })
-        await Filesystem.write(path.join(plugin, "index.ts"), "export default {}")
-      },
-    })
-
-    const file = path.join(tmp.path, "opencode.json")
-    const hit = await ConfigPlugin.resolvePluginSpec(".\\plugin", file)
-    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin", "index.ts")).href)
-  })
-
-  test("resolves relative file plugin paths to file urls", async () => {
-    await using tmp = await tmpdir({
-      init: async (dir) => {
-        await Filesystem.write(path.join(dir, "plugin.ts"), "export default {}")
-      },
-    })
-
-    const file = path.join(tmp.path, "opencode.json")
-    const hit = await ConfigPlugin.resolvePluginSpec("./plugin.ts", file)
-    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin.ts")).href)
-  })
-
-  test("resolves plugin directory paths to directory urls", async () => {
-    await using tmp = await tmpdir({
-      init: async (dir) => {
-        const plugin = path.join(dir, "plugin")
-        await fs.mkdir(plugin, { recursive: true })
-        await Filesystem.writeJson(path.join(plugin, "package.json"), {
-          name: "demo-plugin",
-          type: "module",
-          main: "./index.ts",
-        })
-        await Filesystem.write(path.join(plugin, "index.ts"), "export default {}")
-      },
-    })
-
-    const file = path.join(tmp.path, "opencode.json")
-    const hit = await ConfigPlugin.resolvePluginSpec("./plugin", file)
-    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin")).href)
-  })
-
-  test("resolves plugin directories without package.json to index.ts", async () => {
-    await using tmp = await tmpdir({
-      init: async (dir) => {
-        const plugin = path.join(dir, "plugin")
-        await fs.mkdir(plugin, { recursive: true })
-        await Filesystem.write(path.join(plugin, "index.ts"), "export default {}")
-      },
-    })
-
-    const file = path.join(tmp.path, "opencode.json")
-    const hit = await ConfigPlugin.resolvePluginSpec("./plugin", file)
-    expect(ConfigPlugin.pluginSpecifier(hit)).toBe(pathToFileURL(path.join(tmp.path, "plugin", "index.ts")).href)
-  })
-})
-
-describe("deduplicatePluginOrigins", () => {
-  const dedupe = (plugins: ConfigPlugin.Spec[]) =>
-    ConfigPlugin.deduplicatePluginOrigins(
-      plugins.map((spec) => ({
-        spec,
-        source: "",
-        scope: "global" as const,
-      })),
-    ).map((item) => item.spec)
-
-  test("removes duplicates keeping higher priority (later entries)", () => {
-    const plugins = ["global-plugin@1.0.0", "shared-plugin@1.0.0", "local-plugin@2.0.0", "shared-plugin@2.0.0"]
-
-    const result = dedupe(plugins)
-
-    expect(result).toContain("global-plugin@1.0.0")
-    expect(result).toContain("local-plugin@2.0.0")
-    expect(result).toContain("shared-plugin@2.0.0")
-    expect(result).not.toContain("shared-plugin@1.0.0")
-    expect(result.length).toBe(3)
-  })
-
-  test("keeps path plugins separate from package plugins", () => {
-    const plugins = ["oh-my-opencode@2.4.3", "file:///project/.opencode/plugin/oh-my-opencode.js"]
-
-    const result = dedupe(plugins)
-
-    expect(result).toEqual(plugins)
-  })
-
-  test("deduplicates direct path plugins by exact spec", () => {
-    const plugins = ["file:///project/.opencode/plugin/demo.ts", "file:///project/.opencode/plugin/demo.ts"]
-
-    const result = dedupe(plugins)
-
-    expect(result).toEqual(["file:///project/.opencode/plugin/demo.ts"])
-  })
-
-  test("preserves order of remaining plugins", () => {
-    const plugins = ["a-plugin@1.0.0", "b-plugin@1.0.0", "c-plugin@1.0.0"]
-
-    const result = dedupe(plugins)
-
-    expect(result).toEqual(["a-plugin@1.0.0", "b-plugin@1.0.0", "c-plugin@1.0.0"])
-  })
-})
 
 describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
   it.instance(

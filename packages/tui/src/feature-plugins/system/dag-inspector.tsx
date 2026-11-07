@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/tui/plugin-api"
 import type { BuiltinTuiPlugin } from "../builtins"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { createMemo, For, Show, Switch, Match, createSignal, createEffect, onCleanup, untrack } from "solid-js"
@@ -89,9 +89,7 @@ function cancelActiveWorkflow(api: TuiPluginApi) {
   void api.client.dag
     .summary({ sessionID })
     .then((response) => {
-      const active = (response.data ?? []).filter((workflow) =>
-        ACTIVE_WORKFLOW_STATUSES.has(workflow.status),
-      )
+      const active = (response.data ?? []).filter((workflow) => ACTIVE_WORKFLOW_STATUSES.has(workflow.status))
       if (active.length === 0) {
         api.ui.toast({ variant: "info", message: "No active DAG workflow to cancel" })
         return
@@ -157,8 +155,7 @@ function DagInspector(props: { api: TuiPluginApi }) {
   )
   const params = () =>
     ("params" in props.api.route.current ? props.api.route.current.params : undefined) as
-      | { sessionID?: string; returnRoute?: { name: string; params?: Record<string, unknown> } }
-      | undefined
+      { sessionID?: string; returnRoute?: { name: string; params?: Record<string, unknown> } } | undefined
 
   const [selectedWorkflow, setSelectedWorkflow] = createSignal<string | undefined>(undefined)
   const [selectedNode, setSelectedNode] = createSignal<string | undefined>(undefined)
@@ -293,8 +290,8 @@ function DagInspector(props: { api: TuiPluginApi }) {
     // The sync slice is read directly — event handlers fire outside any
     // reactive scope, so a memoized read could serve a stale signature.
     const sid = params()?.sessionID
-    const wf = (sid ? props.api.state.session.dag(sid) : []).find((w) => w.id === wfId) ??
-      workflows().find((w) => w.id === wfId)
+    const wf =
+      (sid ? props.api.state.session.dag(sid) : []).find((w) => w.id === wfId) ?? workflows().find((w) => w.id === wfId)
     if (!wf) return ""
     return `${wf.nodeCount}:${wf.completedNodes}:${wf.runningNodes}:${wf.failedNodes}:${wf.skippedNodes}:${wf.abortedNodes ?? 0}:${wf.graphRev}`
   }
@@ -320,7 +317,9 @@ function DagInspector(props: { api: TuiPluginApi }) {
     const timer = setInterval(() => {
       if (refreshing) return
       refreshing = true
-      void fetchNodes(wf).finally(() => { refreshing = false })
+      void fetchNodes(wf).finally(() => {
+        refreshing = false
+      })
     }, 2_000)
     // Re-fetch nodes only when a summary event for the selected workflow's
     // owning session indicates the workflow's node-level state changed.
@@ -791,10 +790,18 @@ function DagInspector(props: { api: TuiPluginApi }) {
                           </Show>
                         </box>
                         <Show when={formatDagAgentInput(node())}>
-                          {(input) => <text fg={theme().textMuted} wrapMode="none">{input()}</text>}
+                          {(input) => (
+                            <text fg={theme().textMuted} wrapMode="none">
+                              {input()}
+                            </text>
+                          )}
                         </Show>
                         <Show when={formatDagAgentMessages(node())}>
-                          {(messages) => <text fg={theme().textMuted} wrapMode="none">{messages()}</text>}
+                          {(messages) => (
+                            <text fg={theme().textMuted} wrapMode="none">
+                              {messages()}
+                            </text>
+                          )}
                         </Show>
                         <Show when={node().depends_on.length > 0}>
                           <text fg={theme().textMuted} wrapMode="none">

@@ -28,7 +28,6 @@ import {
   type SequenceBindingLike,
 } from "@opentui/keymap/extras"
 import type { JSX, SolidPlugin } from "@opentui/solid"
-import type { Config as PluginConfig, PluginOptions } from "./index.js"
 
 export type { CliRenderer, KeyEvent, Renderable, SlotMode } from "@opentui/core"
 export { stringifyKeySequence, stringifyKeyStroke } from "@opentui/keymap"
@@ -283,12 +282,7 @@ export type TuiAttentionNotifyInput = {
 }
 
 export type TuiAttentionNotifySkipReason =
-  | "attention_disabled"
-  | "empty_message"
-  | "blurred"
-  | "focused"
-  | "focus_unknown"
-  | "renderer_destroyed"
+  "attention_disabled" | "empty_message" | "blurred" | "focused" | "focus_unknown" | "renderer_destroyed"
 
 export type TuiAttentionNotifyResult = {
   ok: boolean
@@ -363,7 +357,6 @@ export type TuiTheme = {
   readonly selected: string
   has: (name: string) => boolean
   set: (name: string) => boolean
-  install: (jsonPath: string) => Promise<void>
   mode: () => "dark" | "light"
   readonly ready: boolean
 }
@@ -420,14 +413,21 @@ type TuiAttentionConfigView = {
   sounds: Partial<Record<TuiAttentionSoundName, string>>
 }
 
-type TuiConfigView = Pick<PluginConfig, "$schema" | "theme" | "plugin"> &
-  NonNullable<PluginConfig["tui"]> & {
-    leader_timeout: number
-    attention: TuiAttentionConfigView
-    plugin_enabled?: Record<string, boolean>
-    keybinds: TuiBindingLookupView
-    dag_fetch_timeout_ms?: number
+type TuiConfigView = {
+  readonly $schema?: string
+  readonly theme?: string
+  readonly diff_style?: "auto" | "stacked"
+  readonly scroll_speed?: number
+  readonly scroll_acceleration?: { enabled?: boolean }
+  readonly prompt?: {
+    max_height?: number
+    max_width?: number | "auto"
   }
+  leader_timeout: number
+  attention: TuiAttentionConfigView
+  keybinds: TuiBindingLookupView
+  dag_fetch_timeout_ms?: number
+}
 
 export type TuiApp = {
   readonly version: string
@@ -484,7 +484,6 @@ export type TuiHostSlotMap = {
   sidebar_title: {
     session_id: string
     title: string
-    share_url?: string
   }
   sidebar_content: {
     session_id: string
@@ -557,31 +556,6 @@ export type TuiPluginMeta = TuiPluginEntry & {
   state: TuiPluginState
 }
 
-export type TuiPluginStatus = {
-  id: string
-  source: TuiPluginEntry["source"]
-  spec: string
-  target: string
-  enabled: boolean
-  active: boolean
-}
-
-export type TuiPluginInstallOptions = {
-  global?: boolean
-}
-
-export type TuiPluginInstallResult =
-  | {
-      ok: true
-      dir: string
-      tui: boolean
-    }
-  | {
-      ok: false
-      message: string
-      missing?: boolean
-    }
-
 export type TuiWorkspace = {
   current: () => string | undefined
   set: (workspaceID?: string) => void
@@ -624,17 +598,14 @@ export type TuiPluginApi = {
   event: TuiEventBus
   renderer: CliRenderer
   slots: TuiSlots
-  plugins: {
-    list: () => ReadonlyArray<TuiPluginStatus>
-    activate: (id: string) => Promise<boolean>
-    deactivate: (id: string) => Promise<boolean>
-    add: (spec: string) => Promise<boolean>
-    install: (spec: string, options?: TuiPluginInstallOptions) => Promise<TuiPluginInstallResult>
-  }
   lifecycle: TuiLifecycle
 }
 
-export type TuiPlugin = (api: TuiPluginApi, options: PluginOptions | undefined, meta: TuiPluginMeta) => Promise<void>
+export type TuiPlugin = (
+  api: TuiPluginApi,
+  options: Record<string, unknown> | undefined,
+  meta: TuiPluginMeta,
+) => Promise<void>
 
 export type TuiPluginModule = {
   id?: string

@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
+import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/tui/plugin-api"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, Show } from "solid-js"
 import { dagStatusColor } from "../system/dag-inspector-utils"
@@ -30,10 +30,7 @@ function DagIndicator(props: { api: TuiPluginApi; session_id: string }) {
   return (
     <Show when={active().length > 0}>
       <box flexDirection="row" gap={1}>
-        <text
-          flexShrink={0}
-          style={{ fg: dagStatusColor(theme(), attention().length > 0 ? "paused" : "running") }}
-        >
+        <text flexShrink={0} style={{ fg: dagStatusColor(theme(), attention().length > 0 ? "paused" : "running") }}>
           •
         </text>
         <text fg={theme().text} wrapMode="none">

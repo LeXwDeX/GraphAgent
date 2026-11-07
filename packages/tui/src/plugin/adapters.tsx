@@ -1,4 +1,4 @@
-import type { TuiDialogSelectOption, TuiPluginApi, TuiSlotProps } from "@opencode-ai/plugin/tui"
+import type { TuiDialogSelectOption, TuiPluginApi, TuiSlotProps } from "@opencode-ai/tui/plugin-api"
 import type { TuiConfig } from "../config"
 import type { useEvent } from "../context/event"
 import type { useRoute } from "../context/route"
@@ -319,26 +319,6 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
         throw new Error("slots.register is only available in plugin context")
       },
     },
-    plugins: {
-      list() {
-        return []
-      },
-      async activate() {
-        return false
-      },
-      async deactivate() {
-        return false
-      },
-      async add() {
-        return false
-      },
-      async install() {
-        return {
-          ok: false,
-          message: "plugins.install is only available in plugin context",
-        }
-      },
-    },
     theme: {
       get current() {
         return input.theme.theme
@@ -351,9 +331,6 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
       },
       set(name) {
         return input.theme.set(name)
-      },
-      async install(_jsonPath) {
-        throw new Error("theme.install is only available in plugin context")
       },
       mode() {
         return input.theme.mode()
