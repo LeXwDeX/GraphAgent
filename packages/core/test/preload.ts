@@ -10,7 +10,7 @@ process.env.XDG_DATA_HOME = path.join(directory, "share")
 process.env.XDG_CACHE_HOME = path.join(directory, "cache")
 process.env.XDG_CONFIG_HOME = path.join(directory, "config")
 process.env.XDG_STATE_HOME = path.join(directory, "state")
-process.env.GRAPHAGENT_CONFIG_DIR = path.join(directory, "config", "opencode")
+process.env.GRAPHAGENT_CONFIG_DIR = path.join(directory, "config", "graphagent")
 process.env.GRAPHAGENT_TEST_HOME = path.join(directory, "home")
 process.env.GRAPHAGENT_TEST_MANAGED_CONFIG_DIR = path.join(directory, "managed")
 delete process.env.GRAPHAGENT_CONFIG

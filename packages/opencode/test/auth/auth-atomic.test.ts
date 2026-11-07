@@ -171,7 +171,7 @@ test(
       )
       try {
         for (const child of children) expect(await child.exited).toBe(0)
-        const data = JSON.parse(await readFile(path.join(dir, "data", "opencode", "auth.json"), "utf8"))
+        const data = JSON.parse(await readFile(path.join(dir, "data", "graphagent", "auth.json"), "utf8"))
         expect(Object.keys(data)).toHaveLength(16)
       } finally {
         for (const child of children) child.kill()

@@ -11,8 +11,8 @@ process.env.XDG_DATA_HOME = path.join(exerciseGlobalRoot, "data")
 process.env.XDG_CONFIG_HOME = path.join(exerciseGlobalRoot, "config")
 process.env.XDG_STATE_HOME = path.join(exerciseGlobalRoot, "state")
 process.env.XDG_CACHE_HOME = path.join(exerciseGlobalRoot, "cache")
-export const exerciseConfigDirectory = path.join(exerciseGlobalRoot, "config", "opencode")
-export const exerciseDataDirectory = path.join(exerciseGlobalRoot, "data", "opencode")
+export const exerciseConfigDirectory = path.join(exerciseGlobalRoot, "config", "graphagent")
+export const exerciseDataDirectory = path.join(exerciseGlobalRoot, "data", "graphagent")
 // Requests without a directory resolve to process.cwd(). Auth probes and global
 // scenarios execute real handlers, so they must never resolve to the invoking
 // checkout (POST /experimental/worktree would create a worktree and branch there).
