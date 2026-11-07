@@ -2,8 +2,6 @@ import { describe, expect } from "bun:test"
 import { Database } from "@opencode-ai/core/database/database"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ProjectV2 } from "@opencode-ai/core/project"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { AbsolutePath } from "@opencode-ai/core/schema"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Effect, Exit, Fiber, Layer, Ref, Schema } from "effect"
@@ -11,9 +9,7 @@ import { chmod } from "node:fs/promises"
 import path from "node:path"
 import { MemoryConfig } from "@/memory/config"
 import { MemoryHome } from "@/memory/home"
-import { MemoryIdentityFence } from "@/memory/identity-fence"
 import { MemoryIdentityMigration } from "@/memory/identity-migration"
-import { MemoryAdmission } from "@/memory/admission"
 import { MemorySchema } from "@/memory/schema"
 import { MemoryStore } from "@/memory/store"
 import { tmpdirScoped } from "../fixture/fixture"
@@ -97,36 +93,7 @@ function layers(root: string) {
     Layer.provide(EffectFlock.defaultLayer),
     Layer.provide(home),
   )
-  const fence = MemoryIdentityFence.layer.pipe(
-    Layer.provide(database),
-    Layer.provide(EffectFlock.defaultLayer),
-    Layer.provide(home),
-  )
-  const admission = MemoryAdmission.layer.pipe(
-    Layer.provide(FSUtil.defaultLayer),
-    Layer.provide(EffectFlock.defaultLayer),
-    Layer.provide(MemoryConfig.defaultLayer),
-    Layer.provide(home),
-    Layer.provide(store),
-    Layer.provide(fence),
-  )
-  return Layer.mergeAll(home, store, admission, MemoryConfig.defaultLayer, database)
-}
-
-/**
- * Inserts a live identity row. Production callers of ensure() always run with
- * a live row (configuration() re-reads it, the worktree guard requires an
- * initialized project); the fence's liveness recheck needs it in tests too.
- */
-function insertLiveRow(id: ProjectV2.ID) {
-  return Effect.gen(function* () {
-    const { db } = yield* Database.Service
-    yield* db
-      .insert(ProjectTable)
-      .values({ id, worktree: AbsolutePath.make("/unused"), vcs: "git", sandboxes: [] })
-      .run()
-      .pipe(Effect.orDie)
-  })
+  return Layer.mergeAll(home, store, MemoryConfig.defaultLayer, database)
 }
 
 function replaceTopics(store: MemoryStore.Interface, id: ProjectV2.ID, topics: MemorySchema.Topic[]) {
@@ -165,10 +132,12 @@ describe("Project-owned MEMORY persistence", () => {
 
         expect(yield* store.readTopics(projectID)).toEqual([value])
         expect(yield* store.readTopics(otherProjectID)).toEqual([])
-        const manifest = Schema.decodeUnknownSync(
-          Schema.fromJsonString(Schema.Struct({ generation: Schema.String })),
-        )(yield* fs.readFileString(home.manifest(projectID)))
-        const yaml = yield* fs.readFileString(path.join(home.generations(projectID), manifest.generation, `${value.id}.yaml`))
+        const manifest = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ generation: Schema.String })))(
+          yield* fs.readFileString(home.manifest(projectID)),
+        )
+        const yaml = yield* fs.readFileString(
+          path.join(home.generations(projectID), manifest.generation, `${value.id}.yaml`),
+        )
         expect(yaml).toContain("schema_version: 1")
         expect(yaml).toContain("metadata:")
         expect(MemoryStore.decodeTopic(value, "wrong-file-id")).toBeUndefined()
@@ -194,10 +163,7 @@ describe("Project-owned MEMORY persistence", () => {
         expect(yield* fs.exists(home.directory(projectID))).toBe(false)
       }).pipe(
         Effect.provide(
-          Layer.provideMerge(
-            MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)),
-            layers(root),
-          ),
+          Layer.provideMerge(MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)), layers(root)),
         ),
       )
     }),
@@ -222,10 +188,7 @@ describe("Project-owned MEMORY persistence", () => {
         expect(yield* fs.exists(home.directory(projectID))).toBe(false)
       }).pipe(
         Effect.provide(
-          Layer.provideMerge(
-            MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)),
-            layers(root),
-          ),
+          Layer.provideMerge(MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)), layers(root)),
         ),
       )
     }),
@@ -252,10 +215,7 @@ describe("Project-owned MEMORY persistence", () => {
         expect(yield* store.readTopics(otherProjectID)).toEqual([target])
       }).pipe(
         Effect.provide(
-          Layer.provideMerge(
-            MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)),
-            layers(root),
-          ),
+          Layer.provideMerge(MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)), layers(root)),
         ),
       )
     }),
@@ -283,10 +243,7 @@ describe("Project-owned MEMORY persistence", () => {
         expect(yield* store.readTopics(otherProjectID)).toEqual([target])
       }).pipe(
         Effect.provide(
-          Layer.provideMerge(
-            MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)),
-            layers(root),
-          ),
+          Layer.provideMerge(MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)), layers(root)),
         ),
       )
     }),
@@ -313,10 +270,7 @@ describe("Project-owned MEMORY persistence", () => {
         expect(yield* fs.exists(home.directory(projectID))).toBe(true)
       }).pipe(
         Effect.provide(
-          Layer.provideMerge(
-            MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)),
-            layers(root),
-          ),
+          Layer.provideMerge(MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)), layers(root)),
         ),
       )
     }),
@@ -435,173 +389,57 @@ describe("Project-owned MEMORY persistence", () => {
     }),
   )
 
-  it.live("keeps a conflicting sandbox config for repair and removes an exact duplicate", () =>
+  it.live("fails closed on a corrupt manifest and never deletes the unread Home (MEM-PR01-R1-02)", () =>
     Effect.gen(function* () {
       const root = yield* tmpdirScoped()
-      const primary = yield* tmpdirScoped({ git: true })
-      const sandbox = yield* tmpdirScoped()
       yield* Effect.gen(function* () {
         const fs = yield* FSUtil.Service
-        const configStore = yield* MemoryConfig.Service
-        const admission = yield* MemoryAdmission.Service
-        yield* insertLiveRow(projectID)
-        const sandboxConfig = path.join(sandbox, ".agents", "memory.jsonc")
-        yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
-        yield* configStore.writeProject(primary, config)
-        yield* fs.writeFileString(sandboxConfig, JSON.stringify({ ...config, enabled: false }))
+        const home = yield* MemoryHome.Service
+        const migration = yield* MemoryIdentityMigration.Service
+        const store = yield* MemoryStore.Service
+        // Both identities hold Memory so the migration takes the merge path
+        // (the rename fast path never deletes anything).
+        yield* replaceTopics(store, projectID, [topic()])
+        yield* replaceTopics(store, otherProjectID, [topic("新身份的主题")])
 
-        const result = yield* admission.ensure({
-          projectID,
-          projectDirectory: primary,
-          directories: [primary, sandbox],
-          updated: 1,
-        })
-        expect(result.diagnostics.map((item) => item.code)).toEqual(["config.conflict"])
-        expect(result.unresolved).toBe(1)
-        expect(yield* fs.exists(sandboxConfig)).toBe(true)
+        // (a) invalid manifest JSON
+        yield* fs.writeFileString(home.manifest(projectID), "{ not json")
+        expect(Exit.isFailure(yield* Effect.exit(store.readSnapshot(projectID)))).toBe(true)
+        const invalid = yield* Effect.exit(migration.migrateHome(projectID, otherProjectID))
+        expect(Exit.isFailure(invalid)).toBe(true)
+        expect(yield* fs.exists(home.directory(projectID))).toBe(true)
 
-        yield* fs.writeFileString(sandboxConfig, JSON.stringify(config))
-        const duplicate = yield* admission.ensure({
-          projectID,
-          projectDirectory: primary,
-          directories: [sandbox],
-          updated: 2,
-        })
-        expect(duplicate.diagnostics.map((item) => item.code)).toEqual(["config.duplicate"])
-        expect(yield* fs.exists(sandboxConfig)).toBe(false)
-      }).pipe(Effect.provide(layers(root)))
-    }),
-  )
-
-  it.live("promotes a sandbox config even when it matches the global fallback", () =>
-    Effect.gen(function* () {
-      const root = yield* tmpdirScoped()
-      const primary = yield* tmpdirScoped({ git: true })
-      const sandbox = yield* tmpdirScoped()
-      const global = yield* tmpdirScoped()
-      const previous = process.env.GRAPHAGENT_CONFIG_DIR
-
-      yield* Effect.acquireUseRelease(
-        Effect.sync(() => {
-          process.env.GRAPHAGENT_CONFIG_DIR = global
-        }),
-        () =>
-          Effect.gen(function* () {
-            const fs = yield* FSUtil.Service
-            const admission = yield* MemoryAdmission.Service
-            yield* insertLiveRow(projectID)
-            const sandboxConfig = path.join(sandbox, ".agents", "memory.jsonc")
-            yield* fs.writeFileString(path.join(global, "memory.jsonc"), JSON.stringify(config))
-            yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
-            yield* fs.writeFileString(sandboxConfig, JSON.stringify(config))
-
-            const result = yield* admission.ensure({
-              projectID,
-              projectDirectory: primary,
-              directories: [sandbox],
-              updated: 1,
-            })
-
-            expect(result.diagnostics.map((item) => item.code)).toEqual(["config.promoted"])
-            expect(yield* fs.exists(sandboxConfig)).toBe(false)
-            expect((yield* (yield* MemoryConfig.Service).load(primary))?.level).toBe("project")
-          }).pipe(Effect.provide(layers(root))),
-        () =>
-          Effect.sync(() => {
-            if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
-            else process.env.GRAPHAGENT_CONFIG_DIR = previous
-          }),
+        // (b) manifest referencing a generation that does not exist
+        yield* fs.writeFileString(
+          home.manifest(projectID),
+          JSON.stringify({ schema_version: 1, revision: 1, generation: "1-deadbeef" }) + "\n",
+        )
+        expect(Exit.isFailure(yield* Effect.exit(store.readSnapshot(projectID)))).toBe(true)
+        const missing = yield* Effect.exit(migration.migrateHome(projectID, otherProjectID))
+        expect(Exit.isFailure(missing)).toBe(true)
+        expect(yield* fs.exists(home.directory(projectID))).toBe(true)
+      }).pipe(
+        Effect.provide(
+          Layer.provideMerge(MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)), layers(root)),
+        ),
       )
     }),
   )
 
-  it.live("compares normalized project and sandbox configs", () =>
+  it.live("rejects Topics whose item_count disagrees with their items (MEM-PR01-R1-20)", () =>
     Effect.gen(function* () {
+      const base = topic()
+      const drifted = { ...base, metadata: { ...base.metadata, item_count: base.items.length + 1 } }
+      expect(MemoryStore.decodeTopic(drifted, drifted.id)).toBeUndefined()
+
       const root = yield* tmpdirScoped()
-      const primary = yield* tmpdirScoped({ git: true })
-      const sandbox = yield* tmpdirScoped()
       yield* Effect.gen(function* () {
-        const fs = yield* FSUtil.Service
-        const configStore = yield* MemoryConfig.Service
-        const admission = yield* MemoryAdmission.Service
-        yield* insertLiveRow(projectID)
-        const value = { ...config, topic_limit: 50, topic_limit_floor: 10 }
-        const sandboxConfig = path.join(sandbox, ".agents", "memory.jsonc")
-        yield* configStore.writeProject(primary, value)
-        yield* fs.makeDirectory(path.dirname(sandboxConfig), { recursive: true })
-        yield* fs.writeFileString(sandboxConfig, JSON.stringify(value))
-
-        const result = yield* admission.ensure({
-          projectID,
-          projectDirectory: primary,
-          directories: [sandbox],
-          updated: 1,
-        })
-
-        expect(result.diagnostics.map((item) => item.code)).toEqual(["config.duplicate"])
-        expect(yield* fs.exists(sandboxConfig)).toBe(false)
+        const store = yield* MemoryStore.Service
+        const exit = yield* Effect.exit(replaceTopics(store, projectID, [drifted]))
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* store.readTopics(projectID)).toEqual([])
       }).pipe(Effect.provide(layers(root)))
     }),
-  )
-
-  it.live(
-    "fails closed on a corrupt manifest and never deletes the unread Home (MEM-PR01-R1-02)",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const fs = yield* FSUtil.Service
-          const home = yield* MemoryHome.Service
-          const migration = yield* MemoryIdentityMigration.Service
-          const store = yield* MemoryStore.Service
-          // Both identities hold Memory so the migration takes the merge path
-          // (the rename fast path never deletes anything).
-          yield* replaceTopics(store, projectID, [topic()])
-          yield* replaceTopics(store, otherProjectID, [topic("新身份的主题")])
-
-          // (a) invalid manifest JSON
-          yield* fs.writeFileString(home.manifest(projectID), "{ not json")
-          expect(Exit.isFailure(yield* Effect.exit(store.readSnapshot(projectID)))).toBe(true)
-          const invalid = yield* Effect.exit(migration.migrateHome(projectID, otherProjectID))
-          expect(Exit.isFailure(invalid)).toBe(true)
-          expect(yield* fs.exists(home.directory(projectID))).toBe(true)
-
-          // (b) manifest referencing a generation that does not exist
-          yield* fs.writeFileString(
-            home.manifest(projectID),
-            JSON.stringify({ schema_version: 1, revision: 1, generation: "1-deadbeef" }) + "\n",
-          )
-          expect(Exit.isFailure(yield* Effect.exit(store.readSnapshot(projectID)))).toBe(true)
-          const missing = yield* Effect.exit(migration.migrateHome(projectID, otherProjectID))
-          expect(Exit.isFailure(missing)).toBe(true)
-          expect(yield* fs.exists(home.directory(projectID))).toBe(true)
-        }).pipe(
-          Effect.provide(
-            Layer.provideMerge(
-              MemoryIdentityMigration.layer.pipe(Layer.provide(EffectFlock.defaultLayer)),
-              layers(root),
-            ),
-          ),
-        )
-      }),
-  )
-
-  it.live(
-    "rejects Topics whose item_count disagrees with their items (MEM-PR01-R1-20)",
-    () =>
-      Effect.gen(function* () {
-        const base = topic()
-        const drifted = { ...base, metadata: { ...base.metadata, item_count: base.items.length + 1 } }
-        expect(MemoryStore.decodeTopic(drifted, drifted.id)).toBeUndefined()
-
-        const root = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const store = yield* MemoryStore.Service
-          const exit = yield* Effect.exit(replaceTopics(store, projectID, [drifted]))
-          expect(Exit.isFailure(exit)).toBe(true)
-          expect(yield* store.readTopics(projectID)).toEqual([])
-        }).pipe(Effect.provide(layers(root)))
-      }),
   )
 
   it.live(
@@ -614,7 +452,7 @@ describe("Project-owned MEMORY persistence", () => {
           const flock = yield* EffectFlock.Service
           const fs = yield* FSUtil.Service
           const configStore = yield* MemoryConfig.Service
-          const target = MemoryConfig.projectPath(primary)
+          const target = MemoryConfig.localSettingsPath(primary)
 
           // Hold the file's write lock; a concurrent writeProject must queue
           // behind it and may only complete after the release.
@@ -643,152 +481,144 @@ describe("Project-owned MEMORY persistence", () => {
     { timeout: 20_000 },
   )
 
-  it.live(
-    "a second process committing a stale revision observes the explicit conflict (MEM-PR01-R2-03)",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* tmpdirScoped()
-        const coordination = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const store = yield* MemoryStore.Service
-          const value = topic()
-          yield* replaceTopics(store, projectID, [value])
+  it.live("a second process committing a stale revision observes the explicit conflict (MEM-PR01-R2-03)", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const coordination = yield* tmpdirScoped()
+      yield* Effect.gen(function* () {
+        const store = yield* MemoryStore.Service
+        const value = topic()
+        yield* replaceTopics(store, projectID, [value])
 
-          const go = path.join(coordination, "go")
-          const ready = path.join(coordination, "stale.ready")
-          const child = Bun.spawn([
-            process.execPath,
-            path.join(import.meta.dir, "../fixture/memory-commit-worker.ts"),
-            JSON.stringify({
-              root,
-              projectID,
-              ready,
-              go,
-              expectedRevision: 0,
-              summary: "跨进程的陈旧修订",
-            }),
-          ])
-          while (!(yield* Effect.promise(() => Bun.file(ready).exists()))) yield* Effect.sleep("5 millis")
-          yield* Effect.promise(() => Bun.write(go, "go"))
+        const go = path.join(coordination, "go")
+        const ready = path.join(coordination, "stale.ready")
+        const child = Bun.spawn([
+          process.execPath,
+          path.join(import.meta.dir, "../fixture/memory-commit-worker.ts"),
+          JSON.stringify({
+            root,
+            projectID,
+            ready,
+            go,
+            expectedRevision: 0,
+            summary: "跨进程的陈旧修订",
+          }),
+        ])
+        while (!(yield* Effect.promise(() => Bun.file(ready).exists()))) yield* Effect.sleep("5 millis")
+        yield* Effect.promise(() => Bun.write(go, "go"))
 
-          // Exit 0 means the worker observed CommitConflictError — the explicit
-          // cross-process conflict guarantee of the commit protocol.
-          expect(yield* Effect.promise(() => child.exited)).toBe(0)
-          expect(yield* store.readSnapshot(projectID)).toEqual({ revision: 1, topics: [value] })
-        }).pipe(Effect.provide(layers(root)))
-      }),
+        // Exit 0 means the worker observed CommitConflictError — the explicit
+        // cross-process conflict guarantee of the commit protocol.
+        expect(yield* Effect.promise(() => child.exited)).toBe(0)
+        expect(yield* store.readSnapshot(projectID)).toEqual({ revision: 1, topics: [value] })
+      }).pipe(Effect.provide(layers(root)))
+    }),
   )
 
-  it.live(
-    "retains only the newest generations after repeated commits and sweeps orphan staging",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const fs = yield* FSUtil.Service
-          const home = yield* MemoryHome.Service
-          const store = yield* MemoryStore.Service
+  it.live("retains only the newest generations after repeated commits and sweeps orphan staging", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      yield* Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const home = yield* MemoryHome.Service
+        const store = yield* MemoryStore.Service
 
-          // Crash leftover: a staging directory that never reached its rename.
-          const orphan = path.join(home.generations(projectID), ".0-crashed.tmp")
-          yield* fs.makeDirectory(orphan, { recursive: true })
-          yield* fs.writeFileString(path.join(orphan, "project-architecture.yaml"), "id: orphan\n")
+        // Crash leftover: a staging directory that never reached its rename.
+        const orphan = path.join(home.generations(projectID), ".0-crashed.tmp")
+        yield* fs.makeDirectory(orphan, { recursive: true })
+        yield* fs.writeFileString(path.join(orphan, "project-architecture.yaml"), "id: orphan\n")
 
-          for (let i = 1; i <= 5; i++) {
-            yield* replaceTopics(store, projectID, [topic(`第${i}版已确认架构边界`)])
-          }
+        for (let i = 1; i <= 5; i++) {
+          yield* replaceTopics(store, projectID, [topic(`第${i}版已确认架构边界`)])
+        }
 
-          const entries = yield* fs.readDirectoryEntries(home.generations(projectID))
-          const generations = entries
-            .filter((entry) => !entry.name.startsWith("."))
-            .map((entry) => entry.name)
-            .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
-          expect(generations).toHaveLength(3)
-          expect(generations.map((name) => Number.parseInt(name, 10))).toEqual([3, 4, 5])
-          expect(entries.some((entry) => entry.name.endsWith(".tmp"))).toBe(false)
-          // The manifest still points at a retained generation.
-          expect(yield* store.readSnapshot(projectID)).toEqual({
-            revision: 5,
-            topics: [topic("第5版已确认架构边界")],
-          })
-        }).pipe(Effect.provide(layers(root)))
-      }),
+        const entries = yield* fs.readDirectoryEntries(home.generations(projectID))
+        const generations = entries
+          .filter((entry) => !entry.name.startsWith("."))
+          .map((entry) => entry.name)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+        expect(generations).toHaveLength(3)
+        expect(generations.map((name) => Number.parseInt(name, 10))).toEqual([3, 4, 5])
+        expect(entries.some((entry) => entry.name.endsWith(".tmp"))).toBe(false)
+        // The manifest still points at a retained generation.
+        expect(yield* store.readSnapshot(projectID)).toEqual({
+          revision: 5,
+          topics: [topic("第5版已确认架构边界")],
+        })
+      }).pipe(Effect.provide(layers(root)))
+    }),
   )
 
   // Windows chmod is a no-op on directories, and root bypasses the permission
   // check, so the undeletable-generation injection cannot be staged there.
   const itPosix = process.platform === "win32" || process.getuid?.() === 0 ? it.live.skip : it.live
-  itPosix(
-    "keeps committing when generation GC cannot delete a stale generation",
-    () =>
-      Effect.gen(function* () {
-        // A chmod-based undeletable entry only blocks removal for non-root
-        // users; root bypasses permission checks, so the scenario cannot be
-        // staged there.
-        if (process.getuid?.() === 0) return
-        const root = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const fs = yield* FSUtil.Service
-          const home = yield* MemoryHome.Service
-          const store = yield* MemoryStore.Service
+  itPosix("keeps committing when generation GC cannot delete a stale generation", () =>
+    Effect.gen(function* () {
+      // A chmod-based undeletable entry only blocks removal for non-root
+      // users; root bypasses permission checks, so the scenario cannot be
+      // staged there.
+      if (process.getuid?.() === 0) return
+      const root = yield* tmpdirScoped()
+      yield* Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const home = yield* MemoryHome.Service
+        const store = yield* MemoryStore.Service
 
-          for (let i = 1; i <= 3; i++) {
-            yield* replaceTopics(store, projectID, [topic(`第${i}版已确认架构边界`)])
-          }
-          const entries = yield* fs.readDirectoryEntries(home.generations(projectID))
-          const oldest = entries
-            .filter((entry) => !entry.name.startsWith("."))
-            .map((entry) => entry.name)
-            .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))[0]
-          const oldestPath = path.join(home.generations(projectID), oldest)
+        for (let i = 1; i <= 3; i++) {
+          yield* replaceTopics(store, projectID, [topic(`第${i}版已确认架构边界`)])
+        }
+        const entries = yield* fs.readDirectoryEntries(home.generations(projectID))
+        const oldest = entries
+          .filter((entry) => !entry.name.startsWith("."))
+          .map((entry) => entry.name)
+          .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))[0]
+        const oldestPath = path.join(home.generations(projectID), oldest)
 
-          // A read-only directory with a file inside cannot be removed; GC
-          // fails while the commit that already landed must not.
-          yield* Effect.acquireUseRelease(
-            Effect.promise(() => chmod(oldestPath, 0o555)),
-            () =>
-              Effect.gen(function* () {
-                const exit = yield* Effect.exit(replaceTopics(store, projectID, [topic("第四版已确认架构边界")]))
-                expect(Exit.isSuccess(exit)).toBe(true)
-                expect(yield* store.readSnapshot(projectID)).toEqual({
-                  revision: 4,
-                  topics: [topic("第四版已确认架构边界")],
-                })
-                // The undeletable generation is still on disk — the failure
-                // is contained in GC, not the commit.
-                expect(yield* fs.exists(oldestPath)).toBe(true)
-              }),
-            () => Effect.promise(() => chmod(oldestPath, 0o755)).pipe(Effect.ignore),
-          )
-        }).pipe(Effect.provide(layers(root)))
-      }),
+        // A read-only directory with a file inside cannot be removed; GC
+        // fails while the commit that already landed must not.
+        yield* Effect.acquireUseRelease(
+          Effect.promise(() => chmod(oldestPath, 0o555)),
+          () =>
+            Effect.gen(function* () {
+              const exit = yield* Effect.exit(replaceTopics(store, projectID, [topic("第四版已确认架构边界")]))
+              expect(Exit.isSuccess(exit)).toBe(true)
+              expect(yield* store.readSnapshot(projectID)).toEqual({
+                revision: 4,
+                topics: [topic("第四版已确认架构边界")],
+              })
+              // The undeletable generation is still on disk — the failure
+              // is contained in GC, not the commit.
+              expect(yield* fs.exists(oldestPath)).toBe(true)
+            }),
+          () => Effect.promise(() => chmod(oldestPath, 0o755)).pipe(Effect.ignore),
+        )
+      }).pipe(Effect.provide(layers(root)))
+    }),
   )
 
-  it.live(
-    "an orphaned staging generation never shadows the committed generation (MEM-PR01-R1-21)",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const fs = yield* FSUtil.Service
-          const home = yield* MemoryHome.Service
-          const store = yield* MemoryStore.Service
-          const value = topic()
-          yield* replaceTopics(store, projectID, [value])
+  it.live("an orphaned staging generation never shadows the committed generation (MEM-PR01-R1-21)", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      yield* Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const home = yield* MemoryHome.Service
+        const store = yield* MemoryStore.Service
+        const value = topic()
+        yield* replaceTopics(store, projectID, [value])
 
-          // Simulate a crash mid-writeSnapshot: a staging generation exists but
-          // its manifest was never published.
-          const staging = path.join(home.generations(projectID), ".2-orphaned.tmp")
-          yield* fs.makeDirectory(staging, { recursive: true })
-          yield* fs.writeFileString(path.join(staging, "orphan.yaml"), "id: orphan\n")
+        // Simulate a crash mid-writeSnapshot: a staging generation exists but
+        // its manifest was never published.
+        const staging = path.join(home.generations(projectID), ".2-orphaned.tmp")
+        yield* fs.makeDirectory(staging, { recursive: true })
+        yield* fs.writeFileString(path.join(staging, "orphan.yaml"), "id: orphan\n")
 
-          expect(yield* store.readTopics(projectID)).toEqual([value])
-          // The store still commits cleanly afterwards.
-          const next = topic("第二版边界")
-          yield* replaceTopics(store, projectID, [next])
-          expect(yield* store.readTopics(projectID)).toEqual([next])
-        }).pipe(Effect.provide(layers(root)))
-      }),
+        expect(yield* store.readTopics(projectID)).toEqual([value])
+        // The store still commits cleanly afterwards.
+        const next = topic("第二版边界")
+        yield* replaceTopics(store, projectID, [next])
+        expect(yield* store.readTopics(projectID)).toEqual([next])
+      }).pipe(Effect.provide(layers(root)))
+    }),
   )
 
   it.live(
@@ -935,53 +765,23 @@ describe("Project-owned MEMORY persistence", () => {
     { timeout: 30_000 },
   )
 
-  it.live(
-    "write paths fail closed on a corrupt manifest (pins the strict re-read before write)",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const fs = yield* FSUtil.Service
-          const home = yield* MemoryHome.Service
-          const store = yield* MemoryStore.Service
-          yield* replaceTopics(store, projectID, [topic()])
+  it.live("write paths fail closed on a corrupt manifest (pins the strict re-read before write)", () =>
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      yield* Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const home = yield* MemoryHome.Service
+        const store = yield* MemoryStore.Service
+        yield* replaceTopics(store, projectID, [topic()])
 
-          yield* fs.writeFileString(home.manifest(projectID), "{ not json")
+        yield* fs.writeFileString(home.manifest(projectID), "{ not json")
 
-          const exit = yield* Effect.exit(replaceTopics(store, projectID, [topic("修订后的边界")]))
-          expect(Exit.isFailure(exit)).toBe(true)
-          // The corrupt manifest is left untouched (no silent re-init).
-          expect(yield* fs.readFileString(home.manifest(projectID))).toBe("{ not json")
-        }).pipe(Effect.provide(layers(root)))
-      }),
-  )
-
-  it.live(
-    "never caches unresolved admission results (pins the ADR-0003 cache rule)",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* tmpdirScoped()
-        const primary = yield* tmpdirScoped({ git: true })
-        const sandbox = yield* tmpdirScoped()
-        yield* Effect.gen(function* () {
-          const fs = yield* FSUtil.Service
-          const admission = yield* MemoryAdmission.Service
-          yield* insertLiveRow(projectID)
-          const file = path.join(sandbox, ".agents", "memory.jsonc")
-          yield* fs.makeDirectory(path.dirname(file), { recursive: true })
-          yield* fs.writeFileString(file, "{ invalid")
-
-          const snapshot = { projectID, projectDirectory: primary, directories: [primary, sandbox], updated: 1 }
-          const first = yield* admission.ensure(snapshot)
-          expect(first.unresolved).toBeGreaterThan(0)
-
-          // Repair the sandbox config. A cached unresolved result would keep
-          // blocking; the cache rule requires a fresh scan.
-          yield* fs.remove(file)
-          const second = yield* admission.ensure(snapshot)
-          expect(second.unresolved).toBe(0)
-        }).pipe(Effect.provide(layers(root)))
-      }),
+        const exit = yield* Effect.exit(replaceTopics(store, projectID, [topic("修订后的边界")]))
+        expect(Exit.isFailure(exit)).toBe(true)
+        // The corrupt manifest is left untouched (no silent re-init).
+        expect(yield* fs.readFileString(home.manifest(projectID))).toBe("{ not json")
+      }).pipe(Effect.provide(layers(root)))
+    }),
   )
 
   it.live(

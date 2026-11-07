@@ -15,7 +15,6 @@ import os from "node:os"
 import path from "node:path"
 import { Config } from "@/config/config"
 import { Git } from "@/git"
-import { MemoryAdmission } from "@/memory/admission"
 import { MemoryConfig } from "@/memory/config"
 import { MemoryHome } from "@/memory/home"
 import { MemoryIdentityFence } from "@/memory/identity-fence"
@@ -127,7 +126,6 @@ const base = Layer.mergeAll(
   Database.defaultLayer,
   Git.defaultLayer,
   EffectFlock.defaultLayer,
-  MemoryAdmission.defaultLayer,
   MemoryConfig.defaultLayer,
   MemoryHome.defaultLayer,
   MemoryIdentityFence.defaultLayer,
@@ -206,7 +204,11 @@ describe("MEM-PR01-R1-03: memory is inert once the identity row is retired", () 
               project: stamped!,
             })(
               Effect.gen(function* () {
-                const retired = yield* memory.search({ sessionID, messages: [userMessage(sessionID)], query: "任意查询" })
+                const retired = yield* memory.search({
+                  sessionID,
+                  messages: [userMessage(sessionID)],
+                  query: "任意查询",
+                })
                 expect(retired.status).toBe("unavailable")
                 // #350: a /memory on that cannot activate says WHY instead of
                 // the bare "remains off" (retired identity / global identity
@@ -268,7 +270,7 @@ describe("MEM-PR01-R1-07: /memory writes the Project config to the primary direc
             const written = yield* configStore.load(info.worktree)
             expect(written?.config.enabled).toBe(true)
             expect(written?.level).toBe("project")
-            expect(fs.existsSync(path.join(elsewhere, ".agents", "memory.jsonc"))).toBe(false)
+            expect(fs.existsSync(path.join(elsewhere, ".agents", "settings.local.json"))).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
       }),
@@ -340,7 +342,7 @@ describe("MEM-PR01-00: memory is inert under the shared global identity", () => 
             // #350: says WHY (commit-less repo under the shared global
             // identity) instead of the bare "remains off".
             expect(yield* memory.setEnabled(true)).toContain("unavailable")
-            expect(fs.existsSync(path.join(dir, ".agents", "memory.jsonc"))).toBe(false)
+            expect(fs.existsSync(path.join(dir, ".agents", "settings.local.json"))).toBe(false)
           }),
         ).pipe(Effect.provide(testInstanceStoreLayer))
       }),

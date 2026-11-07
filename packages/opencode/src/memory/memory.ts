@@ -14,7 +14,6 @@ import { Project } from "@/project/project"
 import { InstanceState } from "@/effect/instance-state"
 import { MessageID, SessionID } from "@/session/schema"
 import { Token } from "@/util/token"
-import { MemoryAdmission } from "./admission"
 import { MemoryConfig } from "./config"
 import { MemoryIdentityFence } from "./identity-fence"
 import { MemoryLock } from "./lock"
@@ -81,7 +80,6 @@ export const layer: Layer.Layer<
   | Config.Service
   | Provider.Service
   | Project.Service
-  | MemoryAdmission.Service
   | MemoryConfig.Service
   | MemoryIdentityFence.Service
   | MemoryLock.Service
@@ -94,7 +92,6 @@ export const layer: Layer.Layer<
     const provider = yield* Provider.Service
     const project = yield* Project.Service
     const fence = yield* MemoryIdentityFence.Service
-    const admission = yield* MemoryAdmission.Service
     const configStore = yield* MemoryConfig.Service
     const lock = yield* MemoryLock.Service
     const modelCalls = yield* MemoryModel.Service
@@ -234,7 +231,7 @@ export const layer: Layer.Layer<
     // Project Configuration lives in the Project's primary directory
     // (ADR-0001), but the row's `worktree` is the first-seen checkout and is
     // never repointed. When it is gone or now belongs to another repository,
-    // writing there would recreate `.agents/memory.jsonc` in a dead path or
+    // writing there would recreate `.agents/settings.local.json` in a dead path or
     // plant this Project's policy in a foreign repo. Fall back to the first
     // live checkout of this Project in sorted order (deterministic across
     // worktrees, so they agree on one policy file). The active checkout is
@@ -267,33 +264,8 @@ export const layer: Layer.Layer<
       if (current.vcs !== "git" || !current.time.initialized) return undefined
       const primary = yield* primaryDirectory(current, ctx.worktree)
       if (!primary) return undefined
-      // Admission imports and removes legacy memory files in every directory it
-      // scans, so a recorded sandbox that was deleted or reused by another
-      // repository is left out like a stale primary (both of those are verified).
-      const sandboxes = yield* Effect.forEach(
-        current.sandboxes.filter((directory) => directory !== primary && directory !== ctx.worktree),
-        (directory) => ownsDirectory(current.id, directory).pipe(Effect.map((owned) => (owned ? [directory] : []))),
-      ).pipe(Effect.map((owned) => owned.flat()))
-      const migration = yield* admission
-        .ensure({
-          projectID: current.id,
-          projectDirectory: primary,
-          directories: Array.from(new Set([primary, ...sandboxes, ctx.worktree])),
-          updated: current.time.updated,
-        })
-        .pipe(Effect.catchTag("MemoryAdmission.IdentityRetired", () => Effect.succeed(undefined)))
-      // The identity was retired between the row check above and the fence
-      // acquisition: fail closed and stay inert.
-      if (!migration) return undefined
-      if (migration.unresolved) {
-        yield* Effect.logWarning("Project MEMORY migration needs manual repair", {
-          projectID: current.id,
-          diagnostics: migration.diagnostics.filter(
-            (item) => item.code.endsWith(".invalid") || item.code.endsWith(".conflict"),
-          ),
-        })
-        return undefined
-      }
+      // Project memory is the `memory` section of `<root>/.agents/settings.local.json`.
+      // Legacy `memory.json(c)` files are not read and not migrated.
       return { ctx, project: current, primary, loaded: yield* configStore.load(primary) }
     })
 
@@ -869,7 +841,7 @@ export const layer: Layer.Layer<
         // torn-read ModelNotFoundError edge — both mean unavailable here.
         const model = yield* Effect.option(resolveModel(loaded.config))
         if (!Option.isSome(model) || model.value === undefined)
-          return "Memory is enabled but its configured model is unavailable — run /memory on to reselect a replacement, or set `model` in .agents/memory.jsonc to an installed provider/model."
+          return "Memory is enabled but its configured model is unavailable — run /memory on to reselect a replacement, or set `memory.model` in .agents/settings.local.json to an installed provider/model."
       }
       return undefined
     })
@@ -909,11 +881,7 @@ export const layer: Layer.Layer<
 
       return yield* lock.withProject(value.project.id)(
         Effect.gen(function* () {
-          yield* configStore.writeProject(
-            value.primary,
-            MemorySchema.updateConfig(config, { enabled }),
-            loaded.level === "project" ? loaded.path : undefined,
-          )
+          yield* configStore.writeProject(value.primary, MemorySchema.updateConfig(config, { enabled }))
           yield* clearSession()
           return enabled ? ("Memory on" as const) : ("Memory off" as const)
         }),
@@ -943,7 +911,6 @@ export const defaultLayer: Layer.Layer<Service> = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
     Layer.provide(Project.defaultLayer),
-    Layer.provide(MemoryAdmission.defaultLayer),
     Layer.provide(MemoryConfig.defaultLayer),
     Layer.provide(MemoryIdentityFence.defaultLayer),
     Layer.provide(MemoryLock.defaultLayer),
@@ -960,7 +927,6 @@ export const node = LayerNode.make(layer, [
   Config.node,
   Provider.node,
   Project.node,
-  MemoryAdmission.node,
   MemoryConfig.node,
   MemoryIdentityFence.node,
   MemoryLock.node,

@@ -22,7 +22,6 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { InstanceState } from "@/effect/instance-state"
 import { WorktreeEvent } from "@opencode-ai/schema/worktree-event"
 import { SettingsHook } from "@/hook/settings"
-import { MemoryAdmission } from "@/memory/admission"
 import { assertProjectRootWritable } from "@/project/project-root"
 import { MemoryPaths } from "@/memory/paths"
 import * as Option from "effect/Option"
@@ -160,7 +159,6 @@ export const layer: Layer.Layer<
     const gitSvc = yield* Git.Service
     const project = yield* Project.Service
     const store = yield* InstanceStore.Service
-    const memoryAdmission = Option.getOrUndefined(yield* Effect.serviceOption(MemoryAdmission.Service))
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
 
     const git = Effect.fnUntraced(
@@ -562,52 +560,6 @@ export const layer: Layer.Layer<
       })
     }
 
-    const hasUnresolvedLegacyMemory = Effect.fnUntraced(function* (directory: string) {
-      const found = yield* Effect.forEach(
-        MemoryPaths.PROJECT_PATHS,
-        (relative) => fs.exists(pathSvc.join(directory, relative)).pipe(Effect.orDie),
-        { concurrency: "unbounded" },
-      )
-      return found.some(Boolean)
-    })
-
-    const reconcileLegacyMemory = Effect.fnUntraced(function* (input: {
-      projectID: ProjectV2.ID
-      projectDirectory: string
-      directory: string
-      directories: ReadonlyArray<string>
-      initialized: boolean
-      updated: number
-    }) {
-      // Migration runs only for initialized projects (the memory path's own
-      // eligibility gate) and always against the COMPLETE directory snapshot:
-      // promoting a legacy config seen from a single directory could silently
-      // flip the project-wide effective config past disagreeing siblings.
-      if (memoryAdmission && input.initialized) {
-        yield* memoryAdmission.invalidate(input.projectID)
-        const memory = yield* memoryAdmission
-          .ensure({
-            projectID: input.projectID,
-            projectDirectory: input.projectDirectory,
-            directories: input.directories,
-            updated: input.updated,
-          })
-          .pipe(Effect.catchTag("MemoryAdmission.IdentityRetired", () => Effect.succeed(undefined)))
-        // The identity was retired concurrently. Legacy sources may never have
-        // been admitted anywhere, so a destructive step (worktree remove) must
-        // fail closed instead of destroying them; a retry under the successor
-        // identity imports them first.
-        if (!memory) return "Project identity is being upgraded. Retry once the upgrade completes."
-        if (memory.unresolved > 0)
-          return `Cannot continue with unresolved legacy project memory: ${memory.diagnostics
-            .filter((item) => item.code.endsWith(".invalid") || item.code.endsWith(".conflict"))
-            .map((item) => `${item.code} ${item.path}`)
-            .join(", ")}`
-      }
-      if (!(yield* hasUnresolvedLegacyMemory(input.directory))) return undefined
-      return "Cannot continue while unresolved legacy project memory remains. Move or back up .agents/memory* outside this worktree, then retry."
-    })
-
     const removeLocked = Effect.fnUntraced(function* (input: RemoveInput, directory: string) {
       const ctx = yield* InstanceState.context
       const owned = yield* hookOwned(directory, ctx.project.id)
@@ -663,15 +615,6 @@ export const layer: Layer.Layer<
           return yield* new RemoveFailedError({
             message: result.blocked?.reason ?? "WorktreeRemove hook failed while the directory still exists",
           })
-        const blocker = yield* reconcileLegacyMemory({
-          projectID: ctx.project.id,
-          projectDirectory: ctx.project.worktree,
-          directory,
-          directories: currentProject.sandboxes,
-          initialized: currentProject.time.initialized !== undefined,
-          updated: currentProject.time.updated,
-        }).pipe(Effect.mapError((error) => new RemoveFailedError({ message: error.message })))
-        if (blocker) return yield* new RemoveFailedError({ message: blocker })
         yield* store.disposeDirectory(directory)
         yield* dropRegistrations
         yield* fs.remove(ownershipFile(directory)).pipe(Effect.ignore)
@@ -697,48 +640,19 @@ export const layer: Layer.Layer<
           })
         // Registered, but git has no record of the worktree (admin data lost or
         // the git side was already removed). Recover deterministically instead
-        // of failing with a false "not registered": legacy memory is reconciled
-        // fail-closed against the directory when it still exists, then the stale
-        // registration is dropped. The directory itself is never deleted here.
+        // of failing with a false "not registered"; the stale registration is
+        // dropped. The directory itself is never deleted here.
         yield* FiberMap.remove(bootFibers, directory)
 
-        const blocker = yield* reconcileLegacyMemory({
-          projectID: ctx.project.id,
-          projectDirectory: ctx.project.worktree,
-          directory,
-          directories: currentProject.sandboxes,
-          initialized: currentProject.time.initialized !== undefined,
-          updated: currentProject.time.updated,
-        }).pipe(
-          Effect.mapError(
-            (error) => new RemoveFailedError({ message: `Failed to migrate legacy project memory: ${error.message}` }),
-          ),
-        )
-        if (blocker) return yield* new RemoveFailedError({ message: blocker })
         yield* store.disposeDirectory(directory)
         yield* dropRegistrations
         if (owned) yield* fs.remove(ownershipFile(directory)).pipe(Effect.ignore)
         return true
       }
 
-      // The WorktreeRemove hook may run user scripts that still write legacy
-      // memory files; fire it BEFORE taking the fail-closed memory proof so the
-      // proof observes everything the hook produced.
+      // The WorktreeRemove hook may run user scripts; fire it before this
+      // process stops supervising the directory.
       yield* FiberMap.remove(bootFibers, directory)
-
-      const blocker = yield* reconcileLegacyMemory({
-        projectID: ctx.project.id,
-        projectDirectory: ctx.project.worktree,
-        directory: entry.path,
-        directories: currentProject.sandboxes,
-        initialized: currentProject.time.initialized !== undefined,
-        updated: currentProject.time.updated,
-      }).pipe(
-        Effect.mapError(
-          (error) => new RemoveFailedError({ message: `Failed to migrate legacy project memory: ${error.message}` }),
-        ),
-      )
-      if (blocker) return yield* new RemoveFailedError({ message: blocker })
 
       if (entry.prunable) {
         // git already considers this worktree gone (directory deleted, or a
@@ -886,7 +800,7 @@ export const layer: Layer.Layer<
     })
 
     const sweep = Effect.fnUntraced(function* (root: string) {
-      const args = ["clean", "-ffdx", ...MemoryPaths.PROJECT_PATHS.flatMap((relative) => ["-e", relative])]
+      const args = ["clean", "-ffdx", ...MemoryPaths.LOCAL_PATHS.flatMap((relative) => ["-e", relative])]
       const first = yield* git(args, { cwd: root })
       if (first.code === 0) return first
 
@@ -940,20 +854,6 @@ export const layer: Layer.Layer<
       }
 
       const worktreePath = entry.path
-
-      const blocker = yield* reconcileLegacyMemory({
-        projectID: ctx.project.id,
-        projectDirectory: ctx.project.worktree,
-        directory: worktreePath,
-        directories: currentProject.sandboxes,
-        initialized: currentProject.time.initialized !== undefined,
-        updated: currentProject.time.updated,
-      }).pipe(
-        Effect.mapError(
-          (error) => new ResetFailedError({ message: `Failed to migrate legacy project memory: ${error.message}` }),
-        ),
-      )
-      if (blocker) return yield* new ResetFailedError({ message: blocker })
 
       const base = yield* gitSvc.defaultBranch(ctx.worktree)
       if (!base) {
@@ -1009,9 +909,7 @@ export const layer: Layer.Layer<
         return yield* new ResetFailedError({ message: status.stderr || status.text || "Failed to read git status" })
       }
 
-      const dirty = status.text
-        .split("\n")
-        .filter((line) => line && !(line.startsWith("?? ") && MemoryPaths.isProjectMemoryPath(line.slice(3))))
+      const dirty = status.text.split("\n").filter(Boolean)
       if (dirty.length > 0) {
         return yield* new ResetFailedError({ message: `Worktree reset left local changes:\n${dirty.join("\n")}` })
       }
@@ -1040,7 +938,6 @@ export const appLayer = layer.pipe(
   Layer.provide(Git.defaultLayer),
   Layer.provide(AppProcess.defaultLayer),
   Layer.provide(Project.defaultLayer),
-  Layer.provide(MemoryAdmission.defaultLayer),
   Layer.provide(Database.defaultLayer),
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(NodePath.layer),
@@ -1054,7 +951,6 @@ export const node = LayerNode.make(layer, [
   AppProcess.node,
   Git.node,
   Project.node,
-  MemoryAdmission.node,
   InstanceStore.node,
   Database.node,
   SettingsHook.node,

@@ -61,12 +61,7 @@ const createTopicReply = reply()
 // every test in this file fails the moment the schema leaves the wire again.
 const wireIt = testEffect(
   LayerNode.buildLayer(
-    LayerNode.group([
-      Provider.node,
-      MemoryModel.node,
-      CrossSpawnSpawner.node,
-      LayerNode.make(TestLLMServer.layer, []),
-    ]),
+    LayerNode.group([Provider.node, MemoryModel.node, CrossSpawnSpawner.node, LayerNode.make(TestLLMServer.layer, [])]),
   ),
 )
 
@@ -142,7 +137,9 @@ describe("memory maintenance end to end (issue #395)", () => {
           yield* project.setInitialized(registered.project.id)
           const configDir = path.join(dir, ".agents")
           yield* Effect.promise(() => fs.mkdir(configDir, { recursive: true }))
-          yield* Effect.promise(() => fs.writeFile(path.join(configDir, "memory.jsonc"), JSON.stringify(memoryConfig)))
+          yield* Effect.promise(() =>
+            fs.writeFile(path.join(configDir, "settings.local.json"), JSON.stringify({ memory: memoryConfig })),
+          )
 
           yield* llm.pushMatch(
             (hit) => JSON.stringify(hit.body).includes("topic_ids"),

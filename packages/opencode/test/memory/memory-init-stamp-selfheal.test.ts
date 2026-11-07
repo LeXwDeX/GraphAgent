@@ -12,7 +12,6 @@ import { Git } from "@/git"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Memory } from "@/memory/memory"
-import { MemoryAdmission } from "@/memory/admission"
 import { MemoryConfig } from "@/memory/config"
 import { MemoryHome } from "@/memory/home"
 import { MemoryIdentityFence } from "@/memory/identity-fence"
@@ -58,7 +57,6 @@ const base = Layer.mergeAll(
   Git.defaultLayer,
   FSUtil.defaultLayer,
   EffectFlock.defaultLayer,
-  MemoryAdmission.defaultLayer,
   MemoryConfig.defaultLayer,
   MemoryHome.defaultLayer,
   MemoryIdentityFence.defaultLayer,
