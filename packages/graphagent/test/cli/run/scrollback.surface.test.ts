@@ -46,11 +46,14 @@ function render(commits: ClaimedCommit[]) {
   return commits.map(renderCommit).join("")
 }
 
-function renderRows(commit: ClaimedCommit, width = 80) {
-  const raw = decoder.decode(commit.snapshot.getRealCharBytes(true))
-  return Array.from({ length: commit.snapshot.height }, (_, index) =>
-    raw.slice(index * width, (index + 1) * width).trimEnd(),
-  )
+function renderRows(commit: ClaimedCommit) {
+  // `getRealCharBytes(true)` returns fixed-width rows joined by newlines, so
+  // split on them instead of slicing a contiguous buffer.
+  return decoder
+    .decode(commit.snapshot.getRealCharBytes(true))
+    .split("\n")
+    .slice(0, commit.snapshot.height)
+    .map((row) => row.trimEnd())
 }
 
 function destroy(commits: ClaimedCommit[]) {
@@ -63,7 +66,7 @@ async function setup(
   input: {
     width?: number
     wrote?: boolean
-    theme?: RunTheme
+    theme?: RunTheme | ((renderer: TestRenderer) => RunTheme)
     onThemeRelease?: (theme: RunTheme) => void
   } = {},
 ) {
@@ -78,10 +81,11 @@ async function setup(
 
   const treeSitterClient = new MockTreeSitterClient({ autoResolveTimeout: 0 })
   treeSitterClient.setMockResult({ highlights: [] })
+  const theme = typeof input.theme === "function" ? input.theme(out.renderer) : (input.theme ?? RUN_THEME_FALLBACK)
 
   return {
     renderer: out.renderer,
-    scrollback: new RunScrollbackStream(out.renderer, input.theme ?? RUN_THEME_FALLBACK, {
+    scrollback: new RunScrollbackStream(out.renderer, theme, {
       treeSitterClient,
       wrote: input.wrote ?? false,
       onThemeRelease: input.onThemeRelease,
@@ -129,16 +133,25 @@ test("turn summary starts at the left edge", async () => {
 })
 
 test("theme swaps restyle active reasoning without resetting the stream", async () => {
-  const previousSyntax = SyntaxStyle.fromStyles({ default: { fg: "#123456" } })
-  const nextSyntax = SyntaxStyle.fromStyles({ default: { fg: "#abcdef" } })
+  let previousSyntax!: SyntaxStyle
+  let nextSyntax!: SyntaxStyle
   const released: RunTheme[] = []
-  const previous = {
-    ...RUN_THEME_FALLBACK,
-    block: {
-      ...RUN_THEME_FALLBACK.block,
-      subtleSyntax: previousSyntax,
+  let previous!: RunTheme
+  const out = await setup({
+    theme: (renderer) => {
+      previousSyntax = SyntaxStyle.fromStyles({ default: { fg: "#123456" } }, renderer.nativeScene)
+      nextSyntax = SyntaxStyle.fromStyles({ default: { fg: "#abcdef" } }, renderer.nativeScene)
+      previous = {
+        ...RUN_THEME_FALLBACK,
+        block: {
+          ...RUN_THEME_FALLBACK.block,
+          subtleSyntax: previousSyntax,
+        },
+      }
+      return previous
     },
-  }
+    onThemeRelease: (theme) => released.push(theme),
+  })
   const next = {
     ...RUN_THEME_FALLBACK,
     block: {
@@ -146,7 +159,6 @@ test("theme swaps restyle active reasoning without resetting the stream", async 
       subtleSyntax: nextSyntax,
     },
   }
-  const out = await setup({ theme: previous, onThemeRelease: (theme) => released.push(theme) })
 
   try {
     await out.scrollback.append(reasoning("before"))

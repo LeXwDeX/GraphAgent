@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
 import { RGBA, SyntaxStyle } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import type { AssistantMessage, ReasoningPart } from "@graphagent/sdk/v2"
 import { useSync } from "../../../../src/context/sync"
 import { ReasoningMarkdown } from "../../../../src/routes/session"
@@ -45,8 +46,9 @@ test("adopted thinking replaces the existing displayed part and survives a fresh
     time: { start: 1 },
   }
   const fg = RGBA.fromHex("#888888")
-  const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg } })
   function ReasoningProbe() {
+    const renderer = useRenderer()
+    const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg } }, renderer.nativeScene)
     const sync = useSync()
     const current = () => sync.data.part[messageID]?.find((item): item is ReasoningPart => item.type === "reasoning")
     return (

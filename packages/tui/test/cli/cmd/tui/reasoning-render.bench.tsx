@@ -3,12 +3,11 @@
 // Measures signal update through a visible frame in OpenTUI's 100x30 test renderer.
 import { performance } from "node:perf_hooks"
 import { RGBA, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
-import { testRender } from "@opentui/solid"
+import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal, Show } from "solid-js"
 import { ReasoningMarkdown } from "../../../../src/routes/session"
 
 const fg = RGBA.fromHex("#888888")
-const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg } })
 const sample = (sections: number, alternate = false) =>
   Array.from({ length: sections }, (_, index) =>
     alternate
@@ -37,47 +36,50 @@ async function measure(input: Case) {
   let peakHeap = before.heapUsed
   const mountStart = performance.now()
   const app = await testRender(
-    () => (
-      <scrollbox ref={scroll} width={100} height={30} stickyScroll={true} stickyStart="bottom">
-        {Array.from({ length: input.parts }, (_, index) => (
-          <box flexDirection="column">
-            <text>{`${title()} ${index + 1}`}</text>
-            <Show when={expanded()}>
-              {input.renderer === "text" ? (
-                <text>{contents[index][0]()}</text>
-              ) : input.renderer === "code" || input.renderer === "code-unstyled" ? (
-                <code
-                  filetype="markdown"
-                  drawUnstyledText={input.renderer === "code-unstyled"}
-                  streaming={input.renderer === "code"}
-                  syntaxStyle={syntaxStyle}
-                  content={contents[index][0]()}
-                  conceal={false}
-                  fg={fg}
-                />
-              ) : input.renderer === "markdown-raw" ? (
-                <markdown
-                  content={contents[index][0]()}
-                  streaming={false}
-                  internalBlockMode="top-level"
-                  syntaxStyle={syntaxStyle}
-                  conceal={false}
-                  fg={fg}
-                />
-              ) : (
-                <ReasoningMarkdown
-                  content={contents[index][0]()}
-                  streaming={false}
-                  syntaxStyle={syntaxStyle}
-                  conceal={false}
-                  fg={fg}
-                />
-              )}
-            </Show>
-          </box>
-        ))}
-      </scrollbox>
-    ),
+    () => {
+      const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg } }, useRenderer().nativeScene)
+      return (
+        <scrollbox ref={scroll} width={100} height={30} stickyScroll={true} stickyStart="bottom">
+          {Array.from({ length: input.parts }, (_, index) => (
+            <box flexDirection="column">
+              <text>{`${title()} ${index + 1}`}</text>
+              <Show when={expanded()}>
+                {input.renderer === "text" ? (
+                  <text>{contents[index][0]()}</text>
+                ) : input.renderer === "code" || input.renderer === "code-unstyled" ? (
+                  <code
+                    filetype="markdown"
+                    drawUnstyledText={input.renderer === "code-unstyled"}
+                    streaming={input.renderer === "code"}
+                    syntaxStyle={syntaxStyle}
+                    content={contents[index][0]()}
+                    conceal={false}
+                    fg={fg}
+                  />
+                ) : input.renderer === "markdown-raw" ? (
+                  <markdown
+                    content={contents[index][0]()}
+                    streaming={false}
+                    internalBlockMode="top-level"
+                    syntaxStyle={syntaxStyle}
+                    conceal={false}
+                    fg={fg}
+                  />
+                ) : (
+                  <ReasoningMarkdown
+                    content={contents[index][0]()}
+                    streaming={false}
+                    syntaxStyle={syntaxStyle}
+                    conceal={false}
+                    fg={fg}
+                  />
+                )}
+              </Show>
+            </box>
+          ))}
+        </scrollbox>
+      )
+    },
     { width: 100, height: 30 },
   )
   try {

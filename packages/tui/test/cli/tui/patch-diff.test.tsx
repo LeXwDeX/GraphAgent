@@ -10,14 +10,18 @@ import {
   type Renderable,
   type ScrollBoxRenderable,
 } from "@opentui/core"
-import { testRender } from "@opentui/solid"
+import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { PatchDiff, type PatchDiffRef } from "../../../src/component/patch-diff"
 import parsers from "../../../src/parsers-config"
 
 addDefaultParsers(parsers.parsers)
 const fg = RGBA.fromHex("#dddddd")
-const syntax = SyntaxStyle.fromStyles({ default: { fg }, comment: { fg: RGBA.fromHex("#888888") } })
+const createSyntax = (renderer: ReturnType<typeof useRenderer>) =>
+  SyntaxStyle.fromStyles(
+    { default: { fg }, comment: { fg: RGBA.fromHex("#888888") } },
+    renderer.nativeScene,
+  )
 const nodes = (root: Renderable): Renderable[] => [root, ...root.getChildren().flatMap(nodes)]
 const added = (lines: string[], marker = false) =>
   `--- /dev/null\n+++ b/file.ts\n@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}${marker ? "\n\\ No newline at end of file" : ""}`
@@ -28,24 +32,27 @@ for (const width of [80, 160])
     let ref!: PatchDiffRef
     const [view, setView] = createSignal<"unified" | "split">("unified")
     const app = await testRender(
-      () => (
-        <scrollbox ref={scroll} width="100%" height={20}>
-          <PatchDiff
-            ref={(value) => (ref = value)}
-            scroll={() => scroll}
-            diff={added(
-              Array.from({ length: 7500 }, (_, i) => `line${i + 1}`),
-              true,
-            )}
-            view={view()}
-            filetype="typescript"
-            syntaxStyle={syntax}
-            showLineNumbers={true}
-            wrapMode="char"
-            width="100%"
-          />
-        </scrollbox>
-      ),
+      () => {
+        const syntax = createSyntax(useRenderer())
+        return (
+          <scrollbox ref={scroll} width="100%" height={20}>
+            <PatchDiff
+              ref={(value) => (ref = value)}
+              scroll={() => scroll}
+              diff={added(
+                Array.from({ length: 7500 }, (_, i) => `line${i + 1}`),
+                true,
+              )}
+              view={view()}
+              filetype="typescript"
+              syntaxStyle={syntax}
+              showLineNumbers={true}
+              wrapMode="char"
+              width="100%"
+            />
+          </scrollbox>
+        )
+      },
       { width, height: 20 },
     )
     const rendered = () =>
@@ -88,21 +95,25 @@ test("wrapped long lines and multi-line syntax retain whole-file context across 
   lines[1] = "中文🙂 inside the same comment"
   lines[128] = "inside\t" + "long word ".repeat(60) + "WRAPPED_END"
   lines[3199] = "comment ends */ FINAL"
+  let syntax!: SyntaxStyle
   const app = await testRender(
-    () => (
-      <scrollbox ref={scroll} width="100%" height={20}>
-        <PatchDiff
-          scroll={() => scroll}
-          diff={added(lines)}
-          view={view()}
-          filetype="typescript"
-          syntaxStyle={syntax}
-          showLineNumbers={true}
-          wrapMode="word"
-          width="100%"
-        />
-      </scrollbox>
-    ),
+    () => {
+      syntax = createSyntax(useRenderer())
+      return (
+        <scrollbox ref={scroll} width="100%" height={20}>
+          <PatchDiff
+            scroll={() => scroll}
+            diff={added(lines)}
+            view={view()}
+            filetype="typescript"
+            syntaxStyle={syntax}
+            showLineNumbers={true}
+            wrapMode="word"
+            width="100%"
+          />
+        </scrollbox>
+      )
+    },
     { width: 80, height: 20 },
   )
   try {

@@ -6,7 +6,7 @@ import type { TuiPlugin, TuiPluginApi } from "@graphagent/tui/plugin-api"
 import type { BuiltinTuiPlugin } from "../builtins"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { createMemo, For, Show, Switch, Match, createSignal, createEffect, onCleanup, untrack } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Spinner } from "../../component/spinner"
 import { useBindings, useCommandShortcut } from "../../keymap"
 import { selectedForeground, useTheme } from "../../context/theme"
@@ -143,6 +143,7 @@ async function discoverProjectWorkflows(
 }
 
 function DagInspector(props: { api: TuiPluginApi }) {
+  const renderer = useRenderer()
   const theme = () => props.api.theme.current
   // The plugin-facing theme omits the resolver flags selectedForeground needs,
   // so the full theme comes from the context, as in the diff viewer.
@@ -360,7 +361,7 @@ function DagInspector(props: { api: TuiPluginApi }) {
     if (index === -1) return
     const scrollSelected = () => scrollRowIntoView(workflowScroll, index)
     scrollSelected()
-    requestAnimationFrame(scrollSelected)
+    renderer.requestAnimationFrame(scrollSelected)
   })
 
   // Keep the selected node visible inside the wave list.
@@ -371,7 +372,7 @@ function DagInspector(props: { api: TuiPluginApi }) {
     if (row === undefined) return
     const scrollSelected = () => scrollRowIntoView(nodeScroll, row)
     scrollSelected()
-    requestAnimationFrame(scrollSelected)
+    renderer.requestAnimationFrame(scrollSelected)
   })
 
   const moveNode = (delta: number) => {

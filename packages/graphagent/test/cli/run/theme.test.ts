@@ -1,8 +1,13 @@
-import { expect, test } from "bun:test"
-import { RGBA, type CliRenderer, type TerminalColors } from "@opentui/core"
+import { afterAll, expect, test } from "bun:test"
+import { RGBA, ResourceContext, type CliRenderer, type TerminalColors } from "@opentui/core"
 import { RUN_THEME_FALLBACK, generateSystem, resolveRunTheme, resolveTheme } from "@/cli/cmd/run/theme"
 
 const palette = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"] as const
+
+// Syntax styles now require a native owner. There is no renderer here, so use
+// the standalone context OpenTUI documents for that case.
+const owner = new ResourceContext({ objectCapacity: 16, renderCellsMax: 1 })
+afterAll(() => owner.destroy())
 
 function terminalColors(input: Partial<TerminalColors> = {}): TerminalColors {
   return {
@@ -28,6 +33,7 @@ function renderer(
 ) {
   return {
     themeMode: input.themeMode,
+    nativeScene: owner,
     getPalette: async () => {
       if (input.fail) {
         throw new Error("boom")
@@ -35,7 +41,7 @@ function renderer(
 
       return input.colors ?? terminalColors()
     },
-  } as CliRenderer
+  } as unknown as CliRenderer
 }
 
 function expectRgba(color: unknown) {

@@ -94,3 +94,9 @@ exports[`TUI inline tool wrapping separates an inline row from the previous assi
    ✓ Build Task — Review changes
      ↳ 48 toolcalls · 1m 40s"
 `;
+
+exports[`TUI inline tool wrapping updates sticky-bottom geometry when a text separator mounts and unmounts 1`] = `
+"Assistant text
+                                                                       ▄
+   → Read src/cli/cmd/tui/routes/session/index.tsx                     █"
+`;

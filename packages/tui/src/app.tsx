@@ -182,8 +182,17 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           }),
         ),
         (renderer) =>
-          Effect.sync(() => {
-            destroyRenderer(renderer)
+          Effect.gen(function* () {
+            yield* Effect.sync(() => {
+              destroyRenderer(renderer)
+            })
+            // `destroy()` only starts the native teardown; stdout and process
+            // exit must wait for `closed` so the terminal is restored first.
+            yield* Effect.promise(() =>
+              renderer.closed.catch((error) => {
+                TuiLog.write("error", "Failed to close the renderer", error)
+              }),
+            )
           }),
       )
       win32DisableProcessedInput()
@@ -204,8 +213,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       yield* Effect.addFinalizer(() => Effect.sync(TuiAudio.dispose))
       const shutdown = yield* Deferred.make<unknown>()
       const onSighup = () => destroyRenderer(renderer)
+      // The renderer registers its own signal handlers and destroys itself
+      // first on SIGHUP. Prepend so the title is cleared while the native
+      // session is still usable; a destroyed renderer must not be touched.
       yield* Effect.acquireRelease(
-        Effect.sync(() => process.on("SIGHUP", onSighup)),
+        Effect.sync(() => process.prependListener("SIGHUP", onSighup)),
         () => Effect.sync(() => process.off("SIGHUP", onSighup)),
       )
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
@@ -817,9 +829,11 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         category: "System",
         hidden: true,
         enabled: process.platform !== "win32",
-        run: () => {
-          renderer.suspend()
-          process.once("SIGCONT", () => renderer.resume())
+        run: async () => {
+          await renderer.suspend()
+          process.once("SIGCONT", () => {
+            void renderer.resume().catch(() => {})
+          })
           process.kill(0, "SIGTSTP")
         },
       },

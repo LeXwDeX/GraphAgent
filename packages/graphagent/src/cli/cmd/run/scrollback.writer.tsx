@@ -1,4 +1,4 @@
-import { createScrollbackWriter } from "@opentui/solid"
+import { createScrollbackWriter, useRenderer } from "@opentui/solid"
 import { TextRenderable, type ColorInput, type ScrollbackRenderContext, type ScrollbackWriter } from "@opentui/core"
 import { Match, Switch, createMemo } from "solid-js"
 import { entryBody, entryFlags } from "./entry.body"
@@ -101,10 +101,11 @@ export function RunEntryContent(props: {
   opts?: ScrollbackOptions
   width?: number
 }) {
+  const renderer = useRenderer()
   const theme = createMemo(() => props.theme ?? RUN_THEME_FALLBACK)
   const body = createMemo(() => props.body ?? entryBody(props.commit))
   const style = createMemo(() => entryLook(props.commit, theme().entry))
-  const syntax = createMemo(() => entrySyntax(props.commit, theme()))
+  const syntax = createMemo(() => entrySyntax(props.commit, theme(), renderer.nativeScene))
   const color = createMemo(() => entryColor(props.commit, theme()))
   const suppressBackgrounds = createMemo(() => props.opts?.suppressBackgrounds === true)
   const diffBg = (color: ColorInput) => (suppressBackgrounds() ? transparent : color)

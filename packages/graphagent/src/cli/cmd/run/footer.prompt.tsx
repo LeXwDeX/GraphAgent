@@ -223,7 +223,7 @@ export function RunPromptBody(props: {
       }
 
       // Paste can leave the textarea layout stale until the next edit.
-      area.getLayoutNode().markDirty()
+      area.invalidateIntrinsicSize()
       renderer.requestRender()
       void renderer
         .idle()

@@ -5,7 +5,14 @@
 // detects dark/light mode, builds a small system theme locally, and maps it to
 // the run footer + scrollback color model. Falls back to a hardcoded dark-mode
 // palette if detection fails.
-import { RGBA, SyntaxStyle, type CliRenderer, type ColorInput, type TerminalColors } from "@opentui/core"
+import {
+  RGBA,
+  SyntaxStyle,
+  type CliRenderer,
+  type ColorInput,
+  type NativeResourceOwner,
+  type TerminalColors,
+} from "@opentui/core"
 import type { TuiThemeCurrent } from "@graphagent/tui/plugin-api"
 import type { EntryKind } from "./types"
 
@@ -189,7 +196,11 @@ function chroma(color: RGBA) {
   return Math.max(color.r, color.g, color.b) - Math.min(color.r, color.g, color.b)
 }
 
-function opaqueSyntaxStyle(style: SyntaxStyle | undefined, bg: RGBA): SyntaxStyle | undefined {
+function opaqueSyntaxStyle(
+  style: SyntaxStyle | undefined,
+  bg: RGBA,
+  owner: NativeResourceOwner,
+): SyntaxStyle | undefined {
   if (!style) {
     return undefined
   }
@@ -205,6 +216,7 @@ function opaqueSyntaxStyle(style: SyntaxStyle | undefined, bg: RGBA): SyntaxStyl
         },
       ]),
     ),
+    owner,
   )
 }
 
@@ -501,10 +513,11 @@ function map(
   footerTheme: TuiThemeCurrent,
   scrollbackTheme: TuiThemeCurrent,
   splash: RunSplashTheme,
+  owner: NativeResourceOwner,
   syntax?: SyntaxStyle,
   subtleSyntax?: SyntaxStyle,
 ): RunTheme {
-  const opaqueSubtleSyntax = opaqueSyntaxStyle(subtleSyntax, scrollbackTheme.background)
+  const opaqueSubtleSyntax = opaqueSyntaxStyle(subtleSyntax, scrollbackTheme.background, owner)
   subtleSyntax?.destroy()
   const footerBackground = alpha(footerTheme.background, 1)
   const footerMode = mode(footerBackground)
@@ -676,13 +689,14 @@ export async function resolveRunTheme(renderer: CliRenderer): Promise<RunTheme> 
       ...scrollbackTheme,
       _hasSelectedListItemText: true,
     }
-    const syntax = shared.generateSyntax(syntaxTheme)
+    const syntax = shared.generateSyntax(syntaxTheme, renderer.nativeScene)
     return map(
       footerTheme,
       scrollbackTheme,
       splashTheme(scrollbackTheme, indexed),
+      renderer.nativeScene,
       syntax,
-      shared.generateSubtleSyntax(syntaxTheme),
+      shared.generateSubtleSyntax(syntaxTheme, renderer.nativeScene),
     )
   } catch {
     return RUN_THEME_FALLBACK

@@ -1,12 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 import { afterEach, expect, test } from "bun:test"
 import { CodeRenderable, RGBA, SyntaxStyle, type BaseRenderable, type ScrollBoxRenderable } from "@opentui/core"
-import { testRender } from "@opentui/solid"
+import { testRender, useRenderer, type JSX } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { ReasoningMarkdown } from "../../../../src/routes/session"
 
 const fg = RGBA.fromHex("#888888")
-const syntaxStyle = SyntaxStyle.fromStyles({ default: { fg } })
+const createSyntax = (renderer: ReturnType<typeof useRenderer>) =>
+  SyntaxStyle.fromStyles({ default: { fg } }, renderer.nativeScene)
+const withSyntax = (node: (syntaxStyle: SyntaxStyle) => JSX.Element) => () => node(createSyntax(useRenderer()))
 let app: Awaited<ReturnType<typeof testRender>> | undefined
 
 // Markdown blocks start asynchronous Tree-sitter highlighting during rendering.
@@ -49,13 +51,13 @@ afterEach(() => {
 test("replaces a streamed thought with distilled markdown in the same rendered slot", async () => {
   const [content, setContent] = createSignal("Original reasoning with `old` detail")
   app = await testRender(
-    () => (
+    withSyntax((syntaxStyle) => (
       <box width={56}>
         <text>Thought: Plan</text>
         <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
         <text>Final answer</text>
       </box>
-    ),
+    )),
     { width: 56, height: 12 },
   )
   await renderReady()
@@ -72,7 +74,9 @@ test("replaces a streamed thought with distilled markdown in the same rendered s
 test("shows appended text while the thought is still streaming", async () => {
   const [content, setContent] = createSignal("Initial thought")
   app = await testRender(
-    () => <ReasoningMarkdown content={content()} streaming={true} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />,
+    withSyntax((syntaxStyle) => (
+      <ReasoningMarkdown content={content()} streaming={true} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
+    )),
     { width: 48, height: 5 },
   )
   await renderReady()
@@ -85,7 +89,7 @@ test("one mounted thought streams, finalizes, then replaces its first and last b
   const [content, setContent] = createSignal("OLD FIRST\n\nOLD LAST")
   const [streaming, setStreaming] = createSignal(true)
   app = await testRender(
-    () => (
+    withSyntax((syntaxStyle) => (
       <ReasoningMarkdown
         content={content()}
         streaming={streaming()}
@@ -93,7 +97,7 @@ test("one mounted thought streams, finalizes, then replaces its first and last b
         conceal={false}
         fg={fg}
       />
-    ),
+    )),
     { width: 48, height: 8 },
   )
   await renderReady()
@@ -124,11 +128,11 @@ test("switches at exactly 4096/4097 UTF-8 bytes without leaving old content", as
   const [content, setContent] = createSignal(short)
   let scroll!: ScrollBoxRenderable
   app = await testRender(
-    () => (
+    withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} width={56} height={6}>
         <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={true} fg={fg} />
       </scrollbox>
-    ),
+    )),
     { width: 56, height: 6 },
   )
   const frame = async () => {
@@ -173,11 +177,11 @@ test("shows an entire long replacement as readable plain text without stale cont
   const [content, setContent] = createSignal(original)
   let scroll!: ScrollBoxRenderable
   app = await testRender(
-    () => (
+    withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} width={64} height={8}>
         <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
       </scrollbox>
-    ),
+    )),
     { width: 64, height: 8 },
   )
   await renderReady()
@@ -196,13 +200,13 @@ test("shortening a thought below the viewport keeps the earlier reading position
   const [content, setContent] = createSignal(Array.from({ length: 14 }, (_, i) => `Thought line ${i}`).join("\n\n"))
   let scroll!: ScrollBoxRenderable
   app = await testRender(
-    () => (
+    withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} width={48} height={5}>
         <text>{Array.from({ length: 10 }, (_, i) => `Earlier row ${i}`).join("\n")}</text>
         <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
         <text>Later anchor</text>
       </scrollbox>
-    ),
+    )),
     { width: 48, height: 5 },
   )
   await renderReady()
@@ -220,13 +224,13 @@ test("growing a thought while following the bottom keeps the later anchor visibl
   const [content, setContent] = createSignal("Short thought")
   let scroll!: ScrollBoxRenderable
   app = await testRender(
-    () => (
+    withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} stickyScroll={true} stickyStart="bottom" width={48} height={5}>
         <text>{Array.from({ length: 10 }, (_, i) => `Earlier row ${i}`).join("\n")}</text>
         <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
         <text>Later anchor</text>
       </scrollbox>
-    ),
+    )),
     { width: 48, height: 5 },
   )
   await renderReady()
