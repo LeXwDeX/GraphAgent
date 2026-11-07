@@ -82,8 +82,8 @@ commands, code, URLs, configuration keys and numbers stay verbatim.
 ```
 
 Cancelling a turn leaves its background organization jobs running. Deleting the session or disposing its directory
-cancels those jobs. There is no size limit on a reasoning part: every eligible part is sent to the organizer, whose output cap is the model's declared output limit. `OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS` (default 120 s) bounds organizer inactivity; a streaming response is never cut off.
-`OPENCODE_DISABLE_REASONING_DISTILLATION=1` turns the feature off regardless of configuration. Logs report every
+cancels those jobs. There is no size limit on a reasoning part: every eligible part is sent to the organizer, whose output cap is the model's declared output limit. `GRAPHAGENT_REASONING_DISTILLATION_AUX_TIMEOUT_MS` (default 120 s) bounds organizer inactivity; a streaming response is never cut off.
+`GRAPHAGENT_DISABLE_REASONING_DISTILLATION=1` turns the feature off regardless of configuration. Logs report every
 rewrite (`reasoning distillation`) and fallbacks that keep the original reasoning.
 
 ---
@@ -152,7 +152,7 @@ scheduled. Any HTTP 4xx/5xx status and every recognised network failure retries 
 credential-refresh retry, `413` and context overflow hand off to compaction instead of resending, and aborts, missing
 credentials, output-length and structured-output limits, content filters and rejected reasoning state stay terminal.
 When the processor gate or the attempt cap stops a retry, the session logs `retry stopped` with the branch, status,
-attempt, cap and gate state. The opt-in experimental native runtime (`OPENCODE_EXPERIMENTAL_NATIVE_LLM`, off by default)
+attempt, cap and gate state. The opt-in experimental native runtime (`GRAPHAGENT_NATIVE_LLM`, off by default)
 disables its `RequestExecutor` retries when the session processor drives the request, so this table owns retry timing
 and the attempt count; direct native-runtime calls that bypass the processor keep the executor's own bounded retry
 budget. See [compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
@@ -377,7 +377,7 @@ A node's final reply can be plain text, a structured payload (`output_schema` + 
 ### Project configuration files
 
 Everything DAG-specific lives under `.opencode/`, with a global counterpart in
-the opencode config dir (`OPENCODE_CONFIG_DIR`, else `~/.config/opencode`).
+the opencode config dir (`GRAPHAGENT_CONFIG_DIR`, else `~/.config/opencode`).
 Everything else inherits the main opencode configuration.
 
 | Path | Purpose | Global counterpart |
@@ -410,7 +410,7 @@ Curated reference topologies — design decision deep-dive, parallel project del
 
 ## Other changes in this fork
 
-- **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
+- **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `GRAPHAGENT_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
 - **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
 - **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~31 KB to ~20 KB, 36.5 percent), strict `edit` matching that lists ambiguous candidate lines and the closest line when one is close instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
 - **CJK & IME**: terminal input behavior depends on the terminal and input method.

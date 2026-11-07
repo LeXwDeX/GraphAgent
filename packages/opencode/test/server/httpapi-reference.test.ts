@@ -23,8 +23,8 @@ describe("reference HttpApi", () => {
     await mkdir(path.join(remote.path, "Effect-TS"), { recursive: true })
     await $`git clone --bare ${source.path} ${path.join(remote.path, "Effect-TS", "effect.git")}`.quiet()
 
-    const previous = process.env.OPENCODE_REPO_CLONE_GITHUB_BASE_URL
-    process.env.OPENCODE_REPO_CLONE_GITHUB_BASE_URL = pathToFileURL(remote.path).href
+    const previous = process.env.GRAPHAGENT_REPO_CLONE_GITHUB_BASE_URL
+    process.env.GRAPHAGENT_REPO_CLONE_GITHUB_BASE_URL = pathToFileURL(remote.path).href
     try {
       await using tmp = await tmpdir({
         config: {
@@ -84,8 +84,8 @@ describe("reference HttpApi", () => {
         },
       ])
     } finally {
-      if (previous !== undefined) process.env.OPENCODE_REPO_CLONE_GITHUB_BASE_URL = previous
-      else delete process.env.OPENCODE_REPO_CLONE_GITHUB_BASE_URL
+      if (previous !== undefined) process.env.GRAPHAGENT_REPO_CLONE_GITHUB_BASE_URL = previous
+      else delete process.env.GRAPHAGENT_REPO_CLONE_GITHUB_BASE_URL
     }
   })
 })

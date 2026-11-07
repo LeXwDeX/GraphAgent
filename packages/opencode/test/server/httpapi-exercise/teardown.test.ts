@@ -10,28 +10,28 @@ import type { CachedApp } from "./backend"
 const exerciseDb = path.join(process.env.TMPDIR ?? "/tmp", `opencode-teardown-regression-${process.pid}.db`)
 const exerciseGlobal = path.join(process.env.TMPDIR ?? "/tmp", `opencode-teardown-regression-${process.pid}`)
 const envKeys = [
-  "OPENCODE_DB",
-  "OPENCODE_HTTPAPI_EXERCISE_DB",
-  "OPENCODE_HTTPAPI_EXERCISE_GLOBAL",
+  "GRAPHAGENT_DB",
+  "GRAPHAGENT_HTTPAPI_EXERCISE_DB",
+  "GRAPHAGENT_HTTPAPI_EXERCISE_GLOBAL",
   "XDG_DATA_HOME",
   "XDG_CONFIG_HOME",
   "XDG_STATE_HOME",
   "XDG_CACHE_HOME",
 ] as const
 const savedEnv: Record<string, string | undefined> = {}
-const savedFlagDb = Flag.OPENCODE_DB
+const savedFlagDb = Flag.GRAPHAGENT_DB
 
 for (const key of envKeys) {
   savedEnv[key] = process.env[key]
 }
 
-process.env.OPENCODE_HTTPAPI_EXERCISE_DB = exerciseDb
-process.env.OPENCODE_HTTPAPI_EXERCISE_GLOBAL = exerciseGlobal
+process.env.GRAPHAGENT_HTTPAPI_EXERCISE_DB = exerciseDb
+process.env.GRAPHAGENT_HTTPAPI_EXERCISE_GLOBAL = exerciseGlobal
 
 const { createExitBackstop, exitBackstop, runMainWithHardExit, teardown } = await import("./teardown")
 const { appCache } = await import("./backend")
 
-Flag.OPENCODE_DB = savedFlagDb
+Flag.GRAPHAGENT_DB = savedFlagDb
 for (const key of envKeys) {
   const value = savedEnv[key]
   if (value === undefined) delete process.env[key]

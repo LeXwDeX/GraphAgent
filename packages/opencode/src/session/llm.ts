@@ -287,7 +287,7 @@ const live: Layer.Layer<
         )
       }
       const dynamicFolding = ConfigCompaction.resolveDynamic({
-        disabledByEnvironment: Flag.OPENCODE_DISABLE_PRUNE,
+        disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
         dynamic: cfg.compaction?.dynamic,
         prune: cfg.compaction?.prune,
       })
@@ -622,7 +622,7 @@ const live: Layer.Layer<
       if (!selected) return undefined
       // A declared no-reasoning variant keeps the organizer fast; otherwise it requests low effort.
       const effort = selected.variants?.none?.reasoningEffort === "none" ? "none" : "low"
-      const timeoutMs = Flag.OPENCODE_REASONING_DISTILLATION_AUX_TIMEOUT_MS
+      const timeoutMs = Flag.GRAPHAGENT_REASONING_DISTILLATION_AUX_TIMEOUT_MS
       const [item, info] = yield* Effect.all(
         [provider.getProvider(selected.providerID), auth.get(selected.providerID)],
         {

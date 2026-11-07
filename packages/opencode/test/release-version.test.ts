@@ -49,8 +49,8 @@ describe("GraphAgent release versions", () => {
 
     expect(workflow).not.toContain("inputs.version")
     expect(workflow).not.toContain("0.0.0-")
-    expect(workflow).toContain("OPENCODE_CHANNEL: latest")
-    expect(workflow).toContain("OPENCODE_VERSION: ${{ needs.version.outputs.version }}")
+    expect(workflow).toContain("GRAPHAGENT_CHANNEL: latest")
+    expect(workflow).toContain("GRAPHAGENT_VERSION: ${{ needs.version.outputs.version }}")
     expect(workflow).toContain('gh release create "${{ needs.version.outputs.tag }}"')
     expect(workflow).toContain("--latest")
     expect(workflow).not.toContain("--prerelease")

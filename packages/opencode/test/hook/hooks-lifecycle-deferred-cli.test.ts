@@ -29,7 +29,7 @@ for (const command of [false, true]) {
           )
         })
         const cfg = {
-          ...JSON.parse(env.OPENCODE_CONFIG_CONTENT),
+          ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT),
           permission: { "*": "allow" },
           command: { followup: { template: "COMMAND_FOLLOWUP_MARKER" } },
         }
@@ -37,8 +37,8 @@ for (const command of [false, true]) {
           format: "json",
           env: {
             PWD: home,
-            OPENCODE_DB: path.join(home, "restart.sqlite"),
-            OPENCODE_CONFIG_CONTENT: JSON.stringify(cfg),
+            GRAPHAGENT_DB: path.join(home, "restart.sqlite"),
+            GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(cfg),
           },
         }
         yield* llm.tool("write", { filePath: target, content: "REAL_DEFERRED_CONTENT" })
@@ -121,14 +121,14 @@ cliIt.live(
           }),
         )
       })
-      const cfg = { ...JSON.parse(env.OPENCODE_CONFIG_CONTENT), permission: { "*": "allow" } }
+      const cfg = { ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT), permission: { "*": "allow" } }
       const opts: RunOpts = {
         format: "json",
         env: {
-          OPENCODE_DISABLE_PROJECT_CONFIG: "0",
+          GRAPHAGENT_DISABLE_PROJECT_CONFIG: "0",
           PWD: home,
-          OPENCODE_DB: path.join(home, "restart.sqlite"),
-          OPENCODE_CONFIG_CONTENT: JSON.stringify(cfg),
+          GRAPHAGENT_DB: path.join(home, "restart.sqlite"),
+          GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(cfg),
         },
       }
       yield* llm.tool("restart_fixture", {})
@@ -184,13 +184,13 @@ for (const stop of [false, true]) {
             }),
           )
         })
-        const cfg = { ...JSON.parse(env.OPENCODE_CONFIG_CONTENT), permission: { "*": "allow" } }
+        const cfg = { ...JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT), permission: { "*": "allow" } }
         const opts: RunOpts = {
           format: "json",
           env: {
             PWD: home,
-            OPENCODE_DB: path.join(home, "restart.sqlite"),
-            OPENCODE_CONFIG_CONTENT: JSON.stringify(cfg),
+            GRAPHAGENT_DB: path.join(home, "restart.sqlite"),
+            GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(cfg),
           },
         }
         yield* llm.tool("write", { filePath: target, content: "BATCH_DEFERRED_CONTENT" })

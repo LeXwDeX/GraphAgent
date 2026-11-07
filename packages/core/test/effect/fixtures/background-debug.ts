@@ -46,7 +46,7 @@ if (mode === "bare") {
                     mode?.startsWith("open-")
                       ? Effect.addFinalizer(() =>
                           Effect.promise(() =>
-                            fsNative.writeFile(path.join(process.env.OPENCODE_TEST_HOME!, "released"), "yes"),
+                            fsNative.writeFile(path.join(process.env.GRAPHAGENT_TEST_HOME!, "released"), "yes"),
                           ),
                         )
                       : Effect.void,
@@ -122,6 +122,6 @@ if (mode === "bare") {
   if (Exit.isFailure(result)) {
     if (!mode?.endsWith("interrupt") || !Cause.hasInterrupts(result.cause))
       throw new Error("unexpected fixture failure")
-    await fsNative.writeFile(path.join(process.env.OPENCODE_TEST_HOME!, "interrupted"), "yes")
+    await fsNative.writeFile(path.join(process.env.GRAPHAGENT_TEST_HOME!, "interrupted"), "yes")
   }
 }

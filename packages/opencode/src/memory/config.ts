@@ -164,7 +164,7 @@ export function candidates(projectDir: string) {
 }
 
 export function globalConfigDir() {
-  return Flag.OPENCODE_CONFIG_DIR ?? Global.Path.config
+  return Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config
 }
 
 export function projectCandidates(projectDir: string) {

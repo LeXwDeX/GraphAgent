@@ -151,20 +151,19 @@ async function prompt(sdk: Sdk, sessionID: string, text: string) {
 function isolatedEnv(home: string, config: Partial<ConfigV1.Info>, arm: Arm) {
   return {
     ...process.env,
-    OPENCODE_TEST_HOME: home,
+    GRAPHAGENT_TEST_HOME: home,
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
     XDG_DATA_HOME: path.join(home, ".local/share"),
     XDG_STATE_HOME: path.join(home, ".local/state"),
     XDG_CACHE_HOME: path.join(home, ".cache"),
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_DISABLE_AUTOUPDATE: "1",
-    OPENCODE_DISABLE_MODELS_FETCH: "1",
-    OPENCODE_AUTH_CONTENT: "{}",
-    OPENCODE_DISABLE_PRUNE: arm === "disabled" ? "1" : "0",
-    OPENCODE_PRINT_LOGS: "1",
-    OPENCODE_LOG_LEVEL: "INFO",
+    GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config),
+    GRAPHAGENT_DISABLE_PROJECT_CONFIG: "1",
+    GRAPHAGENT_DISABLE_MODELS_FETCH: "1",
+    GRAPHAGENT_AUTH_CONTENT: "{}",
+    GRAPHAGENT_DISABLE_PRUNE: arm === "disabled" ? "1" : "0",
+    GRAPHAGENT_PRINT_LOGS: "1",
+    GRAPHAGENT_LOG_LEVEL: "INFO",
   }
 }
 

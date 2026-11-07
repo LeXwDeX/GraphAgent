@@ -106,7 +106,7 @@ const blockedCompaction = (
           JSON.stringify({ PreCompact: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] }),
         )
       })
-      const server = yield* opencode.host({ env: { OPENCODE_DISABLE_AUTOCOMPACT: "" } })
+      const server = yield* opencode.host({ env: { GRAPHAGENT_DISABLE_AUTOCOMPACT: "" } })
       const post = (route: string, body: object) =>
         Effect.promise(() =>
           fetch(server.url + route, {

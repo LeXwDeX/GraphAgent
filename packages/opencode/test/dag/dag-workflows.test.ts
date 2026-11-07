@@ -11,7 +11,7 @@ const itEffect = testEffect(Layer.empty)
 let dir: string
 let projectDir: string
 let globalDir: string
-const originalConfigDir = process.env.OPENCODE_CONFIG_DIR
+const originalConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 
 const spec = (name: string, nodes: number) =>
   [
@@ -37,14 +37,14 @@ beforeEach(async () => {
   projectDir = path.join(dir, "project")
   globalDir = path.join(dir, "global")
   await fs.mkdir(projectDir, { recursive: true })
-  // Flag.OPENCODE_CONFIG_DIR reads the env — redirect the global scope so the
+  // Flag.GRAPHAGENT_CONFIG_DIR reads the env — redirect the global scope so the
   // real user config dir is never read or written.
-  process.env.OPENCODE_CONFIG_DIR = globalDir
+  process.env.GRAPHAGENT_CONFIG_DIR = globalDir
 })
 
 afterEach(async () => {
-  if (originalConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
-  else process.env.OPENCODE_CONFIG_DIR = originalConfigDir
+  if (originalConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+  else process.env.GRAPHAGENT_CONFIG_DIR = originalConfigDir
   await fs.rm(dir, { recursive: true, force: true })
 })
 

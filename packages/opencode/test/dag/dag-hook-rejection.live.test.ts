@@ -7,7 +7,7 @@ import path from "node:path"
 import { randomBytes } from "node:crypto"
 // Opt in against an already configured QWEN/GLM/DeepSeek provider. This runs
 // the source CLI in an isolated home/database; it does not install a binary.
-const setting = process.env.OPENCODE_DAG_HOOK_LIVE_CONFIG
+const setting = process.env.GRAPHAGENT_DAG_HOOK_LIVE_CONFIG
 test.skipIf(!setting)(
   "a live model corrects a real hook denial and its dependent review validates the artifact",
   async () => {
@@ -17,7 +17,7 @@ test.skipIf(!setting)(
         .filter((modelID) => /qwen|glm|deepseek/i.test(modelID))
         .map((modelID) => ({ providerID, modelID })),
     )
-    const modelSetting = process.env.OPENCODE_DAG_HOOK_LIVE_MODEL
+    const modelSetting = process.env.GRAPHAGENT_DAG_HOOK_LIVE_MODEL
     const model = selected.find(
       (candidate) => !modelSetting || `${candidate.providerID}/${candidate.modelID}` === modelSetting,
     )
@@ -60,10 +60,10 @@ test.skipIf(!setting)(
               readyTimeoutMs: 30000,
               env: {
                 ...env,
-                OPENCODE_CONFIG: "",
-                OPENCODE_CONFIG_DIR: "",
-                OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-                OPENCODE_DB: path.join(home, "isolated.db"),
+                GRAPHAGENT_CONFIG: "",
+                GRAPHAGENT_CONFIG_DIR: "",
+                GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config),
+                GRAPHAGENT_DB: path.join(home, "isolated.db"),
               },
             })
             yield* Effect.promise(async () => {

@@ -20,7 +20,7 @@ every time. This skill covers authoring one. Load
 | Global | `<opencode config dir>/workflows/<name>.yaml` | The procedure is repo-agnostic (a generic review or research pattern). Available in every project. |
 
 The opencode config dir is `~/.config/opencode` on Linux/macOS unless
-`OPENCODE_CONFIG_DIR` redirects it. Ask the user which scope they want when the
+`GRAPHAGENT_CONFIG_DIR` redirects it. Ask the user which scope they want when the
 answer is not obvious from the request; a repo-specific graph in the global
 scope will break in other projects.
 

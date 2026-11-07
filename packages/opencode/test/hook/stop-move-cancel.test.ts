@@ -48,8 +48,8 @@ test("abort after a move invalidates the old Stop callback without masking the n
           const release = path.join(a.path, "hook-release")
           const woke = yield* Deferred.make<void>()
           let discarded = false
-          const previousLevel = process.env.OPENCODE_LOG_LEVEL
-          process.env.OPENCODE_LOG_LEVEL = "DEBUG"
+          const previousLevel = process.env.GRAPHAGENT_LOG_LEVEL
+          process.env.GRAPHAGENT_LOG_LEVEL = "DEBUG"
           yield* Effect.acquireRelease(
             Effect.sync(() =>
               Log.setSink((entry) => {
@@ -63,8 +63,8 @@ test("abort after a move invalidates the old Stop callback without masking the n
             (restore) =>
               Effect.sync(() => {
                 restore()
-                if (previousLevel === undefined) delete process.env.OPENCODE_LOG_LEVEL
-                else process.env.OPENCODE_LOG_LEVEL = previousLevel
+                if (previousLevel === undefined) delete process.env.GRAPHAGENT_LOG_LEVEL
+                else process.env.GRAPHAGENT_LOG_LEVEL = previousLevel
               }),
           )
           const rewake = HookRewake.Service.of({ rewake: () => Deferred.succeed(woke, undefined).pipe(Effect.asVoid) })

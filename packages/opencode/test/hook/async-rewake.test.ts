@@ -47,8 +47,8 @@ const tmp = (name: string) => path.join(os.tmpdir(), `opencode-test-${name}`)
 const observeDiscardedCallback = (sessionID: string) =>
   Effect.gen(function* () {
     let discarded = false
-    const previousLevel = process.env.OPENCODE_LOG_LEVEL
-    process.env.OPENCODE_LOG_LEVEL = "DEBUG"
+    const previousLevel = process.env.GRAPHAGENT_LOG_LEVEL
+    process.env.GRAPHAGENT_LOG_LEVEL = "DEBUG"
     yield* Effect.acquireRelease(
       Effect.sync(() =>
         Log.setSink((entry) => {
@@ -63,8 +63,8 @@ const observeDiscardedCallback = (sessionID: string) =>
       (restore) =>
         Effect.sync(() => {
           restore()
-          if (previousLevel === undefined) delete process.env.OPENCODE_LOG_LEVEL
-          else process.env.OPENCODE_LOG_LEVEL = previousLevel
+          if (previousLevel === undefined) delete process.env.GRAPHAGENT_LOG_LEVEL
+          else process.env.GRAPHAGENT_LOG_LEVEL = previousLevel
         }),
     )
     return pollWithTimeout(

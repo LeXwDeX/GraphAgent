@@ -3134,21 +3134,21 @@ config:
 })
 
 describe("workflow tool saved workflows", () => {
-  // The global scope reads Flag.OPENCODE_CONFIG_DIR from the env; point it at a
+  // The global scope reads Flag.GRAPHAGENT_CONFIG_DIR from the env; point it at a
   // fresh directory so the real user config dir is never touched.
   const withGlobalConfigDir = <A, E, R>(self: (globalDir: string) => Effect.Effect<A, E, R>) =>
     Effect.acquireUseRelease(
       Effect.promise(async () => {
         const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-global-"))
-        const previous = process.env.OPENCODE_CONFIG_DIR
-        process.env.OPENCODE_CONFIG_DIR = globalDir
+        const previous = process.env.GRAPHAGENT_CONFIG_DIR
+        process.env.GRAPHAGENT_CONFIG_DIR = globalDir
         return { globalDir, previous }
       }),
       (state) => self(state.globalDir),
       (state) =>
         Effect.promise(async () => {
-          if (state.previous === undefined) delete process.env.OPENCODE_CONFIG_DIR
-          else process.env.OPENCODE_CONFIG_DIR = state.previous
+          if (state.previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+          else process.env.GRAPHAGENT_CONFIG_DIR = state.previous
           await fs.rm(state.globalDir, { recursive: true, force: true })
         }),
     )
@@ -3417,8 +3417,8 @@ describe("workflow tool saved workflows", () => {
             Bun.write(path.join(workflowSpecDirectory, "path-route.yaml"), routeSpec("path-route")),
           ]),
         )
-        const previousBuiltin = (globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES
-        ;(globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES = {
+        const previousBuiltin = (globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES
+        ;(globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES = {
           "builtin-only-route": routeSpec("builtin-route"),
           "builtin-shadowed": routeSpec("stale-builtin-route"),
         }
@@ -3469,8 +3469,8 @@ describe("workflow tool saved workflows", () => {
           expect(started.title).toBe("Workflow started: project-route")
           expect(published.some((event) => event.type === DagEvent.WorkflowCreated.type)).toBe(true)
         } finally {
-          if (previousBuiltin === undefined) delete (globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES
-          else (globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES = previousBuiltin
+          if (previousBuiltin === undefined) delete (globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES
+          else (globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES = previousBuiltin
         }
       }),
     ),
@@ -3484,8 +3484,8 @@ describe("workflow tool saved workflows", () => {
         yield* Effect.promise(() =>
           Bun.write(path.join(globalDir, "workflows", "marker-route.yaml"), routeSpec("global-route")),
         )
-        const previousBuiltin = (globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES
-        ;(globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES = {
+        const previousBuiltin = (globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES
+        ;(globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES = {
           "marker-builtin": routeSpec("marker-builtin-route"),
         }
         try {
@@ -3515,8 +3515,8 @@ describe("workflow tool saved workflows", () => {
             expect(Cause.pretty(missingExit.cause)).toContain('Saved workflow not found: "missing-route"')
           }
         } finally {
-          if (previousBuiltin === undefined) delete (globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES
-          else (globalThis as Record<string, unknown>).OPENCODE_DAG_TEMPLATES = previousBuiltin
+          if (previousBuiltin === undefined) delete (globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES
+          else (globalThis as Record<string, unknown>).GRAPHAGENT_DAG_TEMPLATES = previousBuiltin
         }
       }),
     ),

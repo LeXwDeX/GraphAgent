@@ -2065,11 +2065,11 @@ describe("session.llm.stream", () => {
   )
 
   it.instance(
-    "lets OPENCODE_DISABLE_PRUNE disable the real outbound folding path",
+    "lets GRAPHAGENT_DISABLE_PRUNE disable the real outbound folding path",
     Effect.acquireUseRelease(
       Effect.sync(() => {
-        const previous = Flag.OPENCODE_DISABLE_PRUNE
-        Flag.OPENCODE_DISABLE_PRUNE = true
+        const previous = Flag.GRAPHAGENT_DISABLE_PRUNE
+        Flag.GRAPHAGENT_DISABLE_PRUNE = true
         return previous
       }),
       () =>
@@ -2111,7 +2111,7 @@ describe("session.llm.stream", () => {
             "Duplicate tool output folded",
           )
         }),
-      (previous) => Effect.sync(() => void (Flag.OPENCODE_DISABLE_PRUNE = previous)),
+      (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_PRUNE = previous)),
     ),
     {
       config: () => ({ ...foldingConfig(), compaction: { dynamic: true } }),

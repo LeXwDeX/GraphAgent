@@ -124,7 +124,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           // connection (attempt 0) is NOT a reconnect.
           if (attempt > 0) emitter.emit("reconnected")
 
-          if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+          if (Flag.GRAPHAGENT_WORKSPACES) {
             // Start syncing workspaces, it's important to do this after
             // we've started listening to events
             await sdk.sync.start().catch(() => {})
@@ -160,7 +160,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           onCleanup(unsubReconnect)
         }
 
-        if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+        if (Flag.GRAPHAGENT_WORKSPACES) {
           // Start syncing workspaces, it's important to do this after
           // we've started listening to events
           await sdk.sync.start().catch(() => {})

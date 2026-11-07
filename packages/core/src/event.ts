@@ -82,7 +82,19 @@ export interface Interface {
   readonly durable: (input: { readonly aggregateID: string; readonly after?: number }) => Stream.Stream<Payload>
   /** @deprecated Use `all()` and consume the returned stream. */
   readonly listen: (listener: Subscriber) => Effect.Effect<Unsubscribe>
-  readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>) => Effect.Effect<void>
+  /**
+   * Register a durable projector. A `key` makes the registration idempotent per
+   * bus instance: registering the same key again replaces that handler instead
+   * of appending a duplicate. Projector layers must pass a stable key so that a
+   * second build of the same layer against a shared bus (for example a node
+   * graph and a default layer resolving the bus through different memo maps)
+   * does not project every event twice.
+   */
+  readonly project: <D extends Definition>(
+    definition: D,
+    projector: Subscriber<D>,
+    key?: string,
+  ) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
     options?: { readonly publish?: boolean; readonly ownerID?: string; readonly strictOwner?: boolean },
@@ -110,7 +122,8 @@ export const layerWith = (options?: LayerOptions) =>
         durable: new Map<string, Set<PubSub.PubSub<void>>>(),
         typed: new Map<string, PubSub.PubSub<Payload>>(),
       }
-      const projectors = new Map<string, Subscriber[]>()
+      type Projector = { readonly key?: string; readonly handler: Subscriber }
+      const projectors = new Map<string, Projector[]>()
       // TODO: Bind durable projectors to exact type+version before supporting incompatible historical payloads.
       const listeners = new Array<Subscriber>()
       const { db } = yield* Database.Service
@@ -275,7 +288,7 @@ export const layerWith = (options?: LayerOptions) =>
             durable: { aggregateID, seq, version: durable.version },
           } as Payload
           for (const projector of list) {
-            yield* projector(committed)
+            yield* projector.handler(committed)
           }
           if (commit) yield* commit(seq)
           yield* db
@@ -729,10 +742,17 @@ export const layerWith = (options?: LayerOptions) =>
           })
         })
 
-      const project = <D extends Definition>(definition: D, projector: Subscriber<D>): Effect.Effect<void> =>
+      const project = <D extends Definition>(
+        definition: D,
+        projector: Subscriber<D>,
+        key?: string,
+      ): Effect.Effect<void> =>
         Effect.sync(() => {
           const list = projectors.get(definition.type) ?? []
-          list.push((event) => projector(event as Payload<D>))
+          const handler: Subscriber = (event) => projector(event as Payload<D>)
+          const existing = key === undefined ? -1 : list.findIndex((item) => item.key === key)
+          if (existing >= 0) list[existing] = { key, handler }
+          else list.push({ key, handler })
           projectors.set(definition.type, list)
         })
 

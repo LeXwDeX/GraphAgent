@@ -25,8 +25,8 @@ await Bun.build({
   sourcemap: "linked",
   external: ["jsonc-parser"],
   define: {
-    OPENCODE_MODELS_DEV: generated.modelsData,
-    OPENCODE_CHANNEL: `'${Script.channel}'`,
+    GRAPHAGENT_MODELS_DEV: generated.modelsData,
+    GRAPHAGENT_CHANNEL: `'${Script.channel}'`,
     ...NODE_SCHEMA_WORKER_DEFINES,
   },
 })

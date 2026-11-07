@@ -17,13 +17,13 @@ process.env.XDG_DATA_HOME = path.join(isolation, "share")
 process.env.XDG_CACHE_HOME = path.join(isolation, "cache")
 process.env.XDG_CONFIG_HOME = path.join(isolation, "config")
 process.env.XDG_STATE_HOME = path.join(isolation, "state")
-process.env.OPENCODE_CONFIG_DIR = path.join(isolation, "config", "opencode")
-process.env.OPENCODE_TEST_HOME = path.join(isolation, "home")
-process.env.OPENCODE_TEST_MANAGED_CONFIG_DIR = path.join(isolation, "managed")
-process.env.OPENCODE_DB = ":memory:"
-delete process.env.OPENCODE_CONFIG
-delete process.env.OPENCODE_CONFIG_CONTENT
-await fs.mkdir(process.env.OPENCODE_TEST_HOME, { recursive: true })
+process.env.GRAPHAGENT_CONFIG_DIR = path.join(isolation, "config", "opencode")
+process.env.GRAPHAGENT_TEST_HOME = path.join(isolation, "home")
+process.env.GRAPHAGENT_TEST_MANAGED_CONFIG_DIR = path.join(isolation, "managed")
+process.env.GRAPHAGENT_DB = ":memory:"
+delete process.env.GRAPHAGENT_CONFIG
+delete process.env.GRAPHAGENT_CONFIG_CONTENT
+await fs.mkdir(process.env.GRAPHAGENT_TEST_HOME, { recursive: true })
 const { MCP } = await import("../../../src/mcp/index")
 const { TestInstance, withTmpdirInstance } = await import("../../fixture/fixture")
 const { Process } = await import("../../../src/util/process")

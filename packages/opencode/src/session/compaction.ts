@@ -279,7 +279,7 @@ export const layer = Layer.effect(
     const startContext = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const reasoningDistillationEnabled = (cfg: ConfigV1.Info, model: Provider.Model) =>
       ConfigReasoningDistillation.resolveEnabled({
-        disabledByEnvironment: Flag.OPENCODE_DISABLE_REASONING_DISTILLATION,
+        disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_REASONING_DISTILLATION,
         enabled: cfg.reasoningDistillation?.enabled,
         modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
       }).enabled

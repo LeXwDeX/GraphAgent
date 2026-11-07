@@ -6,7 +6,7 @@ export * as DagProjector from "./projector"
 import { and, eq, inArray, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer } from "effect"
 import { Database } from "../database/database"
-import { EventV2 } from "../event"
+import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
 import { DagEvent } from "@opencode-ai/schema/dag-event"
 import { WorkflowNodeTable, WorkflowTable } from "./sql"
@@ -99,10 +99,15 @@ export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const { db } = yield* Database.Service
+    // A layer can be built more than once against the same bus (e.g. a node
+    // graph and a default layer resolving it through different memo maps).
+    // Keying the registrations keeps the projection single-shot per bus.
+    const project = <D extends Definition>(definition: D, projector: Subscriber<D>) =>
+      events.project(definition, projector, "projector/dag")
 
     // ---- Workflow lifecycle ----
 
-    yield* events.project(DagEvent.WorkflowCreated, (event) =>
+    yield* project(DagEvent.WorkflowCreated, (event) =>
       db
         .insert(WorkflowTable)
         .values({
@@ -136,7 +141,7 @@ export const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie)
 
-    yield* events.project(DagEvent.WorkflowStarted, (event) =>
+    yield* project(DagEvent.WorkflowStarted, (event) =>
       db
         .update(WorkflowTable)
         .set({
@@ -150,7 +155,7 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.WorkflowPaused, (event) =>
+    yield* project(DagEvent.WorkflowPaused, (event) =>
       db
         .update(WorkflowTable)
         .set({
@@ -168,7 +173,7 @@ export const layer = Layer.effectDiscard(
     // Leaving a pause ends that pause episode. A reminder already delivered for
     // it (wake_reported=true) must not suppress the next report, so the
     // resumed run starts with a fresh, unreported wake marker.
-    yield* events.project(DagEvent.WorkflowResumed, (event) =>
+    yield* project(DagEvent.WorkflowResumed, (event) =>
       db
         .update(WorkflowTable)
         .set({ status: "running", seq: event.durable!.seq, time_updated: toMillis(event.data.timestamp), wake_reported: false })
@@ -176,7 +181,7 @@ export const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie),
     )
-    yield* events.project(DagEvent.WorkflowStepped, setWorkflowStatus(ws("stepping"), [...WorkflowStatusProjection.stepped.from]))
+    yield* project(DagEvent.WorkflowStepped, setWorkflowStatus(ws("stepping"), [...WorkflowStatusProjection.stepped.from]))
 
     const setWorkflowTerminal = (status: WorkflowStatus, from: WorkflowStatus[]) => (event: { data: { dagID: DagEvent.DagID; timestamp: DateTime.Utc }; durable?: { seq: number } }) =>
       db
@@ -197,11 +202,11 @@ export const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie)
 
-    yield* events.project(DagEvent.WorkflowCompleted, setWorkflowTerminal(ws("completed"), [...WorkflowStatusProjection.completed.from]))
-    yield* events.project(DagEvent.WorkflowFailed, setWorkflowTerminal(ws("failed"), [...WorkflowStatusProjection.failed.from]))
-    yield* events.project(DagEvent.WorkflowCancelled, setWorkflowTerminal(ws("cancelled"), [...WorkflowStatusProjection.cancelled.from]))
+    yield* project(DagEvent.WorkflowCompleted, setWorkflowTerminal(ws("completed"), [...WorkflowStatusProjection.completed.from]))
+    yield* project(DagEvent.WorkflowFailed, setWorkflowTerminal(ws("failed"), [...WorkflowStatusProjection.failed.from]))
+    yield* project(DagEvent.WorkflowCancelled, setWorkflowTerminal(ws("cancelled"), [...WorkflowStatusProjection.cancelled.from]))
 
-    yield* events.project(DagEvent.WorkflowReplanned, (event) =>
+    yield* project(DagEvent.WorkflowReplanned, (event) =>
       Effect.gen(function* () {
         const recovery = event.data.recovery
         if (recovery) {
@@ -286,7 +291,7 @@ export const layer = Layer.effectDiscard(
       }),
     )
 
-    yield* events.project(DagEvent.WorkflowConfigUpdated, (event) =>
+    yield* project(DagEvent.WorkflowConfigUpdated, (event) =>
       db
         .update(WorkflowTable)
         .set({ config: event.data.config, seq: event.durable!.seq, time_updated: toMillis(event.data.timestamp) })
@@ -300,7 +305,7 @@ export const layer = Layer.effectDiscard(
 
     // ---- Node lifecycle (insert on register, update thereafter) ----
 
-    yield* events.project(DagEvent.NodeRegistered, (event) =>
+    yield* project(DagEvent.NodeRegistered, (event) =>
       db
         .insert(WorkflowNodeTable)
         .values({
@@ -331,7 +336,7 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeQueued, (event) =>
+    yield* project(DagEvent.NodeQueued, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({
@@ -352,7 +357,7 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeStarted, (event) =>
+    yield* project(DagEvent.NodeStarted, (event) =>
       Effect.gen(function* () {
         const current = yield* db
           .select()
@@ -423,7 +428,7 @@ export const layer = Layer.effectDiscard(
       }),
     )
 
-    yield* events.project(DagEvent.NodeCompleted, (event) =>
+    yield* project(DagEvent.NodeCompleted, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({
@@ -474,7 +479,7 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeFailed, (event) =>
+    yield* project(DagEvent.NodeFailed, (event) =>
       Effect.gen(function* () {
         const current = event.data.worktree
           ? yield* db
@@ -530,7 +535,7 @@ export const layer = Layer.effectDiscard(
       }),
     )
 
-    yield* events.project(DagEvent.NodeSkipped, (event) =>
+    yield* project(DagEvent.NodeSkipped, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({
@@ -550,7 +555,7 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeAborted, (event) =>
+    yield* project(DagEvent.NodeAborted, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({
@@ -581,7 +586,7 @@ export const layer = Layer.effectDiscard(
     // aggregation reads (summaries, status, node lists, rebuild input, wake
     // attribution) show only the current rev. This covers both plan.cancel
     // rows and explicit dag.nodeCancelled publishes (U1: shared semantics).
-    yield* events.project(DagEvent.NodeCancelled, (event) =>
+    yield* project(DagEvent.NodeCancelled, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({ status: "failed", superseded: true, error_reason: "cancelled via replan", escalation_pending: false, seq: event.durable!.seq, time_updated: toMillis(event.data.timestamp) })
@@ -594,7 +599,7 @@ export const layer = Layer.effectDiscard(
         .pipe(Effect.orDie),
     )
 
-    yield* events.project(DagEvent.NodeRestarted, (event) =>
+    yield* project(DagEvent.NodeRestarted, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({
@@ -633,7 +638,7 @@ export const layer = Layer.effectDiscard(
     // the extension count, seq, and wake flag change. wake_reported is reset so
     // the escalated node re-enters the wake snapshot and the main agent is
     // notified once per escalation.
-    yield* events.project(DagEvent.NodeTimeoutEscalated, (event) =>
+    yield* project(DagEvent.NodeTimeoutEscalated, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({
@@ -666,7 +671,7 @@ export const layer = Layer.effectDiscard(
     // write authority, deterministic replay. The status='running' WHERE clause
     // is only a replay-safety guard: a stale extension racing a terminal event
     // (crash recovery) matches 0 rows and is a benign skip.
-    yield* events.project(DagEvent.NodeDeadlineExtended, (event) =>
+    yield* project(DagEvent.NodeDeadlineExtended, (event) =>
       db
         .update(WorkflowNodeTable)
         .set({

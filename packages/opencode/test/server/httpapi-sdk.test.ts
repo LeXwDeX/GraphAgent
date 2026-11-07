@@ -41,9 +41,9 @@ const it = testEffect(
 )
 
 const original = {
-  OPENCODE_DISABLE_PRUNE: Flag.OPENCODE_DISABLE_PRUNE,
-  OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
-  OPENCODE_SERVER_USERNAME: Flag.OPENCODE_SERVER_USERNAME,
+  GRAPHAGENT_DISABLE_PRUNE: Flag.GRAPHAGENT_DISABLE_PRUNE,
+  GRAPHAGENT_SERVER_PASSWORD: Flag.GRAPHAGENT_SERVER_PASSWORD,
+  GRAPHAGENT_SERVER_USERNAME: Flag.GRAPHAGENT_SERVER_USERNAME,
 }
 
 type ServerPath = "default" | "raw"
@@ -87,8 +87,8 @@ function serverFetch(
   return HttpServer.HttpServer.use((server) =>
     Effect.sync(() => {
       void serverPath
-      Flag.OPENCODE_SERVER_PASSWORD = input?.password
-      Flag.OPENCODE_SERVER_USERNAME = input?.username
+      Flag.GRAPHAGENT_SERVER_PASSWORD = input?.password
+      Flag.GRAPHAGENT_SERVER_USERNAME = input?.username
       const baseUrl = HttpServer.formatAddress(server.address)
       return Object.assign(
         async (request: RequestInfo | URL, init?: RequestInit) => {
@@ -478,8 +478,8 @@ function outboundH0ToolResults(outbound: unknown) {
 function h0Arm(input: { sdk: Sdk; llm: TestLLMServer["Service"]; directory: string; enabled: boolean }) {
   return Effect.acquireUseRelease(
     Effect.sync(() => {
-      const previous = Flag.OPENCODE_DISABLE_PRUNE
-      Flag.OPENCODE_DISABLE_PRUNE = !input.enabled
+      const previous = Flag.GRAPHAGENT_DISABLE_PRUNE
+      Flag.GRAPHAGENT_DISABLE_PRUNE = !input.enabled
       return previous
     }),
     () =>
@@ -657,14 +657,14 @@ function h0Arm(input: { sdk: Sdk; llm: TestLLMServer["Service"]; directory: stri
           compactionParts: afterCompactions.length,
         }
       }),
-    (previous) => Effect.sync(() => void (Flag.OPENCODE_DISABLE_PRUNE = previous)),
+    (previous) => Effect.sync(() => void (Flag.GRAPHAGENT_DISABLE_PRUNE = previous)),
   )
 }
 
 afterEach(async () => {
-  Flag.OPENCODE_DISABLE_PRUNE = original.OPENCODE_DISABLE_PRUNE
-  Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
-  Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
+  Flag.GRAPHAGENT_DISABLE_PRUNE = original.GRAPHAGENT_DISABLE_PRUNE
+  Flag.GRAPHAGENT_SERVER_PASSWORD = original.GRAPHAGENT_SERVER_PASSWORD
+  Flag.GRAPHAGENT_SERVER_USERNAME = original.GRAPHAGENT_SERVER_USERNAME
   await disposeAllInstances()
   await resetDatabase()
 })

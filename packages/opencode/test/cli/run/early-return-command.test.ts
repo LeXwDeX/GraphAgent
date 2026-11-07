@@ -19,7 +19,7 @@
 // Harness notes (mirrors test/cli/run/headless-init.test.ts):
 // - run.ts resolves its directory from process.env.PWD, so arms pin PWD to
 //   the fixture home.
-// - OPENCODE_DB="" restores the file-backed DB under the isolated home.
+// - GRAPHAGENT_DB="" restores the file-backed DB under the isolated home.
 // - Arms stub one LLM reply only so the CLI has a default model to resolve;
 //   the early-return paths themselves never call it.
 import { describe, expect } from "bun:test"
@@ -28,7 +28,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../../lib/cli-process"
 
-const RUN_ENV = { OPENCODE_DB: "" }
+const RUN_ENV = { GRAPHAGENT_DB: "" }
 
 const expectCompleted = (result: { exitCode: number; stdout: string }) => {
   expect(result.exitCode).toBe(0)

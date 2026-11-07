@@ -14,20 +14,23 @@ describe("RuntimeFlags", () => {
       const flags = yield* readFlags.pipe(
         Effect.provide(
           fromConfig({
-            OPENCODE_DISABLE_EMBEDDED_WEB_UI: "true",
             OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
-            OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
-            OPENCODE_EXPERIMENTAL: "true",
-            OPENCODE_ENABLE_EXA: "true",
-            OPENCODE_ENABLE_PARALLEL: "true",
-            OPENCODE_ENABLE_EXPERIMENTAL_MODELS: "true",
-            OPENCODE_ENABLE_QUESTION_TOOL: "true",
-            OPENCODE_CLIENT: "desktop",
+            GRAPHAGENT_DISABLE_LSP_DOWNLOAD: "true",
+            GRAPHAGENT_ENABLE_EXA: "true",
+            GRAPHAGENT_ENABLE_PARALLEL: "true",
+            GRAPHAGENT_ENABLE_EXPERIMENTAL_MODELS: "true",
+            GRAPHAGENT_ENABLE_QUESTION_TOOL: "true",
+            GRAPHAGENT_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true",
+            GRAPHAGENT_LSP_TOOL: "true",
+            GRAPHAGENT_OXFMT: "true",
+            GRAPHAGENT_PLAN_MODE: "true",
+            GRAPHAGENT_WORKSPACES: "true",
+            GRAPHAGENT_ICON_DISCOVERY: "true",
+            GRAPHAGENT_CLIENT: "desktop",
           }),
         ),
       )
 
-      expect(flags.disableEmbeddedWebUi).toBe(true)
       expect(flags.disableExternalSkills).toBe(true)
       expect(flags.disableLspDownload).toBe(true)
       expect(flags.disableClaudeCodePrompt).toBe(false)
@@ -35,7 +38,6 @@ describe("RuntimeFlags", () => {
       expect(flags.enableParallel).toBe(true)
       expect(flags.enableExperimentalModels).toBe(true)
       expect(flags.enableQuestionTool).toBe(true)
-      expect(flags.experimentalReferences).toBe(true)
       expect(flags.experimentalBackgroundSubagents).toBe(true)
       expect(flags.experimentalLspTy).toBe(false)
       expect(flags.experimentalLspTool).toBe(true)
@@ -49,12 +51,12 @@ describe("RuntimeFlags", () => {
     }),
   )
 
-  it.effect("defaultLayer parses OPENCODE_EXPERIMENTAL_LSP_TY", () =>
+  it.effect("defaultLayer parses GRAPHAGENT_LSP_TY", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(
         Effect.provide(
           fromConfig({
-            OPENCODE_EXPERIMENTAL_LSP_TY: "true",
+            GRAPHAGENT_LSP_TY: "true",
           }),
         ),
       )
@@ -63,23 +65,23 @@ describe("RuntimeFlags", () => {
     }),
   )
 
-  it.effect("enables native LLM via dedicated flag only", () =>
+  it.effect("enables native LLM via GRAPHAGENT_NATIVE_LLM", () =>
     Effect.gen(function* () {
-      const explicit = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_EXPERIMENTAL_NATIVE_LLM: "true" })))
-      const umbrella = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_EXPERIMENTAL: "true" })))
+      const explicit = yield* readFlags.pipe(Effect.provide(fromConfig({ GRAPHAGENT_NATIVE_LLM: "true" })))
+      const absent = yield* readFlags.pipe(Effect.provide(fromConfig({})))
 
       expect(explicit.experimentalNativeLlm).toBe(true)
-      expect(umbrella.experimentalNativeLlm).toBe(false)
+      expect(absent.experimentalNativeLlm).toBe(false)
     }),
   )
 
-  it.effect("enables WebSockets via dedicated flag only", () =>
+  it.effect("enables WebSockets via GRAPHAGENT_WEBSOCKETS", () =>
     Effect.gen(function* () {
-      const explicit = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_EXPERIMENTAL_WEBSOCKETS: "true" })))
-      const umbrella = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_EXPERIMENTAL: "true" })))
+      const explicit = yield* readFlags.pipe(Effect.provide(fromConfig({ GRAPHAGENT_WEBSOCKETS: "true" })))
+      const absent = yield* readFlags.pipe(Effect.provide(fromConfig({})))
 
       expect(explicit.experimentalWebSockets).toBe(true)
-      expect(umbrella.experimentalWebSockets).toBe(false)
+      expect(absent.experimentalWebSockets).toBe(false)
     }),
   )
 
@@ -87,7 +89,6 @@ describe("RuntimeFlags", () => {
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 1_000 })))
 
-      expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
       expect(flags.disableLspDownload).toBe(false)
       expect(flags.disableClaudeCodePrompt).toBe(false)
@@ -134,9 +135,9 @@ describe("RuntimeFlags", () => {
     }),
   )
 
-  it.effect("disableLspDownload reads OPENCODE_DISABLE_LSP_DOWNLOAD", () =>
+  it.effect("disableLspDownload reads GRAPHAGENT_DISABLE_LSP_DOWNLOAD", () =>
     Effect.gen(function* () {
-      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_DISABLE_LSP_DOWNLOAD: "true" })))
+      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ GRAPHAGENT_DISABLE_LSP_DOWNLOAD: "true" })))
 
       expect(flags.disableLspDownload).toBe(true)
     }),
@@ -166,34 +167,11 @@ describe("RuntimeFlags", () => {
     }),
   )
 
-  it.effect("experimentalIconDiscovery reads OPENCODE_EXPERIMENTAL_ICON_DISCOVERY", () =>
+  it.effect("experimentalIconDiscovery reads GRAPHAGENT_ICON_DISCOVERY", () =>
     Effect.gen(function* () {
-      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_EXPERIMENTAL_ICON_DISCOVERY: "true" })))
+      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ GRAPHAGENT_ICON_DISCOVERY: "true" })))
 
       expect(flags.experimentalIconDiscovery).toBe(true)
-    }),
-  )
-
-  it.effect("experimentalIconDiscovery inherits OPENCODE_EXPERIMENTAL", () =>
-    Effect.gen(function* () {
-      const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_EXPERIMENTAL: "true" })))
-
-      expect(flags.experimentalIconDiscovery).toBe(true)
-    }),
-  )
-
-  it.effect("specific experimental flags override OPENCODE_EXPERIMENTAL", () =>
-    Effect.gen(function* () {
-      const flags = yield* readFlags.pipe(
-        Effect.provide(
-          fromConfig({
-            OPENCODE_EXPERIMENTAL: "true",
-            OPENCODE_EXPERIMENTAL_ICON_DISCOVERY: "false",
-          }),
-        ),
-      )
-
-      expect(flags.experimentalIconDiscovery).toBe(false)
     }),
   )
 
@@ -205,26 +183,12 @@ describe("RuntimeFlags", () => {
     }),
   )
 
-  it.effect("experimentalOxfmt is enabled by OPENCODE_EXPERIMENTAL_OXFMT", () =>
+  it.effect("experimentalOxfmt is enabled by GRAPHAGENT_OXFMT", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(
         Effect.provide(
           fromConfig({
-            OPENCODE_EXPERIMENTAL_OXFMT: "true",
-          }),
-        ),
-      )
-
-      expect(flags.experimentalOxfmt).toBe(true)
-    }),
-  )
-
-  it.effect("experimentalOxfmt inherits OPENCODE_EXPERIMENTAL", () =>
-    Effect.gen(function* () {
-      const flags = yield* readFlags.pipe(
-        Effect.provide(
-          fromConfig({
-            OPENCODE_EXPERIMENTAL: "true",
+            GRAPHAGENT_OXFMT: "true",
           }),
         ),
       )
@@ -237,19 +201,19 @@ describe("RuntimeFlags", () => {
     { name: "absent", config: {}, expected: undefined },
     {
       name: "valid positive integer",
-      config: { OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: "1234" },
+      config: { GRAPHAGENT_BASH_DEFAULT_TIMEOUT_MS: "1234" },
       expected: 1234,
     },
     {
       name: "invalid string",
-      config: { OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: "nope" },
+      config: { GRAPHAGENT_BASH_DEFAULT_TIMEOUT_MS: "nope" },
       expected: undefined,
     },
-    { name: "zero", config: { OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: "0" }, expected: undefined },
-    { name: "negative", config: { OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: "-1" }, expected: undefined },
+    { name: "zero", config: { GRAPHAGENT_BASH_DEFAULT_TIMEOUT_MS: "0" }, expected: undefined },
+    { name: "negative", config: { GRAPHAGENT_BASH_DEFAULT_TIMEOUT_MS: "-1" }, expected: undefined },
     {
       name: "non-integer",
-      config: { OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: "1.5" },
+      config: { GRAPHAGENT_BASH_DEFAULT_TIMEOUT_MS: "1.5" },
       expected: undefined,
     },
   ]) {
@@ -266,19 +230,19 @@ describe("RuntimeFlags", () => {
     { name: "absent", config: {}, expected: undefined },
     {
       name: "valid positive integer",
-      config: { OPENCODE_EXPERIMENTAL_BASH_SILENCE_WARN_MS: "1234" },
+      config: { GRAPHAGENT_BASH_SILENCE_WARN_MS: "1234" },
       expected: 1234,
     },
     {
       name: "invalid string",
-      config: { OPENCODE_EXPERIMENTAL_BASH_SILENCE_WARN_MS: "nope" },
+      config: { GRAPHAGENT_BASH_SILENCE_WARN_MS: "nope" },
       expected: undefined,
     },
-    { name: "zero", config: { OPENCODE_EXPERIMENTAL_BASH_SILENCE_WARN_MS: "0" }, expected: undefined },
-    { name: "negative", config: { OPENCODE_EXPERIMENTAL_BASH_SILENCE_WARN_MS: "-1" }, expected: undefined },
+    { name: "zero", config: { GRAPHAGENT_BASH_SILENCE_WARN_MS: "0" }, expected: undefined },
+    { name: "negative", config: { GRAPHAGENT_BASH_SILENCE_WARN_MS: "-1" }, expected: undefined },
     {
       name: "non-integer",
-      config: { OPENCODE_EXPERIMENTAL_BASH_SILENCE_WARN_MS: "1.5" },
+      config: { GRAPHAGENT_BASH_SILENCE_WARN_MS: "1.5" },
       expected: undefined,
     },
   ]) {
@@ -295,19 +259,19 @@ describe("RuntimeFlags", () => {
     { name: "absent", config: {}, expected: undefined },
     {
       name: "valid positive integer",
-      config: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: "1234" },
+      config: { GRAPHAGENT_OUTPUT_TOKEN_MAX: "1234" },
       expected: 1234,
     },
     {
       name: "invalid string",
-      config: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: "nope" },
+      config: { GRAPHAGENT_OUTPUT_TOKEN_MAX: "nope" },
       expected: undefined,
     },
-    { name: "zero", config: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: "0" }, expected: undefined },
-    { name: "negative", config: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: "-1" }, expected: undefined },
+    { name: "zero", config: { GRAPHAGENT_OUTPUT_TOKEN_MAX: "0" }, expected: undefined },
+    { name: "negative", config: { GRAPHAGENT_OUTPUT_TOKEN_MAX: "-1" }, expected: undefined },
     {
       name: "non-integer",
-      config: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: "1.5" },
+      config: { GRAPHAGENT_OUTPUT_TOKEN_MAX: "1.5" },
       expected: undefined,
     },
   ]) {
@@ -328,17 +292,15 @@ describe("RuntimeFlags", () => {
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
               OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
-              OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
-              OPENCODE_EXPERIMENTAL: "true",
-              OPENCODE_ENABLE_EXA: "true",
-              OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: "1234",
-              OPENCODE_CLIENT: "desktop",
+              GRAPHAGENT_DISABLE_LSP_DOWNLOAD: "true",
+              GRAPHAGENT_ENABLE_EXA: "true",
+              GRAPHAGENT_BASH_DEFAULT_TIMEOUT_MS: "1234",
+              GRAPHAGENT_CLIENT: "desktop",
             }),
           ),
         ),
       )
 
-      expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
       expect(flags.disableLspDownload).toBe(false)
       expect(flags.disableClaudeCodePrompt).toBe(false)

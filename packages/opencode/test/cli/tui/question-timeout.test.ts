@@ -9,8 +9,8 @@ import { it } from "../../lib/effect"
 import { reply } from "../../lib/llm-server"
 import { createTuiProcess, type TuiProcess } from "../../lib/tui-process"
 
-const artifactExecutable = process.env.OPENCODE_TEST_ARTIFACT_EXECUTABLE
-const sourceEnabled = process.env.OPENCODE_TEST_TUI_SOURCE === "1"
+const artifactExecutable = process.env.GRAPHAGENT_TEST_ARTIFACT_EXECUTABLE
+const sourceEnabled = process.env.GRAPHAGENT_TEST_TUI_SOURCE === "1"
 const enabled = !!artifactExecutable || sourceEnabled
 const target = artifactExecutable ? artifactCliTarget(artifactExecutable) : sourceCliTarget
 const run = enabled ? it.live : it.live.skip
@@ -74,7 +74,7 @@ async function freePort() {
 }
 
 async function evidenceDirectory() {
-  const configured = process.env.OPENCODE_TEST_TUI_EVIDENCE_DIR
+  const configured = process.env.GRAPHAGENT_TEST_TUI_EVIDENCE_DIR
   if (configured) {
     if (!path.isAbsolute(configured)) throw new Error(`TUI evidence directory must be absolute: ${configured}`)
     const dir = path.join(configured, "question-timeout")
@@ -109,7 +109,7 @@ run(
           let checkpoint = "fixture-ready"
           const resumedActionFile = path.join(home, "question-timeout-resumed.txt")
           const config = {
-            ...record(JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}")),
+            ...record(JSON.parse(env.GRAPHAGENT_CONFIG_CONTENT ?? "{}")),
             question_timeout: 2,
             permission: { external_directory: { [path.join(home, "*")]: "allow" } },
           }
@@ -143,7 +143,7 @@ run(
                 String(port),
               ],
               cwd: home,
-              env: { ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+              env: { ...env, GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(config) },
               evidenceDir,
               cols: 120,
               rows: 40,

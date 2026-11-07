@@ -11,8 +11,8 @@ import { it } from "../../lib/effect"
 import { reply } from "../../lib/llm-server"
 import { createTuiProcess } from "../../lib/tui-process"
 
-const artifactExecutable = process.env.OPENCODE_TEST_ARTIFACT_EXECUTABLE
-const sourceEnabled = process.env.OPENCODE_TEST_TUI_SOURCE === "1"
+const artifactExecutable = process.env.GRAPHAGENT_TEST_ARTIFACT_EXECUTABLE
+const sourceEnabled = process.env.GRAPHAGENT_TEST_TUI_SOURCE === "1"
 const enabled = !!artifactExecutable || sourceEnabled
 const target = artifactExecutable ? artifactCliTarget(artifactExecutable) : sourceCliTarget
 const run = enabled ? it.live : it.live.skip
@@ -102,7 +102,7 @@ async function freePort() {
 }
 
 async function evidenceDirectory() {
-  const configured = process.env.OPENCODE_TEST_TUI_EVIDENCE_DIR
+  const configured = process.env.GRAPHAGENT_TEST_TUI_EVIDENCE_DIR
   if (configured) {
     if (!path.isAbsolute(configured)) throw new Error(`TUI evidence directory must be absolute: ${configured}`)
     await chmod(configured, 0o700).catch(() => {})

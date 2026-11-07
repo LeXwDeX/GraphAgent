@@ -14,9 +14,9 @@ type Layer int
 
 const (
 	LayerManaged Layer = iota // 管理员强制（最高优先级中的文件层）
-	LayerInline               // OPENCODE_CONFIG_CONTENT 环境变量
+	LayerInline               // GRAPHAGENT_CONFIG_CONTENT 环境变量
 	LayerProject              // 项目根 opencode.json
-	LayerCustom               // OPENCODE_CONFIG 环境变量
+	LayerCustom               // GRAPHAGENT_CONFIG 环境变量
 	LayerGlobal               // ~/.config/opencode/opencode.json
 )
 
@@ -38,8 +38,8 @@ func Discover() []Source {
 		sources = append(sources, checkFile(LayerManaged, "Managed (管理员)", path))
 	}
 	// inline
-	if content := os.Getenv("OPENCODE_CONFIG_CONTENT"); strings.TrimSpace(content) != "" {
-		sources = append(sources, Source{Layer: LayerInline, Label: "Inline (OPENCODE_CONFIG_CONTENT)", Exists: true})
+	if content := os.Getenv("GRAPHAGENT_CONFIG_CONTENT"); strings.TrimSpace(content) != "" {
+		sources = append(sources, Source{Layer: LayerInline, Label: "Inline (GRAPHAGENT_CONFIG_CONTENT)", Exists: true})
 	}
 	for _, path := range homeProjectPaths() {
 		sources = append(sources, checkFile(LayerProject, "Home .opencode", path))
@@ -50,8 +50,8 @@ func Discover() []Source {
 		}
 	}
 	// custom
-	if custom := os.Getenv("OPENCODE_CONFIG"); custom != "" {
-		sources = append(sources, checkFile(LayerCustom, "Custom (OPENCODE_CONFIG)", custom))
+	if custom := os.Getenv("GRAPHAGENT_CONFIG"); custom != "" {
+		sources = append(sources, checkFile(LayerCustom, "Custom (GRAPHAGENT_CONFIG)", custom))
 	}
 	for _, path := range globalConfigPaths() {
 		sources = append(sources, checkFile(LayerGlobal, "Global (全局)", path))
@@ -113,7 +113,7 @@ func GlobalPath() string {
 }
 
 func configDir() string {
-	if dir := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_DIR")); dir != "" {
+	if dir := strings.TrimSpace(os.Getenv("GRAPHAGENT_CONFIG_DIR")); dir != "" {
 		return dir
 	}
 	home, err := os.UserHomeDir()
@@ -198,7 +198,7 @@ func configFiles(dir string, names ...string) []string {
 }
 
 func projectConfigDisabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG"))) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GRAPHAGENT_DISABLE_PROJECT_CONFIG"))) {
 	case "1", "true", "yes":
 		return true
 	default:

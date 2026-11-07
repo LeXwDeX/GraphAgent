@@ -2,13 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import * as Log from "../../src/util/log"
 
 let restore: (() => void) | undefined
-const originalLevel = process.env.OPENCODE_LOG_LEVEL
+const originalLevel = process.env.GRAPHAGENT_LOG_LEVEL
 
 afterEach(() => {
   restore?.()
   restore = undefined
-  if (originalLevel === undefined) delete process.env.OPENCODE_LOG_LEVEL
-  else process.env.OPENCODE_LOG_LEVEL = originalLevel
+  if (originalLevel === undefined) delete process.env.GRAPHAGENT_LOG_LEVEL
+  else process.env.GRAPHAGENT_LOG_LEVEL = originalLevel
 })
 
 const capture = () => {
@@ -34,8 +34,8 @@ describe("util.log", () => {
     })
   })
 
-  test("writes debug when OPENCODE_LOG_LEVEL=DEBUG", () => {
-    process.env.OPENCODE_LOG_LEVEL = "DEBUG"
+  test("writes debug when GRAPHAGENT_LOG_LEVEL=DEBUG", () => {
+    process.env.GRAPHAGENT_LOG_LEVEL = "DEBUG"
     const entries = capture()
     Log.create({ service: "test.service" }).debug("visible", { sessionID: "s1" })
     expect(entries).toHaveLength(1)
@@ -50,7 +50,7 @@ describe("util.log", () => {
   })
 
   test("records duration when the timing logger is enabled", () => {
-    process.env.OPENCODE_LOG_LEVEL = "DEBUG"
+    process.env.GRAPHAGENT_LOG_LEVEL = "DEBUG"
     const entries = capture()
     const label = Log.create({ service: "test.service" }).time("query")
     label[Symbol.dispose]()

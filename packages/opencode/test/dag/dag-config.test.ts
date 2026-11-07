@@ -8,21 +8,21 @@ import * as fs from "node:fs/promises"
 let dir: string
 let projectDir: string
 let globalDir: string
-const originalConfigDir = process.env.OPENCODE_CONFIG_DIR
+const originalConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-config-"))
   projectDir = path.join(dir, "project")
   globalDir = path.join(dir, "global")
   await fs.mkdir(projectDir, { recursive: true })
-  // Redirect the global config dir (Flag.OPENCODE_CONFIG_DIR reads the env)
+  // Redirect the global config dir (Flag.GRAPHAGENT_CONFIG_DIR reads the env)
   // so seeding never touches the real one.
-  process.env.OPENCODE_CONFIG_DIR = globalDir
+  process.env.GRAPHAGENT_CONFIG_DIR = globalDir
 })
 
 afterEach(async () => {
-  if (originalConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR
-  else process.env.OPENCODE_CONFIG_DIR = originalConfigDir
+  if (originalConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+  else process.env.GRAPHAGENT_CONFIG_DIR = originalConfigDir
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -52,7 +52,7 @@ describe("DagConfig.load", () => {
     // Point the global dir AT A FILE so mkdir/writeFile fail with ENOTDIR —
     // load must swallow it (warning only) and still return {}.
     await fs.writeFile(path.join(dir, "not-a-dir"), "")
-    process.env.OPENCODE_CONFIG_DIR = path.join(dir, "not-a-dir")
+    process.env.GRAPHAGENT_CONFIG_DIR = path.join(dir, "not-a-dir")
     const info = await Effect.runPromise(DagConfig.load(projectDir, { autoSeed: true }))
     expect(info).toEqual({})
   })

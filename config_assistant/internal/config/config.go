@@ -29,7 +29,7 @@ func LoadExisting() ([]Loaded, error) {
 		var data map[string]any
 		var err error
 		if src.Layer == LayerInline {
-			data, err = parseJSONC([]byte(os.Getenv("OPENCODE_CONFIG_CONTENT")))
+			data, err = parseJSONC([]byte(os.Getenv("GRAPHAGENT_CONFIG_CONTENT")))
 		} else if strings.HasSuffix(src.Path, ".plist") {
 			data, err = readManagedPlist(src.Path)
 		} else {

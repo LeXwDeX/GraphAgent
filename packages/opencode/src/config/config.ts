@@ -299,7 +299,7 @@ export const layer = Layer.effect(
       let result: Info = {}
       // Seed the default global config with the schema for editor completion, but avoid writing when the user
       // explicitly routes config through env-provided paths or content.
-      if (!Flag.OPENCODE_CONFIG && !Flag.OPENCODE_CONFIG_DIR && !Flag.OPENCODE_CONFIG_CONTENT) {
+      if (!Flag.GRAPHAGENT_CONFIG && !Flag.GRAPHAGENT_CONFIG_DIR && !Flag.GRAPHAGENT_CONFIG_CONTENT) {
         const file = globalConfigFile()
         if (!existsSync(file)) {
           yield* fs
@@ -454,12 +454,12 @@ export const layer = Layer.effect(
         const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
         merge(Global.Path.config, global)
 
-        if (Flag.OPENCODE_CONFIG) {
-          merge(Flag.OPENCODE_CONFIG, yield* loadFile(Flag.OPENCODE_CONFIG, authEnv))
-          yield* Effect.logDebug("loaded custom config", { path: Flag.OPENCODE_CONFIG })
+        if (Flag.GRAPHAGENT_CONFIG) {
+          merge(Flag.GRAPHAGENT_CONFIG, yield* loadFile(Flag.GRAPHAGENT_CONFIG, authEnv))
+          yield* Effect.logDebug("loaded custom config", { path: Flag.GRAPHAGENT_CONFIG })
         }
 
-        if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+        if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG) {
           for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
             merge(file, yield* loadFile(file, authEnv))
           }
@@ -470,12 +470,12 @@ export const layer = Layer.effect(
 
         const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
 
-        if (Flag.OPENCODE_CONFIG_DIR) {
-          yield* Effect.logDebug("loading config from OPENCODE_CONFIG_DIR", { path: Flag.OPENCODE_CONFIG_DIR })
+        if (Flag.GRAPHAGENT_CONFIG_DIR) {
+          yield* Effect.logDebug("loading config from GRAPHAGENT_CONFIG_DIR", { path: Flag.GRAPHAGENT_CONFIG_DIR })
         }
 
         for (const dir of directories) {
-          if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
+          if (dir.endsWith(".opencode") || dir === Flag.GRAPHAGENT_CONFIG_DIR) {
             for (const file of ["opencode.json", "opencode.jsonc"]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
@@ -498,14 +498,14 @@ export const layer = Layer.effect(
           }
         }
 
-        if (process.env.OPENCODE_CONFIG_CONTENT) {
-          const source = "OPENCODE_CONFIG_CONTENT"
-          const next = yield* loadConfig(process.env.OPENCODE_CONFIG_CONTENT, {
+        if (process.env.GRAPHAGENT_CONFIG_CONTENT) {
+          const source = "GRAPHAGENT_CONFIG_CONTENT"
+          const next = yield* loadConfig(process.env.GRAPHAGENT_CONFIG_CONTENT, {
             dir: ctx.directory,
             source,
           })
           merge(source, next)
-          yield* Effect.logDebug("loaded custom config from OPENCODE_CONFIG_CONTENT")
+          yield* Effect.logDebug("loaded custom config from GRAPHAGENT_CONFIG_CONTENT")
         }
 
         const managedDir = ConfigManaged.managedConfigDir()
@@ -540,11 +540,11 @@ export const layer = Layer.effect(
         if (localPermissions.hookPermissions)
           result.hookPermissions = { ...result.hookPermissions, ...localPermissions.hookPermissions }
 
-        if (Flag.OPENCODE_PERMISSION) {
+        if (Flag.GRAPHAGENT_PERMISSION) {
           try {
-            result = mergeConfig(result, { permission: JSON.parse(Flag.OPENCODE_PERMISSION) })
+            result = mergeConfig(result, { permission: JSON.parse(Flag.GRAPHAGENT_PERMISSION) })
           } catch (err) {
-            yield* Effect.logWarning("OPENCODE_PERMISSION contains invalid JSON, skipping", { err })
+            yield* Effect.logWarning("GRAPHAGENT_PERMISSION contains invalid JSON, skipping", { err })
           }
         }
 
@@ -574,10 +574,10 @@ export const layer = Layer.effect(
           }
         }
 
-        if (Flag.OPENCODE_DISABLE_AUTOCOMPACT) {
+        if (Flag.GRAPHAGENT_DISABLE_AUTOCOMPACT) {
           result.compaction = { ...result.compaction, auto: false }
         }
-        if (Flag.OPENCODE_DISABLE_PRUNE) {
+        if (Flag.GRAPHAGENT_DISABLE_PRUNE) {
           result.compaction = { ...result.compaction, dynamic: false, prune: false }
         }
 

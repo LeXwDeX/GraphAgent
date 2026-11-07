@@ -169,6 +169,20 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("replaces a keyed projector instead of registering it twice", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const received = new Array<string>()
+      yield* events.project(SyncMessage, () => Effect.sync(() => received.push("first")), "test-key")
+      yield* events.project(SyncMessage, () => Effect.sync(() => received.push("second")), "test-key")
+      yield* events.project(SyncMessage, () => Effect.sync(() => received.push("anonymous")))
+
+      yield* events.publish(SyncMessage, { id: "one", text: "hello" })
+
+      expect(received).toEqual(["second", "anonymous"])
+    }),
+  )
+
   it.effect("commits local operational state inside a new durable event transaction", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service

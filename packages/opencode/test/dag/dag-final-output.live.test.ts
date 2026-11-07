@@ -1,7 +1,7 @@
 // Live acceptance for final_response DAG delivery through the installed CLI.
-// Opt in with OPENCODE_DAG_LIVE_CONFIG=<config path> (or `1` to use the
+// Opt in with GRAPHAGENT_DAG_LIVE_CONFIG=<config path> (or `1` to use the
 // standard user config). The provider config is read only into memory and is
-// passed to the isolated child process as OPENCODE_CONFIG_CONTENT.
+// passed to the isolated child process as GRAPHAGENT_CONFIG_CONTENT.
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { mkdir, readFile } from "node:fs/promises"
@@ -16,10 +16,10 @@ type ModelCandidate = {
   provider: RecordValue
 }
 
-const liveConfigSetting = process.env.OPENCODE_DAG_LIVE_CONFIG
+const liveConfigSetting = process.env.GRAPHAGENT_DAG_LIVE_CONFIG
 const liveEnabled = Boolean(liveConfigSetting)
 const candidateModelIDs = ["qwen-max", "glm", "deepseek"] as const
-const selectedModelSetting = process.env.OPENCODE_DAG_LIVE_MODELS
+const selectedModelSetting = process.env.GRAPHAGENT_DAG_LIVE_MODELS
 const schemaToken = "LIVE_DAG_SCHEMA_PROOF_71C8"
 const plainAnswer = "LIVE_DAG_FINAL_RAW_4F2A"
 const deliveryMetaKey = "dag_delivery"
@@ -55,7 +55,7 @@ async function readModelCandidates(configPath: string): Promise<ModelCandidate[]
   try {
     config = record(JSON.parse(await readFile(configPath, "utf8")))
   } catch {
-    throw new Error("OPENCODE_DAG_LIVE_CONFIG must name a readable JSON opencode config")
+    throw new Error("GRAPHAGENT_DAG_LIVE_CONFIG must name a readable JSON opencode config")
   }
   const providers = record(config.provider ?? {})
   const result: ModelCandidate[] = []
@@ -68,7 +68,7 @@ async function readModelCandidates(configPath: string): Promise<ModelCandidate[]
       )
     : new Set(candidateModelIDs)
   const requested = candidateModelIDs.filter((modelID) => selected.has(modelID))
-  if (requested.length === 0) throw new Error("OPENCODE_DAG_LIVE_MODELS must select qwen-max, glm, or deepseek")
+  if (requested.length === 0) throw new Error("GRAPHAGENT_DAG_LIVE_MODELS must select qwen-max, glm, or deepseek")
   for (const modelID of requested) {
     for (const [providerID, rawProvider] of Object.entries(providers)) {
       const provider = record(rawProvider)
@@ -365,10 +365,10 @@ test.skipIf(!liveEnabled)(
                 })
                 const serverEnv = {
                   ...env,
-                  OPENCODE_CONFIG: "",
-                  OPENCODE_CONFIG_DIR: "",
-                  OPENCODE_CONFIG_CONTENT: configJson,
-                  OPENCODE_DB: path.join(home, "isolated-opencode.db"),
+                  GRAPHAGENT_CONFIG: "",
+                  GRAPHAGENT_CONFIG_DIR: "",
+                  GRAPHAGENT_CONFIG_CONTENT: configJson,
+                  GRAPHAGENT_DB: path.join(home, "isolated-opencode.db"),
                 }
                 const server = yield* opencode.host({ env: serverEnv })
                 const result = yield* Effect.promise(() =>

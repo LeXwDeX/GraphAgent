@@ -30,8 +30,8 @@ export type ServiceClass<Self, Id extends string, Service> = Context.ServiceClas
  * class ExampleConfig extends ConfigService.Service<ExampleConfig>()(
  *   "@opencode/ExampleConfig",
  *   {
- *     endpoint: Config.String("OPENCODE_EXAMPLE_ENDPOINT").pipe(Config.option),
- *     retries: Config.int("OPENCODE_EXAMPLE_RETRIES").pipe(Config.withDefault(3)),
+ *     endpoint: Config.String("GRAPHAGENT_EXAMPLE_ENDPOINT").pipe(Config.option),
+ *     retries: Config.int("GRAPHAGENT_EXAMPLE_RETRIES").pipe(Config.withDefault(3)),
  *   },
  * ) {}
  *

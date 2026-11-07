@@ -498,11 +498,11 @@ describe("memory config and YAML store", () => {
       const memoryConfig = yield* MemoryConfig.Service
       const global = yield* tmpdirScoped()
       const project = yield* tmpdirScoped()
-      const previous = process.env.OPENCODE_CONFIG_DIR
+      const previous = process.env.GRAPHAGENT_CONFIG_DIR
 
       yield* Effect.acquireUseRelease(
         Effect.sync(() => {
-          process.env.OPENCODE_CONFIG_DIR = global
+          process.env.GRAPHAGENT_CONFIG_DIR = global
         }),
         () =>
           Effect.gen(function* () {
@@ -513,8 +513,8 @@ describe("memory config and YAML store", () => {
           }),
         () =>
           Effect.sync(() => {
-            if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR
-            else process.env.OPENCODE_CONFIG_DIR = previous
+            if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+            else process.env.GRAPHAGENT_CONFIG_DIR = previous
           }),
       )
     }),
@@ -524,13 +524,13 @@ describe("memory config and YAML store", () => {
     Effect.gen(function* () {
       const memoryConfig = yield* MemoryConfig.Service
       const global = yield* tmpdirScoped()
-      const previous = process.env.OPENCODE_CONFIG_DIR
+      const previous = process.env.GRAPHAGENT_CONFIG_DIR
       const existing = { ...config, model: "test/existing" }
       const requested = { ...config, model: "test/requested" }
 
       yield* Effect.acquireUseRelease(
         Effect.sync(() => {
-          process.env.OPENCODE_CONFIG_DIR = global
+          process.env.GRAPHAGENT_CONFIG_DIR = global
         }),
         () =>
           Effect.gen(function* () {
@@ -549,8 +549,8 @@ describe("memory config and YAML store", () => {
           }),
         () =>
           Effect.sync(() => {
-            if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR
-            else process.env.OPENCODE_CONFIG_DIR = previous
+            if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+            else process.env.GRAPHAGENT_CONFIG_DIR = previous
           }),
       )
     }),

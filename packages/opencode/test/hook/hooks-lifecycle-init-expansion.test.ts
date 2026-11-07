@@ -23,7 +23,7 @@ cliIt.live(
         )
       })
       yield* llm.text("INITIALIZED")
-      const result = yield* opencode.run("/init", { format: "json", env: { PWD: home, OPENCODE_DB: "" } })
+      const result = yield* opencode.run("/init", { format: "json", env: { PWD: home, GRAPHAGENT_DB: "" } })
       opencode.expectExit(result, 0)
       const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
         .trim()

@@ -109,7 +109,7 @@ jobs:
         displayName: Run workspace unit tests
         timeoutInMinutes: 20
         env:
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+          GRAPHAGENT_DISABLE_FILEWATCHER: "false"
       - bash: go test ./...
         displayName: Run config assistant tests
         workingDirectory: config_assistant
@@ -149,7 +149,7 @@ jobs:
             workingDirectory: packages/opencode
             timeoutInMinutes: 20
             env:
-              OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+              GRAPHAGENT_DISABLE_FILEWATCHER: "false"
 
   - job: unit_httpapi
     displayName: Unit Tests (HttpAPI)
@@ -194,7 +194,7 @@ jobs:
       UNIT_RESULT_WORKSPACE: $[ dependencies.unit_workspace.result ]
       UNIT_RESULT_HTTPAPI: $[ dependencies.unit_httpapi.result ]
       ${{ each shard in parameters.shards }}:
-        UNIT_RESULT_OPENCODE_${{ shard }}: $[ dependencies.unit_opencode_${{ shard }}.result ]
+        UNIT_RESULT_GRAPHAGENT_${{ shard }}: $[ dependencies.unit_opencode_${{ shard }}.result ]
     steps:
       - checkout: none
       - bash: |

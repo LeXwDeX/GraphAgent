@@ -59,9 +59,9 @@ export const layer = Layer.effect(
     const decode = Schema.decodeUnknownOption(Info)
 
     const read = Effect.fn("Auth.read")(function* (strict = false) {
-      if (process.env.OPENCODE_AUTH_CONTENT) {
+      if (process.env.GRAPHAGENT_AUTH_CONTENT) {
         try {
-          return JSON.parse(process.env.OPENCODE_AUTH_CONTENT)
+          return JSON.parse(process.env.GRAPHAGENT_AUTH_CONTENT)
         } catch (err) {}
       }
 

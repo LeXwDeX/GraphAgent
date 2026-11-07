@@ -50,7 +50,7 @@ When a retryable failure stops, the session logs a `retry stopped` warning with
 (`aborted`, `blocked`, `needsCompaction`, `anyToolCalled`,
 `pendingToolExecutions`, `suppressedActivity`).
 
-The opt-in experimental native runtime (`OPENCODE_EXPERIMENTAL_NATIVE_LLM`, off
+The opt-in experimental native runtime (`GRAPHAGENT_NATIVE_LLM`, off
 by default) disables `RequestExecutor` retries when the session processor drives
 the request, so this dispatch table owns retry timing and the total attempt
 count. Direct native-runtime calls that bypass the processor keep the executor's

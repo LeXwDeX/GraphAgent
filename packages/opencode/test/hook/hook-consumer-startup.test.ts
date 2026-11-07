@@ -51,7 +51,7 @@ for (const authorized of [false, true])
         const result = yield* opencode.run("Exercise startup capability", {
           format: "json",
           permission: { "*": "ask" },
-          env: { OPENCODE_DB: path.join(home, "startup-persistent.sqlite") },
+          env: { GRAPHAGENT_DB: path.join(home, "startup-persistent.sqlite") },
           extraArgs: authorized ? ["--dangerously-skip-permissions"] : [],
         })
         expect(result.exitCode).toBe(0)
@@ -66,7 +66,7 @@ for (const authorized of [false, true])
           const resumed = yield* opencode.run("Resume startup capability", {
             format: "json",
             permission: { "*": "ask" },
-            env: { OPENCODE_DB: path.join(home, "startup-persistent.sqlite") },
+            env: { GRAPHAGENT_DB: path.join(home, "startup-persistent.sqlite") },
             extraArgs: ["--session", calls[0], "--dangerously-skip-permissions"],
           })
           if (resumed.exitCode !== 0)
@@ -102,7 +102,7 @@ cliIt.live("explicit local CLI capability applies to the first resumed deferred 
     const opts = {
       format: "json" as const,
       permission: { "*": "ask" as const },
-      env: { OPENCODE_DB: path.join(home, "deferred-startup.sqlite") },
+      env: { GRAPHAGENT_DB: path.join(home, "deferred-startup.sqlite") },
     }
     yield* llm.tool("bash", { command: "printf deferred-first", description: "first deferred synthetic tool" })
     const deferred = yield* opencode.run("Create a deferred tool", opts)

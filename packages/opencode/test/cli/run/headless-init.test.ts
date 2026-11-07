@@ -12,8 +12,8 @@
 // - The project row only exists for git worktrees — a bare temp dir resolves to
 //   the global project (src/project/project.ts fromDirectory), so each arm
 //   git-inits the fixture home first.
-// - test/preload.ts sets OPENCODE_DB=":memory:" globally and the CLI fixture
-//   spawns children with the runner env merged in; overriding OPENCODE_DB to ""
+// - test/preload.ts sets GRAPHAGENT_DB=":memory:" globally and the CLI fixture
+//   spawns children with the runner env merged in; overriding GRAPHAGENT_DB to ""
 //   (falsy → default path) restores the file-backed DB under the isolated home.
 // - run.ts resolves its directory from process.env.PWD (leaked from the runner
 //   by the fixture), so run arms pin PWD to the fixture home.
@@ -79,7 +79,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
       Effect.gen(function* () {
         yield* gitInit(home)
         yield* llm.text("AGENTS.md initialized")
-        const result = yield* opencode.run("/init", { env: { PWD: home, OPENCODE_DB: "" } })
+        const result = yield* opencode.run("/init", { env: { PWD: home, GRAPHAGENT_DB: "" } })
         opencode.expectExit(result, 0)
         yield* expectStamped(home, 'opencode run "/init"')
       }),
@@ -93,7 +93,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
       Effect.gen(function* () {
         yield* gitInit(home)
         yield* llm.text("AGENTS.md initialized")
-        const result = yield* opencode.run("", { command: "init", env: { PWD: home, OPENCODE_DB: "" } })
+        const result = yield* opencode.run("", { command: "init", env: { PWD: home, GRAPHAGENT_DB: "" } })
         opencode.expectExit(result, 0)
         yield* expectStamped(home, "opencode run --command init")
       }),
@@ -107,7 +107,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
     ({ llm, home, opencode }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
-        const server = yield* opencode.host({ env: { OPENCODE_DB: "" } })
+        const server = yield* opencode.host({ env: { GRAPHAGENT_DB: "" } })
         const client = yield* HttpClient.HttpClient
         const headers = { "x-opencode-directory": encodeURIComponent(home) }
 
@@ -131,7 +131,7 @@ describe("headless /init stamps project.time_initialized (#404)", () => {
     ({ llm, home, opencode }) =>
       Effect.gen(function* () {
         yield* gitInit(home)
-        const server = yield* opencode.host({ env: { OPENCODE_DB: "" } })
+        const server = yield* opencode.host({ env: { GRAPHAGENT_DB: "" } })
         const client = yield* HttpClient.HttpClient
         const headers = { "x-opencode-directory": encodeURIComponent(home) }
 
