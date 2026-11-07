@@ -626,7 +626,10 @@ description: Permission skill.
       )
 
       const home = process.env.GRAPHAGENT_TEST_HOME
-      process.env.GRAPHAGENT_TEST_HOME = test.directory
+      // Keep the isolated user home distinct from the project root: a root
+      // that equals $HOME carries no project layer, so the project skill
+      // would not be discovered.
+      process.env.GRAPHAGENT_TEST_HOME = path.join(test.directory, ".home")
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           process.env.GRAPHAGENT_TEST_HOME = home
