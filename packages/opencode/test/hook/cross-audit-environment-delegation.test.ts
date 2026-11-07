@@ -26,7 +26,7 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
             ...(subagentStopOnce ? { SubagentStop: [{ hooks: [hook] }] } : {}),
           }),
         )
-        const directory = path.join(home, ".config/graphagent/agent")
+        const directory = path.join(home, ".config/graphagent/agents")
         await fs.mkdir(directory, { recursive: true })
         await fs.writeFile(
           path.join(directory, "delegate_child.md"),

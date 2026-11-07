@@ -37,9 +37,9 @@ describe("ConfigAgentPlugin.Plugin", () => {
       expect(
         PermissionV2.evaluate("external_directory", "C:\\Users\\test\\p\\opencode\\src\\*", permissions).effect,
       ).toBe("allow")
-      expect(
-        PermissionV2.evaluate("external_directory", "C:\\Users\\test\\cache\\files\\*", permissions).effect,
-      ).toBe("deny")
+      expect(PermissionV2.evaluate("external_directory", "C:\\Users\\test\\cache\\files\\*", permissions).effect).toBe(
+        "deny",
+      )
     }),
   )
 
@@ -230,7 +230,6 @@ describe("ConfigAgentPlugin.Plugin", () => {
         Effect.gen(function* () {
           yield* Effect.promise(async () => {
             await fs.mkdir(path.join(tmp.path, "agents", "team"), { recursive: true })
-            await fs.mkdir(path.join(tmp.path, "modes"), { recursive: true })
             await fs.writeFile(
               path.join(tmp.path, "agents", "reviewer.md"),
               `---
@@ -259,7 +258,6 @@ permissions:
 Use native v2 fields.`,
             )
             await fs.writeFile(path.join(tmp.path, "agents", "disabled.md"), "---\ndisabled: true\n---\nDisabled")
-            await fs.writeFile(path.join(tmp.path, "modes", "plan.md"), "Make a plan.")
           })
           const agents = yield* AgentV2.Service
           const config = Config.Service.of({
@@ -291,7 +289,6 @@ Use native v2 fields.`,
             permissions: [{ action: "edit", resource: "*", effect: "deny" }],
           })
           expect(yield* agents.get(AgentV2.ID.make("disabled"))).toBeUndefined()
-          expect(yield* agents.get(AgentV2.ID.make("plan"))).toMatchObject({ system: "Make a plan.", mode: "primary" })
         }),
       ),
     ),

@@ -51,6 +51,13 @@ const provider = {
   models: {},
 }
 
+/** Project configuration lives in exactly one layer: `<root>/.agents/settings.json`. */
+async function writeProjectSettings(directory: string, contents: string) {
+  const file = path.join(directory, ".agents", "settings.json")
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, contents)
+}
+
 describe("Config", () => {
   it.effect("validates the optional provider WebSocket setting without changing key configuration", () =>
     Effect.sync(() => {
@@ -358,16 +365,14 @@ describe("Config", () => {
     ),
   )
 
-  it.live("loads question_timeout from graphagent.json", () =>
+  it.live("loads question_timeout from project settings", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          yield* Effect.promise(() =>
-            fs.writeFile(path.join(tmp.path, "graphagent.json"), JSON.stringify({ question_timeout: 2 })),
-          )
+          yield* Effect.promise(() => writeProjectSettings(tmp.path, JSON.stringify({ question_timeout: 2 })))
           const entries = yield* Effect.gen(function* () {
             return yield* (yield* Config.Service).entries()
           }).pipe(Effect.provide(testLayer(tmp.path)))
@@ -391,10 +396,12 @@ describe("Config", () => {
           process.env[name] = envURL
           try {
             yield* Effect.promise(async () => {
-              await fs.writeFile(path.join(tmp.path, "url.txt"), `  ${fileURL}\n`)
-              await fs.writeFile(path.join(tmp.path, "value.txt"), '  value "with" \\ escapes\nnext line  ')
+              await fs.mkdir(path.join(tmp.path, "global"), { recursive: true })
+              await fs.mkdir(path.join(tmp.path, ".agents"), { recursive: true })
+              await fs.writeFile(path.join(tmp.path, ".agents", "url.txt"), `  ${fileURL}\n`)
+              await fs.writeFile(path.join(tmp.path, ".agents", "value.txt"), '  value "with" \\ escapes\nnext line  ')
               await fs.writeFile(
-                path.join(tmp.path, "config.json"),
+                path.join(tmp.path, "global", "config.json"),
                 JSON.stringify({
                   provider: {
                     relay: { npm: "@ai-sdk/openai-compatible", options: { baseURL: `{env:${name}}` } },
@@ -402,7 +409,7 @@ describe("Config", () => {
                 }),
               )
               await fs.writeFile(
-                path.join(tmp.path, "graphagent.jsonc"),
+                path.join(tmp.path, ".agents", "settings.json"),
                 `{
                   // {file:missing-in-comment.txt}
                   "username": "{file:value.txt}",
@@ -414,7 +421,7 @@ describe("Config", () => {
               return yield* (yield* Config.Service).entries()
             }).pipe(Effect.provide(testLayer(tmp.path)))
             const migrated = entries.find((entry) => entry.type === "document" && entry.path?.endsWith("config.json"))
-            const current = entries.find((entry) => entry.type === "document" && entry.path?.endsWith("graphagent.jsonc"))
+            const current = entries.find((entry) => entry.type === "document" && entry.path?.endsWith("settings.json"))
             const envApi = migrated?.type === "document" ? migrated.info.providers?.relay?.api : undefined
             const fileApi = current?.type === "document" ? current.info.providers?.local?.api : undefined
             expect(envApi?.type).toBe("aisdk")
@@ -440,7 +447,7 @@ describe("Config", () => {
           const config = yield* Config.Service
           const previous = yield* config.entries()
           yield* Effect.promise(() =>
-            fs.writeFile(path.join(tmp.path, "graphagent.json"), JSON.stringify({ username: "{file:missing.txt}" })),
+            writeProjectSettings(tmp.path, JSON.stringify({ username: "{file:missing.txt}" })),
           )
           const refresh = config.refresh
           if (!refresh) throw new Error("config refresh unavailable")
@@ -459,26 +466,28 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          yield* Effect.promise(() =>
-            Promise.all([
+          const global = path.join(tmp.path, "global")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(global, { recursive: true })
+            await Promise.all([
               fs.writeFile(
-                path.join(tmp.path, "config.json"),
+                path.join(global, "config.json"),
                 JSON.stringify({ $schema: "base", providers: { base: provider } }),
               ),
               fs.writeFile(
-                path.join(tmp.path, "graphagent.json"),
+                path.join(global, "graphagent.json"),
                 JSON.stringify({ $schema: "middle", providers: { middle: provider } }),
               ),
               fs.writeFile(
-                path.join(tmp.path, "graphagent.jsonc"),
+                path.join(global, "graphagent.jsonc"),
                 `{
                   // Later global files override scalar fields while retaining providers.
                   "$schema": "last",
                   "providers": { "last": ${JSON.stringify(provider)} },
                 }`,
               ),
-            ]),
-          )
+            ])
+          })
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
             const documents = (yield* config.entries()).filter((entry) => entry.type === "document")
@@ -487,11 +496,11 @@ describe("Config", () => {
             expect(documents.map((document) => document.type)).toEqual(["document", "document", "document"])
             expect(documents.map((document) => document.info.$schema)).toEqual(["base", "middle", "last"])
             expect(documents[0]).toBeInstanceOf(Config.Document)
-            expect(documents[0]?.path).toBe(path.join(tmp.path, "config.json"))
+            expect(documents[0]?.path).toBe(path.join(global, "config.json"))
             expect(documents[2]?.info.providers?.last).toBeInstanceOf(ConfigProvider.Info)
 
             yield* Effect.promise(() =>
-              fs.writeFile(path.join(tmp.path, "graphagent.jsonc"), JSON.stringify({ $schema: "changed" })),
+              fs.writeFile(path.join(global, "graphagent.jsonc"), JSON.stringify({ $schema: "changed" })),
             )
             expect(
               (yield* config.entries())
@@ -511,13 +520,13 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          const file = path.join(tmp.path, "graphagent.json")
+          const file = path.join(tmp.path, ".agents", "settings.json")
           const contents = JSON.stringify({
             shell: "/bin/zsh",
             experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] },
             providers: { local: provider },
           })
-          yield* Effect.promise(() => fs.writeFile(file, contents))
+          yield* Effect.promise(() => writeProjectSettings(tmp.path, contents))
 
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
@@ -545,8 +554,8 @@ describe("Config", () => {
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(tmp.path, "graphagent.json"),
+            writeProjectSettings(
+              tmp.path,
               JSON.stringify({
                 shell: "/bin/bash",
                 model: "anthropic/claude",
@@ -723,8 +732,8 @@ describe("Config", () => {
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(tmp.path, "graphagent.json"),
+            writeProjectSettings(
+              tmp.path,
               JSON.stringify({
                 reference: {
                   local: { path: "../library" },
@@ -759,8 +768,8 @@ describe("Config", () => {
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
           yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(tmp.path, "graphagent.json"),
+            writeProjectSettings(
+              tmp.path,
               JSON.stringify({
                 shell: "/bin/zsh",
                 default_agent: "reviewer",
@@ -926,13 +935,18 @@ describe("Config", () => {
     ).pipe(
       Effect.flatMap((tmp) =>
         Effect.gen(function* () {
-          yield* Effect.promise(() =>
-            Promise.all([
-              fs.writeFile(path.join(tmp.path, "config.json"), JSON.stringify({ $schema: "base" })),
-              fs.writeFile(path.join(tmp.path, "graphagent.json"), "{ invalid"),
-              fs.writeFile(path.join(tmp.path, "graphagent.jsonc"), JSON.stringify({ providers: { invalid: true } })),
-            ]),
-          )
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "global"), { recursive: true })
+            await fs.mkdir(path.join(tmp.path, ".agents"), { recursive: true })
+            await Promise.all([
+              fs.writeFile(path.join(tmp.path, "global", "config.json"), JSON.stringify({ $schema: "base" })),
+              writeProjectSettings(tmp.path, "{ invalid"),
+              fs.writeFile(
+                path.join(tmp.path, ".agents", "settings.local.json"),
+                JSON.stringify({ providers: { invalid: true } }),
+              ),
+            ])
+          })
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
             const documents = (yield* config.entries()).filter((entry) => entry.type === "document")
@@ -960,8 +974,8 @@ describe("Config", () => {
                 experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "openai" }] },
               }),
             )
-            await fs.writeFile(
-              path.join(tmp.path, "graphagent.json"),
+            await writeProjectSettings(
+              tmp.path,
               JSON.stringify({
                 experimental: { policies: [{ effect: "allow", action: "provider.use", resource: "openai" }] },
               }),
@@ -978,7 +992,7 @@ describe("Config", () => {
     ),
   )
 
-  it.live("loads global, ancestor, and .agents configuration up to the project boundary", () =>
+  it.live("loads only the nearest .agents project layer up to the project boundary", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
@@ -995,6 +1009,7 @@ describe("Config", () => {
             await fs.mkdir(path.join(root, ".agents"), { recursive: true })
             await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
             await Promise.all([
+              // Direct project files outside `<root>/.agents` are not read.
               fs.writeFile(path.join(tmp.path, "graphagent.json"), JSON.stringify({ $schema: "outside" })),
               fs.writeFile(path.join(global, "graphagent.json"), JSON.stringify({ $schema: "global" })),
               fs.writeFile(path.join(root, "graphagent.json"), JSON.stringify({ $schema: "root" })),
@@ -1002,8 +1017,12 @@ describe("Config", () => {
               fs.writeFile(path.join(directory, "config.json"), JSON.stringify({ $schema: "directory" })),
               fs.writeFile(path.join(root, ".agents", "graphagent.json"), JSON.stringify({ $schema: "root-dot" })),
               fs.writeFile(
-                path.join(directory, ".agents", "graphagent.jsonc"),
+                path.join(directory, ".agents", "settings.json"),
                 JSON.stringify({ $schema: "directory-dot" }),
+              ),
+              fs.writeFile(
+                path.join(directory, ".agents", "settings.local.json"),
+                JSON.stringify({ $schema: "directory-local" }),
               ),
             ])
           })
@@ -1015,26 +1034,18 @@ describe("Config", () => {
 
             expect(entries.filter((entry) => entry.type === "directory").map((entry) => entry.path)).toEqual([
               AbsolutePath.make(global),
-              AbsolutePath.make(path.join(root, ".agents")),
               AbsolutePath.make(path.join(directory, ".agents")),
             ])
             expect(documents.map((document) => document.info.$schema)).toEqual([
               "global",
-              "root",
-              "parent",
-              "directory",
-              "root-dot",
               "directory-dot",
+              "directory-local",
             ])
             expect(entries.map((entry) => (entry.type === "document" ? entry.info.$schema : entry.path))).toEqual([
               "global",
               AbsolutePath.make(global),
-              "root",
-              "parent",
-              "directory",
-              "root-dot",
-              AbsolutePath.make(path.join(root, ".agents")),
               "directory-dot",
+              "directory-local",
               AbsolutePath.make(path.join(directory, ".agents")),
             ])
           }).pipe(
@@ -1058,12 +1069,11 @@ it.effect("refresh reads new permission files and keeps the active cache on inva
       Effect.gen(function* () {
         const service = yield* Config.Service
         const before = yield* service.entries()
-        const file = path.join(tmp.path, "graphagent.jsonc")
+        const file = path.join(tmp.path, ".agents", "settings.json")
         yield* Effect.promise(async () => {
-          await fs.writeFile(file, JSON.stringify({ permission: { read: "deny" } }))
-          await fs.mkdir(path.join(tmp.path, ".agents"), { recursive: true })
+          await writeProjectSettings(tmp.path, JSON.stringify({ permission: { read: "deny" } }))
           await fs.writeFile(
-            path.join(tmp.path, ".agents", "permissions.local.json"),
+            path.join(tmp.path, ".agents", "settings.local.json"),
             JSON.stringify({ permission: { edit: "allow" } }),
           )
         })

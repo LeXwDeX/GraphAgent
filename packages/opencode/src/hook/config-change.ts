@@ -1,5 +1,6 @@
 import { Cause, Context, Effect, Layer, Schema } from "effect"
 import path from "node:path"
+import { PROJECT_DIR } from "@opencode-ai/core/brand"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -30,6 +31,23 @@ export interface Interface {
   readonly checkInstance: (change: Change) => Effect.Effect<Decision>
 }
 export class Service extends Context.Service<Service, Interface>()("@opencode/HookConfigChange") {}
+const PROJECT_SETTINGS_FILES = new Set(["settings.json", "settings.local.json"])
+/**
+ * Project settings are shared by every session in the project, not only those whose
+ * working directory contains the file. When a change targets `<root>/.agents/settings*.json`,
+ * sessions anywhere under `<root>` must still get their ConfigChange veto.
+ */
+function projectRootOf(change: Change) {
+  if (change.source !== "project_settings" && change.source !== "local_settings") return undefined
+  if (!PROJECT_SETTINGS_FILES.has(path.basename(change.path))) return undefined
+  const directory = path.dirname(change.path)
+  if (path.basename(directory) !== PROJECT_DIR) return undefined
+  return path.dirname(directory)
+}
+function isWithin(parent: string, child: string) {
+  const relative = path.relative(parent, child)
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -65,12 +83,14 @@ export const layer = Layer.effect(
       candidates: Iterable<{ directory: string; changed: (change: Change) => Effect.Effect<Decision> }>,
     ) {
       let checked = 0
+      const projectRoot = projectRootOf(change)
       for (const listener of candidates) {
         const relative = path.relative(listener.directory, change.path)
         const ancestor = path.relative(path.dirname(change.path), listener.directory)
         const inside = !relative.startsWith("..") && !path.isAbsolute(relative)
         const inherited = !ancestor.startsWith("..") && !path.isAbsolute(ancestor)
-        if (change.source !== "user_settings" && !inside && !inherited) continue
+        const sharedProject = projectRoot !== undefined && isWithin(projectRoot, listener.directory)
+        if (change.source !== "user_settings" && !inside && !inherited && !sharedProject) continue
         checked++
         const decision = yield* listener
           .changed(change)

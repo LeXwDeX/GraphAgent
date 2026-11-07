@@ -38,7 +38,7 @@ cliIt.live(
       expect(created.status).toBe(200)
       const session = yield* Effect.promise(() => created.json())
       for (const [route, source, filename] of [
-        ["/config", "project_settings", path.join(home, "config.json")],
+        ["/config", "project_settings", path.join(home, ".agents", "settings.json")],
         ["/global/config", "user_settings", path.join(home, ".config/graphagent/graphagent.json")],
       ] as const) {
         const before = yield* Effect.promise(() => fs.readFile(filename, "utf8").catch(() => undefined))

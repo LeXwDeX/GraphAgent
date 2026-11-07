@@ -27,7 +27,7 @@ cliIt.live(
         )
       })
       yield* Effect.promise(async () => {
-        const directory = path.join(home, ".config/graphagent/agent")
+        const directory = path.join(home, ".config/graphagent/agents")
         await fs.mkdir(directory, { recursive: true })
         await fs.writeFile(
           path.join(directory, "lifecycle_child.md"),

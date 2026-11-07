@@ -1,5 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { NodeFileSystem } from "@effect/platform-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Session } from "@/session/session"
@@ -77,8 +79,11 @@ it.live(
   () =>
     provideTmpdirInstance((directory) =>
       Effect.promise(async () => {
+        // Project configuration lives in <root>/.agents/settings.json; a
+        // project-root file is no longer read by the loader.
+        await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
         await Bun.write(
-          `${directory}/graphagent.json`,
+          path.join(directory, ".agents", "settings.json"),
           JSON.stringify({
             model: "test/test-model",
             formatter: false,

@@ -12,7 +12,7 @@ const decodeInfo = Schema.decodeUnknownExit(ConfigCommandV1.Info)
 
 export async function load(dir: string) {
   const result: Record<string, ConfigCommandV1.Info> = {}
-  for (const item of await Glob.scan("{command,commands}/**/*.md", {
+  for (const item of await Glob.scan("commands/**/*.md", {
     cwd: dir,
     absolute: true,
     dot: true,
@@ -21,7 +21,7 @@ export async function load(dir: string) {
     const md = await ConfigMarkdown.parse(item).catch(() => undefined)
     if (!md) continue
 
-    const name = configEntryNameFromPath(path.relative(dir, item), ["command/", "commands/"])
+    const name = configEntryNameFromPath(path.relative(dir, item), ["commands/"])
 
     const config = {
       name,

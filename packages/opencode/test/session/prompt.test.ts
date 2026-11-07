@@ -369,7 +369,7 @@ function makePrompt(input?: PromptLayerOptions) {
         Layer.provide(Auth.defaultLayer),
         Layer.provide(Config.defaultLayer),
         Layer.provide(ProviderSvc.defaultLayer),
-         Layer.provide(
+        Layer.provide(
           LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
         ),
         Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
@@ -717,7 +717,7 @@ const ensureDir = Effect.fn("test.ensureDir")(function* (dir: string) {
 
 const writeConfig = Effect.fn("test.writeConfig")(function* (dir: string, config: Partial<ConfigV1.Info>) {
   yield* writeText(
-    path.join(dir, "graphagent.json"),
+    path.join(dir, ".agents", "settings.json"),
     JSON.stringify({ $schema: "https://opencode.ai/config.json", ...config }),
   )
 })
@@ -3712,42 +3712,44 @@ it.instance("keeps the reminder on a tools-disabled last step (#953)", () =>
   }),
 )
 
-it.instance("clears the todo reminder ledger when the session is deleted (#953)", () =>
-  Effect.gen(function* () {
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const todo = yield* Todo.Service
-    const reminders = yield* TodoReminders.Service
-    const chat = yield* sessions.create({
-      title: "Deleted reminder",
-      permission: [{ permission: "*", pattern: "*", action: "allow" }],
-    })
-    yield* todo.update({
-      sessionID: chat.id,
-      todos: [{ content: "delete cleanup", status: "in_progress", priority: "high" }],
-    })
-    yield* prompt.prompt({
-      sessionID: chat.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "create a reminder before deletion" }],
-    })
-    const messages = yield* sessions.messages({ sessionID: chat.id })
-    const before = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
-    expect(before).toContain("[todo reminder]")
+it.instance(
+  "clears the todo reminder ledger when the session is deleted (#953)",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const todo = yield* Todo.Service
+      const reminders = yield* TodoReminders.Service
+      const chat = yield* sessions.create({
+        title: "Deleted reminder",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* todo.update({
+        sessionID: chat.id,
+        todos: [{ content: "delete cleanup", status: "in_progress", priority: "high" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "create a reminder before deletion" }],
+      })
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const before = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
+      expect(before).toContain("[todo reminder]")
 
-    yield* sessions.remove(chat.id)
+      yield* sessions.remove(chat.id)
 
-    expect(
-      yield* pollWithTimeout(
-        Effect.gen(function* () {
-          const current = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
-          return current?.includes("[todo reminder]") ? undefined : true
-        }),
-        "todo reminder ledger was not cleared after session deletion",
-      ),
-    ).toBe(true)
-  }),
+      expect(
+        yield* pollWithTimeout(
+          Effect.gen(function* () {
+            const current = yield* reminders.forRequest({ sessionID: chat.id, messages, enabled: true })
+            return current?.includes("[todo reminder]") ? undefined : true
+          }),
+          "todo reminder ledger was not cleared after session deletion",
+        ),
+      ).toBe(true)
+    }),
   { config: cfg },
 )
 
@@ -5591,31 +5593,33 @@ it.instance("subtask child inherits parent session external_directory allow", ()
   }),
 )
 
-noLLMServer.instance("prompt tools replace previous prompt tool rules", () =>
-  Effect.gen(function* () {
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const session = yield* sessions.create({ title: "Prompt tools" })
+noLLMServer.instance(
+  "prompt tools replace previous prompt tool rules",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Prompt tools" })
 
-    yield* prompt.prompt({
-      sessionID: session.id,
-      agent: "build",
-      noReply: true,
-      tools: { bash: false },
-      parts: [{ type: "text", text: "first" }],
-    })
-    yield* prompt.prompt({
-      sessionID: session.id,
-      agent: "build",
-      noReply: true,
-      tools: { read: true },
-      parts: [{ type: "text", text: "second" }],
-    })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        tools: { bash: false },
+        parts: [{ type: "text", text: "first" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        tools: { read: true },
+        parts: [{ type: "text", text: "second" }],
+      })
 
-    const reloaded = yield* sessions.get(session.id)
-    expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
-    expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
-  }),
+      const reloaded = yield* sessions.get(session.id)
+      expect(reloaded.permission).toEqual([{ permission: "read", pattern: "*", action: "allow" }])
+      expect(Permission.evaluate("bash", "anything", reloaded.permission ?? []).action).toBe("ask")
+    }),
   { config: cfg },
 )
 

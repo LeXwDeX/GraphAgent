@@ -611,7 +611,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      const skillDir = path.join(test.directory, ".agents", "skill", "perm-skill")
+      const skillDir = path.join(test.directory, ".agents", "skills", "perm-skill")
       yield* Effect.promise(() =>
         Bun.write(
           path.join(skillDir, "SKILL.md"),
@@ -656,7 +656,9 @@ it.instance(
     git: true,
     config: {
       references: {
-        docs: "../docs",
+        // Project settings live in <root>/.agents/settings.json, so relative
+        // paths are anchored at that file's directory.
+        docs: "../../docs",
       },
     },
   },

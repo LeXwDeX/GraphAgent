@@ -15,7 +15,7 @@ cliIt.live("real child tool work resets the consecutive SubagentStop feedback ca
         script,
         `const counter=process.argv[2];const count=Number(await Bun.file(counter).text().catch(()=>0))+1;await Bun.write(counter,String(count));if(count<=9)process.stdout.write(JSON.stringify({decision:'block',reason:'continue the remaining local task'}));`,
       )
-      const agents = path.join(home, ".config/graphagent/agent")
+      const agents = path.join(home, ".config/graphagent/agents")
       await fs.mkdir(agents, { recursive: true })
       await fs.writeFile(
         path.join(agents, "cap_child.md"),

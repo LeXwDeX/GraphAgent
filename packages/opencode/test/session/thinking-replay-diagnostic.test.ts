@@ -175,7 +175,7 @@ for (const runtime of ["sdk", "native"] as const)
         return ${runtime === "native" ? 'new Response(`event: error\\ndata: ${JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } })}\\n\\n`, { headers: { "content-type": "text/event-stream" } })' : 'Response.json({ type: "error", error: { type: "invalid_request_error", message } }, { status: 400, headers: { "request-id": "req_fixture_error" } })'}
       } })
       const directory = ${JSON.stringify(directory)}
-      await Bun.write(directory + "/graphagent.json", JSON.stringify({ enabled_providers: ["fixture"], provider: { fixture: { npm: "@ai-sdk/anthropic", options: { apiKey: "PRIVATE_FIXTURE_KEY", baseURL: server.url.origin + "/v1" }, models: { "claude-haiku-5-5": { name: "Synthetic Haiku", limit: { context: 100000, output: 2048 } } } } } }))
+      await Bun.write(directory + "/.agents/settings.json", JSON.stringify({ enabled_providers: ["fixture"], provider: { fixture: { npm: "@ai-sdk/anthropic", options: { apiKey: "PRIVATE_FIXTURE_KEY", baseURL: server.url.origin + "/v1" }, models: { "claude-haiku-5-5": { name: "Synthetic Haiku", limit: { context: 100000, output: 2048 } } } } } }))
       try {
         await AppRuntime.runPromise(InstanceStore.Service.use(store => store.provide({ directory }, Effect.gen(function* () {
           const provider = yield* Provider.Service

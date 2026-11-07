@@ -72,14 +72,16 @@ describe("LocationServiceMap", () => {
     ).pipe(
       Effect.flatMap(([blocked, allowed]) =>
         Effect.gen(function* () {
-          yield* Effect.promise(() =>
-            fs.writeFile(
-              path.join(blocked.path, "graphagent.json"),
+          yield* Effect.promise(async () => {
+            const settings = path.join(blocked.path, ".agents", "settings.json")
+            await fs.mkdir(path.dirname(settings), { recursive: true })
+            await fs.writeFile(
+              settings,
               JSON.stringify({
                 experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "test" }] },
               }),
-            ),
-          )
+            )
+          })
 
           const update = (directory: string) =>
             Effect.gen(function* () {

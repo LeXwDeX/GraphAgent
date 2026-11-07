@@ -1,7 +1,7 @@
 export * as TuiConfig from "./tui"
 
 import path from "path"
-import { mergeDeep, unique } from "remeda"
+import { mergeDeep } from "remeda"
 import { Cause, Context, Effect, Layer } from "effect"
 import { ConfigParse } from "@/config/parse"
 import * as ConfigPaths from "@/config/paths"
@@ -10,13 +10,11 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { isRecord } from "@opencode-ai/tui/util/record"
 import { Global } from "@opencode-ai/core/global"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { CurrentWorkingDirectory } from "./tui-cwd"
 import { TuiKeybind } from "@opencode-ai/tui/config/keybind"
 import { makeRuntime } from "@opencode-ai/core/effect/runtime"
 import { ConfigVariable } from "@/config/variable"
 import { FormatError, FormatUnknownError } from "@/cli/error"
 import { TuiConfig } from "@opencode-ai/tui/config"
-import { PROJECT_DIR } from "@opencode-ai/core/brand"
 
 export const Info = TuiConfig.Info
 export type Info = TuiConfig.Info
@@ -57,7 +55,7 @@ function dropUnknownKeybinds(input: Record<string, unknown>) {
   }
 }
 
-const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: string; root?: string }) {
+const loadState = Effect.fn("TuiConfig.loadState")(function* () {
   const afs = yield* FSUtil.Service
   let appliedOrder = 0
 
@@ -119,17 +117,10 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       acc.result = mergeDeep(acc.result, data)
     })
 
-  // Every config dir we may read from: global config dir, `.agents` folders
-  // between cwd and the project root, and GRAPHAGENT_CONFIG_DIR.
-  const directories = yield* ConfigPaths.directories(ctx.directory, ctx.root)
-
-  const projectFiles = Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG
-    ? []
-    : yield* ConfigPaths.files("tui", ctx.directory, ctx.root)
-
   const acc: { result: Info } = { result: {} }
 
-  // 1. Global tui config (lowest precedence).
+  // 1. Global tui config (lowest precedence). TUI settings are user-level
+  // only; project directories do not contribute tui.json(c).
   for (const file of ConfigPaths.fileInDirectory(Global.Path.config, "tui")) {
     yield* mergeFile(acc, file)
   }
@@ -139,20 +130,6 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
     const configFile = Flag.GRAPHAGENT_TUI_CONFIG
     yield* mergeFile(acc, configFile)
     yield* Effect.logDebug("loaded custom tui config", { path: configFile })
-  }
-
-  // 3. Project tui files, applied root-first so the closest file wins.
-  for (const file of projectFiles) {
-    yield* mergeFile(acc, file)
-  }
-
-  // 4. `.agents` directories (and GRAPHAGENT_CONFIG_DIR) discovered while
-  // walking up the tree.
-  for (const dir of unique(directories)) {
-    if (path.basename(dir) !== PROJECT_DIR && dir !== Flag.GRAPHAGENT_CONFIG_DIR) continue
-    for (const file of ConfigPaths.fileInDirectory(dir, "tui")) {
-      yield* mergeFile(acc, file)
-    }
   }
 
   return TuiConfig.resolve(
@@ -168,8 +145,7 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const directory = yield* CurrentWorkingDirectory
-    const data = yield* loadState({ directory })
+    const data = yield* loadState()
     const get = Effect.fn("TuiConfig.get")(() => Effect.succeed(data))
     return Service.of({ get })
   }).pipe(Effect.withSpan("TuiConfig.layer")),

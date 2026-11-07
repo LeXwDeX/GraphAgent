@@ -160,6 +160,16 @@ async function writeConfig(dir: string, config: object, name = "graphagent.json"
 const writeConfigEffect = (dir: string, config: object, name = "graphagent.json") =>
   FSUtil.use.writeWithDirs(path.join(dir, name), JSON.stringify(config))
 
+/** Project settings live in exactly one layer: `<root>/.agents/`. */
+const projectSettingsFile = (dir: string) => path.join(dir, ".agents", "settings.json")
+const projectLocalSettingsFile = (dir: string) => path.join(dir, ".agents", "settings.local.json")
+
+const writeProjectConfigEffect = (dir: string, config: object) =>
+  FSUtil.use.writeWithDirs(projectSettingsFile(dir), JSON.stringify(config))
+
+const writeProjectLocalConfigEffect = (dir: string, config: object) =>
+  FSUtil.use.writeWithDirs(projectLocalSettingsFile(dir), JSON.stringify(config))
+
 const withInstanceDir = <A, E, R>(dir: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.provideService(TestInstance, { directory: dir }),
@@ -206,8 +216,12 @@ const withConfigTree = <A, E, R>(
     yield* Effect.all(
       [
         input.global ? writeConfigEffect(global, schemaConfig(input.global)) : undefined,
-        input.project ? writeConfigEffect(directory, schemaConfig(input.project)) : undefined,
-        input.local ? writeConfigEffect(path.join(directory, ".agents"), schemaConfig(input.local)) : undefined,
+        input.project
+          ? writeConfigEffect(path.join(directory, ".agents"), schemaConfig(input.project), "settings.json")
+          : undefined,
+        input.local
+          ? writeConfigEffect(path.join(directory, ".agents"), schemaConfig(input.local), "settings.local.json")
+          : undefined,
       ].filter((effect): effect is Effect.Effect<void, FSUtil.Error, FSUtil.Service> => effect !== undefined),
       { concurrency: "unbounded" },
     )
@@ -364,15 +378,14 @@ it.instance(
 it.instance("updates config and preserves empty shell sentinel", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(
-      test.directory,
-      { $schema: "https://opencode.ai/config.json", shell: "bash" },
-      "config.json",
+    yield* FSUtil.use.writeWithDirs(
+      projectSettingsFile(test.directory),
+      JSON.stringify({ $schema: "https://opencode.ai/config.json", shell: "bash" }),
     )
 
     yield* Config.Service.use((svc) => svc.update(ConfigParse.schema(ConfigV1.Info, { shell: "" }, "test:config")))
 
-    const writtenConfig = yield* FSUtil.use.readJson(path.join(test.directory, "config.json"))
+    const writtenConfig = yield* FSUtil.use.readJson(projectSettingsFile(test.directory))
     expect(writtenConfig).toMatchObject({ shell: "" })
   }),
 )
@@ -441,7 +454,7 @@ test("loads project config from Cygwin paths on Windows", async () => {
 it.instance("ignores legacy tui keys in opencode config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       model: "test/model",
       theme: "legacy",
@@ -459,7 +472,7 @@ it.instance("loads JSONC config file", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
-      path.join(test.directory, "graphagent.jsonc"),
+      projectSettingsFile(test.directory),
       `{
         // This is a comment
         "$schema": "https://opencode.ai/config.json",
@@ -473,24 +486,20 @@ it.instance("loads JSONC config file", () =>
   }),
 )
 
-it.instance("jsonc overrides json in the same directory", () =>
+it.instance("settings.local.json overrides settings.json in the project layer", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(
-      test.directory,
-      {
-        $schema: "https://opencode.ai/config.json",
-        model: "base",
-        username: "base",
-      },
-      "graphagent.jsonc",
-    )
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      model: "base",
+      username: "base",
+    })
+    yield* writeProjectLocalConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       model: "override",
     })
     const config = yield* Config.use.get()
-    expect(config.model).toBe("base")
+    expect(config.model).toBe("override")
     expect(config.username).toBe("base")
   }),
 )
@@ -501,7 +510,7 @@ it.instance("handles environment variable substitution", () =>
     "test-user",
     Effect.gen(function* () {
       const test = yield* TestInstance
-      yield* writeConfigEffect(test.directory, {
+      yield* writeProjectConfigEffect(test.directory, {
         $schema: "https://opencode.ai/config.json",
         username: "{env:TEST_VAR}",
       })
@@ -511,25 +520,24 @@ it.instance("handles environment variable substitution", () =>
   ),
 )
 
-it.instance("preserves env variables when adding $schema to config", () =>
+it.instance("preserves env variables when reading project settings", () =>
   withProcessEnv(
     "PRESERVE_VAR",
     "secret_value",
     Effect.gen(function* () {
       const test = yield* TestInstance
-      // Config without $schema - should trigger auto-add
       yield* FSUtil.use.writeWithDirs(
-        path.join(test.directory, "graphagent.json"),
+        projectSettingsFile(test.directory),
         JSON.stringify({ username: "{env:PRESERVE_VAR}" }),
       )
       const config = yield* Config.use.get()
       expect(config.username).toBe("secret_value")
 
-      // Read the file to verify the env variable was preserved
-      const content = yield* FSUtil.use.readFileString(path.join(test.directory, "graphagent.json"))
+      // Reading project settings must not rewrite the user's file.
+      const content = yield* FSUtil.use.readFileString(projectSettingsFile(test.directory))
       expect(content).toContain("{env:PRESERVE_VAR}")
       expect(content).not.toContain("secret_value")
-      expect(content).toContain("$schema")
+      expect(content).not.toContain("$schema")
     }),
   ),
 )
@@ -537,8 +545,8 @@ it.instance("preserves env variables when adding $schema to config", () =>
 it.instance("handles file inclusion substitution", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* FSUtil.use.writeWithDirs(path.join(test.directory, "included.txt"), "test-user")
-    yield* writeConfigEffect(test.directory, {
+    yield* FSUtil.use.writeWithDirs(path.join(test.directory, ".agents", "included.txt"), "test-user")
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       username: "{file:included.txt}",
     })
@@ -550,8 +558,11 @@ it.instance("handles file inclusion substitution", () =>
 it.instance("handles file inclusion with replacement tokens", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* FSUtil.use.writeWithDirs(path.join(test.directory, "included.md"), "const out = await Bun.$`echo hi`")
-    yield* writeConfigEffect(test.directory, {
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".agents", "included.md"),
+      "const out = await Bun.$`echo hi`",
+    )
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       username: "{file:included.md}",
     })
@@ -563,7 +574,7 @@ it.instance("handles file inclusion with replacement tokens", () =>
 it.instance("validates config schema and throws on invalid values", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       model: 42,
     })
@@ -575,16 +586,40 @@ it.instance("validates config schema and throws on invalid values", () =>
 it.instance("throws error for invalid JSON", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* FSUtil.use.writeWithDirs(path.join(test.directory, "graphagent.json"), "{ invalid json }")
+    yield* FSUtil.use.writeWithDirs(projectSettingsFile(test.directory), "{ invalid json }")
     const exit = yield* Config.use.get().pipe(Effect.exit)
     expect(Exit.isFailure(exit)).toBe(true)
+  }),
+)
+
+it.instance("rejects hooks in project settings", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeProjectConfigEffect(test.directory, { hooks: {} })
+    const exit = yield* Config.use.get().pipe(Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+    const message = error as { message?: string; data?: { message?: string } } | undefined
+    expect(String(message?.data?.message ?? message?.message ?? error)).toContain("hooks.json")
+  }),
+)
+
+it.instance("rejects MCP servers in project settings", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeProjectConfigEffect(test.directory, { mcpServers: {} })
+    const exit = yield* Config.use.get().pipe(Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+    const message = error as { message?: string; data?: { message?: string } } | undefined
+    expect(String(message?.data?.message ?? message?.message ?? error)).toContain("mcp.json")
   }),
 )
 
 it.instance("handles agent configuration", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: {
         test_agent: {
@@ -608,7 +643,7 @@ it.instance("handles agent configuration", () =>
 it.instance("treats agent variant as model-scoped setting (not provider option)", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: {
         test_agent: {
@@ -632,7 +667,7 @@ it.instance("treats agent variant as model-scoped setting (not provider option)"
 it.instance("handles command configuration", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       command: {
         test_command: {
@@ -654,7 +689,7 @@ it.instance("handles command configuration", () =>
 it.instance("migrates mode field to agent field", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       mode: {
         test_mode: {
@@ -677,7 +712,7 @@ it.instance("migrates mode field to agent field", () =>
 it.instance("accepts the deprecated reference field", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       reference: {
         local: { path: "../library" },
@@ -698,7 +733,7 @@ it.instance("loads config from .agents directory", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
-      path.join(test.directory, ".agents", "agent", "test.md"),
+      path.join(test.directory, ".agents", "agents", "test.md"),
       `---
 model: test/model
 ---
@@ -720,7 +755,7 @@ it.instance("agent markdown permission config preserves user key order", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
-      path.join(test.directory, ".agents", "agent", "ordered.md"),
+      path.join(test.directory, ".agents", "agents", "ordered.md"),
       `---
 permission:
   bash: allow
@@ -774,7 +809,7 @@ Nested agent prompt`,
   }),
 )
 
-it.instance("loads commands from .agents/command (singular)", () =>
+it.instance("ignores commands from .agents/command (singular)", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
@@ -785,25 +820,8 @@ description: Test command
 Hello from singular command`,
     )
 
-    yield* FSUtil.use.writeWithDirs(
-      path.join(test.directory, ".agents", "command", "nested", "child.md"),
-      `---
-description: Nested command
----
-Nested command template`,
-    )
-
     const config = yield* Config.use.get()
-
-    expect(config.command?.["hello"]).toEqual({
-      description: "Test command",
-      template: "Hello from singular command",
-    })
-
-    expect(config.command?.["nested/child"]).toEqual({
-      description: "Nested command",
-      template: "Nested command template",
-    })
+    expect(config.command?.["hello"]).toBeUndefined()
   }),
 )
 
@@ -840,14 +858,14 @@ Nested command template`,
   }),
 )
 
-it.instance("updates config and writes to file", () =>
+it.instance("updates config and writes to project settings", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* Config.Service.use((svc) =>
       svc.update(ConfigParse.schema(ConfigV1.Info, { model: "updated/model" }, "test:config")),
     )
 
-    const writtenConfig = yield* FSUtil.use.readJson(path.join(test.directory, "config.json"))
+    const writtenConfig = yield* FSUtil.use.readJson(projectSettingsFile(test.directory))
     expect(writtenConfig).toMatchObject({ model: "updated/model" })
   }),
 )
@@ -1011,7 +1029,7 @@ it.instance("does not error when only custom agent is a subagent", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
-      path.join(test.directory, ".agents", "agent", "helper.md"),
+      path.join(test.directory, ".agents", "agents", "helper.md"),
       `---
 model: test/model
 mode: subagent
@@ -1062,7 +1080,7 @@ it.effect("deduplicates duplicate instructions from global and local configs", (
 it.instance("migrates legacy tools config to permissions - allow", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { tools: { bash: true, read: true } } },
     })
@@ -1078,7 +1096,7 @@ it.instance("migrates legacy tools config to permissions - allow", () =>
 it.instance("migrates legacy tools config to permissions - deny", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { tools: { bash: false, webfetch: false } } },
     })
@@ -1094,7 +1112,7 @@ it.instance("migrates legacy tools config to permissions - deny", () =>
 it.instance("migrates legacy write tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { tools: { write: true } } },
     })
@@ -1160,7 +1178,7 @@ it.instance(
 it.instance("migrates legacy edit tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { tools: { edit: false } } },
     })
@@ -1173,7 +1191,7 @@ it.instance("migrates legacy edit tool to edit permission", () =>
 it.instance("migrates legacy patch tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { tools: { patch: true } } },
     })
@@ -1186,7 +1204,7 @@ it.instance("migrates legacy patch tool to edit permission", () =>
 it.instance("migrates mixed legacy tools config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { tools: { bash: true, write: true, read: false, webfetch: true } } },
     })
@@ -1204,7 +1222,7 @@ it.instance("migrates mixed legacy tools config", () =>
 it.instance("merges legacy tools with existing permission config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       agent: { test: { permission: { glob: "allow" }, tools: { bash: true } } },
     })
@@ -1222,7 +1240,7 @@ it.instance("permission config preserves user key order", () =>
   // must not canonicalise known keys ahead of wildcard or custom keys.
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       permission: {
         "*": "deny",
@@ -1274,11 +1292,11 @@ test("config parser preserves permission order while ignoring unknown top-level 
 
 // MCP config merging tests
 
-it.instance("project config can override MCP server enabled status", () =>
+it.instance("local project settings can override MCP server enabled status", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     // Simulates a base config (like from remote .well-known) with disabled MCP.
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       mcp: {
         jira: {
@@ -1293,21 +1311,17 @@ it.instance("project config can override MCP server enabled status", () =>
         },
       },
     })
-    // Project config enables just jira.
-    yield* writeConfigEffect(
-      test.directory,
-      {
-        $schema: "https://opencode.ai/config.json",
-        mcp: {
-          jira: {
-            type: "remote",
-            url: "https://jira.example.com/mcp",
-            enabled: true,
-          },
+    // Local settings enable just jira.
+    yield* writeProjectLocalConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        jira: {
+          type: "remote",
+          url: "https://jira.example.com/mcp",
+          enabled: true,
         },
       },
-      "graphagent.jsonc",
-    )
+    })
 
     const config = yield* Config.use.get()
     expect(config.mcp?.jira).toEqual({
@@ -1326,7 +1340,7 @@ it.instance("project config can override MCP server enabled status", () =>
 it.instance("MCP config deep merges preserving base config properties", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       mcp: {
         myserver: {
@@ -1339,20 +1353,16 @@ it.instance("MCP config deep merges preserving base config properties", () =>
         },
       },
     })
-    yield* writeConfigEffect(
-      test.directory,
-      {
-        $schema: "https://opencode.ai/config.json",
-        mcp: {
-          myserver: {
-            type: "remote",
-            url: "https://myserver.example.com/mcp",
-            enabled: true,
-          },
+    yield* writeProjectLocalConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        myserver: {
+          type: "remote",
+          url: "https://myserver.example.com/mcp",
+          enabled: true,
         },
       },
-      "graphagent.jsonc",
-    )
+    })
 
     const config = yield* Config.use.get()
     expect(config.mcp?.myserver).toEqual({
@@ -1369,7 +1379,7 @@ it.instance("MCP config deep merges preserving base config properties", () =>
 it.instance("local .agents config can override MCP from project config", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
-    yield* writeConfigEffect(test.directory, {
+    yield* writeProjectConfigEffect(test.directory, {
       $schema: "https://opencode.ai/config.json",
       mcp: {
         docs: {
@@ -1379,21 +1389,16 @@ it.instance("local .agents config can override MCP from project config", () =>
         },
       },
     })
-    yield* FSUtil.use.ensureDir(path.join(test.directory, ".agents"))
-    yield* writeConfigEffect(
-      path.join(test.directory, ".agents"),
-      {
-        $schema: "https://opencode.ai/config.json",
-        mcp: {
-          docs: {
-            type: "remote",
-            url: "https://docs.example.com/mcp",
-            enabled: true,
-          },
+    yield* writeProjectLocalConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        docs: {
+          type: "remote",
+          url: "https://docs.example.com/mcp",
+          enabled: true,
         },
       },
-      "graphagent.json",
-    )
+    })
 
     const config = yield* Config.use.get()
     expect(config.mcp?.docs?.enabled).toBe(true)
@@ -1620,7 +1625,7 @@ describe("GRAPHAGENT_DISABLE_PROJECT_CONFIG", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         yield* FSUtil.use.writeWithDirs(
-          path.join(test.directory, ".agents", "command", "test-cmd.md"),
+          path.join(test.directory, ".agents", "commands", "test-cmd.md"),
           "# Test Command\nThis is a test command.",
         )
         const directories = yield* Config.use.directories()
@@ -1661,7 +1666,8 @@ describe("GRAPHAGENT_DISABLE_PROJECT_CONFIG", () => {
     "GRAPHAGENT_CONFIG_DIR still works when flag is set",
     () =>
       Effect.gen(function* () {
-        const configDir = yield* tmpdirScoped({ config: { model: "configdir/model" } })
+        const configDir = yield* tmpdirScoped()
+        yield* writeConfigEffect(configDir, { model: "configdir/model" })
         yield* withProcessEnvs(
           { GRAPHAGENT_DISABLE_PROJECT_CONFIG: "true", GRAPHAGENT_CONFIG_DIR: configDir },
           Effect.gen(function* () {
@@ -1771,7 +1777,7 @@ describe("DAG settings are read from the global layer only", () => {
         expect((yield* Config.use.get()).dag).toEqual({ concurrency: 7 })
         const logs = JSON.stringify(yield* logLines)
         expect(logs).toContain(warning)
-        expect(logs).toContain(path.join(test.directory, "graphagent.json"))
+        expect(logs).toContain(path.join(test.directory, ".agents", "settings.json"))
         expect(logs).toContain("dag.concurrency")
         expect(logs).toContain("dag.safety")
         // A reload re-reads the same project file; the warning is per file and
@@ -1791,7 +1797,7 @@ describe("DAG settings are read from the global layer only", () => {
         expect((yield* Config.use.get()).dag).toBeUndefined()
         const logs = JSON.stringify(yield* logLines)
         expect(logs).toContain(warning)
-        expect(logs).toContain(path.join(".agents", "graphagent.json"))
+        expect(logs).toContain(path.join(".agents", "settings.local.json"))
         expect(logs).toContain("dag.concurrency")
       }),
     ),
@@ -1799,7 +1805,8 @@ describe("DAG settings are read from the global layer only", () => {
 
   it.effect("treats GRAPHAGENT_CONFIG as the global layer", () =>
     Effect.gen(function* () {
-      const file = yield* tmpdirScoped({ config: { dag: { concurrency: 11 } } })
+      const file = yield* tmpdirScoped()
+      yield* writeConfigEffect(file, { dag: { concurrency: 11 } })
       // Flag values are snapshotted at import time, so runtime changes must
       // update the flag itself rather than the environment.
       yield* Effect.acquireUseRelease(
@@ -1838,7 +1845,8 @@ describe("DAG settings are read from the global layer only", () => {
 
   it.effect("treats GRAPHAGENT_CONFIG_DIR as the global layer", () =>
     Effect.gen(function* () {
-      const dir = yield* tmpdirScoped({ config: { dag: { concurrency: 14 } } })
+      const dir = yield* tmpdirScoped()
+      yield* writeConfigEffect(dir, { dag: { concurrency: 14 } })
       yield* withConfigTree(
         {},
         withProcessEnv(
@@ -1961,10 +1969,10 @@ test("parseManagedPlist handles empty config", async () => {
 })
 
 for (const enabled of [true, false]) {
-  it.instance(`reads reasoning distillation opt-in ${enabled} from graphagent.json`, () =>
+  it.instance(`reads reasoning distillation opt-in ${enabled} from project settings`, () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      yield* writeConfigEffect(test.directory, { reasoningDistillation: { enabled } })
+      yield* writeProjectConfigEffect(test.directory, { reasoningDistillation: { enabled } })
       expect((yield* Config.use.get()).reasoningDistillation?.enabled).toBe(enabled)
     }),
   )
@@ -1974,7 +1982,7 @@ for (const enabled of [true, false]) {
   it.instance(`loads per-model reasoning distillation override ${enabled}`, () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
-      yield* writeConfigEffect(test.directory, {
+      yield* writeProjectConfigEffect(test.directory, {
         reasoningDistillation: { enabled: true },
         provider: {
           "test-provider": {
