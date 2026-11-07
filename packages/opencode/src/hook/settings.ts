@@ -62,6 +62,7 @@ import * as Log from "@/util/log"
 import { Process } from "@/util/process"
 import { Global } from "@opencode-ai/core/global"
 import { APP_NAME, PROJECT_DIR } from "@opencode-ai/core/brand"
+import { hasProjectLayer } from "@/project/project-root"
 import { InstanceState } from "@/effect/instance-state"
 import { MCP } from "@/mcp"
 import { mcpHookOptions } from "@/mcp/elicitation-binding"
@@ -1215,6 +1216,11 @@ function chainCandidates(
   globalConfig?: string,
 ): Array<{ scope: "global" | "project" | "local"; file: string }> {
   const globalConfigDir = resolveGlobalConfig(globalConfig)
+  // When the resolved root is $HOME there is no project layer: `~/.agents` is
+  // the user-level shared directory, so its hooks files must not load as
+  // project hooks. Only the global hooks.json applies.
+  if (!hasProjectLayer(root, Global.Path.home))
+    return [{ scope: "global", file: path.join(globalConfigDir, "hooks.json") }]
   return [
     { scope: "global", file: path.join(globalConfigDir, "hooks.json") },
     { scope: "project", file: path.join(root, PROJECT_DIR, "hooks.json") },

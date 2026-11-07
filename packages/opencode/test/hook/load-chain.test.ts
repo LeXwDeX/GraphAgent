@@ -5,6 +5,7 @@ import os from "os"
 import path from "path"
 import { loadChain, mergeSettings, readJSON, type Settings } from "@/hook/settings"
 import { watchSettings } from "@/hook/extensions"
+import { __watchedFiles } from "@/hook/extensions/hot-reload"
 
 // §4 unit tests for loadChain + hot-reload.
 //
@@ -282,6 +283,56 @@ describe("§4.6 .claude/ paths are NOT read", () => {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
         fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  })
+})
+
+describe("$HOME is not a project layer", () => {
+  test("loadChain ignores ~/.agents hooks when the root is $HOME", async () => {
+    const globalDir = await mktmp("g")
+    const home = await mktmp("home")
+    const previous = process.env.GRAPHAGENT_TEST_HOME
+    process.env.GRAPHAGENT_TEST_HOME = home
+    try {
+      await writeGlobalHooksJson(globalDir, hooksJsonTopLevel("global-home"))
+      await writeHooksJson(home, hooksJsonTopLevel("home-project"))
+      await writeLocalHooksJson(home, hooksJsonTopLevel("home-local"))
+
+      const merged = loadChain(home, globalDir)
+      expect(merged.hooks?.SessionStart?.map((m) => m.hooks[0].command)).toEqual(["global-home"])
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+      else process.env.GRAPHAGENT_TEST_HOME = previous
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(home, { recursive: true, force: true }),
+      ])
+    }
+  })
+
+  test("the hot-reload watch set omits ~/.agents when the root is $HOME", async () => {
+    const globalDir = await mktmp("g")
+    const home = await mktmp("home")
+    const previous = process.env.GRAPHAGENT_TEST_HOME
+    process.env.GRAPHAGENT_TEST_HOME = home
+    try {
+      expect(__watchedFiles(home, globalDir)).toEqual([path.join(globalDir, "hooks.json")])
+
+      // A real project below $HOME keeps its project layer.
+      const projectDir = path.join(home, "work", "repo")
+      await fs.mkdir(path.join(projectDir, ".agents"), { recursive: true })
+      expect(__watchedFiles(projectDir, globalDir)).toEqual([
+        path.join(globalDir, "hooks.json"),
+        path.join(projectDir, ".agents", "hooks.json"),
+        path.join(projectDir, ".agents", "hooks.local.json"),
+      ])
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+      else process.env.GRAPHAGENT_TEST_HOME = previous
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(home, { recursive: true, force: true }),
       ])
     }
   })

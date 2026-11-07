@@ -8,7 +8,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Git } from "@/git"
 import { ConfigPaths } from "@/config/paths"
-import { assertProjectRootWritable, resolveProjectRoot } from "@/project/project-root"
+import { assertProjectRootWritable, hasProjectLayer, resolveProjectRoot } from "@/project/project-root"
 import { ensureLocalExcludes } from "@/project/git-exclude"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { statSync } from "node:fs"
@@ -94,6 +94,10 @@ export const layer = Layer.effect(
 
     const load = Effect.fn("MemoryConfig.load")(function* (projectDir: string) {
       const root = (yield* projectRoot(projectDir)).root
+      // `$HOME/.agents` is the user-level shared directory, not a project
+      // layer: a root that resolves to $HOME must not read project memory
+      // from `~/.agents/settings.local.json`.
+      if (!hasProjectLayer(root, Global.Path.home)) return yield* loadGlobal()
       const file = localSettingsPath(root)
       const text = yield* fs.readFileStringSafe(file)
       if (text !== undefined) {

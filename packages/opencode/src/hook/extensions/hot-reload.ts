@@ -26,6 +26,8 @@ import { statSync } from "fs"
 import path from "path"
 import { Effect } from "effect"
 import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import { Global } from "@opencode-ai/core/global"
+import { hasProjectLayer } from "@/project/project-root"
 import * as Log from "@/util/log"
 import type { Settings } from "../settings"
 
@@ -43,6 +45,8 @@ const POLL_INTERVAL_MS = 2000
 function watchedFiles(root: string, globalConfigDir?: string): string[] {
   const files: string[] = []
   if (globalConfigDir) files.push(path.join(globalConfigDir, "hooks.json"))
+  // `$HOME/.agents` is the user-level shared directory, not a project layer.
+  if (!hasProjectLayer(root, Global.Path.home)) return files
   files.push(path.join(root, PROJECT_DIR, "hooks.json"))
   files.push(path.join(root, PROJECT_DIR, "hooks.local.json"))
   return files
