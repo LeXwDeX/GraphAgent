@@ -173,31 +173,27 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       entry.closing = undefined
     }
 
+    // Scope.close becomes uninterruptible once a child runs uninterruptibly, so
+    // wrapping it in a timeout cannot bound it. Close in the application
+    // cleanup scope instead and bound only the wait: a stuck child must not
+    // keep the entry tombstone (and the caller waiting on it) alive forever.
     const closeEntryScope = (entry: Entry) =>
       Effect.gen(function* () {
-        // Scope.close waits for every child, including uninterruptible ones.
-        // Under Effect 4 that wait cannot be interrupted, so a timeout around
-        // the close itself never fires. Fork the close and bound only the wait:
-        // cleanup returns, and the scope settles once its children finish.
-        const closing = yield* Scope.close(entry.scope, Exit.void).pipe(
+        const fiber = yield* Scope.close(entry.scope, Exit.void).pipe(
           Effect.forkIn(cleanupScope, { startImmediately: true }),
         )
-        const result = yield* Fiber.await(closing).pipe(Effect.timeoutOption("1 second"))
-        if (Option.isNone(result)) {
+        const closed = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("1 second"))
+        if (Option.isNone(closed)) {
           yield* Effect.logWarning("instance entry scope close timed out", { directory: entry.directory })
           return
         }
-        if (Exit.isFailure(result.value)) {
+        if (Exit.isFailure(closed.value)) {
           yield* Effect.logWarning("instance entry scope close failed", {
             directory: entry.directory,
-            cause: result.value.cause,
+            cause: closed.value.cause,
           })
         }
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("instance entry scope close failed", { directory: entry.directory, cause }),
-        ),
-      )
+      })
 
     const beginUse = (entry: Entry) => {
       if (entry.active === 0) entry.idle = Deferred.makeUnsafe<void>()
