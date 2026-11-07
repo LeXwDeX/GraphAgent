@@ -270,6 +270,15 @@ const modelsFixture = Filesystem.readJson<Record<string, ModelsDev.Provider>>(
 
 function recordedNativeLLMLayer(scenario: RecordedScenario) {
   const auth = authLayer(scenario)
+  // Production provides the adapter registry through AppLayer. Rebuild it over
+  // the scenario auth so OAuth providers get the adapter's API-key loader and
+  // request hooks (otherwise the SDK reports a missing API key).
+  const adapters = ProviderAdapters.layer.pipe(
+    Layer.provide(auth),
+    Layer.provide(Config.defaultLayer),
+    Layer.provide(RuntimeFlags.defaultLayer),
+    Layer.provide(EventV2Bridge.defaultLayer),
+  )
   const provider = Provider.layer.pipe(
     Layer.provide(FSUtil.defaultLayer),
     Layer.provide(Env.defaultLayer),
