@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { LLM, type StreamInput } from "@/session/llm"
 import { LLMEvent } from "@opencode-ai/llm"
 import { Effect, Layer, Stream } from "effect"
-import { touch } from "./engine-probe"
+import { markStep, touch } from "./engine-probe"
 
 /**
  * A script returns either a fixed event list or a stream. Streams let a
@@ -139,6 +139,7 @@ export function makeFakeProvider(options?: FakeProviderOptions): FakeProvider {
     LLM.Service.of({
       organizer: () => Effect.succeed(undefined),
       stream: (input) => {
+        markStep()
         const request = fingerprint(input, requests.length)
         requests.push(request)
         touch()

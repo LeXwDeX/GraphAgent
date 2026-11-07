@@ -26,6 +26,16 @@ at the root. Nest a discriminated union under a property, for example
 - Start a new TUI or service process after installation. Existing processes keep running the old binary and do not update automatically.
 - This installed-binary check is not required for unit tests or development checks run with `bun dev`; those test the development runtime. A local test-binary overwrite is not a stable release.
 
+## Engine count baseline (`test/perf`)
+
+The H0 scenarios (S1–S7) measure engine work through `test/lib/engine-probe.ts`. `test/perf/engine-counts.test.ts` runs every scenario and compares its last measured pass with `test/perf/engine-baseline.json`: `perTurn` counters, provider-request count, and the multiset of request shapes. Run it with `bun test test/perf/engine-counts.test.ts`.
+
+- A metric may not exceed `perTurn + Σdeclared`. A PR designed to change a count adds a `declared` entry in the same PR, with the PR number, metric, delta and reason.
+- A change that only needs a new baseline (for example after another Issue merges) is a dedicated baseline-only PR: recapture with `PERF_WRITE_BASELINE=1 bun test test/perf/engine-counts.test.ts` and state the cause in the PR. Do not fold unrelated recaptures into a feature PR.
+- `volatile` keys in each scenario entry are recorded but not compared; the scenario test states the tolerance and its reason. Do not widen `volatile` to hide a new delta — declare the delta instead.
+- `script/perf/engine-wall.ts` measures wall clock on a file database (WAL, `synchronous=NORMAL`) and prints p50/p95. It is not part of CI, and no pipeline may call it.
+- Probes and scenarios stay under `test/perf` and `test/lib`; a probe change must not require editing `src/`.
+
 # Module shape
 
 Do not use `export namespace Foo { ... }` for module organization. It is not
