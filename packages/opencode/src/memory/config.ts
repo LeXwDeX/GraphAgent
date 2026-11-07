@@ -9,12 +9,12 @@ import { Global } from "@opencode-ai/core/global"
 import { Git } from "@/git"
 import { ConfigPaths } from "@/config/paths"
 import { assertProjectRootWritable, resolveProjectRoot } from "@/project/project-root"
+import { ensureLocalExcludes } from "@/project/git-exclude"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { statSync } from "node:fs"
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { dirname, join, relative } from "node:path"
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 import { MemoryFile } from "./file"
-import { MemoryPaths } from "./paths"
 import { MemorySchema } from "./schema"
 
 export type Loaded = {
@@ -64,18 +64,8 @@ export const layer = Layer.effect(
       }
     })
 
-    const ensureProjectExclude = Effect.fnUntraced(function* (root: string, toplevel: string | undefined) {
-      const result = yield* git.run(["rev-parse", "--git-path", "info/exclude"], { cwd: root })
-      if (result.exitCode !== 0) return
-      const raw = result.text().trim()
-      if (!raw) return
-      const file = isAbsolute(raw) ? raw : resolve(root, raw)
-      const relative = pathJoinRelative(toplevel ?? root, join(root, MemoryPaths.PROJECT_LOCAL_SETTINGS))
-      const rule = relative.startsWith("..") ? MemoryPaths.PROJECT_LOCAL_SETTINGS : `/${relative}`
-      const current = (yield* fs.readFileStringSafe(file)) ?? ""
-      if (current.split(/\r?\n/).some((line) => line.trim() === rule)) return
-      const prefix = current.length === 0 || current.endsWith("\n") ? current : current + "\n"
-      yield* MemoryFile.atomicWrite(fs, file, prefix + rule + "\n")
+    const ensureProjectExclude = Effect.fnUntraced(function* (root: string, _toplevel: string | undefined) {
+      yield* Effect.promise(() => ensureLocalExcludes({ root }))
     })
 
     const readFirst = Effect.fnUntraced(function* (paths: string[]) {

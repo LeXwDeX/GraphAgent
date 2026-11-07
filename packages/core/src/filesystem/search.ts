@@ -5,6 +5,7 @@ import { Context, Effect, Layer, Scope } from "effect"
 import { Fff } from "#fff"
 import fuzzysort from "fuzzysort"
 import { FileSystem } from "../filesystem"
+import { Ignore } from "../filesystem/ignore"
 import { FSUtil } from "../fs-util"
 import { Location } from "../location"
 import { Ripgrep } from "../ripgrep"
@@ -152,11 +153,15 @@ export const fffLayer = Layer.effect(
             pageSize: input.limit,
           })
           if (!found.ok) throw found.error
-          return found.value.items.map((item) =>
-            FileSystem.Entry.make({
-              path: RelativePath.make(item.relativePath.replaceAll("\\", "/")),
-              type: "file",
-            }),
+          return found.value.items.flatMap((item) =>
+            Ignore.isWorktreePath(item.relativePath)
+              ? []
+              : [
+                  FileSystem.Entry.make({
+                    path: RelativePath.make(item.relativePath.replaceAll("\\", "/")),
+                    type: "file",
+                  }),
+                ],
           )
         }),
       grep: (input) =>
@@ -169,27 +174,30 @@ export const fffLayer = Layer.effect(
             { mode: "regex", pageSize: input.limit, timeBudgetMs: 1_500 },
           )
           if (!found.ok) throw found.error
-          return found.value.items.map((match) => {
+          return found.value.items.flatMap((match) => {
+            if (Ignore.isWorktreePath(match.relativePath)) return []
             const bytes = Buffer.from(match.lineContent)
             // Match the ripgrep backend's contract: the preview is cut by code
             // point and the consumer gets the true length instead of a marker.
             const chars = Array.from(match.lineContent)
             const truncated = chars.length > 2_000
-            return FileSystem.Match.make({
-              entry: FileSystem.Entry.make({
-                path: RelativePath.make(match.relativePath.replaceAll("\\", "/")),
-                type: "file",
+            return [
+              FileSystem.Match.make({
+                entry: FileSystem.Entry.make({
+                  path: RelativePath.make(match.relativePath.replaceAll("\\", "/")),
+                  type: "file",
+                }),
+                line: match.lineNumber,
+                offset: match.byteOffset,
+                text: truncated ? chars.slice(0, 2_000).join("") : match.lineContent,
+                ...(truncated ? { textLength: chars.length } : {}),
+                submatches: match.matchRanges.map(([start, end]) => ({
+                  text: bytes.subarray(start, end).toString("utf8"),
+                  start,
+                  end,
+                })),
               }),
-              line: match.lineNumber,
-              offset: match.byteOffset,
-              text: truncated ? chars.slice(0, 2_000).join("") : match.lineContent,
-              ...(truncated ? { textLength: chars.length } : {}),
-              submatches: match.matchRanges.map(([start, end]) => ({
-                text: bytes.subarray(start, end).toString("utf8"),
-                start,
-                end,
-              })),
-            })
+            ]
           })
         }),
       find: (input) =>
@@ -223,6 +231,7 @@ export const fffLayer = Layer.effect(
             }))
           })()
           return items
+            .filter((item) => !Ignore.isWorktreePath(item.path))
             .sort((a, b) => b.score - a.score || a.path.length - b.path.length)
             .map((item) => {
               const relative = item.path.replaceAll("\\", "/").replace(/\/$/, "")

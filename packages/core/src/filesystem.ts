@@ -6,6 +6,7 @@ import { FSUtil } from "./fs-util"
 import { Location } from "./location"
 import { PositiveInt, RelativePath } from "./schema"
 import { FileSystemSearch } from "./filesystem/search"
+import { Ignore } from "./filesystem/ignore"
 import { Entry, FileSystem, FindInput, Match } from "@opencode-ai/schema/filesystem"
 export { Entry, Match, Submatch } from "@opencode-ai/schema/filesystem"
 
@@ -95,6 +96,9 @@ const baseLayer = Layer.effect(
                 if (item.type !== "file" && item.type !== "directory") return []
                 const absolute = path.join(target.absolute, item.name)
                 const relative = path.relative(target.directory, absolute)
+                // Product worktrees are independent checkouts owned by their
+                // own instance; never expose them through the parent file tree.
+                if (Ignore.isWorktreePath(relative)) return []
                 return [
                   Entry.make({
                     path: RelativePath.make(relative + (item.type === "directory" ? path.sep : "")),

@@ -8,16 +8,21 @@
  * Legacy references and inline/schema outputs remain readable unchanged.
  */
 
-import { appendFile, readFile, stat, open, mkdir, link, unlink, lstat, chmod, realpath } from "node:fs/promises"
-import { execFile } from "node:child_process"
+import { stat, open, mkdir, link, unlink, lstat, chmod, realpath } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
-import { promisify } from "node:util"
 import path from "node:path"
 import { Effect, Cause } from "effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { Global } from "@opencode-ai/core/global"
 import { PROJECT_DIR } from "@opencode-ai/core/brand"
+import {
+  appendExcludeEntries,
+  canonicalPath,
+  escapeGitIgnorePath,
+  repoLayout,
+  type RepoLayout,
+} from "@/project/git-exclude"
 
 export interface OutputFileRef {
   /** Discriminator against output_schema captured payloads (inline JSON). */
@@ -378,100 +383,4 @@ export function reportAreaDirective(
   }).pipe(
     Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(undefined))),
   )
-}
-
-/** Resolve symlinks (macOS `/var` → `/private/var`) and dot segments without
- * requiring the leaf to exist; walk up to the nearest real ancestor and append
- * the missing segments. */
-async function canonicalPath(value: string): Promise<string> {
-  const resolved = path.resolve(value)
-  const missing: string[] = []
-  let current = resolved
-  for (;;) {
-    try {
-      return path.join(await realpath(current), ...missing.reverse())
-    } catch {
-      const parent = path.dirname(current)
-      if (parent === current) return FSUtil.normalizePath(resolved)
-      missing.push(path.basename(current))
-      current = parent
-    }
-  }
-}
-
-/**
- * Git ignore patterns trim trailing spaces and treat `#`/`!` at the start,
- * plus `*`, `?`, `[`, `\` anywhere, as pattern syntax. The report area is a
- * literal directory path, so escape those characters; otherwise an adversarial
- * checkout name would ignore unrelated files.
- */
-function escapeGitIgnorePath(value: string): string {
-  const trailingSpaces = value.length - value.replace(/ +$/, "").length
-  const body = value.slice(0, value.length - trailingSpaces)
-  let escaped = ""
-  for (let index = 0; index < body.length; index++) {
-    const char = body.charAt(index)
-    if (char === "\\" || char === "*" || char === "?" || char === "[") escaped += `\\${char}`
-    else if (index === 0 && (char === "#" || char === "!")) escaped += `\\${char}`
-    else escaped += char
-  }
-  return `${escaped}${"\\ ".repeat(trailingSpaces)}`
-}
-
-export interface RepoLayout {
-  root: string
-  commonDir: string
-  /** Repository-relative execution directory, git's `--show-prefix` (trailing slash). */
-  prefix: string
-}
-
-const execFileAsync = promisify(execFile)
-
-async function repoLayout(directory: string): Promise<RepoLayout | undefined> {
-  const base = path.resolve(directory)
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["-C", base, "rev-parse", "--show-toplevel", "--git-common-dir", "--show-prefix"],
-      { encoding: "utf8", timeout: 5000, windowsHide: true },
-    )
-    // Three values plus the trailing newline. A path containing a newline
-    // shifts these fields, so refuse the layout instead of acting on it.
-    const lines = stdout.split(/\r?\n/)
-    if (lines.length !== 4 || lines[3] !== "") return undefined
-    const [root, common, prefix = ""] = lines
-    if (!root || !common) return undefined
-    const commonDir = path.resolve(base, common)
-    const [rootInfo, commonInfo] = await Promise.all([
-      stat(root).catch(() => undefined),
-      stat(commonDir).catch(() => undefined),
-    ])
-    if (!rootInfo?.isDirectory() || !commonInfo?.isDirectory()) return undefined
-    return { root, commonDir, prefix }
-  } catch {
-    return undefined
-  }
-}
-
-// Serialize appends per exclude file so concurrent captures in one process do
-// not interleave a read/append pair and duplicate the entry.
-const excludeWrites = new Map<string, Promise<void>>()
-
-function appendExcludeEntries(file: string, entries: string[]) {
-  const previous = excludeWrites.get(file) ?? Promise.resolve()
-  const next = previous
-    .catch(() => undefined)
-    .then(async () => {
-      const existing = await readFile(file, "utf8").catch(() => "")
-      const lines = new Set(existing.split(/\r?\n/).map((line) => line.trim()))
-      const missing = entries.filter((entry) => !lines.has(entry) && !lines.has(entry.replace(/\/$/, "")))
-      if (missing.length === 0) return
-      await mkdir(path.dirname(file), { recursive: true })
-      const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : ""
-      await appendFile(file, `${separator}${missing.join("\n")}\n`)
-    })
-  excludeWrites.set(file, next)
-  return next.finally(() => {
-    if (excludeWrites.get(file) === next) excludeWrites.delete(file)
-  })
 }

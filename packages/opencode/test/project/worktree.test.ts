@@ -303,6 +303,45 @@ describe("Worktree", () => {
       { git: true },
     )
 
+    it.instance(
+      "places worktrees flat under the main checkout's .agents/worktree",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const fs = yield* FSUtil.Service
+          const svc = yield* Worktree.Service
+          const main = yield* fs.realPath(test.directory)
+          const info = yield* svc.makeWorktreeInfo({ name: "flat-location" })
+
+          expect(normalize(info.directory)).toBe(normalize(path.join(main, ".agents", "worktree", "flat-location")))
+          const ignored = yield* gitResult(test.directory, [
+            "check-ignore",
+            "--quiet",
+            ".agents/worktree/flat-location",
+          ])
+          expect(ignored.exitCode).toBe(0)
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "creates from a linked worktree inside the main checkout, not the linked one",
+      () =>
+        withCreatedWorktree({ name: "first" }, ({ info }) =>
+          Effect.gen(function* () {
+            const test = yield* TestInstance
+            const fs = yield* FSUtil.Service
+            const svc = yield* Worktree.Service
+            const main = yield* fs.realPath(test.directory)
+            const nested = yield* svc.makeWorktreeInfo({ name: "second" }).pipe(provideInstance(info.directory))
+
+            expect(normalize(nested.directory)).toBe(normalize(path.join(main, ".agents", "worktree", "second")))
+            expect(normalize(nested.directory)).not.toContain(normalize(info.directory))
+          }),
+        ),
+      { git: true },
+    )
+
     it.instance("fails with NotGitError for non-git directories", () =>
       Effect.gen(function* () {
         const svc = yield* Worktree.Service
@@ -354,6 +393,26 @@ describe("Worktree", () => {
             expect(info.name).toBeDefined()
             expect(info.branch ?? "").toStartWith("opencode/")
             expect(info.directory).toBeDefined()
+          }),
+        ),
+      { git: true },
+    )
+
+    it.instance(
+      "remove drops the empty worktree container but keeps .agents",
+      () =>
+        withCreatedWorktree(undefined, ({ info }) =>
+          Effect.gen(function* () {
+            const test = yield* TestInstance
+            const fs = yield* FSUtil.Service
+            const svc = yield* Worktree.Service
+            const base = path.join(test.directory, ".agents", "worktree")
+            expect(yield* fs.exists(info.directory).pipe(Effect.orDie)).toBe(true)
+
+            expect(yield* svc.remove({ directory: info.directory })).toBe(true)
+
+            expect(yield* fs.exists(base).pipe(Effect.orDie)).toBe(false)
+            expect(yield* fs.exists(path.join(test.directory, ".agents")).pipe(Effect.orDie)).toBe(true)
           }),
         ),
       { git: true },
@@ -501,7 +560,7 @@ describe("Worktree", () => {
 
   describe("reset", () => {
     it.instance(
-      "preserves project-local settings while removing other untracked files",
+      "preserves the project .agents layer while removing other untracked files",
       () =>
         withCreatedWorktree(undefined, ({ info }) =>
           Effect.gen(function* () {
@@ -512,15 +571,19 @@ describe("Worktree", () => {
             const configStore = yield* MemoryConfig.Service
             yield* project.setInitialized(ctx.project.id)
             const settings = path.join(info.directory, ".agents", "settings.local.json")
-            const disposable = path.join(info.directory, ".agents", "disposable.tmp")
+            const preserved = path.join(info.directory, ".agents", "notes.tmp")
+            const disposable = path.join(info.directory, "disposable.tmp")
             // The supported writer installs the checkout's info/exclude rule
-            // before writing the file; reset must preserve exactly that file.
+            // before writing the file; reset must preserve the whole project
+            // layer, including untracked files next to these settings.
             yield* configStore.writeProject(info.directory, memoryConfig())
+            yield* fs.writeFileString(preserved, "keep me\n")
             yield* fs.writeFileString(disposable, "remove me\n")
 
             yield* svc.reset({ directory: info.directory })
 
             expect(JSON.parse(yield* fs.readFileString(settings))).toEqual({ memory: memoryConfig() })
+            expect(yield* fs.readFileString(preserved)).toBe("keep me\n")
             expect(yield* fs.exists(disposable).pipe(Effect.orDie)).toBe(false)
           }),
         ),

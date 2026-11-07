@@ -60,6 +60,22 @@ describe("tool.assertExternalDirectory", () => {
     }),
   )
 
+  it.instance("treats product worktrees inside the project as external", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { requests, ctx } = makeCtx()
+
+      const target = path.join(test.directory, ".agents", "worktree", "wt-01", "file.txt")
+      const expected = glob(path.join(path.dirname(target), "*"))
+
+      yield* assertExternalDirectoryEffect(ctx, target)
+
+      const req = requests.find((r) => r.permission === "external_directory")
+      expect(req).toBeDefined()
+      expect(req!.patterns).toEqual([expected])
+    }),
+  )
+
   it.instance("asks with a single canonical glob", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
