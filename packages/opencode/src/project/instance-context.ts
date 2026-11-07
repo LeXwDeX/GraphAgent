@@ -22,8 +22,10 @@ export const context = LocalContext.create<InstanceContext>("instance")
 export function containsPath(filepath: string, ctx: InstanceContext): boolean {
   // Product-created worktrees live under the project root but are independent
   // checkouts with their own instances. Keep the parent instance's boundary
-  // out of them so touching one still asks for external_directory.
-  if (FSUtil.contains(path.join(ctx.root, PROJECT_DIR, "worktree"), filepath)) return false
+  // out of them so touching one still asks for external_directory. Test
+  // harnesses may provide a partial context without `root`; such a context has
+  // no known project layer, so only the directory/worktree boundary applies.
+  if (ctx.root && FSUtil.contains(path.join(ctx.root, PROJECT_DIR, "worktree"), filepath)) return false
   if (FSUtil.contains(ctx.directory, filepath)) return true
   // Non-git projects set worktree to "/" which would match ANY absolute path.
   // Skip worktree check in this case to preserve external_directory permissions.
