@@ -73,7 +73,11 @@ const dbLayer = countingDatabaseLayer
 const eventLayer = countingEventLayer(EventV2.layer.pipe(Layer.provide(dbLayer)))
 const bridgeLayer = Layer.fresh(EventV2Bridge.layer).pipe(Layer.provide(eventLayer))
 
-export const perfConfig = testProviderConfig("http://localhost:1/v1")
+// The shell tool renders its selected shell into the description, and the
+// selection falls back to `process.env.SHELL` when config omits `shell`. CI
+// runners resolve `bash` while developer machines may resolve `zsh` or `fish`,
+// so the fingerprint would depend on the host. Pin the scenario shell.
+export const perfConfig = { ...testProviderConfig("http://localhost:1/v1"), shell: "bash" }
 
 const summary = Layer.succeed(
   SessionSummary.Service,
