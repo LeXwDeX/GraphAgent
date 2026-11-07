@@ -54,7 +54,7 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
   }
 }
 
-// Claude IDE lock files (`~/.claude/ide/*.lock`) are never read. The only
+// The removed Claude IDE bridge no longer reads its editor lock files. The only
 // connection source is the explicit GRAPHAGENT_EDITOR_SSE_PORT override (see
 // context/editor.ts); editor selection integration is Zed-specific.
 export const editorIntegration: EditorIntegration = {

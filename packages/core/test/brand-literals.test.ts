@@ -39,9 +39,9 @@ const OC_BINARY_PATH_ALLOW: Allow[] = [
 ]
 
 // Every entry below is a closed, itemised exception from #884. The four
-// OPENCODE_DISABLE_CLAUDE_CODE* / OPENCODE_DISABLE_EXTERNAL_SKILLS names were
-// deleted together with their readers by B5; the remaining entries are either
-// the G0b photon patch key or negative tests proving a retired name is ignored.
+// retired Claude Code / external-skills disable switches were deleted together
+// with their readers by B5; the remaining entries are either the G0b photon
+// patch key or negative tests proving a retired name is ignored.
 const LEGACY_ENV_ALLOW: Allow[] = [
   { file: "oc", reason: "G1 switches OC_OPENCODE_NAME together with the installer assets" },
   {
@@ -171,7 +171,8 @@ const CATEGORIES: Category[] = [
   {
     id: "global-app-directory",
     stage: 3,
-    pattern: /\.config[\/\\]opencode\b|\.local[\/\\](share|state)[\/\\]opencode\b|\.cache[\/\\]opencode\b|~\/\.opencode\b/,
+    pattern:
+      /\.config[\/\\]opencode\b|\.local[\/\\](share|state)[\/\\]opencode\b|\.cache[\/\\]opencode\b|~\/\.opencode\b/,
     allow: [],
   },
   {
@@ -195,8 +196,7 @@ const CATEGORIES: Category[] = [
   {
     id: "attribution-header",
     stage: 4,
-    pattern:
-      /(?:X-Title|HTTP-Referer|X-Source|X-Cerebras-3rd-Party-Integration)[^\n]*["'`]?opencode(?:\.ai\/)?["'`]/,
+    pattern: /(?:X-Title|HTTP-Referer|X-Source|X-Cerebras-3rd-Party-Integration)[^\n]*["'`]?opencode(?:\.ai\/)?["'`]/,
     allow: [],
   },
   {
