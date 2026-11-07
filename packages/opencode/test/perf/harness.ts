@@ -176,7 +176,12 @@ const snapshot = countingSnapshotLayer(
   ),
 )
 
-const status = SessionStatus.layer.pipe(Layer.provideMerge(bridgeLayer))
+// Status events are ephemeral and are not part of the measured engine counts
+// (the baseline records zero for scenarios that never go busy after `reset()`).
+// Bind SessionStatus to a dedicated production bridge so the choice cannot
+// depend on layer build order: sharing `bridgeLayer` made the counts flip when
+// an unrelated layer's dependencies changed (#1010).
+const status = SessionStatus.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer))
 const run = SessionRunState.layer.pipe(Layer.provide(status))
 
 // Session.defaultLayer self-provides Database.defaultLayer and

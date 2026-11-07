@@ -2,39 +2,15 @@ import { describe, expect, test } from "bun:test"
 import { $ } from "bun"
 import { fileURLToPath } from "url"
 import path from "path"
+import fs from "fs/promises"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 import { Effect, Exit, Layer } from "effect"
-import { eq, inArray, sql } from "drizzle-orm"
+import { sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
-import { migrations } from "@opencode-ai/core/database/migration.gen"
-import sessionUsageMigration from "@opencode-ai/core/database/migration/20260510033149_session_usage"
-import normalizeStoragePathsMigration from "@opencode-ai/core/database/migration/20260601010001_normalize_storage_paths"
-import sessionMessageProjectionOrderMigration from "@opencode-ai/core/database/migration/20260603040000_session_message_projection_order"
-import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migration/20260604172448_event_sourced_session_input"
-import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
-import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
-import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
-import capturedOutputMigration from "@opencode-ai/core/database/migration/20260715035022_captured_output"
-import fearlessCammiMigration from "@opencode-ai/core/database/migration/20260717034735_fearless_cammi"
-import dagWorkflowNodeIdentityMigration from "@opencode-ai/core/database/migration/20260720013828_dag-workflow-node-identity"
-import dropSessionSummaryDiffsMigration from "@opencode-ai/core/database/migration/20260903044702_drop_session_summary_diffs"
-import workflowExecutionDirectoryMigration from "@opencode-ai/core/database/migration/20261101044937_perfect_shaman"
-import workflowNodeExecutionLocationMigration from "@opencode-ai/core/database/migration/20261101033752_workflow_node_execution_location"
-import dagTargetFingerprintMigration from "@opencode-ai/core/database/migration/20261102204403_absent_caretaker"
-import workflowNodeWorktreeIsolationMigration from "@opencode-ai/core/database/migration/20261102230116_spicy_kid_colt"
-import workflowNodeWorktreeHistoryMigration from "@opencode-ai/core/database/migration/20261103002352_workflow_node_worktree_history"
-import { EventV2 } from "@opencode-ai/core/event"
-import { ProjectV2 } from "@opencode-ai/core/project"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import sessionMetadataMigration from "@opencode-ai/core/database/migration/20260511173437_session-metadata"
-import type { SqlClient as SqlClientService } from "effect/sql/SqlClient"
+import { baseline } from "@opencode-ai/core/database/migration.gen"
 import { Database } from "@opencode-ai/core/database/database"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import type { SqlClient as SqlClientService } from "effect/sql/SqlClient"
 import { tmpdir } from "./fixture/tmpdir"
 
 const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
@@ -65,9 +41,54 @@ describe("DatabaseMigration", () => {
       expect(result.exitCode, result.stderr.toString()).toBe(0)
       expect(result.stdout.toString()).toContain("No schema changes, nothing to migrate")
     }, 30_000)
+
+    test("pre-release generation refuses incremental migrations", async () => {
+      const result = await $`bun ${fileURLToPath(new URL("../script/migration.ts", import.meta.url))}`.quiet().nothrow()
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr.toString()).toContain("--rebaseline")
+    }, 30_000)
+
+    test("check rejects a manually added incremental migration in pre-release", async () => {
+      const probe = path.join(
+        fileURLToPath(new URL("../src/database/migration", import.meta.url)),
+        "20990101000000_probe.ts",
+      )
+      await Bun.write(probe, 'export default { id: "20990101000000_probe", up() {} }\n')
+      try {
+        const result = await $`bun ${fileURLToPath(new URL("../script/migration.ts", import.meta.url))} --check`
+          .quiet()
+          .nothrow()
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr.toString()).toContain("must not contain incremental migrations")
+      } finally {
+        await fs.rm(probe, { force: true })
+      }
+    }, 30_000)
+
+    test("freeze blocks rebaseline and restores incremental generation", async () => {
+      const script = fileURLToPath(new URL("../script/migration.ts", import.meta.url))
+      const lock = fileURLToPath(new URL("../baseline.lock", import.meta.url))
+      expect(await Bun.file(lock).exists()).toBe(false)
+      try {
+        const freeze = await $`bun ${script} --freeze-baseline`.quiet().nothrow()
+        expect(freeze.exitCode, freeze.stderr.toString()).toBe(0)
+        expect((await Bun.file(lock).text()).trim()).toBe(baseline.id)
+
+        const rebaseline = await $`bun ${script} --rebaseline`.quiet().nothrow()
+        expect(rebaseline.exitCode).not.toBe(0)
+
+        const generate = await $`bun ${script}`.quiet().nothrow()
+        expect(generate.exitCode, generate.stderr.toString()).toBe(0)
+
+        const check = await $`bun ${script} --check`.quiet().nothrow()
+        expect(check.exitCode, check.stderr.toString()).toBe(0)
+      } finally {
+        await fs.rm(lock, { force: true })
+      }
+    }, 60_000)
   }
 
-  test("applies tracked migrations to an empty database", async () => {
+  test("applies the baseline to an empty database", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb
@@ -76,966 +97,75 @@ describe("DatabaseMigration", () => {
         expect(yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session'`)).toEqual({
           name: "session",
         })
-        // The V2 executor removal drops the event-sourced session tables; the
-        // canonical V1 message/part tables remain the only projection.
         expect(
           yield* db.all(
-            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session_input', 'session_message', 'session_context_epoch')`,
+            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('event', 'project', 'workflow', 'workflow_node', 'agent_message') ORDER BY name`,
           ),
-        ).toEqual([])
-        expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
-        expect(
-          yield* db.all(
-            sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('event_aggregate_seq_idx', 'event_aggregate_type_seq_idx', 'session_input_session_pending_seq_idx', 'session_input_session_pending_delivery_seq_idx', 'session_input_session_admitted_seq_idx', 'session_input_session_promoted_seq_idx', 'session_message_session_idx', 'session_message_session_type_idx', 'session_message_session_seq_idx', 'session_message_session_type_seq_idx', 'session_message_session_time_created_id_idx') ORDER BY name`,
-          ),
-        ).toEqual([{ name: "event_aggregate_seq_idx" }, { name: "event_aggregate_type_seq_idx" }])
-      }),
-    )
-  })
-
-  test("drops the legacy session summary_diffs column", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        // Legacy install: the column still exists with data, and only the drop migration is pending.
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, summary_diffs text)`)
-        yield* db.run(
-          sql`INSERT INTO session (id, summary_diffs) VALUES ('ses_legacy', '[{"file":"a.txt","patch":"p","additions":1,"deletions":0,"status":"modified"}]')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [dropSessionSummaryDiffsMigration])
-
-        expect(
-          yield* db.get(sql`SELECT name FROM pragma_table_info('session') WHERE name = 'summary_diffs'`),
-        ).toBeUndefined()
-        expect(yield* db.get(sql`SELECT id FROM session WHERE id = 'ses_legacy'`)).toEqual({ id: "ses_legacy" })
-        expect(yield* db.get(sql`SELECT id FROM migration WHERE id = ${dropSessionSummaryDiffsMigration.id}`)).toEqual({
-          id: dropSessionSummaryDiffsMigration.id,
-        })
-      }),
-    )
-
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* DatabaseMigration.apply(db)
-        expect(
-          yield* db.get(sql`SELECT name FROM pragma_table_info('session') WHERE name = 'summary_diffs'`),
-        ).toBeUndefined()
-      }),
-    )
-  })
-
-  test("upgrades DAG node storage without duplicate columns or cross-workflow collisions", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE workflow (id text PRIMARY KEY)`)
-        yield* db.run(sql`
-          CREATE TABLE workflow_node (
-            id text PRIMARY KEY,
-            workflow_id text NOT NULL,
-            name text NOT NULL,
-            worker_type text NOT NULL,
-            status text NOT NULL,
-            required integer NOT NULL DEFAULT 1,
-            depends_on text NOT NULL,
-            model_id text,
-            model_provider_id text,
-            child_session_id text,
-            output text,
-            error_reason text,
-            deadline_ms integer,
-            wake_eligible integer NOT NULL DEFAULT false,
-            wake_reported integer NOT NULL DEFAULT false,
-            replan_attempts integer NOT NULL DEFAULT 0,
-            seq integer NOT NULL,
-            started_at integer,
-            completed_at integer,
-            time_created integer NOT NULL,
-            time_updated integer NOT NULL
-          )
-        `)
-        yield* db.run(sql`CREATE TABLE goal_state (id text PRIMARY KEY)`)
-        yield* db.run(sql`CREATE INDEX goal_state_updated_at_idx ON goal_state (id)`)
-        yield* db.run(sql`INSERT INTO workflow (id) VALUES ('dag-one'), ('dag-two')`)
-        yield* db.run(sql`
-          INSERT INTO workflow_node (id, workflow_id, name, worker_type, status, required, depends_on, seq, time_created, time_updated)
-          VALUES ('shared', 'dag-one', 'First', 'build', 'pending', 1, '[]', 1, 1, 1)
-        `)
-
-        yield* DatabaseMigration.applyOnly(db, [capturedOutputMigration, fearlessCammiMigration, dagWorkflowNodeIdentityMigration])
-
-        expect(
-          (yield* db.all<{ name: string; pk: number }>(sql`PRAGMA table_info(workflow_node)`))
-            .filter((column) => ["workflow_id", "id"].includes(column.name))
-            .map(({ name, pk }) => ({ name, pk })),
         ).toEqual([
-          { name: "id", pk: 2 },
-          { name: "workflow_id", pk: 1 },
+          { name: "agent_message" },
+          { name: "event" },
+          { name: "project" },
+          { name: "workflow" },
+          { name: "workflow_node" },
         ])
-        expect(yield* db.get(sql`SELECT name, captured_output AS capturedOutput FROM workflow_node WHERE workflow_id = 'dag-one' AND id = 'shared'`)).toEqual({
-          name: "First",
-          capturedOutput: null,
-        })
-        expect(yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'goal_state'`)).toBeUndefined()
-
-        yield* db.run(sql`
-          INSERT INTO workflow_node (id, workflow_id, name, worker_type, status, required, depends_on, seq, time_created, time_updated)
-          VALUES ('shared', 'dag-two', 'Second', 'review', 'pending', 1, '[]', 1, 2, 2)
-        `)
-        expect(yield* db.all(sql`SELECT workflow_id AS workflowId, name FROM workflow_node WHERE id = 'shared' ORDER BY workflow_id`)).toEqual([
-          { workflowId: "dag-one", name: "First" },
-          { workflowId: "dag-two", name: "Second" },
-        ])
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: baseline.id }])
       }),
     )
   })
 
-  test("preserves FK constraints after DAG node identity migration", async () => {
-    await run(
+  test("reopening a baseline database is idempotent", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "reopen.sqlite")
+    await Effect.runPromise(Effect.scoped(Layer.build(Database.layerFromPath(filename))))
+    await Effect.runPromise(Effect.scoped(Layer.build(Database.layerFromPath(filename))))
+
+    const rows = await Effect.runPromise(
       Effect.gen(function* () {
         const db = yield* makeDb
-        yield* db.run(sql`PRAGMA foreign_keys = ON`)
-        yield* db.run(sql`
-          CREATE TABLE workflow (
-            id text PRIMARY KEY,
-            project_id text NOT NULL,
-            session_id text NOT NULL,
-            title text NOT NULL,
-            status text NOT NULL,
-            config text NOT NULL,
-            seq integer NOT NULL,
-            wake_reported integer NOT NULL DEFAULT false,
-            started_at integer,
-            completed_at integer,
-            time_created integer NOT NULL,
-            time_updated integer NOT NULL
-          )
-        `)
-        yield* db.run(sql`
-          CREATE TABLE workflow_node (
-            id text PRIMARY KEY,
-            workflow_id text NOT NULL,
-            name text NOT NULL,
-            worker_type text NOT NULL,
-            status text NOT NULL,
-            required integer NOT NULL DEFAULT 1,
-            depends_on text NOT NULL,
-            model_id text,
-            model_provider_id text,
-            child_session_id text,
-            output text,
-            error_reason text,
-            captured_output text,
-            deadline_ms integer,
-            wake_eligible integer NOT NULL DEFAULT false,
-            wake_reported integer NOT NULL DEFAULT false,
-            replan_attempts integer NOT NULL DEFAULT 0,
-            seq integer NOT NULL,
-            started_at integer,
-            completed_at integer,
-            time_created integer NOT NULL,
-            time_updated integer NOT NULL,
-            FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
-          )
-        `)
-        yield* db.run(sql`
-          INSERT INTO workflow (id, project_id, session_id, title, status, config, seq, time_created, time_updated)
-          VALUES ('dag-fk', 'proj', 'ses', 'FK Test', 'running', '{}', 0, 1, 1)
-        `)
-        yield* db.run(sql`
-          INSERT INTO workflow_node (id, workflow_id, name, worker_type, status, required, depends_on, seq, time_created, time_updated)
-          VALUES ('n1', 'dag-fk', 'Node', 'build', 'pending', 1, '[]', 0, 1, 1)
-        `)
-
-        yield* DatabaseMigration.applyOnly(db, [dagWorkflowNodeIdentityMigration])
-
-        yield* db.run(sql`PRAGMA foreign_keys = ON`)
-        expect(yield* db.all(sql`PRAGMA foreign_key_check`)).toEqual([])
-
-        const insertExit = yield* db.run(sql`
-          INSERT INTO workflow_node (id, workflow_id, name, worker_type, status, required, depends_on, seq, time_created, time_updated)
-          VALUES ('n2', 'nonexistent', 'Bad', 'build', 'pending', 1, '[]', 0, 1, 1)
-        `).pipe(Effect.exit)
-        expect(Exit.isFailure(insertExit)).toBe(true)
-
-        yield* db.run(sql`DELETE FROM workflow WHERE id = 'dag-fk'`)
-        expect(yield* db.all(sql`SELECT id FROM workflow_node WHERE workflow_id = 'dag-fk'`)).toEqual([])
-      }),
+        return yield* db.all<{ id: string }>(sql`SELECT id FROM migration`)
+      }).pipe(Effect.provide(SqliteClient.layer({ filename })), Effect.scoped),
     )
+    expect(rows).toEqual([{ id: baseline.id }])
   })
 
   test("rejects a non-empty database without a session table", async () => {
-    await expect(
-      run(
-        Effect.gen(function* () {
-          const db = yield* makeDb
-          yield* db.run(sql`CREATE TABLE unrelated (id text PRIMARY KEY)`)
-          yield* DatabaseMigration.apply(db)
-        }),
-      ),
-    ).rejects.toThrow("Database is not empty and has no session table")
-  })
-
-  test("backfills existing Context Epoch rows to the build agent", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE session_context_epoch (session_id text PRIMARY KEY, baseline text NOT NULL, snapshot text NOT NULL, baseline_seq integer NOT NULL, replacement_seq integer, revision integer DEFAULT 0 NOT NULL)`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_context_epoch (session_id, baseline, snapshot, baseline_seq) VALUES ('ses_existing', 'baseline', '{}', 0)`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [contextEpochAgentMigration])
-
-        expect(yield* db.get(sql`SELECT agent FROM session_context_epoch WHERE session_id = 'ses_existing'`)).toEqual({
-          agent: "build",
-        })
-      }),
-    )
-  })
-
-  test("keeps legacy credential fields nullable", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE credential (id text PRIMARY KEY, connector_id text NOT NULL, method_id text NOT NULL, label text NOT NULL, value text NOT NULL, active integer DEFAULT false NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL)`,
-        )
-        yield* db.run(
-          sql`CREATE UNIQUE INDEX credential_connector_active_idx ON credential (connector_id) WHERE active = 1`,
-        )
-        yield* DatabaseMigration.applyOnly(db, [simplifyIntegrationCredentialsMigration])
-
-        yield* db.run(
-          sql`INSERT INTO credential (id, connector_id, method_id, label, value, active, time_created, time_updated) VALUES ('legacy', 'openai', 'oauth', 'Legacy', '{}', 1, 1, 1)`,
-        )
-        yield* db.run(
-          sql`INSERT INTO credential (id, integration_id, label, value, time_created, time_updated) VALUES ('current', 'anthropic', 'Current', '{}', 2, 2)`,
-        )
-        expect(yield* db.get(sql`SELECT connector_id, method_id, active FROM credential WHERE id = 'current'`)).toEqual(
-          { connector_id: null, method_id: null, active: null },
+        yield* db.run(sql`CREATE TABLE other (id TEXT PRIMARY KEY)`)
+        const exit = yield* Effect.exit(DatabaseMigration.apply(db))
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration'`)).toBe(
+          undefined,
         )
       }),
     )
   })
 
-  test("resets beta history and rebuilds event-sourced Session input storage", async () => {
+  test("rejects a baseline fingerprint mismatch without writing", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, workspace_id text)`)
-        yield* db.run(sql`CREATE TABLE workspace (id text PRIMARY KEY)`)
-        yield* db.run(sql`CREATE TABLE message (id text PRIMARY KEY)`)
-        yield* db.run(sql`CREATE TABLE part (id text PRIMARY KEY)`)
-        yield* db.run(sql`CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL)`)
-        yield* db.run(
-          sql`CREATE TABLE event (id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL, type text NOT NULL, data text NOT NULL)`,
-        )
-        yield* db.run(sql`CREATE INDEX event_aggregate_seq_idx ON event (aggregate_id, seq)`)
-        yield* db.run(sql`CREATE INDEX event_aggregate_type_seq_idx ON event (aggregate_id, type, seq)`)
-        yield* db.run(
-          sql`CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)`,
-        )
-        yield* db.run(sql`CREATE INDEX session_message_session_seq_idx ON session_message (session_id, seq)`)
-        yield* db.run(
-          sql`CREATE TABLE session_input (seq integer PRIMARY KEY AUTOINCREMENT, id text NOT NULL UNIQUE, session_id text NOT NULL, prompt text NOT NULL, delivery text NOT NULL, promoted_seq integer, time_created integer NOT NULL)`,
-        )
-        yield* db.run(
-          sql`CREATE INDEX session_input_session_pending_delivery_seq_idx ON session_input (session_id, promoted_seq, delivery, seq)`,
-        )
-        yield* db.run(sql`INSERT INTO session (id, workspace_id) VALUES ('session', 'wrk_old')`)
-        yield* db.run(sql`INSERT INTO workspace (id) VALUES ('wrk_old')`)
-        yield* db.run(sql`INSERT INTO message (id) VALUES ('message')`)
-        yield* db.run(sql`INSERT INTO part (id) VALUES ('part')`)
-        yield* db.run(sql`INSERT INTO event_sequence (aggregate_id, seq) VALUES ('session', 0)`)
-        yield* db.run(
-          sql`INSERT INTO event (id, aggregate_id, seq, type, data) VALUES ('evt_old', 'session', 0, 'old.1', '{}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES ('msg_old', 'session', 'user', 0, 1, 1, '{}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_input (id, session_id, prompt, delivery, time_created) VALUES ('msg_pending', 'session', '{}', 'steer', 1)`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [eventSourcedSessionInputMigration])
-
-        expect(yield* db.all(sql`SELECT id, workspace_id FROM session`)).toEqual([
-          { id: "session", workspace_id: null },
-        ])
-        expect(yield* db.all(sql`SELECT id FROM workspace`)).toEqual([])
-        expect(yield* db.all(sql`SELECT id FROM message`)).toEqual([{ id: "message" }])
-        expect(yield* db.all(sql`SELECT id FROM part`)).toEqual([{ id: "part" }])
-        expect(yield* db.all(sql`SELECT id FROM event`)).toEqual([])
-        expect(yield* db.all(sql`SELECT aggregate_id FROM event_sequence`)).toEqual([])
-        expect(yield* db.all(sql`SELECT id FROM session_message`)).toEqual([])
-        expect(yield* db.all(sql`SELECT id FROM session_input`)).toEqual([])
-        expect(
-          (yield* db.all<{ name: string }>(sql`PRAGMA table_info(session_input)`)).map((column) => column.name),
-        ).toEqual(["id", "session_id", "prompt", "delivery", "admitted_seq", "promoted_seq", "time_created"])
-        expect(
-          (yield* db.all<{ name: string; unique: number }>(sql`PRAGMA index_list(session_message)`)).find(
-            (index) => index.name === "session_message_session_seq_idx",
-          ),
-        ).toMatchObject({ unique: 1 })
-        expect(
-          (yield* db.all<{ name: string; unique: number }>(sql`PRAGMA index_list(event)`)).find(
-            (index) => index.name === "event_aggregate_seq_idx",
-          ),
-        ).toMatchObject({ unique: 1 })
-        expect(
-          (yield* db.all<{ name: string; unique: number }>(sql`PRAGMA index_list(session_input)`)).filter((index) =>
-            ["session_input_session_admitted_seq_idx", "session_input_session_promoted_seq_idx"].includes(index.name),
-          ),
-        ).toEqual([
-          expect.objectContaining({ name: "session_input_session_promoted_seq_idx", unique: 1 }),
-          expect.objectContaining({ name: "session_input_session_admitted_seq_idx", unique: 1 }),
-        ])
-      }),
-    )
-  })
-
-  test("preserves canonical V1 state and restarts its event stream", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`PRAGMA foreign_keys = ON`)
-        yield* DatabaseMigration.apply(db)
-        // apply() materializes the latest schema, which no longer contains the
-        // V2 tables this upgrade path historically cleared. Recreate their
-        // legacy shapes so the simplify migration can be replayed in isolation.
-        yield* db.run(
-          sql`CREATE TABLE session_input (id text PRIMARY KEY, session_id text NOT NULL, prompt text NOT NULL, delivery text NOT NULL, admitted_seq integer NOT NULL, promoted_seq integer, time_created integer NOT NULL)`,
-        )
-        yield* db.run(
-          sql`CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)`,
-        )
-        yield* db.run(
-          sql`CREATE TABLE session_context_epoch (session_id text PRIMARY KEY, baseline text NOT NULL, snapshot text NOT NULL, baseline_seq integer NOT NULL)`,
-        )
-        yield* db.run(
-          sql`INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) VALUES ('global', '/project', 1, 1, '[]')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO workspace (id, type, project_id, time_used) VALUES ('workspace', 'local', 'global', 1)`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session (id, project_id, workspace_id, slug, directory, title, version, time_created, time_updated) VALUES ('session', 'global', 'workspace', 'session', '/project', 'Before', 'test', 1, 1)`,
-        )
-        yield* db.run(
-          sql`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('message', 'session', 1, 1, '{}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('part', 'message', 'session', 1, 1, '{}')`,
-        )
-        yield* db.run(sql`INSERT INTO event_sequence (aggregate_id, seq) VALUES ('session', 9)`)
-        yield* db.run(
-          sql`INSERT INTO event (id, aggregate_id, seq, type, data) VALUES ('event', 'session', 9, 'session.updated.1', '{}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_input (id, session_id, prompt, delivery, admitted_seq, time_created) VALUES ('input', 'session', '{}', 'steer', 9, 1)`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES ('projected', 'session', 'user', 9, 1, 1, '{}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_context_epoch (session_id, baseline, snapshot, baseline_seq) VALUES ('session', 'baseline', '{}', 9)`,
-        )
-        yield* db.run(sql`DELETE FROM migration WHERE id = ${simplifySessionInputMigration.id}`)
-        yield* DatabaseMigration.applyOnly(db, [simplifySessionInputMigration])
-
-        const database = Layer.succeed(Database.Service, { db })
-        const events = EventV2.layer.pipe(Layer.provide(database))
-        yield* EventV2.Service.use((service) =>
-          service.publish(SessionV1.Event.Updated, {
-            sessionID: SessionSchema.ID.make("session"),
-            info: {
-              id: SessionSchema.ID.make("session"),
-              slug: "session",
-              projectID: ProjectV2.ID.global,
-              directory: "/project",
-              title: "After",
-              version: "test",
-              time: { created: 1, updated: 2 },
-            },
-          }),
-        ).pipe(
-          Effect.provide(
-            Layer.merge(events, SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))),
-          ),
-        )
-
-        expect(
-          yield* db.get(sql`
-            SELECT
-              (SELECT title FROM session WHERE id = 'session') AS title,
-              (SELECT workspace_id FROM session WHERE id = 'session') AS workspaceID,
-              (SELECT COUNT(*) FROM message WHERE id = 'message') AS messages,
-              (SELECT COUNT(*) FROM part WHERE id = 'part') AS parts,
-              (SELECT COUNT(*) FROM workspace) AS workspaces,
-              (SELECT COUNT(*) FROM session_input) AS sessionInputs,
-              (SELECT COUNT(*) FROM session_message) AS sessionMessages,
-              (SELECT COUNT(*) FROM session_context_epoch) AS contextEpochs,
-              (SELECT seq FROM event_sequence WHERE aggregate_id = 'session') AS seq,
-              (SELECT type FROM event WHERE aggregate_id = 'session') AS eventType
-          `),
-        ).toEqual({
-          title: "After",
-          workspaceID: null,
-          messages: 1,
-          parts: 1,
-          workspaces: 0,
-          sessionInputs: 0,
-          sessionMessages: 0,
-          contextEpochs: 0,
-          seq: 0,
-          eventType: "session.updated.1",
-        })
-      }),
-    )
-  })
-
-  test("resets incompatible projected Session messages before adding sequence order", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY)`)
-        yield* db.run(
-          sql`CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)`,
-        )
-        yield* db.run(
-          sql`CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)`,
-        )
-        yield* db.run(sql`CREATE TABLE event (id text PRIMARY KEY, seq integer NOT NULL)`)
-        yield* db.run(
-          sql`CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)`,
-        )
-        yield* db.run(
-          sql`CREATE INDEX session_message_session_time_created_id_idx ON session_message (session_id, time_created, id)`,
-        )
-        yield* db.run(
-          sql`CREATE INDEX session_message_session_type_time_created_id_idx ON session_message (session_id, type, time_created, id)`,
-        )
-        yield* db.run(sql`INSERT INTO session (id) VALUES ('session')`)
-        yield* db.run(
-          sql`INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('legacy_message', 'session', 1, 1, '{"role":"user"}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('legacy_part', 'legacy_message', 'session', 1, 1, '{"type":"text","text":"hello"}')`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session_message (id, session_id, type, time_created, time_updated, data) VALUES ('stale_projection', 'session', 'user', 1, 1, '{}')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [sessionMessageProjectionOrderMigration])
-
-        expect(yield* db.all(sql`SELECT id, session_id, data FROM message`)).toEqual([
-          { id: "legacy_message", session_id: "session", data: '{"role":"user"}' },
-        ])
-        expect(yield* db.all(sql`SELECT id, message_id, session_id, data FROM part`)).toEqual([
-          {
-            id: "legacy_part",
-            message_id: "legacy_message",
-            session_id: "session",
-            data: '{"type":"text","text":"hello"}',
-          },
-        ])
-        expect(yield* db.all(sql`SELECT id FROM session_message`)).toEqual([])
-
-        yield* db.run(
-          sql`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES ('fresh_projection', 'session', 'user', 7, 2, 2, '{}')`,
-        )
-        expect(yield* db.get(sql`SELECT id, seq FROM session_message`)).toEqual({ id: "fresh_projection", seq: 7 })
-      }),
-    )
-  })
-
-  test("runs session usage backfill in order with schema changes", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, time_updated integer NOT NULL)`)
-        yield* db.run(sql`CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, data text NOT NULL)`)
-        yield* db.run(sql`INSERT INTO session (id, time_updated) VALUES ('session_1', 1)`)
-        yield* db.run(
-          sql`INSERT INTO message (id, session_id, data) VALUES ('message_1', 'session_1', '{"role":"assistant","cost":1.25,"tokens":{"input":2,"output":3,"reasoning":4,"cache":{"read":5,"write":6}}}')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [sessionUsageMigration])
-
-        expect(
-          yield* db.get(
-            sql`SELECT cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write FROM session WHERE id = 'session_1'`,
-          ),
-        ).toEqual({
-          cost: 1.25,
-          tokens_input: 2,
-          tokens_output: 3,
-          tokens_reasoning: 4,
-          tokens_cache_read: 5,
-          tokens_cache_write: 6,
-        })
-      }),
-    )
-  })
-
-  test("normalizes Windows storage paths and leaves POSIX paths untouched", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE project (id text PRIMARY KEY, worktree text NOT NULL, sandboxes text NOT NULL)`)
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, directory text NOT NULL, path text)`)
-        // Windows-shaped rows (drive + backslash) must be normalized.
-        yield* db.run(
-          sql`INSERT INTO project (id, worktree, sandboxes) VALUES (${"win"}, ${"C:\\Repo\\Thing"}, ${JSON.stringify([
-            "C:\\Repo\\Thing\\sandbox",
-          ])})`,
-        )
-        yield* db.run(
-          sql`INSERT INTO session (id, directory, path) VALUES (${"win"}, ${"C:\\Repo\\Thing\\packages\\api"}, ${"packages\\api"})`,
-        )
-        // UNC worktrees and their sandboxes must normalize too (not just drive paths).
-        yield* db.run(
-          sql`INSERT INTO project (id, worktree, sandboxes) VALUES (${"unc"}, ${"\\\\server\\share"}, ${JSON.stringify([
-            "\\\\server\\share\\sandbox",
-          ])})`,
-        )
-        // The "/" worktree sentinel and POSIX paths (including a pathological
-        // backslash in a POSIX filename) must survive byte-for-byte.
-        yield* db.run(sql`INSERT INTO project (id, worktree, sandboxes) VALUES (${"global"}, ${"/"}, ${"[]"})`)
-        yield* db.run(
-          sql`INSERT INTO session (id, directory, path) VALUES (${"posix"}, ${"/home/me/we\\ird"}, ${"src\\weird"})`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [normalizeStoragePathsMigration])
-
-        expect(yield* db.get(sql`SELECT worktree, sandboxes FROM project WHERE id = 'win'`)).toEqual({
-          worktree: "C:/Repo/Thing",
-          sandboxes: JSON.stringify(["C:/Repo/Thing/sandbox"]),
-        })
-        expect(yield* db.get(sql`SELECT directory, path FROM session WHERE id = 'win'`)).toEqual({
-          directory: "C:/Repo/Thing/packages/api",
-          path: "packages/api",
-        })
-        expect(yield* db.get(sql`SELECT worktree, sandboxes FROM project WHERE id = 'unc'`)).toEqual({
-          worktree: "//server/share",
-          sandboxes: JSON.stringify(["//server/share/sandbox"]),
-        })
-        expect(yield* db.get(sql`SELECT worktree FROM project WHERE id = 'global'`)).toEqual({ worktree: "/" })
-        expect(yield* db.get(sql`SELECT directory, path FROM session WHERE id = 'posix'`)).toEqual({
-          directory: "/home/me/we\\ird",
-          path: "src\\weird",
-        })
-      }),
-    )
-  })
-
-  test("maps native Windows paths through database columns", async () => {
-    if (process.platform !== "win32") return
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* DatabaseMigration.apply(db)
-        const projectID = ProjectV2.ID.make("codec_project")
-        const worktree = AbsolutePath.make("C:\\Repo\\Thing")
-        const sandbox = AbsolutePath.make("C:\\Repo\\Thing\\sandbox")
-        const directory = "C:\\Repo\\Thing\\packages\\api"
-        const sessionID = SessionSchema.ID.make("ses_codec")
-
-        expect(() =>
-          Effect.runSync(
-            db
-              .insert(ProjectTable)
-              .values({
-                id: ProjectV2.ID.make("invalid_path"),
-                worktree: AbsolutePath.make("not-absolute"),
-                sandboxes: [],
-                time_created: 1,
-                time_updated: 1,
-              })
-              .run(),
-          ),
-        ).toThrow()
-
-        yield* db
-          .insert(ProjectTable)
-          .values({
-            id: projectID,
-            worktree,
-            sandboxes: [sandbox],
-            time_created: 1,
-            time_updated: 1,
-          })
-          .run()
-        yield* db
-          .insert(SessionTable)
-          .values({
-            id: sessionID,
-            project_id: projectID,
-            slug: "codec",
-            directory,
-            path: "packages\\api",
-            title: "Codec",
-            version: "test",
-            time_created: 1,
-            time_updated: 1,
-          })
-          .run()
-
-        expect(
-          yield* db.get<{ worktree: string; sandboxes: string }>(
-            sql`SELECT worktree, sandboxes FROM project WHERE id = ${projectID}`,
-          ),
-        ).toEqual({
-          worktree: "C:/Repo/Thing",
-          sandboxes: JSON.stringify(["C:/Repo/Thing/sandbox"]),
-        })
-        expect(
-          yield* db.get<{ directory: string; path: string }>(
-            sql`SELECT directory, path FROM session WHERE id = ${sessionID}`,
-          ),
-        ).toEqual({
-          directory: "C:/Repo/Thing/packages/api",
-          path: "packages/api",
-        })
-
-        const project = yield* db.select().from(ProjectTable).where(eq(ProjectTable.worktree, worktree)).get()
-        const session = yield* db.select().from(SessionTable).where(eq(SessionTable.directory, directory)).get()
-        expect(project?.worktree).toBe(worktree)
-        expect(project?.sandboxes).toEqual([sandbox])
-        expect(session?.directory).toBe(directory)
-        expect(session?.path).toBe("packages/api")
-
-        expect((yield* db.select().from(SessionTable).where(eq(SessionTable.path, "packages\\api")).get())?.id).toBe(
-          sessionID,
-        )
-
-        const moved = AbsolutePath.make("D:\\Moved\\Thing")
-        const updated = yield* db
-          .update(ProjectTable)
-          .set({ worktree: moved, sandboxes: [moved] })
-          .where(eq(ProjectTable.id, projectID))
-          .returning()
-          .get()
-        expect(updated?.worktree).toBe(moved)
-        expect(updated?.sandboxes).toEqual([moved])
-        expect(
-          yield* db.get<{ worktree: string; sandboxes: string }>(
-            sql`SELECT worktree, sandboxes FROM project WHERE id = ${projectID}`,
-          ),
-        ).toEqual({ worktree: "D:/Moved/Thing", sandboxes: JSON.stringify(["D:/Moved/Thing"]) })
-        expect(
-          (yield* db
-            .select()
-            .from(ProjectTable)
-            .where(inArray(ProjectTable.worktree, [moved]))
-            .get())?.id,
-        ).toBe(projectID)
-
-        yield* db.run(sql`UPDATE project SET worktree = ${"not-absolute"} WHERE id = ${projectID}`)
-        expect(() =>
-          Effect.runSync(db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get()),
-        ).toThrow()
-      }),
-    )
-  })
-
-  test("imports existing drizzle migration state", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash text NOT NULL, created_at numeric, name text, applied_at TEXT)`,
-        )
-        yield* db.run(sql`
-          INSERT INTO __drizzle_migrations (hash, created_at, name, applied_at)
-          VALUES ('hash', 1, '20260127222353_familiar_lady_ursula', ${new Date().toISOString()})
-        `)
-
-        yield* DatabaseMigration.applyOnly(db, [])
-
-        expect(yield* db.get(sql`SELECT id FROM migration`)).toEqual({ id: "20260127222353_familiar_lady_ursula" })
-      }),
-    )
-  })
-
-  test("does not replay a migrated session metadata column", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, metadata text)`)
-        yield* db.run(
-          sql`CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash text NOT NULL, created_at numeric, name text, applied_at TEXT)`,
-        )
-        yield* db.run(sql`
-          INSERT INTO __drizzle_migrations (hash, created_at, name, applied_at)
-          VALUES ('hash', 1, '20260511173437_session-metadata', ${new Date().toISOString()})
-        `)
-
-        yield* DatabaseMigration.applyOnly(db, [sessionMetadataMigration])
-
-        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: "20260511173437_session-metadata" }])
-      }),
-    )
-  })
-
-  test("accepts the temporary replacement session metadata migration id", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, metadata text)`)
+        yield* db.run(sql`CREATE TABLE session (id TEXT PRIMARY KEY)`)
         yield* db.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
-        yield* db.run(sql`INSERT INTO migration (id, time_completed) VALUES ('20260530232709_lovely_romulus', 1)`)
-
-        yield* DatabaseMigration.applyOnly(db, [sessionMetadataMigration])
-
-        expect(yield* db.all(sql`SELECT id FROM migration ORDER BY id`)).toEqual([
-          { id: "20260511173437_session-metadata" },
-          { id: "20260530232709_lovely_romulus" },
-        ])
+        yield* db.run(sql`INSERT INTO migration (id, time_completed) VALUES ('baseline-stale', 0)`)
+        const exit = yield* Effect.exit(DatabaseMigration.apply(db))
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: "baseline-stale" }])
       }),
     )
   })
 
-  test("skips drizzle import when migration table already has state", async () => {
+  test("rejects a baseline database whose migration journal is missing", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
-        yield* db.run(sql`INSERT INTO migration (id, time_completed) VALUES ('existing', 1)`)
-        yield* db.run(
-          sql`CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash text NOT NULL, created_at numeric, name text, applied_at TEXT)`,
+        yield* db.run(sql`CREATE TABLE session (id TEXT PRIMARY KEY)`)
+        const exit = yield* Effect.exit(DatabaseMigration.apply(db))
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* db.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration'`)).toBe(
+          undefined,
         )
-        yield* db.run(sql`
-          INSERT INTO __drizzle_migrations (hash, created_at, name, applied_at)
-          VALUES ('hash', 1, '20260127222353_familiar_lady_ursula', ${new Date().toISOString()})
-        `)
-
-        yield* DatabaseMigration.applyOnly(db, [])
-
-        expect(yield* db.all(sql`SELECT id FROM migration ORDER BY id`)).toEqual([{ id: "existing" }])
-      }),
-    )
-  })
-
-  test("adds workflow_node execution location columns on a new database", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* DatabaseMigration.apply(db)
-
-        expect(
-          yield* db.all(
-            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('directory', 'base_head') ORDER BY name`,
-          ),
-        ).toEqual([{ name: "base_head" }, { name: "directory" }])
-      }),
-    )
-  })
-
-  test("adds workflow_node worktree isolation columns on a new database", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [workflowNodeWorktreeIsolationMigration])
-
-        expect(
-          yield* db.all(
-            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN (
-              'worktree_directory', 'worktree_branch', 'worktree_commit',
-              'worktree_patch_path', 'worktree_patch_sha256', 'worktree_state',
-              'worktree_conflicts_with', 'touched_paths'
-            ) ORDER BY name`,
-          ),
-        ).toEqual([
-          { name: "touched_paths" },
-          { name: "worktree_branch" },
-          { name: "worktree_commit" },
-          { name: "worktree_conflicts_with" },
-          { name: "worktree_directory" },
-          { name: "worktree_patch_path" },
-          { name: "worktree_patch_sha256" },
-          { name: "worktree_state" },
-        ])
-      }),
-    )
-  })
-
-  test("upgrades a legacy workflow_node row with worktree isolation columns", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
-        )
-        yield* db.run(
-          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'wf', 'Legacy node', 'running')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [workflowNodeWorktreeIsolationMigration])
-
-        expect(
-          yield* db.get(
-            sql`SELECT id, worktree_directory AS directory, worktree_state AS state, touched_paths AS touchedPaths FROM workflow_node WHERE workflow_id = 'wf' AND id = 'legacy-node'`,
-          ),
-        ).toEqual({ id: "legacy-node", directory: null, state: null, touchedPaths: null })
-      }),
-    )
-  })
-
-  test("adds the workflow_node worktree history column on a new database", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* DatabaseMigration.apply(db)
-
-        expect(
-          yield* db.all(sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name = 'worktree_history'`),
-        ).toEqual([{ name: "worktree_history" }])
-      }),
-    )
-  })
-
-  test("upgrades a legacy workflow_node row with a null worktree history", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
-        )
-        yield* db.run(
-          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'wf', 'Legacy node', 'running')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [
-          workflowNodeWorktreeIsolationMigration,
-          workflowNodeWorktreeHistoryMigration,
-        ])
-
-        expect(
-          yield* db.get(
-            sql`SELECT id, worktree_history AS worktreeHistory FROM workflow_node WHERE workflow_id = 'wf' AND id = 'legacy-node'`,
-          ),
-        ).toEqual({ id: "legacy-node", worktreeHistory: null })
-      }),
-    )
-  })
-
-  test("upgrades a legacy workflow_node row with execution location columns", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(
-          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
-        )
-        yield* db.run(
-          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'wf', 'Legacy node', 'running')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [workflowNodeExecutionLocationMigration])
-
-        expect(
-          yield* db.all(
-            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('directory', 'base_head') ORDER BY name`,
-          ),
-        ).toEqual([{ name: "base_head" }, { name: "directory" }])
-        expect(
-          yield* db.get(
-            sql`SELECT id, directory, base_head AS baseHead FROM workflow_node WHERE workflow_id = 'wf' AND id = 'legacy-node'`,
-          ),
-        ).toEqual({ id: "legacy-node", directory: null, baseHead: null })
-      }),
-    )
-  })
-
-  test("adds workflow execution_directory on a new database", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* DatabaseMigration.apply(db)
-
-        expect(
-          yield* db.all(sql`SELECT name FROM pragma_table_info('workflow') WHERE name = 'execution_directory'`),
-        ).toEqual([{ name: "execution_directory" }])
-        expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
-      }),
-    )
-  })
-
-  test("upgrades a legacy workflow row without losing it", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE workflow (id text PRIMARY KEY, title text)`)
-        yield* db.run(sql`INSERT INTO workflow (id, title) VALUES ('legacy', 'Legacy workflow')`)
-
-        yield* DatabaseMigration.applyOnly(db, [workflowExecutionDirectoryMigration])
-
-        expect(
-          yield* db.all(sql`SELECT name FROM pragma_table_info('workflow') WHERE name = 'execution_directory'`),
-        ).toEqual([{ name: "execution_directory" }])
-        expect(
-          yield* db.get(
-            sql`SELECT id, title, execution_directory AS executionDirectory FROM workflow WHERE id = 'legacy'`,
-          ),
-        ).toEqual({ id: "legacy", title: "Legacy workflow", executionDirectory: null })
-      }),
-    )
-  })
-
-  test("adds workflow target fingerprint columns on a new database", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* DatabaseMigration.apply(db)
-
-        expect(
-          yield* db.all(
-            sql`SELECT name FROM pragma_table_info('workflow') WHERE name = 'target_fingerprint'`,
-          ),
-        ).toEqual([{ name: "target_fingerprint" }])
-        expect(
-          yield* db.all(
-            sql`SELECT name FROM pragma_table_info('workflow_node') WHERE name IN ('target_fingerprint', 'stale_target') ORDER BY name`,
-          ),
-        ).toEqual([{ name: "stale_target" }, { name: "target_fingerprint" }])
-      }),
-    )
-  })
-
-  test("upgrades legacy workflow and node rows with target fingerprint columns", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE workflow (id text PRIMARY KEY, title text)`)
-        yield* db.run(sql`INSERT INTO workflow (id, title) VALUES ('legacy', 'Legacy workflow')`)
-        yield* db.run(
-          sql`CREATE TABLE workflow_node (id text NOT NULL, workflow_id text NOT NULL, name text NOT NULL, status text NOT NULL, PRIMARY KEY (workflow_id, id))`,
-        )
-        yield* db.run(
-          sql`INSERT INTO workflow_node (id, workflow_id, name, status) VALUES ('legacy-node', 'legacy', 'Legacy node', 'running')`,
-        )
-
-        yield* DatabaseMigration.applyOnly(db, [dagTargetFingerprintMigration])
-
-        expect(
-          yield* db.get(
-            sql`SELECT id, title, target_fingerprint AS targetFingerprint FROM workflow WHERE id = 'legacy'`,
-          ),
-        ).toEqual({ id: "legacy", title: "Legacy workflow", targetFingerprint: null })
-        expect(
-          yield* db.get(
-            sql`SELECT id, target_fingerprint AS targetFingerprint, stale_target AS staleTarget FROM workflow_node WHERE workflow_id = 'legacy' AND id = 'legacy-node'`,
-          ),
-        ).toEqual({ id: "legacy-node", targetFingerprint: null, staleTarget: null })
       }),
     )
   })
