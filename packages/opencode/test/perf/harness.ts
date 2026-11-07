@@ -43,6 +43,7 @@ import { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { Skill } from "@/skill"
 import { Goal } from "@/goal/goal"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "@/format"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -206,26 +207,39 @@ const deps = Layer.mergeAll(
 
 const question = Question.layer.pipe(Layer.provideMerge(deps))
 const todo = Todo.layer.pipe(Layer.provideMerge(deps))
-const registry = ToolRegistry.layer.pipe(
-  Layer.provide(DagAgentMessages.defaultLayer),
-  Layer.provide(Skill.defaultLayer),
-  Layer.provide(Dag.defaultLayer),
-  Layer.provide(FetchHttpClient.layer),
-  Layer.provide(CrossSpawnSpawner.defaultLayer),
-  Layer.provide(Git.defaultLayer),
-  Layer.provide(Ripgrep.defaultLayer),
-  Layer.provide(Format.defaultLayer),
-  Layer.provide(flags),
-  Layer.provideMerge(todo),
-  Layer.provideMerge(question),
-  Layer.provideMerge(deps),
-)
+const makeRegistry = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>) =>
+  ToolRegistry.layer.pipe(
+    Layer.provide(DagAgentMessages.defaultLayer),
+    Layer.provide(Skill.defaultLayer),
+    Layer.provide(Dag.defaultLayer),
+    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(spawner),
+    Layer.provide(Git.defaultLayer),
+    Layer.provide(Ripgrep.defaultLayer),
+    Layer.provide(Format.defaultLayer),
+    Layer.provide(flags),
+    Layer.provideMerge(todo),
+    Layer.provideMerge(question),
+    Layer.provideMerge(deps),
+  )
+const registry = makeRegistry(CrossSpawnSpawner.defaultLayer)
 const trunc = Truncate.layer.pipe(Layer.provideMerge(deps))
+
+export interface PerfLayerOptions {
+  /**
+   * Spawner used by the shell tool inside the registry. S6 passes a fake shell
+   * so a long command runs on TestClock; everything else keeps the real
+   * spawner (git, ripgrep, snapshot).
+   */
+  readonly shell?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>
+}
 
 /** Build the perf layer for one fake provider instance. */
 export function makePerfLayer(
   provider: FakeProvider,
+  options?: PerfLayerOptions,
 ): Layer.Layer<SessionPrompt.Service | Session.Service, never, never> {
+  const registryLayer = options?.shell ? makeRegistry(options.shell) : registry
   const proc = SessionProcessor.layer.pipe(
     Layer.provide(summary),
     Layer.provide(Image.defaultLayer),
@@ -241,7 +255,7 @@ export function makePerfLayer(
     Layer.provideMerge(run),
     Layer.provideMerge(compact),
     Layer.provideMerge(proc),
-    Layer.provideMerge(registry),
+    Layer.provideMerge(registryLayer),
     Layer.provideMerge(trunc),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(Goal.defaultLayer),
