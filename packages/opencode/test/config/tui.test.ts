@@ -305,7 +305,7 @@ it.instance("skips migration when tui.json already exists", () =>
 it.instance("continues loading tui config when legacy source cannot be stripped", () =>
   withCleanState(
     Effect.gen(function* () {
-      // root bypasses file permissions, so the source can always be stripped
+      // Root ignores the 0444 mode and can still strip the legacy source.
       if (process.getuid?.() === 0) return
       const fs = yield* FSUtil.Service
       const test = yield* TestInstance

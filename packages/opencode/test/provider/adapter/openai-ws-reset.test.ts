@@ -138,12 +138,11 @@ test("reset preserves the stream failure budget and a sticky HTTP fallback decis
     expect((await failure()).message).toContain("WebSocket closed before response.completed")
 
     // The third failure crosses the budget only when reset kept the counter.
-    // The first event is already streamed, so this attempt still returns the
-    // errored WebSocket response; the crossing only routes later calls to HTTP.
-    const third = await transport(fallback.url, streamRequest())
-    expect((await readTextError(third.text())).message).toContain("WebSocket closed before response.completed")
-    expect(await (await transport(fallback.url, streamRequest())).text()).toBe("http")
+    // The websocket emits its first event before closing, so this request still
+    // reports the stream error; later requests stick to HTTP fallback.
+    expect((await failure()).message).toContain("WebSocket closed before response.completed")
     transport.reset("session-1")
+    expect(await (await transport(fallback.url, streamRequest())).text()).toBe("http")
     expect(await (await transport(fallback.url, streamRequest())).text()).toBe("http")
 
     expect(upgrades).toBe(3)
