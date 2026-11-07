@@ -1,4 +1,5 @@
 import { Database as BunDatabase, type SQLQueryBindings } from "bun:sqlite"
+import { mock } from "bun:test"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { AppProcess } from "@opencode-ai/core/process"
@@ -8,6 +9,9 @@ import type { Connection } from "effect/sql/SqlConnection"
 import { SqlError, classifySqliteError } from "effect/sql/SqlError"
 import * as Statement from "effect/sql/Statement"
 import * as Reactivity from "effect/reactivity/Reactivity"
+import * as MessageV2 from "@/session/message-v2"
+import * as ToolJsonSchema from "@/tool/json-schema"
+import { Snapshot } from "@/snapshot"
 
 // Engine-level counters for the H0 performance baseline (Issue #1009).
 //
@@ -63,6 +67,53 @@ export function note(key: CounterKey, amount = 1) {
 export function touch() {
   activityTicks += 1
 }
+
+// JSON parse bytes. Event payloads live in `text({ mode: "json" })` columns
+// (packages/core/src/event/sql.ts), so the driver parses them with whichever
+// `JSON.parse` is current at call time; there is no project symbol to wrap
+// without touching `src/`. Patching the process-global once per test process
+// measures every parse the engine performs, including event reads and JSON
+// columns of messages and parts. The probe's own serialization stays on the
+// captured native function so it adds no engine bytes.
+const nativeParse = JSON.parse
+let jsonParseCounted = false
+function installJsonParseCounter() {
+  if (jsonParseCounted) return
+  jsonParseCounted = true
+  JSON.parse = ((text: string, reviver?: unknown) => {
+    if (typeof text === "string") note("json.parseBytes", Buffer.byteLength(text))
+    return nativeParse(text, reviver as never)
+  }) as typeof JSON.parse
+}
+installJsonParseCounter()
+
+// `convert.messages` and `schema.fromSchema` are plain module functions, not
+// Effect services, so the probe replaces their exports for this test process.
+// The mock factories spread the real namespace and delegate to the captured
+// originals, so behavior is unchanged; each Bun test file runs in its own
+// process, keeping the replacement scoped to the perf suite.
+const messageV2Exports = { ...MessageV2 }
+const jsonSchemaExports = { ...ToolJsonSchema }
+const realToModelMessagesEffect = messageV2Exports.toModelMessagesEffect
+const realFromSchema = jsonSchemaExports.fromSchema
+
+mock.module("@/session/message-v2", () => ({
+  ...messageV2Exports,
+  toModelMessagesEffect: (...args: Parameters<typeof realToModelMessagesEffect>) =>
+    Effect.suspend(() => {
+      // One unit per input message converted for the next provider request.
+      note("convert.messages", args[0]?.length ?? 0)
+      return realToModelMessagesEffect(...args)
+    }),
+}))
+
+mock.module("@/tool/json-schema", () => ({
+  ...jsonSchemaExports,
+  fromSchema: (...args: Parameters<typeof realFromSchema>) => {
+    note("schema.fromSchema")
+    return realFromSchema(...args)
+  },
+}))
 
 export function snapshot(): Counters {
   return { ...counters }
@@ -340,3 +391,35 @@ export const countingAppProcessLayer = Layer.effect(
 
 /** Counting EventV2 layer on top of the counting database. */
 export const countingEventBusLayer = countingEventLayer(EventV2.layer.pipe(Layer.provide(countingDatabaseLayer)))
+
+/**
+ * Wrap Snapshot so calls that queue behind the per-worktree git semaphore are
+ * counted. `snapshot/index.ts` keeps its semaphore private, so the probe counts
+ * service calls that enter while another locked call is still running: every
+ * public locked method (cleanup/track/patch/restore/revert/diff/diffFull)
+ * takes the same single-permit lock, making overlap equal to a lock wait.
+ */
+export const countingSnapshotLayer = <E, R>(base: Layer.Layer<Snapshot.Service, E, R>) =>
+  Layer.effect(
+    Snapshot.Service,
+    Effect.gen(function* () {
+      const service = yield* Snapshot.Service
+      let active = 0
+      const counted = <A, E2, R2>(fx: () => Effect.Effect<A, E2, R2>): Effect.Effect<A, E2, R2> =>
+        Effect.suspend(() => {
+          if (active > 0) note("snapshot.lockWaits")
+          active += 1
+          return fx().pipe(Effect.ensuring(Effect.sync(() => (active -= 1))))
+        })
+      return Snapshot.Service.of({
+        init: service.init,
+        cleanup: () => counted(() => service.cleanup()),
+        track: () => counted(() => service.track()),
+        patch: (hash) => counted(() => service.patch(hash)),
+        restore: (snapshot) => counted(() => service.restore(snapshot)),
+        revert: (patches) => counted(() => service.revert(patches)),
+        diff: (hash) => counted(() => service.diff(hash)),
+        diffFull: (from, to) => counted(() => service.diffFull(from, to)),
+      })
+    }),
+  ).pipe(Layer.provide(base))

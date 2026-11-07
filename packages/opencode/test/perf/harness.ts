@@ -49,13 +49,19 @@ import { Format } from "@/format"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { testProviderConfig } from "../lib/test-provider"
-import { countingAppProcessLayer, countingDatabaseLayer, countingEventLayer } from "../lib/engine-probe"
+import {
+  countingAppProcessLayer,
+  countingDatabaseLayer,
+  countingEventLayer,
+  countingSnapshotLayer,
+} from "../lib/engine-probe"
 import type { FakeProvider } from "../lib/fake-provider"
 
 // Layer graph for the H0 scenarios. It mirrors test/session/prompt-empty.test.ts
 // (the smallest SessionPrompt harness) with production defaults for runtime
-// flags and two substitutions:
+// flags and three substitutions:
 //   - the database and event bus come from test/lib/engine-probe.ts;
+//   - Snapshot is wrapped to observe lock waits;
 //   - `LLM.Service` is the scripted engine-probe provider, so no sockets or
 //     test LLM server are involved.
 // SessionSummary stays stubbed for S1: summary generation is measured by the
@@ -155,10 +161,12 @@ const flags = RuntimeFlags.layer()
 
 const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
 
-const snapshot = Snapshot.layer.pipe(
-  Layer.provide(countingAppProcessLayer),
-  Layer.provide(FSUtil.defaultLayer),
-  Layer.provide(Config.defaultLayer),
+const snapshot = countingSnapshotLayer(
+  Snapshot.layer.pipe(
+    Layer.provide(countingAppProcessLayer),
+    Layer.provide(FSUtil.defaultLayer),
+    Layer.provide(Config.defaultLayer),
+  ),
 )
 
 const status = SessionStatus.layer.pipe(Layer.provideMerge(bridgeLayer))
