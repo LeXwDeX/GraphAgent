@@ -96,6 +96,25 @@ describe("§4.1 loadChain reads hooks.json from correct paths (global + project 
       ])
     }
   })
+
+  test("without an explicit path the global layer follows GRAPHAGENT_CONFIG_DIR", async () => {
+    const configDir = await mktmp("config-dir")
+    const projectDir = await mktmp("project-config-dir")
+    const previous = process.env.GRAPHAGENT_CONFIG_DIR
+    process.env.GRAPHAGENT_CONFIG_DIR = configDir
+    try {
+      await writeGlobalHooksJson(configDir, hooksJsonTopLevel("config-dir"))
+      const merged = loadChain(projectDir, projectDir)
+      expect(merged.hooks?.SessionStart?.map((m) => m.hooks[0].command)).toEqual(["config-dir"])
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+      else process.env.GRAPHAGENT_CONFIG_DIR = previous
+      await Promise.all([
+        fs.rm(configDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  })
 })
 
 describe("§4.2 merge order is global → project → worktree concat-append (not override)", () => {
