@@ -1697,8 +1697,13 @@ const serviceLayer = Layer.effect(
                 if (workflow) yield* recoverWorkflow(workflow)
                 return
               }
-              yield* entry.evalLock.withPermits(1)(
+              const handled = yield* entry.evalLock.withPermits(1)(
                 Effect.gen(function* () {
+                  // A stale terminal event for the run this replan reopened can
+                  // drop the runtime entry while this handler waits for the
+                  // evalLock. Scheduling against that dead entry would silently
+                  // do nothing; recovery owns the new revision instead.
+                  if (runtimes.get(dagID) !== entry) return false
                   const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
                   // F2 (DAG-03): a replan is the parent's explicit disposition
                   // of the verdict — release the fail-closed veto hold and
@@ -1905,8 +1910,13 @@ const serviceLayer = Layer.effect(
                   }
                   yield* spawnReady(dagID)
                   yield* checkCompletion(dagID)
+                  return true
                 }),
               )
+              if (!handled) {
+                const workflow = yield* store.getWorkflow(dagID)
+                if (workflow) yield* recoverWorkflow(workflow)
+              }
             }).pipe(guarded("WorkflowReplanned")),
           ),
           Effect.forkScoped({ startImmediately: true }),
@@ -1935,8 +1945,27 @@ const serviceLayer = Layer.effect(
                 const entry = runtimes.get(dagID)
                 const parentSessionID = entry?.parentSessionID
                 if (entry) {
-                  yield* entry.evalLock.withPermits(1)(
+                  const cleaned = yield* entry.evalLock.withPermits(1)(
                     Effect.gen(function* () {
+                      // Terminal events have their own subscriber fiber per event
+                      // type, so a late WorkflowCompleted/Failed/Cancelled can be
+                      // delivered after an additive extend already reopened the
+                      // workflow (WorkflowReplanned). Projectors run inside the
+                      // durable publish transaction, so a non-terminal durable row
+                      // proves this event is stale: keep the new revision's fibers
+                      // and runtime entry; its own terminal event cleans up later.
+                      const durable = yield* store.getWorkflow(dagID)
+                      if (durable && !isTerminalWorkflowStatusValue(durable.status)) {
+                        yield* Effect.logDebug("DagLoop dropped stale workflow terminal event", {
+                          dagID,
+                          event: def.type,
+                          dbStatus: durable.status,
+                        })
+                        return false
+                      }
+                      // The entry may have been removed or replaced while this
+                      // handler waited for the evalLock.
+                      if (runtimes.get(dagID) !== entry) return false
                       for (const [nodeID, fiber] of entry.fibers) {
                         const node = yield* store.getNode(dagID, nodeID)
                         yield* abortChild(
@@ -1953,8 +1982,10 @@ const serviceLayer = Layer.effect(
                       entry.fibers.clear()
                       entry.watchers.clear()
                       runtimes.delete(dagID)
+                      return true
                     }),
                   )
+                  if (!cleaned) return
                 }
                 // P1-6: trigger wake on workflow terminal so the parent
                 // learns the final outcome even if no idle event fires.
@@ -1978,7 +2009,10 @@ const serviceLayer = Layer.effect(
                   // with no runtime to ever clean it. Foreign-project events
                   // are a no-op here.
                   const wf = yield* store.getWorkflow(dagID)
-                  if (wf && wf.projectId === ctx.project.id) {
+                  // A stale terminal event for a reopened (running) workflow must
+                  // not release its registration; a terminal row only event is
+                  // the one that owes the wake.
+                  if (wf && wf.projectId === ctx.project.id && isTerminalWorkflowStatusValue(wf.status)) {
                     yield* automation.unregister(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
                     // #948: a workflow terminalized without a runtime entry
                     // (swept at host level, or recovery that never adopted)
