@@ -16,7 +16,7 @@ function isDestroyed(style: SyntaxStyle) {
 }
 
 test("binds syntax styles to the renderer owner and releases replaced styles", async () => {
-  const theme = resolveTheme(DEFAULT_THEMES.opencode, "dark")
+  const theme = resolveTheme(DEFAULT_THEMES.graphagent, "dark")
   const owners: NativeResourceOwner[] = []
   const styles: SyntaxStyle[] = []
   let swap!: () => void

@@ -1,6 +1,5 @@
 import {
   BoxRenderable,
-  RGBA,
   TextareaRenderable,
   MouseEvent,
   PasteEvent,
@@ -16,7 +15,7 @@ import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@graphagent/core/flag/flag"
 import { Identifier } from "@graphagent/core/id/id"
-import { tint, useTheme } from "../../context/theme"
+import { useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
@@ -48,7 +47,6 @@ import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
-import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
@@ -111,10 +109,6 @@ const DRAFT_RETENTION_MIN_CHARS = 20
 function randomIndex(count: number) {
   if (count <= 0) return 0
   return Math.floor(Math.random() * count)
-}
-
-function fadeColor(color: RGBA, alpha: number) {
-  return RGBA.fromValues(color.r, color.g, color.b, color.a * alpha)
 }
 
 function hasEditorRangeSelection(selection: EditorSelection["ranges"][number]) {
@@ -212,7 +206,6 @@ export function Prompt(props: PromptProps) {
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
-  const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
@@ -1513,13 +1506,7 @@ export function Prompt(props: PromptProps) {
     return !!current
   })
 
-  const agentMetaAlpha = createFadeIn(() => !!local.agent.current(), animationsEnabled)
-  const modelMetaAlpha = createFadeIn(() => !!local.agent.current() && store.mode === "normal", animationsEnabled)
-  const variantMetaAlpha = createFadeIn(
-    () => !!local.agent.current() && store.mode === "normal" && showVariant(),
-    animationsEnabled,
-  )
-  const borderHighlight = createMemo(() => tint(theme.border, highlight(), agentMetaAlpha()))
+  const borderHighlight = highlight
 
   const placeholderText = createMemo(() => {
     if (props.showPlaceholder === false) return undefined
@@ -1650,6 +1637,7 @@ export function Prompt(props: PromptProps) {
               onMouseDown={(r: MouseEvent) => r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
               cursorColor={props.disabled ? theme.backgroundElement : theme.text}
+              cursorStyle={{ style: "block", blinking: false }}
               syntaxStyle={syntax()}
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
@@ -1657,25 +1645,20 @@ export function Prompt(props: PromptProps) {
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
                   {(agent) => (
                     <>
-                      <text fg={fadeColor(highlight(), agentMetaAlpha())}>
+                      <text fg={highlight()}>
                         {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
                       </text>
                       <Show when={store.mode === "normal"}>
                         <box flexDirection="row" gap={1}>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
-                          <text
-                            flexShrink={0}
-                            fg={fadeColor(leader() ? theme.textMuted : theme.text, modelMetaAlpha())}
-                          >
+                          <text fg={theme.textMuted}>·</text>
+                          <text flexShrink={0} fg={leader() ? theme.textMuted : theme.text}>
                             {local.model.parsed().model}
                           </text>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
+                          <text fg={theme.textMuted}>{currentProviderLabel()}</text>
                           <Show when={showVariant()}>
-                            <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
+                            <text fg={theme.textMuted}>·</text>
                             <text>
-                              <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
-                                {local.model.variant.current()}
-                              </span>
+                              <span style={{ fg: theme.warning, bold: true }}>{local.model.variant.current()}</span>
                             </text>
                           </Show>
                         </box>
