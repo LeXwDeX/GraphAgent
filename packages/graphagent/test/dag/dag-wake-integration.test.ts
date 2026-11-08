@@ -2575,4 +2575,38 @@ describe("DagLoop atomic wake integration", () => {
       ),
     )
   })
+
+  it("does not attribute a structurally cancelled node to the agent wake", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Cancelled attribution",
+            config: { name: "cancelled-attribution", nodes: [node("node-a"), node("node-b")] },
+          })
+          const first = yield* takeWithin(childPrompts, "first root node did not start")
+          const second = yield* takeWithin(childPrompts, "second root node did not start")
+          const roots = new Map([first, second].map((item) => [item.title, item]))
+
+          // NodeCancelled lands on failed + superseded + error_class=cancelled,
+          // then a real agent failure on node-b wakes the parent. The cancelled
+          // row must not be attributed as a failed agent node.
+          yield* dag.nodeCancelled(dagID, "node-a")
+          yield* dag.nodeFailed(dagID, "node-b", "agent failed", "exec_failed")
+          yield* Deferred.succeed(roots.get("node-a")!.release, "ignored")
+          yield* Deferred.succeed(roots.get("node-b")!.release, "ignored")
+
+          const parent = yield* takeWithin(parentPrompts, "workflow failure did not wake the parent")
+          const wakeText = promptText(parent.input)
+          expect(wakeText).toContain("[DAG Workflow failed]")
+          expect(wakeText).toContain('Failed nodes:\n- "node-b" (exec_failed): agent failed')
+          expect(wakeText).not.toContain('- "node-a"')
+          expect((yield* store.getCurrentNodes(dagID)).map((node) => node.id)).not.toContain("node-a")
+          yield* Deferred.succeed(parent.release, "success")
+        }),
+      ),
+    )
+  })
 })
