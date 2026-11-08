@@ -186,6 +186,8 @@ type Mailbox = {
   revision: number
   closed_reason: string | null
   result_nudge_revision: number
+  /** Recipient directory, joined by the queries that feed `changed` events. */
+  session_directory?: string | null
 }
 type StoredMessage = {
   id: string
@@ -355,7 +357,11 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         yield* tx.run(sql`INSERT INTO agent_mailbox (id,session_id,workflow_id,node_id,attempt_id,revision,time_created)
       VALUES (${endpoint.id},${endpoint.sessionID},${endpoint.workflowID ?? null},${endpoint.nodeID ?? null},${endpoint.attemptID ?? null},0,${Date.now()}) ON CONFLICT(id) DO NOTHING`)
-        return (yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${endpoint.id}`))!
+        // Join the recipient directory so a mutation can publish its `changed`
+        // event without a second lookup.
+        return (yield* tx.get<Mailbox>(
+          sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.id = ${endpoint.id}`,
+        ))!
       })
     const snapshot = (tx: Tx, row: StoredSnapshot) =>
       Effect.gen(function* () {
@@ -377,11 +383,9 @@ export const layer = Layer.effect(
           stopReason: row.stop_reason ?? undefined,
         }
       })
-    const directory = (tx: Tx, sessionID: string) =>
-      tx.get<{ directory: string }>(sql`SELECT directory FROM session WHERE id = ${sessionID}`)
     const change = (
       box: Pick<Mailbox, "session_id" | "workflow_id" | "node_id">,
-      directory: string | undefined,
+      directory: string | null | undefined,
       kind: Change["kind"],
       mailboxVersion: number,
     ): Change => ({
@@ -393,31 +397,44 @@ export const layer = Layer.effect(
       mailboxVersion,
     })
     /** Bump the mailbox version and queue its post-commit event. */
-    const record = (tx: Tx, box: Mailbox, kind: Change["kind"], changes: Change[]) =>
+    const record = (
+      tx: Tx,
+      box: Pick<Mailbox, "id" | "session_id" | "workflow_id" | "node_id">,
+      directory: string | null | undefined,
+      kind: Change["kind"],
+      changes: Change[],
+    ) =>
       Effect.gen(function* () {
         const updated = yield* tx.get<{ change_seq: number }>(
           sql`UPDATE agent_mailbox SET change_seq = change_seq + 1 WHERE id = ${box.id} RETURNING change_seq`,
         )
         if (!updated) return
-        const session = yield* directory(tx, box.session_id)
-        changes.push(change(box, session?.directory, kind, updated.change_seq))
+        changes.push(change(box, directory, kind, updated.change_seq))
       })
+    /** The caller's own mailbox row, derived from its validated endpoint. */
+    const ownBox = (endpoint: Endpoint) => ({
+      id: endpoint.id,
+      session_id: endpoint.sessionID,
+      workflow_id: endpoint.workflowID ?? null,
+      node_id: endpoint.nodeID ?? null,
+    })
     const undeliverable = (tx: Tx, mailboxID: string, reason: string) =>
       tx.all<{ id: string }>(
         sql`UPDATE agent_message SET state = 'undeliverable', reason = ${reason} WHERE recipient_id = ${mailboxID} AND state = 'queued' RETURNING id`,
       )
-    const close = (tx: Tx, ids: string[], reason: string, changes: Change[]) =>
+    const close = (tx: Tx, boxes: Mailbox[], reason: string, changes: Change[]) =>
       Effect.gen(function* () {
-        for (const id of ids) {
-          const box = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${id}`)
-          if (!box) continue
-          const released = yield* undeliverable(tx, id, reason)
+        for (const box of boxes) {
+          const released = yield* undeliverable(tx, box.id, reason)
           // A repeat close with nothing left to release is a no-op.
           if (box.closed_reason !== null && released.length === 0) continue
-          yield* tx.run(
-            sql`UPDATE agent_mailbox SET closed_reason = COALESCE(closed_reason,${reason}) WHERE id = ${id}`,
+          // Fold the version bump into the close: a close is one durable change
+          // and must not cost a second UPDATE.
+          const closed = yield* tx.get<{ change_seq: number }>(
+            sql`UPDATE agent_mailbox SET closed_reason = COALESCE(closed_reason,${reason}), change_seq = change_seq + 1 WHERE id = ${box.id} RETURNING change_seq`,
           )
-          yield* record(tx, box, "closed", changes)
+          if (!closed) continue
+          changes.push(change(box, box.session_directory, "closed", closed.change_seq))
         }
       })
     const metadata = (tx: Tx, endpoint: Endpoint, workflowID?: string) =>
@@ -469,7 +486,7 @@ export const layer = Layer.effect(
                   const result = yield* commit
                   const finalReason = typeof reason === "function" ? reason(result) : reason
                   const boxes = yield* tx.all<Mailbox>(
-                    sql`SELECT * FROM agent_mailbox WHERE workflow_id = ${workflowID} AND closed_reason IS NULL`,
+                    sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.workflow_id = ${workflowID} AND b.closed_reason IS NULL`,
                   )
                   const wf = yield* workflow(tx, workflowID)
                   for (const box of boxes) {
@@ -484,7 +501,7 @@ export const layer = Layer.effect(
                     if (finalReason || invalidAttempt)
                       yield* close(
                         tx,
-                        [box.id],
+                        [box],
                         finalReason ??
                           (n && attempt(n) !== box.attempt_id
                             ? "attempt_replaced"
@@ -585,8 +602,7 @@ export const layer = Layer.effect(
             const id = `agm_${randomUUID()}`
             yield* tx.run(sql`INSERT INTO agent_message (id,workflow_id,sender_id,recipient_id,recipient_session_id,sender,recipient,idempotency_key,request,content,reply_to,recipient_sequence,accepted_revision,state,transcript_id,part_id,time_created)
         VALUES (${id},${wf.id},${sender.id},${recipient.id},${recipient.sessionID},${JSON.stringify(sender)},${JSON.stringify(recipient)},${request.idempotencyKey},${canonical},${request.content},${request.replyTo ?? null},${revised.revision},${revised.revision},'queued',${Identifier.ascending("message")},${Identifier.ascending("part")},${Date.now()})`)
-            const target = yield* directory(tx, box.session_id)
-            changes.push(change(box, target?.directory, "queued", revised.change_seq))
+            changes.push(change(box, box.session_directory, "queued", revised.change_seq))
             return success(
               mapMessage((yield* tx.get<StoredMessage>(sql`SELECT * FROM agent_message WHERE id = ${id}`))!),
             )
@@ -683,7 +699,6 @@ export const layer = Layer.effect(
           Effect.gen(function* () {
             const endpoint = yield* self(tx, caller)
             if (!endpoint) return reject("unauthorized")
-            const box = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${endpoint.id}`)
             const row = yield* tx.get<StoredSnapshot>(
               sql`SELECT * FROM agent_input_snapshot WHERE id = ${snapshotID} AND mailbox_id = ${endpoint.id}`,
             )
@@ -712,7 +727,7 @@ export const layer = Layer.effect(
               yield* tx.run(
                 sql`UPDATE agent_message SET state = 'delivered', snapshot_id = ${row.id}, time_delivered = ${Date.now()} WHERE id = ${m.id} AND state = 'queued'`,
               )
-            if (box) yield* record(tx, box, "delivered", changes)
+            yield* record(tx, ownBox(endpoint), caller.directory, "delivered", changes)
             return success(yield* snapshot(tx, { ...row, associated: 1 }))
           }),
         ),
@@ -779,8 +794,7 @@ export const layer = Layer.effect(
             if (!endpoint) return
             const released = yield* undeliverable(tx, endpoint.id, reason)
             if (released.length === 0) return
-            const box = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${endpoint.id}`)
-            if (box) yield* record(tx, box, "undeliverable", changes)
+            yield* record(tx, ownBox(endpoint), caller.directory, "undeliverable", changes)
           }),
         ),
       markStopped: (caller, snapshotID, reason) =>
@@ -851,8 +865,7 @@ export const layer = Layer.effect(
                   )
                   if (!claimed) return reject("stale_input")
                   if (input.failureReason) yield* undeliverable(tx, box.id, input.failureReason)
-                  const target = yield* directory(tx, box.session_id)
-                  changes.push(change(box, target?.directory, "closed", claimed.change_seq))
+                  changes.push(change(box, box.session_directory, "closed", claimed.change_seq))
                   return success(yield* commit)
                 }).pipe(Effect.tap(() => afterCommit(changes))),
               { behavior: "immediate" },
@@ -871,29 +884,19 @@ export const layer = Layer.effect(
             // Materialize a tombstone even if this session never received a message.
             const s = yield* session(tx, sessionID)
             if (s) yield* mailbox(tx, main(s))
-            const boxes = yield* tx.all<{ id: string }>(
-              sql`SELECT id FROM agent_mailbox WHERE session_id = ${sessionID}`,
+            const boxes = yield* tx.all<Mailbox>(
+              sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.session_id = ${sessionID}`,
             )
-            yield* close(
-              tx,
-              boxes.map((b) => b.id),
-              reason,
-              changes,
-            )
+            yield* close(tx, boxes, reason, changes)
           }),
         ),
       closeWorkflow: (workflowID, reason) =>
         transaction((tx, changes) =>
           Effect.gen(function* () {
-            const boxes = yield* tx.all<{ id: string }>(
-              sql`SELECT id FROM agent_mailbox WHERE workflow_id = ${workflowID}`,
+            const boxes = yield* tx.all<Mailbox>(
+              sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.workflow_id = ${workflowID}`,
             )
-            yield* close(
-              tx,
-              boxes.map((b) => b.id),
-              reason,
-              changes,
-            )
+            yield* close(tx, boxes, reason, changes)
           }),
         ),
       reconcile: (caller) =>
@@ -902,7 +905,7 @@ export const layer = Layer.effect(
             const current = yield* session(tx, caller.sessionID)
             if (!authorizedSession(caller, current)) return
             const boxes = yield* tx.all<Mailbox>(
-              sql`SELECT * FROM agent_mailbox WHERE closed_reason IS NULL AND (session_id = ${caller.sessionID} OR workflow_id IN (SELECT id FROM workflow WHERE session_id = ${caller.sessionID} AND project_id = ${caller.projectID}))`,
+              sql`SELECT b.*, s.directory AS session_directory FROM agent_mailbox b LEFT JOIN session s ON s.id = b.session_id WHERE b.closed_reason IS NULL AND (b.session_id = ${caller.sessionID} OR b.workflow_id IN (SELECT id FROM workflow WHERE session_id = ${caller.sessionID} AND project_id = ${caller.projectID}))`,
             )
             for (const b of boxes) {
               if (!b.workflow_id || !b.node_id) continue
@@ -919,7 +922,7 @@ export const layer = Layer.effect(
               if (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== b.attempt_id)
                 yield* close(
                   tx,
-                  [b.id],
+                  [b],
                   n && attempt(n) !== b.attempt_id
                     ? "attempt_replaced"
                     : wf?.status === "cancelled" || n?.superseded
