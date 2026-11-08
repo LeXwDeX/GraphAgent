@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
@@ -7,9 +8,18 @@ import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { KVProvider } from "../../../src/context/kv"
 import { ThemeProvider } from "../../../src/context/theme"
 import { TuiConfigProvider } from "../../../src/config"
+import { setLanguage } from "../../../src/i18n"
 import { DiffViewerFileTree } from "../../../src/routes/diff/file-tree"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { allExpandedFileTreeDirectories, buildFileTree } from "../../../src/routes/diff/file-tree-utils"
+
+beforeEach(() => {
+  setLanguage("en")
+})
+
+afterEach(() => {
+  setLanguage(DEFAULT_LANGUAGE)
+})
 
 const theme = {
   background: RGBA.fromHex("#000000"),

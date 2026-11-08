@@ -775,7 +775,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       },
       {
         name: "diff.open",
-        title: "Open diff viewer",
+        title: t("diff.command.open"),
         category: "VCS",
         slashName: "diff",
         run: () => {

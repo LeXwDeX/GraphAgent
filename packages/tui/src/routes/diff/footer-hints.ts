@@ -1,5 +1,6 @@
 import { createMemo } from "solid-js"
 import { useCommandShortcut } from "../../keymap"
+import { t } from "../../i18n"
 import type { FooterHint } from "../../shell/footer"
 
 /** Footer hints owned by the diff route, shown through AppFrame's footer. */
@@ -15,14 +16,14 @@ export function useDiffFooterHints(): () => FooterHint[] {
 
   return createMemo(() => {
     const hints: FooterHint[] = []
-    if (focus()) hints.push({ key: focus(), label: "focus file tree" })
-    if (nextFile()) hints.push({ key: nextFile(), label: "next file" })
-    if (nextHunk()) hints.push({ key: nextHunk(), label: "next hunk" })
-    if (previousHunk()) hints.push({ key: previousHunk(), label: "previous hunk" })
-    if (previousFile()) hints.push({ key: previousFile(), label: "previous file" })
-    if (switchSource()) hints.push({ key: switchSource(), label: "switch source" })
-    if (markReviewed()) hints.push({ key: markReviewed(), label: "mark reviewed" })
-    if (help()) hints.push({ key: help(), label: "all" })
+    if (focus()) hints.push({ key: focus(), label: t("diff.footer.focusFileTree") })
+    if (nextFile()) hints.push({ key: nextFile(), label: t("diff.footer.nextFile") })
+    if (nextHunk()) hints.push({ key: nextHunk(), label: t("diff.footer.nextHunk") })
+    if (previousHunk()) hints.push({ key: previousHunk(), label: t("diff.footer.previousHunk") })
+    if (previousFile()) hints.push({ key: previousFile(), label: t("diff.footer.previousFile") })
+    if (switchSource()) hints.push({ key: switchSource(), label: t("diff.footer.switchSource") })
+    if (markReviewed()) hints.push({ key: markReviewed(), label: t("diff.footer.markReviewed") })
+    if (help()) hints.push({ key: help(), label: t("diff.footer.all") })
     return hints
   })
 }

@@ -14,6 +14,7 @@ import { useDiffNavigation } from "./route"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import path from "path"
 import { createEffect, createMemo, createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { t } from "../../i18n"
 import { DiffViewerFileTree } from "./file-tree"
 import { Panel, PanelGroup, Separator } from "./ui"
 import { DialogSelect } from "../../ui/dialog-select"
@@ -82,9 +83,9 @@ function storedView(value: unknown): DiffView | undefined {
 }
 
 function diffSourceLabel(mode: DiffMode) {
-  if (mode === "last-turn") return "last turn"
-  if (mode === "branch") return "main branch"
-  return "working tree"
+  if (mode === "last-turn") return t("diff.source.lastTurn")
+  if (mode === "branch") return t("diff.source.branch")
+  return t("diff.source.git")
 }
 
 export function Diff() {
@@ -415,7 +416,7 @@ export function Diff() {
   const commands = [
     {
       name: "diff.close",
-      title: "Close diff viewer",
+      title: t("diff.command.close"),
       category: "VCS",
       run() {
         dialog.clear()
@@ -424,7 +425,7 @@ export function Diff() {
     },
     {
       name: "diff.down",
-      title: "Move diff viewer down",
+      title: t("diff.command.down"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -438,7 +439,7 @@ export function Diff() {
     },
     {
       name: "diff.up",
-      title: "Move diff viewer up",
+      title: t("diff.command.up"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -452,7 +453,7 @@ export function Diff() {
     },
     {
       name: "diff.page.down",
-      title: "Page diff viewer down",
+      title: t("diff.command.page.down"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -466,7 +467,7 @@ export function Diff() {
     },
     {
       name: "diff.page.up",
-      title: "Page diff viewer up",
+      title: t("diff.command.page.up"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -480,7 +481,7 @@ export function Diff() {
     },
     {
       name: "diff.toggle",
-      title: "Toggle diff viewer item",
+      title: t("diff.command.toggle"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -491,7 +492,7 @@ export function Diff() {
     },
     {
       name: "diff.expand",
-      title: "Expand diff viewer item",
+      title: t("diff.command.expand"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -509,7 +510,7 @@ export function Diff() {
     },
     {
       name: "diff.expand_all",
-      title: "Expand all diff viewer folders",
+      title: t("diff.command.expandAll"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -520,7 +521,7 @@ export function Diff() {
     },
     {
       name: "diff.collapse",
-      title: "Collapse diff viewer item",
+      title: t("diff.command.collapse"),
       category: "VCS",
       run: focusRunner({
         files() {
@@ -539,7 +540,7 @@ export function Diff() {
     },
     {
       name: "diff.next_hunk",
-      title: "Jump to next diff hunk",
+      title: t("diff.command.nextHunk"),
       category: "VCS",
       run() {
         jumpRelativeHunk(1)
@@ -547,7 +548,7 @@ export function Diff() {
     },
     {
       name: "diff.previous_hunk",
-      title: "Jump to previous diff hunk",
+      title: t("diff.command.previousHunk"),
       category: "VCS",
       run() {
         jumpRelativeHunk(-1)
@@ -555,7 +556,7 @@ export function Diff() {
     },
     {
       name: "diff.next_file",
-      title: "Jump to next diff file",
+      title: t("diff.command.nextFile"),
       category: "VCS",
       run() {
         jumpRelativePatchFile(1)
@@ -563,7 +564,7 @@ export function Diff() {
     },
     {
       name: "diff.previous_file",
-      title: "Jump to previous diff file",
+      title: t("diff.command.previousFile"),
       category: "VCS",
       run() {
         jumpRelativePatchFile(-1)
@@ -571,7 +572,7 @@ export function Diff() {
     },
     {
       name: "diff.mark_reviewed",
-      title: "Toggle selected diff file reviewed",
+      title: t("diff.command.markReviewed"),
       category: "VCS",
       run() {
         toggleSelectedFileReviewed()
@@ -579,7 +580,7 @@ export function Diff() {
     },
     {
       name: "diff.switch_focus",
-      title: "Switch diff viewer focus",
+      title: t("diff.command.switchFocus"),
       category: "VCS",
       run() {
         if (!showFileTree()) return
@@ -592,7 +593,7 @@ export function Diff() {
     },
     {
       name: "diff.toggle_file_tree",
-      title: "Toggle diff viewer file tree",
+      title: t("diff.command.toggleFileTree"),
       category: "VCS",
       run() {
         const next = !fileTreeEnabled()
@@ -603,7 +604,7 @@ export function Diff() {
     },
     {
       name: "diff.single_patch",
-      title: "Toggle single patch view",
+      title: t("diff.command.singlePatch"),
       category: "VCS",
       run() {
         setSelectedHunk(undefined)
@@ -630,7 +631,7 @@ export function Diff() {
     },
     {
       name: "diff.switch_source",
-      title: "Switch diff viewer source",
+      title: t("diff.command.switchSource"),
       category: "VCS",
       run() {
         openSwitchDiffDialog()
@@ -638,7 +639,7 @@ export function Diff() {
     },
     {
       name: "diff.toggle_view",
-      title: "Toggle diff viewer split or unified view",
+      title: t("diff.command.toggleView"),
       category: "VCS",
       run() {
         if (!splitAvailable()) return
@@ -650,7 +651,7 @@ export function Diff() {
     },
     {
       name: "diff.help",
-      title: "Show more diff viewer shortcuts",
+      title: t("diff.command.help"),
       category: "VCS",
       run() {
         openHelpDialog()
@@ -662,23 +663,23 @@ export function Diff() {
     const vcs = sync.data.vcs
     return [
       {
-        title: "Working tree",
+        title: t("diff.switch.git.title"),
         value: "git" as const,
-        description: "Show current git changes",
+        description: t("diff.switch.git.description"),
       },
       ...(vcs?.branch && vcs.default_branch && vcs.branch !== vcs.default_branch
         ? [
             {
-              title: "Main branch",
+              title: t("diff.switch.branch.title"),
               value: "branch" as const,
-              description: "Show changes compared to main branch",
+              description: t("diff.switch.branch.description"),
             },
           ]
         : []),
       {
-        title: "Last turn",
+        title: t("diff.switch.lastTurn.title"),
         value: "last-turn" as const,
-        description: "Show changes from the last assistant turn",
+        description: t("diff.switch.lastTurn.description"),
       },
     ]
   })
@@ -686,7 +687,7 @@ export function Diff() {
   const openSwitchDiffDialog = () => {
     dialog.replace(() => (
       <DialogSelect
-        title="Switch source"
+        title={t("diff.switch.title")}
         skipFilter={true}
         renderFilter={false}
         current={mode()}
@@ -713,11 +714,11 @@ export function Diff() {
   useBindings(() => ({
     commands,
     bindings: [
-      { key: "j,down", cmd: "diff.down", desc: "Move diff viewer down" },
-      { key: "k,up", cmd: "diff.up", desc: "Move diff viewer up" },
-      { key: "pagedown,ctrl+f", cmd: "diff.page.down", desc: "Page diff viewer down" },
-      { key: "pageup,ctrl+b", cmd: "diff.page.up", desc: "Page diff viewer up" },
-      { key: "m", cmd: "diff.mark_reviewed", desc: "Mark selected file reviewed" },
+      { key: "j,down", cmd: "diff.down", desc: t("diff.binding.down") },
+      { key: "k,up", cmd: "diff.up", desc: t("diff.binding.up") },
+      { key: "pagedown,ctrl+f", cmd: "diff.page.down", desc: t("diff.binding.pageDown") },
+      { key: "pageup,ctrl+b", cmd: "diff.page.up", desc: t("diff.binding.pageUp") },
+      { key: "m", cmd: "diff.mark_reviewed", desc: t("diff.binding.markReviewed") },
       ...tuiConfig.keybinds.gather(
         "diff",
         commands.map((command) => command.name),
@@ -729,11 +730,11 @@ export function Diff() {
     <box flexGrow={1} minHeight={0} flexDirection="column">
       <PanelGroup axis="y" width="100%" height="100%">
         <Panel border="none" flexShrink={0} padding={0} paddingLeft={1}>
-          <text fg={theme().text}>Diff </text>
+          <text fg={theme().text}>{t("diff.title")} </text>
           <text fg={theme().textMuted}>{diffSourceLabel(mode())}</text>
           <box flexGrow={1} />
           <text fg={theme().textMuted}>
-            {files().length} {files().length === 1 ? "file" : "files"}
+            {t(files().length === 1 ? "diff.fileCount.one" : "diff.fileCount.other", { count: files().length })}
           </text>
         </Panel>
 
@@ -742,19 +743,19 @@ export function Diff() {
             <Match when={diff.loading}>
               <Separator axis="x" />
               <box flexGrow={1} paddingLeft={1}>
-                <text fg={theme().textMuted}>Loading diff...</text>
+                <text fg={theme().textMuted}>{t("diff.loading")}</text>
               </box>
             </Match>
             <Match when={!diff.loading && files().length === 0}>
               <Separator axis="x" />
               <box flexGrow={1} paddingLeft={1}>
-                <text fg={theme().textMuted}>No diff!</text>
+                <text fg={theme().textMuted}>{t("diff.empty")}</text>
               </box>
             </Match>
             <Match when={!diff.loading && diff.error}>
               <Separator axis="x" />
               <box flexGrow={1} paddingLeft={1}>
-                <text fg={theme().error}>Failed to load diff</text>
+                <text fg={theme().error}>{t("diff.error")}</text>
               </box>
             </Match>
             <Match when={!diff.loading}>
@@ -812,7 +813,7 @@ export function Diff() {
                             <Separator axis="x" start={showFileTree() ? "edge" : undefined} />
                             <Show
                               when={entry.file.patch}
-                              fallback={<text fg={theme().textMuted}>No patch available for this file.</text>}
+                              fallback={<text fg={theme().textMuted}>{t("diff.noPatch")}</text>}
                             >
                               {(patch) => (
                                 <box border={patchLeftBorder()} borderColor={theme().border}>
@@ -866,64 +867,64 @@ function DiffViewerHelpDialog() {
   const { theme } = useTheme()
   const rows = [
     {
-      shortcut: () => "q",
-      action: "Close viewer",
-      description: "Quit the diff viewer",
+      shortcut: useCommandShortcut("diff.close"),
+      action: t("diff.help.close.action"),
+      description: t("diff.help.close.description"),
     },
     {
       shortcut: useCommandShortcut("diff.switch_focus"),
-      action: "Focus file tree",
-      description: "Move keyboard focus between the file tree and patch pane",
+      action: t("diff.help.switchFocus.action"),
+      description: t("diff.help.switchFocus.description"),
     },
     {
       shortcut: useCommandShortcut("diff.next_hunk"),
-      action: "Next hunk",
-      description: "Jump to the next diff hunk",
+      action: t("diff.help.nextHunk.action"),
+      description: t("diff.help.nextHunk.description"),
     },
     {
       shortcut: useCommandShortcut("diff.previous_hunk"),
-      action: "Previous hunk",
-      description: "Jump to the previous diff hunk",
+      action: t("diff.help.previousHunk.action"),
+      description: t("diff.help.previousHunk.description"),
     },
     {
       shortcut: useCommandShortcut("diff.next_file"),
-      action: "Next file",
-      description: "Select the next changed file in file-tree order",
+      action: t("diff.help.nextFile.action"),
+      description: t("diff.help.nextFile.description"),
     },
     {
       shortcut: useCommandShortcut("diff.previous_file"),
-      action: "Previous file",
-      description: "Select the previous changed file in file-tree order",
+      action: t("diff.help.previousFile.action"),
+      description: t("diff.help.previousFile.description"),
     },
     {
       shortcut: useCommandShortcut("diff.toggle_file_tree"),
-      action: "Toggle file tree",
-      description: "Show or hide the file tree sidebar",
+      action: t("diff.help.toggleFileTree.action"),
+      description: t("diff.help.toggleFileTree.description"),
     },
     {
       shortcut: useCommandShortcut("diff.single_patch"),
-      action: "Toggle patches",
-      description: "Switch between one selected patch and all patches",
+      action: t("diff.help.singlePatch.action"),
+      description: t("diff.help.singlePatch.description"),
     },
     {
       shortcut: useCommandShortcut("diff.switch_source"),
-      action: "Switch source",
-      description: "Choose working tree, main branch, or last-turn changes",
+      action: t("diff.help.switchSource.action"),
+      description: t("diff.help.switchSource.description"),
     },
     {
       shortcut: useCommandShortcut("diff.toggle_view"),
-      action: "Toggle view",
-      description: "Switch between split and unified diff layout",
+      action: t("diff.help.toggleView.action"),
+      description: t("diff.help.toggleView.description"),
     },
     {
       shortcut: useCommandShortcut("diff.expand_all"),
-      action: "Expand all folders",
-      description: "Open every folder in the file tree",
+      action: t("diff.help.expandAll.action"),
+      description: t("diff.help.expandAll.description"),
     },
     {
       shortcut: useCommandShortcut("diff.mark_reviewed"),
-      action: "Mark reviewed",
-      description: "Toggle reviewed state for the selected file",
+      action: t("diff.help.markReviewed.action"),
+      description: t("diff.help.markReviewed.description"),
     },
   ]
 
@@ -931,18 +932,18 @@ function DiffViewerHelpDialog() {
     <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
-          Diff shortcuts
+          {t("diff.help.title")}
         </text>
         <text fg={theme.textMuted}>esc</text>
       </box>
       <box flexDirection="row">
         <text fg={theme.textMuted} width={5} wrapMode="none">
-          Key
+          {t("diff.help.key")}
         </text>
         <text fg={theme.textMuted} width={22} wrapMode="none">
-          Action
+          {t("diff.help.action")}
         </text>
-        <text fg={theme.textMuted}>Description</text>
+        <text fg={theme.textMuted}>{t("diff.help.description")}</text>
       </box>
       <For each={rows}>
         {(row) => (

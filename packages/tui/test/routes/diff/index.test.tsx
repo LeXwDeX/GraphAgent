@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
+import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { Session } from "@graphagent/sdk/v2"
@@ -14,14 +15,24 @@ import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../src/context/sync"
 import { ThemeProvider, useTheme } from "../../../src/context/theme"
 import { TuiConfigProvider } from "../../../src/config"
+import { setLanguage } from "../../../src/i18n"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src/keymap"
 import { Diff } from "../../../src/routes/diff"
+import { useDiffFooterHints } from "../../../src/routes/diff/footer-hints"
 import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
+
+beforeEach(() => {
+  setLanguage("en")
+})
+
+afterEach(() => {
+  setLanguage(DEFAULT_LANGUAGE)
+})
 
 const sessionID = "ses_diff_route"
 const sessionDirectory = "/repo/session"
@@ -64,13 +75,14 @@ const diffFiles = [
 
 type Harness = Awaited<ReturnType<typeof renderDiff>>
 
-async function renderDiff(input: { initialRoute?: Route } = {}) {
+async function renderDiff(input: { initialRoute?: Route; config?: Record<string, unknown> } = {}) {
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
   const events = createEventSource()
   const vcsDiffRequests: URL[] = []
   const sessionDiffRequests: URL[] = []
   const base = createFetch((url) => {
+    if (url.pathname === "/config") return json(input.config ?? { language: "en" })
     if (url.pathname === "/session") return json([session])
     if (url.pathname === "/vcs") return json({ branch: "feature", default_branch: "main" })
     return undefined
@@ -93,6 +105,7 @@ async function renderDiff(input: { initialRoute?: Route } = {}) {
   let kv!: ReturnType<typeof useKV>
   let theme!: ReturnType<typeof useTheme>
   let sync!: ReturnType<typeof useSync>
+  let footerHints!: ReturnType<typeof useDiffFooterHints>
   const initialRoute: Route = input.initialRoute ?? {
     type: "diff",
     params: { mode: "git", sessionID },
@@ -104,6 +117,7 @@ async function renderDiff(input: { initialRoute?: Route } = {}) {
     kv = useKV()
     theme = useTheme()
     sync = useSync()
+    footerHints = useDiffFooterHints()
     return <box />
   }
 
@@ -158,6 +172,7 @@ async function renderDiff(input: { initialRoute?: Route } = {}) {
     kv: () => kv,
     theme: () => theme.theme,
     sync: () => sync,
+    footerHints: () => footerHints(),
     vcsDiffRequests,
     sessionDiffRequests,
     tmp,
@@ -212,6 +227,25 @@ test("renders the diff title, file tree and patch body", async () => {
     const request = harness.vcsDiffRequests.find((url) => url.searchParams.get("directory") === sessionDirectory)!
     expect(request.searchParams.get("mode")).toBe("git")
     expect(request.searchParams.get("context")).toBe("12")
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("renders diff chrome in the configured language", async () => {
+  setLanguage("zh-CN")
+  const harness = await renderDiff({ config: { language: "zh-CN" } })
+  try {
+    const frame = await waitForFrame(harness.app, "newFirst")
+    expect(frame).toContain("差异")
+    expect(frame).toContain("工作区")
+    expect(frame).toContain("2 个文件")
+    const labels = harness.footerHints().map((hint) => hint.label)
+    expect(labels).toContain("聚焦文件树")
+    expect(labels).toContain("全部")
+    runCommand(harness, "diff.help")
+    const help = await waitForFrame(harness.app, "差异快捷键")
+    expect(help).toContain("关闭查看器")
   } finally {
     await harness.dispose()
   }

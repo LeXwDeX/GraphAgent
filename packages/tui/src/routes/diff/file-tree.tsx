@@ -5,6 +5,7 @@ import { tint } from "../../context/theme"
 import { createEffect, createMemo, For, Match, Switch } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import { buildFileTree, flattenFileTree, type FileTreeItem, type FileTreeRow } from "./file-tree-utils"
+import { t } from "../../i18n"
 import { Panel } from "./ui"
 
 const FILE_TREE_STATUS_WIDTH = 2
@@ -65,7 +66,7 @@ export function DiffViewerFileTree(props: DiffViewerFileTreeProps) {
             <text />
           </Match>
           <Match when={props.files.length === 0}>
-            <text fg={props.theme.text}>No files</text>
+            <text fg={props.theme.text}>{t("diff.fileTree.empty")}</text>
           </Match>
           <Match when={props.files.length > 0}>
             <For each={rows()}>
