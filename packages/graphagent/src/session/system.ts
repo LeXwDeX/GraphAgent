@@ -21,6 +21,7 @@ import { SettingsHook } from "@/hook/settings"
 import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
+import { resolveLanguage } from "@graphagent/core/config/language"
 
 /**
  * Every model receives the same prompt. The only substitution is the editing
@@ -32,6 +33,8 @@ export function provider(tools: readonly string[] = ["edit", "write"]) {
 
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
+  /** Default reply language; `configured` is the `language` config value. */
+  readonly language: (configured?: string) => Effect.Effect<string[]>
   readonly skills: (
     agent: Agent.Info,
     permission?: PermissionV1.Ruleset,
@@ -124,6 +127,19 @@ export const layer = Layer.effect(
                 "</available_references>",
               ].join("\n"),
         ].filter((part): part is string => part !== undefined)
+      }),
+
+      language: Effect.fn("SystemPrompt.language")(function* (configured?: string) {
+        const language = resolveLanguage(configured)
+        const name = language === "zh-CN" ? "Simplified Chinese (zh-CN)" : "English (en)"
+        return [
+          [
+            "## Reply language",
+            `Reply to the user in ${name} by default.`,
+            "If the user explicitly asks for another language, follow the user's request.",
+            "Keep code, commands, identifiers, and file paths in their original form.",
+          ].join("\n"),
+        ]
       }),
 
       skills: Effect.fn("SystemPrompt.skills")(function* (
