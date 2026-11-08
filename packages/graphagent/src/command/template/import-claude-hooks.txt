@@ -146,7 +146,7 @@ After migration, report:
 
 ## Hooks.json Format Reference
 
-OpenCode recognizes 33 events total. `configure-hooks` owns the complete event list, matcher targets, handler availability, input/output effects and local applicability.
+OpenCode accepts 33 events total for import compatibility; 31 have a local trigger. `configure-hooks` owns that actionable list, matcher targets, handler availability, input/output effects and local applicability.
 
 Use top-level event arrays containing `{matcher?, hooks:[...]}`. Matchers are case-sensitive and ignored on events without a target. The five handler kinds are `command`, `http`, `mcp_tool`, `prompt`, and `agent`; `mcp` is a legacy alias. Keep `mcp_tool` server/tool/input fields intact. Command `args` is an argv array, HTTP uses `url`, and evaluators use `prompt` and optional `model`. Preserve the source's event-specific timeout rather than replacing it with a universal default.
 

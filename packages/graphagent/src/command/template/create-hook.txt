@@ -8,7 +8,7 @@ Load `configure-hooks` first. Infer the event, action, destination and write aut
 
 ## Select the event and handler
 
-Use its 33-event list to recognize all 33 events. Check local applicability before writing:
+Use the event list in `configure-hooks` to recognize supported events. Check local applicability before writing:
 
 - Tool: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`
 - Permission: `PermissionRequest`, `PermissionDenied`
