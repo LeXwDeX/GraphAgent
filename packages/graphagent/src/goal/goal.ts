@@ -16,6 +16,19 @@ import { SessionAutomationLease } from "@/session/automation-lease"
 import { SessionCancellation } from "@/session/cancellation"
 import { SessionLocation } from "@/session/location"
 import { DagLocation } from "@/dag/location"
+import { SessionGoal } from "@graphagent/schema/session-goal"
+
+/** Public HTTP/event shape of a durable goal row. */
+export function toPublic(state: GoalState.Info): SessionGoal.Info {
+  return {
+    goal: state.goal,
+    status: state.status,
+    turnsUsed: state.turns_used,
+    maxTurns: state.max_turns,
+    subgoals: state.subgoals ?? [],
+    ...(state.paused_reason !== undefined ? { pausedReason: state.paused_reason } : {}),
+  }
+}
 
 /**
  * DAG-LOC-01 (P2-A) — goal-side execution-location ownership.
@@ -247,14 +260,7 @@ const serviceLayer = Layer.effect(
     const publishGoal = (sessionID: SessionID, state: GoalState.Info) =>
       events.publish(GoalEvent.Updated, {
         sessionID,
-        goal: {
-          goal: state.goal,
-          status: state.status,
-          turnsUsed: state.turns_used,
-          maxTurns: state.max_turns,
-          subgoals: state.subgoals ?? [],
-          ...(state.paused_reason !== undefined ? { pausedReason: state.paused_reason } : {}),
-        },
+        goal: toPublic(state),
       })
 
     const fibers = new Map<SessionID, Fiber.Fiber<unknown, unknown>>()

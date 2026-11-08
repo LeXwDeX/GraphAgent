@@ -1,4 +1,5 @@
-import { Clock, Context, Deferred, Effect, Layer } from "effect"
+import { realpath } from "node:fs/promises"
+import { Clock, Context, Deferred, Effect, Layer, Option } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 
@@ -24,6 +25,17 @@ interface Entry {
 export interface Interface {
   readonly input: (sessionID: string) => Effect.Effect<void>
   readonly update: (sessionID: string, input: Update) => Effect.Effect<void>
+  /**
+   * Directory-guarded update: the session and the calling instance must resolve
+   * to the same real path before the attention state is touched. Returns false
+   * when either side is missing or the paths differ; callers map that to their
+   * own not-found contract.
+   */
+  readonly updateFor: (
+    sessionID: string,
+    input: Update,
+    directories: { readonly instanceDirectory?: string; readonly sessionDirectory?: string },
+  ) => Effect.Effect<boolean>
   readonly quiet: (sessionID: string, milliseconds: number) => Effect.Effect<void>
   readonly activity: (sessionID: string) => Effect.Effect<void>
   readonly viewing: (sessionID: string) => Effect.Effect<boolean>
@@ -87,6 +99,21 @@ export const layer = Layer.effect(
         backgroundView: input.backgroundView ?? previous?.backgroundView ?? false,
       })
     })
+    const updateFor = Effect.fn("SessionAttention.updateFor")(function* (
+      sessionID: string,
+      payload: Update,
+      directories: { readonly instanceDirectory?: string; readonly sessionDirectory?: string },
+    ) {
+      const instanceDirectory = directories.instanceDirectory
+      const sessionDirectory = directories.sessionDirectory
+      if (!instanceDirectory || !sessionDirectory) return false
+      const resolved = yield* Effect.tryPromise(() =>
+        Promise.all([realpath(sessionDirectory), realpath(instanceDirectory)]),
+      ).pipe(Effect.option)
+      if (Option.isNone(resolved) || resolved.value[0] !== resolved.value[1]) return false
+      yield* update(sessionID, payload)
+      return true
+    })
     const quiet = Effect.fn("SessionAttention.quiet")(function* (sessionID: string, milliseconds: number) {
       while (true) {
         const settled = yield* Effect.raceFirst(
@@ -114,7 +141,7 @@ export const layer = Layer.effect(
         yield* Deferred.interrupt(value.terminalChanged)
       }
     })
-    return Service.of({ input, update, quiet, activity, viewing, clear })
+    return Service.of({ input, update, updateFor, quiet, activity, viewing, clear })
   }),
 )
 export const defaultLayer = layer

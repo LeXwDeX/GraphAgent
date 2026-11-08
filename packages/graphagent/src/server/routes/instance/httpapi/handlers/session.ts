@@ -1,12 +1,9 @@
-import { realpath } from "node:fs/promises"
-import { ApiNotFoundError } from "../errors"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionAttention } from "@/notification/attention"
 import type { SessionAttentionInput } from "@graphagent/schema/session-attention"
 import { LocalPermissionStartup } from "@/permission/local-startup"
 import { Logging } from "@graphagent/core/observability/logging"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
-import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
@@ -14,7 +11,6 @@ import { Permission } from "@/permission"
 import { SessionLifecycle } from "@/session/lifecycle"
 import { ClientSessions } from "@/session/client-sessions"
 import { Session } from "@/session/session"
-import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
@@ -65,37 +61,13 @@ const tryParseJson = (text: string) =>
     catch: () => new HttpApiError.BadRequest({}),
   })
 
-// #404: headless clients (`opencode run "/init"`, SDK text prompts) deliver
-// slash commands as plain text parts to POST /session/:id/message. The TUI
-// routes them client-side before calling /command, but nothing server-side
-// did, so SessionPrompt.command never ran and Command.Event.Executed never
-// fired (project.time_initialized stayed NULL). Mirror the TUI's parse —
-// first line carries /command + args, later lines join the arguments — and
-// only ever route single-text-part prompts.
-function parseCommandPayload(payload: typeof PromptPayload.Type) {
-  const part = payload.parts.length === 1 ? payload.parts[0] : undefined
-  const text = part?.type === "text" && part.text.startsWith("/") ? part.text : undefined
-  if (!text) return undefined
-  const firstLineEnd = text.indexOf("\n")
-  const firstLine = firstLineEnd === -1 ? text : text.slice(0, firstLineEnd)
-  const [token, ...firstLineArgs] = firstLine.split(" ")
-  const rest = firstLineEnd === -1 ? "" : text.slice(firstLineEnd + 1)
-  return {
-    command: token.slice(1),
-    arguments: firstLineArgs.join(" ") + (rest ? "\n" + rest : ""),
-  }
-}
-
 export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
     const lifecycle = yield* SessionLifecycle.Service
     const promptSvc = yield* SessionPrompt.Service
-    const commands = yield* Command.Service
     const revertSvc = yield* SessionRevert.Service
-    const compactSvc = yield* SessionCompaction.Service
     const runState = yield* SessionRunState.Service
-    const agentSvc = yield* Agent.Service
     const permissionSvc = yield* Permission.Service
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
@@ -147,14 +119,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // message is emitted — so the only states returned are active / paused.)
       // 404 keeps the response schema honest: a 200 body always carries Goal.
       if (!state) return yield* Effect.fail(notFound(`No goal for session: ${ctx.params.sessionID}`))
-      return {
-        goal: state.goal,
-        status: state.status,
-        turnsUsed: state.turns_used,
-        maxTurns: state.max_turns,
-        subgoals: state.subgoals ?? [],
-        ...(state.paused_reason !== undefined ? { pausedReason: state.paused_reason } : {}),
-      }
+      return Goal.toPublic(state)
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -169,25 +134,22 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       query: typeof MessagesQuery.Type
     }) {
       if (ctx.query.before && ctx.query.limit === undefined) return yield* new HttpApiError.BadRequest({})
-      if (ctx.query.before) {
-        const before = ctx.query.before
-        yield* Effect.try({
-          try: () => MessageV2.cursor.decode(before),
-          catch: () => new HttpApiError.BadRequest({}),
-        })
-      }
-      yield* requireSession(ctx.params.sessionID)
       if (ctx.query.limit === undefined || ctx.query.limit === 0) {
         return yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       }
 
-      const page = yield* SessionError.mapStorageNotFound(
-        MessageV2.page({
+      const page = yield* session
+        .messagesPage({
           sessionID: ctx.params.sessionID,
           limit: ctx.query.limit,
           before: ctx.query.before,
-        }),
-      )
+        })
+        .pipe(
+          Effect.catchTags({
+            SessionInvalidCursor: () => Effect.fail(new HttpApiError.BadRequest({})),
+            NotFoundError: (error) => Effect.fail(notFound(error.message)),
+          }),
+        )
       if (!page.cursor) return page.items
 
       const request = yield* HttpServerRequest.HttpServerRequest
@@ -213,8 +175,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
     })
 
-    const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
-      const created = yield* lifecycle.create(ctx.payload)
+    const create = Effect.fn("SessionHttpApi.create")(function* (
+      payload?: Session.CreateInput,
+      options?: SessionLifecycle.CreateOptions,
+    ) {
+      const created = yield* lifecycle.create(payload, options)
       ClientSessions.touch({ sessionID: created.id, directory: created.directory })
       return created
     })
@@ -223,12 +188,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       request: HttpServerRequest.HttpServerRequest
     }) {
       const approved = LocalPermissionStartup.take(ctx.request.source)
-      const grant =
-        approved && permissionSvc.grantHookBypass
-          ? LocalPermissionStartup.once(permissionSvc.grantHookBypass)
-          : undefined
-      const createLocal = (payload?: Session.CreateInput) =>
-        create({ payload }).pipe(Effect.provideService(LocalPermissionStartup.Grant, grant))
+      const localGrant =
+        approved && permissionSvc.grantHookBypass ? LocalPermissionStartup.once(permissionSvc.grantHookBypass) : undefined
+      const createLocal = (payload?: Session.CreateInput) => create(payload, { localGrant })
       const body = yield* Effect.orDie(ctx.request.text)
       if (body.trim().length === 0) return yield* createLocal()
 
@@ -254,23 +216,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof UpdatePayload.Type
     }) {
-      const current = yield* requireSession(ctx.params.sessionID)
-      if (ctx.payload.title !== undefined) {
-        yield* session.setTitle({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
-      }
-      if (ctx.payload.metadata !== undefined) {
-        yield* session.setMetadata({ sessionID: ctx.params.sessionID, metadata: ctx.payload.metadata })
-      }
-      if (ctx.payload.permission !== undefined) {
-        yield* session.setPermission({
-          sessionID: ctx.params.sessionID,
-          permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
-        })
-      }
-      if (ctx.payload.time?.archived !== undefined) {
-        yield* session.setArchived({ sessionID: ctx.params.sessionID, time: ctx.payload.time.archived })
-      }
-      return yield* requireSession(ctx.params.sessionID)
+      return yield* SessionError.mapStorageNotFound(
+        session.applyUpdate({ sessionID: ctx.params.sessionID, ...ctx.payload }),
+      )
     })
 
     const fork = Effect.fn("SessionHttpApi.fork")(function* (ctx: {
@@ -333,25 +281,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       const current = yield* requireSession(ctx.params.sessionID)
       ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
-      yield* revertSvc.cleanup(current)
-      const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
-      const defaultAgent = yield* agentSvc.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
-
-      yield* compactSvc.create({
-        sessionID: ctx.params.sessionID,
-        agent: currentAgent,
-        model: {
+      yield* SessionError.mapStorageNotFound(
+        promptSvc.summarize({
+          sessionID: ctx.params.sessionID,
           providerID: ctx.payload.providerID,
           modelID: ctx.payload.modelID,
-        },
-        auto: ctx.payload.auto ?? false,
-      })
-      yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
+          auto: ctx.payload.auto,
+        }),
+      )
       return true
     })
 
-    // Text that names a registered command routes through SessionPrompt.command
+    // Text that names a registered command routes through SessionPrompt.submit
     // so headless entrypoints get the same Command.Event.Executed lifecycle
     // (incl. project init stamping) as the TUI; a registry miss falls through
     // to a plain prompt turn, preserving existing text-prompt semantics.
@@ -361,29 +302,18 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         yield* permissionSvc.grantHookBypass(sessionID)
     })
 
-    const promptOrCommand = Effect.fn("SessionHttpApi.promptOrCommand")(function* (ctx: {
+    const submit = Effect.fn("SessionHttpApi.submit")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
     }) {
-      yield* grantLocalStartup(ctx.params.sessionID)
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const approved = LocalPermissionStartup.take(request.source, ctx.params.sessionID)
       const instance = yield* InstanceRef
       if (instance) ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: instance.directory })
-
-      const parsed = parseCommandPayload(ctx.payload)
-      const cmd = parsed ? yield* commands.get(parsed.command) : undefined
-      if (parsed && cmd) {
-        return yield* promptSvc.command({
-          sessionID: ctx.params.sessionID,
-          command: parsed.command,
-          arguments: parsed.arguments,
-          messageID: ctx.payload.messageID,
-          agent: ctx.payload.agent,
-          variant: ctx.payload.variant,
-          hookMode: ctx.payload.hookMode,
-          ...(ctx.payload.model ? { model: `${ctx.payload.model.providerID}/${ctx.payload.model.modelID}` } : {}),
-        })
-      }
-      return yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID })
+      return yield* promptSvc.submit(
+        { ...ctx.payload, sessionID: ctx.params.sessionID },
+        { localGrant: approved && permissionSvc.grantHookBypass !== undefined },
+      )
     })
 
     const setModel = Effect.fn("SessionHttpApi.setModel")(function* (ctx: {
@@ -402,18 +332,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       const current = yield* requireSession(ctx.params.sessionID)
       const instance = yield* InstanceRef
-      const directories = instance
-        ? yield* Effect.tryPromise(() => Promise.all([realpath(current.directory), realpath(instance.directory)])).pipe(
-            Effect.option,
-          )
-        : Option.none()
-      if (Option.isNone(directories) || directories.value[0] !== directories.value[1])
-        return yield* new ApiNotFoundError({
-          name: "NotFoundError",
-          data: { message: "Session not found in this directory" },
-        })
       const service = yield* SessionAttention.Service
-      yield* service.update(ctx.params.sessionID, ctx.payload)
+      const accepted = yield* service.updateFor(ctx.params.sessionID, ctx.payload, {
+        instanceDirectory: instance?.directory,
+        sessionDirectory: current.directory,
+      })
+      if (!accepted) return yield* Effect.fail(notFound("Session not found in this directory"))
       return true
     })
     const resume = Effect.fn("SessionHttpApi.resume")(function* (ctx: {
@@ -433,7 +357,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      const message = yield* promptOrCommand(ctx).pipe(Effect.mapError(promptError))
+      const message = yield* submit(ctx).pipe(Effect.mapError(promptError))
       return HttpServerResponse.stream(Stream.make(JSON.stringify(message)).pipe(Stream.encodeText), {
         contentType: "application/json",
       })
@@ -444,7 +368,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      yield* promptOrCommand(ctx).pipe(
+      yield* submit(ctx).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })

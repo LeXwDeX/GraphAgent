@@ -72,8 +72,9 @@ import { httpClient } from "@graphagent/core/effect/layer-node-platform"
 import { EventV2 } from "@graphagent/core/event"
 import { ModelsDev } from "@graphagent/core/models-dev"
 import { Npm } from "@graphagent/core/npm"
+import { ProjectCopy } from "@/project/copy"
 import { ProjectV2 } from "@graphagent/core/project"
-import { ProjectCopy } from "@graphagent/core/project/copy"
+import { ProjectCopy as CoreProjectCopy } from "@graphagent/core/project/copy"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { lazy } from "@/util/lazy"
@@ -104,7 +105,7 @@ import { schemaErrorLayer as v2SchemaErrorLayer } from "@graphagent/server/middl
 import { workspaceHandlers } from "./handlers/workspace"
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
-import { disposeMiddleware } from "./lifecycle"
+import { afterResponseLayer } from "./lifecycle"
 import { memoMap } from "@graphagent/core/effect/memo-map"
 import { compressionLayer } from "./middleware/compression"
 import { errorLayer } from "./middleware/error"
@@ -170,6 +171,7 @@ type RouteRequirements =
 // its ambient service context — a hand-copied node list would not catch a
 // missing member.
 export const app = LayerNode.group([
+  ProjectCopy.node,
   Npm.node,
   FSUtil.node,
   Database.node,
@@ -225,7 +227,7 @@ export const app = LayerNode.group([
   httpClient,
   EventV2.node,
   ProjectV2.node,
-  ProjectCopy.node,
+  CoreProjectCopy.node,
   Goal.node,
   // SettingsHook + SessionHooks: previously defined but never wired into
   // the server app graph, so every consumer using
@@ -294,7 +296,7 @@ export function createRoutes(options?: {
   readonly replacements?: readonly LayerNode.Replacement[]
 }): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   const moveSession = MoveSession.defaultLayer.pipe(Layer.provide(MoveSessionLookup.layer))
-  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, serverRoutes).pipe(
+  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, serverRoutes, afterResponseLayer).pipe(
     Layer.provide([errorLayer, compressionLayer, moveSession, HttpServer.layerServices]),
     Layer.provide(LayerNode.buildLayer(app, options)),
     Layer.provideMerge(Observability.layer),
@@ -311,7 +313,6 @@ export const webHandler = lazy(() =>
   HttpRouter.toWebHandler(routes, {
     disableLogger: true,
     memoMap,
-    middleware: disposeMiddleware,
   }),
 )
 
