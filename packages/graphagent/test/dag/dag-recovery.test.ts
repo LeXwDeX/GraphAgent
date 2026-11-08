@@ -555,7 +555,7 @@ describe("reconcileWorkflow", () => {
     expect(events).toContainEqual({
       type: "nodeFailed",
       nodeID: "n1",
-      reason: "output_schema declared but submit_result was never successfully called (recovered)",
+      reason: "output_schema declared but no final structured response was captured (recovered)",
       trigger: "verdict_fail",
     })
   })
@@ -988,6 +988,7 @@ describe("reconcileWorkflow output file refs (issue #388)", () => {
     const dagLayer = makeDagLayer(nodes, events, undefined, captured, undefined, workflow)
     const messages = Layer.mock(DagMessages.Service, {
       revisions: () => Effect.succeed({ ok: false as const, reason: "unauthorized" as const }),
+      guard: (_caller, _input, commit) => Effect.map(commit, (value) => ({ ok: true as const, value })),
     })
     await Effect.runPromise(
       reconcileWorkflow(

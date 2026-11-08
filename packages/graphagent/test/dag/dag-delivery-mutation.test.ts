@@ -22,7 +22,6 @@ function node(id: string, depends_on: string[] = []): NodeConfig {
 }
 const config = (nodes: NodeConfig[], delivery_node = "old"): WorkflowConfig => ({
   name: "mutation",
-  result_protocol: "final_response",
   delivery_node,
   nodes,
 })

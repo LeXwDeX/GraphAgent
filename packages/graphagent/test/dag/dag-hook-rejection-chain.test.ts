@@ -65,7 +65,6 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
               title: `Hook rejection ${mode}`,
               config: {
                 name: "hook-rejection-chain",
-                result_protocol: "final_response",
                 delivery_node: "review",
                 max_concurrency: 1,
                 nodes: [

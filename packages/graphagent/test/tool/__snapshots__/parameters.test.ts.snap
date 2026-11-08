@@ -1180,14 +1180,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       "description": "Injected into every generated child prompt; required for blocks",
                       "type": "string",
                     },
-                    "result_protocol": {
-                      "description": "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
-                      "enum": [
-                        "final_response",
-                        "submit_result",
-                      ],
-                      "type": "string",
-                    },
                     "workspace": {
                       "description": "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
                       "type": "string",
@@ -1288,7 +1280,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "type": "string",
                           },
                           "output_schema": {
-                            "description": "JSON Schema for the child's final JSON answer (historical submit_result workflows keep their tool protocol)",
+                            "description": "JSON Schema for the child's final JSON answer",
                             "type": "object",
                           },
                           "prompt_template": {
@@ -1393,14 +1385,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       },
                       "type": "array",
                     },
-                    "result_protocol": {
-                      "description": "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
-                      "enum": [
-                        "final_response",
-                        "submit_result",
-                      ],
-                      "type": "string",
-                    },
                     "workspace": {
                       "description": "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
                       "type": "string",
@@ -1413,7 +1397,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                   "type": "object",
                 },
               ],
-              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, result_protocol?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...], node_defaults?, result_protocol?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. result_protocol is final_response (default) or submit_result (legacy); delivery_node selects the final node copied to the parent. This is the start file's config envelope only; consult each nested field's schema",
+              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...], node_defaults?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. delivery_node selects the final node copied to the parent. This is the start file's config envelope only; consult each nested field's schema",
             },
             "title": {
               "description": "Optional workflow title",

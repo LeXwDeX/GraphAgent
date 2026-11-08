@@ -181,7 +181,6 @@ async function run(
           parentSessionID: "ses_parent",
           promptParts: [{ type: "text", text: "work" }],
           outputSchema: schema,
-          resultProtocol: "final_response",
           ...overrides,
         })
         yield* Fiber.await(result.fiber)

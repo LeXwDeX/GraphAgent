@@ -93,7 +93,6 @@ test.skipIf(!setting)(
                   title: "777 dynamic refusal recovery",
                   config: {
                     name: "777-real-hook",
-                    result_protocol: "final_response",
                     delivery_node: "review",
                     max_concurrency: 1,
                     nodes: [

@@ -80,6 +80,7 @@ interface Harness {
   fail: boolean
   failSessionCreate: boolean
   failRemoval: boolean
+  failCreate: boolean
   onFailure: (reason: string, worktree: DagEvent.NodeWorktree | undefined) => Effect.Effect<void>
   rejectNodeStarted: boolean
   prompt: (sessionID: string, directory: string) => void
@@ -106,7 +107,11 @@ function reply(sessionID: string): SessionV1.WithParts {
   } as SessionV1.WithParts
 }
 
-function makeHarness(target: string, mode: "success" | "failure" = "success"): Harness {
+function makeHarness(
+  target: string,
+  mode: "success" | "failure" = "success",
+  options: { withWorktree?: boolean } = {},
+): Harness {
   const harness: Harness = {
     layer: Layer.empty as unknown as Layer.Layer<never>,
     completed: [],
@@ -117,6 +122,7 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
     fail: mode === "failure",
     failSessionCreate: false,
     failRemoval: false,
+    failCreate: false,
     onFailure: () => Effect.void,
     rejectNodeStarted: false,
     prompt: () => {},
@@ -240,7 +246,9 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
   })
   const worktreeLayer = Layer.mock(Worktree.Service, {
     create: (input?: { name?: string }) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        if (harness.failCreate)
+          return yield* Effect.fail(new Worktree.CreateFailedError({ message: "worktree create exploded" }))
         const directory = mkdtempSync(path.join(tmpdir(), "dag-isolation-wt-"))
         roots.push(directory)
         rmSync(directory, { recursive: true, force: true })
@@ -275,7 +283,7 @@ function makeHarness(target: string, mode: "success" | "failure" = "success"): H
     agentLayer,
     sessionLayer,
     promptLayer,
-    worktreeLayer,
+    ...(options.withWorktree === false ? [] : [worktreeLayer]),
     instanceStoreLayer,
   ) as never
   return harness
@@ -643,5 +651,72 @@ describe("spawn worktree isolation", () => {
     expect(harness.failed).toEqual([])
     expect(harness.removals).toHaveLength(1)
     for (const worktree of harness.worktrees) expect(existsSync(worktree)).toBe(false)
+  })
+
+  it("fails the node when worktree isolation has no Worktree service", async () => {
+    const target = repo()
+    const harness = makeHarness(target, "success", { withWorktree: false })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toEqual([
+      expect.objectContaining({ reason: "worktree isolation requires the Worktree service" }),
+    ])
+    expect(harness.worktrees).toEqual([])
+  })
+
+  it("fails the node when worktree isolation has no execution directory", async () => {
+    const target = repo()
+    const harness = makeHarness(target)
+    const base = spawnInput(target, "a", "success", harness)
+    const input: NodeSpawnInput = {
+      dagID: base.dagID,
+      nodeID: base.nodeID,
+      node: base.node,
+      parentSessionID: base.parentSessionID,
+      promptParts: base.promptParts,
+      isolation: "worktree",
+    }
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), input)
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toEqual([
+      expect.objectContaining({ reason: "worktree isolation requires an execution directory" }),
+    ])
+    expect(harness.worktrees).toEqual([])
+  })
+
+  it("fails the node when worktree creation fails", async () => {
+    const target = repo()
+    const harness = makeHarness(target)
+    harness.failCreate = true
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
+    )
+
+    expect(harness.completed).toEqual([])
+    expect(harness.failed).toEqual([
+      expect.objectContaining({ reason: "worktree create failed: worktree create exploded" }),
+    ])
+    expect(harness.worktrees).toEqual([])
   })
 })

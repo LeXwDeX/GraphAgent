@@ -21,7 +21,7 @@ import { deliverReport, reportIdentity, selectReportNode } from "@/dag/runtime/r
 import { commitOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import { WorkflowAuthoring } from "@/dag/authoring"
-import { parseWorkflowConfig, resultProtocol } from "@/dag/dag"
+import { parseWorkflowConfig } from "@/dag/dag"
 import { before } from "@/session/message-v2"
 
 const Barrier = EventV2.define({ type: "test.dag.delivery.barrier", schema: {} })
@@ -92,7 +92,6 @@ function fixture(
       const text = "  Exact final report\n\nwith **formatting** and trailing space.  "
       const config = {
         name: "delivery",
-        result_protocol: "final_response",
         delivery_node: "final",
         nodes: [{ id: "final", depends_on: [], ...(options ? { output_schema: options.schema } : {}) }],
       }
@@ -767,7 +766,7 @@ it("uses explicit delivery selection and never guesses from required nodes or ol
   expect(reportIdentity(makeWorkflowRow({ seq: 2 }))).not.toEqual(reportIdentity(makeWorkflowRow({ seq: 3 })))
 })
 
-it("persists the unique leaf synthesis selection and preserves the legacy protocol default", async () => {
+it("persists the unique leaf synthesis selection", async () => {
   const authoring = WorkflowAuthoring.make()
   const result = await Effect.runPromise(
     authoring.prepare({
@@ -824,8 +823,6 @@ it("persists the unique leaf synthesis selection and preserves the legacy protoc
     }),
   )
   expect(invalid.valid).toBe(false)
-  expect(resultProtocol(parseWorkflowConfig(JSON.stringify({ name: "legacy", nodes: [] })))).toBe("submit_result")
-  expect(parseWorkflowConfig(JSON.stringify({ name: "bad", nodes: [], result_protocol: "unknown" }))).toBeUndefined()
 })
 
 it("preserves an unprocessed user request while idle and delivers after it has an answer", () =>

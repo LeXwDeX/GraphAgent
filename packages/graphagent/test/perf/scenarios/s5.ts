@@ -65,7 +65,7 @@ function buildConfig(name: string, workers: number): WorkflowConfig {
       prompt_template: { inline: "Deliver the final answer." },
     },
   ]
-  return { name, result_protocol: "final_response", delivery_node: DELIVERY, max_concurrency: 5, nodes }
+  return { name, delivery_node: DELIVERY, max_concurrency: 5, nodes }
 }
 
 /** Services `makeDagPerfLayer` provides and this scenario consumes. */

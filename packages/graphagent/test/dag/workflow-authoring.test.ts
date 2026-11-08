@@ -625,7 +625,7 @@ describe("WorkflowAuthoring replan start-only capture fields", () => {
     }),
   )
 
-  it.effect("rejects result_protocol on replans", () =>
+  it.effect("rejects the removed result_protocol field on replans", () =>
     Effect.gen(function* () {
       const result = yield* replanPrepare([
         "fragment:",
@@ -635,8 +635,9 @@ describe("WorkflowAuthoring replan start-only capture fields", () => {
         ...nodeLines,
       ])
       expect(result.valid).toBe(false)
-      const error = result.errors.find((diagnostic) => diagnostic.path === "fragment.result_protocol")
+      const error = result.errors.find((diagnostic) => diagnostic.path.includes("result_protocol"))
       expect(error).toBeDefined()
+      expect(error?.message).toBe("UnexpectedKey")
       expect(error?.code).toBe(DagValidation.DIAGNOSTIC_CODES.schemaInvalid)
     }),
   )
@@ -652,7 +653,6 @@ describe("WorkflowAuthoring replan start-only capture fields", () => {
             "config:",
             "  name: capture",
             "  delivery_node: work",
-            "  result_protocol: final_response",
             "  nodes:",
             ...nodeLines,
           ].join("\n"),

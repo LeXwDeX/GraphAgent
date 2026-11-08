@@ -313,7 +313,6 @@ it("keeps the final report and a completion wake after earlier checkpoint wakes 
         title: "Reporting completion",
         config: {
           name: "reporting-completion",
-          result_protocol: "final_response",
           delivery_node: "final",
           max_concurrency: 8,
           nodes: [
@@ -450,7 +449,6 @@ it("treats a reporting delivery leaf as display-only and never acknowledges its 
         title: "Reporting delivery leaf",
         config: {
           name: "reporting-delivery-leaf",
-          result_protocol: "final_response",
           delivery_node: "final",
           nodes: [node("final")],
         },
@@ -481,7 +479,6 @@ it("wakes the parent when a gate skips the delivery node and only a result index
         title: "Gated delivery",
         config: {
           name: "gated-delivery",
-          result_protocol: "final_response",
           delivery_node: "summary",
           nodes: [
             { ...node("gate"), report_to_parent: false },
@@ -528,7 +525,6 @@ it("delivers a direct final answer once without a redundant parent turn", async 
         title: "Direct answer",
         config: {
           name: "direct-answer",
-          result_protocol: "final_response",
           delivery_node: "final",
           nodes: [{ ...node("final"), report_to_parent: false }],
         },

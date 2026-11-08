@@ -178,7 +178,6 @@ describe("spawn final-response protocol", () => {
             parentSessionID: "ses_parent",
             promptParts: [{ type: "text", text: "work" }],
             outputSchema: schema,
-            resultProtocol: "final_response",
           })
           yield* Fiber.await(result.fiber)
         }).pipe(Effect.provide(Layer.mergeAll(dag, agent, sessions, prompt, provider, config, RuntimeFlags.layer({})))),
@@ -187,7 +186,7 @@ describe("spawn final-response protocol", () => {
     return { events, receipt, prompts, promptSessions }
   }
 
-  it("captures a null JSON result as present without a submit_result call", async () => {
+  it("captures a null JSON result as present without a tool call", async () => {
     const result = await run(assistant([{ text: "null" }]), { type: "null" })
     expect(result.events).toEqual([{ type: "completed", output: null }])
     expect(result.receipt).toEqual({ present: true, value: null })
@@ -311,7 +310,6 @@ describe("recovered final-response settlement", () => {
     })
     await Effect.runPromise(
       continueRecoveredMessageNode("wf", "n", {
-        result_protocol: "final_response",
         nodes: [{ id: "n", output_schema: { type: "boolean" } }],
       }).pipe(Effect.provide(Layer.mergeAll(dag, prompt, messages))),
     )
@@ -347,7 +345,7 @@ describe("recovered final-response settlement", () => {
         "wf",
         () => Effect.succeed("completed"),
         undefined,
-        { result_protocol: "final_response", nodes: [{ id: "n" }] },
+        { nodes: [{ id: "n" }] },
         undefined,
         undefined,
         undefined,
@@ -387,7 +385,7 @@ describe("recovered final-response settlement", () => {
         "wf",
         () => Effect.succeed("completed"),
         undefined,
-        { result_protocol: "final_response", nodes: [{ id: "n" }] },
+        { nodes: [{ id: "n" }] },
         undefined,
         undefined,
         undefined,
@@ -453,7 +451,7 @@ describe("recovered final-response settlement", () => {
           "wf",
           () => Effect.succeed("completed"),
           undefined,
-          { result_protocol: "final_response", nodes: [{ id: "n" }] },
+          { nodes: [{ id: "n" }] },
           undefined,
           directory,
           undefined,
@@ -516,7 +514,7 @@ describe("recovered final-response settlement", () => {
           "wf",
           () => Effect.succeed("completed"),
           undefined,
-          { result_protocol: "final_response", nodes: [{ id: "n" }] },
+          { nodes: [{ id: "n" }] },
           undefined,
           directory,
           () => (_sessionID, expected) =>
@@ -568,7 +566,7 @@ describe("recovered final-response settlement", () => {
         "wf",
         () => Effect.succeed("completed"),
         undefined,
-        { result_protocol: "final_response", nodes: [{ id: "n", output_schema: { type: "boolean" } }] },
+        { nodes: [{ id: "n", output_schema: { type: "boolean" } }] },
         undefined,
         undefined,
         undefined,
@@ -619,7 +617,7 @@ describe("recovered final-response settlement", () => {
         "wf",
         () => Effect.succeed("completed"),
         undefined,
-        { result_protocol: "final_response", nodes: [{ id: "n", output_schema: { type: "boolean" } }] },
+        { nodes: [{ id: "n", output_schema: { type: "boolean" } }] },
         undefined,
         undefined,
         undefined,
@@ -663,7 +661,7 @@ describe("recovered final-response settlement", () => {
         "wf",
         () => Effect.succeed("completed"),
         undefined,
-        { result_protocol: "final_response", nodes: [{ id: "n", output_schema: { type: "boolean" } }] },
+        { nodes: [{ id: "n", output_schema: { type: "boolean" } }] },
         undefined,
         undefined,
         undefined,

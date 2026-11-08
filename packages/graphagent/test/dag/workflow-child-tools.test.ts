@@ -24,8 +24,6 @@ import { sql } from "drizzle-orm"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
-  registerFinalResponseSession,
-  clearFinalResponseSession,
 } from "@/dag/runtime/capture"
 
 const Parameters = Schema.Struct({})
@@ -47,7 +45,6 @@ const agentDefinition: Tool.Def<typeof Parameters> = {
   parameters: Parameters,
   execute: () => Effect.succeed({ title: "agent", output: "queued", metadata: {} }),
 }
-const submitDefinition: Tool.Def<typeof Parameters> = { ...agentDefinition, id: "submit_result" }
 const todoDefinition: Tool.Def<typeof Parameters> = {
   id: "todowrite",
   description: "todowrite",
@@ -77,7 +74,6 @@ const it = testEffect(
           { definition: workflowDefinition, sourceKind: "host-builtin", registrationID: "test:workflow" },
           { definition: taskDefinition, sourceKind: "host-builtin", registrationID: "test:task" },
           { definition: agentDefinition, sourceKind: "host-builtin", registrationID: "test:agent" },
-          { definition: submitDefinition, sourceKind: "host-builtin", registrationID: "test:submit" },
           { definition: todoDefinition, sourceKind: "host-builtin", registrationID: "test:todo" },
         ]),
     }),
@@ -99,8 +95,6 @@ describe("workflow child boundary", () => {
       expect(childTools).not.toContain("task")
       expect(parentTools).not.toContain("agent")
       expect(childTools).not.toContain("agent")
-      expect(parentTools).not.toContain("submit_result")
-      expect(childTools).not.toContain("submit_result")
     }),
   )
 
@@ -199,27 +193,25 @@ describe("workflow child boundary", () => {
         Effect.sync(() => {
           registerCaptureSlot(legacy, { type: "object" })
           registerCaptureSlot(final, { type: "object" })
-          registerFinalResponseSession(final)
         }),
         () =>
           Effect.sync(() => {
             clearCaptureSlot(legacy)
             clearCaptureSlot(final)
-            clearFinalResponseSession(final)
           }),
       )
       for (const [info, expected] of [
         [session(owner), ["agent"]],
         [session(SessionID.make("ses_without_workflow")), []],
         [session(SessionID.make("ses_task_child"), owner), []],
-        [session(legacy, owner), ["agent", "submit_result"]],
+        [session(legacy, owner), ["agent"]],
         [session(final, owner), ["agent"]],
         [session(plain, owner), ["agent"]],
         [session(replaced, owner), []],
         [{ ...session(owner), directory: "/tmp/other-worktree" }, []],
       ] as const) {
         const ids = yield* resolvedToolIDs(build, info).pipe(Effect.provide(Layer.merge(store, messages)))
-        expect(ids.filter((id) => id === "agent" || id === "submit_result")).toEqual([...expected])
+        expect(ids.filter((id) => id === "agent")).toEqual([...expected])
       }
     }),
   )

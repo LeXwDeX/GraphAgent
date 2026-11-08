@@ -8,14 +8,12 @@
 /**
  * Issue #386 — structured-output single-authority contract.
  *
- * A DAG node with output_schema must instruct the child, up front, that the
- * submit_result payload is the single authoritative report: the summary lives
- * inside the payload, prose must not duplicate it, and a successful submission
- * ends the turn. Both delivery channels carry the contract: the DAG-generated
- * schema instruction part (loop.ts) and the submit_result tool description.
+ * A DAG node with output_schema must instruct the child, up front, that its
+ * final assistant answer is the single authoritative report: exactly one JSON
+ * value, captured automatically, with no prose duplication. The DAG-generated
+ * schema instruction part (loop.ts) carries the contract.
  */
 import { describe, expect, it } from "bun:test"
-import path from "node:path"
 import { Deferred, Effect, Layer, Option, Queue } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
@@ -188,7 +186,6 @@ describe("DAG schema prompt contract (issue #386)", () => {
           const gate = yield* Queue.take(childPrompts)
           const prompt = promptText(gate.input)
           expect(prompt).toContain("exactly one JSON value")
-          expect(prompt).not.toContain("submit_result")
           yield* Deferred.succeed(gate.release, '{"summary":"Captured from final answer."}')
           const row = yield* pollWithTimeout(
             store.getNode(dagID, "report").pipe(Effect.map((node) => node?.status === "completed" ? node : undefined)),
@@ -239,146 +236,5 @@ describe("DAG schema prompt contract (issue #386)", () => {
         }),
       ),
     )
-  })
-
-  it("schema instruction tells the child the payload is the single authoritative report", async () => {
-    await Effect.runPromise(
-      runContractTest(({ dag, childPrompts }) =>
-        Effect.gen(function* () {
-          yield* dag.create({
-            projectID: "project-1",
-            sessionID: "ses_parent",
-            title: "Schema prompt contract",
-            config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
-          })
-          const gate = yield* Queue.take(childPrompts)
-          const prompt = promptText(gate.input)
-          expect(prompt).toContain("submit_result")
-          // Summary belongs inside the payload, not in prose.
-          expect(prompt).toContain("Put your full summary inside the payload")
-          // Prose must not duplicate the payload.
-          expect(prompt).toContain("Do not repeat the payload in your message text")
-          // A successful submission ends the turn.
-          expect(prompt).toContain("end your turn without restating the result")
-          // Issue #436: the consequence of skipping submit_result is stated
-          // up front so the child cannot treat prose as a substitute.
-          expect(prompt).toContain("does NOT count as submitting")
-          expect(prompt).toContain("this node FAILS")
-          yield* Deferred.succeed(gate.release, "done")
-        }),
-      ),
-    )
-  })
-
-  // The issue-#386 acceptance chain does not stop at prompt construction:
-  // the child submits through submit_result, the capture lands durably, and
-  // the node settles with the payload as its durable output — prose plays no
-  // part in settlement. The gate replays exactly the durable write the real
-  // tool performs (store.setCapturedOutput); spawn's completion gate
-  // (settleCapturedOutput) runs unmocked below it.
-  it("settles the node from the submit_result payload as the durable output", async () => {
-    await Effect.runPromise(
-      runContractTest(({ dag, store, childPrompts }) =>
-        Effect.gen(function* () {
-          const dagID = yield* dag.create({
-            projectID: "project-1",
-            sessionID: "ses_parent",
-            title: "Schema prompt contract",
-            config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
-          })
-          const gate = yield* Queue.take(childPrompts)
-          const payload = { summary: "Delivered through submit_result only." }
-          yield* store.setCapturedOutput(gate.input.sessionID as string, payload)
-          // The contract-compliant reply: no payload duplication in prose.
-          yield* Deferred.succeed(gate.release, "Submitted.")
-          const node = yield* pollWithTimeout(
-            store.getNode(dagID, "report").pipe(
-              Effect.map((row) => row?.status === "completed" ? row : undefined),
-            ),
-            "schema node did not complete from the submitted payload",
-          )
-          expect(node.output).toEqual(payload)
-        }),
-      ),
-    )
-  })
-
-  it("submit_result tool description carries the same single-authority contract", async () => {
-    const description = await Bun.file(
-      path.join(import.meta.dir, "../../src/tool/submit_result.txt"),
-    ).text()
-    expect(description).toContain("The payload is the authoritative report")
-    expect(description).toContain("do not duplicate it in your message")
-    expect(description).toContain("end the turn after success")
-  })
-
-  // Issue #436 minimal step: a child that ends its turn without ever calling
-  // submit_result gets exactly one nudge turn in the same session before the
-  // node is failed. Review-aggregate children were observed (PR #424 era)
-  // producing the whole review in prose and never handing it back.
-  describe("submit_result retry nudge (issue #436)", () => {
-    it("nudges once when the child never submits, then completes from the submitted payload", async () => {
-      await Effect.runPromise(
-        runContractTest(({ dag, store, childPrompts }) =>
-          Effect.gen(function* () {
-            const dagID = yield* dag.create({
-              projectID: "project-1",
-              sessionID: "ses_parent",
-              title: "Nudge completes",
-              config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
-            })
-            // First turn: full analysis in prose, no submit_result call.
-            const first = yield* Queue.take(childPrompts)
-            expect(promptText(first.input)).toContain("[OUTPUT CONTRACT")
-            yield* Deferred.succeed(first.release, "Full review: everything checks out.")
-            // The nudge arrives as a second prompt to the SAME child session.
-            const nudge = yield* Queue.take(childPrompts)
-            expect(nudge.input.sessionID).toBe(first.input.sessionID)
-            expect(promptText(nudge.input)).toContain("without calling the submit_result tool")
-            // The child complies on the second chance.
-            const payload = { summary: "Submitted after the nudge." }
-            yield* store.setCapturedOutput(nudge.input.sessionID as string, payload)
-            yield* Deferred.succeed(nudge.release, "Submitted.")
-            const node = yield* pollWithTimeout(
-              store.getNode(dagID, "report").pipe(
-                Effect.map((row) => row?.status === "completed" ? row : undefined),
-              ),
-              "node did not complete after the nudge turn",
-            )
-            expect(node.output).toEqual(payload)
-          }),
-        ),
-      )
-    })
-
-    it("fails the node after the nudge still produces no submission", async () => {
-      await Effect.runPromise(
-        runContractTest(({ dag, store, childPrompts }) =>
-          Effect.gen(function* () {
-            const dagID = yield* dag.create({
-              projectID: "project-1",
-              sessionID: "ses_parent",
-              title: "Nudge exhausted",
-              config: { name: "schema-prompt-contract", result_protocol: "submit_result", nodes: [schemaNode()] },
-            })
-            const first = yield* Queue.take(childPrompts)
-            yield* Deferred.succeed(first.release, "Prose only, no submission.")
-            const nudge = yield* Queue.take(childPrompts)
-            yield* Deferred.succeed(nudge.release, "Still nothing.")
-            // No third prompt comes from spawn: the nudge is one per node
-            // EXECUTION. (The DagLoop's own NodeFailed handler may respawn
-            // the node as a fresh attempt afterwards — that retry policy is
-            // a separate pre-existing layer, not spawn's business.)
-            const node = yield* pollWithTimeout(
-              store.getNode(dagID, "report").pipe(
-                Effect.map((row) => row?.status === "failed" ? row : undefined),
-              ),
-              "node was not failed after the exhausted nudge",
-            )
-            expect(node.errorReason).toContain("never successfully called")
-          }),
-        ),
-      )
-    })
   })
 })

@@ -62,7 +62,7 @@ describe("DagProjector: captured_output reset on NodeStarted", () => {
     )
   })
 
-  it("new submit_result after restart stores the new payload, not the stale one", async () => {
+  it("new final-response capture after restart stores the new payload, not the stale one", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* setupFKs()
@@ -78,7 +78,7 @@ describe("DagProjector: captured_output reset on NodeStarted", () => {
         yield* events.publish(DagEvent.NodeRestarted, { dagID, nodeID, childSessionID: "ses_A" as never, timestamp: ts(3) })
         yield* events.publish(DagEvent.NodeStarted, { dagID, nodeID, childSessionID: "ses_B" as never, timestamp: ts(4) })
 
-        // Run #2: agent calls submit_result with P2
+        // Run #2: the new attempt captures P2 as its final response
         yield* store.setCapturedOutput("ses_B", { value: "P2" })
         const node = yield* store.getNode(dagID, "node-1")
         expect(node?.capturedOutput).toEqual({ value: "P2" })
