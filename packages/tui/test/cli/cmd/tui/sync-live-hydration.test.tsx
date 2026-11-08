@@ -53,7 +53,7 @@ test("stale session hydration does not overwrite live message parts", async () =
   }, tmp.path)
 
   try {
-    const hydrate = sync.session.sync(sessionID)
+    const hydrate = sync.session.activate(sessionID)
     await wait(() => requested)
     emit(global({ id: "evt_message", type: "message.updated", properties: { sessionID, info: assistant } }))
     emit(
@@ -105,7 +105,7 @@ test("orphan live deltas do not suppress hydrated parts", async () => {
   }, tmp.path)
 
   try {
-    const hydrate = sync.session.sync(sessionID)
+    const hydrate = sync.session.activate(sessionID)
     await wait(() => requested)
     emit(
       global({
@@ -145,7 +145,10 @@ test("hydration does not clear text streamed before it starts", async () => {
   }, tmp.path)
 
   try {
-    emit(global({ id: "evt_message", type: "message.updated", properties: { sessionID, info: assistant } }))
+    // Interest is registered before hydration, so events that arrive while the
+    // snapshot is in flight are delivered and merge into the stream buffer.
+    const hydrate = sync.session.activate(sessionID)
+    await wait(() => requested)
     emit(
       global({
         id: "evt_part",
@@ -164,13 +167,15 @@ test("hydration does not clear text streamed before it starts", async () => {
         properties: { sessionID, messageID, partID, field: "text", delta: "visible streamed content" },
       }),
     )
-    await wait(() => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text !== "")
-    const hydrate = sync.session.sync(sessionID)
-    await wait(() => requested)
+    await wait(() => {
+      const part = sync.data.part[messageID]?.[0]
+      return part?.type === "text" && sync.readPartText(part) === "visible streamed content"
+    })
     resolveMessages(json([{ info: assistant, parts: [{ id: partID, sessionID, messageID, type: "text", text: "" }] }]))
     await hydrate
 
-    expect(sync.data.part[messageID][0]).toMatchObject({ text: "visible streamed content" })
+    // The hydration snapshot has empty text; the buffered delta still renders.
+    expect(sync.readPartText(sync.data.part[messageID][0])).toBe("visible streamed content")
   } finally {
     app.renderer.destroy()
   }
@@ -196,7 +201,7 @@ test("live messages merged during hydration retain the 100 message window", asyn
   }, tmp.path)
 
   try {
-    const hydrate = sync.session.sync(sessionID)
+    const hydrate = sync.session.activate(sessionID)
     await wait(() => requested)
     const live = { ...assistant, id: "msg_z_live" }
     emit(global({ id: "evt_live", type: "message.updated", properties: { sessionID, info: live } }))
@@ -243,10 +248,10 @@ test("a message removed during hydration does not regain stale parts", async () 
   }, tmp.path)
 
   try {
+    const hydrate = sync.session.activate(sessionID)
+    await wait(() => requested)
     emit(global({ id: "evt_message", type: "message.updated", properties: { sessionID, info: assistant } }))
     await wait(() => sync.data.message[sessionID]?.length === 1)
-    const hydrate = sync.session.sync(sessionID)
-    await wait(() => requested)
     emit(global({ id: "evt_removed", type: "message.removed", properties: { sessionID, messageID } }))
     await wait(() => sync.data.message[sessionID]?.length === 0)
     resolveMessages(

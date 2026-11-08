@@ -1,8 +1,12 @@
 import { createOpencodeClient } from "@graphagent/sdk/v2"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { Event, GlobalEvent } from "@graphagent/sdk/v2"
 import { Flag } from "@graphagent/core/flag/flag"
-import { createSimpleContext } from "./helper"
+import { BoxRenderable } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import { batch, onCleanup, onMount } from "solid-js"
+import { createSimpleContext } from "./helper"
+import { createFrameClock, type FrameClock } from "./frame-clock"
+import type { GateDecision } from "./event-gate"
 
 export type EventSource = {
   subscribe: (handler: (event: GlobalEvent) => void) => Promise<() => void>
@@ -29,6 +33,26 @@ export interface SdkEventEmitter {
   on(type: "reconnected", handler: () => void): () => void
 }
 
+const URGENT_TYPES = new Set([
+  "permission.asked",
+  "permission.replied",
+  "permission.v2.asked",
+  "permission.v2.replied",
+  "question.asked",
+  "question.replied",
+  "question.rejected",
+  "question.interacted",
+  "question.timed_out",
+  "question.v2.asked",
+  "question.v2.replied",
+  "question.v2.rejected",
+  "question.v2.interacted",
+  "question.v2.timed_out",
+  "session.status",
+  "session.idle",
+  "session.error",
+])
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
@@ -39,6 +63,33 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     events?: EventSource
   }) => {
     const abort = new AbortController()
+    const renderer = useRenderer()
+    const frameClock: FrameClock = createFrameClock({
+      requestRender: () => renderer.requestRender(),
+      registerPass: (run) => {
+        try {
+          const pass = new BoxRenderable(renderer, {
+            position: "absolute",
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
+            visible: false,
+          })
+          pass.onLifecyclePass = run
+          renderer.registerLifecyclePass(pass)
+          return () => {
+            renderer.unregisterLifecyclePass(pass)
+            pass.destroy()
+          }
+        } catch {
+          // Headless or test renderers without lifecycle passes still flush
+          // through the fallback timer.
+          return () => {}
+        }
+      },
+    })
+    let eventGate: ((event: Event) => GateDecision) | undefined
 
     function createSDK() {
       return createOpencodeClient({
@@ -76,6 +127,16 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       },
     }
 
+    let pending: GlobalEvent[] = []
+    const dispatch = () => {
+      const events = pending
+      pending = []
+      if (events.length === 0) return
+      batch(() => {
+        for (const event of events) emitter.emit("event", event)
+      })
+    }
+
     onMount(async () => {
       const events = props.events
       // The TUI always receives events from the worker transport. There is no
@@ -85,11 +146,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
       const emitBatch = (batchEvents: GlobalEvent[]) => {
         if (batchEvents.length === 0) return
-        batch(() => {
-          for (const event of batchEvents) {
-            emitter.emit("event", event)
-          }
-        })
+        pending.push(...batchEvents)
+        frameClock.schedule(dispatch)
+        // Permission and question prompts must not wait for the next frame.
+        if (batchEvents.some((event) => URGENT_TYPES.has(event.payload.type))) frameClock.flushNow()
       }
 
       const unsub = events.subscribeBatch
@@ -111,6 +171,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
     onCleanup(() => {
       abort.abort()
+      pending = []
+      frameClock.dispose()
       eventHandlers.clear()
       reconnectHandlers.clear()
     })
@@ -122,6 +184,14 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       directory: props.directory,
       event: emitter,
       fetch: props.fetch ?? fetch,
+      frameClock,
+      /** Client-side defence applied by `useEvent` before subscribers see the event. */
+      get eventGate() {
+        return eventGate
+      },
+      setEventGate(gate: ((event: Event) => GateDecision) | undefined) {
+        eventGate = gate
+      },
       /** Replace the full-session interest set, e.g. from the F1 aggregator. */
       setInterest: (full: readonly string[]) => props.events?.setInterest?.(full) ?? Promise.resolve(),
       url: props.url,

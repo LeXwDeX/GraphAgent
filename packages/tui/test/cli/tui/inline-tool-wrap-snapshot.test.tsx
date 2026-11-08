@@ -280,6 +280,11 @@ describe("TUI inline tool wrapping", () => {
     expect(formatSubagentToolcalls(0)).toBe("0 toolcalls")
   })
 
+  test("distinguishes an unknown cold-start tool count from zero", () => {
+    expect(formatSubagentToolcalls(undefined)).toBe("—")
+    expect(formatCompletedSubagentDetail(undefined, "501ms")).toBe("— · 501ms")
+  })
+
   test("keeps background state attached to the subagent identity", () => {
     expect(formatSubagentTitle("Explore", "Inspect renderer", false)).toBe("Explore Task — Inspect renderer")
     expect(formatSubagentTitle("Explore", "Inspect renderer", true)).toBe(

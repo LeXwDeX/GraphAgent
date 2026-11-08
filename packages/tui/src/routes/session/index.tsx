@@ -326,7 +326,9 @@ export function Session() {
         } catch {}
       }
       editor.reconnect(result.data.directory)
-      await sync.session.sync(sessionID)
+      // Register the session and its parent chain for full events before the
+      // snapshot, so events in between merge instead of being dropped.
+      await sync.session.activate(sessionID)
       if (result.data.parentID && !sync.data.message[result.data.parentID]) {
         await sync.session.sync(result.data.parentID).catch(() => undefined)
       }
@@ -341,6 +343,9 @@ export function Session() {
       navigate({ type: "home" })
     })
   })
+
+  // Leaving the route releases its interest source and lets the LRU shrink.
+  onCleanup(() => sync.session.deactivate())
 
   let lastSwitch: string | undefined = undefined
   onCleanup(
@@ -874,7 +879,7 @@ export function Session() {
         }
 
         const text = textParts
-          .map((part) => part.displayText ?? part.text)
+          .map((part) => sync.readPartText(part))
           .join("\n")
           .trim()
         if (!text) {
@@ -913,6 +918,7 @@ export function Session() {
               toolDetails: showDetails(),
               assistantMetadata: showAssistantMetadata(),
               providers: sync.data.provider,
+              readText: (part) => sync.readPartText(part),
             },
           )
           await clipboard.write?.(transcript)
@@ -957,6 +963,7 @@ export function Session() {
               toolDetails: options.toolDetails,
               assistantMetadata: options.assistantMetadata,
               providers: sync.data.provider,
+              readText: (part) => sync.readPartText(part),
             },
           )
 
@@ -1602,7 +1609,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
 
   const content = createMemo(() => {
     // OpenRouter encrypts some reasoning blocks; drop the placeholder.
-    return props.part.text.replace("[REDACTED]", "").trim()
+    return ctx.sync.readPartText(props.part).replace("[REDACTED]", "").trim()
   })
   // Reasoning is finalized when the server sets `time.end` (see processor.ts).
   // Flips independently of the parent message completing.
@@ -1732,7 +1739,7 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const content = createMemo(() => (props.part.displayText ?? props.part.text).trim())
+  const content = createMemo(() => ctx.sync.readPartText(props.part).trim())
   return (
     <Show when={content()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
@@ -2265,33 +2272,16 @@ function Task(props: ToolProps) {
   const sync = useSync()
   const dialog = useDialog()
 
-  onMount(() => {
-    const sessionID = stringValue(props.metadata.sessionId)
-    if (sessionID && !sync.data.message[sessionID]?.length) void sync.session.sync(sessionID)
-  })
-
   const sessionID = createMemo(() => stringValue(props.metadata.sessionId))
-  const messages = createMemo(() => sync.data.message[sessionID() ?? ""] ?? [])
-
-  const tools = createMemo(() => {
-    return messages().flatMap((msg) =>
-      (sync.data.part[msg.id] ?? [])
-        .filter((part): part is ToolPart => part.type === "tool")
-        .map((part) => ({ tool: part.tool, state: part.state })),
-    )
-  })
-
-  const current = createMemo(() =>
-    tools().findLast((x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title),
-  )
-
+  // #886 5.5: the row never loads the child session; it reads the summary that
+  // the event gate keeps up to date (and that a cold start rebuilds from the
+  // session list). Entering the child view is what hydrates it.
+  const summary = createMemo(() => sync.data.summary[sessionID() ?? ""])
   const status = createMemo(() => sync.data.session_status[sessionID() ?? ""])
   const isRunning = createMemo(() => {
-    const value = status()
-    return (
-      props.part.state.status === "running" ||
-      (props.metadata.background === true && value !== undefined && value.type !== "idle")
-    )
+    if (props.part.state.status === "running") return true
+    const value = summary()
+    return value?.status === "busy" || value?.status === "retry"
   })
   const retry = createMemo(() => {
     const value = status()
@@ -2300,10 +2290,9 @@ function Task(props: ToolProps) {
   })
 
   const duration = createMemo(() => {
-    const first = messages().find((x) => x.role === "user")?.time.created
-    const assistant = messages().findLast((x) => x.role === "assistant")?.time.completed
-    if (!first || !assistant) return 0
-    return assistant - first
+    const value = summary()
+    if (value?.startedAt === undefined) return 0
+    return Math.max(0, value.lastActivityAt - value.startedAt)
   })
 
   const content = createMemo(() => {
@@ -2320,16 +2309,14 @@ function Task(props: ToolProps) {
     const retrying = retry()
     if (isRunning() && retrying) {
       content.push(`↳ ${formatSubagentRetry(retrying.attempt, Locale.truncate(retrying.message, 80))}`)
-    } else if (isRunning() && tools().length > 0) {
-      if (current()) {
-        const state = current()!.state
-        const title = state.status === "running" || state.status === "completed" ? state.title : undefined
-        content.push(`↳ ${Locale.titlecase(current()!.tool)} ${title}`)
-      } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
+    } else if (isRunning()) {
+      const current = summary()?.current
+      if (current) content.push(`↳ ${Locale.titlecase(current.tool)} ${current.title ?? ""}`.trimEnd())
+      else content.push(`↳ ${formatSubagentToolcalls(summary()?.toolCalls)}`)
     }
 
     if (!isRunning() && props.part.state.status === "completed") {
-      content.push(`↳ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`)
+      content.push(`↳ ${formatCompletedSubagentDetail(summary()?.toolCalls, Locale.duration(duration()))}`)
     }
 
     return content.join("\n")
@@ -2357,7 +2344,10 @@ function Task(props: ToolProps) {
   )
 }
 
-export function formatSubagentToolcalls(count: number) {
+export function formatSubagentToolcalls(count: number | undefined) {
+  // A cold start cannot reconstruct historical tool counts (#886 5.4); `—`
+  // distinguishes "unknown" from a real zero.
+  if (count === undefined) return "—"
   return `${count} toolcall${count === 1 ? "" : "s"}`
 }
 
@@ -2369,7 +2359,7 @@ export function formatSubagentRetry(attempt: number, message: string) {
   return `Retrying (attempt ${attempt}) · ${message}`
 }
 
-export function formatCompletedSubagentDetail(toolcalls: number, duration: string) {
+export function formatCompletedSubagentDetail(toolcalls: number | undefined, duration: string) {
   if (toolcalls === 0) return duration
   return `${formatSubagentToolcalls(toolcalls)} · ${duration}`
 }

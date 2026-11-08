@@ -20,6 +20,8 @@ export function createEventSource() {
   let reconnectFns = new Set<() => void>()
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined
   const pending: Uint8Array[] = []
+  // Record the interest submissions so tests can assert the ordering contract.
+  const interest: string[][] = []
   return {
     source: {
       subscribe: async (handler: (event: GlobalEvent) => void) => {
@@ -28,6 +30,9 @@ export function createEventSource() {
           if (fn === handler) fn = undefined
         }
       },
+      setInterest: async (full: readonly string[]) => {
+        interest.push([...full])
+      },
       onReconnect: (handler: () => void) => {
         reconnectFns.add(handler)
         return () => {
@@ -35,6 +40,7 @@ export function createEventSource() {
         }
       },
     } satisfies EventSource,
+    interest,
     emit(event: GlobalEvent) {
       if (!fn) throw new Error("event source not ready")
       fn(event)
