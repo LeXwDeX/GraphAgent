@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
+import { DiffRenderable, ScrollBoxRenderable, type Renderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { Session } from "@graphagent/sdk/v2"
 import { onCleanup } from "solid-js"
@@ -75,7 +76,9 @@ const diffFiles = [
 
 type Harness = Awaited<ReturnType<typeof renderDiff>>
 
-async function renderDiff(input: { initialRoute?: Route; config?: Record<string, unknown> } = {}) {
+async function renderDiff(
+  input: { initialRoute?: Route; config?: Record<string, unknown>; diff?: unknown[]; height?: number } = {},
+) {
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
   const events = createEventSource()
@@ -91,7 +94,7 @@ async function renderDiff(input: { initialRoute?: Route; config?: Record<string,
     const url = new URL(request instanceof Request ? request.url : String(request))
     if (url.pathname === "/vcs/diff") {
       vcsDiffRequests.push(url)
-      return json(diffFiles)
+      return json(input.diff ?? diffFiles)
     }
     if (url.pathname === `/session/${sessionID}/diff`) {
       sessionDiffRequests.push(url)
@@ -160,7 +163,7 @@ async function renderDiff(input: { initialRoute?: Route; config?: Record<string,
     )
   }
 
-  const app = await testRender(() => <Harness />, { width: 100, height: 28 })
+  const app = await testRender(() => <Harness />, { width: 100, height: input.height ?? 28 })
   for (let attempt = 0; attempt < 100 && !hasCommand(keymap, "diff.close"); attempt++) {
     await app.renderOnce()
     await Bun.sleep(10)
@@ -346,6 +349,134 @@ test("switch source reopens the diff and keeps the original return route", async
     await harness.dispose()
   }
 })
+
+test("last-turn source requests the session diff", async () => {
+  const messageID = "msg_diff"
+  const harness = await renderDiff({
+    initialRoute: {
+      type: "diff",
+      params: { mode: "last-turn", sessionID, messageID },
+      returnRoute: { type: "session", sessionID },
+    },
+  })
+  try {
+    await waitFor(harness.app, () => harness.sessionDiffRequests.length > 0)
+    const request = harness.sessionDiffRequests[0]!
+    expect(request.pathname).toBe(`/session/${sessionID}/diff`)
+    expect(request.searchParams.get("messageID")).toBe(messageID)
+    expect(harness.vcsDiffRequests).toHaveLength(0)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+function buildHunk(start: number, name: string) {
+  return [
+    `@@ -${start},21 +${start},21 @@`,
+    ...Array.from({ length: 10 }, (_, i) => ` const ${name}Before${i} = true`),
+    `-const old${name} = true`,
+    `+const new${name} = true`,
+    ...Array.from({ length: 10 }, (_, i) => ` const ${name}After${i} = true`),
+  ].join("\n")
+}
+
+const hunkPatch = `--- a/src/file.ts
++++ b/src/file.ts
+${buildHunk(1, "first")}
+${buildHunk(100, "second")}
+${buildHunk(200, "third")}`
+
+test("brackets navigate diff hunks", async () => {
+  const harness = await renderDiff({
+    height: 20,
+    diff: [{ file: "src/file.ts", additions: 3, deletions: 3, status: "modified" as const, patch: hunkPatch }],
+  })
+  try {
+    await waitForFrame(harness.app, "firstBefore0")
+    await waitFor(harness.app, () => Boolean(findScrollBox(harness.app.renderer.root)))
+    const scroll = findScrollBox(harness.app.renderer.root)!
+    const initial = scroll.scrollTop
+
+    runCommand(harness, "diff.next_hunk")
+    await harness.app.renderOnce()
+    const first = scroll.scrollTop
+    expect(first).toBeGreaterThan(initial)
+
+    runCommand(harness, "diff.next_hunk")
+    await harness.app.renderOnce()
+    const second = scroll.scrollTop
+    expect(second).toBeGreaterThan(first)
+
+    runCommand(harness, "diff.previous_hunk")
+    await harness.app.renderOnce()
+    expect(scroll.scrollTop).toBe(first)
+
+    runCommand(harness, "diff.next_hunk")
+    await harness.app.renderOnce()
+    expect(scroll.scrollTop).toBe(second)
+
+    scroll.scrollTo(initial)
+    runCommand(harness, "diff.next_hunk")
+    await harness.app.renderOnce()
+    expect(scroll.scrollTop).toBe(first)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("large diff keeps file and hunk navigation across resize", async () => {
+  const harness = await renderDiff({
+    height: 20,
+    diff: [
+      {
+        file: "a-large.ts",
+        additions: 3000,
+        deletions: 0,
+        status: "added" as const,
+        patch: `--- /dev/null\n+++ b/a-large.ts\n@@ -0,0 +1,3000 @@\n${Array.from({ length: 3000 }, (_, i) => `+large${i + 1}`).join("\n")}`,
+      },
+      {
+        file: "z-small.ts",
+        additions: 1,
+        deletions: 1,
+        status: "modified" as const,
+        patch: "--- a/z-small.ts\n+++ b/z-small.ts\n@@ -1 +1 @@\n-old\n+small final",
+      },
+    ],
+  })
+  try {
+    await waitForFrame(harness.app, "large1")
+    const scroll = findScrollBox(harness.app.renderer.root)!
+    scroll.scrollTo(1_000_000)
+    await waitForFrame(harness.app, "small final")
+    runCommand(harness, "diff.previous_file")
+    await waitForFrame(harness.app, "large1")
+    runCommand(harness, "diff.mark_reviewed")
+    await harness.app.renderOnce()
+    runCommand(harness, "diff.toggle_view")
+    harness.app.resize(160, 20)
+    await waitForFrame(harness.app, "large1")
+    runCommand(harness, "diff.next_hunk")
+    await harness.app.renderOnce()
+    runCommand(harness, "diff.next_hunk")
+    await waitForFrame(harness.app, "small final")
+    runCommand(harness, "diff.close")
+    await harness.app.renderOnce()
+    expect(harness.route()).toEqual({ type: "session", sessionID })
+  } finally {
+    await harness.dispose()
+  }
+})
+
+function findScrollBox(root: Renderable): ScrollBoxRenderable | undefined {
+  if (root instanceof ScrollBoxRenderable && containsDiff(root)) return root
+  return root.getChildren().map(findScrollBox).find(Boolean)
+}
+
+function containsDiff(root: Renderable): boolean {
+  if (root instanceof DiffRenderable) return true
+  return root.getChildren().some(containsDiff)
+}
 
 function hasBackground(harness: Harness, text: string, background: ReturnType<Harness["theme"]>["primary"]) {
   const frame = harness.app.captureSpans()
