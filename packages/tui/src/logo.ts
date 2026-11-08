@@ -1,11 +1,33 @@
-export const logo = {
-  left: ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"],
-  right: ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"],
-}
+// Character data for the GraphAgent wordmark. Rendering (colors, shadow
+// shading, breakpoints, theme tokens) belongs to F1; this module only owns
+// the glyphs.
+//
+// Classification for renderers: `█` is drawn with the foreground color
+// (GRAPH light gray, AGENT brand blue), box-drawing characters `╗╔╝╚║═`
+// with the shadow color, spaces are transparent.
 
-export const go = {
-  left: ["    ", "█▀▀▀", "█_^█", "▀▀▀▀"],
-  right: ["    ", "█▀▀█", "█__█", "▀▀▀▀"],
-}
+export const LOGO_GRAPH: readonly string[] = [
+  " ██████╗ ██████╗  █████╗ ██████╗ ██╗  ██╗",
+  "██╔════╝ ██╔══██╗██╔══██╗██╔══██╗██║  ██║",
+  "██║  ███╗██████╔╝███████║██████╔╝███████║",
+  "██║   ██║██╔══██╗██╔══██║██╔═══╝ ██╔══██║",
+  "╚██████╔╝██║  ██║██║  ██║██║     ██║  ██║",
+  " ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝",
+]
 
-export const marks = "_^~,"
+export const LOGO_AGENT: readonly string[] = [
+  " █████╗  ██████╗ ███████╗███╗   ██╗████████╗",
+  "██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝",
+  "███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║   ",
+  "██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║   ",
+  "██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║   ",
+  "╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   ",
+]
+
+export const LOGO_GAP = 2
+
+export const LOGO_WIDTH = 87
+
+export const LOGO_MIN_COLUMNS = 90
+
+export const LOGO_MINI = "◇─◆ GraphAgent"
