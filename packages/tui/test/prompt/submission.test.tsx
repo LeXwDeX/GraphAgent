@@ -104,6 +104,11 @@ function SyncProbe(props: { onSync: (sync: ReturnType<typeof useSync>) => void }
   return <box />
 }
 
+function SDKProbe(props: { ready: (value: ReturnType<typeof useSDK>) => void }) {
+  props.ready(useSDK())
+  return <box />
+}
+
 function PromptRoute(props: { sessionID?: string }) {
   const route = useRoute()
   return (
@@ -187,6 +192,7 @@ async function mountRoute(
   let navigation!: ReturnType<typeof useRoute>
   let editor!: ReturnType<typeof useEditorContext>
   let sync!: ReturnType<typeof useSync>
+  let sdk!: ReturnType<typeof useSDK>
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
   let counter!: () => number
   let resolveReady!: () => void
@@ -248,6 +254,7 @@ async function mountRoute(
                                                         }}
                                                       />
                                                       <SyncProbe onSync={(value) => (sync = value)} />
+                                                      <SDKProbe ready={(value) => (sdk = value)} />
                                                       <Show when={mounted()}>
                                                         {view === "session" ? (
                                                           <Session />
@@ -291,6 +298,7 @@ async function mountRoute(
     app,
     baseline: counter(),
     sync,
+    sdk,
     events,
     keymap,
     editor,
@@ -812,7 +820,9 @@ for (const deleted of [false, true]) {
           properties: { sessionID: routeSessionID, info: { ...routeSession, title: "live title" } },
         },
       })
-      await Bun.sleep(10)
+      // Delivery is frame-batched. Flush the clock instead of sleeping so the
+      // event deterministically lands while hydration is still suspended.
+      route.sdk.frameClock.flushNow()
       release()
       await task
       expect(route.sync.session.get(routeSessionID)?.title).toBe(deleted ? undefined : "live title")
