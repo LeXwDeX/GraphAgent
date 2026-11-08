@@ -482,7 +482,7 @@ const scenarios: Scenario[] = [
     .at((ctx) => ({
       path: "/mcp",
       headers: ctx.headers(),
-      body: { name: "httpapi-disabled", config: { type: "local", command: ["bun", "--version"], enabled: false } },
+      body: { name: "httpapi-disabled", config: { type: "local", command: ["bun", "--version"], disabled: true } },
     }))
     .json(
       200,

@@ -2,13 +2,12 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { type Tool } from "ai"
-import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { serviceUse } from "@graphagent/core/effect/service-use"
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio"
 import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client"
 import type { ClientOptions, LoggingMessageNotification, Tool as MCPToolDef } from "@modelcontextprotocol/client"
-import { Config } from "@/config/config"
-import { ConfigMCPV1 } from "@graphagent/core/v1/config/mcp"
+import { McpConfig } from "./config"
 import { NamedError } from "@graphagent/core/util/error"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { APP_NAME } from "@graphagent/core/brand"
@@ -68,17 +67,15 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("MCP.NotF
 
 type MCPClient = Client
 
-function createClient(directory: string, protocol?: "auto" | "legacy" | "modern") {
+function createClient(directory: string) {
   const client = new Client(
     { name: APP_NAME, version: InstallationVersion },
     {
       ...CLIENT_OPTIONS,
-      // Per-server protocol era (#448). Absent/'auto' probes server/discover with
-      // conservative fallback to the 2025 initialize handshake; 'legacy' skips the
-      // probe; 'modern' pins 2026-07-28 with no fallback.
-      versionNegotiation: {
-        mode: protocol === "legacy" ? "legacy" : protocol === "modern" ? { pin: "2026-07-28" } : "auto",
-      },
+      // Protocol negotiation is always automatic: probe server/discover and
+      // fall back to the 2025 initialize handshake. The per-server `protocol`
+      // override was removed with the mcp.json migration.
+      versionNegotiation: { mode: "auto" },
     },
   )
   client.setRequestHandler("roots/list", () => Promise.resolve({ roots: [{ uri: pathToFileURL(directory).href }] }))
@@ -137,11 +134,7 @@ const pendingOAuthTransports = new Map<string, StreamableHTTPClientTransport>()
 type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][number]
 type ResourceInfo = Awaited<ReturnType<MCPClient["listResources"]>>["resources"][number]
 type ResourceTemplateInfo = Awaited<ReturnType<MCPClient["listResourceTemplates"]>>["resourceTemplates"][number]
-type McpEntry = NonNullable<ConfigV1.Info["mcp"]>[string]
-
-function isMcpConfigured(entry: McpEntry): entry is ConfigMCPV1.Info {
-  return typeof entry === "object" && entry !== null && "type" in entry
-}
+type McpServer = ConfigMCP.Server
 
 function remoteURL(value: string) {
   if (URL.canParse(value)) return new URL(value)
@@ -163,7 +156,7 @@ interface AuthResult {
 // --- Effect Service ---
 
 interface State {
-  config: Record<string, ConfigMCPV1.Info>
+  config: Record<string, McpServer>
   status: Record<string, Status>
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
@@ -186,7 +179,7 @@ export interface Interface {
   readonly resourceTemplates: (
     clientName?: string,
   ) => Effect.Effect<Record<string, ResourceTemplateInfo & { client: string }>>
-  readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
+  readonly add: (name: string, mcp: McpServer) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
@@ -232,7 +225,6 @@ export const layer = Layer.effect(
     const connectTransport = Effect.fn("MCP.connectTransport")(function* (
       transport: Transport,
       timeout: number,
-      protocol?: "auto" | "legacy" | "modern",
     ) {
       const directory = yield* InstanceState.directory
       return yield* Effect.acquireUseRelease(
@@ -240,7 +232,7 @@ export const layer = Layer.effect(
         (t) =>
           Effect.tryPromise({
             try: () => {
-              const client = createClient(directory, protocol)
+              const client = createClient(directory)
               return withTimeout(client.connect(t), timeout).then(() => client)
             },
             catch: (e) => (e instanceof Error ? e : new Error(String(e))),
@@ -251,10 +243,7 @@ export const layer = Layer.effect(
 
     const DISABLED_RESULT: CreateResult = { status: { status: "disabled" } }
 
-    const connectRemote = Effect.fn("MCP.connectRemote")(function* (
-      key: string,
-      mcp: ConfigMCPV1.Info & { type: "remote" },
-    ) {
+    const connectRemote = Effect.fn("MCP.connectRemote")(function* (key: string, mcp: ConfigMCP.Remote) {
       const oauthDisabled = mcp.oauth === false
       const oauthConfig = typeof mcp.oauth === "object" ? mcp.oauth : undefined
       const url = remoteURL(mcp.url)
@@ -271,11 +260,11 @@ export const layer = Layer.effect(
           key,
           mcp.url,
           {
-            clientId: oauthConfig?.clientId,
-            clientSecret: oauthConfig?.clientSecret,
+            client_id: oauthConfig?.client_id,
+            client_secret: oauthConfig?.client_secret,
             scope: oauthConfig?.scope,
-            callbackPort: oauthConfig?.callbackPort,
-            redirectUri: oauthConfig?.redirectUri,
+            callback_port: oauthConfig?.callback_port,
+            redirect_uri: oauthConfig?.redirect_uri,
           },
           {
             onRedirect: async () => {},
@@ -291,10 +280,10 @@ export const layer = Layer.effect(
         requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
       })
 
-      const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
+      const connectTimeout = mcp.timeout?.startup ?? DEFAULT_TIMEOUT
       let lastStatus: Status | undefined
 
-      const result = yield* connectTransport(transport, connectTimeout, mcp.protocol).pipe(
+      const result = yield* connectTransport(transport, connectTimeout).pipe(
         Effect.catch((error) => {
           const lastError = error instanceof Error ? error : new Error(String(error))
           const isAuthError =
@@ -304,12 +293,12 @@ export const layer = Layer.effect(
             if (lastError.message.includes("registration") || lastError.message.includes("client_id")) {
               lastStatus = {
                 status: "needs_client_registration" as const,
-                error: "Server does not support dynamic client registration. Please provide clientId in config.",
+                error: "Server does not support dynamic client registration. Please provide client_id in config.",
               }
               return events
                 .publish(TuiEvent.ToastShow, {
                   title: "MCP Authentication Required",
-                  message: `Server "${key}" requires a pre-registered client ID. Add clientId to your config.`,
+                  message: `Server "${key}" requires a pre-registered client ID. Add client_id to your mcp.json entry.`,
                   variant: "warning",
                   duration: 8000,
                 })
@@ -340,10 +329,7 @@ export const layer = Layer.effect(
       }
     })
 
-    const connectLocal = Effect.fn("MCP.connectLocal")(function* (
-      key: string,
-      mcp: ConfigMCPV1.Info & { type: "local" },
-    ) {
+    const connectLocal = Effect.fn("MCP.connectLocal")(function* (key: string, mcp: ConfigMCP.Local) {
       const [cmd, ...args] = mcp.command
       const baseDir = yield* InstanceState.directory
       const cwd = mcp.cwd ? path.resolve(baseDir, mcp.cwd) : baseDir
@@ -359,8 +345,8 @@ export const layer = Layer.effect(
         },
       })
 
-      const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
-      return yield* connectTransport(transport, connectTimeout, mcp.protocol).pipe(
+      const connectTimeout = mcp.timeout?.startup ?? DEFAULT_TIMEOUT
+      return yield* connectTransport(transport, connectTimeout).pipe(
         Effect.map((client): { client: MCPClient | undefined; status: Status } => ({
           client,
           status: connectedStatus(client),
@@ -373,15 +359,13 @@ export const layer = Layer.effect(
     })
 
     const create = Effect.fn("MCP.create")(
-      function* (key: string, mcp: ConfigMCPV1.Info) {
-        if (mcp.enabled === false) {
+      function* (key: string, mcp: McpServer) {
+        if (mcp.disabled === true) {
           return DISABLED_RESULT
         }
 
         const { client: mcpClient, status } =
-          mcp.type === "remote"
-            ? yield* connectRemote(key, mcp as ConfigMCPV1.Info & { type: "remote" })
-            : yield* connectLocal(key, mcp as ConfigMCPV1.Info & { type: "local" })
+          mcp.type === "remote" ? yield* connectRemote(key, mcp) : yield* connectLocal(key, mcp)
 
         if (!mcpClient) {
           if (status.status !== "connected" && status.status !== "disabled") {
@@ -391,7 +375,9 @@ export const layer = Layer.effect(
         }
 
         return yield* Effect.gen(function* () {
-          const listed = mcpClient.getServerCapabilities()?.tools ? yield* McpCatalog.defs(mcpClient, mcp.timeout) : []
+          const listed = mcpClient.getServerCapabilities()?.tools
+            ? yield* McpCatalog.defs(mcpClient, mcp.timeout?.request)
+            : []
           if (!listed) {
             return yield* Effect.fail(new Error("Failed to get tools"))
           }
@@ -419,8 +405,6 @@ export const layer = Layer.effect(
         })
       }),
     )
-    const cfgSvc = yield* Config.Service
-
     const descendants = Effect.fnUntraced(
       function* (pid: number) {
         if (process.platform === "win32") return [] as number[]
@@ -521,10 +505,11 @@ export const layer = Layer.effect(
     }
 
     const state = yield* InstanceState.make<State>(
-      Effect.fn("MCP.state")(function* () {
-        const cfg = yield* cfgSvc.get()
+      Effect.fn("MCP.state")(function* (ctx) {
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        // mcp.json is the only source of server definitions; a removed V1 shape
+        // throws a ConfigInvalidError that names the offending file and key.
+        const config = McpConfig.load(ctx.root)
         const s: State = {
           config: {},
           status: {},
@@ -537,23 +522,13 @@ export const layer = Layer.effect(
           Object.entries(config),
           ([key, mcp]) =>
             Effect.gen(function* () {
-              if (!isMcpConfigured(mcp)) {
-                yield* Effect.logError("Ignoring MCP config entry without type", { key })
-                return
-              }
-
-              if (mcp.enabled === false) {
-                s.status[key] = { status: "disabled" }
-                return
-              }
-
               const result = yield* create(key, mcp)
               s.status[key] = result.status
               if (result.mcpClient) {
                 s.clients[key] = result.mcpClient
                 s.defs[key] = result.defs!
                 if (result.instructions) s.instructions[key] = result.instructions
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
+                watch(s, key, result.mcpClient, bridge, mcp.timeout?.request)
               }
             }),
           { concurrency: "unbounded" },
@@ -605,13 +580,11 @@ export const layer = Layer.effect(
 
     const status = Effect.fn("MCP.status")(function* () {
       const s = yield* InstanceState.get(state)
-
-      const cfg = yield* cfgSvc.get()
-      const config = cfg.mcp ?? {}
+      const ctx = yield* InstanceState.context
+      const config = McpConfig.load(ctx.root)
       const result: Record<string, Status> = {}
 
-      for (const [key, mcp] of Object.entries(config)) {
-        if (!isMcpConfigured(mcp)) continue
+      for (const key of Object.keys(config)) {
         result[key] = s.status[key] ?? { status: "disabled" }
       }
 
@@ -639,7 +612,7 @@ export const layer = Layer.effect(
         }))
     })
 
-    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: McpServer) {
       const s = yield* InstanceState.get(state)
       const result = yield* create(name, mcp)
 
@@ -650,10 +623,10 @@ export const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout?.request)
     })
 
-    const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const add = Effect.fn("MCP.add")(function* (name: string, mcp: McpServer) {
       const s = yield* InstanceState.get(state)
       s.config[name] = mcp
       yield* createAndStore(name, mcp)
@@ -662,7 +635,7 @@ export const layer = Layer.effect(
 
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
       const mcp = yield* requireMcpConfig(name)
-      yield* createAndStore(name, { ...mcp, enabled: true })
+      yield* createAndStore(name, { ...mcp, disabled: false })
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
@@ -673,18 +646,15 @@ export const layer = Layer.effect(
       s.status[name] = { status: "disabled" }
     })
 
-    function requestTimeout(s: State, name: string, configured: McpEntry | undefined, fallback?: number) {
-      const staticTimeout = configured && isMcpConfigured(configured) ? configured.timeout : undefined
-      return s.config[name]?.timeout ?? staticTimeout ?? fallback
+    function requestTimeout(s: State, name: string, configured: McpServer | undefined) {
+      return s.config[name]?.timeout?.request ?? configured?.timeout?.request ?? DEFAULT_TIMEOUT
     }
 
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, Tool> = {}
       const s = yield* InstanceState.get(state)
-
-      const cfg = yield* cfgSvc.get()
-      const config = cfg.mcp ?? {}
-      const defaultTimeout = cfg.experimental?.mcp_timeout
+      const ctx = yield* InstanceState.context
+      const config = McpConfig.load(ctx.root)
 
       for (const [clientName, client] of Object.entries(s.clients)) {
         if (s.status[clientName]?.status !== "connected") continue
@@ -694,7 +664,7 @@ export const layer = Layer.effect(
           yield* Effect.logWarning("missing cached tools for connected server", { clientName })
           continue
         }
-        const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
+        const timeout = requestTimeout(s, clientName, mcpConfig)
         for (const mcpTool of listed) {
           const key = McpCatalog.toolName(clientName, mcpTool.name)
           result[key] = McpCatalog.bindTool(McpCatalog.convertTool(mcpTool, client, timeout), {
@@ -718,7 +688,8 @@ export const layer = Layer.effect(
       targetClientName?: string,
     ) {
       return Effect.gen(function* () {
-        const cfg = yield* cfgSvc.get()
+        const ctx = yield* InstanceState.context
+        const config = McpConfig.load(ctx.root)
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
             ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
@@ -727,7 +698,7 @@ export const layer = Layer.effect(
             McpCatalog.fetch(
               clientName,
               client,
-              (c) => listFn(c, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
+              (c) => listFn(c, requestTimeout(s, clientName, config[clientName])),
               label,
               key,
             ).pipe(Effect.map((items) => Object.entries(items ?? {}))),
@@ -772,9 +743,10 @@ export const layer = Layer.effect(
         yield* Effect.logWarning(`client not found for ${label}`, { clientName })
         return undefined
       }
-      const cfg = yield* cfgSvc.get()
+      const ctx = yield* InstanceState.context
+      const config = McpConfig.load(ctx.root)
       return yield* Effect.tryPromise({
-        try: () => fn(client, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
+        try: () => fn(client, requestTimeout(s, clientName, config[clientName])),
         catch: (error) => error,
       }).pipe(
         Effect.tapError((error) =>
@@ -814,10 +786,8 @@ export const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       if (s.config[mcpName]) return s.config[mcpName]
 
-      const cfg = yield* cfgSvc.get()
-      const mcpConfig = cfg.mcp?.[mcpName]
-      if (!mcpConfig || !isMcpConfigured(mcpConfig)) return undefined
-      return mcpConfig
+      const ctx = yield* InstanceState.context
+      return McpConfig.load(ctx.root)[mcpName]
     })
 
     const requireMcpConfig = Effect.fnUntraced(function* (mcpName: string) {
@@ -836,10 +806,10 @@ export const layer = Layer.effect(
       // OAuth config is optional - if not provided, we'll use auto-discovery
       const oauthConfig = typeof mcpConfig.oauth === "object" ? mcpConfig.oauth : undefined
 
-      // Resolve effective redirect URI: explicit redirectUri > callbackPort shorthand > default
+      // Resolve effective redirect URI: explicit redirect_uri > callback_port shorthand > default
       const effectiveRedirectUri =
-        oauthConfig?.redirectUri ??
-        (oauthConfig?.callbackPort ? `http://127.0.0.1:${oauthConfig.callbackPort}${OAUTH_CALLBACK_PATH}` : undefined)
+        oauthConfig?.redirect_uri ??
+        (oauthConfig?.callback_port ? `http://127.0.0.1:${oauthConfig.callback_port}${OAUTH_CALLBACK_PATH}` : undefined)
 
       // Start the callback server with custom redirectUri if configured
       yield* Effect.promise(() => McpOAuthCallback.ensureRunning(effectiveRedirectUri))
@@ -853,10 +823,10 @@ export const layer = Layer.effect(
         mcpName,
         mcpConfig.url,
         {
-          clientId: oauthConfig?.clientId,
-          clientSecret: oauthConfig?.clientSecret,
+          client_id: oauthConfig?.client_id,
+          client_secret: oauthConfig?.client_secret,
           scope: oauthConfig?.scope,
-          redirectUri: effectiveRedirectUri,
+          redirect_uri: effectiveRedirectUri,
         },
         {
           onRedirect: async (url) => {
@@ -874,7 +844,7 @@ export const layer = Layer.effect(
 
       return yield* Effect.tryPromise({
         try: () => {
-          const client = createClient(directory, mcpConfig.protocol)
+          const client = createClient(directory)
           return client
             .connect(transport)
             .then(() => ({ authorizationUrl: "", oauthState, client }) satisfies AuthResult)
@@ -904,7 +874,7 @@ export const layer = Layer.effect(
 
         const listed = client
           ? client.getServerCapabilities()?.tools
-            ? yield* McpCatalog.defs(client, mcpConfig.timeout)
+            ? yield* McpCatalog.defs(client, mcpConfig.timeout?.request)
             : []
           : undefined
         if (!client || !listed) {
@@ -920,7 +890,7 @@ export const layer = Layer.effect(
           client,
           listed,
           client.getInstructions()?.trim(),
-          mcpConfig.timeout,
+          mcpConfig.timeout?.request,
         )
         const { Notification } = yield* Effect.promise(() => import("@/notification"))
         const notification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
@@ -1047,11 +1017,10 @@ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 export const defaultLayer = layer.pipe(
   Layer.provide(McpAuth.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
-  Layer.provide(Config.defaultLayer),
   Layer.provide(CrossSpawnSpawner.defaultLayer),
   Layer.provide(FSUtil.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node])
+export const node = LayerNode.make(layer, [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node])
 
 export * as MCP from "."

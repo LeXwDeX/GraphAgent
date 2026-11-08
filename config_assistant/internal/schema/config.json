@@ -538,149 +538,6 @@
       },
       "additionalProperties": true
     },
-    "McpLocalConfig": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "enum": [
-            "local"
-          ],
-          "description": "Type of MCP server connection"
-        },
-        "command": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Command and arguments to run the MCP server"
-        },
-        "cwd": {
-          "type": "string",
-          "description": "Working directory for the MCP server process. Relative paths resolve from the workspace directory."
-        },
-        "environment": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Environment variables to set when running the MCP server"
-        },
-        "enabled": {
-          "type": "boolean",
-          "description": "Enable or disable the MCP server on startup"
-        },
-        "timeout": {
-          "type": "integer",
-          "maximum": 9007199254740991,
-          "exclusiveMinimum": 0,
-          "description": "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."
-        },
-        "protocol": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "legacy",
-            "modern"
-          ],
-          "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
-        }
-      },
-      "required": [
-        "type",
-        "command"
-      ],
-      "additionalProperties": true
-    },
-    "McpOAuthConfig": {
-      "type": "object",
-      "properties": {
-        "clientId": {
-          "type": "string",
-          "description": "OAuth client ID. If not provided, dynamic client registration (RFC 7591) will be attempted."
-        },
-        "clientSecret": {
-          "type": "string",
-          "description": "OAuth client secret (if required by the authorization server)"
-        },
-        "scope": {
-          "type": "string",
-          "description": "OAuth scopes to request during authorization"
-        },
-        "callbackPort": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
-          "description": "Port for the local OAuth callback server (default: 19876). Shorthand for redirectUri when only the port needs changing. Ignored if redirectUri is set."
-        },
-        "redirectUri": {
-          "type": "string",
-          "description": "OAuth redirect URI (default: http://127.0.0.1:19876/mcp/oauth/callback)."
-        }
-      },
-      "additionalProperties": true
-    },
-    "McpRemoteConfig": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "enum": [
-            "remote"
-          ],
-          "description": "Type of MCP server connection"
-        },
-        "url": {
-          "type": "string",
-          "description": "URL of the remote MCP server"
-        },
-        "enabled": {
-          "type": "boolean",
-          "description": "Enable or disable the MCP server on startup"
-        },
-        "headers": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Headers to send with the request"
-        },
-        "oauth": {
-          "description": "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/McpOAuthConfig"
-            },
-            {
-              "type": "boolean",
-              "enum": [
-                false
-              ]
-            }
-          ]
-        },
-        "timeout": {
-          "type": "integer",
-          "maximum": 9007199254740991,
-          "exclusiveMinimum": 0,
-          "description": "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified."
-        },
-        "protocol": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "legacy",
-            "modern"
-          ],
-          "description": "Protocol era negotiation: 'auto' probes server/discover and falls back to the 2025 initialize handshake, 'legacy' skips the probe and runs the 2025 initialize handshake, 'modern' speaks only 2026-07-28 with no fallback. Defaults to 'auto'."
-        }
-      },
-      "required": [
-        "type",
-        "url"
-      ],
-      "additionalProperties": true
-    },
     "LayoutConfig": {
       "type": "string",
       "enum": [
@@ -1092,32 +949,6 @@
           },
           "description": "Custom provider configurations and model overrides"
         },
-        "mcp": {
-          "type": "object",
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/McpLocalConfig"
-              },
-              {
-                "$ref": "#/$defs/McpRemoteConfig"
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "enabled"
-                ],
-                "additionalProperties": true
-              }
-            ]
-          },
-          "description": "MCP (Model Context Protocol) server configurations"
-        },
         "formatter": {
           "description": "Enable or configure formatters. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
           "anyOf": [
@@ -1362,12 +1193,6 @@
             "continue_loop_on_deny": {
               "type": "boolean",
               "description": "Continue the agent loop when a tool call is denied"
-            },
-            "mcp_timeout": {
-              "type": "integer",
-              "maximum": 9007199254740991,
-              "exclusiveMinimum": 0,
-              "description": "Timeout in milliseconds for model context protocol (MCP) requests"
             },
             "policies": {
               "type": "array",

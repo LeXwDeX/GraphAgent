@@ -12,11 +12,11 @@ const OAUTH_CALLBACK_PORT = 19876
 const OAUTH_CALLBACK_PATH = "/mcp/oauth/callback"
 
 export interface McpOAuthConfig {
-  clientId?: string
-  clientSecret?: string
+  client_id?: string
+  client_secret?: string
   scope?: string
-  callbackPort?: number
-  redirectUri?: string
+  callback_port?: number
+  redirect_uri?: string
 }
 
 export interface McpOAuthCallbacks {
@@ -33,10 +33,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
   ) {}
 
   get redirectUrl(): string {
-    if (this.config.redirectUri) {
-      return this.config.redirectUri
+    if (this.config.redirect_uri) {
+      return this.config.redirect_uri
     }
-    const port = this.config.callbackPort ?? OAUTH_CALLBACK_PORT
+    const port = this.config.callback_port ?? OAUTH_CALLBACK_PORT
     return `http://127.0.0.1:${port}${OAUTH_CALLBACK_PATH}`
   }
 
@@ -47,17 +47,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
       client_uri: "https://opencode.ai",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
-      token_endpoint_auth_method: this.config.clientSecret ? "client_secret_post" : "none",
+      token_endpoint_auth_method: this.config.client_secret ? "client_secret_post" : "none",
       ...(this.config.scope ? { scope: this.config.scope } : {}),
     }
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
     // Check config first (pre-registered client)
-    if (this.config.clientId) {
+    if (this.config.client_id) {
       return {
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
+        client_id: this.config.client_id,
+        client_secret: this.config.client_secret,
       }
     }
 

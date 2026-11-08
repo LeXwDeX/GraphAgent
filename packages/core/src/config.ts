@@ -12,12 +12,12 @@ import { AbsolutePath, PositiveInt } from "./schema"
 import { ConfigAgent } from "./config/agent"
 import { ConfigAttachments } from "./config/attachments"
 import { ConfigCompaction } from "./config/compaction"
+import { ConfigMCP } from "./config/mcp"
 import { ConfigReasoningDistillation } from "./config/reasoning-distillation"
 import { ConfigCommand } from "./config/command"
 import { ConfigExperimental } from "./config/experimental"
 import { ConfigFormatter } from "./config/formatter"
 import { ConfigLSP } from "./config/lsp"
-import { ConfigMCP } from "./config/mcp"
 import { ConfigProvider } from "./config/provider"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
@@ -87,9 +87,6 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   tool_output: ConfigToolOutput.Info.pipe(Schema.optional).annotate({
     description: "Tool output truncation thresholds",
-  }),
-  mcp: ConfigMCP.Info.pipe(Schema.optional).annotate({
-    description: "MCP server configuration",
   }),
   compaction: ConfigCompaction.Info.pipe(Schema.optional).annotate({
     description: "Conversation compaction behavior",
@@ -167,6 +164,7 @@ export const layer = Layer.effect(
         if (strict) return yield* Effect.fail(new Error(`Invalid configuration JSON: ${filepath}`))
         return undefined
       }
+      ConfigMCP.rejectRemovedSettings(input, filepath)
 
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)

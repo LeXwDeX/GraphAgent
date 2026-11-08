@@ -1,5 +1,4 @@
 import { cmd } from "./cmd"
-import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { effectCmd } from "../effect-cmd"
 import { Cause } from "effect"
 import {
@@ -12,16 +11,14 @@ import * as prompts from "@clack/prompts"
 import { UI } from "../ui"
 import { MCP } from "../../mcp"
 import { McpAuth } from "../../mcp/auth"
+import { McpConfig } from "../../mcp/config"
 import { McpOAuthProvider } from "../../mcp/oauth-provider"
-import { Config } from "@/config/config"
-import { ConfigMCPV1 } from "@graphagent/core/v1/config/mcp"
 import { InstanceRef } from "@/effect/instance-ref"
+import { assertProjectRootWritable, hasProjectLayer } from "@/project/project-root"
+import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { InstallationVersion } from "@graphagent/core/installation/version"
-import path from "path"
 import { Global } from "@graphagent/core/global"
-import { APP_NAME, CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
-import { modify, applyEdits } from "jsonc-parser"
-import { Filesystem } from "@/util/filesystem"
+import { APP_NAME } from "@graphagent/core/brand"
 import { Effect } from "effect"
 
 function getAuthStatusIcon(status: MCP.AuthStatus): string {
@@ -46,52 +43,54 @@ function getAuthStatusText(status: MCP.AuthStatus): string {
   }
 }
 
-type McpEntry = NonNullable<ConfigV1.Info["mcp"]>[string]
-
-type McpConfigured = ConfigMCPV1.Info
-function isMcpConfigured(config: McpEntry): config is McpConfigured {
-  return typeof config === "object" && config !== null && "type" in config
-}
-
+type McpConfigured = ConfigMCP.Server
 type McpRemote = Extract<McpConfigured, { type: "remote" }>
-function isMcpRemote(config: McpEntry): config is McpRemote {
-  return isMcpConfigured(config) && config.type === "remote"
+
+function isMcpRemote(server: McpConfigured): server is McpRemote {
+  return server.type === "remote"
 }
 
-function configuredServers(config: ConfigV1.Info) {
-  return Object.entries(config.mcp ?? {}).filter((entry): entry is [string, McpConfigured] => isMcpConfigured(entry[1]))
+function configuredServers(servers: McpConfig.Servers) {
+  return Object.entries(servers)
 }
 
-function oauthServers(config: ConfigV1.Info) {
-  return configuredServers(config).filter(
-    (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && entry[1].oauth !== false,
+function oauthServers(servers: McpConfig.Servers) {
+  return configuredServers(servers).filter(
+    (entry): entry is [string, McpRemote] => entry[1].type === "remote" && entry[1].oauth !== false,
   )
+}
+
+/** The project root and the merged `mcpServers` map for the current instance. */
+function mcpState() {
+  return Effect.gen(function* () {
+    const ctx = yield* InstanceRef
+    const root = ctx?.root ?? Global.Path.home
+    return { root, servers: McpConfig.load(root) }
+  })
 }
 
 function listState() {
   return Effect.gen(function* () {
-    const cfg = yield* Config.Service
     const mcp = yield* MCP.Service
-    const config = yield* cfg.get()
+    const { servers } = yield* mcpState()
     const statuses = yield* mcp.status()
     const stored = yield* Effect.all(
-      Object.fromEntries(configuredServers(config).map(([name]) => [name, mcp.hasStoredTokens(name)])),
+      Object.fromEntries(configuredServers(servers).map(([name]) => [name, mcp.hasStoredTokens(name)])),
       { concurrency: "unbounded" },
     )
-    return { config, statuses, stored }
+    return { servers, statuses, stored }
   })
 }
 
 function authState() {
   return Effect.gen(function* () {
-    const cfg = yield* Config.Service
     const mcp = yield* MCP.Service
-    const config = yield* cfg.get()
+    const { servers } = yield* mcpState()
     const auth = yield* Effect.all(
-      Object.fromEntries(oauthServers(config).map(([name]) => [name, mcp.getAuthStatus(name)])),
+      Object.fromEntries(oauthServers(servers).map(([name]) => [name, mcp.getAuthStatus(name)])),
       { concurrency: "unbounded" },
     )
-    return { config, auth }
+    return { servers, auth }
   })
 }
 
@@ -117,12 +116,12 @@ export const McpListCommand = effectCmd({
     UI.empty()
     prompts.intro("MCP Servers")
 
-    const { config, statuses, stored } = yield* listState()
-    const servers = configuredServers(config)
+    const { servers: serverMap, statuses, stored } = yield* listState()
+    const servers = configuredServers(serverMap)
 
     if (servers.length === 0) {
       prompts.log.warn("No MCP servers configured")
-      prompts.outro("Add servers with: opencode mcp add")
+      prompts.outro("Add servers with: graphagent mcp add")
       return
     }
 
@@ -184,15 +183,14 @@ export const McpAuthCommand = effectCmd({
     UI.empty()
     prompts.intro("MCP OAuth Authentication")
 
-    const { config, auth } = yield* authState()
-    const mcpServers = config.mcp ?? {}
-    const servers = oauthServers(config)
+    const { servers: mcpServers, auth } = yield* authState()
+    const servers = oauthServers(mcpServers)
 
     if (servers.length === 0) {
       prompts.log.warn("No OAuth-capable MCP servers configured")
-      prompts.log.info("Remote MCP servers support OAuth by default. Add a remote server in graphagent.json:")
+      prompts.log.info("Remote MCP servers support OAuth by default. Add a remote server in .agents/mcp.json:")
       prompts.log.info(`
-  "mcp": {
+  "mcpServers": {
     "my-server": {
       "type": "remote",
       "url": "https://example.com/mcp"
@@ -234,7 +232,7 @@ export const McpAuthCommand = effectCmd({
       return
     }
 
-    if (!isMcpRemote(serverConfig) || serverConfig.oauth === false) {
+    if (serverConfig.type !== "remote" || serverConfig.oauth === false) {
       prompts.log.error(`MCP server ${serverName} is not an OAuth-capable remote server`)
       prompts.outro("Done")
       return
@@ -273,15 +271,15 @@ export const McpAuthCommand = effectCmd({
           } else if (status.status === "needs_client_registration") {
             spinner.error("Authentication failed")
             prompts.log.error(status.error)
-            prompts.log.info("Add clientId to your MCP server config:")
+            prompts.log.info("Add a pre-registered client to your MCP server config:")
             prompts.log.info(`
-  "mcp": {
+  "mcpServers": {
     "${serverName}": {
       "type": "remote",
       "url": "${serverConfig.url}",
       "oauth": {
-        "clientId": "your-client-id",
-        "clientSecret": "your-client-secret"
+        "client_id": "your-client-id",
+        "client_secret": "your-client-secret"
       }
     }
   }`)
@@ -314,8 +312,8 @@ export const McpAuthListCommand = effectCmd({
     UI.empty()
     prompts.intro("MCP OAuth Status")
 
-    const { config, auth } = yield* authState()
-    const servers = oauthServers(config)
+    const { servers: mcpServers, auth } = yield* authState()
+    const servers = oauthServers(mcpServers)
 
     if (servers.length === 0) {
       prompts.log.warn("No OAuth-capable MCP servers configured")
@@ -394,46 +392,21 @@ export const McpLogoutCommand = effectCmd({
   }),
 })
 
-async function resolveConfigPath(baseDir: string, global = false) {
-  // Check for existing config files (prefer .jsonc over .json, check the project
-  // directory too)
-  const candidates = [
-    path.join(baseDir, `${CONFIG_BASENAME}.json`),
-    path.join(baseDir, `${CONFIG_BASENAME}.jsonc`),
-  ]
-
-  if (!global) {
-    candidates.push(
-      path.join(baseDir, PROJECT_DIR, `${CONFIG_BASENAME}.json`),
-      path.join(baseDir, PROJECT_DIR, `${CONFIG_BASENAME}.jsonc`),
-    )
-  }
-
-  for (const candidate of candidates) {
-    if (await Filesystem.exists(candidate)) {
-      return candidate
-    }
-  }
-
-  // Default to graphagent.json if none exist
-  return candidates[0]
+/** The `mcp.json` file a write targets: project layer by default, user level on `--global`. */
+function configFile(root: string, global: boolean) {
+  return global ? McpConfig.globalFile() : McpConfig.projectFile(root)
 }
 
-async function addMcpToConfig(name: string, mcpConfig: ConfigMCPV1.Info, configPath: string) {
-  let text = "{}"
-  if (await Filesystem.exists(configPath)) {
-    text = await Filesystem.readText(configPath)
-  }
-
-  // Use jsonc-parser to modify while preserving comments
-  const edits = modify(text, ["mcp", name], mcpConfig, {
-    formattingOptions: { tabSize: 2, insertSpaces: true },
-  })
-  const result = applyEdits(text, edits)
-
-  await Filesystem.write(configPath, result)
-
-  return configPath
+/**
+ * Write one server entry to the selected `mcp.json` layer. Project-layer writes
+ * are refused when the project root resolves to `$HOME`, because `~/.agents` is
+ * the user-level shared directory, not a project layer.
+ */
+function addMcp(root: string, name: string, server: McpConfigured, global: boolean) {
+  const file = configFile(root, global)
+  if (!global) assertProjectRootWritable(root, Global.Path.home)
+  McpConfig.upsert(file, name, server)
+  return file
 }
 
 export const McpAddCommand = effectCmd({
@@ -458,6 +431,11 @@ export const McpAddCommand = effectCmd({
         describe: "HTTP header for a remote MCP server (KEY=VALUE)",
         type: "string",
         array: true,
+      })
+      .option("global", {
+        describe: "write to the user-level mcp.json instead of the project layer",
+        type: "boolean",
+        default: false,
       }),
   handler: Effect.fn("Cli.mcp.add")(function* (args) {
     const maybeCtx = yield* InstanceRef
@@ -492,7 +470,7 @@ export const McpAddCommand = effectCmd({
           )
         const environment = entries(args.env ?? [], "environment variable")
         const headers = entries(args.header ?? [], "HTTP header")
-        const mcpConfig: ConfigMCPV1.Info = args.url
+        const mcpConfig: McpConfigured = args.url
           ? {
               type: "remote",
               url: args.url,
@@ -504,8 +482,7 @@ export const McpAddCommand = effectCmd({
               ...(Object.keys(environment).length ? { environment } : {}),
             }
 
-        const configPath = await resolveConfigPath(Global.Path.config, true)
-        await addMcpToConfig(args.name, mcpConfig, configPath)
+        const configPath = addMcp(ctx.root, args.name, mcpConfig, Boolean(args.global))
         prompts.log.success(`MCP server "${args.name}" added to ${configPath}`)
         return
       }
@@ -513,35 +490,32 @@ export const McpAddCommand = effectCmd({
       UI.empty()
       prompts.intro("Add MCP server")
 
-      const project = ctx.project
-
       // Resolve config paths eagerly for hints
-      const [projectConfigPath, globalConfigPath] = await Promise.all([
-        resolveConfigPath(ctx.worktree),
-        resolveConfigPath(Global.Path.config, true),
-      ])
+      const projectConfigPath = McpConfig.projectFile(ctx.root)
+      const globalConfigPath = McpConfig.globalFile()
 
-      // Determine scope
-      let configPath = globalConfigPath
-      if (project.vcs === "git") {
+      // Determine scope; a project layer exists everywhere except $HOME.
+      let global = true
+      if (hasProjectLayer(ctx.root, Global.Path.home)) {
         const scopeResult = await prompts.select({
           message: "Location",
           options: [
             {
               label: "Current project",
-              value: projectConfigPath,
+              value: false,
               hint: projectConfigPath,
             },
             {
               label: "Global",
-              value: globalConfigPath,
+              value: true,
               hint: globalConfigPath,
             },
           ],
         })
         if (prompts.isCancel(scopeResult)) throw new UI.CancelledError()
-        configPath = scopeResult
+        global = scopeResult
       }
+      const configPath = configFile(ctx.root, global)
 
       const name = await prompts.text({
         message: "Enter MCP server name",
@@ -574,12 +548,12 @@ export const McpAddCommand = effectCmd({
         })
         if (prompts.isCancel(command)) throw new UI.CancelledError()
 
-        const mcpConfig: ConfigMCPV1.Info = {
+        const mcpConfig: McpConfigured = {
           type: "local",
           command: command.split(" "),
         }
 
-        await addMcpToConfig(name, mcpConfig, configPath)
+        addMcp(ctx.root, name, mcpConfig, global)
         prompts.log.success(`MCP server "${name}" added to ${configPath}`)
         prompts.outro("MCP server added successfully")
         return
@@ -604,7 +578,7 @@ export const McpAddCommand = effectCmd({
         })
         if (prompts.isCancel(useOAuth)) throw new UI.CancelledError()
 
-        let mcpConfig: ConfigMCPV1.Info
+        let mcpConfig: McpConfigured
 
         if (useOAuth) {
           const hasClientId = await prompts.confirm({
@@ -639,8 +613,8 @@ export const McpAddCommand = effectCmd({
               type: "remote",
               url,
               oauth: {
-                clientId,
-                ...(clientSecret && { clientSecret }),
+                client_id: clientId,
+                ...(clientSecret && { client_secret: clientSecret }),
               },
             }
           } else {
@@ -657,7 +631,7 @@ export const McpAddCommand = effectCmd({
           }
         }
 
-        await addMcpToConfig(name, mcpConfig, configPath)
+        addMcp(ctx.root, name, mcpConfig, global)
         prompts.log.success(`MCP server "${name}" added to ${configPath}`)
       }
 
@@ -676,14 +650,15 @@ export const McpDebugCommand = effectCmd({
       demandOption: true,
     }),
   handler: Effect.fn("Cli.mcp.debug")(function* (args) {
-    const config = yield* Config.Service.use((cfg) => cfg.get())
+    const ctx = yield* InstanceRef
+    const root = ctx?.root ?? Global.Path.home
+    const mcpServers = McpConfig.load(root)
     const mcp = yield* MCP.Service
     const auth = yield* McpAuth.Service
     yield* Effect.promise(async () => {
       UI.empty()
       prompts.intro("MCP OAuth Debug")
 
-      const mcpServers = config.mcp ?? {}
       const serverName = args.name
 
       const serverConfig = mcpServers[serverName]
@@ -777,10 +752,10 @@ export const McpDebugCommand = effectCmd({
             serverName,
             serverConfig.url,
             {
-              clientId: oauthConfig?.clientId,
-              clientSecret: oauthConfig?.clientSecret,
+              client_id: oauthConfig?.client_id,
+              client_secret: oauthConfig?.client_secret,
               scope: oauthConfig?.scope,
-              redirectUri: oauthConfig?.redirectUri,
+              redirect_uri: oauthConfig?.redirect_uri,
             },
             {
               onRedirect: async () => {},
@@ -800,16 +775,8 @@ export const McpDebugCommand = effectCmd({
             const client = new Client(
               { name: `${APP_NAME}-debug`, version: InstallationVersion },
               {
-                // Mirror createClient's per-server era mapping so diagnostics
-                // match the runtime connection behavior (#448).
-                versionNegotiation: {
-                  mode:
-                    serverConfig.protocol === "legacy"
-                      ? "legacy"
-                      : serverConfig.protocol === "modern"
-                        ? { pin: "2026-07-28" }
-                        : "auto",
-                },
+                // Mirror createClient: protocol negotiation is always automatic.
+                versionNegotiation: { mode: "auto" },
               },
             )
             await client.connect(transport)

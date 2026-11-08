@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import { describe, expect } from "bun:test"
 import { Arbitrary, Effect, Layer, Schema, Exit } from "effect"
 import { Config } from "@graphagent/core/config"
+import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { ConfigProvider } from "@graphagent/core/config/provider"
 import { ConfigMigrateV1 } from "@graphagent/core/v1/config/migrate"
@@ -79,6 +80,35 @@ describe("Config", () => {
         expect(config.provider?.relay.options?.apiKey).toBe("{env:TEST_RELAY_KEY}")
       }
       expect(() => decode({ provider: { relay: { options: { experimentalWebSockets: "true" } } } })).toThrow()
+    }),
+  )
+
+  it.effect("rejects MCP settings that moved to mcp.json", () =>
+    Effect.sync(() => {
+      // InvalidError keeps the user-facing text in data.message; Error.message
+      // is only the tag name.
+      const message = (fn: () => unknown) => {
+        try {
+          fn()
+        } catch (error) {
+          return (error as { data?: { message?: string } }).data?.message ?? String(error)
+        }
+        throw new Error("expected the call to throw")
+      }
+      expect(
+        message(() =>
+          ConfigMCP.rejectRemovedSettings(
+            { mcp: { local: { type: "local", command: ["node", "server.js"] } } },
+            "config.json",
+          ),
+        ),
+      ).toMatch(/"mcp" is no longer a configuration key/)
+      expect(
+        message(() => ConfigMCP.rejectRemovedSettings({ experimental: { mcp_timeout: 5000 } }, "config.json")),
+      ).toMatch(/"experimental\.mcp_timeout" was removed/)
+      expect(() => ConfigMCP.rejectRemovedSettings({ mcpServers: { mcp: { type: "local", command: ["x"] } } }, "mcp.json"))
+        .not.toThrow()
+      expect(() => ConfigMCP.rejectRemovedSettings(undefined, "config.json")).not.toThrow()
     }),
   )
 
@@ -596,26 +626,6 @@ describe("Config", () => {
                   image: { auto_resize: false, max_width: 1200, max_height: 900, max_base64_bytes: 1048576 },
                 },
                 tool_output: { max_lines: 1000, max_bytes: 32768 },
-                mcp: {
-                  timeout: { startup: 5000, request: 60000 },
-                  servers: {
-                    local: {
-                      type: "local",
-                      command: ["node", "./mcp/server.js"],
-                      environment: { API_KEY: "secret" },
-                      disabled: false,
-                      timeout: { request: 10000 },
-                    },
-                    remote: {
-                      type: "remote",
-                      url: "https://mcp.example.com/mcp",
-                      headers: { Authorization: "Bearer token" },
-                      oauth: { client_id: "client", scope: "read write", callback_port: 19876 },
-                      disabled: true,
-                      timeout: { startup: 15000 },
-                    },
-                  },
-                },
                 compaction: {
                   auto: true,
                   prune: false,
@@ -677,26 +687,6 @@ describe("Config", () => {
               image: { auto_resize: false, max_width: 1200, max_height: 900, max_base64_bytes: 1048576 },
             })
             expect(documents[0]?.info.tool_output).toEqual({ max_lines: 1000, max_bytes: 32768 })
-            expect(documents[0]?.info.mcp).toEqual({
-              timeout: { startup: 5000, request: 60000 },
-              servers: {
-                local: {
-                  type: "local",
-                  command: ["node", "./mcp/server.js"],
-                  environment: { API_KEY: "secret" },
-                  disabled: false,
-                  timeout: { request: 10000 },
-                },
-                remote: {
-                  type: "remote",
-                  url: "https://mcp.example.com/mcp",
-                  headers: { Authorization: "Bearer token" },
-                  oauth: { client_id: "client", scope: "read write", callback_port: 19876 },
-                  disabled: true,
-                  timeout: { startup: 15000 },
-                },
-              },
-            })
             expect(documents[0]?.info.compaction).toEqual({
               auto: true,
               prune: false,
@@ -826,16 +816,6 @@ describe("Config", () => {
                   },
                 },
                 compaction: { auto: true, tail_turns: 3, preserve_recent_tokens: 2000, reserved: 10000 },
-                experimental: { mcp_timeout: 5000 },
-                mcp: {
-                  local: { type: "local", command: ["node", "server.js"], enabled: false, timeout: 10000 },
-                  remote: {
-                    type: "remote",
-                    url: "https://mcp.example.com",
-                    oauth: { clientId: "client", callbackPort: 19876 },
-                    timeout: 20000,
-                  },
-                },
               }),
             ),
           )
@@ -904,23 +884,6 @@ describe("Config", () => {
               prune: undefined,
               keep: { tokens: 2000 },
               buffer: 10000,
-            })
-            expect(documents[0]?.info.mcp).toMatchObject({
-              timeout: { request: 5000 },
-              servers: {
-                local: {
-                  type: "local",
-                  command: ["node", "server.js"],
-                  disabled: true,
-                  timeout: { request: 10000 },
-                },
-                remote: {
-                  type: "remote",
-                  url: "https://mcp.example.com",
-                  oauth: { client_id: "client", callback_port: 19876 },
-                  timeout: { request: 20000 },
-                },
-              },
             })
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),

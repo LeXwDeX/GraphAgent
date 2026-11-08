@@ -1,4 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
+import { mkdir, writeFile } from "node:fs/promises"
 import path from "path"
 import { Effect } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
@@ -95,6 +96,26 @@ describe("tool.registry", () => {
       const ids = yield* registry.ids()
 
       expect(ids).not.toContain("task_status")
+    }),
+  )
+
+  it.instance("does not load legacy JavaScript tools from project tool directories", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const directory = yield* InstanceState.directory
+      yield* Effect.promise(async () => {
+        for (const name of ["tool", "tools", ".agents/tool", ".agents/tools"]) {
+          const dir = path.join(directory, name)
+          await mkdir(dir, { recursive: true })
+          await writeFile(
+            path.join(dir, "legacy.ts"),
+            `export const legacy = { description: "legacy", args: {}, execute: async () => "legacy" }\n`,
+          )
+        }
+      })
+
+      const ids = yield* registry.ids()
+      expect(ids).not.toContain("legacy")
     }),
   )
 

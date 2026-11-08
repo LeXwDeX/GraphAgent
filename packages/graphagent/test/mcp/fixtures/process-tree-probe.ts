@@ -66,7 +66,7 @@ async function waitForPidFile(file: string, timeoutMs: number) {
 let result: { ok: boolean; rootDead?: boolean; childDead?: boolean }
 try {
   result = await Effect.runPromise(
-    withTmpdirInstance({ config: { mcp: {} } })(
+    withTmpdirInstance({ mcp: {} })(
       Effect.gen(function* () {
         const mcp = yield* MCP.Service
         const { directory } = yield* TestInstance

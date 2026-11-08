@@ -1,5 +1,6 @@
 import { $ } from "bun"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import type { McpConfig } from "../../src/mcp/config"
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -74,6 +75,8 @@ async function stop(dir: string) {
 type TmpDirOptions<T> = {
   git?: boolean
   config?: Partial<ConfigV1.Info>
+  /** Server entries written to `<root>/.agents/mcp.json`. */
+  mcp?: McpConfig.Servers
   init?: (dir: string) => Promise<T>
   dispose?: (dir: string) => Promise<T>
 }
@@ -97,6 +100,9 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
       }),
     )
   }
+  if (options?.mcp) {
+    await Bun.write(path.join(dirpath, ".agents", "mcp.json"), JSON.stringify({ mcpServers: options.mcp }))
+  }
   const realpath = sanitizePath(await fs.realpath(dirpath))
   const extra = await options?.init?.(realpath)
   const result = {
@@ -118,6 +124,7 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
 export function tmpdirScoped<E = never, R = never>(options?: {
   git?: boolean
   config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+  mcp?: McpConfig.Servers | (() => McpConfig.Servers)
   init?: (directory: string) => Effect.Effect<void, E, R>
 }) {
   return Effect.gen(function* () {
@@ -154,6 +161,15 @@ export function tmpdirScoped<E = never, R = never>(options?: {
       })
     }
 
+    if (options?.mcp) {
+      const resolved = typeof options.mcp === "function" ? options.mcp() : options.mcp
+      yield* Effect.promise(async () => {
+        const target = path.join(dir, ".agents", "mcp.json")
+        await fs.mkdir(path.dirname(target), { recursive: true })
+        await fs.writeFile(target, JSON.stringify({ mcpServers: resolved }))
+      })
+    }
+
     if (options?.init) yield* options.init(dir)
 
     return dir
@@ -177,7 +193,11 @@ export const disposeAllInstancesEffect = InstanceStore.Service.use((store) => st
 
 export function provideTmpdirInstance<A, E, R>(
   self: (path: string) => Effect.Effect<A, E, R>,
-  options?: { git?: boolean; config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>) },
+  options?: {
+    git?: boolean
+    config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+    mcp?: McpConfig.Servers | (() => McpConfig.Servers)
+  },
 ) {
   return Effect.gen(function* () {
     const path = yield* tmpdirScoped(options)
@@ -197,6 +217,7 @@ export const withTmpdirInstance =
   <E2 = never, R2 = never>(options?: {
     git?: boolean
     config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+    mcp?: McpConfig.Servers | (() => McpConfig.Servers)
     init?: (directory: string) => Effect.Effect<void, E2, R2>
   }) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>

@@ -279,7 +279,9 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
       --url         URL for a remote MCP server                                             [string]
       --env         environment variable for a local MCP server (KEY=VALUE)                  [array]
-      --header      HTTP header for a remote MCP server (KEY=VALUE)                          [array]"
+      --header      HTTP header for a remote MCP server (KEY=VALUE)                          [array]
+      --global      write to the user-level mcp.json instead of the project layer
+                                                                          [boolean] [default: false]"
 `;
 
 exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent mcp auth --help 1`] = `

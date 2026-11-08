@@ -1,5 +1,5 @@
 import { MCP } from "@/mcp"
-import { ConfigMCPV1 } from "@graphagent/core/v1/config/mcp"
+import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
 import { McpServerNotFoundError } from "../errors"
@@ -9,7 +9,7 @@ import { described } from "./metadata"
 
 export const AddPayload = Schema.Struct({
   name: Schema.String,
-  config: ConfigMCPV1.Info,
+  config: ConfigMCP.Server,
 })
 
 export const StatusMap = Schema.Record(Schema.String, MCP.Status)

@@ -38,9 +38,9 @@ for (const { event, action } of [
             }),
           )
           await fs.writeFile(
-            path.join(home, ".config/graphagent/graphagent.json"),
+            path.join(home, ".config/graphagent/mcp.json"),
             JSON.stringify({
-              mcp: { fixture: { type: "local", command: [process.execPath, serverScript], enabled: true } },
+              mcpServers: { fixture: { type: "local", command: [process.execPath, serverScript] } },
             }),
           )
         })

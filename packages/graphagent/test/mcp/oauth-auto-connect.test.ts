@@ -178,7 +178,7 @@ mcpTest.instance(
         expect(serverStatus["test-oauth"].status).toBe("needs_auth")
       }),
     ),
-  { config: config("test-oauth") },
+  config("test-oauth"),
 )
 
 mcpTest.instance("state() generates a new state when none is saved", () =>
@@ -253,7 +253,7 @@ mcpTest.instance(
         expect(after["test-oauth-connect"]?.status).toBe("connected")
       }),
     ),
-  { config: config("test-oauth-connect") },
+  config("test-oauth-connect"),
 )
 
 mcpTest.instance(
@@ -278,7 +278,7 @@ mcpTest.instance(
         expect(Object.keys(yield* mcp.resources())).toEqual(["test-oauth-resources:docs://readme"])
       }),
     ),
-  { config: config("test-oauth-resources") },
+  config("test-oauth-resources"),
 )
 
 mcpTest.instance(
@@ -295,5 +295,5 @@ mcpTest.instance(
       expect((yield* mcp.finishAuth("finish-auth-notification", "synthetic-code")).status).toBe("connected")
       expect(authNotifications).toEqual([{ notificationType: "auth_success", message: "MCP authentication completed" }])
     }),
-  { config: config("finish-auth-notification") },
+  config("finish-auth-notification"),
 )

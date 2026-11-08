@@ -47,12 +47,12 @@ describe("experimental HttpApi", () => {
       config: {
         formatter: false,
         lsp: false,
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
+      },
+      mcp: {
+        demo: {
+          type: "local",
+          command: ["echo", "demo"],
+          disabled: true,
         },
       },
     },
