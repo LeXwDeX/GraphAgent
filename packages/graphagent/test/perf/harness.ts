@@ -34,6 +34,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { SettingsHook } from "@/hook/settings"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { DagLoop } from "@/dag/runtime/loop"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -244,6 +245,7 @@ const makeStacks = (
     Layer.provide(DagAgentMessages.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Dag.defaultLayer),
+    Layer.provide(DagControl.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(shell),
     Layer.provide(Git.defaultLayer),
@@ -370,6 +372,7 @@ export function makeDagPerfLayer(provider: FakeProvider) {
     Layer.provide(DagAgentMessages.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(dag),
+    Layer.provide(DagControl.layer.pipe(Layer.provide(dag))),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(Git.defaultLayer),

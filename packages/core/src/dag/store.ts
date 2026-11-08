@@ -243,6 +243,8 @@ export interface Interface {
   readonly listByProject: (projectId: string) => Effect.Effect<WorkflowRow[]>
   readonly listByStatus: (status: string) => Effect.Effect<WorkflowRow[]>
   readonly getWorkflowSummaries: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
+  /** Parent-session view of `getWorkflowSummaries`; same aggregation and ordering. */
+  readonly listSummariesByParent: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
   /** Latest explicit parent control that can dispose of a checkpoint veto. */
   readonly getLatestCheckpointControlSeq: (workflowId: string) => Effect.Effect<number | undefined>
   /**
@@ -292,6 +294,77 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
+
+    // One parent-session aggregation serves both the historical name and the
+    // H3-facing listSummariesByParent query; keep their semantics identical.
+    const summariesByParent = Effect.fn("DagStore.listSummariesByParent")(function* (sessionId: string) {
+      const wfRows = yield* db
+        .select()
+        .from(WorkflowTable)
+        .where(eq(WorkflowTable.session_id, sessionId))
+        .orderBy(desc(WorkflowTable.time_created))
+        .all()
+        .pipe(Effect.orDie)
+      if (wfRows.length === 0) return []
+      // P1-4: aggregate in SQL — pulling every node row into JS made each
+      // dag.* event burst scale with total node count across the session.
+      // Rev-view (v1.0.15 Train A): superseded rows are filtered out so the
+      // counts reflect ONLY the current graph revision — a replaced segment
+      // neither counts toward nodeCount nor inflates failedNodes.
+      const countRows = yield* db
+        .select({
+          workflowId: WorkflowNodeTable.workflow_id,
+          status: WorkflowNodeTable.status,
+          total: count(),
+        })
+        .from(WorkflowNodeTable)
+        .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
+        .where(and(eq(WorkflowTable.session_id, sessionId), eq(WorkflowNodeTable.superseded, false)))
+        .groupBy(WorkflowNodeTable.workflow_id, WorkflowNodeTable.status)
+        .all()
+        .pipe(Effect.orDie)
+      // F10: separate aggregation for running nodes with a not-yet-adjudicated
+      // timeout escalation (the status grouping above cannot see the flag).
+      // escalation_pending is set on escalate and cleared on adjudication, so
+      // this counts only nodes genuinely awaiting main-agent action.
+      const escalatedRows = yield* db
+        .select({
+          workflowId: WorkflowNodeTable.workflow_id,
+          total: count(),
+        })
+        .from(WorkflowNodeTable)
+        .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
+        .where(and(
+          eq(WorkflowTable.session_id, sessionId),
+          eq(WorkflowNodeTable.status, "running"),
+          eq(WorkflowNodeTable.escalation_pending, true),
+          eq(WorkflowNodeTable.superseded, false),
+        ))
+        .groupBy(WorkflowNodeTable.workflow_id)
+        .all()
+        .pipe(Effect.orDie)
+      const escalatedByWorkflow = new Map(escalatedRows.map((row) => [row.workflowId, row.total]))
+      const counts = countRows.reduce((all, row) => {
+        const current = all.get(row.workflowId) ?? { nodeCount: 0, completedNodes: 0, runningNodes: 0, failedNodes: 0, skippedNodes: 0, abortedNodes: 0, queuedNodes: 0 }
+        current.nodeCount += row.total
+        if (row.status === "completed") current.completedNodes += row.total
+        if (row.status === "running") current.runningNodes += row.total
+        if (row.status === "failed") current.failedNodes += row.total
+        if (row.status === "skipped") current.skippedNodes += row.total
+        if (row.status === "aborted") current.abortedNodes += row.total
+        if (row.status === "queued") current.queuedNodes += row.total
+        all.set(row.workflowId, current)
+        return all
+      }, new Map<string, { nodeCount: number; completedNodes: number; runningNodes: number; failedNodes: number; skippedNodes: number; abortedNodes: number; queuedNodes: number }>())
+      return wfRows.map((wf) => ({
+        id: wf.id,
+        title: wf.title,
+        status: wf.status,
+        graphRev: wf.graph_rev,
+        ...(counts.get(wf.id) ?? { nodeCount: 0, completedNodes: 0, runningNodes: 0, failedNodes: 0, skippedNodes: 0, abortedNodes: 0, queuedNodes: 0 }),
+        escalatedNodes: escalatedByWorkflow.get(wf.id) ?? 0,
+      }))
+    })
 
     return Service.of({
       getWorkflow: Effect.fn("DagStore.getWorkflow")(function* (id) {
@@ -405,74 +478,8 @@ export const layer = Layer.effect(
         return rows.map(mapWorkflow)
       }),
 
-      getWorkflowSummaries: Effect.fn("DagStore.getWorkflowSummaries")(function* (sessionId) {
-        const wfRows = yield* db
-          .select()
-          .from(WorkflowTable)
-          .where(eq(WorkflowTable.session_id, sessionId))
-          .orderBy(desc(WorkflowTable.time_created))
-          .all()
-          .pipe(Effect.orDie)
-        if (wfRows.length === 0) return []
-        // P1-4: aggregate in SQL — pulling every node row into JS made each
-        // dag.* event burst scale with total node count across the session.
-        // Rev-view (v1.0.15 Train A): superseded rows are filtered out so the
-        // counts reflect ONLY the current graph revision — a replaced segment
-        // neither counts toward nodeCount nor inflates failedNodes.
-        const countRows = yield* db
-          .select({
-            workflowId: WorkflowNodeTable.workflow_id,
-            status: WorkflowNodeTable.status,
-            total: count(),
-          })
-          .from(WorkflowNodeTable)
-          .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
-          .where(and(eq(WorkflowTable.session_id, sessionId), eq(WorkflowNodeTable.superseded, false)))
-          .groupBy(WorkflowNodeTable.workflow_id, WorkflowNodeTable.status)
-          .all()
-          .pipe(Effect.orDie)
-        // F10: separate aggregation for running nodes with a not-yet-adjudicated
-        // timeout escalation (the status grouping above cannot see the flag).
-        // escalation_pending is set on escalate and cleared on adjudication, so
-        // this counts only nodes genuinely awaiting main-agent action.
-        const escalatedRows = yield* db
-          .select({
-            workflowId: WorkflowNodeTable.workflow_id,
-            total: count(),
-          })
-          .from(WorkflowNodeTable)
-          .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
-          .where(and(
-            eq(WorkflowTable.session_id, sessionId),
-            eq(WorkflowNodeTable.status, "running"),
-            eq(WorkflowNodeTable.escalation_pending, true),
-            eq(WorkflowNodeTable.superseded, false),
-          ))
-          .groupBy(WorkflowNodeTable.workflow_id)
-          .all()
-          .pipe(Effect.orDie)
-        const escalatedByWorkflow = new Map(escalatedRows.map((row) => [row.workflowId, row.total]))
-        const counts = countRows.reduce((all, row) => {
-          const current = all.get(row.workflowId) ?? { nodeCount: 0, completedNodes: 0, runningNodes: 0, failedNodes: 0, skippedNodes: 0, abortedNodes: 0, queuedNodes: 0 }
-          current.nodeCount += row.total
-          if (row.status === "completed") current.completedNodes += row.total
-          if (row.status === "running") current.runningNodes += row.total
-          if (row.status === "failed") current.failedNodes += row.total
-          if (row.status === "skipped") current.skippedNodes += row.total
-          if (row.status === "aborted") current.abortedNodes += row.total
-          if (row.status === "queued") current.queuedNodes += row.total
-          all.set(row.workflowId, current)
-          return all
-        }, new Map<string, { nodeCount: number; completedNodes: number; runningNodes: number; failedNodes: number; skippedNodes: number; abortedNodes: number; queuedNodes: number }>())
-        return wfRows.map((wf) => ({
-          id: wf.id,
-          title: wf.title,
-          status: wf.status,
-          graphRev: wf.graph_rev,
-          ...(counts.get(wf.id) ?? { nodeCount: 0, completedNodes: 0, runningNodes: 0, failedNodes: 0, skippedNodes: 0, abortedNodes: 0, queuedNodes: 0 }),
-          escalatedNodes: escalatedByWorkflow.get(wf.id) ?? 0,
-        }))
-      }),
+      getWorkflowSummaries: summariesByParent,
+      listSummariesByParent: summariesByParent,
 
       getNodes: Effect.fn("DagStore.getNodes")(function* (workflowId) {
         const rows = yield* db

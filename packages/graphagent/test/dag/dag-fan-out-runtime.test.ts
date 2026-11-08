@@ -4,16 +4,19 @@
 // writer's id, and anything else runs the writer serially without the marker.
 import { describe, expect, it } from "bun:test"
 import { Effect, Layer } from "effect"
+import { eq } from "drizzle-orm"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { EventV2 } from "@graphagent/core/event"
+import { EventTable } from "@graphagent/core/event/sql"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { Model } from "@graphagent/schema/model"
 import { Provider } from "@graphagent/schema/provider"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { Agent } from "@/agent/agent"
 import { DagBlocks } from "@/dag/blocks"
 import { Dag, parseWorkflowConfig } from "@/dag/dag"
@@ -140,10 +143,20 @@ async function run(planOutput: unknown, expectedWriters: number) {
       for (let i = 0; i < 500 && !(yield* admitted()); i++) yield* realSleep(10)
 
       const config = parseWorkflowConfig((yield* storeSvc.getWorkflow(dagID))!.config)!
+      // The durable event log is the observable persistence side: a rejected
+      // fan-out expansion must not have parked the workflow.
+      const eventRows = yield* db.db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, dagID))
+        .all()
+        .pipe(Effect.orDie)
       return {
         config,
         running: (yield* running()).map((row) => row.id).sort(),
         prompts,
+        status: (yield* storeSvc.getWorkflow(dagID))!.status,
+        eventTypes: eventRows.map((row) => row.type),
       }
     }).pipe(
       Effect.provide(Layer.mergeAll(base, loopLayer)),
@@ -196,6 +209,10 @@ describe("DagLoop fan_out expansion", () => {
     const result = await run({ summary: "huge", packages: many }, 1)
     expect(result.running).toEqual(["slices"])
     expect(result.prompts.some((text) => text.includes("the expanded graph was rejected"))).toBe(true)
+    // A rejected expansion is a control-plane refusal, not a workflow pause:
+    // the serial writer keeps the workflow running with no pause event.
+    expect(result.status).toBe("running")
+    expect(result.eventTypes).not.toContain(DagEvent.WorkflowPaused.type)
   })
 })
 

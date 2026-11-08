@@ -26,6 +26,7 @@ import { Provider as RuntimeProvider } from "@/provider/provider"
 import { fingerprintBrief } from "@/dag/admission"
 import { DagBlocks } from "@/dag/blocks"
 import { Dag, type NodeConfig } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { DagLoop, isPausedReminderDue } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -142,7 +143,8 @@ function wakeLayer(input: {
     Layer.provide(bridge),
     Layer.provide(store),
   )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const control = DagControl.layer.pipe(Layer.provide(dag))
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, control, status)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {

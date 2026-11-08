@@ -138,6 +138,14 @@ const make = (options: Config) =>
         compiler,
         driver: "sqlite-bun",
         transactionAcquirer,
+        // SQLite keeps the transaction open after deferred constraint commit
+        // failures, so a failed COMMIT rolls back before releasing the
+        // connection. A rollback that fails as well only poisons this attempt;
+        // the original commit error still surfaces.
+        onCommitFailure: (conn) => Effect.ignore(conn.executeUnprepared("ROLLBACK", [], undefined)),
+        // SQLite supports releasing nested savepoints; nested transactions are
+        // only released when the client declares the statement.
+        releaseSavepoint: (name) => `RELEASE SAVEPOINT ${name}`,
         spanAttributes: [
           ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
           [ATTR_DB_SYSTEM_NAME, "sqlite"],

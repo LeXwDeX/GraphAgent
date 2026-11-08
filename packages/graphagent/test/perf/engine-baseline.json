@@ -806,5 +806,34 @@
       ]
     }
   },
-  "declared": []
+  "declared": [
+    {
+      "pr": "#1120",
+      "metric": "sql.write",
+      "scenario": "S1",
+      "delta": 1,
+      "reason": "D7 change stream (#1015): one delivered change bumps agent_mailbox.change_seq in the measured turn."
+    },
+    {
+      "pr": "#1120",
+      "metric": "sql.write",
+      "scenario": "S2",
+      "delta": 1,
+      "reason": "D7 change stream (#1015): one delivered change bumps agent_mailbox.change_seq in the measured turn."
+    },
+    {
+      "pr": "#1120",
+      "metric": "sql.write",
+      "scenario": "S3",
+      "delta": 1,
+      "reason": "D7 change stream (#1015): one delivered change bumps agent_mailbox.change_seq in the measured turn."
+    },
+    {
+      "pr": "#1120",
+      "metric": "sql.write",
+      "scenario": "S7",
+      "delta": 2,
+      "reason": "D7 change stream (#1015): two delivered changes bump agent_mailbox.change_seq in the measured turn."
+    }
+  ]
 }
