@@ -58,20 +58,22 @@ describe("v2 location HttpApi", () => {
     ).toMatchObject({ location: { directory: "/tmp/project" } })
   })
 
-  test("returns command and skill snapshots with resolved locations", async () => {
+  test("returns command snapshots with resolved locations", async () => {
     await using tmp = await tmpdir({ git: true })
 
-    for (const route of ["/api/command", "/api/skill"]) {
-      const response = await request(route, tmp.path)
-      expect(response.status).toBe(200)
-      const body = (await response.json()) as {
-        location: { directory: string; project: { id: string } }
-        data: unknown
-      }
-      expect(body.data).toBeArray()
-      expect(body.location.directory).toBe(tmp.path)
-      expect(body.location.project.id).toBeTruthy()
+    // `/api/skill` was removed with the V2 skill implementation; commands,
+    // including skill-derived ones, remain the only V2 snapshot route.
+    expect((await request("/api/skill", tmp.path)).status).toBe(404)
+
+    const response = await request("/api/command", tmp.path)
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      location: { directory: string; project: { id: string } }
+      data: unknown
     }
+    expect(body.data).toBeArray()
+    expect(body.location.directory).toBe(tmp.path)
+    expect(body.location.project.id).toBeTruthy()
   })
 
   test("streams native EventV2 payloads across locations", async () => {
