@@ -53,6 +53,7 @@ import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import {
+  EscapePriority,
   GRAPHAGENT_BASE_MODE,
   useBindings,
   useCommandShortcut,
@@ -655,10 +656,24 @@ export function Prompt(props: PromptProps) {
       "prompt.stash",
       "prompt.stash.pop",
       "prompt.stash.list",
-      "session.interrupt",
       "workspace.set",
       "session.move",
     ]),
+  }))
+
+  // Escape-only interrupt layer. It sits below ask/modal but above the generic
+  // base layers, so a busy session's double-escape is handled here instead of
+  // being gathered as one more prompt palette command.
+  useBindings(() => ({
+    target: inputTarget,
+    priority: EscapePriority.interrupt,
+    enabled: (() => {
+      cursorVersion()
+      if (inputTarget() === undefined || input === undefined || props.disabled || auto()?.visible) return false
+      if (store.mode === "shell" || !input.focused) return false
+      return status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID))
+    })(),
+    bindings: tuiConfig.keybinds.get("session.interrupt"),
   }))
 
   const ref: PromptRef = {
@@ -926,6 +941,7 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
+      priority: EscapePriority.shell,
       enabled: inputTarget() !== undefined && store.mode === "shell",
       bindings: [{ key: "escape", desc: "Exit shell mode", group: "Prompt", cmd: () => setStore("mode", "normal") }],
     }

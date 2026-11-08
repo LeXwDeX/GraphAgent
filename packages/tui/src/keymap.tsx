@@ -7,7 +7,7 @@ import {
   registerManagedTextareaLayer,
   registerTimedLeader,
 } from "@opentui/keymap/addons/opentui"
-import { stringifyKeyStroke, type Binding } from "@opentui/keymap"
+import { stringifyKeyStroke, type ActiveBinding, type Binding, type KeySequencePart } from "@opentui/keymap"
 import {
   formatCommandBindings as formatCommandBindingsExtra,
   formatKeySequence as formatKeySequenceExtra,
@@ -22,6 +22,24 @@ export const GRAPHAGENT_BASE_MODE = "base"
 export const COMMAND_PALETTE_COMMAND = "command.palette.show"
 
 const GRAPHAGENT_MODE_KEY = "graphagent.mode"
+
+/**
+ * Shared escape-layer ordering. Higher values are consulted first; sibling
+ * layers keep their own sub-ordering where the child must win (askSub, modalHelp).
+ */
+export const EscapePriority = {
+  autocomplete: 700,
+  drawer: 600,
+  ask: 500,
+  askSub: 501,
+  modal: 400,
+  modalHelp: 401,
+  detail: 300,
+  subagent: 200,
+  shell: 110,
+  interrupt: 100,
+  none: -1,
+} as const
 
 export const GraphagentKeymapProvider = KeymapProvider
 export const useGraphagentKeymap = useKeymap
@@ -172,7 +190,7 @@ const inputCommands = [
   "input.submit",
 ] as const
 
-function hasManagedTextareaFocus(renderer: CliRenderer) {
+export function hasManagedTextareaFocus(renderer: CliRenderer) {
   const editor = renderer.currentFocusedEditor
   return editor instanceof TextareaRenderable && !(editor instanceof InputRenderable)
 }
@@ -249,11 +267,25 @@ export function useLeaderActive(): Accessor<boolean> {
 
 export function useCommandShortcut(command: string): Accessor<string> {
   const config = useTuiConfig()
-  return useKeymapSelector((keymap: OpenTuiKeymap) =>
-    formatKeySequence(
-      keymap.getCommandBindings({ visibility: "registered", commands: [command] }).get(command)?.[0]?.sequence,
-      config,
-    ),
+  return useKeymapSelector((keymap: OpenTuiKeymap) => {
+    const bindings = keymap.getCommandBindings({ visibility: "registered", commands: [command] }).get(command)
+    return formatKeySequence(displaySequence(command, bindings), config)
+  })
+}
+
+/**
+ * Inside tmux, ctrl+b is the terminal multiplexer prefix, so the drawer prefers
+ * its leader alternative when both are registered.
+ */
+export function displaySequence(
+  command: string,
+  bindings: readonly Pick<ActiveBinding<Renderable, KeyEvent>, "sequence">[] | undefined,
+): KeySequencePart[] | undefined {
+  const first = bindings?.[0]
+  if (command !== "session.drawer.toggle" || !process.env.TMUX) return first?.sequence
+  return (
+    bindings?.find((binding) => binding.sequence.some((part) => part.tokenName === LEADER_TOKEN))?.sequence ??
+    first?.sequence
   )
 }
 

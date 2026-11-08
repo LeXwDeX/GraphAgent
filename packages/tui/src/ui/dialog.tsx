@@ -5,7 +5,7 @@ import { MouseButton, Renderable, RGBA } from "@opentui/core"
 import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
 import { Flag } from "@graphagent/core/flag/flag"
-import { useBindings, useGraphagentModeStack } from "../keymap"
+import { EscapePriority, useBindings, useGraphagentModeStack } from "../keymap"
 import { useClipboard } from "../context/clipboard"
 
 export function Dialog(
@@ -100,6 +100,7 @@ function init() {
   }
 
   useBindings(() => ({
+    priority: EscapePriority.modal,
     enabled: store.stack.length > 0 && !renderer.getSelection()?.getSelectedText(),
     bindings: [
       {
@@ -142,6 +143,13 @@ function init() {
         setStore("size", "medium")
         setStore("stack", [])
       })
+      refocus()
+    },
+    pop() {
+      const current = store.stack.at(-1)
+      if (!current) return
+      current.onClose?.()
+      setStore("stack", store.stack.slice(0, -1))
       refocus()
     },
     replace(input: any, onClose?: () => void) {

@@ -14,7 +14,7 @@ import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiConfig } from "../../config"
-import { GRAPHAGENT_BASE_MODE, useBindings, useCommandShortcut } from "../../keymap"
+import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings, useCommandShortcut } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 
 type PermissionStage = "permission" | "always" | "reject"
@@ -510,7 +510,6 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
       },
     ],
     bindings: [
-      { key: "escape", desc: "Cancel permission rejection", group: "Permission", cmd: () => props.onCancel() },
       ...tuiConfig.keybinds.get("app.exit"),
       {
         key: "return",
@@ -518,6 +517,13 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
         group: "Permission",
         cmd: () => props.onConfirm(input.plainText),
       },
+    ],
+  }))
+
+  useBindings(() => ({
+    priority: EscapePriority.askSub,
+    bindings: [
+      { key: "escape", desc: "Cancel permission rejection", group: "Permission", cmd: () => props.onCancel() },
     ],
   }))
 
@@ -661,18 +667,21 @@ function Prompt<const T extends Record<string, string>>(props: {
         group: "Permission",
         cmd: () => props.onSelect(store.selected),
       },
-      ...(props.escapeKey
-        ? [
-            {
-              key: "escape",
-              desc: "Reject permission",
-              group: "Permission",
-              cmd: () => props.onSelect(props.escapeKey!),
-            },
-          ]
-        : []),
       ...(props.escapeKey ? tuiConfig.keybinds.get("app.exit") : []),
       ...(props.fullscreen ? tuiConfig.keybinds.get("permission.prompt.fullscreen") : []),
+    ],
+  }))
+
+  useBindings(() => ({
+    enabled: !!props.escapeKey,
+    priority: EscapePriority.ask,
+    bindings: [
+      {
+        key: "escape",
+        desc: "Reject permission",
+        group: "Permission",
+        cmd: () => props.onSelect(props.escapeKey!),
+      },
     ],
   }))
 
