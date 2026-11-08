@@ -187,7 +187,7 @@ describe("live cross-workspace DAG continuation", () => {
                 sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES (${session.id},${projectID},${session.parentID ?? null},${session.slug},${session.directory},${session.title},'test',1,1)`,
               )
             yield* db.run(
-              sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,title,status,config,seq,time_created,time_updated) VALUES ('dag_cross_workspace',${projectID},${parentID},${owner.path},${workspace.path},'W','running',${JSON.stringify({ name: "W", nodes: [{ id: "node-1", name: "N", worker_type: "build", depends_on: [] }] })},0,1,1)`,
+              sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('dag_cross_workspace',${projectID},${parentID},${owner.path},${workspace.path},'{"kind":"none"}','W','running',${JSON.stringify({ name: "W", nodes: [{ id: "node-1", name: "N", worker_type: "build", depends_on: [] }] })},0,1,1)`,
             )
             yield* db.run(
               sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated) VALUES ('node-1','dag_cross_workspace','N','build','pending','[]',NULL,0,1,1)`,

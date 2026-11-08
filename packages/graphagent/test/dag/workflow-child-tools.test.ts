@@ -229,7 +229,7 @@ describe("workflow child boundary", () => {
         const worker = { ...session(SessionID.make("ses_real_child"), owner.id), projectID: owner.projectID, directory: "/tmp/opencode-linked" }
         yield* db.run(sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${owner.projectID},${owner.directory},'[]',1,1)`)
         for (const s of [owner, worker]) yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES (${s.id},${s.projectID},${s.parentID ?? null},${s.id},${s.directory},${s.title},'test',1,1)`)
-        yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,title,status,config,seq,time_created,time_updated) VALUES ('wf-real',${owner.projectID},${owner.id},${owner.directory},${worker.directory},'W','running','{}',1,1,1)`)
+        yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf-real',${owner.projectID},${owner.id},${owner.directory},${worker.directory},'{"kind":"none"}','W','running','{}',1,1,1)`)
         yield* db.run(sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,directory,seq,time_created,time_updated) VALUES ('n','wf-real','N','task','running','[]',${worker.id},${worker.directory},1,1,1)`)
         expect(yield* resolvedToolIDs(build, owner)).toContain("agent")
         const childTools = yield* resolvedToolIDs(build, worker)

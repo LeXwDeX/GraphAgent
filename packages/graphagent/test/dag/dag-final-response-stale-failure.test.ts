@@ -61,7 +61,7 @@ function seed(status: "pending" | "running" = "running") {
       ],
     })
     yield* db.run(
-      sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,time_created,time_updated) VALUES (${workflowID},'p',${parent.sessionID},${parent.directory},'W','running',${config},0,1,1)`,
+      sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES (${workflowID},'p',${parent.sessionID},${parent.directory},'{"kind":"none"}','W','running',${config},0,1,1)`,
     )
     yield* db.run(
       sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated) VALUES ('n',${workflowID},'N','build',${status},'[]',${status === "pending" ? null : child.sessionID},0,1,1)`,

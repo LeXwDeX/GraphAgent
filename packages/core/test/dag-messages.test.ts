@@ -25,7 +25,7 @@ const seed = Effect.gen(function* () {
       sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES (${id},'p',${id === "child" ? "parent" : null},${id},${process.cwd()},${id},'test',1,1)`,
     )
   yield* db.run(
-    sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,time_created,time_updated) VALUES ('wf','p','parent',${process.cwd()},'W','running','{}',1,1,1)`,
+    sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf','p','parent',${process.cwd()},'{"kind":"none"}','W','running','{}',1,1,1)`,
   )
   yield* db.run(
     sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated) VALUES ('n','wf','N','task','running','[]','child',1,1,1)`,

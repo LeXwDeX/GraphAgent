@@ -926,8 +926,8 @@ const seedAgentConversation = Effect.fn("test.seedAgentConversation")(function* 
   const parent = yield* sessions.create({ title: "DAG parent" })
   const child = yield* sessions.create({ parentID: parent.id, title: "DAG child" })
   const workflowID = `dag-${parent.id}`
-  yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,time_created,time_updated)
-    VALUES (${workflowID},${instance.project.id},${parent.id},${instance.directory},'Messaging','running','{}',1,1,1)`)
+  yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,time_created,time_updated)
+    VALUES (${workflowID},${instance.project.id},${parent.id},${instance.directory},'{"kind":"none"}','Messaging','running','{}',1,1,1)`)
   yield* db.run(sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated)
     VALUES ('worker',${workflowID},'Worker','task','running','[]',${child.id},1,1,1)`)
   const identity = { projectID: instance.project.id, directory: instance.directory }

@@ -72,7 +72,7 @@ describe("Dag settlement transaction fence", () => {
           sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES ('ses_parent','p',NULL,'ses_parent',${process.cwd()},'Parent','test',1,1)`,
         )
         yield* db.run(
-          sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,time_created,time_updated) VALUES ('wf','p','ses_parent',${process.cwd()},'Fence','running','{}',0,1,1)`,
+          sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf','p','ses_parent',${process.cwd()},'{"kind":"none"}','Fence','running','{}',0,1,1)`,
         )
 
         const fenced = yield* mailbox

@@ -151,7 +151,7 @@ describe("DAG agent message adapter", () => {
         yield* db.run(sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${project},${directory},'[]',1,1) ON CONFLICT(id) DO NOTHING`)
         yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES ('ses_poll_race',${project},NULL,'parent',${directory},'parent','test',1,1)`)
         yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES ('ses_poll_race_child',${project},'ses_poll_race','child',${directory},'child','test',1,1)`)
-        yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,time_created,time_updated) VALUES ('wf-race',${project},'ses_poll_race',${directory},'race','running','{}',0,1,1)`)
+        yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf-race',${project},'ses_poll_race',${directory},'{"kind":"none"}','race','running','{}',0,1,1)`)
         yield* db.run(sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated) VALUES ('n','wf-race','node','build','running','[]','ses_poll_race_child',0,1,1)`)
         const adapter = yield* DagAgentMessages.Service
         const messages = yield* DagMessages.Service
@@ -272,7 +272,7 @@ describe("DAG agent message adapter", () => {
       yield* db.run(sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${project},${directory},'[]',1,1) ON CONFLICT(id) DO NOTHING`)
       yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES ('ses_poll_parent',${project},NULL,'parent',${directory},'parent','test',1,1)`)
       yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES ('ses_poll_child',${project},'ses_poll_parent','child',${directory},'child','test',1,1)`)
-      yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,time_created,time_updated) VALUES ('wf-poll',${project},'ses_poll_parent',${directory},'poll','running','{}',0,1,1)`)
+      yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf-poll',${project},'ses_poll_parent',${directory},'{"kind":"none"}','poll','running','{}',0,1,1)`)
       yield* db.run(sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated) VALUES ('n','wf-poll','node','build','running','[]','ses_poll_child',0,1,1)`)
       const adapter = yield* DagAgentMessages.Service
       const messages = yield* DagMessages.Service
