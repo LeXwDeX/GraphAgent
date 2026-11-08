@@ -24,7 +24,6 @@ import { SkillTool } from "./skill"
 import { WorkflowTool } from "./workflow"
 import { AgentTool } from "./agent"
 import { DagAgentMessages } from "@/dag/agent-messages"
-import { SubmitResultTool } from "./submit_result"
 import { Dag } from "@/dag/dag"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
@@ -132,7 +131,6 @@ export const layer = Layer.effect(
     const skilltool = yield* SkillTool
     const workflow = yield* WorkflowTool
     const agentTool = yield* AgentTool
-    const submitResult = yield* SubmitResultTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -159,7 +157,6 @@ export const layer = Layer.effect(
           patch: Tool.init(patchtool),
           workflow: Tool.init(workflow),
           agent: Tool.init(agentTool),
-          submitResult: Tool.init(submitResult),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
@@ -186,7 +183,6 @@ export const layer = Layer.effect(
             tool.patch,
             tool.workflow,
             tool.agent,
-            tool.submitResult,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],

@@ -5,7 +5,6 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Logging } from "@graphagent/core/observability/logging"
 import type { Agent } from "@/agent/agent"
-import { isFinalResponseSession } from "@/dag/runtime/capture"
 import type { EffectBridge } from "@/effect/bridge"
 import { SessionContext } from "@/effect/session-context"
 import { applyPreHookDecision, classifyPermissionAsk, withoutUnusableDefer } from "@/hook/pre-hook-decision"
@@ -1079,7 +1078,6 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   } = deps
 
   for (const [key, item] of Object.entries(mcpItems)) {
-    if (key === "submit_result" && isFinalResponseSession(input.session.id)) continue
     const execute = item.execute
     if (!execute) continue
 

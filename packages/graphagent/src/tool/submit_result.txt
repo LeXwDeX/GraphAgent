@@ -1,5 +1,0 @@
-Submit structured output for a DAG workflow node. Use this only in a child session whose node declares an `output_schema`, and submit a payload that matches it.
-
-The payload is the authoritative report: put the full result and summary there, do not duplicate it in your message, and end the turn after success. If validation fails, correct the payload and call again in the same session.
-
-Outside such a node this tool has no effect.
