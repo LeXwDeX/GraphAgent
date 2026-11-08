@@ -14,13 +14,35 @@ export type SessionRoute = {
   prompt?: PromptInfo
 }
 
-export type PluginRoute = {
-  type: "plugin"
-  id: string
-  data?: Record<string, unknown>
+export type DiffMode = "git" | "branch" | "last-turn"
+
+export type DiffParams = {
+  mode?: DiffMode
+  sessionID?: string
+  messageID?: string
 }
 
-export type Route = HomeRoute | SessionRoute | PluginRoute
+export type DiffRoute = {
+  type: "diff"
+  params: DiffParams
+  returnRoute: Route
+}
+
+export type Route = HomeRoute | SessionRoute | DiffRoute
+
+/**
+ * Copy a route before it is stored back into the route store. Solid store
+ * proxies must not be nested inside the same store; the diff route also
+ * carries a return route, so copy that chain recursively.
+ */
+export function snapshotRoute(route: Route): Route {
+  if (route.type !== "diff") return { ...route }
+  return {
+    type: "diff",
+    params: { ...route.params },
+    returnRoute: snapshotRoute(route.returnRoute),
+  }
+}
 
 export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",
@@ -41,14 +63,15 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   },
 })
 
+/**
+ * Deep links only address home and session. The diff route is internal and
+ * cannot be opened from startup; plugin routes no longer exist.
+ */
 function initialRoute(value: unknown): Route | undefined {
   if (!value || typeof value !== "object" || !("type" in value)) return
   if (value.type === "home") return { type: "home" }
   if (value.type === "session" && "sessionID" in value && typeof value.sessionID === "string") {
     return { type: "session", sessionID: value.sessionID }
-  }
-  if (value.type === "plugin" && "id" in value && typeof value.id === "string") {
-    return { type: "plugin", id: value.id }
   }
 }
 

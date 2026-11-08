@@ -27,7 +27,6 @@ import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, u
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { ErrorComponent } from "./component/error-component"
-import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
@@ -47,7 +46,10 @@ import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
-import { Session } from "./routes/session"
+import { Main } from "./routes/session"
+import { Diff } from "./routes/diff"
+import { useDiffNavigation } from "./routes/diff/route"
+import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
 import { useFooterKeyHints } from "./shell/footer"
 import type { TopBarRight } from "./shell/top-bar"
@@ -371,6 +373,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
+  const diffFooterHints = useDiffFooterHints()
+  const diffNavigation = useDiffNavigation()
 
   const api = createTuiApi(
     createTuiApiAdapters({
@@ -457,8 +461,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       return
     }
 
-    if (route.data.type === "plugin") {
-      renderer.setTerminalTitle(`OC | ${route.data.id}`)
+    if (route.data.type === "diff") {
+      renderer.setTerminalTitle("OC | diff")
     }
   })
 
@@ -770,6 +774,22 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         category: "System",
       },
       {
+        name: "diff.open",
+        title: t("diff.command.open"),
+        category: "VCS",
+        slashName: "diff",
+        run: () => {
+          const sessionID =
+            route.data.type === "session"
+              ? route.data.sessionID
+              : route.data.type === "diff"
+                ? route.data.params.sessionID
+                : undefined
+          diffNavigation.open({ mode: "git", sessionID })
+          dialog.clear()
+        },
+      },
+      {
         name: "help.show",
         title: "Help",
         slashName: "help",
@@ -940,7 +960,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
     enabled: () => {
-      if (route.data.type === "plugin" && route.data.id === "diff") return false
+      if (route.data.type === "diff") return false
       const current = promptRef.current
       if (!current?.focused) return true
       if (hasManagedTextareaFocus(renderer)) return false
@@ -989,14 +1009,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       message: `${evt.properties.source} is unreachable. Using cached or configured providers only. See ${TuiLog.logFilePath()} for details.`,
       duration: 8000,
     })
-  })
-
-  const plugin = createMemo(() => {
-    if (!ready()) return
-    if (route.data.type !== "plugin") return
-    const render = pluginRuntime.routes.get(route.data.id)
-    if (!render) return <PluginRouteMissing id={route.data.id} onHome={() => route.navigate({ type: "home" })} />
-    return render({ params: route.data.data })
   })
 
   const topBar = createMemo(() => {
@@ -1063,7 +1075,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           footer={{
             agent: local.agent.current()?.name,
             agentAction: footerKeys().agent,
-            hints: footerKeys().hints,
+            hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
           }}
           bottomZone={<pluginRuntime.Slot name="app_bottom" />}
         >
@@ -1072,12 +1084,12 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
               <Home />
             </Match>
             <Match when={route.data.type === "session"}>
-              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                {(_) => <Session />}
-              </Show>
+              <Main />
+            </Match>
+            <Match when={route.data.type === "diff"}>
+              <Diff />
             </Match>
           </Switch>
-          {plugin()}
         </AppFrame>
         <pluginRuntime.Slot name="app" />
       </Show>

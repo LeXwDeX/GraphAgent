@@ -51,7 +51,8 @@ function routeNavigate(route: ReturnType<typeof useRoute>, name: string, params?
     return
   }
 
-  route.navigate({ type: "plugin", id: name, data: params })
+  // Only home and session are addressable from plugins. The internal diff
+  // route is opened by its own navigation helper and cannot be entered here.
 }
 
 function routeCurrent(route: ReturnType<typeof useRoute>): TuiPluginApi["route"]["current"] {
@@ -67,8 +68,8 @@ function routeCurrent(route: ReturnType<typeof useRoute>): TuiPluginApi["route"]
   }
 
   return {
-    name: route.data.id,
-    params: route.data.data,
+    name: "diff",
+    params: route.data.params,
   }
 }
 
@@ -138,9 +139,6 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
         return g
           ? { goal: g.goal, status: g.status, turnsUsed: Number(g.turnsUsed), maxTurns: Number(g.maxTurns) }
           : undefined
-      },
-      dag(sessionID) {
-        return sync.data.dag[sessionID] ?? []
       },
       messages(sessionID) {
         return sync.data.message[sessionID] ?? []

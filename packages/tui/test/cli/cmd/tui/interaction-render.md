@@ -43,6 +43,6 @@ Whole-file text and syntax context remain available, so mounted-line counts are 
 Single-run mount results are sensitive to parser startup and host load. This in-process harness does not measure OS
 terminal delivery, network time, model latency or the entire application startup path.
 
-Regression coverage in `test/cli/tui/patch-diff.test.tsx`, `test/cli/tui/diff-viewer.test.tsx` and
+Regression coverage in `test/cli/tui/patch-diff.test.tsx`, `test/routes/diff/index.test.tsx` and
 `test/util/added-patch.test.ts` additionally exercises wrapping, Unicode, multi-line syntax, stable gutters, view changes,
 resize with preceding content, file/hunk navigation, review actions, cleanup and the small/mixed/partial-patch fallback.

@@ -19,9 +19,8 @@
         "packages/graphagent/src/dag/",
         "packages/graphagent/src/tool/workflow.ts",
         "packages/schema/src/dag-event.ts",
-        "packages/tui/src/feature-plugins/system/dag-inspector.tsx",
-        "packages/tui/src/feature-plugins/system/dag-inspector-utils.ts",
-        "packages/tui/src/feature-plugins/sidebar/dag-panel.tsx",
+        "packages/tui/src/dag/model.ts",
+        "packages/tui/src/dag/waves.ts",
         "packages/graphagent/src/server/routes/instance/httpapi/groups/dag.ts",
         "packages/graphagent/src/server/routes/instance/httpapi/handlers/dag.ts"
       ]

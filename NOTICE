@@ -40,10 +40,8 @@ are checked for consistency in CI.
                                              crash recovery, templates
    - packages/graphagent/src/tool/workflow.ts  The `workflow` agent tool
    - packages/schema/src/dag-event.ts        DAG event schema definitions
-   - packages/tui/src/feature-plugins/system/dag-inspector.tsx
-   - packages/tui/src/feature-plugins/system/dag-inspector-utils.ts
-   - packages/tui/src/feature-plugins/sidebar/dag-panel.tsx
-                                             TUI DAG inspector and sidebar panel
+   - packages/tui/src/dag/model.ts             TUI DAG model formatting helpers
+   - packages/tui/src/dag/waves.ts             TUI DAG wave computation
    - packages/graphagent/src/server/routes/instance/httpapi/groups/dag.ts
    - packages/graphagent/src/server/routes/instance/httpapi/handlers/dag.ts
                                              DAG HTTP API routes

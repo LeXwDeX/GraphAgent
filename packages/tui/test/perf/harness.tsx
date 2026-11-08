@@ -25,7 +25,7 @@ import { Prompt, type PromptRef } from "../../src/component/prompt"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
-import { Session } from "../../src/routes/session"
+import { Main } from "../../src/routes/session"
 import { DialogProvider } from "../../src/ui/dialog"
 import { ToastProvider } from "../../src/ui/toast"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -114,7 +114,7 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     })
     return (
       <>
-        <Session />
+        <Main />
         <Prompt sessionID={fixture.session.id} visible={true} ref={(value) => (state.directPrompt = value)} />
       </>
     )
