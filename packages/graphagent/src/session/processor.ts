@@ -29,7 +29,6 @@ import { ToolInputRejectedError } from "./llm/ai-sdk"
 import { hookToolStop } from "@/hook/trigger-result"
 import { CompactionTimeoutError, watchCompactionStream } from "./compaction-timeout"
 import { SessionStatus } from "./status"
-import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
@@ -180,7 +179,6 @@ export const layer = Layer.effect(
     const agents = yield* Agent.Service
     const llm = yield* LLM.Service
     const permission = yield* Permission.Service
-    const summary = yield* SessionSummary.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
     const image = yield* Image.Service
@@ -684,12 +682,6 @@ export const layer = Layer.effect(
               }
               ctx.snapshot = undefined
             }
-            yield* summary
-              .summarize({
-                sessionID: ctx.sessionID,
-                messageID: ctx.assistantMessage.parentID,
-              })
-              .pipe(Effect.ignore, Effect.forkIn(scope))
             if (
               !ctx.assistantMessage.summary &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
@@ -1237,7 +1229,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Agent.defaultLayer),
     Layer.provide(LLM.defaultLayer),
     Layer.provide(Permission.defaultLayer),
-    Layer.provide(SessionSummary.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(Image.defaultLayer),
     Layer.provide(Config.defaultLayer),
@@ -1253,7 +1244,6 @@ export const node = LayerNode.make(layer, [
   Agent.node,
   LLM.node,
   Permission.node,
-  SessionSummary.node,
   SessionStatus.node,
   Image.node,
   EventV2Bridge.node,

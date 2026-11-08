@@ -2871,6 +2871,10 @@ export const layer = Layer.effect(
             return value
           })
 
+        // Temporary turn boundary until H1 (#1019) lands session turns: the
+        // initial user message of this loop invocation identifies the turn.
+        let turnUserID: MessageID | undefined
+
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
@@ -2883,6 +2887,7 @@ export const layer = Layer.effect(
           let msgs = snapshot.messages
           let budget = snapshot.budget
           const previous = MessageV2.latest(msgs)
+          if (!turnUserID && previous.user) turnUserID = previous.user.id
           const previousParts = msgs.findLast((message) => message.info.id === previous.assistant?.id)?.parts
           const needsStop =
             turnStopped ||
@@ -3206,6 +3211,8 @@ export const layer = Layer.effect(
                   continue
                 }
               }
+              if (turnUserID)
+                yield* summary.summarizeTurn({ sessionID, userMessageIDs: [turnUserID] }).pipe(Effect.ignore)
               return yield* getLastAssistant(sessionID)
             }
           }
@@ -3490,9 +3497,6 @@ export const layer = Layer.effect(
               })
             }
 
-            if (step === 1)
-              yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
-
             // Reminder text is computed after the persisted user content and appended by
             // the provider adapter after the persisted user content. It never
             // reaches stored messages and only the current turn carries one.
@@ -3765,8 +3769,9 @@ export const layer = Layer.effect(
           if (outcome === "break") turnError = handle.message.error
           continue
         }
-        // Unreachable: the step loop above only exits via `return` inside the
-        // finished-check. Kept so TS infers a definite return type for runLoop.
+        // The compaction "stop" task breaks out of the step loop; it is still a
+        // successful turn exit, so summarize here as well.
+        if (turnUserID) yield* summary.summarizeTurn({ sessionID, userMessageIDs: [turnUserID] }).pipe(Effect.ignore)
         return yield* getLastAssistant(sessionID)
       },
     )

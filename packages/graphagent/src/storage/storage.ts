@@ -3,7 +3,6 @@ import path from "path"
 import { Global } from "@graphagent/core/global"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Effect, Layer, Option, RcMap, Schema, Context, TxReentrantLock } from "effect"
-import { NonNegativeInt } from "@graphagent/core/schema"
 import { Git } from "@/git"
 
 export class NotFoundError extends Schema.TaggedError<NotFoundError>()("NotFoundError", {
@@ -32,21 +31,9 @@ const MessageFile = Schema.Struct({
   id: Schema.String,
 })
 
-const DiffFile = Schema.Struct({
-  additions: NonNegativeInt,
-  deletions: NonNegativeInt,
-})
-
-const SummaryFile = Schema.Struct({
-  id: Schema.String,
-  projectID: Schema.String,
-  summary: Schema.Struct({ diffs: Schema.Array(DiffFile) }),
-})
-
 const decodeRoot = Schema.decodeUnknownOption(RootFile)
 const decodeSession = Schema.decodeUnknownOption(SessionFile)
 const decodeMessage = Schema.decodeUnknownOption(MessageFile)
-const decodeSummary = Schema.decodeUnknownOption(SummaryFile)
 
 export interface Interface {
   readonly remove: (key: string[]) => Effect.Effect<void, FSUtil.Error>

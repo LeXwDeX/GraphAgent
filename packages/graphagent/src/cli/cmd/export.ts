@@ -237,6 +237,21 @@ export const ExportCommand = effectCmd({
   }),
 })
 
+// H5 (#1016): diffs live in `message_diff`, not in message data. Inject them
+// back onto the user message at export time so the exported shape is unchanged.
+export const sessionExport = Effect.fn("Cli.export.session")(function* (sessionID: SessionID) {
+  const svc = yield* Session.Service
+  const info = yield* svc.get(sessionID)
+  const messageDiffs = yield* svc.readSessionMessageDiffs(info.id)
+  const messages = (yield* svc.messages({ sessionID: info.id })).map((msg) => {
+    if (msg.info.role !== "user") return msg
+    const diffs = messageDiffs.get(msg.info.id)
+    if (!diffs) return msg
+    return { ...msg, info: { ...msg.info, summary: { ...msg.info.summary, diffs } } }
+  })
+  return { info, messages }
+})
+
 const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; sanitize?: boolean }) {
   const svc = yield* Session.Service
   let sessionID = args.sessionID ? SessionID.make(args.sessionID) : undefined
@@ -281,10 +296,7 @@ const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; 
   // Match legacy try/catch — catches both typed failures and defects
   // (Session.Service.get throws NotFoundError as a defect, not a typed E).
   return yield* Effect.gen(function* () {
-    const sessionInfo = yield* svc.get(sessionID!)
-    const messages = yield* svc.messages({ sessionID: sessionInfo.id })
-
-    const exportData = { info: sessionInfo, messages }
+    const exportData = yield* sessionExport(sessionID!)
 
     process.stdout.write(JSON.stringify(args.sanitize ? sanitize(exportData) : exportData, null, 2))
     process.stdout.write(EOL)

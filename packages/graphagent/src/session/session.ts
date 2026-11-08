@@ -32,7 +32,7 @@ import { like } from "drizzle-orm"
 import { sql } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
-import { PartTable, SessionTable } from "@graphagent/core/session/sql"
+import { MessageDiffTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
@@ -475,6 +475,14 @@ export interface Interface {
   }) => Effect.Effect<void>
   readonly clearRevert: (sessionID: SessionID) => Effect.Effect<void>
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
+  readonly readMessageDiff: (messageID: MessageID) => Effect.Effect<Snapshot.FileDiff[]>
+  readonly readSessionMessageDiffs: (sessionID: SessionID) => Effect.Effect<ReadonlyMap<MessageID, Snapshot.FileDiff[]>>
+  readonly writeMessageDiff: (input: {
+    sessionID: SessionID
+    messageID: MessageID
+    diff: ReadonlyArray<Snapshot.FileDiff>
+  }) => Effect.Effect<void>
+  readonly deleteMessageDiff: (messageID: MessageID) => Effect.Effect<void>
   readonly setWorkspace: (input: { sessionID: SessionID; workspaceID: Info["workspaceID"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<SessionV1.WithParts[], NotFound>
@@ -1105,6 +1113,52 @@ export const layer: Layer.Layer<
       yield* patch(input.sessionID, { time: { updated: Date.now() }, summary: input.summary }).pipe(Effect.orDie)
     })
 
+    // H5 (#1016): message diffs live in their own table. These accessors write
+    // the database directly (no durable event); the projector-owned message
+    // row stays diff-free so hydrating a message never parses a large patch.
+    const readMessageDiff = Effect.fn("Session.readMessageDiff")(function* (messageID: MessageID) {
+      const row = yield* db
+        .select()
+        .from(MessageDiffTable)
+        .where(eq(MessageDiffTable.message_id, messageID))
+        .get()
+        .pipe(Effect.orDie)
+      return row ? [...row.diff] : []
+    })
+
+    const readSessionMessageDiffs = Effect.fn("Session.readSessionMessageDiffs")(function* (sessionID: SessionID) {
+      const rows = yield* db
+        .select()
+        .from(MessageDiffTable)
+        .where(eq(MessageDiffTable.session_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      const result = new Map<MessageID, Snapshot.FileDiff[]>()
+      for (const row of rows) result.set(row.message_id, [...row.diff])
+      return result
+    })
+
+    const writeMessageDiff = Effect.fn("Session.writeMessageDiff")(function* (input: {
+      sessionID: SessionID
+      messageID: MessageID
+      diff: ReadonlyArray<Snapshot.FileDiff>
+    }) {
+      const diff = [...input.diff]
+      yield* db
+        .insert(MessageDiffTable)
+        .values({ message_id: input.messageID, session_id: input.sessionID, diff })
+        .onConflictDoUpdate({
+          target: MessageDiffTable.message_id,
+          set: { session_id: input.sessionID, diff },
+        })
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+    const deleteMessageDiff = Effect.fn("Session.deleteMessageDiff")(function* (messageID: MessageID) {
+      yield* db.delete(MessageDiffTable).where(eq(MessageDiffTable.message_id, messageID)).run().pipe(Effect.orDie)
+    })
+
     const setWorkspace = Effect.fn("Session.setWorkspace")(function* (input: {
       sessionID: SessionID
       workspaceID: Info["workspaceID"]
@@ -1245,6 +1299,10 @@ export const layer: Layer.Layer<
       setRevert,
       clearRevert,
       setSummary,
+      readMessageDiff,
+      readSessionMessageDiffs,
+      writeMessageDiff,
+      deleteMessageDiff,
       setWorkspace,
       diff,
       messages,
