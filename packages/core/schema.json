@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "7962de47-7093-453f-8be4-ee7ddaaace1b",
+  "id": "c84a17f1-4cee-4876-bbc8-4857d009fef2",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -1491,6 +1491,16 @@
       "default": null,
       "generated": null,
       "name": "status",
+      "entityType": "columns",
+      "table": "workflow"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "pause_reason",
       "entityType": "columns",
       "table": "workflow"
     },
