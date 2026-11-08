@@ -228,6 +228,7 @@ describe("session.system", () => {
       expect(zh).toContain("Simplified Chinese (zh-CN)")
       expect(en).toContain("English (en)")
       expect(zh).toContain("If the user explicitly asks for another language, follow the user's request.")
+      expect(en).toContain("If the user explicitly asks for another language, follow the user's request.")
       expect(zh).toContain("Keep code, commands, identifiers, and file paths in their original form.")
     }),
   )

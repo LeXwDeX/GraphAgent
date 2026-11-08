@@ -4098,6 +4098,66 @@ for (const [runtime, runner] of [
     }),
   )
 
+  runner.instance(`structured output bypasses tool hooks and keeps a large payload intact (${runtime})`, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Structured payload" })
+      const before = hookRecorded.length
+      const answer = Array.from({ length: 2_100 }, (_, index) => `line-${index}-${"x".repeat(32)}`).join("\n")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        format: new SessionV1.OutputFormatJsonSchema({
+          type: "json_schema",
+          schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] },
+          retryCount: 0,
+        }),
+        parts: [{ type: "text", text: "Return the payload verbatim." }],
+      })
+      yield* llm.tool("StructuredOutput", { answer })
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+
+      const toolHooks = hookRecorded.slice(before).filter((payload) => payload.event === "PreToolUse")
+      expect(toolHooks).toEqual([])
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role !== "assistant") throw new Error("Expected an assistant response")
+      expect(result.info.error).toBeUndefined()
+      expect(Buffer.byteLength(answer)).toBeGreaterThan(50 * 1024)
+      expect(result.info.structured).toEqual({ answer })
+      expect((yield* llm.inputs)[0].tool_choice).toBe("required")
+    }),
+  )
+
+  for (const language of ["zh-CN", "en"] as const) {
+    runner.instance(`sends the configured reply language in the system prompt (${language}, ${runtime})`, () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), language }))
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Language" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "hello" }],
+        })
+        yield* llm.text("done")
+
+        yield* prompt.loop({ sessionID: chat.id })
+
+        const system = requestSystem((yield* llm.inputs)[0])
+        expect(system).toContain("## Reply language")
+        expect(system).toContain(language === "zh-CN" ? "Simplified Chinese (zh-CN)" : "English (en)")
+        expect(system).toContain("If the user explicitly asks for another language, follow the user's request.")
+        expect(system).toContain("Keep code, commands, identifiers, and file paths in their original form.")
+      }),
+    )
+  }
+
   for (const setting of ["default", "zero"] as const) {
     runner.instance(`tool call budget is unlimited with ${setting} configuration (${runtime})`, () =>
       Effect.gen(function* () {
@@ -5147,7 +5207,10 @@ const contextFoldingDisabledClosedLoop = (runtime: "ai-sdk" | "native") =>
 
 const occurrences = (value: string, marker: string) => value.split(marker).length - 1
 
-const expectBoundedOriginalGraphagentSummary = (body: unknown, markers: { read: string; grep: string; glob: string }) => {
+const expectBoundedOriginalGraphagentSummary = (
+  body: unknown,
+  markers: { read: string; grep: string; glob: string },
+) => {
   const text = JSON.stringify(body)
   expect(text).not.toContain("Duplicate tool output folded")
   expect(occurrences(text, markers.read)).toBeGreaterThanOrEqual(2)
@@ -7029,6 +7092,16 @@ function requestMessages(input: { messages?: unknown }) {
     lastRole: role(messages.at(-1)),
     last: JSON.stringify(messages.at(-1)),
   }
+}
+
+// The wire shape differs per runtime: OpenAI-compatible providers send system
+// messages inside `messages`, while others send a top-level `system` string or
+// block array. Assertions about system instructions must cover both.
+function requestSystem(input: { messages?: unknown; system?: unknown }) {
+  const messages: unknown[] = Array.isArray(input.messages) ? input.messages : []
+  const role = (message: unknown) =>
+    typeof message === "object" && message !== null && "role" in message ? message.role : undefined
+  return JSON.stringify([input.system ?? null, ...messages.filter((message) => role(message) === "system")])
 }
 
 withMemoryContext.instance("sends MEMORY data in the trailing runtime context, not the system prompt", () =>

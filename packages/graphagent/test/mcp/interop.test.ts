@@ -30,7 +30,7 @@ function withTimeout<T>(promise: Promise<T>, message: string, ms = PROBE_TIMEOUT
 
 // The probe drives the real v2 client in a fresh process: sibling files in
 // test/mcp mock.module the client SDK in the shared bun test process.
-async function runProbe(mode: "stdio-auto" | "stdio-legacy" | "http-auto") {
+async function runProbe(mode: "stdio-auto" | "stdio-legacy" | "stdio-legacy-only" | "http-auto") {
   const child = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixtures", "interop-probe.ts"), mode], {
     cwd: path.join(import.meta.dir, "../.."),
     stdout: "pipe",
@@ -41,15 +41,19 @@ async function runProbe(mode: "stdio-auto" | "stdio-legacy" | "http-auto") {
     Promise.all([child.exited, Bun.readableStreamToText(child.stdout)]),
     `interop probe ${mode} timed out`,
   )
-  return { code, result: JSON.parse(stdout) as { era?: string; version?: string; echo?: string } }
+  return {
+    code,
+    result: JSON.parse(stdout) as { era?: string; version?: string; tools?: string[]; echo?: string },
+  }
 }
 
 describe("mcp dual-era interop", () => {
-  test("stdio auto negotiates 2026-07-28 and round-trips a tool call", async () => {
+  test("stdio auto negotiates 2026-07-28, lists tools, and round-trips a call", async () => {
     const { code, result } = await runProbe("stdio-auto")
     expect(code, JSON.stringify(result)).toBe(0)
     expect(result.era).toBe("modern")
     expect(result.version).toBe(MODERN_VERSION)
+    expect(result.tools).toContain("echo")
     expect(result.echo).toBe("echo:hello")
   })
 
@@ -58,14 +62,25 @@ describe("mcp dual-era interop", () => {
     expect(code, JSON.stringify(result)).toBe(0)
     expect(result.era).toBe("legacy")
     expect(result.version).toBe(LEGACY_VERSION)
+    expect(result.tools).toContain("echo")
     expect(result.echo).toBe("echo:legacy")
   })
 
-  test("streamable http auto negotiates 2026-07-28 and round-trips a tool call", async () => {
+  test("stdio auto falls back to 2025-11-25 against a legacy-only server", async () => {
+    const { code, result } = await runProbe("stdio-legacy-only")
+    expect(code, JSON.stringify(result)).toBe(0)
+    expect(result.era).toBe("legacy")
+    expect(result.version).toBe(LEGACY_VERSION)
+    expect(result.tools).toContain("echo")
+    expect(result.echo).toBe("echo-legacy-only:legacy-only")
+  })
+
+  test("streamable http auto negotiates 2026-07-28, lists tools, and round-trips a call", async () => {
     const { code, result } = await runProbe("http-auto")
     expect(code, JSON.stringify(result)).toBe(0)
     expect(result.era).toBe("modern")
     expect(result.version).toBe(MODERN_VERSION)
+    expect(result.tools).toContain("echo")
     expect(result.echo).toBe("echo-http:http")
   })
 })

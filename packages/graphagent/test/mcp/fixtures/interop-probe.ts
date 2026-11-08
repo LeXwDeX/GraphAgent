@@ -34,16 +34,25 @@ function firstText(result: { content: Array<{ type: string; text?: string }> }) 
   return result.content[0]?.text
 }
 
-async function runStdio(legacy: boolean) {
-  const client = new Client({ name: "interop-probe", version: "0.0.0" }, { versionNegotiation: { mode: legacy ? "legacy" : "auto" } })
+async function runStdio(input: { negotiation: "auto" | "legacy"; server: "dual-era" | "legacy-only"; text: string }) {
+  const client = new Client(
+    { name: "interop-probe", version: "0.0.0" },
+    { versionNegotiation: { mode: input.negotiation } },
+  )
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(import.meta.dir, "server-stdio.ts")],
+    args: [path.join(import.meta.dir, input.server === "dual-era" ? "server-stdio.ts" : "legacy-only-server.ts")],
   })
   await withTimeout(client.connect(transport), "stdio connect timed out")
   try {
-    const result = await client.callTool({ name: "echo", arguments: { text: legacy ? "legacy" : "hello" } })
-    return { era: client.getProtocolEra(), version: client.getNegotiatedProtocolVersion(), echo: firstText(result as { content: Array<{ type: string; text?: string }> }) }
+    const tools = (await client.listTools()).tools.map((tool) => tool.name)
+    const result = await client.callTool({ name: "echo", arguments: { text: input.text } })
+    return {
+      era: client.getProtocolEra(),
+      version: client.getNegotiatedProtocolVersion(),
+      tools,
+      echo: firstText(result as { content: Array<{ type: string; text?: string }> }),
+    }
   } finally {
     await client.close()
   }
@@ -73,10 +82,19 @@ async function runHttp() {
   })
   const port = await withTimeout(readListeningPort(httpServer.stdout), "http fixture did not report a port in time")
   const client = new Client({ name: "interop-probe", version: "0.0.0" }, { versionNegotiation: { mode: "auto" } })
-  await withTimeout(client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`))), "http connect timed out")
+  await withTimeout(
+    client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`))),
+    "http connect timed out",
+  )
   try {
+    const tools = (await client.listTools()).tools.map((tool) => tool.name)
     const result = await client.callTool({ name: "echo", arguments: { text: "http" } })
-    return { era: client.getProtocolEra(), version: client.getNegotiatedProtocolVersion(), echo: firstText(result as { content: Array<{ type: string; text?: string }> }) }
+    return {
+      era: client.getProtocolEra(),
+      version: client.getNegotiatedProtocolVersion(),
+      tools,
+      echo: firstText(result as { content: Array<{ type: string; text?: string }> }),
+    }
   } finally {
     await client.close()
     httpServer.kill()
@@ -84,6 +102,15 @@ async function runHttp() {
   }
 }
 
-const outcome = mode === "http-auto" ? await runHttp() : await runStdio(mode === "stdio-legacy")
+const outcome =
+  mode === "http-auto"
+    ? await runHttp()
+    : mode === "stdio-legacy-only"
+      ? await runStdio({ negotiation: "auto", server: "legacy-only", text: "legacy-only" })
+      : await runStdio({
+          negotiation: mode === "stdio-legacy" ? "legacy" : "auto",
+          server: "dual-era",
+          text: mode === "stdio-legacy" ? "legacy" : "hello",
+        })
 console.log(JSON.stringify({ mode, ...outcome }))
 process.exit(0)
