@@ -232,3 +232,27 @@ export function cellWidth(text: string, ambiguousWidth: AmbiguousWidth = 1): num
   }
   return width + extra
 }
+
+const ELLIPSIS = "…"
+
+/**
+ * Truncate `text` to at most `maxWidth` terminal cells, appending `…` when the
+ * text was cut. Uses the same width model as {@link cellWidth}.
+ */
+export function truncateCells(text: string, maxWidth: number, ambiguousWidth: AmbiguousWidth = 1): string {
+  if (maxWidth <= 0) return ""
+  if (cellWidth(text, ambiguousWidth) <= maxWidth) return text
+
+  const ellipsisWidth = cellWidth(ELLIPSIS, ambiguousWidth)
+  if (maxWidth < ellipsisWidth) return ""
+
+  let result = ""
+  let width = 0
+  for (const { segment } of graphemes.segment(text)) {
+    const segmentWidth = cellWidth(segment, ambiguousWidth)
+    if (width + segmentWidth + ellipsisWidth > maxWidth) break
+    result += segment
+    width += segmentWidth
+  }
+  return `${result}${ELLIPSIS}`
+}
