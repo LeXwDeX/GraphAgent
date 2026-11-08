@@ -25,6 +25,7 @@ import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
+import { useFooterStatus } from "../../../src/shell/footer-status"
 import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
@@ -141,6 +142,12 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
     return <Main />
   }
 
+  // Mirrors the production footer slot that renders transient footer content.
+  function FooterStatusView() {
+    const status = useFooterStatus()
+    return <box flexShrink={0}>{status()}</box>
+  }
+
   const app = await testRender(
     () => {
       const renderer = useRenderer()
@@ -177,6 +184,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                                                     <EditorContextProvider integration={{}}>
                                                       <LocationProvider>
                                                         <Probe />
+                                                        <FooterStatusView />
                                                       </LocationProvider>
                                                     </EditorContextProvider>
                                                   </PromptRefProvider>
