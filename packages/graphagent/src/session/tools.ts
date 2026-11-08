@@ -1,17 +1,12 @@
 import { Agent } from "@/agent/agent"
 import { subagentRoleDefaultRuleIndices } from "@/agent/subagent-permissions"
 import { Provider } from "@/provider/provider"
-import { ProviderTransform } from "@/provider/transform"
-import { MCP } from "@/mcp"
-import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
-import { DagStore } from "@graphagent/core/dag/store"
-import { DagMessages } from "@graphagent/core/dag/messages"
 import { Truncate } from "@/tool/truncate"
-import { MCP_RESOURCE_TOOLS, ToolPipeline, toRecord } from "@/tool/pipeline"
-import type { DirectToolContext, ResolveInput } from "@/tool/pipeline"
+import { ToolPipeline, toRecord } from "@/tool/pipeline"
+import type { DirectToolContext, ToolEntry, WrapInput } from "@/tool/pipeline"
 import { SettingsHook } from "@/hook/settings"
 import { HookTranscript } from "@/hook/transcript"
 import { promptIdentity } from "@/hook/prompt-identity"
@@ -19,44 +14,9 @@ import { ToolInputUpdated } from "@/permission/hook-control"
 import { type Tool as AITool, type ToolExecutionOptions, asSchema } from "ai"
 import { Effect } from "effect"
 import * as Option from "effect/Option"
-import { Session } from "./session"
 import { EffectBridge } from "@/effect/bridge"
-import { ModelV2 } from "@graphagent/core/model"
 import { Hash } from "@graphagent/core/util/hash"
 import { ToolSourceLedger, type Registration as ToolSourceRegistration } from "./tool-source-ledger"
-
-const canUseAgentMessages = Effect.fn("SessionTools.canUseAgentMessages")(function* (session: Session.Info) {
-  const store = yield* Effect.serviceOption(DagStore.Service)
-  const messages = yield* Effect.serviceOption(DagMessages.Service)
-  if (Option.isNone(store) || Option.isNone(messages)) return false
-  const workflows = yield* store.value.listBySession(session.parentID ?? session.id)
-  const caller = { projectID: session.projectID, directory: session.directory, sessionID: session.id }
-  if (!session.parentID) {
-    for (const workflow of workflows) {
-      const endpoint = yield* messages.value.resolve(caller, workflow.id)
-      if (endpoint.ok && endpoint.value.kind === "main") return true
-    }
-    return false
-  }
-  const endpoint = yield* messages.value.revisions(caller)
-  if (!endpoint.ok || endpoint.value.endpoint.kind !== "node") return false
-  for (const workflow of workflows) {
-    if (endpoint.value.endpoint.workflowID !== workflow.id) continue
-    const nodes = yield* store.value.getNodes(workflow.id)
-    if (
-      nodes.some(
-        (node) =>
-          node.status === "running" &&
-          !node.superseded &&
-          node.childSessionId === session.id &&
-          node.id === endpoint.value.endpoint.nodeID &&
-          DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts) === endpoint.value.endpoint.attemptID,
-      )
-    )
-      return true
-  }
-  return false
-})
 
 const outputFingerprint = (value: unknown) => {
   try {
@@ -68,13 +28,12 @@ const outputFingerprint = (value: unknown) => {
 
 export type { DirectToolContext }
 
-export const resolve = Effect.fn("SessionTools.resolve")(function* (input: ResolveInput) {
+export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapInput) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
   const permission = yield* Permission.Service
   const agentService = Option.getOrUndefined(yield* Effect.serviceOption(Agent.Service))
   const registry = yield* ToolRegistry.Service
-  const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const sourceLedger =
     input.sourceLedger ??
@@ -88,19 +47,50 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
   >()
   const hooks = input.hooks ?? Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
 
+  // Definition-stage rewrites (availability, permissions, descriptions, schemas) happen in
+  // the registry; this layer only wraps the resulting entries for execution.
+  const entries = input.directTool
+    ? yield* registry.resolve({
+        directTool: input.directTool,
+        ...(input.model ? { model: input.model } : {}),
+        agent: input.agent,
+        session: input.session,
+        user: input.user,
+        permission: input.permission ?? input.session.permission,
+      })
+    : yield* registry.resolve({
+        model: input.model,
+        agent: input.agent,
+        session: input.session,
+        user: input.user,
+        permission: input.permission ?? input.session.permission,
+      })
+  const entriesByID = new Map(entries.map((entry) => [entry.id, entry]))
+
   // Real MCP identity of each server-provided tool, keyed by its model-facing name. Hook
   // matchers use the official `mcp__server__tool` name derived from this binding, never by
   // splitting the lossy key.
-  const mcpHookIdentity = new Map<string, { canonicalToolName: string; mcpServer: { name: string; source: string } }>()
+  const hookIdentity = (toolName: string | undefined) => {
+    if (toolName === undefined) return undefined
+    const source = entriesByID.get(toolName)?.source
+    if (source?.kind !== "mcp") return undefined
+    return {
+      canonicalToolName: source.canonicalName,
+      mcpServer: { name: source.server, source: source.source },
+    }
+  }
   // Server-marked tools (`_meta["anthropic/requiresUserInteraction"] === true`) always need a human.
-  const mcpRequiresInteraction = new Map<string, { server: string; tool: string }>()
+  const needsForcedAsk = (toolName: string) => {
+    const source = entriesByID.get(toolName)?.source
+    return source?.kind === "mcp" && source.requiresUserInteraction
+  }
   // The prompt runtime injects a wrapped settings service that materializes the transcript before
   // each configured event and overrides this context. Callers that reach `resolve` directly have
   // no such wrapper, so they would send `transcript_path: ""`; give them a real snapshot instead.
   const hookContext = Effect.fn("SessionTools.hookContext")(function* (toolName?: string) {
     const policy = "hookPolicy" in permission ? yield* permission.hookPolicy(input.session.id) : undefined
     const mode = policy?.mode ?? (input.agent.name === "plan" ? "plan" : "default")
-    const binding = toolName === undefined ? undefined : mcpHookIdentity.get(toolName)
+    const binding = hookIdentity(toolName)
     // Tool events fire inside a prompt, so name that prompt and its effort in the
     // envelope. When the prompt runtime injected its wrapper the same values are
     // recomputed there; an explicitly supplied value always wins.
@@ -136,74 +126,24 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
       )
     }).pipe(Effect.interruptible, Effect.timeoutOption("250 millis"), Effect.ignoreCause)
 
-  const transformSchema = (schema: Parameters<typeof ProviderTransform.schema>[1]) =>
-    input.model ? ProviderTransform.schema(input.model, schema) : schema
-  const registrations = input.directTool
-    ? [{ definition: input.directTool, sourceKind: "host-builtin" as const, registrationID: "host:explicit-shell" }]
-    : yield* registry.registrations({
-        modelID: ModelV2.ID.make(input.model.api.id),
-        providerID: input.model.providerID,
-        agent: input.agent,
-      })
-  const agentMessagesAvailable =
-    registrations.some((item) => item.sourceKind === "host-builtin" && item.definition.id === "agent") &&
-    (yield* canUseAgentMessages(input.session))
-  const registryItems = registrations.filter((registration) => {
-    if (registration.sourceKind !== "host-builtin") return true
-    if (registration.definition.id === "agent") return agentMessagesAvailable
-    return true
-  })
-  const mcpItems = input.directTool ? {} : yield* mcp.tools()
-  for (const [key, item] of Object.entries(mcpItems)) {
-    const binding = McpCatalog.toolBinding(item)
-    if (binding?.requiresUserInteraction === true)
-      mcpRequiresInteraction.set(key, { server: binding.server, tool: binding.tool })
-    if (binding)
-      mcpHookIdentity.set(key, {
-        canonicalToolName: McpCatalog.canonicalToolName(binding),
-        mcpServer: { name: binding.server, source: binding.source },
-      })
-  }
-  const hasMcpResourceServer =
-    !input.directTool &&
-    Object.values(yield* mcp.clients()).some((client) => !!client.getServerCapabilities()?.resources)
-  const effectiveSources = new Map<string, ToolSourceRegistration>()
-  for (const item of registryItems) {
-    effectiveSources.set(item.definition.id, {
-      sourceKind: item.sourceKind,
-      registrationID: item.registrationID,
-    })
-  }
-  if (hasMcpResourceServer) {
-    effectiveSources.set(MCP_RESOURCE_TOOLS.list, {
-      sourceKind: "mcp",
-      registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.list}`,
-    })
-    effectiveSources.set(MCP_RESOURCE_TOOLS.listTemplates, {
-      sourceKind: "mcp",
-      registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.listTemplates}`,
-    })
-    effectiveSources.set(MCP_RESOURCE_TOOLS.read, {
-      sourceKind: "mcp",
-      registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.read}`,
-    })
-  }
-  for (const key of Object.keys(mcpItems).toSorted()) {
-    effectiveSources.set(key, { sourceKind: "mcp", registrationID: `mcp:${key}` })
-  }
-  const activeRegistrations = [...effectiveSources.entries()]
-    .toSorted(([left], [right]) => left.localeCompare(right))
-    .map(([, source]) => source)
+  const settlement = (entry: ToolEntry): ToolSourceRegistration =>
+    entry.source.kind === "builtin"
+      ? { sourceKind: "host-builtin", registrationID: entry.source.registrationID }
+      : entry.source.kind === "direct-shell"
+        ? { sourceKind: "host-builtin", registrationID: "host:explicit-shell" }
+        : entry.source.kind === "mcp"
+          ? { sourceKind: "mcp", registrationID: `mcp:${entry.id}` }
+          : { sourceKind: "mcp", registrationID: entry.source.registrationID }
+  const activeRegistrations = [...entries].toSorted((left, right) => left.id.localeCompare(right.id)).map(settlement)
   let registrationGeneration = "inactive"
 
-  const recordSettlement = (toolName: string, callID: string, source: ToolSourceRegistration) =>
+  const recordSettlement = (entry: ToolEntry, callID: string) =>
     sourceLedger.record({
       sessionID: input.session.id,
       assistantMessageID: input.processor.message.id,
       callID,
-      toolName,
-      sourceKind: source.sourceKind,
-      registrationID: source.registrationID,
+      toolName: entry.id,
+      ...settlement(entry),
       registrationGeneration,
     })
 
@@ -263,10 +203,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
           {
             toolInput: args,
             toolName,
-            ...(toolName === undefined ? {} : mcpHookIdentity.get(toolName)),
+            ...(toolName === undefined ? {} : hookIdentity(toolName)),
             // A forced ask is never settled by a hook allow, bypass, acceptEdits, remembered or configured
             // allow; deny rules and dontAsk still apply first.
-            ...(toolName !== undefined && mcpRequiresInteraction.has(toolName) ? { force: true } : {}),
+            ...(toolName !== undefined && needsForcedAsk(toolName) ? { force: true } : {}),
             hookAllowed,
             ...(agentService
               ? {
@@ -313,19 +253,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
     questionHookAnswers,
     hookContext,
     reportInterrupt,
-    transformSchema,
     recordSettlement,
     recordInput,
     rawContext,
     context,
     configuredPermission,
-    registryItems,
-    mcp,
+    entries,
     truncate,
     resourceHookState,
-    hasMcpResourceServer,
-    mcpItems,
-    mcpRequiresInteraction,
   }
   yield* ToolPipeline.builtinTools(pipelineDeps, tools)
   yield* ToolPipeline.mcpResourceTools(pipelineDeps, tools)

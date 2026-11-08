@@ -8,7 +8,7 @@ import { SessionHooks } from "@/hook/session-hooks"
 import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
-import { ToolRegistry } from "@/tool/registry"
+import { ToolRegistry, type ToolEntry } from "@/tool/registry"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -25,6 +25,8 @@ import { Agent } from "@/agent/agent"
 import { QuestionTool } from "@/tool/question"
 import { Question } from "@/question"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { MCP_RESOURCE_DEFINITIONS, MCP_RESOURCE_ORDER } from "@/tool/mcp-resource"
+import { builtinEntry, mcpEntries } from "../fixture/tool-registry"
 
 const hookLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
@@ -67,14 +69,31 @@ const layers = Layer.mergeAll(
   Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
   Layer.mock(ToolRegistry.Service, {
     tools: () => Effect.succeed([writeDefinition, ...extraDefinitions]),
-    registrations: () =>
-      Effect.succeed(
-        [writeDefinition, ...extraDefinitions].map((definition) => ({
-          definition,
-          sourceKind: "host-builtin" as const,
-          registrationID: `test:${definition.id}`,
-        })),
-      ),
+    resolve: () =>
+      Effect.sync(() => {
+        const entries: ToolEntry[] = [writeDefinition, ...extraDefinitions].map((definition) =>
+          builtinEntry(definition),
+        )
+        const hasResources = Object.values(mcpClients).some(
+          (client) =>
+            !!(client as { getServerCapabilities?: () => { resources?: unknown } }).getServerCapabilities?.()
+              ?.resources,
+        )
+        if (hasResources) {
+          for (const op of MCP_RESOURCE_ORDER) {
+            const definition = MCP_RESOURCE_DEFINITIONS[op]
+            entries.push({
+              id: definition.id,
+              source: { kind: "mcp-resource" as const, op, registrationID: `mcp-resource:${definition.id}` },
+              effects: "read" as const,
+              description: definition.description,
+              jsonSchema: definition.jsonSchema,
+            })
+          }
+        }
+        entries.push(...mcpEntries(mcpTools))
+        return entries
+      }),
   }),
 )
 const it = testEffect(layers)

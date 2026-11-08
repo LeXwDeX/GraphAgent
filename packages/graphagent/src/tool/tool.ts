@@ -12,6 +12,14 @@ interface Metadata {
   [key: string]: any
 }
 
+/**
+ * Declared filesystem effect of a tool. `read` promises that a call cannot
+ * change the workspace, so a step containing only read tools reuses its start
+ * snapshot. `workspace_write` may change tracked files. `unknown` is treated
+ * as a write; MCP and direct-shell entries always use it.
+ */
+export type Effects = "read" | "workspace_write" | "unknown"
+
 // TODO: remove this hack
 export type DynamicDescription = (agent: Agent.Info) => Effect.Effect<string>
 
@@ -21,13 +29,10 @@ export type DynamicDescription = (agent: Agent.Info) => Effect.Effect<string>
  * error class makes it matchable upstream, and its `message` getter produces
  * the model-facing prose that the AI SDK feeds back as the tool result.
  */
-export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsError>()(
-  "ToolInvalidArgumentsError",
-  {
-    tool: Schema.String,
-    detail: Schema.String,
-  },
-) {
+export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsError>()("ToolInvalidArgumentsError", {
+  tool: Schema.String,
+  detail: Schema.String,
+}) {
   override get message() {
     return `The ${this.tool} tool was called with invalid arguments: ${this.detail} Please rewrite the input so it satisfies the expected schema.`
   }
@@ -93,6 +98,8 @@ export interface Def<
   execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   /** `input` is the repaired input that failed the final strict decode. */
   formatValidationError?(error: unknown, input?: unknown): string
+  /** Declared filesystem effect; missing means `unknown` (treated as a write). */
+  effects?: Effects
 }
 export type DefWithoutID<
   Parameters extends Schema.Decoder<unknown> = Schema.Decoder<unknown>,
@@ -162,7 +169,9 @@ function isPlainObjectRoot(root: unknown): root is JSONSchema7 {
 }
 
 function yieldOrDieRootCombinator(id: string, root: unknown): never {
-  const combinator = ["anyOf", "oneOf", "allOf"].find((key) => Array.isArray((root as unknown as Record<string, unknown>)?.[key]))
+  const combinator = ["anyOf", "oneOf", "allOf"].find((key) =>
+    Array.isArray((root as unknown as Record<string, unknown>)?.[key]),
+  )
   throw new Error(
     `Tool "${id}" parameters must serialize to a plain object root (type: "object" with properties); found a root-level ${combinator ?? "non-object"} combinator. Nest the union under a property, e.g. Schema.Struct({ params: <union> }). Root-level combinators violate the OpenAI tools contract: DeepSeek rejects them and GLM answers with empty tool arguments.`,
   )
@@ -220,7 +229,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
                 yield* Effect.logInfo("tool arguments repaired", { "tool.name": id, "repair.changes": changes })
             }
             decoded = yield* decode(repaired).pipe(Effect.mapError((error) => invalidArguments(error, repaired)))
-          // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
+            // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the decoder output is the schema type for this tool
           }
           const result = yield* execute(decoded as unknown as Schema.Schema.Type<Parameters>, ctx)
           if (result.metadata.truncated !== undefined) {

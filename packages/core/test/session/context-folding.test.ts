@@ -251,7 +251,7 @@ describe("context-folding planner", () => {
     const grep = candidate("source-grep", { toolName: "grep", input: { filePath: "/workspace/file.ts" } })
     const otherRegistration = candidate("source-registration", { registrationID: "another-read" })
     const otherGeneration = candidate("source-generation", { generation: "generation-2" })
-    const custom = candidate("source-custom", { sourceKind: "custom" })
+    const custom = candidate("source-custom", { sourceKind: "provider" })
     const crossSessionBase = candidate("source-session")
     const crossSession: FoldCandidate = {
       ...crossSessionBase,

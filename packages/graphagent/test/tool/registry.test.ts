@@ -9,6 +9,9 @@ import { TestConfig } from "../fixture/config"
 import { Config } from "@/config/config"
 import { Agent } from "@/agent/agent"
 import { InstanceState } from "@/effect/instance-state"
+import { ProjectV2 } from "@graphagent/core/project"
+import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -109,6 +112,59 @@ describe("tool.registry", () => {
 
       expect(task?.jsonSchema).toBeDefined()
       expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeUndefined()
+    }),
+  )
+
+  it.instance("every built-in tool declares a known effects class", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
+      if (!build) throw new Error("build agent not found")
+      const registered = yield* registry.all()
+      expect(registered.length).toBeGreaterThanOrEqual(16)
+      const missing = registered
+        .filter((definition) => definition.effects === undefined)
+        .map((definition) => definition.id)
+      expect(missing).toEqual([])
+      for (const definition of registered) {
+        expect(["read", "workspace_write", "unknown"]).toContain(definition.effects ?? "")
+      }
+      // The definition-stage rebuild used by `tools` must preserve the declaration too.
+      const rebuilt = []
+      for (const id of ["test-model", "gpt-5"]) {
+        const model = id === "gpt-5" ? ProviderTest.model({ id: ModelV2.ID.make(id) }) : ProviderTest.model()
+        rebuilt.push(...(yield* registry.tools({ providerID: model.providerID, modelID: model.id, agent: build })))
+      }
+      for (const definition of rebuilt) expect(definition.effects).toBeDefined()
+    }),
+  )
+
+  it.instance("resolves entries deterministically in registration order", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
+      if (!build) throw new Error("build agent not found")
+      const directory = yield* InstanceState.directory
+      const session = {
+        id: SessionID.make("ses_registry_order"),
+        slug: "registry-order",
+        projectID: ProjectV2.ID.global,
+        directory,
+        title: "registry order",
+        version: "1.0.0",
+        time: { created: 1, updated: 1 },
+      } as Session.Info
+      const model = ProviderTest.model()
+      const first = yield* registry.resolve({ model, agent: build, session })
+      const second = yield* registry.resolve({ model, agent: build, session })
+      expect(JSON.stringify(first.map((entry) => entry.id))).toBe(JSON.stringify(second.map((entry) => entry.id)))
+      const order = (yield* registry.tools({ providerID: model.providerID, modelID: model.id, agent: build })).map(
+        (definition) => definition.id,
+      )
+      const resolved = first.map((entry) => entry.id)
+      expect(resolved).toEqual(order.filter((id) => resolved.includes(id)))
     }),
   )
 })

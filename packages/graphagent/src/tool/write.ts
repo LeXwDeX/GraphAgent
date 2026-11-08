@@ -32,6 +32,7 @@ export const WriteTool = Tool.define(
 
     return {
       description: DESCRIPTION,
+      effects: "workspace_write",
       parameters: Parameters,
       execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {

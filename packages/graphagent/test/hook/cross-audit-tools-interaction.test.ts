@@ -16,6 +16,7 @@ import { TestInstance } from "../fixture/fixture"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
 import { hookCommand } from "../fixture/claude-hook"
+import { mcpEntries } from "../fixture/tool-registry"
 
 // A server-provided tool marked `_meta["anthropic/requiresUserInteraction"] === true` always needs a real
 // human confirmation. Only an explicit deny (or dontAsk) may settle it without one.
@@ -55,7 +56,10 @@ const it = testEffect(
     Permission.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provideMerge(hookLayer)),
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed(mcpTools) }),
     Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
-    Layer.mock(ToolRegistry.Service, { tools: () => Effect.succeed([]), registrations: () => Effect.succeed([]) }),
+    Layer.mock(ToolRegistry.Service, {
+      tools: () => Effect.succeed([]),
+      resolve: () => Effect.sync(() => mcpEntries(mcpTools)),
+    }),
   ),
 )
 

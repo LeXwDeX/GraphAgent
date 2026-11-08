@@ -18,6 +18,7 @@ export const SkillTool = Tool.define(
 
     return {
       description: DESCRIPTION,
+      effects: "read",
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

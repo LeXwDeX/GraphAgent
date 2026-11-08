@@ -4,7 +4,7 @@ export type FoldRef = Readonly<{
   callID: string
 }>
 
-export type ToolSourceKind = "host-builtin" | "custom" | "mcp" | "provider" | "unknown"
+export type ToolSourceKind = "host-builtin" | "mcp" | "provider" | "unknown"
 
 export type ToolSourceIdentity = Readonly<{
   sessionID: string
