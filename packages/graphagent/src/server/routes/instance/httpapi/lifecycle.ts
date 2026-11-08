@@ -1,54 +1,60 @@
+export * as AfterResponse from "./lifecycle"
+
 import { EffectBridge } from "@/effect/bridge"
 import type { InstanceContext } from "@/project/instance-context"
 import { InstanceStore } from "@/project/instance-store"
-import { Effect } from "effect"
-import { HttpEffect, HttpMiddleware, HttpServerRequest } from "effect/http"
+import { Context, Effect, Ref } from "effect"
+import { HttpMiddleware, HttpRouter } from "effect/http"
 
-type MarkedInstance = {
-  ctx: InstanceContext
-  store: InstanceStore.Interface
-  bridge: EffectBridge.Shape
+type Action = Effect.Effect<void>
+
+/**
+ * Request-scoped handoff for work that must run after the handler produced its
+ * response (instance disposal and reload). The middleware owns one queue per
+ * request and provides this service to the handler; no request identity map is
+ * needed.
+ */
+export interface Interface {
+  /** Disposes the instance after the response for this request has been produced. */
+  readonly dispose: (ctx: InstanceContext) => Effect.Effect<void, never, InstanceStore.Service>
+  /** Reloads the instance store after the response for this request has been produced. */
+  readonly reload: (next: InstanceStore.LoadInput) => Effect.Effect<void, never, InstanceStore.Service>
 }
 
-// Disposal is requested by an endpoint handler, but must run from the outer
-// server middleware after the response has been produced. The original Request
-// object is the stable handoff key between those two phases.
-const disposeAfterResponse = new WeakMap<object, MarkedInstance>()
+export class Service extends Context.Service<Service, Interface>()("@graphagent/AfterResponse") {}
 
-const mark = (ctx: InstanceContext) =>
-  Effect.gen(function* () {
-    return { ctx, store: yield* InstanceStore.Service, bridge: yield* EffectBridge.make() }
-  })
-
-export const markInstanceForDisposal = (ctx: InstanceContext) =>
-  Effect.gen(function* () {
-    const marked = yield* mark(ctx)
-    return yield* HttpEffect.appendPreResponseHandler((request, response) =>
-      Effect.sync(() => {
-        // The response is sent before disposeMiddleware performs the teardown.
-        disposeAfterResponse.set(request.source, marked)
-        return response
+export const make = (pending: Ref.Ref<readonly Action[]>): Interface => {
+  const enqueue = (action: Action) => Ref.update(pending, (actions) => [...actions, action])
+  return {
+    dispose: (ctx) =>
+      Effect.gen(function* () {
+        const store = yield* InstanceStore.Service
+        const bridge = yield* EffectBridge.make()
+        yield* enqueue(Effect.uninterruptible(bridge.run(store.dispose(ctx))))
       }),
-    )
-  })
+    reload: (next) =>
+      Effect.gen(function* () {
+        const store = yield* InstanceStore.Service
+        const bridge = yield* EffectBridge.make()
+        yield* enqueue(Effect.uninterruptible(bridge.run(store.reload(next))))
+      }),
+  }
+}
 
-export const markInstanceForReload = (ctx: InstanceContext, next: InstanceStore.LoadInput) =>
+export const afterResponseMiddleware: HttpMiddleware.HttpMiddleware = (effect) =>
   Effect.gen(function* () {
-    const marked = yield* mark(ctx)
-    return yield* HttpEffect.appendPreResponseHandler((_request, response) =>
-      Effect.as(Effect.uninterruptible(marked.bridge.run(marked.store.reload(next))), response),
-    )
-  })
-
-export const disposeMiddleware: HttpMiddleware.HttpMiddleware = (effect) =>
-  Effect.gen(function* () {
-    const response = yield* effect
-    const request = yield* HttpServerRequest.HttpServerRequest
-    const marked = disposeAfterResponse.get(request.source)
-    if (!marked) return response
-    disposeAfterResponse.delete(request.source)
-    yield* Effect.uninterruptible(marked.bridge.run(marked.store.dispose(marked.ctx))).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("instance disposal failed", { cause })),
-    )
+    const pending = yield* Ref.make<readonly Action[]>([])
+    const response = yield* effect.pipe(Effect.provideService(Service, make(pending)))
+    for (const action of yield* Ref.get(pending)) {
+      yield* action.pipe(Effect.catchCause((cause) => Effect.logWarning("after-response action failed", { cause })))
+    }
     return response
   })
+
+/**
+ * Global middleware layer, part of the routes graph so every server entrypoint
+ * (`HttpRouter.serve`, `toWebHandler`, test harnesses) runs after-response
+ * actions. It must live in the routes layer rather than in a per-call option:
+ * routes are also served directly from `HttpApiApp.routes`.
+ */
+export const afterResponseLayer = HttpRouter.middleware(afterResponseMiddleware, { global: true })

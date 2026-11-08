@@ -10,7 +10,7 @@ import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { ApiVcsApplyError } from "../groups/instance"
-import { markInstanceForDisposal } from "../lifecycle"
+import { AfterResponse } from "../lifecycle"
 
 export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance", (handlers) =>
   Effect.gen(function* () {
@@ -22,7 +22,7 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
     const vcs = yield* Vcs.Service
 
     const dispose = Effect.fn("InstanceHttpApi.dispose")(function* () {
-      yield* markInstanceForDisposal(yield* InstanceState.context)
+      yield* (yield* AfterResponse.Service).dispose(yield* InstanceState.context)
       return true
     })
 

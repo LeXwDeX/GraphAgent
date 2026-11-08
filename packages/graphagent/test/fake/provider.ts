@@ -54,6 +54,12 @@ export namespace ProviderTest {
         Provider.Service,
         Provider.Service.of({
           list: Effect.fn("TestProvider.list")(() => Effect.succeed({ [row.id]: row })),
+          publicCatalog: Effect.fn("TestProvider.publicCatalog")(() =>
+            Effect.succeed({ providers: [row], default: { [row.id]: mdl.id } }),
+          ),
+          publicProviders: Effect.fn("TestProvider.publicProviders")(() =>
+            Effect.succeed({ all: [row], default: { [row.id]: mdl.id }, connected: [row.id] }),
+          ),
           getProvider: Effect.fn("TestProvider.getProvider")((providerID) => {
             if (providerID === row.id) return Effect.succeed(row)
             return Effect.die(new Error(`Unknown test provider: ${providerID}`))

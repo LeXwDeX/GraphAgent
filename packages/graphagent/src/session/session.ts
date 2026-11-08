@@ -256,6 +256,21 @@ const Model = Schema.Struct({
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
 
+export const UpdateInput = Schema.Struct({
+  title: Schema.optional(Schema.String),
+  metadata: Schema.optional(Metadata),
+  permission: Schema.optional(PermissionV1.Ruleset),
+  time: Schema.optional(
+    Schema.Struct({
+      archived: Schema.optional(ArchivedTimestamp),
+    }),
+  ),
+})
+export type UpdateInput = typeof UpdateInput.Type
+
+/** A message-page cursor that does not decode. Callers map this to their own bad-request shape. */
+export class InvalidCursor extends Schema.TaggedError<InvalidCursor>()("SessionInvalidCursor", {}) {}
+
 export const Info = Schema.Struct({
   id: SessionID,
   slug: Schema.String,
@@ -490,6 +505,12 @@ export interface Interface {
   readonly setWorkspace: (input: { sessionID: SessionID; workspaceID: Info["workspaceID"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
   readonly messages: (input: { sessionID: SessionID; limit?: number }) => Effect.Effect<SessionV1.WithParts[], NotFound>
+  readonly messagesPage: (input: {
+    sessionID: SessionID
+    limit: number
+    before?: string
+  }) => Effect.Effect<{ items: SessionV1.WithParts[]; cursor?: string }, NotFound | InvalidCursor>
+  readonly applyUpdate: (input: { sessionID: SessionID } & UpdateInput) => Effect.Effect<Info, NotFound>
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends SessionV1.Info>(msg: T) => Effect.Effect<T>
@@ -1166,6 +1187,39 @@ export const layer: Layer.Layer<
       return [] as Snapshot.FileDiff[]
     })
 
+    const applyUpdate: Interface["applyUpdate"] = Effect.fn("Session.applyUpdate")(function* (input) {
+      const current = yield* get(input.sessionID)
+      if (input.title !== undefined) {
+        yield* setTitle({ sessionID: input.sessionID, title: input.title })
+      }
+      if (input.metadata !== undefined) {
+        yield* setMetadata({ sessionID: input.sessionID, metadata: input.metadata })
+      }
+      if (input.permission !== undefined) {
+        // Permission.merge is a flat concatenation with the new rules last.
+        yield* setPermission({
+          sessionID: input.sessionID,
+          permission: [...(current.permission ?? []), ...input.permission],
+        })
+      }
+      if (input.time?.archived !== undefined) {
+        yield* setArchived({ sessionID: input.sessionID, time: input.time.archived })
+      }
+      return yield* get(input.sessionID)
+    })
+
+    const messagesPage: Interface["messagesPage"] = Effect.fn("Session.messagesPage")(function* (input) {
+      const before = input.before
+      if (before) {
+        yield* Effect.try({
+          try: () => MessageV2.cursor.decode(before),
+          catch: () => new InvalidCursor(),
+        })
+      }
+      const page = yield* MessageV2.page(input).pipe(Effect.provideService(Database.Service, database))
+      return { items: page.items, cursor: page.cursor }
+    })
+
     const messages: Interface["messages"] = Effect.fn("Session.messages")(function* (input) {
       if (input.limit) {
         return (yield* MessageV2.page({ sessionID: input.sessionID, limit: input.limit }).pipe(
@@ -1263,6 +1317,8 @@ export const layer: Layer.Layer<
       setWorkspace,
       diff,
       messages,
+      messagesPage,
+      applyUpdate,
       children,
       remove,
       updateMessage,

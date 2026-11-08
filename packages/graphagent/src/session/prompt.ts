@@ -49,6 +49,27 @@ function estimatePendingToolOutputTokens(messages: SessionV1.WithParts[], messag
   }
   return pending
 }
+
+// #404: headless clients (`opencode run "/init"`, SDK text prompts) deliver
+// slash commands as plain text parts to POST /session/:id/message. The TUI
+// routes them client-side before calling /command, but nothing server-side
+// did, so SessionPrompt.command never ran and Command.Event.Executed never
+// fired (project.time_initialized stayed NULL). Mirror the TUI's parse —
+// first line carries /command + args, later lines join the arguments — and
+// only ever route single-text-part prompts.
+function parseCommandPayload(payload: PromptInput) {
+  const part = payload.parts.length === 1 ? payload.parts[0] : undefined
+  const text = part?.type === "text" && part.text.startsWith("/") ? part.text : undefined
+  if (!text) return undefined
+  const firstLineEnd = text.indexOf("\n")
+  const firstLine = firstLineEnd === -1 ? text : text.slice(0, firstLineEnd)
+  const [token, ...firstLineArgs] = firstLine.split(" ")
+  const rest = firstLineEnd === -1 ? "" : text.slice(firstLineEnd + 1)
+  return {
+    command: token.slice(1),
+    arguments: firstLineArgs.join(" ") + (rest ? "\n" + rest : ""),
+  }
+}
 import { SHELL_ABORT_NOTE } from "../tool/shell"
 import { Session } from "./session"
 import { Agent } from "../agent/agent"
@@ -282,6 +303,13 @@ export interface Interface {
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, PromptError>
+  /** Parses `/command` text, grants a one-shot local startup permission, and routes to command or prompt. */
+  readonly submit: (
+    input: PromptInput,
+    options?: { readonly localGrant?: boolean },
+  ) => Effect.Effect<SessionV1.WithParts, PromptError>
+  /** Revert cleanup, compaction creation, and the summarizing turn in one operation. */
+  readonly summarize: (input: SummarizeInput) => Effect.Effect<void, Session.NotFound>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
   readonly editQueuedMessage: (input: QueuedMessageEditInput) => Effect.Effect<SessionV1.WithParts, QueuedMessageError>
   readonly deleteQueuedMessage: (input: QueuedMessageDeleteInput) => Effect.Effect<boolean, QueuedMessageError>
@@ -4493,6 +4521,42 @@ export const layer = Layer.effect(
       },
     )
 
+    const submit: Interface["submit"] = Effect.fn("SessionPrompt.submit")(function* (input, options) {
+      if (options?.localGrant) {
+        const grant = permission.grantHookBypass
+        if (grant) yield* grant(input.sessionID)
+      }
+      const parsed = parseCommandPayload(input)
+      if (parsed && (yield* commands.get(parsed.command))) {
+        return yield* command({
+          sessionID: input.sessionID,
+          command: parsed.command,
+          arguments: parsed.arguments,
+          messageID: input.messageID,
+          agent: input.agent,
+          variant: input.variant,
+          hookMode: input.hookMode,
+          ...(input.model ? { model: `${input.model.providerID}/${input.model.modelID}` } : {}),
+        })
+      }
+      return yield* prompt(input)
+    })
+
+    const summarize: Interface["summarize"] = Effect.fn("SessionPrompt.summarize")(function* (input) {
+      const current = yield* sessions.get(input.sessionID)
+      yield* revert.cleanup(current)
+      const messages = yield* sessions.messages({ sessionID: input.sessionID })
+      const defaultAgent = yield* agents.defaultAgent()
+      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+      yield* compaction.create({
+        sessionID: input.sessionID,
+        agent: currentAgent,
+        model: { providerID: input.providerID, modelID: input.modelID },
+        auto: input.auto ?? false,
+      })
+      yield* loop({ sessionID: input.sessionID })
+    })
+
     return Service.of({
       cancel,
       prompt,
@@ -4507,6 +4571,8 @@ export const layer = Layer.effect(
       loop,
       shell,
       command,
+      submit,
+      summarize,
       resolvePromptParts,
       editQueuedMessage,
       deleteQueuedMessage,
@@ -4587,6 +4653,14 @@ export const PromptInput = Schema.Struct({
   ),
 })
 export type PromptInput = Schema.Schema.Type<typeof PromptInput>
+
+export const SummarizeInput = Schema.Struct({
+  sessionID: SessionID,
+  providerID: ProviderV2.ID,
+  modelID: ModelV2.ID,
+  auto: Schema.optional(Schema.Boolean),
+})
+export type SummarizeInput = typeof SummarizeInput.Type
 
 export const SetModelInput = Schema.Struct({
   sessionID: SessionID,
