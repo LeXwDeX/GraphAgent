@@ -18,6 +18,7 @@ import {
   type ScrollbackWriter,
 } from "@opentui/core"
 import * as Locale from "@/util/locale"
+import { APP_NAME, APP_TITLE } from "@graphagent/core/brand"
 import type { RunSplashTheme } from "./theme"
 
 export const SPLASH_TITLE_LIMIT = 50
@@ -195,7 +196,7 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
       })
     }
 
-    push(lines, body_left, top, "OpenCode", right, undefined, TextAttributes.BOLD)
+    push(lines, body_left, top, APP_TITLE, right, undefined, TextAttributes.BOLD)
     if (input.detail) {
       push(
         lines,
@@ -235,7 +236,7 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
       lines,
       body_left + label.length,
       top + 1,
-      `opencode --mini -s ${meta.session_id}`,
+      `${APP_NAME} --mini -s ${meta.session_id}`,
       right,
       undefined,
       TextAttributes.BOLD,

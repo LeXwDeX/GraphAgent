@@ -52,6 +52,9 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
       }).pipe(Effect.provide(Global.defaultLayer)),
     )
     await ready
+    await setup.renderOnce()
+    await Bun.sleep(20)
+    expect(titles).toContain("GraphAgent")
     process.emit("SIGHUP")
     await task
 
@@ -71,8 +74,11 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   // The test renderer has no terminal session, so the native title control
-  // rejects with InvalidPhase and trips the app error boundary.
-  setup.renderer.setTerminalTitle = () => {}
+  // rejects with InvalidPhase; record the call without forwarding it.
+  const titles: string[] = []
+  setup.renderer.setTerminalTitle = (title) => {
+    titles.push(title)
+  }
   const events = createEventSource()
   const session = {
     id: "dummy",
@@ -126,6 +132,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     await ready
     await setup.renderOnce()
     await Bun.sleep(20)
+    expect(titles).toContain("GA | Demo session")
     api?.keymap.dispatchCommand("app.exit")
     await task
 

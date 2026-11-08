@@ -2,6 +2,7 @@ import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@op
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { Global } from "@graphagent/core/global"
+import { APP_TITLE } from "@graphagent/core/brand"
 import { Flag } from "@graphagent/core/flag/flag"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
@@ -458,24 +459,24 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     if (!terminalTitleEnabled() || Flag.GRAPHAGENT_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
+      renderer.setTerminalTitle(APP_TITLE)
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
+        renderer.setTerminalTitle(APP_TITLE)
         return
       }
 
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
+      renderer.setTerminalTitle(`GA | ${title}`)
       return
     }
 
     if (route.data.type === "diff") {
-      renderer.setTerminalTitle("OC | diff")
+      renderer.setTerminalTitle("GA | diff")
     }
   })
 
