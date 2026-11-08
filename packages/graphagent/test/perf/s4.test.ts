@@ -1,21 +1,16 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import type { Counters } from "../lib/engine-probe"
 import { testEffect } from "../lib/effect"
+import { expectDeterministicPasses } from "./determinism"
 import { s4Scenario } from "./scenarios/s4"
 
 // The session engine's idempotency gate (#523) drops a durable append whose
 // type and payload hash repeat the aggregate's latest event. Repeated tool
 // part updates that reach the publish path within the same millisecond carry
 // identical payloads, so how many appends the gate drops depends on real time.
-// Each drop removes exactly three writes, adds the read and JSON parse of the
-// latest event row, and moves a parse that would have happened anyway off the
-// measured path; the gate is the only source of variance in this scenario.
-// Bytes and SQL totals are therefore volatile, every other counter must match.
-const VOLATILE = new Set(["json.parseBytes", "json.encodeBytes", "sha256Bytes", "sql.read", "sql.write"])
-const withoutVolatile = (counts: Counters) =>
-  Object.fromEntries(Object.entries(counts).filter(([key]) => !VOLATILE.has(key)))
-
+// The gate is the only source of variance in this scenario; the shared
+// determinism helper compares everything else exactly and the SQL book by its
+// append-unit accounting.
 const STEPS = 20
 
 const scenario = s4Scenario()
@@ -42,20 +37,7 @@ describe("S4 tool-dense turn", () => {
 
         // Payload byte totals carry timestamps and sequence numbers; the
         // remaining counters must match exactly, the same rule as S1/S6.
-        expect(withoutVolatile(result.counts)).toEqual(withoutVolatile(result.firstCounts))
-        expect(
-          Math.abs(result.counts["json.encodeBytes"] - result.firstCounts["json.encodeBytes"]),
-        ).toBeLessThanOrEqual(64)
-
-        // Dedup drops are the only tolerated SQL difference: both counters
-        // move by the same amount, a multiple of the three-statement append
-        // unit, and never by more than ten dropped appends.
-        const readDelta = result.counts["sql.read"] - result.firstCounts["sql.read"]
-        const writeDelta = result.counts["sql.write"] - result.firstCounts["sql.write"]
-        expect(readDelta).toBe(writeDelta)
-        // `%` yields -0 for negative multiples; compare the boolean instead.
-        expect(readDelta % 3 === 0).toBe(true)
-        expect(Math.abs(readDelta)).toBeLessThanOrEqual(30)
+        expectDeterministicPasses(result.counts, result.firstCounts)
       }),
     scenario.instance,
     { timeout: scenario.timeout },
