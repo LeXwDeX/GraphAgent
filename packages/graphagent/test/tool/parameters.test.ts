@@ -267,6 +267,17 @@ describe("tool parameters", () => {
     test("rejects missing prompt", () => {
       expect(accepts(Task, { description: "d", subagent_type: "general" })).toBe(false)
     })
+    test("accepts the cancel shape", () => {
+      const parsed = parse(Task, { action: "cancel", task_id: "ses_child" })
+      expect(parsed).toMatchObject({ action: "cancel", task_id: "ses_child" })
+    })
+    test("rejects cancel without task_id", () => {
+      expect(accepts(Task, { action: "cancel" })).toBe(false)
+      expect(accepts(Task, { action: "cancel", description: "d", prompt: "p", subagent_type: "general" })).toBe(false)
+    })
+    test("exposes the cancel action on the wire schema", () => {
+      expect(toJsonSchema(Task)).toMatchObject({ properties: { action: { enum: ["cancel"] } } })
+    })
   })
 
   describe("todo", () => {
