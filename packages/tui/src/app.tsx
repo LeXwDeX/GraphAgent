@@ -46,7 +46,7 @@ import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
-import { Session } from "./routes/session"
+import { Main } from "./routes/session"
 import { Diff } from "./routes/diff"
 import { useDiffNavigation } from "./routes/diff/route"
 import { useDiffFooterHints } from "./routes/diff/footer-hints"
@@ -1081,9 +1081,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
               <Home />
             </Match>
             <Match when={route.data.type === "session"}>
-              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                {(_) => <Session />}
-              </Show>
+              <Main />
             </Match>
             <Match when={route.data.type === "diff"}>
               <Diff />

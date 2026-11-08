@@ -160,7 +160,7 @@ function use() {
   return ctx
 }
 
-export function Session() {
+export function Main() {
   const setEpilogue = useEpilogue()
   const clipboard = useClipboard()
   const writeExport = async (file: string, content: string) => {
@@ -299,54 +299,6 @@ export function Session() {
     }),
   )
 
-  createEffect(() => {
-    const sessionID = route.sessionID
-    void (async () => {
-      const previousWorkspace = untrack(() => project.workspace.current())
-      const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
-      if (!result.data) {
-        toast.show({
-          message: `Session not found: ${sessionID}`,
-          variant: "error",
-          duration: 5000,
-        })
-        navigate({ type: "home" })
-        return
-      }
-
-      if (result.data.workspaceID !== previousWorkspace) {
-        project.workspace.set(result.data.workspaceID)
-
-        // Sync all the data for this workspace. Note that this
-        // workspace may not exist anymore which is why this is not
-        // fatal. If it doesn't we still want to show the session
-        // (which will be non-interactive)
-        try {
-          await sync.bootstrap({ fatal: false })
-        } catch {}
-      }
-      editor.reconnect(result.data.directory)
-      // Register the session and its parent chain for full events before the
-      // snapshot, so events in between merge instead of being dropped.
-      await sync.session.activate(sessionID)
-      if (result.data.parentID && !sync.data.message[result.data.parentID]) {
-        await sync.session.sync(result.data.parentID).catch(() => undefined)
-      }
-      if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
-    })().catch((error) => {
-      if (route.sessionID !== sessionID) return
-      toast.show({
-        message: errorMessage(error),
-        variant: "error",
-        duration: 5000,
-      })
-      navigate({ type: "home" })
-    })
-  })
-
-  // Leaving the route releases its interest source and lets the LRU shrink.
-  onCleanup(() => sync.session.deactivate())
-
   let lastSwitch: string | undefined = undefined
   onCleanup(
     event.on("message.part.updated", (evt) => {
@@ -373,6 +325,93 @@ export function Session() {
     seeded = true
     r.set(route.prompt)
   }
+
+  // Session switches keep this component mounted, so activation is scoped to
+  // the route id instead of the component. Each switch bumps the generation,
+  // aborts work from the previous id, resets per-session UI state, and queues
+  // one serialized activation so a slow switch cannot overlap the next one.
+  let generation = 0
+  let activation = Promise.resolve()
+
+  createEffect(
+    on(
+      () => route.sessionID,
+      (sessionID) => {
+        const current = ++generation
+        const isCurrent = () => current === generation
+        seeded = false
+        setSidebarOpen(false)
+        setHookStatus({})
+        lastSwitch = undefined
+        prompt?.set(route.prompt ?? { input: "", parts: [] })
+
+        activation = activation
+          .then(async () => {
+            if (!isCurrent()) return
+            const previousWorkspace = untrack(() => project.workspace.current())
+            const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
+            if (!isCurrent()) return
+            if (!result.data) {
+              toast.show({
+                message: `Session not found: ${sessionID}`,
+                variant: "error",
+                duration: 5000,
+              })
+              navigate({ type: "home" })
+              return
+            }
+
+            if (result.data.workspaceID !== previousWorkspace) {
+              project.workspace.set(result.data.workspaceID)
+
+              // Sync all the data for this workspace. Note that this
+              // workspace may not exist anymore which is why this is not
+              // fatal. If it doesn't we still want to show the session
+              // (which will be non-interactive)
+              try {
+                await sync.bootstrap({ fatal: false })
+              } catch {}
+              if (!isCurrent()) return
+            }
+            editor.reconnect(result.data.directory)
+            // Register the session and its parent chain for full events before
+            // the snapshot, so events in between merge instead of being
+            // dropped.
+            await sync.session.activate(sessionID)
+            if (!isCurrent()) {
+              sync.session.deactivate()
+              return
+            }
+            if (result.data.parentID && !sync.data.message[result.data.parentID]) {
+              await sync.session.sync(result.data.parentID).catch(() => undefined)
+              if (!isCurrent()) {
+                sync.session.deactivate()
+                return
+              }
+            }
+            if (scroll) scroll.scrollBy(100_000)
+          })
+          .catch((error) => {
+            if (!isCurrent()) return
+            toast.show({
+              message: errorMessage(error),
+              variant: "error",
+              duration: 5000,
+            })
+            navigate({ type: "home" })
+          })
+
+        // Leaving this route releases its interest source and lets the LRU
+        // shrink. The generation bump aborts any activation still in flight.
+        onCleanup(() => {
+          if (!isCurrent()) return
+          generation += 1
+          sync.session.deactivate()
+        })
+      },
+    ),
+  )
+
   const keymap = useGraphagentKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()

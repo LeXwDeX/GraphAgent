@@ -24,7 +24,7 @@ import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
-import { Session } from "../../../src/routes/session"
+import { Main } from "../../../src/routes/session"
 import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
@@ -145,7 +145,7 @@ test("the Task row renders the child summary without hydrating the child session
 
   function Probe() {
     sync = useSync()
-    return <Session />
+    return <Main />
   }
 
   const app = await testRender(

@@ -26,7 +26,7 @@ import { createPluginRuntime, PluginRuntimeProvider } from "../../src/plugin/run
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
-import { Session } from "../../src/routes/session"
+import { Main } from "../../src/routes/session"
 import { DialogProvider } from "../../src/ui/dialog"
 import { ToastProvider, Toast } from "../../src/ui/toast"
 import { tmpdir } from "../fixture/fixture"
@@ -257,7 +257,7 @@ async function mountRoute(
                                                       <SDKProbe ready={(value) => (sdk = value)} />
                                                       <Show when={mounted()}>
                                                         {view === "session" ? (
-                                                          <Session />
+                                                          <Main />
                                                         ) : (
                                                           <PromptRoute sessionID={sessionID} />
                                                         )}
