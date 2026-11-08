@@ -29,6 +29,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       session_id: r.sessionId,
       title: r.title,
       status: r.status,
+      ...(r.pauseReason !== null ? { pause_reason: r.pauseReason } : {}),
       config: r.config,
       seq: r.seq,
       time_created: r.timeCreated,
@@ -139,6 +140,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
         runningNodes: s.runningNodes,
         failedNodes: s.failedNodes,
         skippedNodes: s.skippedNodes,
+        abortedNodes: s.abortedNodes,
         queuedNodes: s.queuedNodes,
         escalatedNodes: s.escalatedNodes,
       }))

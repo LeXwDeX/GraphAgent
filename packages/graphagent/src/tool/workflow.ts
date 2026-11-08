@@ -24,7 +24,8 @@ import {
   workflowArtifactsRoot,
   workflowDraftsArea,
 } from "@/dag/runtime/output-ref"
-import { TerminalViolationError, isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
+import { TerminalViolationError, displayState, isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
+import { ResumeBlockedError } from "@/dag/resume-guard"
 import type { DagEvent } from "@graphagent/schema/dag-event"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
@@ -276,11 +277,7 @@ export const WorkflowTool = Tool.define<
         if (Exit.isFailure(currentExit) && Cause.hasInterrupts(currentExit.cause)) return yield* Effect.interrupt
         const currentStatus = Exit.isSuccess(currentExit) ? currentExit.value?.status : undefined
         if (currentStatus && isTerminalWorkflowStatusValue(currentStatus)) {
-          const retry =
-            currentStatus === "archived"
-              ? "Archived workflows are immutable — start a new workflow instead."
-              : `Correct the fragment and retry ${action}.`
-          return `Workflow state: ${currentStatus} (unchanged). ${retry}`
+          return `Workflow state: ${currentStatus} (unchanged). Correct the fragment and retry ${action}.`
         }
         const pauseExit = yield* dag.pause(workflowID).pipe(Effect.exit)
         if (Exit.isFailure(pauseExit) && Cause.hasInterrupts(pauseExit.cause)) return yield* Effect.interrupt
@@ -293,6 +290,23 @@ export const WorkflowTool = Tool.define<
           ? "Workflow state: paused (already parked). A corrected mutation can resume it."
           : `Workflow state: ${actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${String(Cause.squash(pauseExit.cause))}`
       })
+
+    // D12: a ResumeGuard veto is a normal control outcome. Surface its
+    // message (which carries the durable pause_reason) instead of letting the
+    // generic orDie collapse it into an opaque defect.
+    const resumeThroughGuard = <A>(effect: Effect.Effect<A, Error>) =>
+      effect.pipe(
+        Effect.catchIf(
+          (error): error is ResumeBlockedError => error instanceof ResumeBlockedError,
+          (error) =>
+            Effect.die(
+              new Error(
+                `${error.message}. The workflow stays paused. Inspect workflow status for pause_reason, resolve the blocker, then retry control(resume) or control(step).`,
+              ),
+            ),
+        ),
+        Effect.orDie,
+      )
 
     const runRecoverableMutation = <A>(
       workflowID: Dag.ID,
@@ -671,6 +685,8 @@ export const WorkflowTool = Tool.define<
                     id: workflow.id,
                     title: workflow.title,
                     status: workflow.status,
+                    // D12: the durable reason a paused workflow stays paused.
+                    ...(workflow.pauseReason ? { pause_reason: workflow.pauseReason } : {}),
                     ...(failureReason ? { failure_reason: failureReason } : {}),
                     ...(workflow.targetFingerprint ? { target_fingerprint: workflow.targetFingerprint } : {}),
                     ...(latestRetarget
@@ -704,6 +720,9 @@ export const WorkflowTool = Tool.define<
                       id: node.id,
                       name: node.name,
                       status: node.status,
+                      // D11: structured display state; raw status/error_class
+                      // stay so existing consumers and audit keep working.
+                      display_state: displayState(node),
                       required: node.required,
                       depends_on: node.dependsOn,
                       ...(node.childSessionId ? { child_session_id: node.childSessionId } : {}),
@@ -1104,7 +1123,7 @@ export const WorkflowTool = Tool.define<
                     metadata: { workflowId: wfId } as Metadata,
                   }
                 case "resume":
-                  yield* dag.resume(wfId).pipe(Effect.orDie)
+                  yield* resumeThroughGuard(dag.resume(wfId))
                   return {
                     title: "Workflow resumed",
                     output: `<workflow id="${wfId}" state="running"/>`,
@@ -1125,7 +1144,7 @@ export const WorkflowTool = Tool.define<
                     metadata: { workflowId: wfId } as Metadata,
                   }
                 case "step": {
-                  const r = yield* dag.step(wfId).pipe(Effect.orDie)
+                  const r = yield* resumeThroughGuard(dag.step(wfId))
                   if (r.status === "no_ready_nodes") {
                     return {
                       title: "Workflow step: no ready nodes",
