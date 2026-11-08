@@ -275,14 +275,8 @@ export function Autocomplete(props: {
     }
   }
 
-  const [references] = createResource(async () => {
-    const ref = location()
-    const result = await sdk.client.v2.reference.list(
-      { location: { directory: ref?.directory ?? sdk.directory ?? process.cwd(), workspace: ref?.workspaceID } },
-      { throwOnError: true },
-    )
-    return result.data.data
-  })
+  // #886 5.7: the @alias list comes from the sync store, populated at bootstrap.
+  const references = createMemo(() => sync.data.reference)
 
   const referenceMatch = createMemo(() => {
     if (!store.visible || store.visible === "/") return

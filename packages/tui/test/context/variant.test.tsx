@@ -18,7 +18,7 @@ import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
 import { PromptRefProvider } from "../../src/context/prompt"
 import { RouteProvider, useRoute } from "../../src/context/route"
-import { SDKProvider } from "../../src/context/sdk"
+import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
@@ -80,12 +80,14 @@ async function mount(
   let local!: ReturnType<typeof useLocal>
   let sync!: ReturnType<typeof useSync>
   let route!: ReturnType<typeof useRoute>
+  let sdk!: ReturnType<typeof useSDK>
   let prompt!: PromptRef
   const [mounted, setMounted] = createSignal(true)
   function Content() {
     local = useLocal()
     sync = useSync()
     route = useRoute()
+    sdk = useSDK()
     return (
       <Show when={mounted()}>
         <Prompt
@@ -203,6 +205,9 @@ async function mount(
     })),
   )
   sync.set("message", { a: [], b: [] })
+  // The event gate forwards full session events only for sessions the UI
+  // registered interest in; tests treat both synthetic sessions as open.
+  await sync.interest.set("test", ["a", "b"])
   return {
     local,
     sync,
@@ -210,6 +215,10 @@ async function mount(
     app,
     tmp,
     events,
+    /** Deliver queued events now instead of waiting for the next frame. */
+    flush() {
+      sdk.frameClock.flushNow()
+    },
     get prompt() {
       return prompt
     },
@@ -1392,6 +1401,7 @@ test("deleting a session prevents its queued prompt from being sent", async () =
         properties: { sessionID: "a", info: structuredClone(unwrap(info)) },
       },
     })
+    app.flush()
     release()
     await model
     await Bun.sleep(20)

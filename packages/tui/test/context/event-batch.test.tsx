@@ -17,12 +17,13 @@ function event(id: string): GlobalEvent {
 async function mount(source: EventSource) {
   const seen: string[] = []
   let ready!: () => void
+  let sdk!: ReturnType<typeof useSDK>
   const mounted = new Promise<void>((resolve) => {
     ready = resolve
   })
 
   function Probe() {
-    const sdk = useSDK()
+    sdk = useSDK()
     onMount(() => {
       sdk.event.on("event", (evt) => seen.push(evt.payload.id!))
       void sdk.setInterest(["ses_a"]).then(ready)
@@ -38,11 +39,11 @@ async function mount(source: EventSource) {
     </TestTuiContexts>
   ))
   await mounted
-  return { app, seen }
+  return { app, seen, sdk }
 }
 
 describe("SDK event transport", () => {
-  test("prefers a worker batch and emits every event synchronously", async () => {
+  test("prefers a worker batch and flushes it as one frame batch", async () => {
     let handler: ((events: GlobalEvent[]) => void) | undefined
     const source: EventSource = {
       subscribe: async () => () => {},
@@ -54,11 +55,13 @@ describe("SDK event transport", () => {
       },
       setInterest: async () => {},
     }
-    const { app, seen } = await mount(source)
+    const { app, seen, sdk } = await mount(source)
 
     try {
       handler!([event("evt_1"), event("evt_2")])
-      // No 16ms queue: the batch is delivered in the same turn.
+      // The frame clock owns the batch; until it flushes nothing is emitted.
+      expect(seen).toEqual([])
+      sdk.frameClock.flushNow()
       expect(seen).toEqual(["evt_1", "evt_2"])
     } finally {
       app.renderer.destroy()
@@ -92,10 +95,11 @@ describe("SDK event transport", () => {
         }
       },
     }
-    const { app, seen } = await mount(source)
+    const { app, seen, sdk } = await mount(source)
 
     try {
       handler!(event("evt_3"))
+      sdk.frameClock.flushNow()
       expect(seen).toEqual(["evt_3"])
     } finally {
       app.renderer.destroy()
