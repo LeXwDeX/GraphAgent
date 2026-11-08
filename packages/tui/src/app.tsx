@@ -51,7 +51,9 @@ import { Diff } from "./routes/diff"
 import { useDiffNavigation } from "./routes/diff/route"
 import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
+import { useDrawer } from "./shell/drawer"
 import { useFooterKeyHints } from "./shell/footer"
+import { SessionDrawer } from "./routes/session/drawer"
 import type { TopBarRight } from "./shell/top-bar"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
@@ -373,6 +375,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
+  const drawer = useDrawer()
   const diffFooterHints = useDiffFooterHints()
   const diffNavigation = useDiffNavigation()
 
@@ -1046,6 +1049,13 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     }
   })
 
+  const drawerContent = createMemo(() => {
+    if (route.data.type !== "session") return
+    if (!drawer.visible()) return
+    if (sync.session.get(route.data.sessionID)?.parentID) return
+    return <SessionDrawer sessionID={route.data.sessionID} />
+  })
+
   return (
     <box
       width={dimensions().width}
@@ -1078,6 +1088,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
           }}
           bottomZone={<pluginRuntime.Slot name="app_bottom" />}
+          drawer={drawerContent()}
         >
           <Switch>
             <Match when={route.data.type === "home"}>

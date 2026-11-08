@@ -1,5 +1,4 @@
 import {
-  batch,
   createContext,
   createEffect,
   createMemo,
@@ -63,12 +62,12 @@ import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
-import { Sidebar } from "./sidebar"
+import { useDrawer } from "../../shell/drawer"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
-import { Toast, useToast } from "../../ui/toast"
+import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
@@ -82,6 +81,7 @@ import { formatTranscript } from "../../util/transcript"
 import { sessionEpilogue } from "../../util/presentation"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
+import { t } from "../../i18n"
 import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
@@ -232,8 +232,7 @@ export function Main() {
   })
 
   const dimensions = useTerminalDimensions()
-  const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
-  const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const drawer = useDrawer()
   const [conceal, setConceal] = createSignal(true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
@@ -246,15 +245,9 @@ export function Main() {
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
-  const wide = createMemo(() => dimensions().width > 120)
-  const sidebarVisible = createMemo(() => {
-    if (session()?.parentID) return false
-    if (sidebarOpen()) return true
-    if (sidebar() === "auto" && wide()) return true
-    return false
-  })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+  // The drawer overlays the main area instead of shrinking it.
+  const contentWidth = createMemo(() => dimensions().width - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -340,7 +333,6 @@ export function Main() {
         const current = ++generation
         const isCurrent = () => current === generation
         seeded = false
-        setSidebarOpen(false)
         setHookStatus({})
         lastSwitch = undefined
         prompt?.set(route.prompt ?? { input: "", parts: [] })
@@ -690,15 +682,12 @@ export function Main() {
       },
     },
     {
-      title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
+      title: drawer.visible() ? t("drawer.command.hide") : t("drawer.command.show"),
       value: "session.drawer.toggle",
       category: "Session",
+      enabled: !session()?.parentID,
       run: () => {
-        batch(() => {
-          const isVisible = sidebarVisible()
-          setSidebar(() => (isVisible ? "hide" : "auto"))
-          setSidebarOpen(!isVisible)
-        })
+        drawer.toggle()
         dialog.clear()
       },
     },
@@ -1151,6 +1140,13 @@ export function Main() {
 
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
+    enabled: () => drawer.visible() && !session()?.parentID,
+    priority: EscapePriority.drawer,
+    bindings: [{ key: "escape", desc: t("drawer.command.hide"), group: "Session", cmd: () => drawer.close() }],
+  }))
+
+  useBindings(() => ({
+    mode: GRAPHAGENT_BASE_MODE,
     enabled: foregroundTasks().length > 0,
     priority: 1,
     bindings: tuiConfig.keybinds.get("session.background"),
@@ -1378,28 +1374,7 @@ export function Main() {
                 </Show>
               </box>
             </Show>
-            <Toast />
           </box>
-          <Show when={sidebarVisible()}>
-            <Switch>
-              <Match when={wide()}>
-                <Sidebar sessionID={route.sessionID} />
-              </Match>
-              <Match when={!wide()}>
-                <box
-                  position="absolute"
-                  top={0}
-                  left={0}
-                  right={0}
-                  bottom={0}
-                  alignItems="flex-end"
-                  backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
-                >
-                  <Sidebar sessionID={route.sessionID} />
-                </box>
-              </Match>
-            </Switch>
-          </Show>
         </box>
       </context.Provider>
     </LocationProvider>
