@@ -24,7 +24,6 @@ import { Ripgrep } from "./ripgrep"
 import { Watcher } from "./filesystem/watcher"
 import { Reference } from "./reference"
 import { RepositoryCache } from "./repository-cache"
-import { SkillV2 } from "./skill"
 import { AppProcess } from "./process"
 
 export class LocationServiceMap extends LayerMap.Service<LocationServiceMap>()("@graphagent/example/LocationServiceMap", {
@@ -47,7 +46,6 @@ export class LocationServiceMap extends LayerMap.Service<LocationServiceMap>()("
       ProjectCopy.locationLayer,
       FileSystem.locationLayer,
       Watcher.locationLayer,
-      SkillV2.locationLayer,
     ).pipe(Layer.provideMerge(location))
 
     // Kick off a background project copy refresh to update locations now that we

@@ -2337,34 +2337,6 @@ export type IntegrationRef = {
   name: string
 }
 
-export type SkillV2Source = SkillV2DirectorySource | SkillV2UrlSource | SkillV2EmbeddedSource
-
-export type SkillV2EmbeddedSource = {
-  type: "embedded"
-  skill: SkillV2Info
-}
-
-export type SkillV2Info = {
-  name: string
-  description?: string
-  slash?: boolean
-  location: string
-  content: string
-  hooks?: {
-    [key: string]: unknown
-  }
-}
-
-export type SkillV2UrlSource = {
-  type: "url"
-  url: string
-}
-
-export type SkillV2DirectorySource = {
-  type: "directory"
-  path: string
-}
-
 export type IntegrationEnvMethod = {
   type: "env"
   names: Array<string>
@@ -5630,6 +5602,7 @@ export type AppSkillsResponses = {
     description?: string
     location: string
     content: string
+    hidden?: boolean
     hooks?: unknown
     hookOrigin?: string
     hookSource?: "project" | "user" | "builtin"
@@ -9336,43 +9309,6 @@ export type V2CommandListResponses = {
 }
 
 export type V2CommandListResponse = V2CommandListResponses[keyof V2CommandListResponses]
-
-export type V2SkillListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/skill"
-}
-
-export type V2SkillListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2SkillListError = V2SkillListErrors[keyof V2SkillListErrors]
-
-export type V2SkillListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<SkillV2Info>
-  }
-}
-
-export type V2SkillListResponse = V2SkillListResponses[keyof V2SkillListResponses]
 
 export type V2EventSubscribeData = {
   body?: never

@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Logger } from "effect"
 import { Skill } from "../../src/skill"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { provideInstance, provideTmpdirInstance, testInstanceStoreLayer, tmpdir } from "../fixture/fixture"
@@ -40,6 +40,30 @@ const withHome = <A, E, R>(home: string, self: Effect.Effect<A, E, R>) =>
       }),
   )
 
+const withConfigDir = <A, E, R>(dir: string, self: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const prev = process.env.GRAPHAGENT_TEST_CONFIG_DIR
+      process.env.GRAPHAGENT_TEST_CONFIG_DIR = dir
+      return prev
+    }),
+    () => self,
+    (prev) =>
+      Effect.sync(() => {
+        if (prev === undefined) delete process.env.GRAPHAGENT_TEST_CONFIG_DIR
+        else process.env.GRAPHAGENT_TEST_CONFIG_DIR = prev
+      }),
+  )
+
+const writeSkill = (file: string, name: string, extra: Record<string, unknown> = {}) =>
+  Effect.promise(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await Bun.write(
+      file,
+      `---\n${JSON.stringify({ name, description: `${name} fixture`, ...extra })}\n---\n\n# ${name}\n`,
+    )
+  })
+
 describe("skill", () => {
   it.live("does not register workflow as a built-in skill", () =>
     provideTmpdirInstance(
@@ -48,8 +72,8 @@ describe("skill", () => {
           const skill = yield* Skill.Service
           expect(yield* skill.get("workflow")).toBeUndefined()
           expect(
-            (yield* skill.all()).filter((item) => item.location === "<built-in>").map((item) => item.name),
-          ).toEqual(["customize-opencode", "configure-hooks", "create-dag-workflow", "git-workflow"])
+            (yield* skill.all()).filter((item) => item.location.startsWith("/builtin/")).map((item) => item.name),
+          ).toEqual(["customize-opencode", "configure-hooks", "git-workflow"])
           expect(yield* skill.get("orchestration-router")).toBeUndefined()
         }),
       { git: true },
@@ -78,7 +102,7 @@ description: User-defined workflow guidance.
             name: "workflow",
             description: "User-defined workflow guidance.",
           })
-          expect((yield* skill.get("workflow"))?.location).not.toBe("<built-in>")
+          expect((yield* skill.get("workflow"))?.location).not.toStartWith("/builtin/")
         }),
       { git: true },
     ),
@@ -104,7 +128,7 @@ Instructions here.
           )
 
           const skill = yield* Skill.Service
-          const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+          const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
           expect(list.length).toBe(1)
           const item = list.find((x) => x.name === "test-skill")
           expect(item).toBeDefined()
@@ -177,7 +201,7 @@ description: Second test skill.
           )
 
           const skill = yield* Skill.Service
-          const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+          const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
           expect(list.length).toBe(2)
           expect(list.find((x) => x.name === "skill-one")).toBeDefined()
           expect(list.find((x) => x.name === "skill-two")).toBeDefined()
@@ -201,7 +225,7 @@ Just some content without YAML frontmatter.
           )
 
           const skill = yield* Skill.Service
-          expect((yield* skill.all()).filter((s) => s.location !== "<built-in>")).toEqual([])
+          expect((yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))).toEqual([])
         }),
       { git: true },
     ),
@@ -226,7 +250,7 @@ Instructions here.
           )
 
           const skill = yield* Skill.Service
-          const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+          const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
           expect(list.length).toBe(1)
           const item = list.find((x) => x.name === "manual-skill")
           expect(item).toBeDefined()
@@ -256,7 +280,7 @@ description: A skill in the .claude/skills directory.
           )
 
           const skill = yield* Skill.Service
-          const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+          const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
           expect(list).toEqual([])
         }),
       { git: true },
@@ -276,7 +300,7 @@ description: A skill in the .claude/skills directory.
           yield* Effect.promise(() => createClaudeGlobalSkill(tmp.path))
           yield* Effect.gen(function* () {
             const skill = yield* Skill.Service
-            const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+            const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
             expect(list).toEqual([])
           }).pipe(provideInstance(tmp.path))
         }),
@@ -330,7 +354,7 @@ description: A skill in the .claude/skills directory.
       () =>
         Effect.gen(function* () {
           const skill = yield* Skill.Service
-          expect((yield* skill.all()).filter((s) => s.location !== "<built-in>")).toEqual([])
+          expect((yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))).toEqual([])
         }),
       { git: true },
     ),
@@ -385,7 +409,7 @@ description: A skill in the .agents/skills directory.
           )
 
           const skill = yield* Skill.Service
-          const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+          const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
           expect(list.length).toBe(1)
           const item = list.find((x) => x.name === "agent-skill")
           expect(item).toBeDefined()
@@ -424,7 +448,7 @@ This skill is loaded from the global home directory.
 
           yield* Effect.gen(function* () {
             const skill = yield* Skill.Service
-            const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+            const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
             expect(list.length).toBe(1)
             expect(list[0].name).toBe("global-agent-skill")
             expect(list[0].description).toBe("A global skill from ~/.agents/skills for testing.")
@@ -465,7 +489,7 @@ description: A skill in the .agents/skills directory.
           )
 
           const skill = yield* Skill.Service
-          const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
+          const list = (yield* skill.all()).filter((s) => !s.location.startsWith("/builtin/"))
           expect(list.map((s) => s.name)).toEqual(["agent-skill"])
         }),
       { git: true },
@@ -506,5 +530,148 @@ description: A second skill in the .agents/skills directory.
         }),
       { git: true },
     ),
+  )
+
+  it.live("keeps a hidden skill loadable by name", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          yield* writeSkill(path.join(dir, ".agents", "skills", "reference-only", "SKILL.md"), "reference-only", {
+            hidden: true,
+          })
+
+          const skill = yield* Skill.Service
+          expect(yield* skill.get("reference-only")).toMatchObject({ name: "reference-only", hidden: true })
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live("does not load the singular skill directory", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          yield* writeSkill(path.join(dir, ".agents", "skill", "singular-skill", "SKILL.md"), "singular-skill")
+
+          const skill = yield* Skill.Service
+          expect(yield* skill.get("singular-skill")).toBeUndefined()
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live("merges skill sources in priority order", () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir({ git: true })),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const extra = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const configDir = path.join(home.path, ".config", "graphagent")
+
+      yield* withHome(
+        home.path,
+        withConfigDir(
+          configDir,
+          provideTmpdirInstance(
+            (dir) =>
+              Effect.gen(function* () {
+                yield* writeSkill(
+                  path.join(home.path, ".agents", "skills", "dup-user-project", "SKILL.md"),
+                  "dup-user-project",
+                )
+                yield* writeSkill(
+                  path.join(dir, ".agents", "skills", "dup-user-project", "SKILL.md"),
+                  "dup-user-project",
+                )
+                yield* writeSkill(
+                  path.join(home.path, ".agents", "skills", "dup-user-config", "SKILL.md"),
+                  "dup-user-config",
+                )
+                yield* writeSkill(path.join(configDir, "skills", "dup-user-config", "SKILL.md"), "dup-user-config")
+                yield* writeSkill(
+                  path.join(configDir, "skills", "dup-config-project", "SKILL.md"),
+                  "dup-config-project",
+                )
+                yield* writeSkill(
+                  path.join(dir, ".agents", "skills", "dup-config-project", "SKILL.md"),
+                  "dup-config-project",
+                )
+                yield* writeSkill(
+                  path.join(dir, ".agents", "skills", "dup-path-project", "SKILL.md"),
+                  "dup-path-project",
+                )
+                yield* writeSkill(path.join(extra.path, "dup-path-project", "SKILL.md"), "dup-path-project")
+                yield* writeSkill(path.join(dir, ".agents", "skills", "git-workflow", "SKILL.md"), "git-workflow")
+
+                const skill = yield* Skill.Service
+                expect((yield* skill.require("dup-user-project")).location).toContain(path.join(dir, ".agents"))
+                expect((yield* skill.require("dup-user-config")).location).toContain(path.join(configDir, "skills"))
+                expect((yield* skill.require("dup-config-project")).location).toContain(path.join(dir, ".agents"))
+                expect((yield* skill.require("dup-path-project")).location).toContain(extra.path)
+                // A project skill may shadow a built-in of the same name.
+                expect((yield* skill.require("git-workflow")).location).not.toStartWith("/builtin/")
+              }),
+            { git: true, config: { skills: { paths: [extra.path] } } },
+          ),
+        ),
+      )
+    }),
+  )
+
+  it.live("does not walk above the project root", () =>
+    Effect.gen(function* () {
+      const parent = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir({ git: true })),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const root = path.join(parent.path, "project")
+      yield* Effect.promise(() => fs.mkdir(path.join(root, ".agents", "skills"), { recursive: true }))
+
+      yield* writeSkill(path.join(parent.path, ".agents", "skills", "parent-skill", "SKILL.md"), "parent-skill")
+      yield* writeSkill(path.join(root, ".agents", "skills", "child-skill", "SKILL.md"), "child-skill")
+
+      yield* withHome(
+        path.join(parent.path, "home"),
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          expect(yield* skill.get("parent-skill")).toBeUndefined()
+          expect(yield* skill.get("child-skill")).toBeDefined()
+        }).pipe(provideInstance(root)),
+      )
+    }),
+  )
+
+  it.effect("applies same-name overrides in discovery order when parsing completes out of order", () =>
+    Effect.gen(function* () {
+      const logs: string[] = []
+      const logger = Logger.make((options) => logs.push(JSON.stringify(options.message)))
+      const matches = ["/skills/early/SKILL.md", "/skills/late/SKILL.md"]
+
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const state: Skill.State = { skills: {}, dirs: new Set() }
+        yield* Skill.loadSkills(state, { matches, dirs: [] }, {} as never, (match) =>
+          // Real timers, not Effect.sleep: `it.effect` provides TestClock, which
+          // would suspend until the test clock is advanced.
+          Effect.promise(
+            () =>
+              new Promise((resolve) =>
+                setTimeout(
+                  () => resolve({ match, name: "duplicate", description: match, content: match }),
+                  Math.floor(Math.random() * 20),
+                ),
+              ),
+          ),
+        ).pipe(Effect.withLogger(logger))
+
+        // Discovery order, not parse completion order, picks the winner.
+        expect(state.skills.duplicate?.location).toBe(matches[1])
+      }
+
+      expect(logs.filter((line) => line.includes("duplicate skill name"))).toHaveLength(50)
+    }),
   )
 })

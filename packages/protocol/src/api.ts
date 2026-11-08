@@ -5,7 +5,6 @@ import { ModelGroup } from "./groups/model"
 import { ProviderGroup } from "./groups/provider"
 import { FileSystemGroup } from "./groups/fs"
 import { CommandGroup } from "./groups/command"
-import { SkillGroup } from "./groups/skill"
 import { EventGroup, makeEventGroup } from "./groups/event"
 import type { Definition } from "@graphagent/schema/event"
 import { AgentGroup } from "./groups/agent"
@@ -36,7 +35,6 @@ const makeApiFromGroup = <
     .add(CredentialGroup.middleware(locationMiddleware))
     .add(FileSystemGroup.middleware(locationMiddleware))
     .add(CommandGroup.middleware(locationMiddleware))
-    .add(SkillGroup.middleware(locationMiddleware))
     .add(eventGroup)
     .add(ReferenceGroup.middleware(locationMiddleware))
     .add(ProjectCopyGroup.middleware(locationMiddleware))

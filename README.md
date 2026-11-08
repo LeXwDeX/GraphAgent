@@ -139,8 +139,8 @@ producer in this build.
   `/create-hook` walks through authoring a new hook.
 - Background waits: an `asyncRewake` command hook can watch CI, reviews or deploys while the agent keeps working; a
   conclusion exits with code 2 and wakes the session with a bounded summary. The Active Hooks block marks such hooks
-  `background`. See the [background watcher recipe](./packages/core/src/plugin/skill/configure-hooks.md#background-watcher-recipe).
-- Reference: [hooks guide](./packages/core/src/plugin/skill/configure-hooks.md).
+  `background`. See the [background watcher recipe](./packages/graphagent/src/skill/builtin/configure-hooks.md#background-watcher-recipe).
+- Reference: [hooks guide](./packages/graphagent/src/skill/builtin/configure-hooks.md).
 
 ---
 
@@ -291,14 +291,9 @@ relative to the session directory instead of the library.
 
 ### 3. Let the agent author it
 
-The built-in **`create-dag-workflow`** skill covers spec authoring: the library
-scopes, the file shape, the rules a saved spec must respect (no pinned models,
-`worker_type` must exist, required template variables must be supplied), and
-how to verify it. Ask to "save this as a reusable workflow" and the agent
-establishes the phases and gates with you, writes the file into the scope you
-pick, and proves it by starting it once. For one-off graphs, `workflow(action="draft")`
-takes the structured graph as tool parameters and hands back a validated
-`spec_path`, so field drift never reaches the file.
+For one-off graphs, `workflow(action="draft")` takes the structured graph as
+tool parameters and hands back a validated `spec_path`, so field drift never
+reaches the file.
 
 Node prompts referenced by `prompt_template.id` resolve from the project's
 `.opencode/dag-prompts/<id>.md`, then the global `<config dir>/dag-prompts/`.
@@ -466,8 +461,7 @@ Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers these 
 
 - [`docs/architecture.md`](./docs/architecture.md) — system overview, client/API boundaries, and source map
 - [`packages/graphagent/src/memory/CONTEXT.md`](./packages/graphagent/src/memory/CONTEXT.md) — Project Memory model and invariants
-- [Hooks guide](./packages/core/src/plugin/skill/configure-hooks.md) — events, schemas and verification
-- [Saved workflow authoring guide](./packages/core/src/plugin/skill/create-dag-workflow.md) — the `create-dag-workflow` skill body
+- [Hooks guide](./packages/graphagent/src/skill/builtin/configure-hooks.md) — events, schemas and verification
 - [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) — curated workflows, composable blocks and worker prompts
 - [`AGENTS.md`](./AGENTS.md) — contribution & development guide
 

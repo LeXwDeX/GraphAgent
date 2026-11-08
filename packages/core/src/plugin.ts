@@ -11,7 +11,6 @@ import { Integration } from "./integration"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { PluginHost } from "./plugin/host"
 import { Reference } from "./reference"
-import { SkillV2 } from "./skill"
 import { State } from "./state"
 
 export const ID = Schema.String.pipe(Schema.brand("Plugin.ID"))
@@ -145,5 +144,4 @@ export const locationLayer = layer.pipe(
   Layer.provideMerge(CommandV2.locationLayer),
   Layer.provideMerge(Integration.locationLayer),
   Layer.provideMerge(Reference.locationLayer),
-  Layer.provideMerge(SkillV2.locationLayer),
 )

@@ -1,8 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Fiber } from "effect"
 import { define } from "@graphagent/core/plugin/context/index"
-import { SkillV2 } from "@graphagent/core/skill"
-import { AbsolutePath } from "@graphagent/core/schema"
 import { SourceProvenance } from "@graphagent/core/session/source-provenance"
 import { AgentV2 } from "@graphagent/core/agent"
 import { PluginV2 } from "@graphagent/core/plugin"
@@ -94,33 +92,5 @@ it.effect("records hook provenance from the actual contributor execution boundar
     })
     yield* agents.reload()
     expect(SourceProvenance.agent(agents, "scoped")?.source).toBe("builtin")
-  }),
-)
-
-it.effect("records only actually registered contributor skill hooks as builtin sources", () =>
-  Effect.gen(function* () {
-    const plugins = yield* PluginV2.Service
-    const skills = yield* SkillV2.Service
-    yield* plugins.add(PluginV2.ID.make("actual-skill-owner"), (ctx) =>
-      ctx.skill
-        .transform((draft) => {
-          draft.source({
-            type: "embedded",
-            skill: SkillV2.Info.make({
-              name: "plugin-hook-skill",
-              location: AbsolutePath.make("/fixture/plugin/SKILL.md"),
-              content: "fixture",
-              hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] },
-            }),
-          })
-        })
-        .pipe(Effect.asVoid),
-    )
-    const loaded = (yield* skills.list()).find((item) => item.name === "plugin-hook-skill")
-    expect(loaded?.hooks).toBeDefined()
-    expect(loaded && SourceProvenance.skill(loaded)).toEqual({
-      source: "builtin",
-      origin: "actual-skill-owner:skill:embedded:plugin-hook-skill",
-    })
   }),
 )

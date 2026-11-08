@@ -33,16 +33,21 @@ export const SkillTool = Tool.define(
             metadata: {},
           })
 
+          // Built-in skills have no directory on disk: `/builtin/<name>.md` is
+          // a synthetic location, so skip the file listing.
+          const builtin = info.location.startsWith("/builtin/")
           const dir = path.dirname(info.location)
           const base = dir
-          const files = yield* ripgrep.find({
-            cwd: dir,
-            pattern: "!**/SKILL.md",
-            hidden: true,
-            follow: false,
-            signal: ctx.abort,
-            limit: 10,
-          })
+          const files = builtin
+            ? []
+            : yield* ripgrep.find({
+                cwd: dir,
+                pattern: "!**/SKILL.md",
+                hidden: true,
+                follow: false,
+                signal: ctx.abort,
+                limit: 10,
+              })
 
           // A skill's frontmatter hooks become active only when the skill tool
           // actually loads it. The stable path origin makes repeated loads in
@@ -66,13 +71,17 @@ export const SkillTool = Tool.define(
               "",
               info.content.trim(),
               "",
-              `Base directory for this skill: ${base}`,
-              "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
-              "Note: file list is sampled.",
-              "",
-              "<skill_files>",
-              files.map((file) => `<file>${path.resolve(dir, file.path)}</file>`).join("\n"),
-              "</skill_files>",
+              ...(builtin
+                ? []
+                : [
+                    `Base directory for this skill: ${base}`,
+                    "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
+                    "Note: file list is sampled.",
+                    "",
+                    "<skill_files>",
+                    files.map((file) => `<file>${path.resolve(dir, file.path)}</file>`).join("\n"),
+                    "</skill_files>",
+                  ]),
               "</skill_content>",
             ].join("\n"),
             metadata: {

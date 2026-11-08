@@ -95,6 +95,35 @@ Use this skill.
     }),
   )
 
+  it.instance("execute loads a builtin skill without a filesystem listing", () =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      const home = process.env.GRAPHAGENT_TEST_HOME
+      process.env.GRAPHAGENT_TEST_HOME = path.join(dir, ".home")
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          process.env.GRAPHAGENT_TEST_HOME = home
+        }),
+      )
+
+      const registry = yield* ToolRegistry.Service
+      const agent = { name: "build", mode: "primary" as const, permission: [], options: {} }
+      const tool = (yield* registry.tools({
+        providerID: "opencode" as any,
+        modelID: "gpt-5" as any,
+        agent,
+      })).find((tool) => tool.id === SkillTool.id)
+      if (!tool) throw new Error("Skill tool not found")
+
+      const result = yield* tool.execute({ name: "git-workflow" }, { ...baseCtx, ask: () => Effect.void })
+
+      expect(result.output).toContain(`<skill_content name="git-workflow">`)
+      expect(result.output).not.toContain("Base directory for this skill")
+      expect(result.output).not.toContain("<skill_files>")
+      expect(result.metadata.dir).toBe("/builtin")
+    }),
+  )
+
   it.instance("execute preserves not found message", () =>
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory

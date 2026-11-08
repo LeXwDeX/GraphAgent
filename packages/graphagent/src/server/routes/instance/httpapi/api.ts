@@ -4,7 +4,6 @@ import { EventV2 } from "@graphagent/core/event"
 import { EventManifest } from "@/event-manifest"
 import { Credential } from "@graphagent/core/credential"
 import { Integration } from "@graphagent/core/integration"
-import { SkillV2 } from "@graphagent/core/skill"
 import { InstanceDisposed } from "@/server/event"
 import { Question } from "@/question"
 import { ConfigApi } from "./groups/config"
@@ -83,7 +82,6 @@ export const GraphagentHttpApi = HttpApi.make("opencode")
     Integration.Inputs,
     Integration.Method,
     Integration.Ref,
-    SkillV2.Source,
   ])
 
 export type RootHttpApiType = typeof RootHttpApi

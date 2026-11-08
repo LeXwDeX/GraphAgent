@@ -76,10 +76,6 @@ const LEGACY_ENV_ALLOW: Allow[] = [
     reason: "macOS acceptance pins OC_OPENCODE_NAME until G1",
   },
   {
-    file: "packages/graphagent/src/skill/index.ts",
-    reason: "CUSTOMIZE_OPENCODE_SKILL_* constants are renamed by B4",
-  },
-  {
     file: "packages/graphagent/src/image/image.ts",
     reason: "G0b: the photon-node patch reads __OPENCODE_PHOTON_WASM_PATH",
   },
