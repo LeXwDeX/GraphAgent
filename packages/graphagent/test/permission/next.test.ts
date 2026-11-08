@@ -14,7 +14,7 @@ import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { MessageID, SessionID } from "../../src/session/schema"
-import { SettingsHook } from "../../src/hook/settings"
+import { SettingsHook } from "../../src/hook"
 import { HookStartContext } from "../../src/hook/start-context"
 
 const events = EventV2Bridge.defaultLayer

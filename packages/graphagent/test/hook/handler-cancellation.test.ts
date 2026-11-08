@@ -1,7 +1,7 @@
 import { expect, describe } from "bun:test"
 import { Effect, Layer } from "effect"
 import { MockLanguageModelV3 } from "ai/test"
-import { SettingsHook, type HookCommand } from "@/hook/settings"
+import { SettingsHook, type HookCommand } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"

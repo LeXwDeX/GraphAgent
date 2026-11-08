@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"

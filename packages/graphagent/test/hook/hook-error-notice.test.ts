@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
-import { SettingsHook, type HookCommand, type HookPayload } from "@/hook/settings"
+import { SettingsHook, type HookCommand, type HookPayload } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { MCP } from "@/mcp"

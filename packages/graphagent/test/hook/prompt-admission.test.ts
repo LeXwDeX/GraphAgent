@@ -1,4 +1,4 @@
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { HookFileWatch } from "@/hook/file-watch"
 import { HookLifecycle } from "@/hook/lifecycle"

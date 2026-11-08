@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { __chainCandidates, summarizeChain } from "@/hook/settings"
+import { __chainCandidates, summarizeChain } from "@/hook"
 import { __watchedFiles } from "@/hook/extensions/hot-reload"
 
 // The project hooks layer is a single directory: `<root>/.agents/hooks.json`

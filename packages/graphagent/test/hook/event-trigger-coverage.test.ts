@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync, statSync } from "fs"
 import path from "path"
-import { VALID_HOOK_EVENTS } from "@/hook/settings"
+import { VALID_HOOK_EVENTS } from "@/hook"
 import { BUILTIN_SKILLS } from "@/skill/builtin"
 
 /**
@@ -10,12 +10,20 @@ import { BUILTIN_SKILLS } from "@/skill/builtin"
  * source, so declaration-only events cannot ship silently.
  *
  * Textual scan: counts `event: "<name>"` occurrences under packages/graphagent/src and packages/core/src,
- * excluding hook/settings.ts itself (its payload type union and envelope builder
+ * excluding the settings module itself (its payload type union and envelope builder
  * mention every event by construction).
  */
 
 const SRC_ROOT = path.resolve(import.meta.dir, "../../src")
-const EXCLUDED = new Set([path.join(SRC_ROOT, "hook", "settings.ts")])
+const HOOK_ENGINE = path.join(SRC_ROOT, "hook", "engine")
+const EXCLUDED = new Set([
+  // The payload type union declares every event by construction.
+  path.join(SRC_ROOT, "hook", "types.ts"),
+  // Engine trigger sites are checked separately below (same `event: "<name>"` shape).
+  ...readdirSync(HOOK_ENGINE)
+    .filter((entry) => entry.endsWith(".ts"))
+    .map((entry) => path.join(HOOK_ENGINE, entry)),
+])
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -51,11 +59,12 @@ describe("hook event trigger coverage", () => {
   const haystack = [...sourceFiles(SRC_ROOT), ...sourceFiles(path.resolve(SRC_ROOT, "../../core/src"))]
     .map((file) => readFileSync(file, "utf8"))
     .join("\n")
-  // settings.ts mentions every event in its payload type union and envelope
-  // builder, so it is excluded from the general scan — but events triggered from
-  // inside settings.ts itself (e.g. ConfigChange on hot-reload) count via the
-  // stricter `trigger({ event: "..." })` call shape.
-  const settingsSource = readFileSync(path.join(SRC_ROOT, "hook", "settings.ts"), "utf8")
+  // Engine files are excluded from the general scan; events triggered inside
+  // the engine itself (e.g. ConfigChange on hot-reload) are still counted below.
+  const engineSource = readdirSync(HOOK_ENGINE)
+    .filter((entry) => entry.endsWith(".ts"))
+    .map((entry) => readFileSync(path.join(HOOK_ENGINE, entry), "utf8"))
+    .join("\n")
 
   // These names belong to the import protocol, but the corresponding local
   // business operations do not exist. Native permission denial is not a classifier.
@@ -63,7 +72,7 @@ describe("hook event trigger coverage", () => {
   for (const event of VALID_HOOK_EVENTS) {
     if (unavailable.has(event)) continue
     test(`event "${event}" has at least one trigger site`, () => {
-      const wired = haystack.includes(`event: "${event}"`) || settingsSource.includes(`trigger({ event: "${event}"`)
+      const wired = haystack.includes(`event: "${event}"`) || engineSource.includes(`event: "${event}"`)
       expect(wired).toBe(true)
     })
   }

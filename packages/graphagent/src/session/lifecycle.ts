@@ -9,7 +9,7 @@ import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Session } from "@/session/session"
 import { Effect, Layer, Context } from "effect"
 import * as Option from "effect/Option"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import * as Log from "@/util/log"
 

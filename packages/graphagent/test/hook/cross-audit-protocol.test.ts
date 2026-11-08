@@ -14,7 +14,7 @@ import {
   type HookEvent,
   type HookPayload,
   type ShellProbe,
-} from "@/hook/settings"
+} from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { MCP } from "@/mcp"
 import { EventV2Bridge } from "@/event-v2-bridge"

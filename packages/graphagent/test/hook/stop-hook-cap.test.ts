@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { MAX_STOP_CONTINUATIONS, stopHookBlockCap } from "@/hook/settings"
+import { MAX_STOP_CONTINUATIONS, stopHookBlockCap } from "@/hook"
 
 describe("Stop hook continuation cap", () => {
   test("defaults to 8 and accepts only positive integers", () => {

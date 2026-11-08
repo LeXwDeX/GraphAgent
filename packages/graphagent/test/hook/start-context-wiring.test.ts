@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Context, Effect, Layer, Scope } from "effect"
 import { HookStartContext } from "@/hook/start-context"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionCompaction } from "@/session/compaction"
 import { SessionLifecycle } from "@/session/lifecycle"

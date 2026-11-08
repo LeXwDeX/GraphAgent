@@ -24,7 +24,7 @@ export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(
     if (status?.clear) yield* status.clear(SessionID.make(input.sessionID))
     if (attention) yield* attention.clear(input.sessionID)
     const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
-    const { SettingsHook } = yield* Effect.promise(() => import("./settings"))
+    const { SettingsHook } = yield* Effect.promise(() => import("./index"))
     const { Session } = yield* Effect.promise(() => import("@/session/session"))
     const settings = yield* SettingsHook.Service
     const session = yield* Session.Service

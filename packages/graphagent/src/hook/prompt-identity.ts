@@ -15,7 +15,7 @@
  * custom variant name has no portable meaning and is omitted rather than
  * guessed.
  */
-import type { HookEffort } from "./settings"
+import type { HookEffort } from "./types"
 import type { Message } from "./transcript"
 import { variantToEffort } from "@graphagent/core/session/effort"
 

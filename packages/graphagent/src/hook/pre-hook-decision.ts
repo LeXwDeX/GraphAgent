@@ -1,5 +1,5 @@
 import { Cause, Exit } from "effect"
-import type { TriggerResult } from "./settings"
+import type { TriggerResult } from "./trigger-result"
 
 /**
  * Pure synchronous reduction of a PreToolUse `TriggerResult` into the three

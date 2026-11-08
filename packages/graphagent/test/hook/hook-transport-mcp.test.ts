@@ -1,7 +1,7 @@
 import { jsonSchema, tool } from "ai"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { MCP } from "@/mcp"
 import { EventV2Bridge } from "@/event-v2-bridge"

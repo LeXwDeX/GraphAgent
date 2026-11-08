@@ -1,12 +1,12 @@
 /**
  * HookRewake — bridge service tag for async hook rewake delivery.
  *
- * Tag-only leaf module: imports nothing from prompt.ts or settings.ts, so
+ * Tag-only leaf module: imports nothing from prompt.ts or the hook barrel, so
  * there is no import cycle. The live implementation lives in rewake-live.ts
  * (depends on this tag + SessionPrompt.Service); app-runtime and the httpapi
  * server node graph wire it.
  *
- * Deliberately NO default/no-op layer here: settings.ts resolves this service
+ * Deliberately NO default/no-op layer here: service.ts resolves this service
  * via `Effect.serviceOption` and degrades gracefully (log.warn + skip) when it
  * is absent. A no-op layer would risk masking the live one if both were ever
  * wired into the same graph.

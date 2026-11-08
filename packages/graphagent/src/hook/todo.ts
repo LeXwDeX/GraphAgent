@@ -2,7 +2,7 @@ export * as HookTodo from "./todo"
 
 import { Effect, Layer } from "effect"
 import { SessionTodoHooks } from "@graphagent/core/session/todo-hooks"
-import { SettingsHook } from "./settings"
+import { SettingsHook } from "./index"
 import { Session } from "@/session/session"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"

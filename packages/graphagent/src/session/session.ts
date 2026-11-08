@@ -563,12 +563,12 @@ export const layer: Layer.Layer<
     // at which a caller-provided SettingsHook mock/layer is in this layer's
     // context (it is consumed by construction and not re-exposed in the runtime
     // output context). The tag is obtained via a DEFERRED dynamic import rather
-    // than a top-level `import { SettingsHook }`: settings.ts pulls in
+    // than a top-level `import { SettingsHook }`: the hook barrel pulls in
     // Provider → Plugin → Session, so a static import closes a load-order cycle
     // that surfaces as a TDZ ReferenceError when test entries load goal/hook
     // modules. By construction time the static module graph has settled, so the
     // deferred import resolves to the cached module instantly.
-    const { SettingsHook } = yield* Effect.promise(() => import("@/hook/settings"))
+    const { SettingsHook } = yield* Effect.promise(() => import("@/hook"))
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const hookSkills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
     const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))

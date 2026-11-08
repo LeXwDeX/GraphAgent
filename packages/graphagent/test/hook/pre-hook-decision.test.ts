@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { applyPreHookDecision, classifyPermissionAsk } from "@/hook/pre-hook-decision"
-import type { TriggerResult } from "@/hook/settings"
+import type { TriggerResult } from "@/hook"
 import { Permission } from "@/permission"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 

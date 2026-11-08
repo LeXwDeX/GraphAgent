@@ -26,7 +26,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
-import type { HookEvent, HookJSONOutput, HookCommand } from "./settings"
+import type { HookEvent, HookJSONOutput, HookCommand } from "./types"
 import { HookCommandSchema } from "./schema"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -188,7 +188,7 @@ export const layer = Layer.effect(
       // Resolve the event vocabulary only when registering. A static import
       // would form a module-initialization cycle: settings owns SessionHooks,
       // while permission and MCP also compose the settings layer.
-      const { VALID_HOOK_EVENTS } = yield* Effect.promise(() => import("./settings"))
+      const { VALID_HOOK_EVENTS } = yield* Effect.promise(() => import("./index"))
       const isEvent = (name: string): name is HookEvent => VALID_HOOK_EVENTS.has(name)
       const entries: SessionHookEntry[] = []
       for (const [name, groups] of Object.entries(raw)) {
