@@ -1370,6 +1370,7 @@ export const layer = Layer.effect(
         agent: parentAgent,
         session,
         model: taskModel,
+        user: lastUser,
         messages: msgs,
         promptOps,
         bypassAgentCheck: true,
@@ -2966,6 +2967,7 @@ export const layer = Layer.effect(
               agent,
               session,
               model,
+              user: lastUser,
               processor: handle,
               bypassAgentCheck: false,
               messages: msgs,
@@ -3449,6 +3451,7 @@ export const layer = Layer.effect(
                     agent,
                     session,
                     model,
+                    user: lastUser,
                     processor: handle,
                     bypassAgentCheck,
                     messages: msgs,
@@ -3467,17 +3470,12 @@ export const layer = Layer.effect(
                   ),
                 )
 
-            // Permission.ask evaluates native rules before configured rules.
-            // Use that same split for everything advertised or reminded here.
+            // Permission.ask evaluates native rules before configured rules. Use
+            // that same split for the system prompts and the stream input.
             const nativePermission = (yield* agents.permissionPolicy(agent.name)).native
-            const disabledTools = Permission.disabledByPolicy(
-              Object.keys(tools),
-              nativePermission,
-              Permission.merge(agent.permission, session.permission ?? []),
-            )
-            const enabledTools = Object.keys(tools).filter(
-              (name) => lastUser.tools?.[name] !== false && !disabledTools.has(name),
-            )
+            // Resolution already applied native and configured permission rules plus the
+            // per-message tool switches, so the advertised set is exactly the resolved keys.
+            const enabledTools = Object.keys(tools)
             msgs = yield* SessionReminders.apply({
               messages: msgs,
               agent,
@@ -3973,37 +3971,36 @@ export const layer = Layer.effect(
       const result = followupAdmissions
         .run(
           input.sessionID,
-          (
-            commit,
-          ): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionAdmission.Blocked> =>
-            withRunRequest(input.sessionID, (request) => promptLocks.withLock(input.sessionID)(
-              Effect.gen(function* () {
-                if (!request.valid()) return yield* Effect.interrupt
-                const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-                const contexts = yield* resumeContexts(target)
-                if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
-                const initial =
-                  input.hookMode !== "interactive" && hookLifecycle
-                    ? yield* hookLifecycle.consumeInitial(input.sessionID)
-                    : undefined
-                const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-                const initialTurn = initial && !history.some((message) => message.info.role === "user")
-                const latest = history.findLast((message) => message.info.role === "assistant")
-                const deferred = latest?.parts.some(
-                  (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
-                )
-                const saved = yield* pendingInput(target.metadata)
-                if (!initialTurn && !deferred && !saved) {
-                  if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
-                  return yield* new NoPendingHookInput({
-                    message: "No initial hook message or deferred tool call is pending",
-                  })
-                }
-                if (input.followup) {
-                  if (saved)
+          (commit): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionAdmission.Blocked> =>
+            withRunRequest(input.sessionID, (request) =>
+              promptLocks.withLock(input.sessionID)(
+                Effect.gen(function* () {
+                  if (!request.valid()) return yield* Effect.interrupt
+                  const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+                  const contexts = yield* resumeContexts(target)
+                  if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
+                  const initial =
+                    input.hookMode !== "interactive" && hookLifecycle
+                      ? yield* hookLifecycle.consumeInitial(input.sessionID)
+                      : undefined
+                  const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+                  const initialTurn = initial && !history.some((message) => message.info.role === "user")
+                  const latest = history.findLast((message) => message.info.role === "assistant")
+                  const deferred = latest?.parts.some(
+                    (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
+                  )
+                  const saved = yield* pendingInput(target.metadata)
+                  if (!initialTurn && !deferred && !saved) {
+                    if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
                     return yield* new NoPendingHookInput({
                       message: "No initial hook message or deferred tool call is pending",
                     })
+                  }
+                  if (input.followup) {
+                    if (saved)
+                      return yield* new NoPendingHookInput({
+                        message: "No initial hook message or deferred tool call is pending",
+                      })
                   }
                   if (input.followup) {
                     if (saved)

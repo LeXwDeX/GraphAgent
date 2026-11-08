@@ -79,14 +79,7 @@ function prepareEditArguments(value: unknown): unknown {
   if (edits && topLevelReplacement) return value
   const edit = edits?.[0] ?? {}
 
-  const filePath = firstString(
-    value.filePath,
-    value.file_path,
-    value.path,
-    edit.filePath,
-    edit.file_path,
-    edit.path,
-  )
+  const filePath = firstString(value.filePath, value.file_path, value.path, edit.filePath, edit.file_path, edit.path)
   const oldString = firstString(
     value.oldString,
     value.old_string,
@@ -161,6 +154,7 @@ export const EditTool = Tool.define(
 
     return {
       description: DESCRIPTION,
+      effects: "workspace_write",
       parameters: Parameters,
       // Reject edits/edit keys instead of stripping them: a call that carries
       // both top-level strings and an edits array must fail closed rather than

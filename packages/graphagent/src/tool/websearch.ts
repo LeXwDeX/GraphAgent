@@ -110,6 +110,7 @@ export const WebSearchTool = Tool.define(
       get description() {
         return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
       },
+      effects: "read",
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

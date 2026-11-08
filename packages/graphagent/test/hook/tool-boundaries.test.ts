@@ -14,6 +14,7 @@ import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
+import type { Interface as ToolRegistryInterface, ToolEntry } from "@/tool/registry"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -37,6 +38,7 @@ import { Instruction } from "@/session/instruction"
 import { LSP } from "@/lsp/lsp"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { claudeHookCommand, nativeHookCommand, hookCommand } from "../fixture/claude-hook"
+import { builtinEntry, mcpEntries, mcpResourceEntries } from "../fixture/tool-registry"
 
 const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'"
 const jsonCommand = (json: unknown) => "printf '%s' " + quote(JSON.stringify(json))
@@ -65,8 +67,18 @@ const layers = Layer.mergeAll(
   Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
   Layer.mock(ToolRegistry.Service, {
     tools: () => Effect.succeed([writeDefinition]),
-    registrations: () =>
-      Effect.succeed([{ definition: writeDefinition, sourceKind: "host-builtin", registrationID: "test:write" }]),
+    // Resolve reads MCP tools from the runtime service so tests that override
+    // MCP.Service per case receive their tools through the registry entries.
+    resolve: (() =>
+      Effect.gen(function* () {
+        const mcp = yield* MCP.Service
+        const entries: ToolEntry[] = [builtinEntry(writeDefinition), ...mcpEntries(yield* mcp.tools())]
+        const hasResourceServer = Object.values(yield* mcp.clients()).some(
+          (client) => !!client.getServerCapabilities()?.resources,
+        )
+        if (hasResourceServer) entries.push(...mcpResourceEntries())
+        return entries
+      })) as unknown as ToolRegistryInterface["resolve"],
   }),
 )
 const it = testEffect(layers)
@@ -309,8 +321,7 @@ const shellFailureLayers = Layer.mergeAll(
   Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
   Layer.mock(ToolRegistry.Service, {
     tools: () => Effect.succeed([shellFailureDefinition]),
-    registrations: () =>
-      Effect.succeed([{ definition: shellFailureDefinition, sourceKind: "host-builtin", registrationID: "test:bash" }]),
+    resolve: () => Effect.succeed([builtinEntry(shellFailureDefinition, "test:bash")]),
   }),
 )
 const shellFailureIt = testEffect(shellFailureLayers)
@@ -474,14 +485,7 @@ const discovery = testEffect(
         const definitions = yield* discoveryDefinitions
         return Layer.mock(ToolRegistry.Service, {
           tools: () => Effect.succeed(definitions),
-          registrations: () =>
-            Effect.succeed(
-              definitions.map((definition) => ({
-                definition,
-                sourceKind: "host-builtin" as const,
-                registrationID: `test:${definition.id}`,
-              })),
-            ),
+          resolve: () => Effect.succeed(definitions.map((definition) => builtinEntry(definition))),
         })
       }),
     ).pipe(Layer.provideMerge(discoveryToolLayer)),

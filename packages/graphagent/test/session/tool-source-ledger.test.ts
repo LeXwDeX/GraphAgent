@@ -12,7 +12,7 @@ const sessionID = "ses_context_folding"
 const identity = (input: {
   messageID: string
   callID: string
-  sourceKind?: "host-builtin" | "custom" | "mcp" | "provider"
+  sourceKind?: "host-builtin" | "mcp" | "provider"
   generation: string
 }) => ({
   sessionID,
@@ -155,7 +155,7 @@ const conversation = (options?: { truncated?: boolean; sourceTruncated?: boolean
   ),
 ]
 
-const registerPair = (ledger: Ledger, sourceKind: "host-builtin" | "custom" | "mcp" | "provider" = "host-builtin") =>
+const registerPair = (ledger: Ledger, sourceKind: "host-builtin" | "mcp" | "provider" = "host-builtin") =>
   Effect.gen(function* () {
     const generation = yield* ledger.activate(sessionID, [{ sourceKind, registrationID: `${sourceKind}:read` }])
     yield* ledger.record(identity({ messageID: "msg_source", callID: "call_source", sourceKind, generation }))
@@ -168,7 +168,7 @@ describe("session tool-source ledger", () => {
     Effect.gen(function* () {
       const ledger = yield* ToolSourceLedger.Service
       const builtin = [{ sourceKind: "host-builtin" as const, registrationID: "builtin:read" }]
-      const custom = [{ sourceKind: "custom" as const, registrationID: "custom:read" }]
+      const custom = [{ sourceKind: "provider" as const, registrationID: "provider:read" }]
       const firstBuiltin = yield* ledger.activate(sessionID, builtin)
       yield* ledger.record(identity({ messageID: "msg_existing", callID: "call_existing", generation: firstBuiltin }))
 
@@ -272,7 +272,7 @@ describe("session tool-source ledger", () => {
         }),
       ).toBeUndefined()
 
-      const second = yield* ledger.activate(sessionID, [{ sourceKind: "custom", registrationID: "custom:read" }])
+      const second = yield* ledger.activate(sessionID, [{ sourceKind: "provider", registrationID: "provider:read" }])
       expect(second).not.toBe(first)
       expect(
         yield* ledger.lookup({
@@ -293,11 +293,11 @@ describe("session tool-source ledger", () => {
       ).toBeUndefined()
 
       yield* ledger.record(
-        identity({ messageID: "msg_source", callID: "call_source", sourceKind: "custom", generation: second }),
+        identity({ messageID: "msg_source", callID: "call_source", sourceKind: "provider", generation: second }),
       )
       const rematerialized = yield* ledger.activate(
         sessionID,
-        [{ sourceKind: "custom", registrationID: "custom:read" }],
+        [{ sourceKind: "provider", registrationID: "provider:read" }],
         "provider:model-b:schema-b",
       )
       expect(rematerialized).not.toBe(second)
@@ -313,7 +313,7 @@ describe("session tool-source ledger", () => {
         identity({
           messageID: "msg_source",
           callID: "call_source",
-          sourceKind: "custom",
+          sourceKind: "provider",
           generation: rematerialized,
         }),
       )
@@ -373,7 +373,7 @@ describe("session tool-source ledger", () => {
       ).toBeDefined()
 
       // A changed set for the parent still invalidates the parent's older identities only.
-      yield* ledger.activate(sessionID, [{ sourceKind: "custom", registrationID: "custom:read" }])
+      yield* ledger.activate(sessionID, [{ sourceKind: "provider", registrationID: "provider:read" }])
       expect(
         yield* ledger.lookup({ sessionID, assistantMessageID: "msg_source", callID: "call_source", toolName: "read" }),
       ).toBeUndefined()
@@ -533,7 +533,7 @@ describe("session tool-source ledger", () => {
         "untrusted-source",
       ])
 
-      for (const sourceKind of ["custom", "mcp", "provider"] as const) {
+      for (const sourceKind of ["mcp", "provider"] as const) {
         yield* registerPair(ledger, sourceKind)
         const overwritten = yield* MessageV2.contextFoldingHistory({ messages, ledger })
         expect(overwritten.duplicatePlan.replacements).toEqual([])

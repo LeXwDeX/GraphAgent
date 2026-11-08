@@ -23,6 +23,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { SessionID, MessageID } from "@/session/schema"
 import { TestInstance } from "../fixture/fixture"
+import { builtinEntry } from "../fixture/tool-registry"
 import { ProviderTest } from "../fake/provider"
 import { testEffect } from "../lib/effect"
 
@@ -58,14 +59,7 @@ const layers = Layer.mergeAll(
       ]
       return Layer.mock(ToolRegistry.Service, {
         tools: () => Effect.succeed(definitions),
-        registrations: () =>
-          Effect.succeed(
-            definitions.map((definition) => ({
-              definition,
-              sourceKind: "host-builtin" as const,
-              registrationID: `test:${definition.id}`,
-            })),
-          ),
+        resolve: () => Effect.succeed(definitions.map((definition) => builtinEntry(definition))),
       })
     }),
   ).pipe(Layer.provide(toolDependencies)),

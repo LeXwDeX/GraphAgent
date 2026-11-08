@@ -18,6 +18,8 @@ import type { TaskPromptOps } from "@/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
+import { builtinEntry } from "../fixture/tool-registry"
+import { ROOT_ONLY_TOOLS } from "@/tool/pipeline"
 
 const it = testEffect(Layer.mergeAll(Truncate.defaultLayer, Agent.defaultLayer))
 const memoryParameters = Schema.Struct({ query: Schema.String })
@@ -35,10 +37,19 @@ const resolveIt = testEffect(
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([memoryDefinition]),
-      registrations: () =>
-        Effect.succeed([
-          { definition: memoryDefinition, sourceKind: "host-builtin", registrationID: "test:memory_search" },
-        ]),
+      // Mirror the registry's definition-stage filters for this fixture: child
+      // sessions never see root-only tools, and deny rules remove the tool.
+      resolve: (input) =>
+        Effect.succeed(
+          Permission.disabledByPolicy(
+            [memoryDefinition.id],
+            [],
+            Permission.merge(input.agent.permission, input.permission ?? []),
+          ).has(memoryDefinition.id) ||
+            (input.session.parentID !== undefined && ROOT_ONLY_TOOLS.has(memoryDefinition.id))
+            ? []
+            : [builtinEntry(memoryDefinition)],
+        ),
     }),
   ),
 )
@@ -64,10 +75,18 @@ const nativeDenyIt = testEffect(
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([memoryDefinition]),
-      registrations: () =>
-        Effect.succeed([
-          { definition: memoryDefinition, sourceKind: "host-builtin", registrationID: "test:memory_search" },
-        ]),
+      // Mirror the registry's definition-stage filters for this fixture: the
+      // native policy denies memory_search despite the configured allow.
+      resolve: (input) =>
+        Effect.succeed(
+          Permission.disabledByPolicy(
+            [memoryDefinition.id],
+            Permission.fromConfig({ memory_search: "deny" }),
+            Permission.merge(input.agent.permission, input.permission ?? []),
+          ).has(memoryDefinition.id)
+            ? []
+            : [builtinEntry(memoryDefinition)],
+        ),
     }),
   ),
 )

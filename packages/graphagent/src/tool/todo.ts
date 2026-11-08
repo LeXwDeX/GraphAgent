@@ -29,6 +29,7 @@ export const TodoWriteTool = Tool.define<typeof Parameters, Metadata, Todo.Servi
 
     return {
       description: DESCRIPTION_WRITE,
+      effects: "read",
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {

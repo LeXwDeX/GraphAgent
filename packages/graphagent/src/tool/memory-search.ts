@@ -20,6 +20,7 @@ export const MemorySearchTool = Tool.define<typeof Parameters, Metadata, never>(
   Effect.succeed({
     description:
       "Retrieve relevant durable project memory for the current user turn. Use it when historical preferences, confirmed decisions, rationale, or project terms may materially affect the answer.",
+    effects: "read",
     parameters: Parameters,
     execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {

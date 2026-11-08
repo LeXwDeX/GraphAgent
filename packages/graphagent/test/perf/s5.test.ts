@@ -9,6 +9,7 @@ const it = testEffect(scenario.layer)
 
 const WORKERS = 8
 const WORKFLOWS = 3
+const BACKGROUND = 4
 
 // SQL/byte/lock counters drift with 15-way concurrency and the loop's 30s
 // paused sweep; the event counts and message conversion do not. S4 set the
@@ -55,7 +56,17 @@ describe("S5 DAG concurrency with background tasks", () => {
           expect(run.waited.every((wait) => !wait.timedOut && wait.status === "completed")).toBe(true)
           expect(run.requests.length).toBeGreaterThan(0)
           expect(run.requests.every((request) => request.purpose === "conversation")).toBe(true)
-          expect(new Set(run.requests.map((request) => request.toolsHash)).size).toBe(1)
+          // #1014: resolve applies the subagent role-default denies, so the
+          // workflow child sessions (which derive `todowrite: deny`) advertise
+          // one tool less than the background sessions. Both sets are
+          // legitimate, and the run must not fragment beyond them.
+          const shapes = new Map<string, number>()
+          for (const request of run.requests) shapes.set(request.toolsHash, (shapes.get(request.toolsHash) ?? 0) + 1)
+          expect(shapes.size).toBe(2)
+          expect([...shapes.values()].sort((left, right) => left - right)).toEqual([
+            BACKGROUND,
+            WORKFLOWS * (WORKERS + 2),
+          ])
           // H3's structural proof: the parent session never ran a turn, so no
           // transcript materialization happened for it.
           expect(run.parentMessages).toBe(0)
@@ -77,14 +88,12 @@ describe("S5 DAG concurrency with background tasks", () => {
         expect(stable(result.second.counts)).toEqual(stable(result.first.counts))
         // Two passes use independent sessions, so the recorded system/prefix
         // hashes differ by session identity. The request shape — what the engine
-        // asked the provider for — must match.
-        const shape = (request: (typeof result.second.requests)[number]) => ({
-          purpose: request.purpose,
-          messageCount: request.messageCount,
-          toolsHash: request.toolsHash,
-          toolChoice: request.toolChoice,
-        })
-        expect(result.second.requests.map(shape)).toEqual(result.first.requests.map(shape))
+        // asked the provider for — must match as a multiset: the two tool sets
+        // above can interleave in scheduling-dependent order.
+        const shape = (request: (typeof result.second.requests)[number]) =>
+          [request.purpose, request.messageCount, request.toolsHash, request.toolChoice].join("|")
+        const shapesOf = (requests: (typeof result.second.requests)) => requests.map(shape).sort()
+        expect(shapesOf(result.second.requests)).toEqual(shapesOf(result.first.requests))
       }),
     scenario.instance,
     { timeout: scenario.timeout },

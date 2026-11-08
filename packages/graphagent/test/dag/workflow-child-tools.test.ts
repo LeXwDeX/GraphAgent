@@ -12,19 +12,18 @@ import { SessionProcessor } from "@/session/processor"
 import { Session } from "@/session/session"
 import { SessionTools } from "@/session/tools"
 import { Tool } from "@/tool/tool"
-import { ToolRegistry } from "@/tool/registry"
+import { ToolRegistry, canUseAgentMessages } from "@/tool/registry"
+import { ROOT_ONLY_TOOLS } from "@/tool/pipeline"
 import type { TaskPromptOps } from "@/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { testEffect } from "../lib/effect"
+import { builtinEntry } from "../fixture/tool-registry"
 import { ProviderTest } from "../fake/provider"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Database } from "@graphagent/core/database/database"
 import { sql } from "drizzle-orm"
-import {
-  registerCaptureSlot,
-  clearCaptureSlot,
-} from "@/dag/runtime/capture"
+import { registerCaptureSlot, clearCaptureSlot } from "@/dag/runtime/capture"
 
 const Parameters = Schema.Struct({})
 const workflowDefinition: Tool.Def<typeof Parameters> = {
@@ -69,13 +68,14 @@ const it = testEffect(
     Layer.mock(MCP.Service, { clients: () => Effect.succeed({}), tools: () => Effect.succeed({}) }),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([workflowDefinition, taskDefinition, agentDefinition]),
-      registrations: () =>
-        Effect.succeed([
-          { definition: workflowDefinition, sourceKind: "host-builtin", registrationID: "test:workflow" },
-          { definition: taskDefinition, sourceKind: "host-builtin", registrationID: "test:task" },
-          { definition: agentDefinition, sourceKind: "host-builtin", registrationID: "test:agent" },
-          { definition: todoDefinition, sourceKind: "host-builtin", registrationID: "test:todo" },
-        ]),
+      resolve: (input) =>
+        Effect.gen(function* () {
+          const entries = [workflowDefinition, taskDefinition, todoDefinition].map((definition) =>
+            builtinEntry(definition),
+          )
+          if (yield* canUseAgentMessages(input.session)) entries.push(builtinEntry(agentDefinition))
+          return entries.filter((entry) => !input.session.parentID || !ROOT_ONLY_TOOLS.has(entry.id))
+        }),
     }),
   ),
 )
@@ -222,30 +222,57 @@ describe("workflow child boundary", () => {
       const build = yield* (yield* Agent.Service).get("build")
       if (!build) throw new Error("Expected configured agent fixture")
       const database = Database.layerFromPath(":memory:")
-      const services = Layer.mergeAll(database, DagStore.layer.pipe(Layer.provide(database)), DagMessages.layer.pipe(Layer.provide(database)))
+      const services = Layer.mergeAll(
+        database,
+        DagStore.layer.pipe(Layer.provide(database)),
+        DagMessages.layer.pipe(Layer.provide(database)),
+      )
       yield* Effect.gen(function* () {
         const { db } = yield* Database.Service
         const messages = yield* DagMessages.Service
         const owner = { ...session(SessionID.make("ses_real_owner")), projectID: ProjectV2.ID.make("p-workspace") }
-        const worker = { ...session(SessionID.make("ses_real_child"), owner.id), projectID: owner.projectID, directory: "/tmp/opencode-linked" }
-        yield* db.run(sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${owner.projectID},${owner.directory},'[]',1,1)`)
-        for (const s of [owner, worker]) yield* db.run(sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES (${s.id},${s.projectID},${s.parentID ?? null},${s.id},${s.directory},${s.title},'test',1,1)`)
-        yield* db.run(sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf-real',${owner.projectID},${owner.id},${owner.directory},${worker.directory},'{"kind":"none"}','W','running','{}',1,1,1)`)
-        yield* db.run(sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,directory,seq,time_created,time_updated) VALUES ('n','wf-real','N','task','running','[]',${worker.id},${worker.directory},1,1,1)`)
+        const worker = {
+          ...session(SessionID.make("ses_real_child"), owner.id),
+          projectID: owner.projectID,
+          directory: "/tmp/opencode-linked",
+        }
+        yield* db.run(
+          sql`INSERT INTO project (id,worktree,sandboxes,time_created,time_updated) VALUES (${owner.projectID},${owner.directory},'[]',1,1)`,
+        )
+        for (const s of [owner, worker])
+          yield* db.run(
+            sql`INSERT INTO session (id,project_id,parent_id,slug,directory,title,version,time_created,time_updated) VALUES (${s.id},${s.projectID},${s.parentID ?? null},${s.id},${s.directory},${s.title},'test',1,1)`,
+          )
+        yield* db.run(
+          sql`INSERT INTO workflow (id,project_id,session_id,directory,execution_directory,target_fingerprint,title,status,config,seq,time_created,time_updated) VALUES ('wf-real',${owner.projectID},${owner.id},${owner.directory},${worker.directory},'{"kind":"none"}','W','running','{}',1,1,1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,directory,seq,time_created,time_updated) VALUES ('n','wf-real','N','task','running','[]',${worker.id},${worker.directory},1,1,1)`,
+        )
         expect(yield* resolvedToolIDs(build, owner)).toContain("agent")
         const childTools = yield* resolvedToolIDs(build, worker)
         expect(childTools).toContain("agent")
         expect(childTools).not.toContain("task")
         expect(childTools).not.toContain("workflow")
         expect(yield* resolvedToolIDs(build, { ...worker, directory: owner.directory })).not.toContain("agent")
-        expect(yield* resolvedToolIDs(build, { ...worker, projectID: ProjectV2.ID.make("foreign") })).not.toContain("agent")
+        expect(yield* resolvedToolIDs(build, { ...worker, projectID: ProjectV2.ID.make("foreign") })).not.toContain(
+          "agent",
+        )
         const parentCaller = { projectID: owner.projectID, directory: owner.directory, sessionID: owner.id }
         const childCaller = { projectID: worker.projectID, directory: worker.directory, sessionID: worker.id }
-        const sent = yield* messages.send(parentCaller, { workflowID: "wf-real", nodeID: "n", attemptID: DagMessages.nodeAttemptID(worker.id, 0), idempotencyKey: "hello", content: "hello" })
+        const sent = yield* messages.send(parentCaller, {
+          workflowID: "wf-real",
+          nodeID: "n",
+          attemptID: DagMessages.nodeAttemptID(worker.id, 0),
+          idempotencyKey: "hello",
+          content: "hello",
+        })
         expect(sent.ok).toBe(true)
         const received = yield* messages.receive(childCaller)
         expect(received.ok && received.value.map((item) => item.content)).toEqual(["hello"])
-        expect((yield* messages.send(childCaller, { workflowID: "wf-real", idempotencyKey: "reply", content: "reply" })).ok).toBe(true)
+        expect(
+          (yield* messages.send(childCaller, { workflowID: "wf-real", idempotencyKey: "reply", content: "reply" })).ok,
+        ).toBe(true)
         yield* db.run(sql`UPDATE session SET parent_id = 'wrong' WHERE id = ${worker.id}`)
         expect(yield* resolvedToolIDs(build, worker)).not.toContain("agent")
         yield* db.run(sql`UPDATE session SET parent_id = ${owner.id} WHERE id = ${worker.id}`)
