@@ -2547,4 +2547,32 @@ describe("DagLoop atomic wake integration", () => {
       await Promise.all([fs.rm(invalidPath, { force: true }), fs.rm(correctedPath, { force: true })])
     }
   })
+
+  it("does not attribute a budget-exhausted failure to the agent wake", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Budget exhausted",
+            config: { name: "budget-exhausted", nodes: [node("node-a")] },
+          })
+          const root = yield* takeWithin(childPrompts, "root node did not start")
+          yield* dag.nodeFailed(dagID, "node-a", "budget exhausted", "exec_failed", undefined, "budget_exhausted")
+          yield* Deferred.succeed(root.release, "ignored")
+
+          const parent = yield* takeWithin(parentPrompts, "workflow failure did not wake the parent")
+          const wakeText = promptText(parent.input)
+          expect(wakeText).toContain("[DAG Workflow failed]")
+          // D12: budget exhaustion is an engine outcome, not an agent failure —
+          // the failed-node attribution (and its replan hint) must stay absent.
+          // The per-node result line still reports the raw error class.
+          expect(wakeText).not.toContain("Failed nodes:")
+          expect((yield* store.getNode(dagID, "node-a"))?.errorClass).toBe("budget_exhausted")
+          yield* Deferred.succeed(parent.release, "success")
+        }),
+      ),
+    )
+  })
 })

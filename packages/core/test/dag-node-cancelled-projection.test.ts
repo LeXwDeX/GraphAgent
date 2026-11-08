@@ -104,6 +104,10 @@ describe("NodeCancelled projection (no phantom node-level cancelled status)", ()
         expect(row?.errorReason).toBe("cancelled via replan")
         // Cancel is an adjudication — the pending-escalation flag must clear.
         expect(row?.escalationPending).toBe(false)
+        // The cancelled row is superseded, so the current-revision view (and
+        // therefore wake attribution) never sees it.
+        expect(row?.superseded).toBe(true)
+        expect((yield* store.getCurrentNodes("dag_cancel")).map((node) => node.id)).toEqual([])
       }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
     )
   })

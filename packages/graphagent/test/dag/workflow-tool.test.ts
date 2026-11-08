@@ -270,7 +270,29 @@ const mockNodes = (id: string) =>
                   childSessionId: "ses_review",
                 }),
               ]
-            : []
+            : id === "dag_display"
+              ? [
+                  makeNodeRow({
+                    id: "node_cancelled",
+                    workflowId: id,
+                    name: "Cancelled node",
+                    status: "failed",
+                    required: false,
+                    errorReason: "cancelled via replan",
+                    errorClass: "cancelled",
+                    superseded: true,
+                  }),
+                  makeNodeRow({
+                    id: "node_escalated",
+                    workflowId: id,
+                    name: "Escalated node",
+                    status: "running",
+                    required: true,
+                    escalationPending: true,
+                    timeoutExtensions: 1,
+                  }),
+                ]
+              : []
 
 const mockWorkflowConfig = (id: string) =>
   JSON.stringify({
@@ -466,7 +488,26 @@ const store = Layer.mock(DagStore.Service, {
                         timeCreated: 1,
                         timeUpdated: 2,
                       }
-                    : undefined,
+                    : id === "dag_display"
+                      ? {
+                          id,
+                          projectId: projectID,
+                          sessionId: "ses_workflow_parent",
+                          title: "Display state workflow",
+                          directory: process.cwd(),
+                          targetFingerprint: { kind: "none" } as const,
+                          status: "paused",
+                          pauseReason: "budget_exhausted",
+                          config: mockWorkflowConfig(id),
+                          seq: 1,
+                          wakeReported: false,
+                          graphRev: 1,
+                          startedAt: 1,
+                          completedAt: null,
+                          timeCreated: 1,
+                          timeUpdated: 2,
+                        }
+                      : undefined,
     ),
   getNodes: (id: string) =>
     Effect.succeed(
@@ -1441,6 +1482,37 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('"retired": true')
       expect(result.output).toContain('"conflicts"')
       expect(result.output).toContain('"src/shared.ts"')
+    }),
+  )
+
+  runtime.effect("status exposes pause_reason and structured display_state per node", () =>
+    Effect.gen(function* () {
+      const info = yield* WorkflowTool
+      const workflow = yield* info.init()
+      const result = yield* workflow.execute(
+        {
+          params: { action: "status", workflow_id: Dag.ID.make("dag_display") },
+        },
+        {
+          sessionID: SessionID.make("ses_workflow_parent"),
+          messageID: MessageID.ascending(),
+          agent: "build",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        } satisfies Tool.Context,
+      )
+
+      expect(result.output).toContain('"pause_reason": "budget_exhausted"')
+      // D11: cancellation keeps the raw failed status but displays as cancelled.
+      const cancelled = JSON.parse(result.output).nodes.find((node: { id: string }) => node.id === "node_cancelled")
+      expect(cancelled.status).toBe("failed")
+      expect(cancelled.error_class).toBe("cancelled")
+      expect(cancelled.display_state).toBe("cancelled")
+      const escalated = JSON.parse(result.output).nodes.find((node: { id: string }) => node.id === "node_escalated")
+      expect(escalated.status).toBe("running")
+      expect(escalated.display_state).toBe("escalated")
     }),
   )
 
