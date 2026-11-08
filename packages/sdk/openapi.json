@@ -9062,97 +9062,6 @@
             "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.dag.list({\n  ...\n})"
           }
         ]
-      },
-      "post": {
-        "tags": ["dag"],
-        "operationId": "dag.start",
-        "parameters": [
-          {
-            "name": "directory",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          },
-          {
-            "name": "workspace",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Created workflow",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DagWorkflow"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BadRequestError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "ConflictError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConflictError"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Create and start a DAG workflow",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "session_id": {
-                    "type": "string"
-                  },
-                  "title": {
-                    "type": "string"
-                  },
-                  "config": {}
-                },
-                "required": ["session_id", "config"],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.dag.start({\n  ...\n})"
-          }
-        ]
       }
     },
     "/dag/session/{sessionID}": {
@@ -9526,105 +9435,6 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.dag.nodeDetail({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/dag/{dagID}/control": {
-      "post": {
-        "tags": ["dag"],
-        "operationId": "dag.control",
-        "parameters": [
-          {
-            "name": "dagID",
-            "in": "path",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          },
-          {
-            "name": "directory",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          },
-          {
-            "name": "workspace",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Control result (replan/extend include the plan disposition)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DagControlResult"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BadRequestError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "ConflictError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConflictError"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Control a workflow (pause/resume/cancel/replan/extend/step/complete)",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "operation": {
-                    "type": "string",
-                    "enum": ["pause", "resume", "cancel", "replan", "extend", "step", "complete"]
-                  },
-                  "fragment": {}
-                },
-                "required": ["operation"],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.dag.control({\n  ...\n})"
           }
         ]
       }
@@ -26519,136 +26329,6 @@
         "type": "string",
         "enum": ["allow", "deny", "ask"]
       },
-      "DagControlResult": {
-        "type": "object",
-        "properties": {
-          "status": {
-            "type": "string"
-          },
-          "cancel": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "restart": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "replace": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "add": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "ignore": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": ["status"],
-        "additionalProperties": false
-      },
-      "DagWorkflow": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "config": {
-            "type": "string"
-          },
-          "seq": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity", "-Infinity", "NaN"]
-              }
-            ]
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity", "-Infinity", "NaN"]
-              }
-            ]
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity", "-Infinity", "NaN"]
-              }
-            ]
-          },
-          "time_created": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity", "-Infinity", "NaN"]
-              }
-            ]
-          },
-          "time_updated": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity", "-Infinity", "NaN"]
-              }
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "project_id",
-          "session_id",
-          "title",
-          "status",
-          "config",
-          "seq",
-          "time_created",
-          "time_updated"
-        ],
-        "additionalProperties": false
-      },
       "DagNode": {
         "type": "object",
         "properties": {
@@ -26785,6 +26465,96 @@
           }
         },
         "required": ["id", "workflow_id", "name", "worker_type", "status", "required", "depends_on", "replan_attempts"],
+        "additionalProperties": false
+      },
+      "DagWorkflow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "config": {
+            "type": "string"
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          },
+          "time_created": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          },
+          "time_updated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "session_id",
+          "title",
+          "status",
+          "config",
+          "seq",
+          "time_created",
+          "time_updated"
+        ],
         "additionalProperties": false
       },
       "ProjectDirectories": {
@@ -27446,7 +27216,7 @@
     },
     {
       "name": "dag",
-      "description": "DAG workflow inspector + control routes"
+      "description": "DAG workflow inspector routes"
     },
     {
       "name": "workspace",

@@ -206,37 +206,6 @@ export function dagNodeGlyph(status: string): string {
   return "○"
 }
 
-export type DagControlOperation = "pause" | "resume" | "cancel" | "step"
-
-/** Whether a control operation applies to the workflow's current status.
- * Shared by keybinding feedback and the footer's contextual hints so the
- * hint bar never advertises an operation that would only produce a toast. */
-export function dagControlAllowed(status: string | undefined, operation: DagControlOperation): boolean {
-  if (operation === "pause" || operation === "step") return status === "running" || status === "stepping"
-  if (operation === "resume") return status === "paused" || status === "stepping"
-  return status === "running" || status === "stepping" || status === "paused"
-}
-
-export function dagControlUnavailableMessage(status: string | undefined, operation: DagControlOperation) {
-  if (dagControlAllowed(status, operation)) return undefined
-  const action =
-    operation === "pause"
-      ? "paused"
-      : operation === "resume"
-        ? "resumed"
-        : operation === "step"
-          ? "stepped"
-          : "cancelled"
-  return `Workflow is ${status ?? "unavailable"} and cannot be ${action}`
-}
-
-export function dagControlProgressMessage(operation: DagControlOperation) {
-  if (operation === "pause") return "Pausing workflow..."
-  if (operation === "resume") return "Resuming workflow..."
-  if (operation === "step") return "Stepping workflow..."
-  return "Cancelling workflow..."
-}
-
 /**
  * Unique owning sessions of a project-level workflow list, preserving the
  * list's order. The summary endpoint is session-scoped, so discovery groups

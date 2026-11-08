@@ -4537,29 +4537,6 @@ export type PermissionV2Rule = {
 
 export type PermissionV2Effect = "allow" | "deny" | "ask"
 
-export type DagControlResult = {
-  status: string
-  cancel?: Array<string>
-  restart?: Array<string>
-  replace?: Array<string>
-  add?: Array<string>
-  ignore?: Array<string>
-}
-
-export type DagWorkflow = {
-  id: string
-  project_id: string
-  session_id: string
-  title: string
-  status: string
-  config: string
-  seq: number | "Infinity" | "-Infinity" | "NaN"
-  started_at?: number | "Infinity" | "-Infinity" | "NaN"
-  completed_at?: number | "Infinity" | "-Infinity" | "NaN"
-  time_created: number | "Infinity" | "-Infinity" | "NaN"
-  time_updated: number | "Infinity" | "-Infinity" | "NaN"
-}
-
 export type DagNode = {
   id: string
   workflow_id: string
@@ -4590,6 +4567,20 @@ export type DagNode = {
   replan_attempts: number | "Infinity" | "-Infinity" | "NaN"
   started_at?: number | "Infinity" | "-Infinity" | "NaN"
   completed_at?: number | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type DagWorkflow = {
+  id: string
+  project_id: string
+  session_id: string
+  title: string
+  status: string
+  config: string
+  seq: number | "Infinity" | "-Infinity" | "NaN"
+  started_at?: number | "Infinity" | "-Infinity" | "NaN"
+  completed_at?: number | "Infinity" | "-Infinity" | "NaN"
+  time_created: number | "Infinity" | "-Infinity" | "NaN"
+  time_updated: number | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type ProjectDirectories = Array<{
@@ -8491,46 +8482,6 @@ export type DagListResponses = {
 
 export type DagListResponse = DagListResponses[keyof DagListResponses]
 
-export type DagStartData = {
-  body?: {
-    session_id: string
-    title?: string
-    config: unknown
-  }
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/dag"
-}
-
-export type DagStartErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * NotFoundError
-   */
-  404: NotFoundError
-  /**
-   * ConflictError
-   */
-  409: ConflictError
-}
-
-export type DagStartError = DagStartErrors[keyof DagStartErrors]
-
-export type DagStartResponses = {
-  /**
-   * Created workflow
-   */
-  200: DagWorkflow
-}
-
-export type DagStartResponse = DagStartResponses[keyof DagStartResponses]
-
 export type DagBySessionData = {
   body?: never
   path: {
@@ -8701,47 +8652,6 @@ export type DagNodeDetailResponses = {
 }
 
 export type DagNodeDetailResponse = DagNodeDetailResponses[keyof DagNodeDetailResponses]
-
-export type DagControlData = {
-  body?: {
-    operation: "pause" | "resume" | "cancel" | "replan" | "extend" | "step" | "complete"
-    fragment?: unknown
-  }
-  path: {
-    dagID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/dag/{dagID}/control"
-}
-
-export type DagControlErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * NotFoundError
-   */
-  404: NotFoundError
-  /**
-   * ConflictError
-   */
-  409: ConflictError
-}
-
-export type DagControlError = DagControlErrors[keyof DagControlErrors]
-
-export type DagControlResponses = {
-  /**
-   * Control result (replan/extend include the plan disposition)
-   */
-  200: DagControlResult
-}
-
-export type DagControlResponse = DagControlResponses[keyof DagControlResponses]
 
 export type ExperimentalWorkspaceAdapterListData = {
   body?: never

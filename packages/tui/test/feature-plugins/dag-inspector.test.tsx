@@ -86,7 +86,6 @@ async function renderDagInspector(opts: RenderOpts = {}) {
   const nodesCalls: string[] = []
   const summaryCalls: string[] = []
   let listCalls = 0
-  const controlCalls: { dagID: string; operation: string }[] = []
   const commandCalls: unknown[] = []
   const navigations: { name: string; params?: Record<string, unknown> }[] = []
   const toasts: { variant?: string; message: string }[] = []
@@ -125,10 +124,6 @@ async function renderDagInspector(opts: RenderOpts = {}) {
           nodes: async (input: { dagID: string }) => {
             nodesCalls.push(input.dagID)
             return opts.fetchNodes?.(input.dagID, nodesCalls.length) ?? { data: nodesState }
-          },
-          control: async (input: { dagID: string; operation: string }) => {
-            controlCalls.push(input)
-            return { data: undefined }
           },
         },
         session: {
@@ -211,7 +206,6 @@ async function renderDagInspector(opts: RenderOpts = {}) {
     nodesCalls: () => nodesCalls,
     summaryCalls: () => summaryCalls,
     listCalls: () => listCalls,
-    controlCalls: () => controlCalls,
     setWorkflows: (wfs: DagWorkflowSummary[]) => {
       workflowsState = wfs
     },
@@ -309,47 +303,6 @@ describe("DagInspector", () => {
         params: { sessionID: SESSION_ID, returnRoute },
       })
       expect(viewer.commandCalls()).toEqual([])
-    } finally {
-      viewer.app.renderer.destroy()
-    }
-  })
-
-  test("/dag-cancel cancels the only active workflow in the current session", async () => {
-    const viewer = await renderDagInspector({
-      initialRoute: { name: "session", params: { sessionID: SESSION_ID } },
-      serverWorkflows: [
-        wfSummary({ id: "wf-running", status: "running" }),
-        wfSummary({ id: "wf-complete", status: "completed" }),
-      ],
-    })
-    try {
-      expect(viewer.commands.get("dag.cancel.active")?.slashName).toBe("dag-cancel")
-      runCommand(viewer.commands, "dag.cancel.active")
-      await waitForCondition(() => viewer.controlCalls().length > 0)
-      expect(viewer.controlCalls()).toEqual([{ dagID: "wf-running", operation: "cancel" }])
-    } finally {
-      viewer.app.renderer.destroy()
-    }
-  })
-
-  test("/dag-cancel opens the inspector instead of guessing when multiple workflows are active", async () => {
-    const returnRoute = { name: "session", params: { sessionID: SESSION_ID } }
-    const viewer = await renderDagInspector({
-      initialRoute: returnRoute,
-      serverWorkflows: [
-        wfSummary({ id: "wf-running", status: "running" }),
-        wfSummary({ id: "wf-paused", status: "paused" }),
-      ],
-    })
-    try {
-      runCommand(viewer.commands, "dag.cancel.active")
-      await waitForCondition(() => viewer.navigations().length > 0)
-      expect(viewer.controlCalls()).toEqual([])
-      expect(viewer.navigations().at(-1)).toEqual({
-        name: "dag",
-        params: { sessionID: SESSION_ID, returnRoute },
-      })
-      expect(viewer.toasts().at(-1)?.message).toContain("Multiple active workflows")
     } finally {
       viewer.app.renderer.destroy()
     }
@@ -541,68 +494,6 @@ describe("DagInspector", () => {
       expect(viewer.navigations()).toContainEqual(
         expect.objectContaining({ name: "session", params: expect.objectContaining({ sessionID: "child_ses_1" }) }),
       )
-    } finally {
-      viewer.app.renderer.destroy()
-    }
-  })
-
-  test("dag.pause pauses a running workflow", async () => {
-    const viewer = await renderDagInspector({
-      workflows: [wfSummary({ id: "wf-1", status: "running" })],
-      nodes: [dagNode({ id: "n-1", name: "build", status: "running" })],
-    })
-    try {
-      await viewer.app.waitForFrame((frame) => frame.includes("build"))
-      runCommand(viewer.commands, "dag.pause")
-      await waitForCondition(() => viewer.controlCalls().length > 0)
-      expect(viewer.controlCalls()).toContainEqual({ dagID: "wf-1", operation: "pause" })
-    } finally {
-      viewer.app.renderer.destroy()
-    }
-  })
-
-  test("dag.pause pauses a stepping workflow", async () => {
-    const viewer = await renderDagInspector({
-      workflows: [wfSummary({ id: "wf-1", status: "stepping" })],
-      nodes: [dagNode({ id: "n-1", name: "build", status: "running" })],
-    })
-    try {
-      await viewer.app.waitForFrame((frame) => frame.includes("build"))
-      runCommand(viewer.commands, "dag.pause")
-      await waitForCondition(() => viewer.controlCalls().length > 0)
-      expect(viewer.controlCalls()).toContainEqual({ dagID: "wf-1", operation: "pause" })
-    } finally {
-      viewer.app.renderer.destroy()
-    }
-  })
-
-  test("dag.pause on a terminal workflow explains why pause is unavailable", async () => {
-    const viewer = await renderDagInspector({
-      workflows: [wfSummary({ id: "wf-1", status: "completed", completedNodes: 2 })],
-      nodes: [dagNode({ id: "n-1", name: "build", status: "completed" })],
-    })
-    try {
-      await viewer.app.waitForFrame((frame) => frame.includes("build"))
-      runCommand(viewer.commands, "dag.pause")
-      await waitForCondition(() => viewer.toasts().length > 0)
-      expect(viewer.controlCalls()).toEqual([])
-      expect(viewer.toasts().at(-1)?.message).toMatch(/completed.*cannot be paused/i)
-    } finally {
-      viewer.app.renderer.destroy()
-    }
-  })
-
-  test("control operations stay reachable through the command palette", async () => {
-    const viewer = await renderDagInspector({
-      workflows: [wfSummary({ id: "wf-1", status: "running" })],
-      nodes: [dagNode({ id: "n-1", name: "build", status: "running" })],
-    })
-    try {
-      await viewer.app.waitForFrame((frame) => frame.includes("build"))
-      // Unbound by default, so the palette namespace is the only way in.
-      for (const name of ["dag.pause", "dag.resume", "dag.step", "dag.cancel"]) {
-        expect(viewer.commands.get(name)?.namespace).toBe("palette")
-      }
     } finally {
       viewer.app.renderer.destroy()
     }

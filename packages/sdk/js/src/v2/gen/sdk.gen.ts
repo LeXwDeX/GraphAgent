@@ -34,8 +34,6 @@ import type {
   ConfigUpdateResponses,
   DagBySessionErrors,
   DagBySessionResponses,
-  DagControlErrors,
-  DagControlResponses,
   DagDetailErrors,
   DagDetailResponses,
   DagListErrors,
@@ -44,8 +42,6 @@ import type {
   DagNodeDetailResponses,
   DagNodesErrors,
   DagNodesResponses,
-  DagStartErrors,
-  DagStartResponses,
   DagSummaryErrors,
   DagSummaryResponses,
   EventSubscribeResponse,
@@ -4615,45 +4611,6 @@ export class Dag extends HeyApiClient {
   }
 
   /**
-   * Create and start a DAG workflow
-   */
-  public start<ThrowOnError extends boolean = false>(
-    parameters: {
-      directory?: string
-      workspace?: string
-      session_id: string
-      title?: string
-      config: unknown
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<DagStartResponses, DagStartErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "session_id" },
-            { in: "body", key: "title" },
-            { in: "body", key: "config" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<DagStartResponses, DagStartErrors, ThrowOnError>({
-      url: "/dag",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
    * List workflows by session
    */
   public bySession<ThrowOnError extends boolean = false>(
@@ -4802,45 +4759,6 @@ export class Dag extends HeyApiClient {
       url: "/dag/{dagID}/nodes/{nodeID}",
       ...options,
       ...params,
-    })
-  }
-
-  /**
-   * Control a workflow (pause/resume/cancel/replan/extend/step/complete)
-   */
-  public control<ThrowOnError extends boolean = false>(
-    parameters: {
-      dagID: string
-      directory?: string
-      workspace?: string
-      operation: "pause" | "resume" | "cancel" | "replan" | "extend" | "step" | "complete"
-      fragment?: unknown
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<DagControlResponses, DagControlErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "dagID" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "operation" },
-            { in: "body", key: "fragment" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<DagControlResponses, DagControlErrors, ThrowOnError>({
-      url: "/dag/{dagID}/control",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
     })
   }
 }

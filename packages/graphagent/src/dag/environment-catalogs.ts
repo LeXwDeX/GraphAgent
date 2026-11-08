@@ -13,16 +13,20 @@ import { DagModel } from "./model"
 import { DagValidation } from "./validation"
 
 /**
- * The environment-profile catalog loader shared by the workflow tool and the
- * httpapi dag.start handler (#344): agent names, model availability, and
- * tier resolution from the project's dag.jsonc. Passing the services in
- * keeps this module layer-free — callers resolve Agent/Provider from their
- * own composition context.
+ * The environment-profile catalog loader shared by the workflow tool's
+ * authoring and start paths: agent names, model availability, and tier
+ * resolution from the project's dag.jsonc. Passing the services in keeps
+ * this module layer-free — callers resolve Agent/Provider from their own
+ * composition context.
  */
-export const makeCatalogLoader = (
-  agents: Agent.Interface,
-  provider: Provider.Interface,
-): ((context: { directory?: string; parent?: { id: string; providerID: string } }) => Effect.Effect<DagValidation.EnvironmentCatalogs>) =>
+export const makeCatalogLoader =
+  (
+    agents: Agent.Interface,
+    provider: Provider.Interface,
+  ): ((context: {
+    directory?: string
+    parent?: { id: string; providerID: string }
+  }) => Effect.Effect<DagValidation.EnvironmentCatalogs>) =>
   (context) =>
     Effect.gen(function* () {
       if (!context.directory) return {}
@@ -44,9 +48,7 @@ export const makeCatalogLoader = (
               workerType: node.worker_type,
             }),
             agent: agentsByName.get(node.worker_type)?.model,
-            parent: context.parent
-              ? { modelID: context.parent.id, providerID: context.parent.providerID }
-              : undefined,
+            parent: context.parent ? { modelID: context.parent.id, providerID: context.parent.providerID } : undefined,
           })
           return Boolean(resolved && availableModels.has(`${resolved.providerID}/${resolved.modelID}`))
         })
@@ -59,8 +61,7 @@ export const makeCatalogLoader = (
           agentCatalog
             .filter(
               (agent) =>
-                agent.name !== "plan" &&
-                Permission.disabled(["edit", "write", "patch"], agent.permission).size === 0,
+                agent.name !== "plan" && Permission.disabled(["edit", "write", "patch"], agent.permission).size === 0,
             )
             .map((agent) => agent.name),
         ),
