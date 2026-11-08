@@ -569,60 +569,6 @@ const scenarios: Scenario[] = [
       body: {},
     }))
     .status(400),
-  http.protected
-    .get("/experimental/tool", "tool.list")
-    .at((ctx) => ({
-      path: `/experimental/tool?${new URLSearchParams({ provider: "opencode", model: "test" })}`,
-      headers: ctx.headers(),
-    }))
-    .json(200, array, "status"),
-  http.protected.get("/experimental/tool/ids", "tool.ids").json(200, array),
-  http.protected.get("/experimental/worktree", "worktree.list").json(200, array),
-  http.protected
-    .post("/experimental/worktree", "worktree.create")
-    .mutating()
-    .at((ctx) => ({ path: "/experimental/worktree", headers: ctx.headers(), body: { name: "api-dsl" } }))
-    .jsonEffect(
-      200,
-      (body, ctx) =>
-        Effect.gen(function* () {
-          object(body)
-          check(typeof body.directory === "string", "created worktree should include directory")
-          yield* ctx.worktreeRemove(body.directory)
-        }),
-      "status",
-    ),
-  http.protected
-    .post("/experimental/worktree", "worktree.create.invalid")
-    .at((ctx) => ({ path: "/experimental/worktree", headers: ctx.headers(), body: { name: 1 } }))
-    .status(400),
-  http.protected
-    .delete("/experimental/worktree", "worktree.remove")
-    .mutating()
-    .seeded((ctx) => ctx.worktree({ name: "api-remove" }))
-    .at((ctx) => ({ path: "/experimental/worktree", headers: ctx.headers(), body: { directory: ctx.state.directory } }))
-    .json(200, (body) => {
-      check(body === true, "worktree remove should return true")
-    }),
-  http.protected
-    .post("/experimental/worktree/reset", "worktree.reset")
-    .mutating()
-    .seeded((ctx) => ctx.worktree({ name: "api-reset" }))
-    .at((ctx) => ({
-      path: "/experimental/worktree/reset",
-      headers: ctx.headers(),
-      body: { directory: ctx.state.directory },
-    }))
-    .jsonEffect(200, (body, ctx) =>
-      Effect.gen(function* () {
-        check(body === true, "worktree reset should return true")
-        yield* ctx.worktreeRemove(ctx.state.directory)
-      }),
-    ),
-  http.protected
-    .get("/experimental/session", "experimental.session.list")
-    .at((ctx) => ({ path: "/experimental/session?roots=false&archived=false", headers: ctx.headers() }))
-    .json(200, array),
   http.protected.get("/experimental/capabilities", "experimental.capabilities.get").json(200, (body) => {
     check(typeof body === "object" && body !== null, "capabilities should be an object")
     check("backgroundSubagents" in body, "capabilities should report background subagents")

@@ -56,8 +56,6 @@ import type {
   ExperimentalResourceListResponses,
   ExperimentalSessionBackgroundErrors,
   ExperimentalSessionBackgroundResponses,
-  ExperimentalSessionListErrors,
-  ExperimentalSessionListResponses,
   ExperimentalWorkspaceAdapterListErrors,
   ExperimentalWorkspaceAdapterListResponses,
   ExperimentalWorkspaceCreateErrors,
@@ -238,10 +236,6 @@ import type {
   SyncStealErrors,
   SyncStealResponses,
   TextPartInput,
-  ToolIdsErrors,
-  ToolIdsResponses,
-  ToolListErrors,
-  ToolListResponses,
   V2AgentListErrors,
   V2AgentListResponses,
   V2CommandListErrors,
@@ -303,17 +297,6 @@ import type {
   VcsGetResponses,
   VcsStatusErrors,
   VcsStatusResponses,
-  WorktreeCreateErrors,
-  WorktreeCreateInput,
-  WorktreeCreateResponses,
-  WorktreeListErrors,
-  WorktreeListResponses,
-  WorktreeRemoveErrors,
-  WorktreeRemoveInput,
-  WorktreeRemoveResponses,
-  WorktreeResetErrors,
-  WorktreeResetInput,
-  WorktreeResetResponses,
 } from "./types.gen.js"
 
 export type Options<
@@ -607,52 +590,6 @@ export class Capabilities extends HeyApiClient {
 }
 
 export class Session extends HeyApiClient {
-  /**
-   * List sessions
-   *
-   * Get a list of all OpenCode sessions across projects, sorted by most recently updated. Archived sessions are excluded by default.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-      roots?: boolean | "true" | "false"
-      start?: number
-      cursor?: number
-      search?: string
-      limit?: number
-      archived?: boolean | "true" | "false"
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<ExperimentalSessionListResponses, ExperimentalSessionListErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "query", key: "roots" },
-            { in: "query", key: "start" },
-            { in: "query", key: "cursor" },
-            { in: "query", key: "search" },
-            { in: "query", key: "limit" },
-            { in: "query", key: "archived" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<
-      ExperimentalSessionListResponses,
-      ExperimentalSessionListErrors,
-      ThrowOnError
-    >({
-      url: "/experimental/session",
-      ...options,
-      ...params,
-    })
-  }
-
   /**
    * Background subagents
    *
@@ -1320,215 +1257,6 @@ export class Config2 extends HeyApiClient {
       url: "/config/providers",
       ...options,
       ...params,
-    })
-  }
-}
-
-export class Tool extends HeyApiClient {
-  /**
-   * List tools
-   *
-   * Get a list of available tools with their JSON schema parameters for a specific provider and model combination.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters: {
-      directory?: string
-      workspace?: string
-      provider: string
-      model: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<ToolListResponses, ToolListErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "query", key: "provider" },
-            { in: "query", key: "model" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<ToolListResponses, ToolListErrors, ThrowOnError>({
-      url: "/experimental/tool",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * List tool IDs
-   *
-   * Get a list of all available tool IDs, including both built-in tools and dynamically registered tools.
-   */
-  public ids<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<ToolIdsResponses, ToolIdsErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<ToolIdsResponses, ToolIdsErrors, ThrowOnError>({
-      url: "/experimental/tool/ids",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Worktree extends HeyApiClient {
-  /**
-   * Remove worktree
-   *
-   * Remove a git worktree and delete its branch.
-   */
-  public remove<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-      worktreeRemoveInput?: WorktreeRemoveInput
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<WorktreeRemoveResponses, WorktreeRemoveErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { key: "worktreeRemoveInput", map: "body" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).delete<WorktreeRemoveResponses, WorktreeRemoveErrors, ThrowOnError>({
-      url: "/experimental/worktree",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * List worktrees
-   *
-   * List all sandbox worktrees for the current project.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<WorktreeListResponses, WorktreeListErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<WorktreeListResponses, WorktreeListErrors, ThrowOnError>({
-      url: "/experimental/worktree",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Create worktree
-   *
-   * Create a new git worktree for the current project and run any configured startup scripts.
-   */
-  public create<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-      worktreeCreateInput?: WorktreeCreateInput
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<WorktreeCreateResponses, WorktreeCreateErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { key: "worktreeCreateInput", map: "body" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<WorktreeCreateResponses, WorktreeCreateErrors, ThrowOnError>({
-      url: "/experimental/worktree",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Reset worktree
-   *
-   * Reset a worktree branch to the primary default branch.
-   */
-  public reset<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-      worktreeResetInput?: WorktreeResetInput
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<WorktreeResetResponses, WorktreeResetErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { key: "worktreeResetInput", map: "body" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<WorktreeResetResponses, WorktreeResetErrors, ThrowOnError>({
-      url: "/experimental/worktree/reset",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
     })
   }
 }
@@ -5671,16 +5399,6 @@ export class OpencodeClient extends HeyApiClient {
   private _config?: Config2
   get config(): Config2 {
     return (this._config ??= new Config2({ client: this.client }))
-  }
-
-  private _tool?: Tool
-  get tool(): Tool {
-    return (this._tool ??= new Tool({ client: this.client }))
-  }
-
-  private _worktree?: Worktree
-  get worktree(): Worktree {
-    return (this._worktree ??= new Worktree({ client: this.client }))
   }
 
   private _find?: Find
