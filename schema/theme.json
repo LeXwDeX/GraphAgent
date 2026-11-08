@@ -286,6 +286,34 @@
                 }
               ]
             },
+            "textDim": {
+              "description": "Weakest text (hints, separators, queued); defaults to a 50% tint of textMuted over background",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
             "selectedListItemText": {
               "description": "Foreground for the selected list item; defaults to the background color",
               "anyOf": [
@@ -423,6 +451,62 @@
                 }
               ]
             },
+            "backgroundSelected": {
+              "description": "Selected list/panel row; defaults to a 12% tint of primary over backgroundPanel",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "backgroundUser": {
+              "description": "User message block background; defaults to backgroundElement",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
             "border": {
               "anyOf": [
                 {
@@ -478,6 +562,202 @@
               ]
             },
             "borderSubtle": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "borderWarning": {
+              "description": "Warning panel border; defaults to a 40% tint of warning over border",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "logoFace": {
+              "description": "GraphAgent logo GRAPH face; defaults to textMuted",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "logoAccent": {
+              "description": "GraphAgent logo AGENT face; defaults to primary",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "logoShadow": {
+              "description": "GraphAgent logo outline shadow; defaults to a 25% tint of textMuted over background",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "statusRunning": {
+              "description": "Running DAG segments and spinners; defaults to primary",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "statusQueued": {
+              "description": "Queued or skipped states; defaults to textDim",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "Hex color (#rrggbb / #rrggbbaa) or a defs reference name"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "dark": {
+                      "type": "string",
+                      "description": "Color or reference used in dark mode"
+                    },
+                    "light": {
+                      "type": "string",
+                      "description": "Color or reference used in light mode"
+                    }
+                  },
+                  "required": [
+                    "dark",
+                    "light"
+                  ],
+                  "additionalProperties": true,
+                  "description": "Dark/light pair for the same role"
+                }
+              ]
+            },
+            "statusPaused": {
+              "description": "Paused or waiting states; defaults to warning",
               "anyOf": [
                 {
                   "type": "string",
