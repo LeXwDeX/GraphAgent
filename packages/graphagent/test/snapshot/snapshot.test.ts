@@ -776,6 +776,34 @@ it.instance(
 )
 
 it.instance(
+  "concurrent tracks coalesce and keep writes made before each request",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/first.txt`, "first")
+
+    // No writes happen while these run, so every request must observe the same
+    // tree regardless of how the coordinator batches them.
+    const hashes = yield* Effect.forEach(
+      Array.from({ length: 8 }, () => snapshot.track()),
+      (track) => track,
+      { concurrency: "unbounded" },
+    )
+    expect(hashes.every(Boolean)).toBe(true)
+    expect(new Set(hashes).size).toBe(1)
+
+    // The shared tree contains the write that preceded every request, and
+    // matches the working tree once the batches finish.
+    const diffs = yield* snapshot.diffFull(before!, hashes[0]!)
+    expect(diffs.map((item) => item.file)).toEqual(["first.txt"])
+    expect((yield* snapshot.patch(hashes[0]!)).files).toEqual([])
+  }),
+  { git: true },
+)
+
+it.instance(
   "diff function with various changes",
   withTrackedSnapshot(({ tmp, snapshot, before }) =>
     Effect.gen(function* () {
