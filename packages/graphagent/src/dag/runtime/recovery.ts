@@ -77,8 +77,7 @@ export function reconcileWorkflow(
     const nodes = yield* dag.store.getNodes(dagID)
     const messages = yield* Effect.serviceOption(DagMessages.Service)
     const workflow = Option.isSome(messages) ? yield* dag.store.getWorkflow(dagID) : undefined
-    const workflowExecutionDirectory =
-      executionDirectory ?? workflow?.executionDirectory ?? workflow?.directory ?? undefined
+    const workflowExecutionDirectory = executionDirectory ?? workflow?.executionDirectory ?? workflow?.directory
     // #946: recovery must finish an isolated attempt exactly like the live
     // path — commit, patch, touched paths, then remove or keep. The Worktree
     // service and the instance store are lazy for the same bootstrap-cycle
@@ -661,7 +660,7 @@ export function continueRecoveredMessageNode(
       return
     const childSessionID = node.childSessionId
     // Workflow ownership remains with the parent, while the mailbox belongs to the child session.
-    const ownerDirectory = workflow.directory ?? location.directory
+    const ownerDirectory = workflow.directory
     const ownerExecutionDirectory =
       executionDirectory ?? nodeConfig?.workspace ?? workflow.executionDirectory ?? ownerDirectory
     const boundExecutionDirectory =
@@ -725,7 +724,7 @@ export function continueRecoveredMessageNode(
       if (!(yield* nodeWorkspaceUsable)) return false
       if (
         directory !== undefined &&
-        (current.value.directory === null ||
+        (current.value.directory === "" ||
           DagLocation.canonicalDirectory(current.value.directory) !== DagLocation.canonicalDirectory(directory))
       )
         return false

@@ -528,7 +528,7 @@ describe("DagProjector: target fingerprint", () => {
     })
   }
 
-  it("projects legacy events without a fingerprint to null and false", async () => {
+  it("projects legacy events without a fingerprint to the non-git marker and false", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* legacySeed()
@@ -565,7 +565,7 @@ describe("DagProjector: target fingerprint", () => {
           durationMs: NonNegativeInt.make(0),
           timestamp: ts(3),
         })
-        expect((yield* store.getWorkflow(legacyDagID))?.targetFingerprint).toBeNull()
+        expect((yield* store.getWorkflow(legacyDagID))?.targetFingerprint).toEqual({ kind: "none" })
         const node = yield* store.getNode(legacyDagID, "review-1")
         expect(node?.targetFingerprint).toBeNull()
         expect(node?.staleTarget).toBe(false)

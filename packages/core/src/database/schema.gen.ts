@@ -37,6 +37,7 @@ export default {
           \`node_id\` text,
           \`attempt_id\` text,
           \`revision\` integer DEFAULT 0 NOT NULL,
+          \`change_seq\` integer DEFAULT 0 NOT NULL,
           \`result_nudge_revision\` integer DEFAULT -1 NOT NULL,
           \`closed_reason\` text,
           \`time_created\` integer NOT NULL
@@ -189,9 +190,9 @@ export default {
           \`id\` text PRIMARY KEY,
           \`project_id\` text NOT NULL,
           \`session_id\` text NOT NULL,
-          \`directory\` text,
+          \`directory\` text NOT NULL,
           \`execution_directory\` text,
-          \`target_fingerprint\` text,
+          \`target_fingerprint\` text NOT NULL,
           \`title\` text NOT NULL,
           \`status\` text NOT NULL,
           \`config\` text NOT NULL,
@@ -383,6 +384,7 @@ export default {
       yield* tx.run(
         `CREATE INDEX \`workflow_node_workflow_status_idx\` ON \`workflow_node\` (\`workflow_id\`,\`status\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`workflow_node_child_session_idx\` ON \`workflow_node\` (\`child_session_id\`);`)
       yield* tx.run(
         `CREATE UNIQUE INDEX \`workflow_node_workflow_id_seq_idx\` ON \`workflow_node\` (\`workflow_id\`,\`id\`,\`seq\`);`,
       )

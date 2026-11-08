@@ -266,6 +266,7 @@ describe("DagLoop stepping race window", () => {
                   project_id: "project-1" as never,
                   session_id: "ses_parent" as never,
                   directory: process.cwd(),
+                  target_fingerprint: { kind: "none" },
                   title: "Step race",
                   status: "stepping",
                   config: JSON.stringify({ name: "step-race", nodes: [nodeConfig("a"), nodeConfig("b")] }),

@@ -791,7 +791,7 @@ export const layer = Layer.effect(
         mode: config.mode,
         max_total_nodes: config.max_total_nodes,
       })
-      const structuralErrors = DagValidation.sortLegacyStructural(structural.filter((d) => d.severity === "error"))
+      const structuralErrors = DagValidation.sortDiagnostics(structural.filter((d) => d.severity === "error"))
       for (const warning of structural.filter((d) => d.severity === "warning")) {
         yield* Effect.logWarning("DAG structural validation diagnostic", { diagnostic: warning })
       }
@@ -1121,7 +1121,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
           const owner = options.owner
           const owned =
             workflow.projectId === owner.projectID &&
-            workflow.directory !== null &&
+            workflow.directory !== "" &&
             DagLocation.canonicalDirectory(workflow.directory) === DagLocation.canonicalDirectory(owner.directory)
           // Re-check inside the fence: a SessionEvent.Moved may have re-stamped
           // the row after the caller's precheck, and the old instance must not
@@ -1284,7 +1284,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
         terminalNodeIds,
         grandfatheredNodeIds: persistedGateNodeIds(merged.nodes, cfgById),
       })
-      const replanErrors = DagValidation.sortLegacyStructural(replanDiagnostics.filter((d) => d.severity === "error"))
+      const replanErrors = DagValidation.sortDiagnostics(replanDiagnostics.filter((d) => d.severity === "error"))
       for (const warning of replanDiagnostics.filter((d) => d.severity === "warning")) {
         yield* Effect.logWarning("DAG structural validation diagnostic", { diagnostic: warning })
       }
@@ -1596,7 +1596,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
             input.nodeIDs,
             workflow.graphRev + 1,
             config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
-            DagLocation.fingerprintTarget(workflow.executionDirectory || workflow.directory || ""),
+            DagLocation.fingerprintTarget(workflow.executionDirectory || workflow.directory),
           ),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
@@ -1715,7 +1715,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       if (input.workspace === undefined && input.fingerprint === undefined) {
         return yield* Effect.fail(new Error("Retarget rejected: provide workspace or fingerprint"))
       }
-      const ownerDirectory = workflow.directory ?? ""
+      const ownerDirectory = workflow.directory
       let toDirectory: string | undefined
       if (input.workspace !== undefined) {
         const resolved = DagLocation.resolveWorkspace(input.workspace, ownerDirectory)
@@ -1727,7 +1727,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       // #945: the fingerprint is always computed from the bound tree. A caller
       // that supplies an expected value gets fail-closed validation, not a
       // writable field: durable fingerprints must remain runtime-derived.
-      const executionDirectory = toDirectory ?? workflow.executionDirectory ?? workflow.directory ?? ""
+      const executionDirectory = toDirectory ?? workflow.executionDirectory ?? workflow.directory
       const toFingerprint = DagLocation.fingerprintTarget(executionDirectory)
       if (input.fingerprint !== undefined) {
         const actual = toFingerprint.kind === "git" ? toFingerprint.value : "none"
@@ -1741,11 +1741,10 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       if (!config) return yield* Effect.fail(new Error(`Retarget rejected: workflow config is invalid: ${dagID}`))
       const nodes = yield* store.getNodes(dagID)
       const configByID = new Map(config.nodes.map((node) => [node.id, node]))
-      const fromDirectory = workflow.executionDirectory ?? workflow.directory ?? undefined
-      const fromFingerprint = workflow.targetFingerprint ?? undefined
+      const fromDirectory = workflow.executionDirectory ?? workflow.directory
+      const fromFingerprint = workflow.targetFingerprint
       const targetChanged =
-        DagLocation.canonicalDirectory(executionDirectory) !== DagLocation.canonicalDirectory(fromDirectory ?? "") ||
-        !fromFingerprint ||
+        DagLocation.canonicalDirectory(executionDirectory) !== DagLocation.canonicalDirectory(fromDirectory) ||
         !DagLocation.sameFingerprint(fromFingerprint, toFingerprint)
       const completed = targetChanged
         ? nodes.filter(
@@ -1813,9 +1812,9 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
           replaced: 0,
           restarted: restarted.length,
           retarget: {
-            ...(fromDirectory !== undefined ? { fromDirectory } : {}),
+            fromDirectory,
             ...(toDirectory !== undefined ? { toDirectory } : {}),
-            ...(fromFingerprint !== undefined ? { fromFingerprint } : {}),
+            fromFingerprint,
             toFingerprint,
             ...(input.reason !== undefined ? { reason: input.reason } : {}),
             nodes: restarted,

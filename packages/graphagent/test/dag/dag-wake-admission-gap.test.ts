@@ -216,6 +216,7 @@ function seed(directory: string) {
         project_id: Project.ID.make("project-1"),
         session_id: SessionID.make("ses_parent"),
         directory: AbsolutePath.make(directory),
+        target_fingerprint: { kind: "none" },
         title: "Wake gap",
         status: "completed",
         seq: 1,

@@ -375,6 +375,7 @@ describe("SessionProjector", () => {
           status: "running",
           config: "{}",
           seq: 0,
+          target_fingerprint: { kind: "none" },
         })
         .run()
         .pipe(Effect.orDie)

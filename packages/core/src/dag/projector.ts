@@ -115,14 +115,16 @@ export const layer = Layer.effectDiscard(
           project_id: event.data.projectID,
           session_id: event.data.sessionID,
           // DAG-LOC-01: the execution-location key, stamped at dag.create.
-          // A legacy event without the field projects to NULL — a row that
-          // matches no instance directory and is never adopted.
-          directory: event.data.directory ?? null,
-          // #943: NULL for legacy events and workflows without a workspace;
-          // spawn then keeps executing in the owner directory.
+          // The field stays optional in the persisted event; a stored event
+          // that omits it projects to the empty string, which no instance
+          // owns (fail-closed) but which keeps the column NOT NULL.
+          directory: event.data.directory ?? "",
+          // #943: NULL when the workflow has no bound workspace; spawn then
+          // keeps executing in the owner directory.
           execution_directory: event.data.executionDirectory ?? null,
-          // #944: NULL for legacy events; absent means no target identity.
-          target_fingerprint: event.data.targetFingerprint ?? null,
+          // #944: create always writes the start fingerprint. A stored event
+          // without one projects the explicit non-git marker.
+          target_fingerprint: event.data.targetFingerprint ?? { kind: "none" },
           title: event.data.title,
           status: event.data.status,
           config: event.data.config,

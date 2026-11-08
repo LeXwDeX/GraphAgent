@@ -334,7 +334,8 @@ export const layer = Layer.effect(
                   projection_sequence: row.seq,
                   closed_reason: revisions.ok ? revisions.value.closedReason : undefined,
                   // #949: where this attempt ran, the HEAD it started from,
-                  // and when the row last changed. Optional for legacy rows.
+                  // and when the row last changed. Absent until the attempt
+                  // records them.
                   ...nodeLocationView(row),
                   progress,
                   output:

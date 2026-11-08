@@ -7,10 +7,10 @@ export function makeWorkflowRow(overrides: Partial<DagStore.WorkflowRow> = {}): 
     sessionId: "ses_parent",
     // #948: spawned workflows must have a usable execution location. Unit
     // fixtures represent normal created workflows, so default to the existing
-    // test process directory; NULL-legacy cases pass directory: null
-    // explicitly.
+    // test process directory.
     directory: process.cwd(),
     executionDirectory: null,
+    targetFingerprint: { kind: "none" },
     title: "Test Workflow",
     status: "running",
     config: "{}",

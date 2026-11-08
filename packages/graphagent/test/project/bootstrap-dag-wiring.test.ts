@@ -53,6 +53,7 @@ describe("instance bootstrap DAG wiring", () => {
                     project_id: context.project.id as never,
                     session_id: parent.id as never,
                     directory: context.directory,
+                    target_fingerprint: { kind: "none" },
                     title: "condition false",
                     status: "running",
                     config: JSON.stringify({

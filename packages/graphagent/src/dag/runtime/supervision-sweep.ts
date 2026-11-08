@@ -114,8 +114,8 @@ export const escalateIntervalFromConfig = (raw: string | undefined, nodeId: stri
  * cadence covers both shapes: re-timed watchers match the config (the
  * durable value merely over-estimates by the accumulated grants, delaying —
  * never causing — a settle), gate-skipped ones are caught by the durable
- * bound. Returns 0 when the columns are missing (legacy rows) so the config
- * value decides alone.
+ * bound. Returns 0 when the columns are missing (unstarted rows) so the
+ * config value decides alone.
  */
 export const escalateIntervalDurable = (
   deadlineMs: number | null | undefined,
@@ -162,9 +162,9 @@ const serviceLayer = Layer.effect(
     // directory, so the TUI never got a summary push for a swept settle
     // (bootstrap refetch only). Providing a reference derived from the
     // workflow's own durable row (directory + project) stamps the events so
-    // the owning directory's consumers see them. Falls back to unstamped
-    // when the row cannot be resolved — same visibility as before, never
-    // worse.
+    // the owning directory's consumers see them. Publishes without a
+    // location stamp when the row cannot be resolved or has no owner
+    // directory — same visibility as before, never worse.
     const withWorkflowLocation = Effect.fnUntraced(function* <A, E>(workflowId: string, body: Effect.Effect<A, E>) {
       const wf = yield* store
         .getWorkflow(workflowId)
@@ -190,9 +190,9 @@ const serviceLayer = Layer.effect(
     /**
      * #948: the host-level sweep is the only actor that sees workflows whose
      * owning instance is gone. Terminalize every non-terminal row whose
-     * durable execution location is unstamped or missing, so a removed
-     * worktree or a pre-DAG-LOC-01 NULL row cannot stay live forever. The
-     * shared DagLocation verdict is the same one recovery and spawn use;
+     * durable execution location is missing or invalid, so a removed
+     * worktree or an owner-less row cannot stay live forever. The shared
+     * DagLocation verdict is the same one recovery and spawn use;
      * `failUnrecoverable` is idempotent and legalizes the pending/paused legs.
      * Wake delivery stays with the owning DagLoop (the durable wake row is
      * re-armed once) and converges through the normal drain.

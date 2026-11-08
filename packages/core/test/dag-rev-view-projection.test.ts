@@ -66,6 +66,8 @@ function seed(workflowStatus: string) {
       config: "{}",
       seq: 1,
       wake_reported: false,
+      directory: "/project",
+      target_fingerprint: { kind: "none" },
     }).run().pipe(Effect.orDie)
     yield* db.insert(WorkflowNodeTable).values([
       {

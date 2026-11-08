@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "a05e6f5b-dafb-49cb-9e65-77e55d72e75a",
+  "id": "7962de47-7093-453f-8be4-ee7ddaaace1b",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -311,6 +311,16 @@
       "default": "0",
       "generated": null,
       "name": "revision",
+      "entityType": "columns",
+      "table": "agent_mailbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "change_seq",
       "entityType": "columns",
       "table": "agent_mailbox"
     },
@@ -1436,7 +1446,7 @@
     },
     {
       "type": "text",
-      "notNull": false,
+      "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
@@ -1456,7 +1466,7 @@
     },
     {
       "type": "text",
-      "notNull": false,
+      "notNull": true,
       "autoincrement": false,
       "default": null,
       "generated": null,
@@ -3122,6 +3132,20 @@
       "where": null,
       "origin": "manual",
       "name": "workflow_node_workflow_status_idx",
+      "entityType": "indexes",
+      "table": "workflow_node"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "workflow_node_child_session_idx",
       "entityType": "indexes",
       "table": "workflow_node"
     },

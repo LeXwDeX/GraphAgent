@@ -75,7 +75,7 @@ describe("EventResidueSweep (#524)", () => {
           .pipe(Effect.orDie)
         yield* db
           .insert(WorkflowTable)
-          .values({ id: "dag_live", project_id: ProjectV2.ID.make("proj_sweep"), session_id: "ses_live", title: "live", status: "running", config: "{}", seq: 0 })
+          .values({ id: "dag_live", project_id: ProjectV2.ID.make("proj_sweep"), session_id: "ses_live", title: "live", status: "running", config: "{}", seq: 0, directory: "/project", target_fingerprint: { kind: "none" } })
           .run()
           .pipe(Effect.orDie)
 

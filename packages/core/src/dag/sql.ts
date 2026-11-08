@@ -35,19 +35,18 @@ export const WorkflowTable = sqliteTable(
     // rewrite an existing stamp) and re-stamped ONLY by the session projector's
     // SessionEvent.Moved projection (the stamp moves WITH the session in one
     // transaction, payload-sourced from the Moved event — no SessionTable read).
-    // No other writer may set it; R7-ext pins the whitelist. Nullable: legacy rows
-    // predating the column match no instance (fail-closed — never adopted until
-    // recreated).
-    directory: text(),
+    // No other writer may set it; R7-ext pins the whitelist. Required: create
+    // always stamps the target session's durable directory.
+    directory: text().notNull(),
     // Execution directory (#943): the bound workspace (absolute realpath) where
     // this workflow's child sessions run. Separate from `directory`, which
     // keeps deciding ownership, adoption, recovery and wake. NULL means "run in
-    // the owner directory" — the pre-#943 behavior for every legacy row.
+    // the owner directory" — no workspace is configured.
     execution_directory: text(),
     // Target fingerprint (#944): the working-tree identity captured when the
-    // workflow started. NULL for legacy rows; `{ kind: "none" }` is the explicit
-    // marker for a non-git directory.
-    target_fingerprint: text({ mode: "json" }).$type<DagEvent.TargetFingerprint>(),
+    // workflow started. Create always writes it; `{ kind: "none" }` is the
+    // explicit marker for a non-git directory.
+    target_fingerprint: text({ mode: "json" }).$type<DagEvent.TargetFingerprint>().notNull(),
     title: text().notNull(),
     status: text().notNull(),
     config: text().notNull(), // YAML string
@@ -55,8 +54,8 @@ export const WorkflowTable = sqliteTable(
     wake_reported: integer({ mode: "boolean" }).notNull().default(false), // D3: terminal or paused reminder reported to parent for this status episode?
     // Rev-view (v1.0.15 Train A): the current graph-revision counter. Bumped
     // by the WorkflowReplanned projection; audit/telemetry only — the view
-    // predicate is the per-node `superseded` marker below. Default 1: legacy
-    // rows predate the concept and render exactly as before.
+    // predicate is the per-node `superseded` marker below. Default 1 is the
+    // first graph revision.
     graph_rev: integer().notNull().default(1),
     // #1010 (E0): workflow-level worktree settlement, written by the E3
     // projection from `WorkflowWorktreeSettled`. NULL means the workflow has
@@ -92,17 +91,17 @@ export const WorkflowNodeTable = sqliteTable(
     // Per-attempt execution location (#949): the directory this node ran in
     // and the repo HEAD observed when it started. Snapshotted on NodeStarted
     // so status/observe keep reporting the attempt's origin after the branch
-    // moves. Nullable: legacy rows and non-git directories have no HEAD.
+    // moves. Nullable: non-git directories have no HEAD.
     directory: text(),
     base_head: text(),
     // Target fingerprint (#944): the start fingerprint for target-sensitive
     // nodes, replaced by the completion fingerprint on NodeCompleted. NULL for
-    // legacy rows and for nodes that do not judge the working tree.
+    // nodes that do not judge the working tree.
     target_fingerprint: text({ mode: "json" }).$type<DagEvent.TargetFingerprint>(),
     // True when a completed target-sensitive node saw a different tree than it
-    // started with. NULL until evaluated; legacy rows keep NULL and read false.
+    // started with. NULL until evaluated; reads as false.
     stale_target: integer({ mode: "boolean" }),
-    // #946: worktree isolation evidence. NULL for non-isolated and legacy rows.
+    // #946: worktree isolation evidence. NULL for non-isolated rows.
     // `worktree_state` is active|removed|kept; kept rows are the ones a failed
     // node leaves for inspection.
     worktree_directory: text(),
@@ -115,7 +114,7 @@ export const WorkflowNodeTable = sqliteTable(
     // #946: worktrees a later attempt on this node replaced. NodeStarted
     // archives the prior pointer here before overwriting it, so status can
     // still report a kept/active worktree the current row no longer names.
-    // NULL for legacy rows and nodes that never restarted.
+    // NULL for nodes that never restarted.
     worktree_history: text({ mode: "json" }).$type<DagEvent.NodeWorktree[]>(),
     // #946: paths this node changed at completion. Non-isolated nodes record
     // them from `git status --porcelain`; isolated nodes mirror the worktree
@@ -138,7 +137,7 @@ export const WorkflowNodeTable = sqliteTable(
     // fragment bypassed). Durable data is untouched — the marker only filters
     // VIEW/aggregation reads (summaries, status, node lists, rebuild input,
     // wake attribution) to the current revision. Monotonic: once true, stays
-    // true. Default false: legacy rows render exactly as before.
+    // true. Default false: the node is part of the current revision.
     superseded: integer({ mode: "boolean" }).notNull().default(false),
     seq: integer().notNull(), // latest durable event seq for this node
     started_at: integer(),
@@ -149,6 +148,8 @@ export const WorkflowNodeTable = sqliteTable(
     primaryKey({ columns: [table.workflow_id, table.id] }),
     index("workflow_node_workflow_idx").on(table.workflow_id),
     index("workflow_node_workflow_status_idx").on(table.workflow_id, table.status),
+    // H3/E2 look nodes up by child session; keep the reverse lookup indexed.
+    index("workflow_node_child_session_idx").on(table.child_session_id),
     uniqueIndex("workflow_node_workflow_id_seq_idx").on(table.workflow_id, table.id, table.seq),
   ],
 )

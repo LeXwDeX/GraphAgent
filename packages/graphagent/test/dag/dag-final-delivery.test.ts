@@ -118,6 +118,8 @@ function fixture(
           id: "wf-1",
           project_id: "proj-1" as never,
           session_id: "ses_parent" as never,
+          directory: process.cwd(),
+          target_fingerprint: { kind: "none" },
           title: "delivery",
           status: "completed",
           config: JSON.stringify(config),

@@ -90,7 +90,7 @@ function seed(workflowStatus: "running" | "completed" | "failed", nodeStatus: "r
       sql`INSERT INTO session (id,project_id,slug,directory,title,version,time_created,time_updated) VALUES ('ses_parent','p','parent',${directory},'S','test',1,1)`,
     )
     yield* db.run(
-      sql`INSERT INTO workflow (id,project_id,session_id,directory,title,status,config,seq,graph_rev,completed_at,time_created,time_updated) VALUES (${workflowID},'p','ses_parent',${directory},'Mutation',${workflowStatus},${JSON.stringify(config([node("old")]))},0,1,${workflowStatus === "completed" ? 10 : null},1,10)`,
+      sql`INSERT INTO workflow (id,project_id,session_id,directory,target_fingerprint,title,status,config,seq,graph_rev,completed_at,time_created,time_updated) VALUES (${workflowID},'p','ses_parent',${directory},'{"kind":"none"}','Mutation',${workflowStatus},${JSON.stringify(config([node("old")]))},0,1,${workflowStatus === "completed" ? 10 : null},1,10)`,
     )
     yield* db.run(
       sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,output,wake_eligible,seq,time_created,time_updated) VALUES ('old',${workflowID},'Old','build',${nodeStatus},'[]','ses_old',${JSON.stringify("old report")},1,0,1,10)`,

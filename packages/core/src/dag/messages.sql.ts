@@ -13,6 +13,9 @@ export const AgentMailboxTable = sqliteTable(
     node_id: text(),
     attempt_id: text(),
     revision: integer().notNull().default(0),
+    // D7 change stream: bumped by every mailbox-mutating transaction so readers
+    // can compare versions across send/associate/close without a row scan.
+    change_seq: integer().notNull().default(0),
     result_nudge_revision: integer().notNull().default(-1),
     closed_reason: text(),
     time_created: integer().notNull(),

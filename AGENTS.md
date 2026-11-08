@@ -32,7 +32,7 @@ The repository ships a single generated baseline instead of the historical incre
 3. A rebaseline changes the baseline fingerprint. Delete and recreate every local development database, and state "baseline changed" in the PR description.
 4. When parallel PRs touch the baseline, re-run `--rebaseline` against the definitions of the merge target; never hand-merge `schema.gen.ts` or `schema.json`.
 5. Tests cover empty-database creation and baseline-fingerprint rejection; upgrade-an-existing-database cases are not required in this period.
-6. The baseline already registers `session_turn`, `child_binding`, `child_run`, `dag_node_attempt`, `workflow.worktree`, and `session.dag_mode` / `session.dag_budget_tokens`. `message_diff` (H5), the `workflow_node(child_session_id)` index (E1), `dag_runner` (E1b), `agent_mailbox.change_seq` and `workflow.pause_reason` (E1), and `workflow_node.safety_denials` (E4) are added in place by their owning Issues under these rules.
+6. The baseline already registers `session_turn`, `child_binding`, `child_run`, `dag_node_attempt`, `workflow.worktree`, the workflow execution-location columns (`workflow.directory` and `workflow.target_fingerprint` NOT NULL, E1), the `workflow_node(child_session_id)` index (E1), `agent_mailbox.change_seq` (E1), and `session.dag_mode` / `session.dag_budget_tokens`. `message_diff` (H5), `dag_runner` (E1b), `workflow.pause_reason` (E1), and `workflow_node.safety_denials` (E4) are added in place by their owning Issues under these rules.
 
 After v2.0.0 publishes, run `bun run migration --freeze-baseline` once and commit `baseline.lock`. That freezes the baseline, makes `--rebaseline` refuse to run, and restores incremental migration generation with the upgrade tests.
 

@@ -85,12 +85,10 @@ export class StructuralValidationError extends Schema.TaggedError<StructuralVali
   "StructuralValidationError",
   { diagnostics: Schema.mutable(Schema.Array(DiagnosticSchema)) },
 ) {
-  /** The message text tools and tests have always seen, derived from the
-   * shared diagnostic messages. The legacy render format is decided at
-   * construction time via the legacy-class tag — never by re-parsing
-   * message text. */
+  /** One stable render built from the shared diagnostics: the historical
+   * "Invalid workflow config:" prefix plus the diagnostic message. */
   override get message() {
-    return this.diagnostics.map((d) => legacyValidationMessage(d)).join("; ")
+    return this.diagnostics.map((d) => `Invalid workflow config: ${d.message}`).join("; ")
   }
 }
 
@@ -132,11 +130,16 @@ export function diagnostic(input: {
   }
 }
 
-/** Stable ordering: field path, then code, then message. Same input always
- * yields the same diagnostic order, so validate output is diffable. */
+/** Stable ordering: errors before warnings, then field path, code, and
+ * message. Same input always yields the same diagnostic order, so validate
+ * output is diffable. */
 export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
   return [...diagnostics].sort(
-    (a, b) => a.path.localeCompare(b.path) || a.code.localeCompare(b.code) || a.message.localeCompare(b.message),
+    (a, b) =>
+      (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1) ||
+      a.path.localeCompare(b.path) ||
+      a.code.localeCompare(b.code) ||
+      a.message.localeCompare(b.message),
   )
 }
 
@@ -646,36 +649,6 @@ export interface StructuralInput {
    * warning. Block-compiled graphs are compiler-owned; their edges are not
    * linted (default true for direct callers such as Dag.create). */
   redundant_dependency_lint?: boolean
-}
-
-// Legacy byte-compat: Dag.create has always reported one structural class at
-// a time in a fixed sequence. Each helper tags its diagnostics with that
-// class index so callers can restore the historical ordering without
-// re-parsing message text — the ordering lives with the message authors.
-const legacyClassByDiagnostic = new WeakMap<Diagnostic, number>()
-
-// Classes whose messages pass through as-is in the legacy render; every
-// other structural class is prefixed with "Invalid workflow config:".
-const RAW_LEGACY_CLASSES = new Set([4, 5, 7])
-
-function tagLegacyClass(diagnostics: Diagnostic[], classIndex: number): Diagnostic[] {
-  for (const d of diagnostics) legacyClassByDiagnostic.set(d, classIndex)
-  return diagnostics
-}
-
-export function sortLegacyStructural(diagnostics: readonly Diagnostic[]): Diagnostic[] {
-  return sortDiagnostics([...diagnostics]).sort(
-    (a, b) => (legacyClassByDiagnostic.get(a) ?? 8) - (legacyClassByDiagnostic.get(b) ?? 8),
-  )
-}
-
-/** Legacy message render driven by the structural class tag, never by
- * re-parsing message text. Schema-decode diagnostics (untagged) render with
- * the historical "Invalid workflow config:" wrapper. */
-function legacyValidationMessage(d: Diagnostic): string {
-  const cls = legacyClassByDiagnostic.get(d)
-  if (cls !== undefined && RAW_LEGACY_CLASSES.has(cls)) return d.message
-  return `Invalid workflow config: ${d.message}`
 }
 
 function duplicateNodeIds(nodes: readonly NodeConfig[]): string[] {
@@ -1240,33 +1213,25 @@ function topologyDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
   const required = requiredNodeValidation(nodes)
   if (!required.valid) {
     diagnostics.push(
-      ...tagLegacyClass(
-        required.errors.map((error) =>
-          diagnostic({
-            code: DIAGNOSTIC_CODES.dagInvalid,
-            path: "nodes",
-            message: error,
-            hint: "Required nodes must be reachable without depending on optional work",
-          }),
-        ),
-        6,
+      ...required.errors.map((error) =>
+        diagnostic({
+          code: DIAGNOSTIC_CODES.dagInvalid,
+          path: "nodes",
+          message: error,
+          hint: "Required nodes must be reachable without depending on optional work",
+        }),
       ),
     )
   }
   const cyclePath = findCycle(nodes)
   if (cyclePath) {
     diagnostics.push(
-      ...tagLegacyClass(
-        [
-          diagnostic({
-            code: DIAGNOSTIC_CODES.dagInvalid,
-            path: "nodes",
-            message: `Workflow config contains a dependency cycle: ${cyclePath.join(" -> ")}`,
-            hint: "Break the cycle by removing one depends_on edge",
-          }),
-        ],
-        7,
-      ),
+      diagnostic({
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: "nodes",
+        message: `Workflow config contains a dependency cycle: ${cyclePath.join(" -> ")}`,
+        hint: "Break the cycle by removing one depends_on edge",
+      }),
     )
   }
   return diagnostics
@@ -1343,18 +1308,18 @@ export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
           }),
         ]
       : []),
-    ...tagLegacyClass(duplicateIdDiagnostics(duplicates), 0),
-    ...tagLegacyClass(danglingDependencyDiagnostics(input.nodes, input.known_node_ids), 1),
-    ...tagLegacyClass(inputMappingDiagnostics(input.nodes), 1),
-    ...tagLegacyClass(conditionDiagnostics(input.nodes), 2),
-    ...tagLegacyClass(fanOutDiagnostics(input.nodes), 2),
-    ...tagLegacyClass(bindingDiagnostics(input.nodes), 3),
-    ...tagLegacyClass(ceilingDiagnostics(input), 4),
-    ...tagLegacyClass(review.errors, 5),
-    ...tagLegacyClass(review.warnings, 5),
+    ...duplicateIdDiagnostics(duplicates),
+    ...danglingDependencyDiagnostics(input.nodes, input.known_node_ids),
+    ...inputMappingDiagnostics(input.nodes),
+    ...conditionDiagnostics(input.nodes),
+    ...fanOutDiagnostics(input.nodes),
+    ...bindingDiagnostics(input.nodes),
+    ...ceilingDiagnostics(input),
+    ...review.errors,
+    ...review.warnings,
     ...(duplicates.length === 0 ? topologyDiagnostics(input.nodes) : []),
-    ...tagLegacyClass(outputSchemaKeywordDiagnostics(input.nodes), 8),
-    ...tagLegacyClass(input.redundant_dependency_lint === false ? [] : redundantDependencyDiagnostics(input.nodes), 8),
+    ...outputSchemaKeywordDiagnostics(input.nodes),
+    ...(input.redundant_dependency_lint === false ? [] : redundantDependencyDiagnostics(input.nodes)),
   ])
 }
 
@@ -1408,21 +1373,18 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     grandfathered: input.grandfatheredNodeIds,
   })
   return sortDiagnostics([
-    ...tagLegacyClass(duplicateIdDiagnostics(duplicates), 0),
-    ...tagLegacyClass(danglingDependencyDiagnostics(input.rerunNodes, knownIds), 1),
-    ...tagLegacyClass(inputMappingDiagnostics(input.rerunNodes, input.merged.nodes), 1),
-    ...tagLegacyClass(conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds), 2),
-    ...tagLegacyClass(fanOutDiagnostics(input.rerunNodes, input.merged.nodes), 2),
-    ...tagLegacyClass(bindingDiagnostics(input.rerunNodes), 3),
-    ...tagLegacyClass(
-      ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
-      4,
-    ),
-    ...tagLegacyClass(review.errors, 5),
-    ...tagLegacyClass(review.warnings, 5),
+    ...duplicateIdDiagnostics(duplicates),
+    ...danglingDependencyDiagnostics(input.rerunNodes, knownIds),
+    ...inputMappingDiagnostics(input.rerunNodes, input.merged.nodes),
+    ...conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds),
+    ...fanOutDiagnostics(input.rerunNodes, input.merged.nodes),
+    ...bindingDiagnostics(input.rerunNodes),
+    ...ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
+    ...review.errors,
+    ...review.warnings,
     ...(duplicates.length === 0 ? topologyDiagnostics(input.rerunNodes) : []),
-    ...tagLegacyClass(outputSchemaKeywordDiagnostics(input.rerunNodes), 8),
-    ...tagLegacyClass(redundantDependencyDiagnostics(input.rerunNodes, input.merged.nodes), 8),
+    ...outputSchemaKeywordDiagnostics(input.rerunNodes),
+    ...redundantDependencyDiagnostics(input.rerunNodes, input.merged.nodes),
     // DAG-02: the checkpoint gate must police the MERGED graph too — a
     // fragment can attach a new dependent to an EXISTING reporting
     // checkpoint, which the fragment-scoped authoring check cannot see.

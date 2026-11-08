@@ -273,6 +273,8 @@ describe("Project.fromDirectory", () => {
           id: "dag-app",
           project_id: rootProject.id,
           session_id: sessionID,
+          directory: process.cwd(),
+          target_fingerprint: { kind: "none" },
           title: "App workflow",
           status: "running",
           config: "{}",

@@ -386,7 +386,7 @@ const serviceLayer = Layer.effect(
                 DagLocation.resolveExecution(current)._tag !== "ok" ||
                 // A move to a DIFFERENT directory transfers execution
                 // ownership; the new owner adopts, this stale entry must stop.
-                DagLocation.canonicalDirectory(current.directory!) !== DagLocation.canonicalDirectory(ctx.directory)
+                DagLocation.canonicalDirectory(current.directory) !== DagLocation.canonicalDirectory(ctx.directory)
               )
                 return
             }
@@ -948,7 +948,7 @@ const serviceLayer = Layer.effect(
                       dagID,
                       nodeID,
                       entry.config ?? null,
-                      workflow.directory ?? ctx.directory,
+                      workflow.directory,
                       makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary),
                       executionDirectory,
                     ),
@@ -1065,7 +1065,7 @@ const serviceLayer = Layer.effect(
               // fails such nodes loudly instead of undefined-completing them.
               config ?? null,
               lastAssistantText,
-              wf.executionDirectory ?? wf.directory ?? ctx.directory,
+              wf.executionDirectory ?? wf.directory,
               (executionDirectory) => {
                 const { worktree, boundary } = artifactPermissionBase(
                   ctx.directory,
@@ -1162,8 +1162,7 @@ const serviceLayer = Layer.effect(
               evalLock: Semaphore.makeUnsafe(1),
               parentSessionID: wf.sessionId,
               config,
-              executionDirectory:
-                currentWorkflow?.executionDirectory ?? wf.executionDirectory ?? wf.directory ?? ctx.directory,
+              executionDirectory: currentWorkflow?.executionDirectory ?? wf.executionDirectory ?? wf.directory,
               graphRev: currentWorkflow?.graphRev ?? wf.graphRev,
               fibers: new Map(),
               watchers: new Map(),
@@ -1222,12 +1221,13 @@ const serviceLayer = Layer.effect(
           // Same cross-instance guard as recoverWorkflow, through the same
           // execution-location authority: only the instance whose DIRECTORY
           // owns the workflow may dispose of the orphan.
-          // A NULL-directory row has no owner under ownsWorkflow (fail-closed
-          // by design), so no instance would ever terminalize it. This sweep
-          // is the one place that must still dispose of such an orphan: the
-          // row is provably an abandoned create sequence, and leaving it
-          // pending forever is the zombie #948 removes.
-          if (wf.directory !== null && !(yield* DagLocation.ownsWorkflow(wf.id, ctx.directory))) return
+          // An owner-less (empty-directory) row has no owner under
+          // ownsWorkflow (fail-closed by design), so no instance would ever
+          // terminalize it. This sweep is the one place that must still
+          // dispose of such an orphan: the row is provably an abandoned
+          // create sequence, and leaving it pending forever is the zombie
+          // #948 removes.
+          if (wf.directory !== "" && !(yield* DagLocation.ownsWorkflow(wf.id, ctx.directory))) return
           const dagID = wf.id
           if (runtimes.has(dagID) || recovering.has(dagID)) return
           // Reserve the adoption slot for the whole terminalization sequence:
@@ -1325,7 +1325,7 @@ const serviceLayer = Layer.effect(
                   evalLock: Semaphore.makeUnsafe(1),
                   parentSessionID: wf.sessionId,
                   config,
-                  executionDirectory: wf.executionDirectory ?? wf.directory ?? ctx.directory,
+                  executionDirectory: wf.executionDirectory ?? wf.directory,
                   graphRev: wf.graphRev,
                   fibers: new Map(),
                   watchers: new Map(),
@@ -1713,7 +1713,7 @@ const serviceLayer = Layer.effect(
                     entry.graphRev = wf.graphRev
                     // #945: a retarget rebinds the workflow workspace. New
                     // attempts must spawn in the durable execution directory.
-                    entry.executionDirectory = wf.executionDirectory ?? wf.directory ?? ctx.directory
+                    entry.executionDirectory = wf.executionDirectory ?? wf.directory
                   }
                   // Rev-view (v1.0.15 Train A): THE aggregation filter point.
                   // The rebuild input is the CURRENT graph revision only —
@@ -1979,9 +1979,9 @@ const serviceLayer = Layer.effect(
                   if (wf && wf.projectId === ctx.project.id) {
                     yield* automation.unregister(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
                     // #948: a workflow terminalized without a runtime entry
-                    // (legacy NULL row swept at host level, or recovery that
-                    // never adopted) still owes the parent one wake. The drain
-                    // re-applies execution and notification-only ownership.
+                    // (swept at host level, or recovery that never adopted)
+                    // still owes the parent one wake. The drain re-applies
+                    // execution and notification-only ownership.
                     yield* tryDeliverWake(wf.sessionId).pipe(Effect.ignore, Effect.forkScoped)
                   }
                 }
@@ -2126,11 +2126,11 @@ const serviceLayer = Layer.effect(
 
         /**
          * #948 notification-only ownership. `ownsSession` ignores terminal
-         * rows so a legacy NULL-terminal zombie cannot block a later valid
-         * workflow in the same session. That leaves one gap: a terminal-only
-         * batch has no execution owner. Gate it on the parent session's
-         * durable directory instead — this grants notification delivery only,
-         * never execution, and never falls back to process.cwd.
+         * rows so a dead workflow cannot block a later valid workflow in the
+         * same session. That leaves one gap: a terminal-only batch has no
+         * execution owner. Gate it on each durable workflow directory
+         * instead — this grants notification delivery only, never execution,
+         * and never falls back to process.cwd.
          */
         const sessionNotificationOwned = Effect.fnUntraced(function* (sessionID: string) {
           const snapshot = yield* store
@@ -2145,28 +2145,8 @@ const serviceLayer = Layer.effect(
           const terminal = snapshot.workflows.filter(
             (workflow) => !workflow.wakeReported && isTerminalWorkflowStatusValue(workflow.status),
           )
-          if (terminal.length === 0) return true
-          let sessionDirectory: string | undefined
           for (const workflow of terminal) {
-            if (workflow.directory !== null && workflow.directory !== "") {
-              // A stamped terminal row keeps its normal execution-location
-              // owner; only legacy NULL rows need the notification-only proof.
-              if (!(yield* DagLocation.ownsWorkflow(workflow.id, ctx.directory))) return false
-              continue
-            }
-            if (sessionDirectory === undefined) {
-              const info = yield* sessionSvc
-                .get(SessionID.make(sessionID))
-                .pipe(
-                  Effect.catchCause((cause) =>
-                    Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(undefined),
-                  ),
-                )
-              sessionDirectory = info?.directory
-            }
-            if (!sessionDirectory) return false
-            if (DagLocation.canonicalDirectory(sessionDirectory) !== DagLocation.canonicalDirectory(ctx.directory))
-              return false
+            if (!(yield* DagLocation.ownsWorkflow(workflow.id, ctx.directory))) return false
           }
           return true
         })

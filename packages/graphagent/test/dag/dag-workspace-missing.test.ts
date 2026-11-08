@@ -1,7 +1,7 @@
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- durable row fixtures use branded-column shims.
 /**
- * #948: a workflow whose execution directory is missing or was never stamped
- * must terminalize once instead of rotting forever or failing node by node.
+ * #948: a workflow whose execution directory is missing or empty must
+ * terminalize once instead of rotting forever or failing node by node.
  * These probes drive the host-level supervision sweep with the real durable
  * Dag projector so the observable contract is the projected row, the durable
  * WorkflowFailed event, and the single unreported parent wake.
@@ -140,15 +140,15 @@ const runSweepTest = <A>(
   )
 
 describe("DAG workspace failure terminalization (#948)", () => {
-  it("terminalizes a NULL-directory row once and releases its lease", async () => {
-    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-workspace-null-")))
+  it("terminalizes an empty-directory row once and releases its lease", async () => {
+    const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-workspace-empty-")))
     try {
       await Effect.runPromise(
         runSweepTest(directory, ({ database, store, sweep, automation, dagID }) =>
           Effect.gen(function* () {
             yield* database.db
               .update(WorkflowTable)
-              .set({ directory: null })
+              .set({ directory: "" })
               .where(eq(WorkflowTable.id, dagID))
               .run()
               .pipe(Effect.orDie)
@@ -157,7 +157,7 @@ describe("DAG workspace failure terminalization (#948)", () => {
 
             const workflow = yield* store.getWorkflow(dagID)
             expect(workflow?.status).toBe("failed")
-            expect(yield* store.getWorkflowFailureReason!(dagID)).toContain("workspace_unstamped")
+            expect(yield* store.getWorkflowFailureReason!(dagID)).toContain("workspace_invalid")
             expect(yield* workflowFailureCount(database, dagID)).toBe(1)
             // One durable terminal wake row, not a per-node error cascade.
             expect((yield* store.getUnreportedWakeWorkflows("ses_parent")).map((row) => row.id)).toEqual([dagID])

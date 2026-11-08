@@ -332,6 +332,7 @@ function state(input: {
           id: "dag_recovery",
           projectId: "p",
           directory: process.cwd(),
+          targetFingerprint: { kind: "none" },
           status: "running",
           sessionId: "ses_parent",
           title: "Recovery",
@@ -399,7 +400,7 @@ describe("message recovery continuation admission and settlement branches", () =
     ["node without child", { node: { childSessionId: null } }],
     ["terminal node", { node: { status: "completed" } }],
     ["missing workflow", { noWorkflow: true }],
-    ["workflow without directory", { workflow: { directory: null } }],
+    ["workflow without directory", { workflow: { directory: "" } }],
     ["paused workflow", { workflow: { status: "paused" } }],
     ["cancelled workflow", { workflow: { status: "cancelled" } }],
   ] as const)

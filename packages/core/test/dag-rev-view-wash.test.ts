@@ -64,6 +64,8 @@ function seed() {
       wake_reported: true,
       started_at: 1,
       completed_at: 2,
+      directory: "/project",
+      target_fingerprint: { kind: "none" },
     }).run().pipe(Effect.orDie)
   })
 }
