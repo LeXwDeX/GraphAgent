@@ -537,15 +537,68 @@ describe("DagControl.apply — paused ResumeGuard precheck", () => {
     await runHarness(harness, (control) =>
       Effect.gen(function* () {
         const resumeExit = yield* control.apply(workflowID, { op: "resume" }, caller).pipe(Effect.exit)
-        expect(rejectionOf(resumeExit)._tag).toBe("Conflict")
+        const resumeRejection = rejectionOf(resumeExit)
+        expect(resumeRejection._tag).toBe("Conflict")
+        if (resumeRejection._tag === "Conflict") expect(resumeRejection.status).toBe("paused")
         expect(harness.guardChecks).toHaveLength(1)
 
         reset(harness)
         const stepExit = yield* control.apply(workflowID, { op: "step" }, caller).pipe(Effect.exit)
-        expect(rejectionOf(stepExit)._tag).toBe("Conflict")
+        const stepRejection = rejectionOf(stepExit)
+        expect(stepRejection._tag).toBe("Conflict")
+        if (stepRejection._tag === "Conflict") expect(stepRejection.status).toBe("paused")
         expect(harness.guardChecks).toHaveLength(2)
       }),
     )
+  })
+
+  it("reports the persisted running status when step is vetoed outside the precheck", async () => {
+    const harness = makeHarness({
+      workflow: activeWorkflow(),
+      step: () => Effect.fail(new ResumeBlockedError({ workflowID })),
+    })
+    await runHarness(harness, (control) =>
+      Effect.gen(function* () {
+        const exit = yield* control.apply(workflowID, { op: "step" }, caller).pipe(Effect.exit)
+        const rejection = rejectionOf(exit)
+        expect(rejection._tag).toBe("Conflict")
+        if (rejection._tag === "Conflict") {
+          expect(rejection.kind).toBe("resume-blocked")
+          expect(rejection.status).toBe("running")
+        }
+        // step is not a prechecked op; the policy is enforced by Dag inside its lock.
+        expect(harness.guardChecks).toHaveLength(0)
+      }),
+    )
+  })
+
+  it("propagates a defect from the resume policy without returning a rejection", async () => {
+    const harness = makeHarness({ workflow: pausedWorkflow() })
+    const guardDefect = new Error("simulated guard defect")
+    harness.guardState.policy = { check: () => Effect.die(guardDefect) }
+    const exit = await runHarness(harness, (control) =>
+      control
+        .apply(workflowID, { op: "extend", prepared: { action: "extend", nodes: [makeNode("b")] } }, caller)
+        .pipe(Effect.exit),
+    )
+    expect(defectOf(exit)).toBe(guardDefect)
+    expect(methods(harness)).toEqual(["store.getWorkflow"])
+  })
+
+  it("fails closed when the resume policy fails with an untyped error", async () => {
+    const harness = makeHarness({ workflow: pausedWorkflow() })
+    const policyBug = new Error("policy bug")
+    // A policy is only allowed to fail with ResumeBlockedError. Any other
+    // failure is a contract violation, so the precheck must abort instead of
+    // letting the mutation proceed as if the check had passed.
+    harness.guardState.policy = { check: () => Effect.fail(policyBug) } as unknown as ResumeGuard.Policy
+    const exit = await runHarness(harness, (control) =>
+      control
+        .apply(workflowID, { op: "replan", prepared: { action: "replan", nodes: [makeNode("b")] } }, caller)
+        .pipe(Effect.exit),
+    )
+    expect(defectOf(exit)).toBe(policyBug)
+    expect(methods(harness)).toEqual(["store.getWorkflow"])
   })
 })
 
@@ -621,6 +674,26 @@ describe("DagControl.parkRejected", () => {
     expect(rejectionOf(exit)._tag).toBe("NotFound")
     expect(methods(harness)).not.toContain("pause")
   })
+
+  it("skips the owner check and parks when the first read fails without interrupting", async () => {
+    const harness = makeHarness({
+      readWorkflow: (index) =>
+        index === 0 ? Effect.fail(new Error("simulated first read failure")) : Effect.succeed(pausedWorkflow()),
+    })
+    const outcome = await runHarness(harness, (control) => control.parkRejected(workflowID, caller))
+    // An unreadable row cannot prove a foreign owner, so parking still runs;
+    // the successful pause ends the protocol before the read-back.
+    expect(outcome).toEqual({ result: "parked", status: "paused" })
+    expect(methods(harness)).toEqual(["store.getWorkflow", "pause"])
+  })
+
+  it("propagates an interrupt from the first read", async () => {
+    const harness = makeHarness({ readWorkflow: () => Effect.interrupt })
+    const exit = await runHarness(harness, (control) => control.parkRejected(workflowID, caller).pipe(Effect.exit))
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
+    expect(methods(harness)).toEqual(["store.getWorkflow"])
+  })
 })
 
 describe("DagControl applicability — owner check", () => {
@@ -691,6 +764,13 @@ describe("DagControl rejection classification", () => {
       status: "completed",
     },
     {
+      name: "TerminalViolationError for another entity falls back to the persisted status",
+      error: new TerminalViolationError("node-1", "completed", "running"),
+      tag: "Conflict",
+      kind: "terminal",
+      status: "running",
+    },
+    {
       name: "StaleNodeAttemptError is a stale-attempt conflict at the persisted status",
       error: staleAttempt,
       tag: "Conflict",
@@ -712,11 +792,11 @@ describe("DagControl rejection classification", () => {
       status: "running",
     },
     {
-      name: "ResumeBlockedError reports paused with the durable pause reason",
+      name: "ResumeBlockedError reports the persisted status with the durable pause reason",
       error: new ResumeBlockedError({ workflowID, pauseReason: "budget" }),
       tag: "Conflict",
       kind: "resume-blocked",
-      status: "paused",
+      status: "running",
       pauseReason: "budget",
     },
     {
@@ -818,8 +898,43 @@ describe("DagControl rejection classification", () => {
       diagnostics: 0,
     },
     {
+      name: "duplicate recovery node_ids are invalid",
+      error: new Error("Recovery node_ids must be unique"),
+      tag: "Invalid",
+      status: "running",
+      diagnostics: 0,
+    },
+    {
+      name: "a recovery node outside the current graph is invalid",
+      error: new Error("Recovery node is not in the current graph: node-9"),
+      tag: "Invalid",
+      status: "running",
+      diagnostics: 0,
+    },
+    {
+      name: "an unreadable recovery execution definition is invalid",
+      error: new Error("Recovery cannot read the execution definition for node: node-9"),
+      tag: "Invalid",
+      status: "running",
+      diagnostics: 0,
+    },
+    {
+      name: "an unmappable recovery input source is invalid",
+      error: new Error('Recovery cannot map input source "x": bad source'),
+      tag: "Invalid",
+      status: "running",
+      diagnostics: 0,
+    },
+    {
+      name: "a recovery attempt ID collision is invalid",
+      error: new Error("Recovery attempt ID already exists: node-9#2"),
+      tag: "Invalid",
+      status: "running",
+      diagnostics: 0,
+    },
+    {
       name: "a recovery attempt ceiling is invalid",
-      error: new Error("Recovery attempt ceiling exceeded"),
+      error: new Error("Recovery attempt ceiling exceeded for node: node-9"),
       tag: "Invalid",
       status: "running",
       diagnostics: 0,
@@ -896,6 +1011,148 @@ describe("DagControl rejection classification", () => {
         const exit = yield* control.apply(workflowID, { op: "resume" }, caller).pipe(Effect.exit)
         expect(rejectionOf(exit)._tag).toBe("Invalid")
         expect(methods(harness)).not.toContain("pause")
+      }),
+    )
+  })
+
+  it("dies when the persisted replan config is invalid", async () => {
+    const configError = new Error("Replan rejected: current workflow config is invalid: wf-1")
+    const harness = makeHarness({
+      workflow: activeWorkflow(),
+      replan: () => Effect.fail(configError),
+    })
+    const exit = await runHarness(harness, (control) =>
+      control
+        .apply(workflowID, { op: "replan", prepared: { action: "replan", nodes: [makeNode("b")] } }, caller)
+        .pipe(Effect.exit),
+    )
+    // A corrupt persisted config is a data defect, not caller input: no
+    // ControlInvalid and no parking attempt.
+    expect(defectOf(exit)).toBe(configError)
+    expect(methods(harness)).not.toContain("pause")
+  })
+
+  it("overrides a Conflict status with the park readback after a successful pause", async () => {
+    const transition = new InvalidTransitionError(workflowID, "running", "paused")
+    const harness = makeHarness({
+      workflow: activeWorkflow(),
+      replan: () => Effect.fail(transition),
+    })
+    await runHarness(harness, (control) =>
+      Effect.gen(function* () {
+        const exit = yield* control
+          .apply(workflowID, { op: "replan", prepared: { action: "replan", nodes: [makeNode("b")] } }, caller)
+          .pipe(Effect.exit)
+        const rejection = rejectionOf(exit)
+        expect(rejection._tag).toBe("Conflict")
+        if (rejection._tag !== "Conflict") throw new Error("expected a Conflict rejection")
+        expect(rejection.kind).toBe("transition")
+        expect(rejection.message).toBe(String(transition))
+        expect(rejection.cause).toBe(transition)
+        expect(rejection.parked).toBe("parked")
+        // Classification saw the error's fromStatus ("running"); the later park
+        // readback reports the actual post-pause state.
+        expect(rejection.status).toBe("paused")
+      }),
+    )
+  })
+
+  it("overrides a Conflict status with a terminal park readback", async () => {
+    const terminal = new TerminalViolationError(workflowID, "failed", "running", "boom")
+    const harness = makeHarness({
+      readWorkflow: (index) =>
+        Effect.succeed(
+          index === 0
+            ? activeWorkflow()
+            : makeWorkflowRow({ id: workflowID, sessionId: "ses_parent", status: "completed" }),
+        ),
+      replan: () => Effect.fail(terminal),
+    })
+    await runHarness(harness, (control) =>
+      Effect.gen(function* () {
+        const exit = yield* control
+          .apply(workflowID, { op: "replan", prepared: { action: "replan", nodes: [makeNode("b")] } }, caller)
+          .pipe(Effect.exit)
+        const rejection = rejectionOf(exit)
+        expect(rejection._tag).toBe("Conflict")
+        if (rejection._tag !== "Conflict") throw new Error("expected a Conflict rejection")
+        expect(rejection.kind).toBe("terminal")
+        expect(rejection.message).toBe(terminal.message)
+        expect(rejection.cause).toBe(terminal)
+        expect(rejection.parked).toBe("terminal-unchanged")
+        // Classification saw the error's terminalStatus ("failed"); the park
+        // readback is the actual persisted "completed".
+        expect(rejection.status).toBe("completed")
+        expect(methods(harness)).not.toContain("pause")
+      }),
+    )
+  })
+
+  it("rebuilds an Invalid rejection with message, diagnostics, and cause intact", async () => {
+    const validation = new StructuralValidationError({
+      diagnostics: [{ severity: "error", code: "dag.invalid", path: "nodes", message: "bad node", hint: "fix it" }],
+    })
+    const harness = makeHarness({
+      workflow: activeWorkflow(),
+      replan: () => Effect.fail(validation),
+    })
+    await runHarness(harness, (control) =>
+      Effect.gen(function* () {
+        const exit = yield* control
+          .apply(workflowID, { op: "replan", prepared: { action: "replan", nodes: [makeNode("b")] } }, caller)
+          .pipe(Effect.exit)
+        const rejection = rejectionOf(exit)
+        expect(rejection._tag).toBe("Invalid")
+        if (rejection._tag !== "Invalid") throw new Error("expected an Invalid rejection")
+        expect(rejection.message).toBe(String(validation))
+        expect(rejection.diagnostics).toEqual(validation.diagnostics)
+        expect(rejection.cause).toBe(validation)
+        expect(rejection.parked).toBe("parked")
+        expect(rejection.status).toBe("paused")
+      }),
+    )
+  })
+
+  it("reports unknown when the classification status read fails", async () => {
+    const stale = new StaleNodeAttemptError(
+      "node-1",
+      { replanAttempts: 0 },
+      { replanAttempts: 1, nodeSeq: 2, childSessionID: null, graphRev: 1 },
+    )
+    const harness = makeHarness({
+      readWorkflow: (index) =>
+        index === 0
+          ? Effect.succeed(activeWorkflow())
+          : Effect.fail(new Error("simulated classification read failure")),
+      pause: () => Effect.fail(stale),
+    })
+    await runHarness(harness, (control) =>
+      Effect.gen(function* () {
+        const exit = yield* control.apply(workflowID, { op: "pause" }, caller).pipe(Effect.exit)
+        const rejection = rejectionOf(exit)
+        expect(rejection._tag).toBe("Conflict")
+        if (rejection._tag === "Conflict") {
+          expect(rejection.kind).toBe("stale-attempt")
+          expect(rejection.status).toBe("unknown")
+        }
+      }),
+    )
+  })
+
+  it("reports missing when the classification read returns no row", async () => {
+    const harness = makeHarness({
+      readWorkflow: (index) => Effect.succeed(index === 0 ? activeWorkflow() : undefined),
+      pause: () => Effect.fail(new Error("Node still in-flight: cannot step wf-1")),
+    })
+    await runHarness(harness, (control) =>
+      Effect.gen(function* () {
+        const exit = yield* control.apply(workflowID, { op: "pause" }, caller).pipe(Effect.exit)
+        const rejection = rejectionOf(exit)
+        expect(rejection._tag).toBe("Conflict")
+        if (rejection._tag === "Conflict") {
+          expect(rejection.kind).toBe("transition")
+          expect(rejection.status).toBe("missing")
+        }
       }),
     )
   })

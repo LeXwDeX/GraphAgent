@@ -340,7 +340,15 @@ export const WorkflowTool = Tool.define<
           }
           const failure = Option.getOrThrow(Cause.findErrorOption(cause))
           if (failure instanceof DagControl.ControlNotFound) {
-            return Effect.die(new Error(`Workflow not found: ${workflowID}`))
+            return Effect.gen(function* () {
+              const parked = yield* control.parkRejected(workflowID, { sessionID }).pipe(Effect.option)
+              if (Option.isNone(parked)) return yield* Effect.die(new Error(`Workflow not found: ${workflowID}`))
+              return yield* Effect.die(
+                new Error(
+                  `Workflow not found: ${workflowID}\n${parkText(parked.value, action)}\n${WORKFLOW_RECOVERY.instruction}`,
+                ),
+              )
+            })
           }
           const state = failure.parked
             ? `\n${parkText({ result: failure.parked, status: failure.status }, action)}`

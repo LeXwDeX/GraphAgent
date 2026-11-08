@@ -206,22 +206,25 @@ const isPlainMessage = (error: unknown, prefix: string): boolean => messageOf(er
 
 const withParked = (
   rejection: ControlConflict | ControlInvalid,
-  parked: ParkResult,
+  outcome: ParkOutcome,
 ): ControlConflict | ControlInvalid =>
   rejection._tag === "Conflict"
     ? new ControlConflict({
-        status: rejection.status,
+        // The park readback is later than classification, so its status is the
+        // actual persisted state after the rejected mutation (for example
+        // `paused` after a successful parking pause).
+        status: outcome.status,
         message: rejection.message,
         kind: rejection.kind,
         pauseReason: rejection.pauseReason,
-        parked,
+        parked: outcome.result,
         cause: rejection.cause,
       })
     : new ControlInvalid({
-        status: rejection.status,
+        status: outcome.status,
         message: rejection.message,
         diagnostics: rejection.diagnostics,
-        parked,
+        parked: outcome.result,
         cause: rejection.cause,
       })
 
@@ -325,7 +328,9 @@ const make = Effect.gen(function* () {
       if (error instanceof ResumeBlockedError) {
         return new ControlConflict({
           kind: "resume-blocked",
-          status: "paused",
+          // A policy veto can fire on a running workflow (for example a step
+          // request), so report the actual persisted status, not a guess.
+          status: yield* persistedStatus(dagID),
           pauseReason: error.pauseReason,
           message: error.message,
           cause: error,
@@ -364,6 +369,13 @@ const make = Effect.gen(function* () {
           message: String(error),
           cause: error,
         })
+      }
+
+      // A corrupt persisted config is a data defect, not caller input: the
+      // caller cannot fix it by editing the fragment, so let it bubble as a
+      // defect instead of matching the generic `Replan rejected:` prefix below.
+      if (isPlainMessage(error, "Replan rejected: current workflow config is invalid:")) {
+        return yield* Effect.die(error)
       }
 
       if (
@@ -449,7 +461,7 @@ const make = Effect.gen(function* () {
             return yield* Effect.fail(
               new ControlConflict({
                 kind: "resume-blocked",
-                status: "paused",
+                status: workflow.status,
                 pauseReason: veto.value.pauseReason,
                 message: veto.value.message,
                 cause: veto.value,
@@ -458,6 +470,10 @@ const make = Effect.gen(function* () {
           }
           const defect = Cause.findDefect(checked.cause)
           if (Result.isSuccess(defect)) return yield* Effect.die(defect.success)
+          // A policy that fails with an untyped error violates its contract.
+          // Fail closed: the mutation must not proceed, and the failure is a
+          // defect rather than a caller-visible rejection.
+          return yield* Effect.die(Cause.squash(checked.cause))
         }
       }
 
@@ -538,7 +554,7 @@ const make = Effect.gen(function* () {
             // acquire it again. A concurrent delete loses the owner check;
             // report the original rejection un-parked rather than masking it.
             const parked = yield* parkRejected(dagID, caller).pipe(Effect.option)
-            return yield* Effect.fail(Option.isSome(parked) ? withParked(rejection, parked.value.result) : rejection)
+            return yield* Effect.fail(Option.isSome(parked) ? withParked(rejection, parked.value) : rejection)
           })
         }),
       )

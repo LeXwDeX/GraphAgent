@@ -571,6 +571,10 @@ const events = Layer.mock(EventV2Bridge.Service, {
 // Dag instance and the real control service without changing behavior.
 const dagCalls: string[] = []
 const controlOps: string[] = []
+// Test-local overrides for the DagControl service. Reset by each test that sets
+// them so the shared runtime layer observes real behavior everywhere else.
+let controlApplyOverride: DagControl.Interface["apply"] | undefined
+let controlParkOverride: DagControl.Interface["parkRejected"] | undefined
 
 function recordingDagMethod<K extends keyof Dag.Interface>(name: K, method: Dag.Interface[K]): Dag.Interface[K] {
   const inner = method as unknown as (...args: unknown[]) => unknown
@@ -610,9 +614,11 @@ const control = Layer.effect(
           Effect.sync(() => {
             controlOps.push(request.op)
           }),
-          () => real.apply(dagID, request, caller),
+          () =>
+            controlApplyOverride ? controlApplyOverride(dagID, request, caller) : real.apply(dagID, request, caller),
         ),
-      parkRejected: (dagID, caller) => real.parkRejected(dagID, caller),
+      parkRejected: (dagID, caller) =>
+        controlParkOverride ? controlParkOverride(dagID, caller) : real.parkRejected(dagID, caller),
     })
   }),
 ).pipe(Layer.provide(DagControl.layer.pipe(Layer.provide(dag))))
@@ -2024,6 +2030,63 @@ describe("workflow tool execution", () => {
         "step",
       ])
     }),
+  )
+
+  runtime.effect("parks a rejected replan whose workflow row cannot be read and reports missing state", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      const workflow = yield* (yield* WorkflowTool).init()
+      const spec_path = yield* writeWorkflowSpec("replan-missing-workflow", {
+        fragment: {
+          name: "replan-missing-workflow",
+          nodes: [
+            {
+              id: "replan-missing",
+              name: "Replan missing",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "work" },
+            },
+          ],
+        },
+      })
+      controlApplyOverride = (() =>
+        Effect.fail(new DagControl.ControlNotFound())) as unknown as DagControl.Interface["apply"]
+      controlParkOverride = (() =>
+        Effect.succeed({
+          result: { failed: "simulated first read failure", actualStatus: "missing" },
+          status: "missing",
+        })) as unknown as DagControl.Interface["parkRejected"]
+      const result = yield* workflow
+        .execute(
+          Schema.decodeUnknownSync(Parameters)({
+            params: {
+              action: "control",
+              workflow_id: "dag_status",
+              operation: "replan",
+              spec_path,
+            },
+          }),
+          toolContext(),
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(result)).toBe(true)
+      if (Exit.isFailure(result)) {
+        const message = String(Cause.squash(result.cause))
+        // The rejected mutation still reports the best-known durable state and
+        // the shared recovery instruction, even though the workflow vanished.
+        expect(message).toContain("Workflow not found: dag_status")
+        expect(message).toContain("Workflow state: missing")
+        expect(message).toContain("Diagnose the reported cause")
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          controlApplyOverride = undefined
+          controlParkOverride = undefined
+        }),
+      ),
+    ),
   )
 
   runtime.effect("routes local recovery through the owned workflow and returns revision and attempt lineage", () =>
