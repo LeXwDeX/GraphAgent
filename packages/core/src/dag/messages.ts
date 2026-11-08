@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto"
 import { resolve as resolvePath } from "node:path"
 import { sql } from "drizzle-orm"
 import { EffectDrizzleQueryError } from "drizzle-orm/effect-core/errors"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, PubSub, Stream } from "effect"
 import { SqlError } from "effect/sql/SqlError"
 import { Database } from "../database/database"
 import { LayerNode } from "../effect/layer-node"
@@ -98,7 +98,25 @@ export interface Metadata {
   /** Latest durable message timestamp for this mailbox (optionally workflow-scoped). */
   lastMessageAt?: number
 }
+/** One committed mailbox change, published after the mutating transaction commits. */
+export interface Change {
+  /** Absent for a main (parent-session) mailbox, whose row carries no workflow. */
+  workflowID?: string
+  nodeID?: string
+  recipientSessionID: string
+  /** Recipient session directory, for routing the process-level stream to an instance. */
+  directory: string
+  kind: "queued" | "delivered" | "undeliverable" | "closed"
+  /** Post-commit `agent_mailbox.change_seq`; monotonic per mailbox and stable for replay. */
+  mailboxVersion: number
+}
 export interface Interface {
+  /**
+   * Process-scoped mailbox change stream. Every mailbox mutation publishes
+   * exactly one event only after its transaction commits; a rollback or a
+   * no-op publishes nothing. Consumers treat events as invalidation nudges.
+   */
+  readonly changed: Stream.Stream<Change>
   /** Host-only event/projection boundary. No provider or other remote I/O inside commit. */
   /**
    * Run `commit` in the workflow's immediate transaction, then close any
@@ -238,8 +256,20 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
-    const transaction = <A, E, R>(body: (tx: Tx) => Effect.Effect<A, E, R>) =>
-      db.transaction(body, { behavior: "immediate" }).pipe(Effect.orDie)
+    // Process-scoped change stream: mutations collect events inside their
+    // transaction and publish only after COMMIT. Unlike durable Event rows,
+    // these are invalidation nudges — a lost event costs a rescan, never state.
+    const changed = yield* PubSub.unbounded<Change>()
+    yield* Effect.addFinalizer(() => PubSub.shutdown(changed))
+    const publish = (changes: readonly Change[]) =>
+      Effect.forEach(changes, (change) => PubSub.publish(changed, change), { discard: true })
+    const transaction = <A, E, R>(body: (tx: Tx, changes: Change[]) => Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        const changes: Change[] = []
+        return db
+          .transaction((tx) => body(tx, changes), { behavior: "immediate" })
+          .pipe(Effect.orDie, Effect.tap(() => publish(changes)))
+      })
     const read = <A, E, R>(body: (tx: Tx) => Effect.Effect<A, E, R>) => db.transaction(body).pipe(Effect.orDie)
     const workflow = (tx: Tx, id: string) => tx.get<Workflow>(sql`SELECT * FROM workflow WHERE id = ${id}`)
     const node = (tx: Tx, workflowID: string, nodeID: string) =>
@@ -329,15 +359,45 @@ export const layer = Layer.effect(
           stopReason: row.stop_reason ?? undefined,
         }
       })
-    const close = (tx: Tx, ids: string[], reason: string) =>
+    const directory = (tx: Tx, sessionID: string) =>
+      tx.get<{ directory: string }>(sql`SELECT directory FROM session WHERE id = ${sessionID}`)
+    const change = (
+      box: Pick<Mailbox, "session_id" | "workflow_id" | "node_id">,
+      directory: string | undefined,
+      kind: Change["kind"],
+      mailboxVersion: number,
+    ): Change => ({
+      ...(box.workflow_id ? { workflowID: box.workflow_id } : {}),
+      ...(box.node_id ? { nodeID: box.node_id } : {}),
+      recipientSessionID: box.session_id,
+      directory: directory ?? "",
+      kind,
+      mailboxVersion,
+    })
+    /** Bump the mailbox version and queue its post-commit event. */
+    const record = (tx: Tx, box: Mailbox, kind: Change["kind"], changes: Change[]) =>
+      Effect.gen(function* () {
+        const updated = yield* tx.get<{ change_seq: number }>(
+          sql`UPDATE agent_mailbox SET change_seq = change_seq + 1 WHERE id = ${box.id} RETURNING change_seq`,
+        )
+        if (!updated) return
+        const session = yield* directory(tx, box.session_id)
+        changes.push(change(box, session?.directory, kind, updated.change_seq))
+      })
+    const undeliverable = (tx: Tx, mailboxID: string, reason: string) =>
+      tx.all<{ id: string }>(
+        sql`UPDATE agent_message SET state = 'undeliverable', reason = ${reason} WHERE recipient_id = ${mailboxID} AND state = 'queued' RETURNING id`,
+      )
+    const close = (tx: Tx, ids: string[], reason: string, changes: Change[]) =>
       Effect.gen(function* () {
         for (const id of ids) {
-          yield* tx.run(
-            sql`UPDATE agent_mailbox SET closed_reason = COALESCE(closed_reason,${reason}) WHERE id = ${id}`,
-          )
-          yield* tx.run(
-            sql`UPDATE agent_message SET state = 'undeliverable', reason = ${reason} WHERE recipient_id = ${id} AND state = 'queued'`,
-          )
+          const box = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${id}`)
+          if (!box) continue
+          const released = yield* undeliverable(tx, id, reason)
+          // A repeat close with nothing left to release is a no-op.
+          if (box.closed_reason !== null && released.length === 0) continue
+          yield* tx.run(sql`UPDATE agent_mailbox SET closed_reason = COALESCE(closed_reason,${reason}) WHERE id = ${id}`)
+          yield* record(tx, box, "closed", changes)
         }
       })
     const metadata = (tx: Tx, endpoint: Endpoint, workflowID?: string) =>
@@ -366,6 +426,7 @@ export const layer = Layer.effect(
         }
       })
     return Service.of({
+      changed: Stream.fromPubSub(changed),
       identify: (caller, workflowID) =>
         read((tx) =>
           Effect.gen(function* () {
@@ -379,48 +440,53 @@ export const layer = Layer.effect(
           }),
         ),
       fenceWorkflow: (workflowID, reason, commit) =>
-        db
-          .transaction(
-            (tx) =>
-              Effect.gen(function* () {
-                const result = yield* commit
-                const finalReason = typeof reason === "function" ? reason(result) : reason
-                const boxes = yield* tx.all<Mailbox>(
-                  sql`SELECT * FROM agent_mailbox WHERE workflow_id = ${workflowID} AND closed_reason IS NULL`,
-                )
-                const wf = yield* workflow(tx, workflowID)
-                for (const box of boxes) {
-                  const n = box.node_id ? yield* node(tx, workflowID, box.node_id) : undefined
-                  // A session-level box has no attempt to invalidate. Close it
-                  // only on an explicit terminal reason; a no-op commit (for
-                  // example a concurrently moved workflow) must leave a live
-                  // parent mailbox open.
-                  const invalidAttempt =
-                    box.node_id !== null &&
-                    (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== box.attempt_id)
-                  if (finalReason || invalidAttempt)
-                    yield* close(
-                      tx,
-                      [box.id],
-                      finalReason ??
-                        (n && attempt(n) !== box.attempt_id
-                          ? "attempt_replaced"
-                          : n?.superseded
-                            ? "cancelled"
-                            : "closed"),
-                    )
-                }
-                return result
-              }),
-            { behavior: "immediate" },
-          )
-          .pipe(
-            Effect.catch((error) =>
-              error instanceof SqlError || error instanceof EffectDrizzleQueryError
-                ? Effect.die(error)
-                : Effect.fail(error),
-            ),
-          ),
+        Effect.suspend(() => {
+          const changes: Change[] = []
+          return db
+            .transaction(
+              (tx) =>
+                Effect.gen(function* () {
+                  const result = yield* commit
+                  const finalReason = typeof reason === "function" ? reason(result) : reason
+                  const boxes = yield* tx.all<Mailbox>(
+                    sql`SELECT * FROM agent_mailbox WHERE workflow_id = ${workflowID} AND closed_reason IS NULL`,
+                  )
+                  const wf = yield* workflow(tx, workflowID)
+                  for (const box of boxes) {
+                    const n = box.node_id ? yield* node(tx, workflowID, box.node_id) : undefined
+                    // A session-level box has no attempt to invalidate. Close it
+                    // only on an explicit terminal reason; a no-op commit (for
+                    // example a concurrently moved workflow) must leave a live
+                    // parent mailbox open.
+                    const invalidAttempt =
+                      box.node_id !== null &&
+                      (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== box.attempt_id)
+                    if (finalReason || invalidAttempt)
+                      yield* close(
+                        tx,
+                        [box.id],
+                        finalReason ??
+                          (n && attempt(n) !== box.attempt_id
+                            ? "attempt_replaced"
+                            : n?.superseded
+                              ? "cancelled"
+                              : "closed"),
+                        changes,
+                      )
+                  }
+                  return result
+                }),
+              { behavior: "immediate" },
+            )
+            .pipe(
+              Effect.catch((error) =>
+                error instanceof SqlError || error instanceof EffectDrizzleQueryError
+                  ? Effect.die(error)
+                  : Effect.fail(error),
+              ),
+              Effect.tap(() => publish(changes)),
+            )
+        }),
       resolve: (caller, workflowID, nodeID) =>
         transaction((tx) =>
           Effect.gen(function* () {
@@ -437,7 +503,7 @@ export const layer = Layer.effect(
           }),
         ),
       send: (caller, request) =>
-        transaction((tx) =>
+        transaction((tx, changes) =>
           Effect.gen(function* () {
             if (
               !request.idempotencyKey ||
@@ -494,13 +560,15 @@ export const layer = Layer.effect(
               sql`SELECT COUNT(*) AS n FROM agent_message WHERE recipient_id = ${recipient.id} AND state = 'queued'`,
             )
             if (queued!.n >= 64) return reject("capacity")
-            const revised = yield* tx.get<{ revision: number }>(
-              sql`UPDATE agent_mailbox SET revision = revision + 1 WHERE id = ${recipient.id} AND closed_reason IS NULL AND revision = ${box.revision} RETURNING revision`,
+            const revised = yield* tx.get<{ revision: number; change_seq: number }>(
+              sql`UPDATE agent_mailbox SET revision = revision + 1, change_seq = change_seq + 1 WHERE id = ${recipient.id} AND closed_reason IS NULL AND revision = ${box.revision} RETURNING revision, change_seq`,
             )
             if (!revised) return reject("closed")
             const id = `agm_${randomUUID()}`
             yield* tx.run(sql`INSERT INTO agent_message (id,workflow_id,sender_id,recipient_id,recipient_session_id,sender,recipient,idempotency_key,request,content,reply_to,recipient_sequence,accepted_revision,state,transcript_id,part_id,time_created)
         VALUES (${id},${wf.id},${sender.id},${recipient.id},${recipient.sessionID},${JSON.stringify(sender)},${JSON.stringify(recipient)},${request.idempotencyKey},${canonical},${request.content},${request.replyTo ?? null},${revised.revision},${revised.revision},'queued',${Identifier.ascending("message")},${Identifier.ascending("part")},${Date.now()})`)
+            const target = yield* directory(tx, box.session_id)
+            changes.push(change(box, target?.directory, "queued", revised.change_seq))
             return success(
               mapMessage((yield* tx.get<StoredMessage>(sql`SELECT * FROM agent_message WHERE id = ${id}`))!),
             )
@@ -593,10 +661,11 @@ export const layer = Layer.effect(
           }),
         ),
       associate: (caller, snapshotID) =>
-        transaction((tx) =>
+        transaction((tx, changes) =>
           Effect.gen(function* () {
             const endpoint = yield* self(tx, caller)
             if (!endpoint) return reject("unauthorized")
+            const box = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${endpoint.id}`)
             const row = yield* tx.get<StoredSnapshot>(
               sql`SELECT * FROM agent_input_snapshot WHERE id = ${snapshotID} AND mailbox_id = ${endpoint.id}`,
             )
@@ -625,6 +694,7 @@ export const layer = Layer.effect(
               yield* tx.run(
                 sql`UPDATE agent_message SET state = 'delivered', snapshot_id = ${row.id}, time_delivered = ${Date.now()} WHERE id = ${m.id} AND state = 'queued'`,
               )
+            if (box) yield* record(tx, box, "delivered", changes)
             return success(yield* snapshot(tx, { ...row, associated: 1 }))
           }),
         ),
@@ -685,13 +755,14 @@ export const layer = Layer.effect(
           }),
         ),
       discardPending: (caller, reason) =>
-        transaction((tx) =>
+        transaction((tx, changes) =>
           Effect.gen(function* () {
             const endpoint = yield* self(tx, caller)
             if (!endpoint) return
-            yield* tx.run(
-              sql`UPDATE agent_message SET state = 'undeliverable',reason = ${reason} WHERE recipient_id = ${endpoint.id} AND state = 'queued'`,
-            )
+            const released = yield* undeliverable(tx, endpoint.id, reason)
+            if (released.length === 0) return
+            const box = yield* tx.get<Mailbox>(sql`SELECT * FROM agent_mailbox WHERE id = ${endpoint.id}`)
+            if (box) yield* record(tx, box, "undeliverable", changes)
           }),
         ),
       markStopped: (caller, snapshotID, reason) =>
@@ -705,66 +776,80 @@ export const layer = Layer.effect(
           }),
         ),
       guard: (caller, input, commit) =>
-        db
-          .transaction(
-            (tx) =>
-              Effect.gen(function* () {
-                const wf = yield* workflow(tx, input.workflowID)
-                const sender = wf && (yield* owner(tx, caller, wf))
-                if (!wf || !sender) return reject("unauthorized")
-                const n = yield* node(tx, wf.id, input.nodeID)
-                if (
-                  !n ||
-                  !liveNode(n) ||
-                  attempt(n) !== input.attemptID ||
-                  (sender.kind === "node" && sender.nodeID !== n.id)
-                )
-                  return reject("stale_attempt")
-                const childSession = yield* session(tx, n.child_session_id!)
-                if (
-                  !boundChild(wf, n, childSession) &&
-                  !(!childSession && sender.kind === "main" && input.failureReason && input.close !== false)
-                )
-                  return reject("unauthorized")
-                if (!liveWorkflow(wf.status)) return reject("closed")
-                const endpoint = child(n)
-                const box = yield* mailbox(tx, endpoint)
-                if (box.closed_reason) return reject("closed")
-                if (input.expectedAcceptedRevision !== undefined && box.revision !== input.expectedAcceptedRevision)
-                  return reject("stale_input")
-                const frozen = input.snapshotID
-                  ? yield* tx.get<StoredSnapshot>(
-                      sql`SELECT * FROM agent_input_snapshot WHERE id = ${input.snapshotID} AND mailbox_id = ${box.id}`,
+        Effect.suspend(() => {
+          const changes: Change[] = []
+          return db
+            .transaction(
+              (tx) =>
+                Effect.gen(function* () {
+                  const wf = yield* workflow(tx, input.workflowID)
+                  const sender = wf && (yield* owner(tx, caller, wf))
+                  if (!wf || !sender) return reject("unauthorized")
+                  const n = yield* node(tx, wf.id, input.nodeID)
+                  if (
+                    !n ||
+                    !liveNode(n) ||
+                    attempt(n) !== input.attemptID ||
+                    (sender.kind === "node" && sender.nodeID !== n.id)
+                  )
+                    return reject("stale_attempt")
+                  const childSession = yield* session(tx, n.child_session_id!)
+                  if (
+                    !boundChild(wf, n, childSession) &&
+                    !(!childSession && sender.kind === "main" && input.failureReason && input.close !== false)
+                  )
+                    return reject("unauthorized")
+                  if (!liveWorkflow(wf.status)) return reject("closed")
+                  const endpoint = child(n)
+                  const box = yield* mailbox(tx, endpoint)
+                  if (box.closed_reason) return reject("closed")
+                  if (input.expectedAcceptedRevision !== undefined && box.revision !== input.expectedAcceptedRevision)
+                    return reject("stale_input")
+                  const frozen = input.snapshotID
+                    ? yield* tx.get<StoredSnapshot>(
+                        sql`SELECT * FROM agent_input_snapshot WHERE id = ${input.snapshotID} AND mailbox_id = ${box.id}`,
+                      )
+                    : undefined
+                  const checkSnapshot = !input.failureReason || input.requireCurrentInput === true
+                  if (
+                    checkSnapshot &&
+                    ((!frozen && (box.revision > 0 || input.snapshotID !== undefined)) ||
+                      (frozen && frozen.revision !== box.revision))
+                  )
+                    return reject("stale_input")
+                  if (checkSnapshot && frozen && !frozen.associated) return reject("unassociated")
+                  if (checkSnapshot && frozen?.stop_reason && frozen.stop_reason !== "budget_exhausted")
+                    return reject("stopped")
+                  // close:false claims the result without closing the channel, so it publishes nothing.
+                  if (input.close === false) {
+                    const claimed = yield* tx.get<{ id: string }>(
+                      sql`UPDATE agent_mailbox SET closed_reason = NULL WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING id`,
                     )
-                  : undefined
-                const checkSnapshot = !input.failureReason || input.requireCurrentInput === true
-                if (
-                  checkSnapshot &&
-                  ((!frozen && (box.revision > 0 || input.snapshotID !== undefined)) ||
-                    (frozen && frozen.revision !== box.revision))
-                )
-                  return reject("stale_input")
-                if (checkSnapshot && frozen && !frozen.associated) return reject("unassociated")
-                if (checkSnapshot && frozen?.stop_reason && frozen.stop_reason !== "budget_exhausted")
-                  return reject("stopped")
-                const claimed = yield* tx.get(
-                  sql`UPDATE agent_mailbox SET closed_reason = ${input.close === false ? null : (input.failureReason ?? "completed")} WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING id`,
-                )
-                if (!claimed) return reject("stale_input")
-                if (input.failureReason) yield* close(tx, [box.id], input.failureReason)
-                return success(yield* commit)
-              }),
-            { behavior: "immediate" },
-          )
-          .pipe(
-            Effect.catch((error) =>
-              error instanceof SqlError || error instanceof EffectDrizzleQueryError
-                ? Effect.die(error)
-                : Effect.fail(error),
-            ),
-          ),
+                    if (!claimed) return reject("stale_input")
+                    return success(yield* commit)
+                  }
+                  const claimed = yield* tx.get<{ change_seq: number }>(
+                    sql`UPDATE agent_mailbox SET closed_reason = ${input.failureReason ?? "completed"}, change_seq = change_seq + 1 WHERE id = ${box.id} AND revision = ${box.revision} AND closed_reason IS NULL RETURNING change_seq`,
+                  )
+                  if (!claimed) return reject("stale_input")
+                  if (input.failureReason) yield* undeliverable(tx, box.id, input.failureReason)
+                  const target = yield* directory(tx, box.session_id)
+                  changes.push(change(box, target?.directory, "closed", claimed.change_seq))
+                  return success(yield* commit)
+                }),
+              { behavior: "immediate" },
+            )
+            .pipe(
+              Effect.catch((error) =>
+                error instanceof SqlError || error instanceof EffectDrizzleQueryError
+                  ? Effect.die(error)
+                  : Effect.fail(error),
+              ),
+              Effect.tap(() => publish(changes)),
+            )
+        }),
       closeSession: (sessionID, reason) =>
-        transaction((tx) =>
+        transaction((tx, changes) =>
           Effect.gen(function* () {
             // Materialize a tombstone even if this session never received a message.
             const s = yield* session(tx, sessionID)
@@ -776,11 +861,12 @@ export const layer = Layer.effect(
               tx,
               boxes.map((b) => b.id),
               reason,
+              changes,
             )
           }),
         ),
       closeWorkflow: (workflowID, reason) =>
-        transaction((tx) =>
+        transaction((tx, changes) =>
           Effect.gen(function* () {
             const boxes = yield* tx.all<{ id: string }>(
               sql`SELECT id FROM agent_mailbox WHERE workflow_id = ${workflowID}`,
@@ -789,12 +875,13 @@ export const layer = Layer.effect(
               tx,
               boxes.map((b) => b.id),
               reason,
+              changes,
             )
           }),
         ),
       reconcile: (caller) =>
-        transaction((tx) =>
-          Effect.gen(function* () {
+        transaction((tx, changes) => {
+          return Effect.gen(function* () {
             const current = yield* session(tx, caller.sessionID)
             if (!authorizedSession(caller, current)) return
             const boxes = yield* tx.all<Mailbox>(
@@ -815,10 +902,11 @@ export const layer = Layer.effect(
                     : wf?.status === "cancelled" || n?.superseded
                       ? "cancelled"
                       : "closed",
+                  changes,
                 )
             }
-          }),
-        ),
+          })
+        }),
       revisions: (caller) =>
         transaction((tx) =>
           Effect.gen(function* () {
