@@ -503,6 +503,17 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  /**
+   * Publishes one settle batch — message updates followed by their parts — as a
+   * single durable transaction. Every entry must belong to the same session.
+   * Parts are published without a defensive clone, so callers must pass objects
+   * they will not mutate afterwards; message updates keep the existing
+   * reference semantics of `updateMessage`.
+   */
+  readonly settle: (input: {
+    readonly messages?: ReadonlyArray<SessionV1.Info>
+    readonly parts?: ReadonlyArray<SessionV1.Part>
+  }) => Effect.Effect<void>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -846,6 +857,24 @@ export const layer: Layer.Layer<
         })
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
+
+    const settle = Effect.fn("Session.settle")(function* (input: {
+      messages?: ReadonlyArray<SessionV1.Info>
+      parts?: ReadonlyArray<SessionV1.Part>
+    }) {
+      const time = Date.now()
+      const batch: Array<Parameters<typeof events.publishMany>[0][number]> = [
+        ...(input.messages ?? []).map((info) => ({
+          definition: SessionV1.Event.MessageUpdated,
+          data: { sessionID: info.sessionID, info },
+        })),
+        ...(input.parts ?? []).map((part) => ({
+          definition: SessionV1.Event.PartUpdated,
+          data: { sessionID: part.sessionID, part, time },
+        })),
+      ]
+      if (batch.length) yield* events.publishMany(batch)
+    })
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       const row = yield* db
@@ -1314,6 +1343,7 @@ export const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      settle,
       getPart,
       updatePartDelta,
       findMessage,

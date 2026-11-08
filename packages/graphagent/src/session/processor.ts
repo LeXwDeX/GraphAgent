@@ -677,21 +677,24 @@ export const layer = Layer.effect(
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
             accumulateUsage(ctx.assistantMessage, usage)
-            yield* session.updatePart({
-              id: PartID.ascending(),
-              reason: value.reason,
-              snapshot: completedSnapshot,
-              messageID: ctx.assistantMessage.id,
-              sessionID: ctx.assistantMessage.sessionID,
-              type: "step-finish",
-              tokens: usage.tokens,
-              cost: usage.cost,
-            })
-            yield* session.updateMessage(ctx.assistantMessage)
+            // One settle batch: the step-finish part, the assistant message and
+            // the optional patch part commit as a single durable transaction.
+            const settled: SessionV1.Part[] = [
+              {
+                id: PartID.ascending(),
+                reason: value.reason,
+                snapshot: completedSnapshot,
+                messageID: ctx.assistantMessage.id,
+                sessionID: ctx.assistantMessage.sessionID,
+                type: "step-finish",
+                tokens: usage.tokens,
+                cost: usage.cost,
+              },
+            ]
             if (ctx.snapshot && ctx.stepToolActivity) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
-                yield* session.updatePart({
+                settled.push({
                   id: PartID.ascending(),
                   messageID: ctx.assistantMessage.id,
                   sessionID: ctx.sessionID,
@@ -701,6 +704,7 @@ export const layer = Layer.effect(
                 })
               }
             }
+            yield* session.settle({ messages: [ctx.assistantMessage], parts: settled })
             ctx.snapshot = undefined
             if (
               !ctx.assistantMessage.summary &&
