@@ -461,11 +461,13 @@ export const layer = Layer.effect(
 
       const mcpItems = yield* mcp.tools()
       for (const key of Object.keys(mcpItems).toSorted((left, right) => left.localeCompare(right))) {
+        // A server tool with the same model-facing key replaces the built-in,
+        // matching the pre-registry merge order (`tools[key] = item`): the
+        // model sees exactly one tool under that name, and it is the MCP one.
         if (entries.has(key)) {
-          yield* Effect.logWarning("MCP tool name collides with a built-in tool; keeping the built-in", {
+          yield* Effect.logWarning("MCP tool name collides with a built-in tool; the MCP tool wins", {
             tool: key,
           })
-          continue
         }
         const item = mcpItems[key]
         const binding = McpCatalog.toolBinding(item)

@@ -41,7 +41,7 @@ const resourceClient = Object.assign(new Client({ name: "fixture", version: "0" 
 })
 
 const mcpTools = {
-  // The built-in `read` keeps its name even though the server exports the same key.
+  // The server exports the same key as the built-in `read`; the MCP tool wins.
   read: mcpTool("fixture", "read"),
   zzz_remote: mcpTool("fixture", "zzz"),
   aaa_remote: mcpTool("fixture", "aaa"),
@@ -68,7 +68,7 @@ afterEach(async () => {
 })
 
 describe("tool.registry MCP resolution", () => {
-  it.instance("keeps the built-in on a name collision, orders MCP tools, and appends resource helpers", () =>
+  it.instance("lets an MCP tool override a same-name built-in, orders MCP tools, and appends resource helpers", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const agents = yield* Agent.Service
@@ -90,9 +90,16 @@ describe("tool.registry MCP resolution", () => {
       const entries = yield* registry.resolve({ model, agent: build, session }).pipe(Effect.withLogger(logger))
       const ids = entries.map((entry) => entry.id)
 
-      // Built-in wins: exactly one `read`, sourced from the host.
+      // The MCP tool wins the name (the pre-registry merge assigned
+      // `tools[key] = item` after the built-ins), so exactly one `read`
+      // remains and it is sourced from the server.
       expect(ids.filter((id) => id === "read")).toHaveLength(1)
-      expect(entries.find((entry) => entry.id === "read")?.source.kind).toBe("builtin")
+      expect(entries.find((entry) => entry.id === "read")?.source).toMatchObject({
+        kind: "mcp",
+        server: "fixture",
+        tool: "read",
+        canonicalName: "mcp__fixture__read",
+      })
       expect(logs.join("\n")).toContain("collides with a built-in tool")
       expect(logs.join("\n")).toContain("read")
 

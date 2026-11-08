@@ -20,6 +20,7 @@ import { Command } from "../../src/command"
 import { Config } from "@/config/config"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "../../src/mcp"
+import { McpCatalog } from "../../src/mcp/catalog"
 import { Permission } from "../../src/permission"
 import { Provider as ProviderSvc } from "@/provider/provider"
 import { Env } from "../../src/env"
@@ -140,7 +141,20 @@ function makeMcp(instructions: MCP.ServerInstructions[] = [], tools: Record<stri
       status: () => Effect.succeed({}),
       clients: () => Effect.succeed({}),
       instructions: () => Effect.succeed(instructions),
-      tools: () => ready.pipe(Effect.as(tools)),
+      // `MCP.tools()` binds every server tool to its real identity; the registry
+      // relies on that binding, so the stub must provide it too. Rebind on each
+      // call because some tests add tools to the same record mid-flight.
+      tools: () =>
+        ready.pipe(
+          Effect.as(
+            Object.fromEntries(
+              Object.entries(tools).map(([key, item]) => [
+                key,
+                McpCatalog.bindTool(item, { server: "fixture", tool: key, source: "fixture" }),
+              ]),
+            ),
+          ),
+        ),
       prompts: () => Effect.succeed({}),
       resources: () => Effect.succeed({}),
       resourceTemplates: () => Effect.succeed({}),
