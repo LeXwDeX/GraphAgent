@@ -24,6 +24,7 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { Event } from "@graphagent/schema/event"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Question } from "@/question"
 import { Session } from "@/session/session"
@@ -132,6 +133,7 @@ const dag = Dag.layer.pipe(
       Effect.succeed({ id: Event.ID.create(), type: definition.type, data }),
   })),
 )
+const control = DagControl.layer.pipe(Layer.provide(dag))
 
 const runtime = testEffect(
   Layer.mergeAll(
@@ -160,6 +162,7 @@ const runtime = testEffect(
       getModel: (providerID, modelID) => Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID })),
     }),
     dag,
+    control,
     Layer.mock(Session.Service, {
       get: (id: Parameters<Session.Interface["get"]>[0]) =>
         Effect.succeed({

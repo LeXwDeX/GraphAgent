@@ -5,6 +5,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { DagValidation } from "@/dag/validation"
 import { Agent } from "@/agent/agent"
 import { Skill } from "@/skill"
@@ -566,7 +567,55 @@ const events = Layer.mock(EventV2Bridge.Service, {
       return { id: "event_test", type: definition.type, data } as never
     }),
 })
-const dag = Dag.layer.pipe(Layer.provide(store), Layer.provide(events))
+// Observability for the "tool never bypasses DagControl" test: wrap the real
+// Dag instance and the real control service without changing behavior.
+const dagCalls: string[] = []
+const controlOps: string[] = []
+
+function recordingDagMethod<K extends keyof Dag.Interface>(name: K, method: Dag.Interface[K]): Dag.Interface[K] {
+  const inner = method as unknown as (...args: unknown[]) => unknown
+  return ((...args: unknown[]) => {
+    dagCalls.push(name)
+    return inner(...args)
+  }) as unknown as Dag.Interface[K]
+}
+
+const dagBase = Dag.layer.pipe(Layer.provide(store), Layer.provide(events))
+const dag = Layer.effect(
+  Dag.Service,
+  Effect.gen(function* () {
+    const real = yield* Dag.Service
+    return Dag.Service.of({
+      ...real,
+      pause: recordingDagMethod("pause", real.pause),
+      resume: recordingDagMethod("resume", real.resume),
+      step: recordingDagMethod("step", real.step),
+      cancel: recordingDagMethod("cancel", real.cancel),
+      complete: recordingDagMethod("complete", real.complete),
+      replan: recordingDagMethod("replan", real.replan),
+      extend: recordingDagMethod("extend", real.extend),
+      recover: recordingDagMethod("recover", real.recover),
+      retarget: recordingDagMethod("retarget", real.retarget),
+      extendTimeout: recordingDagMethod("extendTimeout", real.extendTimeout),
+    })
+  }),
+).pipe(Layer.provide(dagBase))
+const control = Layer.effect(
+  DagControl.Service,
+  Effect.gen(function* () {
+    const real = yield* DagControl.Service
+    return DagControl.Service.of({
+      apply: (dagID, request, caller) =>
+        Effect.flatMap(
+          Effect.sync(() => {
+            controlOps.push(request.op)
+          }),
+          () => real.apply(dagID, request, caller),
+        ),
+      parkRejected: (dagID, caller) => real.parkRejected(dagID, caller),
+    })
+  }),
+).pipe(Layer.provide(DagControl.layer.pipe(Layer.provide(dag))))
 const testModel = ProviderTest.model({
   providerID: ProviderV2.ID.make("test"),
   id: ModelV2.ID.make("test-model"),
@@ -635,6 +684,7 @@ const runtime = testEffect(
     }),
     providerCatalog,
     dag,
+    control,
     Layer.mock(Session.Service, {
       get: (id: Parameters<Session.Interface["get"]>[0]) =>
         Effect.succeed({
@@ -685,6 +735,7 @@ const missingModelRuntime = testEffect(
     }),
     providerCatalog,
     dag,
+    control,
     Layer.mock(Session.Service, {
       get: (id: Parameters<Session.Interface["get"]>[0]) =>
         Effect.succeed({
@@ -1837,6 +1888,140 @@ describe("workflow tool execution", () => {
         DagEvent.WorkflowCancelled.type,
         DagEvent.WorkflowCompleted.type,
         DagEvent.WorkflowStepped.type,
+      ])
+    }),
+  )
+
+  runtime.effect("routes every control op and the top-level extend through DagControl without bypassing it", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      dagCalls.length = 0
+      controlOps.length = 0
+      const info = yield* WorkflowTool
+      const workflow = yield* info.init()
+      const replanSpec = yield* writeWorkflowSpec("control-replan-recording", {
+        fragment: {
+          name: "control-replan-recording",
+          nodes: [
+            {
+              id: "replanned-recording",
+              name: "Replanned recording",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "work" },
+            },
+          ],
+        },
+      })
+      const extendSpec = yield* writeWorkflowSpec("control-extend-recording", {
+        nodes: [
+          {
+            id: "extended-recording",
+            name: "Extended recording",
+            worker_type: "general",
+            depends_on: [],
+            prompt_template: { inline: "work" },
+          },
+        ],
+      })
+
+      yield* workflow.execute(
+        { params: { action: "control", workflow_id: Dag.ID.make("dag_status"), operation: "pause" } },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        { params: { action: "control", workflow_id: Dag.ID.make("dag_paused"), operation: "resume" } },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        { params: { action: "control", workflow_id: Dag.ID.make("dag_status"), operation: "cancel" } },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        { params: { action: "control", workflow_id: Dag.ID.make("dag_finishable"), operation: "complete" } },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        { params: { action: "control", workflow_id: Dag.ID.make("dag_step"), operation: "step" } },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_paused"),
+            operation: "recover",
+            node_ids: [DagEvent.NodeID.make("retry")],
+            expected_graph_rev: 1,
+          },
+        },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_retarget"),
+            operation: "retarget",
+            fingerprint: "none",
+            reason: "recording",
+          },
+        },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_defaults"),
+            operation: "extend_timeout",
+            node_id: Dag.NodeID.make("node_missing"),
+            timeout_ms: 60_000,
+          },
+        },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            workflow_id: Dag.ID.make("dag_status"),
+            operation: "replan",
+            spec_path: replanSpec,
+          },
+        },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        { params: { action: "extend", workflow_id: Dag.ID.make("dag_status"), spec_path: extendSpec } },
+        toolContext(),
+      )
+
+      expect(controlOps).toEqual([
+        "pause",
+        "resume",
+        "cancel",
+        "complete",
+        "step",
+        "recover",
+        "retarget",
+        "extend_timeout",
+        "replan",
+        "extend",
+      ])
+      // Each mutation reaches Dag exactly once, through DagControl. A direct
+      // dag.* call from the tool would double that method's count.
+      expect([...dagCalls].sort()).toEqual([
+        "cancel",
+        "complete",
+        "extend",
+        "extendTimeout",
+        "pause",
+        "recover",
+        "replan",
+        "resume",
+        "retarget",
+        "step",
       ])
     }),
   )

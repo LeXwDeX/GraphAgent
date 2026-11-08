@@ -21,6 +21,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { Worktree } from "@/worktree"
@@ -540,6 +541,7 @@ describe("spawn worktree isolation", () => {
             Effect.provide(
               Layer.mergeAll(
                 Layer.mock(Dag.Service, { store }),
+                Layer.mock(DagControl.Service, {}),
                 Layer.mock(Provider.Service, {}),
                 Layer.mock(Truncate.Service, { output: (content) => Effect.succeed({ content, truncated: false }) }),
               ),

@@ -19,6 +19,7 @@ import { Tool } from "@/tool/tool"
 import { WorkflowTool } from "@/tool/workflow"
 import { ProviderTest } from "../fake/provider"
 import { Dag, type NodeConfig } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { reconcileWorkflow } from "@/dag/runtime/recovery"
@@ -47,7 +48,8 @@ const harness = (() => {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  return Layer.mergeAll(database, events, bridge, store, projector, dag)
+  const control = DagControl.layer.pipe(Layer.provide(dag))
+  return Layer.mergeAll(database, events, bridge, store, projector, dag, control)
 })()
 
 function runTest<A, R = never>(
