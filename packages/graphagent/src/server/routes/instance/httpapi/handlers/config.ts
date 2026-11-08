@@ -4,7 +4,7 @@ import * as InstanceState from "@/effect/instance-state"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
-import { markInstanceForDisposal } from "../lifecycle"
+import { AfterResponse } from "../lifecycle"
 
 export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (handlers) =>
   Effect.gen(function* () {
@@ -19,16 +19,12 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
       yield* configSvc
         .update(ctx.payload)
         .pipe(Effect.catchTag("ConfigChangeBlocked", () => Effect.fail(new HttpApiError.BadRequest({}))))
-      yield* markInstanceForDisposal(yield* InstanceState.context)
+      yield* (yield* AfterResponse.Service).dispose(yield* InstanceState.context)
       return ctx.payload
     })
 
     const providers = Effect.fn("ConfigHttpApi.providers")(function* () {
-      const providers = yield* providerSvc.list()
-      return {
-        providers: Object.values(providers).map(Provider.toPublicInfo),
-        default: Provider.defaultModelIDs(providers),
-      }
+      return yield* providerSvc.publicCatalog()
     })
 
     return handlers.handle("get", get).handle("update", update).handle("providers", providers)

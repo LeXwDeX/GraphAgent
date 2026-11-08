@@ -1015,6 +1015,8 @@ export type Error = ModelNotFoundError | InitError | NoProvidersError | NoModels
 
 export interface Interface {
   readonly list: () => Effect.Effect<Record<ProviderV2.ID, Info>>
+  readonly publicCatalog: () => Effect.Effect<ConfigProvidersResult>
+  readonly publicProviders: () => Effect.Effect<ListResult>
   readonly getProvider: (providerID: ProviderV2.ID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderV2.ID, modelID: ModelV2.ID) => Effect.Effect<Model, ModelNotFoundError>
   readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3, ModelNotFoundError>
@@ -1557,6 +1559,36 @@ export const layer = Layer.effect(
 
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
 
+    const publicCatalog = Effect.fn("Provider.publicCatalog")(function* () {
+      const providers = yield* list()
+      return {
+        providers: Object.values(providers).map(toPublicInfo),
+        default: defaultModelIDs(providers),
+      }
+    })
+
+    const publicProviders = Effect.fn("Provider.publicProviders")(function* () {
+      const cfg = yield* config.get()
+      const catalog = yield* modelsDevSvc.get()
+      const disabled = new Set(cfg.disabled_providers ?? [])
+      const enabled = cfg.enabled_providers ? new Set(cfg.enabled_providers) : undefined
+      const filtered: Record<string, ModelsDev.Provider> = {}
+      for (const [key, value] of Object.entries(catalog)) {
+        if ((enabled ? enabled.has(key) : true) && !disabled.has(key)) filtered[key] = value
+      }
+      const connected = yield* list()
+      const credentials = yield* auth.all().pipe(Effect.orDie)
+      const providers = Object.assign(
+        mapValues(filtered, (item) => fromModelsDevProvider(item)),
+        connected,
+      )
+      return {
+        all: Object.values(providers).map(toPublicInfo),
+        default: defaultModelIDs(providers),
+        connected: Object.keys(providers).filter((id) => id in connected || credentials[id]),
+      }
+    })
+
     async function resolveSDK(model: Model, s: State, envs: Record<string, string | undefined>) {
       try {
         const provider = s.providers[model.providerID]
@@ -1883,7 +1915,17 @@ export const layer = Layer.effect(
       }
     })
 
-    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel })
+    return Service.of({
+      list,
+      publicCatalog,
+      publicProviders,
+      getProvider,
+      getModel,
+      getLanguage,
+      closest,
+      getSmallModel,
+      defaultModel,
+    })
   }),
 )
 

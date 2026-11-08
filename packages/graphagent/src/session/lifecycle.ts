@@ -1,4 +1,3 @@
-import { LocalPermissionStartup } from "@/permission/local-startup"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookFileWatch } from "@/hook/file-watch"
 import { HookConfigChange } from "@/hook/config-change"
@@ -16,8 +15,16 @@ import * as Log from "@/util/log"
 
 const log = Log.create({ service: "session.lifecycle" })
 
+export interface CreateOptions {
+  /**
+   * One-shot local startup grant. Only in-process callers that marked the
+   * original HTTP request may pass it; it never crosses the request schema.
+   */
+  readonly localGrant?: (sessionID: string) => Effect.Effect<void>
+}
+
 export interface Interface {
-  readonly create: (input?: Session.CreateInput) => Effect.Effect<Session.Info>
+  readonly create: (input?: Session.CreateInput, options?: CreateOptions) => Effect.Effect<Session.Info>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionLifecycle") {}
@@ -33,10 +40,13 @@ export const layer = Layer.effect(
     const configChange = Option.getOrUndefined(yield* Effect.serviceOption(HookConfigChange.Service))
     const skills = yield* Skill.Service
 
-    const create = Effect.fn("SessionLifecycle.create")(function* (input?: Session.CreateInput) {
+    const create = Effect.fn("SessionLifecycle.create")(function* (
+      input?: Session.CreateInput,
+      options?: CreateOptions,
+    ) {
       const result = yield* session.create(input)
       if (result.parentID) return result
-      const startupGrant = yield* LocalPermissionStartup.Grant
+      const startupGrant = options?.localGrant
       if (startupGrant) yield* startupGrant(result.id)
       if (lifecycle) yield* lifecycle.attach(result.id)
       // Startup is handled here, so the first prompt admission must not fire `resume`.

@@ -15,7 +15,7 @@ import { InstanceRef, WorkspaceRef } from "../../src/effect/instance-ref"
 import { InstanceLayer } from "../../src/project/instance-layer"
 import { Project } from "../../src/project/project"
 import { Session } from "../../src/session/session"
-import { disposeMiddleware, markInstanceForDisposal } from "../../src/server/routes/instance/httpapi/lifecycle"
+import { AfterResponse, afterResponseMiddleware } from "../../src/server/routes/instance/httpapi/lifecycle"
 import {
   InstanceContextMiddleware,
   instanceContextLayer,
@@ -46,6 +46,11 @@ const testStateLayer = Layer.effectDiscard(
 
 const workspaceLayer = workspaceLayerWithRuntimeFlags({ experimentalWorkspaces: true })
 
+// Type-level stand-in only: the real request-scoped service is injected by
+// afterResponseMiddleware. A runtime stub would be captured by
+// HttpApiBuilder's build-time context, which shadows per-request services.
+const afterResponseTypeOnly = Layer.empty as unknown as Layer.Layer<AfterResponse.Service>
+
 const it = testEffect(
   Layer.mergeAll(
     testStateLayer,
@@ -54,6 +59,7 @@ const it = testEffect(
     InstanceLayer.layer,
     Project.defaultLayer,
     workspaceLayer,
+    afterResponseTypeOnly,
   ).pipe(Layer.provide(Ripgrep.defaultLayer)),
 )
 
@@ -129,7 +135,7 @@ const probeHandlers = HttpApiBuilder.group(ProbeApi, "probe", (handlers) =>
       Effect.fn("InstanceContextProbe.dispose")(function* () {
         const instance = yield* InstanceRef
         if (!instance) return false
-        yield* markInstanceForDisposal(instance)
+        yield* (yield* AfterResponse.Service).dispose(instance)
         return true
       }),
     ),
@@ -149,9 +155,11 @@ const waitDisposedEvent = waitGlobalBusEvent({
 }).pipe(Effect.map((event) => ({ directory: event.directory, workspace: event.workspace })))
 
 const serveDisposeProbe = () =>
-  HttpRouter.serve(probeRoutes, { middleware: disposeMiddleware, disableListenLog: true, disableLogger: true }).pipe(
-    Layer.build,
-  )
+  HttpRouter.serve(probeRoutes, {
+    middleware: afterResponseMiddleware,
+    disableListenLog: true,
+    disableLogger: true,
+  }).pipe(Layer.build)
 
 describe("HttpApi instance context middleware", () => {
   it.live("provides instance context from the routed directory", () =>
