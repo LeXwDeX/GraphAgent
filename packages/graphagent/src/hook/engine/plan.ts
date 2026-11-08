@@ -1,0 +1,80 @@
+/**
+ * Handler identity, event eligibility, and matcher group selection.
+ *
+ * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
+ */
+import { commandText, expandCommand, httpUrl } from "../exec/command"
+import { matches } from "../match"
+import type { HookCommand, HookEvent, HookMatcher, HookPayload } from "../types"
+
+/**
+ * Identity of a handler for per-trigger dedup: only fully equivalent handlers
+ * run once (CC behavior). Every configured field except loader metadata takes
+ * part (headers, env allowlists, options, timeout), plus the expanded command
+ * or URL. Scoped skill/agent registrations add their origin separately.
+ */
+export function handlerKey(entry: HookCommand, origin?: string): string {
+  const target =
+    entry.type === "command"
+      ? expandCommand(entry)
+      : entry.type === "http"
+        ? httpUrl(entry)
+        : entry.type === "mcp_tool"
+          ? `${entry.server}/${entry.tool}`
+          : commandText(entry)
+  const { __sourceDir: _sourceDir, ...identity } = entry
+  return JSON.stringify([origin ?? "settings", target, identity], (_key, value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : value,
+  )
+}
+
+/** Per-event handler availability from the 2026-10-16 Claude Code hooks reference. */
+const ALL_HANDLER_TYPES = new Set<HookCommand["type"]>(["command", "http", "mcp_tool", "mcp", "prompt", "agent"])
+const OBSERVATIONAL_HANDLER_TYPES = new Set<HookCommand["type"]>(["command", "http", "mcp_tool", "mcp"])
+function supportsHandler(event: HookEvent, type: HookCommand["type"]): boolean {
+  if (event === "Setup") return type === "command"
+  if (event === "SessionStart") return type === "command" || type === "mcp_tool" || type === "mcp"
+  if (event === "PermissionRequest") return type !== "agent"
+  if (
+    [
+      "UserPromptSubmit",
+      "UserPromptExpansion",
+      "PreToolUse",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "PostToolBatch",
+      "PermissionDenied",
+      "Stop",
+      "SubagentStop",
+      "TaskCreated",
+      "TaskCompleted",
+      "TeammateIdle",
+    ].includes(event)
+  )
+    return ALL_HANDLER_TYPES.has(type)
+  return OBSERVATIONAL_HANDLER_TYPES.has(type)
+}
+
+/** A group runs when the event exposes no matcher targets or one target matches its matcher. */
+export function groupMatches(
+  group: Pick<HookMatcher, "matcher">,
+  targets: readonly string[] | undefined,
+  event: HookEvent,
+): boolean {
+  return targets === undefined || targets.some((target) => matches(group.matcher, target, event))
+}
+
+/** Handler type support plus the startup event surface that excludes MCP handlers. */
+export function entryEligible(payload: HookPayload, entry: HookCommand): boolean {
+  if (!supportsHandler(payload.event, entry.type)) return false
+  if (
+    (entry.type === "mcp_tool" || entry.type === "mcp") &&
+    (payload.event === "Setup" ||
+      (payload.event === "SessionStart" && ["startup", "resume", "fork"].includes(payload.source)))
+  )
+    return false
+  return true
+}
