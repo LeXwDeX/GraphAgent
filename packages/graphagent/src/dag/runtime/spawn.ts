@@ -47,7 +47,6 @@ import { SessionID, MessageID, PartID } from "@/session/schema"
 import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
-import type { ResultProtocol } from "../dag"
 import { isReviewWorker, type VerdictEvidence } from "../review-lifecycle"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagModel } from "../model"
@@ -66,10 +65,6 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import {
   registerCaptureSlot,
   clearCaptureSlot,
-  captureRejectedBySchema,
-  getLastValidationFix,
-  registerFinalResponseSession,
-  clearFinalResponseSession,
   settleCapturedOutput,
   settlePlainTextOutput,
 } from "./capture"
@@ -133,8 +128,6 @@ export interface NodeSpawnInput {
   /** Verified completed dependency artifacts, scoped to this child session. */
   inputArtifacts?: ManagedOutputFileRef[]
   outputSchema?: Record<string, unknown>
-  /** Missing means the persisted submit_result protocol for direct legacy callers. */
-  resultProtocol?: ResultProtocol
   timeoutMs?: number
   reportToParent?: boolean
   reviewImplementationFingerprint?: string
@@ -1047,7 +1040,6 @@ export function spawnNode(
               )
             })
 
-          if (input.resultProtocol === "final_response") registerFinalResponseSession(childSession.id)
           if (input.outputSchema) registerCaptureSlot(childSession.id, input.outputSchema)
 
           // The prompt runs WITHOUT a timeout — the deadline watcher owns the
@@ -1059,29 +1051,6 @@ export function spawnNode(
           const caller = workflow?.directory
             ? { projectID: workflow.projectId, directory: childSession.directory, sessionID: childSession.id }
             : undefined
-          const readSettlement = Effect.fn("DagRuntime.spawn.readSettlement")(function* () {
-            const updatedNode = yield* dag.store.getNode(input.dagID, input.nodeID).pipe(Effect.orDie)
-            if (
-              !updatedNode ||
-              updatedNode.replanAttempts !== settlementAttempt.replanAttempts ||
-              updatedNode.childSessionId !== settlementAttempt.childSessionID
-            )
-              return undefined
-            const captured = updatedNode?.capturedOutput
-            return {
-              neverCalled: !(updatedNode.capturedOutputPresent ?? (captured !== undefined && captured !== null)),
-              snapshotID: updatedNode.capturedSnapshotID ?? undefined,
-              // Single settlement authority shared with crash recovery
-              // (capture.ts settleCapturedOutput).
-              settlement: settleCapturedOutput(
-                captured,
-                input.reviewImplementationFingerprint,
-                "",
-                updatedNode.capturedOutputPresent,
-                input.verdictEvidence,
-              ),
-            }
-          })
           // Best-effort local fence before another model prompt in the same child
           // session. The durable row is read without the workflow lock, so a
           // concurrent control op can still land between this read and the
@@ -1179,7 +1148,7 @@ export function spawnNode(
               { internalDelegation: true },
             ),
           )
-          // A nudge or stale-input continuation is still the same live attempt.
+          // A stale-input continuation is still the same live attempt.
           // The finalizer is installed before settlement can publish a terminal
           // event: NodeFailed consumers interrupt this execution fiber. It runs
           // after durable settlement even on that interruption, while scoped hooks
@@ -1302,37 +1271,7 @@ export function spawnNode(
                   return
                 }
                 if (result.info.finish === "length" && !continuedFromLength) {
-                  const submitResultProtocol = input.outputSchema && input.resultProtocol !== "final_response"
-                  // A validated submit_result payload persisted for THIS attempt is the node's
-                  // authoritative result: the turn only ran out of text budget after recording
-                  // it. Settle that capture instead of spending another prompt, and never let a
-                  // failed follow-up turn turn this success into a failure.
-                  if (submitResultProtocol) {
-                    clearCaptureSlot(childSession.id)
-                    const captured = yield* readSettlement()
-                    // A stale attempt (or deleted node) is settled by its owner.
-                    if (!captured) return
-                    if (!captured.neverCalled) {
-                      const settlement = captured.settlement
-                      yield* (
-                        settlement.kind === "complete"
-                          ? complete(settlement.output, {
-                              ...settlementAttempt,
-                              inputSnapshotID: captured.snapshotID,
-                            })
-                          : nodeFailure(settlement.reason, "verdict_fail", settlementAttempt)
-                      ).pipe(
-                        Effect.catchIf(isTransitionRejection, () =>
-                          Effect.logWarning("output-cap capture settlement guard rejected — node already terminal"),
-                        ),
-                      )
-                      return
-                    }
-                  }
                   if (!(yield* awaitContinuationAdmission)) return
-                  // submit_result needs its capture slot re-armed for the continued turn.
-                  if (input.outputSchema && input.resultProtocol !== "final_response")
-                    registerCaptureSlot(childSession.id, input.outputSchema)
                   result = yield* nodeExecution(
                     promptSvc.prompt(
                       {
@@ -1344,10 +1283,7 @@ export function spawnNode(
                         parts: [
                           {
                             type: "text",
-                            text:
-                              input.outputSchema && input.resultProtocol !== "final_response"
-                                ? "Your previous turn hit the output token limit. Do not redo the work. If the work is complete, call submit_result with your full result matching the schema from your instructions and end your turn; otherwise finish the remaining work first."
-                                : "Your previous turn hit the output token limit. Do not redo the work; finish and emit only the final response now.",
+                            text: "Your previous turn hit the output token limit. Do not redo the work; finish and emit only the final response now.",
                           },
                         ],
                       },
@@ -1384,7 +1320,7 @@ export function spawnNode(
                     continued: continuedFromLength,
                   })
                 })
-                if (input.outputSchema && input.resultProtocol === "final_response") {
+                if (input.outputSchema) {
                   if (Option.isSome(messageService) && caller && !snapshotID)
                     yield* new Dag.StaleMessageInputError({
                       dagID: input.dagID,
@@ -1488,93 +1424,6 @@ export function spawnNode(
                       Effect.logWarning("final-response settlement guard rejected — node already terminal"),
                     ),
                   )
-                } else if (input.outputSchema) {
-                  // #956: the tool already told the model which present field
-                  // failed. Keep that near-miss for the single repair turn;
-                  // structural failures record no fix and keep failing.
-                  const lastFix = getLastValidationFix(childSession.id)
-                  let schemaFix = lastFix
-                  // #956: a structural rejection also leaves no captured output,
-                  // but it is not a turn that never called submit_result.
-                  let schemaRejected = captureRejectedBySchema(childSession.id)
-                  clearCaptureSlot(childSession.id)
-                  let verdict = yield* readSettlement()
-                  if (!verdict) return
-                  // Issue #436 minimal step: a child that ended its whole turn
-                  // without ever calling submit_result gets exactly one nudge
-                  // turn in the same session — the work is already done, only the
-                  // structured hand-back is missing. A captured-but-invalid payload
-                  // is NOT nudged: that is a deterministic contract violation and
-                  // a retry would only re-bill the same mistake. A structural
-                  // rejection with no field-level fix (schemaRejected alone) also
-                  // called the tool — the nudge text would be false, so skip it.
-                  const lengthLimited = result.info.role === "assistant" && result.info.finish === "length"
-                  const structuralRejection = schemaRejected && schemaFix === undefined
-                  if (
-                    verdict.settlement.kind === "fail" &&
-                    verdict.neverCalled &&
-                    !lengthLimited &&
-                    !structuralRejection
-                  ) {
-                    if (!(yield* claimResubmission)) return
-                    registerCaptureSlot(childSession.id, input.outputSchema)
-                    result = yield* nodeExecution(
-                      promptSvc.prompt(
-                        {
-                          messageID: MessageID.ascending(),
-                          sessionID: childSession.id,
-                          model,
-                          agent: agent.name,
-                          ...(input.variant ? { variant: input.variant } : {}),
-                          parts: [
-                            {
-                              type: "text",
-                              text: lastFix
-                                ? `${repairPrompt(lastFix)} Call submit_result with the corrected payload and end your turn. If tools remain available, keep your existing tool-call budget.`
-                                : `You ended your turn without calling the submit_result tool, so this node recorded no structured output. Do not redo the work. If tools remain available, call submit_result with your full result matching the schema from your instructions. This follow-up retains your existing tool-call budget. If tools are disabled because that budget is exhausted, report the blocker in text; the node cannot succeed without a submitted result.`,
-                            },
-                          ],
-                        },
-                        { continueToolBudget: true, internalDelegation: true },
-                      ),
-                    )
-                    inputSnapshot =
-                      Option.isSome(messageService) && caller
-                        ? yield* messageService.value.snapshotForTurn(caller, result.info.id)
-                        : undefined
-                    schemaFix = getLastValidationFix(childSession.id)
-                    schemaRejected = schemaRejected || captureRejectedBySchema(childSession.id)
-                    clearCaptureSlot(childSession.id)
-                    verdict = yield* readSettlement()
-                    if (!verdict) return
-                  }
-                  // The length cap explains only a missing result; a captured schema,
-                  // contract or evidence failure remains the node's verdict.
-                  const settlement =
-                    verdict.settlement.kind === "fail" && verdict.neverCalled && lengthLimited
-                      ? ({ kind: "fail", reason: yield* lengthReason } as const)
-                      : verdict.settlement
-                  const schemaInvalid =
-                    !lengthLimited && verdict.neverCalled && (schemaFix !== undefined || schemaRejected)
-                  yield* (
-                    settlement.kind === "complete"
-                      ? complete(settlement.output, {
-                          ...settlementAttempt,
-                          inputSnapshotID: verdict.snapshotID,
-                        })
-                      : nodeFailure(
-                          settlement.reason,
-                          "verdict_fail",
-                          settlementAttempt,
-                          schemaInvalid ? "schema_invalid" : undefined,
-                        )
-                  ).pipe(
-                    Effect.catchIf(isTransitionRejection, () =>
-                      Effect.logWarning(
-                        `${settlement.kind === "complete" ? "nodeCompleted" : "nodeFailed (verdict_fail)"} guard rejected — node already terminal`,
-                      ),
-                    ),
-                  )
                 } else {
                   const final = finalAssistantText(result, true)
                   const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
@@ -1584,7 +1433,7 @@ export function spawnNode(
                       "verdict_fail",
                       {
                         ...settlementAttempt,
-                        ...(input.resultProtocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                        inputSnapshotID: snapshotID,
                       },
                     ).pipe(
                       Effect.catchIf(isTransitionRejection, () =>
@@ -1676,39 +1525,7 @@ export function spawnNode(
                 )
                 break
               }
-              let nudge = !!(
-                input.outputSchema &&
-                input.resultProtocol !== "final_response" &&
-                revisions?.ok &&
-                revisions.value.queued === 0
-              )
-              if (nudge) {
-                const admitted = yield* claimResubmission.pipe(
-                  Effect.catchIf(isStaleMessageInput, () => Effect.succeed(undefined)),
-                )
-                if (admitted === false) break
-                nudge = admitted === true
-              }
-              result = nudge
-                ? yield* nodeExecution(
-                    promptSvc.prompt(
-                      {
-                        messageID: MessageID.ascending(),
-                        sessionID: childSession.id,
-                        model,
-                        agent: agent.name,
-                        ...(input.variant ? { variant: input.variant } : {}),
-                        parts: [
-                          {
-                            type: "text",
-                            text: "Runtime continuation: the earlier structured result belongs to an older input snapshot. Review the recorded agent messages and submit an updated result. Keep completed tool evidence and do not repeat completed writes.",
-                          },
-                        ],
-                      },
-                      { internalDelegation: true },
-                    ),
-                  )
-                : yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }))
+              result = yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }))
             }
           }).pipe(Effect.ensuring(notifyStop))
         }).pipe(Effect.ensuring(semaphore.release(1)))
@@ -1720,7 +1537,6 @@ export function spawnNode(
             yield* Fiber.interrupt(watcherFiber).pipe(Effect.ignore)
             if (childSessionID) {
               clearCaptureSlot(childSessionID)
-              clearFinalResponseSession(childSessionID)
               if (hooks?.unregisterScoped) yield* hooks.unregisterScoped(childSessionID, hookOrigin)
             }
             // #946: a worktree whose NodeStarted never published has no

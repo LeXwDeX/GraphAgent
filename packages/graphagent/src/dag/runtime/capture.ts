@@ -21,40 +21,9 @@ type CaptureSlot = {
   schema: Record<string, unknown>
   generation: number
   pending?: AbortController
-  /** A submit_result call was rejected by the schema. Distinct from a turn
-   * that never called the tool: both leave no captured output. */
-  rejectedBySchema?: boolean
 }
 const schemas = new Map<string, CaptureSlot>()
 let generation = 0
-const snapshots = new Map<string, string>()
-// #956: remember only a near-miss fix from the latest validation attempt so
-// the turn-end repair prompt can name the failing field instead of repeating
-// the whole schema.
-const validationFixes = new Map<string, SchemaValidationFix>()
-// A child session owns its protocol. This is registered before prompting and
-// removed with the execution fiber, so unrelated sessions keep their tools.
-const finalResponseSessions = new Set<string>()
-
-export function registerFinalResponseSession(sessionID: string): void {
-  finalResponseSessions.add(sessionID)
-}
-
-export function isFinalResponseSession(sessionID: string): boolean {
-  return finalResponseSessions.has(sessionID)
-}
-
-export function clearFinalResponseSession(sessionID: string): void {
-  finalResponseSessions.delete(sessionID)
-}
-
-export function setCaptureSnapshot(sessionID: string, snapshotID: string): void {
-  snapshots.set(sessionID, snapshotID)
-}
-
-export function getCaptureSnapshot(sessionID: string): string | undefined {
-  return snapshots.get(sessionID)
-}
 
 export function registerCaptureSlot(sessionID: string, schema: Record<string, unknown>): void {
   schemas.get(sessionID)?.pending?.abort("capture slot changed")
@@ -72,43 +41,6 @@ export function getCaptureSchema(sessionID: string): Record<string, unknown> | u
 export function clearCaptureSlot(sessionID: string): void {
   schemas.get(sessionID)?.pending?.abort("capture slot changed")
   schemas.delete(sessionID)
-  snapshots.delete(sessionID)
-  validationFixes.delete(sessionID)
-}
-
-export function getLastValidationFix(sessionID: string): SchemaValidationFix | undefined {
-  return validationFixes.get(sessionID)
-}
-
-function rememberValidationFix(
-  slot: CaptureSlot,
-  sessionID: string,
-  result: { ok: true } | { ok: false; fix?: SchemaValidationFix },
-): void {
-  if (result.ok) {
-    validationFixes.delete(sessionID)
-    slot.rejectedBySchema = false
-    return
-  }
-  slot.rejectedBySchema = true
-  if (result.fix) validationFixes.set(sessionID, result.fix)
-  else validationFixes.delete(sessionID)
-}
-
-/** Whether this capture slot saw a submit_result rejected by the schema. */
-export function captureRejectedBySchema(sessionID: string): boolean {
-  return schemas.get(sessionID)?.rejectedBySchema === true
-}
-
-export function validatePayload(
-  sessionID: string,
-  payload: unknown,
-): { ok: true } | { ok: false; error: string; notAvailable?: boolean; fix?: SchemaValidationFix } {
-  const slot = schemas.get(sessionID)
-  if (!slot) return { ok: false, error: "submit_result is not available in this session", notAvailable: true }
-  const result = validateAgainstSchema(payload, slot.schema)
-  rememberValidationFix(slot, sessionID, result)
-  return result
 }
 
 export type CaptureValidation =
@@ -122,7 +54,7 @@ export async function validatePayloadAsync(
   signal: AbortSignal,
 ): Promise<CaptureValidation> {
   const slot = schemas.get(sessionID)
-  if (!slot) return { ok: false, error: "submit_result is not available in this session", notAvailable: true }
+  if (!slot) return { ok: false, error: "no capture slot is registered in this session", notAvailable: true }
   if (slot.pending) return { ok: false, error: "schema validation is already running in this session" }
   const pending = new AbortController()
   slot.pending = pending
@@ -136,7 +68,6 @@ export async function validatePayloadAsync(
     const result: Validation = await validateInWorker(slot.schema, payload, pending.signal)
     if (schemas.get(sessionID) !== slot)
       return { ok: false, error: "capture slot changed during schema validation", notAvailable: true }
-    rememberValidationFix(slot, sessionID, result)
     return result.ok ? { ...result, generation: slot.generation } : result
   } finally {
     signal.removeEventListener("abort", cancel)
@@ -179,7 +110,7 @@ export function settleCapturedOutput(
   evidence: readonly VerdictEvidence[] = [],
 ): CapturedSettlement {
   if (!submitted)
-    return { kind: "fail", reason: `output_schema declared but submit_result was never successfully called${suffix}` }
+    return { kind: "fail", reason: `output_schema declared but no final structured response was captured${suffix}` }
   if (reviewFingerprint) {
     const result = validateReviewResult(captured, reviewFingerprint)
     if (!result.valid)

@@ -94,7 +94,7 @@ export function make(options: Options = {}) {
       }
       if (decoded.value.action === "replan") {
         const fragment = decoded.value.spec.fragment
-        const rejected = (["result_protocol", "delivery_node", "workspace"] as const)
+        const rejected = (["delivery_node", "workspace"] as const)
           .filter((field) => fragment[field] !== undefined)
           .map((field) =>
             DagValidation.diagnostic({
@@ -194,7 +194,6 @@ function prepareGraph(decoded: DecodedAction, nodes: NodeConfig[], nodeDefaults?
     title: spec.title ?? spec.config.name,
     config: {
       name: spec.config.name,
-      ...(spec.config.result_protocol ? { result_protocol: spec.config.result_protocol } : {}),
       ...(deliveryNode ? { delivery_node: deliveryNode } : {}),
       mode: spec.mode ?? "standard",
       ...(spec.config.max_concurrency !== undefined ? { max_concurrency: spec.config.max_concurrency } : {}),

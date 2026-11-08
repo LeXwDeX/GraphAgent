@@ -47,7 +47,6 @@
 // events do not reach this subscription. Engine stalls remain watchdog-bounded.
 
 import type { Event, OpencodeClient, TextPart } from "@graphagent/sdk/v2"
-import { parseWorkflowConfig } from "@/dag/dag"
 import { reportIdentity } from "@/dag/report-identity"
 import { isRecord } from "@/util/record"
 
@@ -201,10 +200,6 @@ export function createDagHold(
 }
 
 // Match the runtime gate; invalid persisted configs cannot produce direct receipts.
-function finalResponseConfig(raw: string): boolean {
-  return parseWorkflowConfig(raw)?.result_protocol === "final_response"
-}
-
 type ReportObservation = {
   readonly baseline: ReadonlySet<string>
   readonly emitted: ReadonlySet<string>
@@ -267,7 +262,7 @@ export async function dagWorkflowsBySession(
   return Promise.all(
     (response.data ?? []).map(async (workflow): Promise<DagWorkflowSnapshot> => {
       const basic = { id: workflow.id, status: workflow.status }
-      if (workflow.status !== "completed" || !finalResponseConfig(workflow.config)) return basic
+      if (workflow.status !== "completed") return basic
       if (typeof workflow.seq !== "number" || !Number.isSafeInteger(workflow.seq))
         return { ...basic, awaitingReport: true, receiptUnknown: true }
       const seq = workflow.seq

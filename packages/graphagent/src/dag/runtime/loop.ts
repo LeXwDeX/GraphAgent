@@ -38,7 +38,7 @@ import {
   isWorkflowTerminalStatus,
   isTerminalWorkflowStatusValue,
 } from "@graphagent/core/dag/core/types"
-import { Dag, type WorkflowConfig, parseWorkflowConfig, resultProtocol } from "../dag"
+import { Dag, type WorkflowConfig, parseWorkflowConfig } from "../dag"
 import { staleUpstreamNodes, staleUpstreamNote } from "../recovery-plan"
 import { DagFanOut } from "../fan-out"
 import { projectBriefForNode } from "../admission"
@@ -716,13 +716,10 @@ const serviceLayer = Layer.effect(
             if (nodeConfig?.output_schema) {
               promptParts.push({
                 type: "text",
-                text:
-                  resultProtocol(entry.config) === "final_response"
-                    ? `\n\n[OUTPUT CONTRACT] End with exactly one JSON value matching this schema:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nUse your final assistant answer only: no Markdown fence or surrounding prose. The runtime validates and captures it automatically. Do not send the final result through agent.send. File changes and other side effects are not rolled back if validation fails.${allowedVerdictHint(nodeConfig.output_schema)}`
-                    : `\n\n[OUTPUT CONTRACT — this node's success depends on it] You MUST call the submit_result tool with a JSON payload matching this schema before ending your turn:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nPut your full summary inside the payload. Do not repeat the payload in your message text. Writing the payload in message text does NOT count as submitting: if you end your turn without a successful submit_result call, this node FAILS and no structured result is accepted. File changes and other side effects are not rolled back; inspect them before retrying. After submit_result succeeds, end your turn without restating the result.`,
+                text: `\n\n[OUTPUT CONTRACT] End with exactly one JSON value matching this schema:\n${JSON.stringify(nodeConfig.output_schema, null, 2)}\nUse your final assistant answer only: no Markdown fence or surrounding prose. The runtime validates and captures it automatically. Do not send the final result through agent.send. File changes and other side effects are not rolled back if validation fails.${allowedVerdictHint(nodeConfig.output_schema)}`,
               })
             }
-            if (resultProtocol(entry.config) === "final_response" && !nodeConfig?.output_schema) {
+            if (!nodeConfig?.output_schema) {
               promptParts.push({
                 type: "text",
                 text: "\n\n[FINAL ANSWER] End with your complete final answer. It is captured automatically; do not also report it through agent.send. Use agent.send for questions, decisions and collaboration.",
@@ -764,7 +761,6 @@ const serviceLayer = Layer.effect(
               inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
               promptParts,
               outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
-              resultProtocol: resultProtocol(entry.config),
               timeoutMs: nodeConfig?.worker_config?.timeout_ms,
               reportToParent: nodeConfig?.report_to_parent,
               reviewImplementationFingerprint: nodeConfig
@@ -2049,7 +2045,7 @@ const serviceLayer = Layer.effect(
           for (const workflow of workflows) {
             if (!workflow || workflow.status !== "completed") continue
             const config = parseWorkflowConfig(workflow.config)
-            if (!config || resultProtocol(config) !== "final_response") continue
+            if (!config) continue
             const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
             finalResponseCompletions.set(
               workflow.id,
@@ -2070,9 +2066,7 @@ const serviceLayer = Layer.effect(
                 const workflow = workflowsByID.get(node.workflowId)
                 if (workflow?.status !== "running") return false
                 // Final-response workflows deliver progress checkpoints while
-                // downstream work continues. Legacy submit_result keeps its
-                // terminal-batch contract for compatibility.
-                if (resultProtocol(parseWorkflowConfig(workflow.config)) !== "final_response") return false
+                // downstream work continues.
                 const entry = runtimes.get(workflow.id)
                 return !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode()
               })

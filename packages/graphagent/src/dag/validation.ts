@@ -240,8 +240,7 @@ export const NodeSchema = Schema.Struct({
   }),
   cancel: Schema.optional(Schema.Boolean).annotate({ description: "(replan only) Cancel this node" }),
   output_schema: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
-    description:
-      "JSON Schema for the child's final JSON answer (historical submit_result workflows keep their tool protocol)",
+    description: "JSON Schema for the child's final JSON answer",
   }),
   review: Schema.optional(
     Schema.Struct({
@@ -278,10 +277,6 @@ const NodeDefaults = Schema.Struct({
 })
 
 const GraphBudgetFields = {
-  result_protocol: Schema.optional(Schema.Literals(["final_response", "submit_result"])).annotate({
-    description:
-      "Result capture protocol. New workflows default to final_response; submit_result is legacy compatibility.",
-  }),
   delivery_node: Schema.optional(Schema.String).annotate({
     description:
       "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
