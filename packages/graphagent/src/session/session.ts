@@ -30,13 +30,10 @@ import { isNull } from "drizzle-orm"
 import { desc } from "drizzle-orm"
 import { like } from "drizzle-orm"
 import { sql } from "drizzle-orm"
-import { inArray } from "drizzle-orm"
-import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
 import { PartTable, SessionTable } from "@graphagent/core/session/sql"
 import { SessionProjector } from "@graphagent/core/session/projector"
-import { ProjectTable } from "@graphagent/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
@@ -280,19 +277,6 @@ export const Info = Schema.Struct({
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
-export const ProjectInfo = Schema.Struct({
-  id: ProjectV2.ID,
-  name: optionalOmitUndefined(Schema.String),
-  worktree: Schema.String,
-}).annotate({ identifier: "ProjectSummary" })
-export type ProjectInfo = Types.DeepMutable<Schema.Schema.Type<typeof ProjectInfo>>
-
-export const GlobalInfo = Schema.Struct({
-  ...Info.fields,
-  project: Schema.NullOr(ProjectInfo),
-}).annotate({ identifier: "GlobalSession" })
-export type GlobalInfo = Types.DeepMutable<Schema.Schema.Type<typeof GlobalInfo>>
-
 export const CreateInput = Schema.optional(
   Schema.Struct({
     parentID: Schema.optional(SessionID),
@@ -344,16 +328,6 @@ export type ListInput = {
   start?: number
   search?: string
   limit?: number
-}
-
-export type GlobalListInput = {
-  directory?: string
-  roots?: boolean
-  start?: number
-  cursor?: number
-  search?: string
-  limit?: number
-  archived?: boolean
 }
 
 export const Event = {
@@ -451,7 +425,6 @@ export type NotFound = NotFoundError
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
-  readonly listGlobal: (input?: GlobalListInput) => Effect.Effect<GlobalInfo[]>
   readonly create: (input?: {
     parentID?: SessionID
     title?: string
@@ -642,47 +615,6 @@ export const layer: Layer.Layer<
         experimentalWorkspaces: flags.experimentalWorkspaces,
         ...input,
       })
-    })
-
-    const listGlobal = Effect.fn("Session.listGlobal")(function* (input?: GlobalListInput) {
-      const conditions: SQL[] = []
-      if (input?.directory) conditions.push(eq(SessionTable.directory, input.directory))
-      if (input?.roots) conditions.push(isNull(SessionTable.parent_id))
-      if (input?.start) conditions.push(gte(SessionTable.time_updated, input.start))
-      if (input?.cursor) conditions.push(lt(SessionTable.time_updated, input.cursor))
-      if (input?.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
-      if (!input?.archived) conditions.push(isNull(SessionTable.time_archived))
-
-      const query =
-        conditions.length > 0
-          ? db
-              .select()
-              .from(SessionTable)
-              .where(and(...conditions))
-          : db.select().from(SessionTable)
-      const rows = yield* query
-        .orderBy(desc(SessionTable.time_updated), desc(SessionTable.id))
-        .limit(input?.limit ?? 100)
-        .all()
-        .pipe(Effect.orDie)
-      const ids = [...new Set(rows.map((row) => row.project_id))]
-      const projects = new Map<string, ProjectInfo>()
-      if (ids.length > 0) {
-        const items = yield* db
-          .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
-          .from(ProjectTable)
-          .where(inArray(ProjectTable.id, ids))
-          .all()
-          .pipe(Effect.orDie)
-        for (const item of items) {
-          projects.set(item.id, {
-            id: item.id,
-            name: item.name ?? undefined,
-            worktree: item.worktree,
-          })
-        }
-      }
-      return rows.map((row) => ({ ...fromRow(row), project: projects.get(row.project_id) ?? null }))
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
@@ -1246,7 +1178,6 @@ export const layer: Layer.Layer<
 
     const api: Interface = Service.of({
       list,
-      listGlobal,
       create,
       fork,
       touch,
@@ -1377,76 +1308,6 @@ function listByProject(
       Effect.orDie,
       Effect.map((rows) => rows.map(fromRow)),
     )
-}
-
-export function* listGlobal(input?: {
-  directory?: string
-  roots?: boolean
-  start?: number
-  cursor?: number
-  search?: string
-  limit?: number
-  archived?: boolean
-}) {
-  const conditions: SQL[] = []
-
-  if (input?.directory) {
-    conditions.push(eq(SessionTable.directory, input.directory))
-  }
-  if (input?.roots) {
-    conditions.push(isNull(SessionTable.parent_id))
-  }
-  if (input?.start) {
-    conditions.push(gte(SessionTable.time_updated, input.start))
-  }
-  if (input?.cursor) {
-    conditions.push(lt(SessionTable.time_updated, input.cursor))
-  }
-  if (input?.search) {
-    conditions.push(like(SessionTable.title, `%${input.search}%`))
-  }
-  if (!input?.archived) {
-    conditions.push(isNull(SessionTable.time_archived))
-  }
-
-  const limit = input?.limit ?? 100
-
-  const rows = runtime.runSync(({ db }) => {
-    const query =
-      conditions.length > 0
-        ? db
-            .select()
-            .from(SessionTable)
-            .where(and(...conditions))
-        : db.select().from(SessionTable)
-    return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all().pipe(Effect.orDie)
-  })
-
-  const ids = [...new Set(rows.map((row) => row.project_id))]
-  const projects = new Map<string, ProjectInfo>()
-
-  if (ids.length > 0) {
-    const items = runtime.runSync(({ db }) =>
-      db
-        .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
-        .from(ProjectTable)
-        .where(inArray(ProjectTable.id, ids))
-        .all()
-        .pipe(Effect.orDie),
-    )
-    for (const item of items) {
-      projects.set(item.id, {
-        id: item.id,
-        name: item.name ?? undefined,
-        worktree: item.worktree,
-      })
-    }
-  }
-
-  for (const row of rows) {
-    const project = projects.get(row.project_id) ?? null
-    yield { ...fromRow(row), project }
-  }
 }
 
 export const node = LayerNode.make(layer, [

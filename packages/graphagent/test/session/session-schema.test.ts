@@ -38,20 +38,6 @@ describe("Session schema", () => {
     expect(JSON.stringify(encoded)).not.toContain("parentID")
   })
 
-  test("encodes undefined optional global session project fields as omitted keys", () => {
-    const encoded = Schema.encodeUnknownSync(Session.GlobalInfo)({
-      ...info,
-      project: {
-        id: ProjectV2.ID.global,
-        name: undefined,
-        worktree: "/tmp/opencode",
-      },
-    }) as Record<string, unknown>
-
-    expect(Object.hasOwn(encoded, "parentID")).toBe(false)
-    expect(Object.hasOwn(encoded.project as Record<string, unknown>, "name")).toBe(false)
-  })
-
   test("encodes nested undefined optional session fields as omitted keys", () => {
     const encoded = Schema.encodeUnknownSync(Session.Info)({
       ...info,

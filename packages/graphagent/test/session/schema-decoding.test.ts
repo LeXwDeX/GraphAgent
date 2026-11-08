@@ -106,49 +106,6 @@ describe("Session.Info", () => {
   })
 })
 
-describe("Session.ProjectInfo", () => {
-  const decode = decodeUnknown(Session.ProjectInfo)
-
-  test("accepts with and without optional name", () => {
-    const noName = { id: projectID, worktree: "/tmp/wt" }
-    const withName = { ...noName, name: "alpha" }
-    expect(decode(noName)).toEqual(noName)
-    expect(decode(withName)).toEqual(withName)
-  })
-})
-
-describe("Session.GlobalInfo", () => {
-  const decode = decodeUnknown(Session.GlobalInfo)
-
-  test("accepts null project", () => {
-    const input = {
-      id: sessionID,
-      slug: "global",
-      projectID,
-      directory: "/tmp/proj",
-      title: "global",
-      version: "0",
-      time: { created: 0, updated: 0 },
-      project: null,
-    }
-    expect(decode(input)).toEqual(input)
-  })
-
-  test("accepts populated project", () => {
-    const input = {
-      id: sessionID,
-      slug: "global",
-      projectID,
-      directory: "/tmp/proj",
-      title: "global",
-      version: "0",
-      time: { created: 0, updated: 0 },
-      project: { id: projectID, worktree: "/tmp/wt", name: "alpha" },
-    }
-    expect(decode(input)).toEqual(input)
-  })
-})
-
 describe("Session input schemas", () => {
   test("CreateInput accepts undefined and populated forms", () => {
     const decode = decodeUnknown(Session.CreateInput)

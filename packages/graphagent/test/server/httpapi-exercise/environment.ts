@@ -15,7 +15,7 @@ export const exerciseConfigDirectory = path.join(exerciseGlobalRoot, "config", "
 export const exerciseDataDirectory = path.join(exerciseGlobalRoot, "data", "graphagent")
 // Requests without a directory resolve to process.cwd(). Auth probes and global
 // scenarios execute real handlers, so they must never resolve to the invoking
-// checkout (POST /experimental/worktree would create a worktree and branch there).
+// checkout (mutating scenarios would create files and branches there).
 export const exerciseWorkingDirectory = path.join(exerciseGlobalRoot, "cwd")
 export const invokingDirectory = process.cwd()
 mkdirSync(exerciseWorkingDirectory, { recursive: true })
