@@ -211,11 +211,10 @@ describe("DependencyGraph", () => {
 })
 
 describe("iron laws (transition tables)", () => {
-  it("isWorkflowTerminalStatus identifies the 4 terminal workflow statuses", () => {
+  it("isWorkflowTerminalStatus identifies the 3 terminal workflow statuses", () => {
     expect(isWorkflowTerminalStatus(WorkflowStatus.COMPLETED)).toBe(true)
     expect(isWorkflowTerminalStatus(WorkflowStatus.FAILED)).toBe(true)
     expect(isWorkflowTerminalStatus(WorkflowStatus.CANCELLED)).toBe(true)
-    expect(isWorkflowTerminalStatus(WorkflowStatus.ARCHIVED)).toBe(true)
     expect(isWorkflowTerminalStatus(WorkflowStatus.RUNNING)).toBe(false)
     expect(isWorkflowTerminalStatus(WorkflowStatus.PAUSED)).toBe(false)
   })
@@ -265,16 +264,8 @@ describe("iron laws (transition tables)", () => {
       ],
       [
         NodeStatus.RUNNING,
-        [
-          NodeStatus.COMPLETED,
-          NodeStatus.FAILED,
-          NodeStatus.ABORTED,
-          NodeStatus.PAUSED,
-          NodeStatus.PENDING,
-          NodeStatus.SKIPPED,
-        ],
+        [NodeStatus.COMPLETED, NodeStatus.FAILED, NodeStatus.ABORTED, NodeStatus.PENDING, NodeStatus.SKIPPED],
       ],
-      [NodeStatus.PAUSED, [NodeStatus.RUNNING, NodeStatus.ABORTED, NodeStatus.SKIPPED, NodeStatus.FAILED]],
       [NodeStatus.COMPLETED, []],
       [NodeStatus.FAILED, []],
       [NodeStatus.ABORTED, []],
@@ -311,10 +302,10 @@ describe("iron laws (transition tables)", () => {
         ],
       ],
       [WorkflowStatus.PAUSED, [WorkflowStatus.RUNNING, WorkflowStatus.CANCELLED]],
-      [WorkflowStatus.COMPLETED, [WorkflowStatus.ARCHIVED]],
-      [WorkflowStatus.FAILED, [WorkflowStatus.ARCHIVED]],
-      [WorkflowStatus.CANCELLED, [WorkflowStatus.ARCHIVED]],
-      [WorkflowStatus.ARCHIVED, []],
+      // D11: terminal statuses admit nothing (archived was removed).
+      [WorkflowStatus.COMPLETED, []],
+      [WorkflowStatus.FAILED, []],
+      [WorkflowStatus.CANCELLED, []],
     ] as const
 
     for (const [status, expected] of transitions) {
@@ -394,10 +385,6 @@ describe("transitions (event mappings + aggregation)", () => {
     expect(transitionToNodeEvent(NodeStatus.PENDING, NodeStatus.RUNNING)).toBe("node.started")
   })
 
-  it("transitionToNodeEvent: PAUSED → RUNNING emits node.resumed", () => {
-    expect(transitionToNodeEvent(NodeStatus.PAUSED, NodeStatus.RUNNING)).toBe("node.resumed")
-  })
-
   it("transitionToNodeEvent: FAILED → RUNNING emits node.restarted (replan path)", () => {
     expect(transitionToNodeEvent(NodeStatus.FAILED, NodeStatus.RUNNING)).toBe("node.restarted")
   })
@@ -419,7 +406,6 @@ describe("transitions (event mappings + aggregation)", () => {
       [NodeStatus.PENDING, null],
       [NodeStatus.QUEUED, "node.queued"],
       [NodeStatus.RUNNING, "node.started"],
-      [NodeStatus.PAUSED, "node.paused"],
       [NodeStatus.COMPLETED, "node.completed"],
       [NodeStatus.FAILED, "node.failed"],
       [NodeStatus.ABORTED, "node.aborted"],
@@ -440,7 +426,6 @@ describe("transitions (event mappings + aggregation)", () => {
       [WorkflowStatus.COMPLETED, "workflow.completed"],
       [WorkflowStatus.FAILED, "workflow.failed"],
       [WorkflowStatus.CANCELLED, "workflow.cancelled"],
-      [WorkflowStatus.ARCHIVED, "workflow.archived"],
     ] as const
 
     for (const [status, event] of events) {
@@ -509,7 +494,7 @@ describe("validateRequiredNodes", () => {
 })
 
 describe("planReplan (D11 simplified model)", () => {
-  for (const status of [NodeStatus.PENDING, NodeStatus.QUEUED, NodeStatus.PAUSED]) {
+  for (const status of [NodeStatus.PENDING, NodeStatus.QUEUED]) {
     it(`rejects a new dependency on an omitted ${status} node`, () => {
       const plan = planReplan(
         { nodes: [{ id: "old", status, depends_on: [] }] },

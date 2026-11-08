@@ -81,6 +81,6 @@ describe("projector from-guards vs declared transition tables", () => {
 // hold status="cancelled". The drift test passes for cancelled because
 // "failed" is a legal target from every cancelled.from state; a phantom
 // node-level "cancelled" target is what this alignment rules out. The
-// cancellation marker rides on error_reason ("cancelled via replan"), locked
-// by dag-node-cancelled-projection.test.ts and the opencode canonical proof
-// at packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.
+// cancellation marker rides on the structured error_class="cancelled" (D12),
+// locked by dag-node-cancelled-projection.test.ts and the opencode canonical
+// proof at packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.

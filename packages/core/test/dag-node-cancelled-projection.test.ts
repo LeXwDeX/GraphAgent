@@ -82,7 +82,7 @@ function seed() {
 }
 
 describe("NodeCancelled projection (no phantom node-level cancelled status)", () => {
-  test("projects NodeCancelled to status=failed + error_reason='cancelled via replan' and clears escalation_pending", async () => {
+  test("projects NodeCancelled to status=failed + error_class='cancelled' and clears escalation_pending", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* seed()
@@ -97,8 +97,10 @@ describe("NodeCancelled projection (no phantom node-level cancelled status)", ()
 
         const row = yield* store.getNode("dag_cancel", "n1")
         // NodeCancelled has no independent terminal status: it lands on failed
-        // with the cancellation carried by error_reason, never status="cancelled".
+        // with the cancellation carried by the structured error_class marker
+        // (D12), never status="cancelled".
         expect(row?.status).toBe("failed")
+        expect(row?.errorClass).toBe("cancelled")
         expect(row?.errorReason).toBe("cancelled via replan")
         // Cancel is an adjudication — the pending-escalation flag must clear.
         expect(row?.escalationPending).toBe(false)
