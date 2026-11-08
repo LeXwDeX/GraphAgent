@@ -48,11 +48,51 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
           `---\n${JSON.stringify({ mode: "subagent", description: "DAG lifecycle fixture", hooks: { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script, "agent"] }] }] } })}\n---\nComplete the task.`,
         )
       })
+      // Start through the parent's workflow tool: the HTTP start endpoint was
+      // removed with C1, so the tool/authoring path is the supported entry.
+      const spec = path.join(home, `hook-lifecycle-${protocol}.yaml`)
+      yield* Effect.promise(() =>
+        fs.writeFile(
+          spec,
+          JSON.stringify({
+            title: "Hook lifecycle",
+            config: {
+              name: "hook-lifecycle",
+              result_protocol: protocol,
+              delivery_node: "worker",
+              max_concurrency: 1,
+              nodes: [
+                {
+                  id: "worker",
+                  name: "Local worker",
+                  worker_type: "general",
+                  depends_on: [],
+                  required: true,
+                  ...(protocol === "submit_result"
+                    ? {
+                        output_schema: {
+                          type: "object",
+                          required: ["summary"],
+                          properties: { summary: { type: "string" } },
+                        },
+                      }
+                    : {}),
+                  prompt_template: { inline: "Produce the report." },
+                },
+              ],
+            },
+          }),
+        ),
+      )
+      const childMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("Produce the report.")
+      yield* llm.toolMatch((hit) => JSON.stringify(hit.body).includes("HOOK-LIFECYCLE-START"), "workflow", {
+        params: { action: "start", spec_path: spec },
+      })
       if (protocol === "submit_result") {
-        yield* llm.text("PREMATURE_DAG_REPORT")
-        yield* llm.tool("submit_result", { payload: { summary: "FINAL_DAG_REPORT" } })
+        yield* llm.textMatch(childMatch, "PREMATURE_DAG_REPORT")
+        yield* llm.toolMatch(childMatch, "submit_result", { payload: { summary: "FINAL_DAG_REPORT" } })
       }
-      yield* llm.text("FINAL_DAG_REPORT")
+      yield* llm.textMatch(childMatch, "FINAL_DAG_REPORT")
       const server = yield* opencode.host({
         env: {
           GRAPHAGENT_CONFIG_CONTENT: JSON.stringify({
@@ -77,35 +117,12 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
         model: { providerID: "test", id: "test-model" },
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
-      const workflow = yield* request("/dag", {
-        session_id: parent.id,
-        title: "Hook lifecycle",
-        config: {
-          name: "hook-lifecycle",
-          result_protocol: protocol,
-          delivery_node: "worker",
-          max_concurrency: 1,
-          nodes: [
-            {
-              id: "worker",
-              name: "Local worker",
-              worker_type: "general",
-              depends_on: [],
-              required: true,
-              ...(protocol === "submit_result"
-                ? {
-                    output_schema: {
-                      type: "object",
-                      required: ["summary"],
-                      properties: { summary: { type: "string" } },
-                    },
-                  }
-                : {}),
-              prompt_template: { inline: "Produce the report." },
-            },
-          ],
-        },
+      yield* request(`/session/${parent.id}/message`, {
+        parts: [{ type: "text", text: "HOOK-LIFECYCLE-START" }],
       })
+      const workflows = yield* request(`/dag/session/${parent.id}`)
+      const workflow = workflows[0]
+      if (!workflow) throw new Error("workflow tool did not start a workflow")
       let detail: any
       const deadline = Date.now() + 10_000
       do {

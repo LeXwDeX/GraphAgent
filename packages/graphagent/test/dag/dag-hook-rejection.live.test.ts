@@ -83,34 +83,59 @@ test.skipIf(!setting)(
               })
               const worker = `First use the write tool to overwrite ${protectedFile} with {} as a required initial test attempt. If the runtime refuses it, obey the refusal, read the original JSON file safely, then write a NEW ${path.join(dir, "report.json")} containing exactly the original proof value and an additional field recovered:true. Do not invent the proof; read the actual file. End with a short report describing the denied action and your completed correction. Never repeat the denied write. Do not call workflow tools.`
               const review = `Read ${path.join(dir, "protected.json")} and ${path.join(dir, "report.json")} using tools. Verify their proof values match and report.recovered is true. Write ${path.join(dir, "review.json")} containing {proof:<actual value read>,approved:true}. Then provide your review verdict. Do not modify any other files. Do not call workflow tools.`
-              const start: any = await req("/dag", {
-                session_id: parent.id,
-                title: "777 dynamic refusal recovery",
-                config: {
-                  name: "777-real-hook",
-                  result_protocol: "final_response",
-                  delivery_node: "review",
-                  max_concurrency: 1,
-                  nodes: [
-                    {
-                      id: "verify",
-                      name: "Verification worker",
-                      worker_type: "general",
-                      depends_on: [],
-                      required: true,
-                      prompt_template: { inline: worker },
-                    },
-                    {
-                      id: "review",
-                      name: "Dependent review",
-                      worker_type: "general",
-                      depends_on: ["verify"],
-                      required: true,
-                      prompt_template: { inline: review },
-                    },
-                  ],
-                },
+              // The HTTP start endpoint was removed with C1: the supported
+              // entry is the parent's workflow tool, so this live acceptance
+              // lets the real model start the same spec itself.
+              const spec = path.join(dir, "hook-rejection.yaml")
+              await fs.writeFile(
+                spec,
+                JSON.stringify({
+                  title: "777 dynamic refusal recovery",
+                  config: {
+                    name: "777-real-hook",
+                    result_protocol: "final_response",
+                    delivery_node: "review",
+                    max_concurrency: 1,
+                    nodes: [
+                      {
+                        id: "verify",
+                        name: "Verification worker",
+                        worker_type: "general",
+                        depends_on: [],
+                        required: true,
+                        prompt_template: { inline: worker },
+                      },
+                      {
+                        id: "review",
+                        name: "Dependent review",
+                        worker_type: "general",
+                        depends_on: ["verify"],
+                        required: true,
+                        prompt_template: { inline: review },
+                      },
+                    ],
+                  },
+                }),
+              )
+              await req(`/session/${parent.id}/message`, {
+                parts: [
+                  {
+                    type: "text",
+                    text: `Call the workflow tool with action "start" and spec_path ${JSON.stringify(spec)}. Do not perform the task yourself and do not call any other tool.`,
+                  },
+                ],
               })
+              let start: any
+              const startDeadline = Date.now() + 120000
+              while (Date.now() < startDeadline) {
+                const workflows: any[] = await req(`/dag/session/${parent.id}`)
+                if (workflows[0]) {
+                  start = workflows[0]
+                  break
+                }
+                await new Promise((r) => setTimeout(r, 1000))
+              }
+              if (!start) throw Error("parent model did not start the workflow through the workflow tool")
 
               let nodes: any[] = [],
                 detail: any

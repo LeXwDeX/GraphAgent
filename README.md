@@ -30,14 +30,14 @@ team.**
 Everything below is developed in this fork on top of opencode. Each feature is opt-in or self-contained; the rest of
 opencode (providers, LSP, client/server and TUI) retains its existing behavior.
 
-| Feature | What it does | How to use it |
-| --- | --- | --- |
-| [Reasoning shaping](#reasoning-shaping) | Reorganizes reasoning in the background and adopts completed rewrites between steps (off by default) | `reasoningDistillation.enabled` + `small_model` |
-| [DAG workflows](#dag-workflows) | Decomposes a task into a durable dependency graph of child agents | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
-| [Project Memory](#project-memory) | Keeps confirmed preferences, decisions and terminology per project | `/memory on` |
-| [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally | `/goal`, `/subgoal` |
-| [Hooks](#hooks) | Claude Code–compatible lifecycle hooks | `hooks.json`, `/create-hook`, `/import-claude-hooks` |
-| [Context management](#context-management) | Bounds tool output, limits tool calls, compacts long sessions | `tool_output`, `compaction`, `maxToolCalls` |
+| Feature                                    | What it does                                                                                         | How to use it                                           |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| [Reasoning shaping](#reasoning-shaping)    | Reorganizes reasoning in the background and adopts completed rewrites between steps (off by default) | `reasoningDistillation.enabled` + `small_model`         |
+| [DAG workflows](#dag-workflows)            | Decomposes a task into a durable dependency graph of child agents                                    | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
+| [Project Memory](#project-memory)          | Keeps confirmed preferences, decisions and terminology per project                                   | `/memory on`                                            |
+| [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally                                     | `/goal`, `/subgoal`                                     |
+| [Hooks](#hooks)                            | Claude Code–compatible lifecycle hooks                                                               | `hooks.json`, `/create-hook`, `/import-claude-hooks`    |
+| [Context management](#context-management)  | Bounds tool output, limits tool calls, compacts long sessions                                        | `tool_output`, `compaction`, `maxToolCalls`             |
 
 ---
 
@@ -222,18 +222,18 @@ your own.
 
 ### 1. Choose the model tiers — `.opencode/dag.jsonc`
 
-Nodes never name their own model. The graph declares *which nodes are critical*
-and configuration decides *what runs them*:
+Nodes never name their own model. The graph declares _which nodes are critical_
+and configuration decides _what runs them_:
 
 ```jsonc
 {
   // Critical nodes: required: true, plus review/arbiter workers.
   "model": {
     "advanced": "anthropic/claude-sonnet-4-5",
-    "standard": "anthropic/claude-haiku-4-5"
+    "standard": "anthropic/claude-haiku-4-5",
   },
   // Reasoning variant for DAG child sessions, when the model defines one.
-  "thinking_depth": "medium"
+  "thinking_depth": "medium",
 }
 ```
 
@@ -248,11 +248,11 @@ model, the workflow is not created and you are asked to configure one.
 A workflow spec is a YAML file describing the graph. Put it in a workflow
 directory and it gains a **name**:
 
-| Scope | Path | Availability |
-|---|---|---|
-| Project | `.opencode/workflows/<name>.yaml` | This repo, committed with it — the whole team gets the same procedure |
-| Global | `<opencode config dir>/workflows/<name>.yaml` | Every project on the machine |
-| Builtin | Compiled into release binaries | Every release install — the last-resort tier |
+| Scope   | Path                                          | Availability                                                          |
+| ------- | --------------------------------------------- | --------------------------------------------------------------------- |
+| Project | `.opencode/workflows/<name>.yaml`             | This repo, committed with it — the whole team gets the same procedure |
+| Global  | `<opencode config dir>/workflows/<name>.yaml` | Every project on the machine                                          |
+| Builtin | Compiled into release binaries                | Every release install — the last-resort tier                          |
 
 Resolution takes the first match in that order, so a project file shadows a
 global one with the same name, and both shadow the builtin tier. The global
@@ -314,17 +314,17 @@ The engine lives in [`packages/core/src/dag`](./packages/core/src/dag) (state ma
 
 Each node declares:
 
-| Field | Purpose |
-|---|---|
-| `depends_on` | Dependency edges; cycle detection and dangling-reference validation at creation |
-| `worker_type` | Which agent runs the node (`explore`, `build`, `general`, or any configured agent) |
-| `prompt_template` | Prompt by `id` (from project, then global `dag-prompts/`) or `inline`, with `{{var}}` interpolation |
-| `input_mapping` | Map upstream node outputs into template variables (`"count": "node-b.output.count"`) |
-| `condition` | Expression over upstream outputs; false → node skipped, pure descendants cascade-skip |
-| `output_schema` | JSON Schema; the child agent must call `submit_result` with a matching structured payload |
-| `required` | Failure of a required node fails the workflow |
-| `report_to_parent` | Wake the parent agent when this node reaches a terminal state |
-| `review` | `design` or `diff` review phase with an implementation-fingerprint contract (below) |
+| Field              | Purpose                                                                                             |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| `depends_on`       | Dependency edges; cycle detection and dangling-reference validation at creation                     |
+| `worker_type`      | Which agent runs the node (`explore`, `build`, `general`, or any configured agent)                  |
+| `prompt_template`  | Prompt by `id` (from project, then global `dag-prompts/`) or `inline`, with `{{var}}` interpolation |
+| `input_mapping`    | Map upstream node outputs into template variables (`"count": "node-b.output.count"`)                |
+| `condition`        | Expression over upstream outputs; false → node skipped, pure descendants cascade-skip               |
+| `output_schema`    | JSON Schema; the child agent must call `submit_result` with a matching structured payload           |
+| `required`         | Failure of a required node fails the workflow                                                       |
+| `report_to_parent` | Wake the parent agent when this node reaches a terminal state                                       |
+| `review`           | `design` or `diff` review phase with an implementation-fingerprint contract (below)                 |
 
 Workflow-level knobs: `max_concurrency` (default 5), `max_node_replan_attempts` (5), `max_total_nodes` (100), per-node `timeout_ms` (default 10 min, queue wait counts toward the deadline).
 
@@ -344,7 +344,7 @@ Two things this fixes. A workflow whose failed segment was rewritten now reports
 ### State machine & persistence
 
 - Declared transition tables for workflow and node status; every mutation goes through a guard, invalid transitions and terminal violations are typed errors (HTTP 409, not 500).
-- All changes are published as durable `dag.*` events; a projector writes the SQLite read model *inside* the publish transaction. History is event replay, not a log table. A drift test fails whenever the projector's guards and the declared transition tables are edited out of sync.
+- All changes are published as durable `dag.*` events; a projector writes the SQLite read model _inside_ the publish transaction. History is event replay, not a log table. A drift test fails whenever the projector's guards and the declared transition tables are edited out of sync.
 - Crash recovery is lazy, per-workflow, and evidence-based: nodes left `running` are reconciled against their child session's durable state. Sessions that finished back-fill their captured output; when execution ownership was genuinely lost, the workflow pauses and the parent decides disposition (replan / resume / cancel). Recovery never adopts or restarts provider work on its own.
 - Failure triage: every failed node carries a failure class (`timeout` / `exec_failed` / `verdict_fail`) surfaced in `workflow(action=status)` and in the parent's wake — including a failed-nodes attribution digest when a workflow terminalizes failed — so the parent agent can select the failed node for local recovery instead of rebuilding the graph.
 
@@ -357,21 +357,19 @@ A node's final reply can be plain text, a structured payload (`output_schema` + 
 - Admission Q&A covers six dimensions (goal, scope, constraints/assumptions, acceptance criteria, evidence, risks) under a bounded policy: `LIGHT` (1 round), `STANDARD` (3), `GRILL` (5, adversarial). The resulting Requirement Brief is fingerprinted (SHA-256 over a canonical form); material changes invalidate the fingerprint and return admission to questioning. A consumed record is persisted with the workflow and never replayed.
 - Review nodes declare their phase honestly: `design` reviews pre-implementation artifacts; `diff` reviews the actual implementation and requires the implementation node, a passing verification node, and a fingerprint echo. Changing the implementation changes the fingerprint, so a stale `ACCEPT` cannot satisfy the gate.
 
-### Observing & controlling
+### Observing
 
-- TUI DAG inspector (command palette → `dag.open`): workflow list, wave-ordered node view with live status, node detail (deps, errors, output preview, deadline countdown), and `p`/`r`/`s`/`x` for pause/resume/step/cancel; `enter` drops into a node's child session.
+- TUI DAG inspector (command palette → `dag.open`): workflow list, wave-ordered node view with live status, node detail (deps, errors, output preview, deadline countdown); `enter` drops into a node's child session. Workflow control goes through the `workflow` tool, not the inspector.
 - Sidebar panel: per-session workflow progress (completed/running/failed/queued), expandable node list, driven by ephemeral summary events, with a fetch-on-open safety net instead of polling.
-- HTTP API (same code path as the tool surface):
+- HTTP API (read-only queries; mutations go through the `workflow` tool):
 
   ```
   GET  /dag                              list workflows
-  POST /dag                              start a workflow
   GET  /dag/session/:sessionID           workflows for a session
   GET  /dag/session/:sessionID/summary   progress summaries
   GET  /dag/:dagID                       workflow detail
   GET  /dag/:dagID/nodes                 node list
   GET  /dag/:dagID/nodes/:nodeID         node detail
-  POST /dag/:dagID/control               pause/resume/cancel/replan/extend/step/complete
   ```
 
 ### Project configuration files
@@ -380,19 +378,19 @@ Everything DAG-specific lives under `.opencode/`, with a global counterpart in
 the opencode config dir (`GRAPHAGENT_CONFIG_DIR`, else `~/.config/opencode`).
 Everything else inherits the main opencode configuration.
 
-| Path | Purpose | Global counterpart |
-|---|---|---|
-| `.opencode/dag.jsonc` | Model tiers (`advanced` / `standard`) and `thinking_depth` for child sessions | `<config dir>/dag.jsonc`, seeded with comments on first use |
-| `.opencode/workflows/*.yaml` | Saved workflow specs, startable by name | `<config dir>/workflows/*.yaml` |
-| `.opencode/dag-prompts/*.md` | Node prompt templates referenced by `prompt_template.id` (project first) | `<config dir>/dag-prompts/*.md` |
-| `.opencode/workflow-reports/` | Node report files (auto-gitignored) | — |
+| Path                          | Purpose                                                                       | Global counterpart                                          |
+| ----------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `.opencode/dag.jsonc`         | Model tiers (`advanced` / `standard`) and `thinking_depth` for child sessions | `<config dir>/dag.jsonc`, seeded with comments on first use |
+| `.opencode/workflows/*.yaml`  | Saved workflow specs, startable by name                                       | `<config dir>/workflows/*.yaml`                             |
+| `.opencode/dag-prompts/*.md`  | Node prompt templates referenced by `prompt_template.id` (project first)      | `<config dir>/dag-prompts/*.md`                             |
+| `.opencode/workflow-reports/` | Node report files (auto-gitignored)                                           | —                                                           |
 
 Both `dag.jsonc` and the workflow library are read lazily, so an edit applies to
 the next workflow start without a restart.
 
 ## Background
 
-GraphAgent treats a graph as an executable, durable, inspectable contract — not a diagram of agents, and not a prompt chain with arrows added afterward. The first complete DAG-engine commit landed on **2026-07-02**; the paper [*What makes prompts a graph*](https://arxiv.org/abs/2607.27578), which formalized explicit structure, prompt/topology separation, executable semantics, and the graph as a first-class artifact, appeared on **2026-07-30**.
+GraphAgent treats a graph as an executable, durable, inspectable contract — not a diagram of agents, and not a prompt chain with arrows added afterward. The first complete DAG-engine commit landed on **2026-07-02**; the paper [_What makes prompts a graph_](https://arxiv.org/abs/2607.27578), which formalized explicit structure, prompt/topology separation, executable semantics, and the graph as a first-class artifact, appeared on **2026-07-30**.
 
 The operating doctrine that came out of it:
 
@@ -456,11 +454,11 @@ bun dev serve        # headless API server (port 4096)
 
 Mixed license model:
 
-| Content | License | Text |
-|---------|---------|------|
-| Upstream opencode code (the vast majority) | MIT | [`LICENSE`](./LICENSE) |
-| DAG workflow engine (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE), [`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
-| Portable runtime assets (fork-authored) | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE) |
+| Content                                    | License           | Text                                                                                                                                               |
+| ------------------------------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Upstream opencode code (the vast majority) | MIT               | [`LICENSE`](./LICENSE)                                                                                                                             |
+| DAG workflow engine (fork-authored)        | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE), [`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
+| Portable runtime assets (fork-authored)    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                             |
 
 Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers these modules and their derivatives, including network-server deployments. Other files retain their existing licenses.
 

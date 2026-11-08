@@ -14,8 +14,6 @@ import {
   computeNodeRowIndex,
   computeWaves,
   sameDagNodes,
-  dagControlProgressMessage,
-  dagControlUnavailableMessage,
   dagNodeGlyph,
   dagNodeHistoryLabel,
   dagStatusColor,
@@ -29,7 +27,6 @@ import {
   formatDagAgentInput,
   mergeDagWorkflowSummaries,
   dagEscalationLabel,
-  type DagControlOperation,
   type DagNode,
 } from "./dag-inspector-utils"
 import type { DagWorkflowSummary } from "@graphagent/sdk/v2"
@@ -74,45 +71,6 @@ function scrollRowIntoView(scroll: ScrollBoxRenderable | undefined, index: numbe
   if (index >= scroll.scrollTop + scroll.viewport.height) {
     scroll.scrollTo(index - scroll.viewport.height + 1)
   }
-}
-
-const ACTIVE_WORKFLOW_STATUSES = new Set(["running", "paused", "stepping"])
-
-function cancelActiveWorkflow(api: TuiPluginApi) {
-  const current = api.route.current
-  const params = ("params" in current ? current.params : undefined) as { sessionID?: string } | undefined
-  const sessionID = params?.sessionID
-  if (!sessionID) {
-    api.ui.toast({ variant: "info", message: "No session selected for DAG cancellation" })
-    return
-  }
-  void api.client.dag
-    .summary({ sessionID })
-    .then((response) => {
-      const active = (response.data ?? []).filter((workflow) => ACTIVE_WORKFLOW_STATUSES.has(workflow.status))
-      if (active.length === 0) {
-        api.ui.toast({ variant: "info", message: "No active DAG workflow to cancel" })
-        return
-      }
-      if (active.length > 1) {
-        api.ui.toast({ variant: "info", message: "Multiple active workflows; select one in the DAG inspector" })
-        api.route.navigate(ROUTE, { sessionID, returnRoute: current })
-        api.ui.dialog.clear()
-        return
-      }
-      const workflow = active[0]
-      if (!workflow) return
-      void api.client.dag.control({ dagID: workflow.id, operation: "cancel" }).then(() => {
-        api.ui.toast({ variant: "info", message: `Workflow ${workflow.title} cancel requested` })
-        api.ui.dialog.clear()
-      })
-    })
-    .catch((error: unknown) => {
-      api.ui.toast({
-        variant: "error",
-        message: `DAG cancel failed: ${error instanceof Error ? error.message : String(error)}`,
-      })
-    })
 }
 
 // Project-level discovery: the inspector's workflow list must not depend on
@@ -391,34 +349,6 @@ function DagInspector(props: { api: TuiPluginApi }) {
     setSelectedWorkflow(wfs[next]?.id)
   }
 
-  const control = (operation: DagControlOperation) => {
-    const wf = selectedWorkflow()
-    if (!wf) return
-    const workflow = workflows().find((item) => item.id === wf)
-    const unavailable = dagControlUnavailableMessage(workflow?.status, operation)
-    if (unavailable) {
-      const message = unavailable
-      setActionMessage(message)
-      props.api.ui.toast({ variant: "info", message })
-      return
-    }
-    setActionMessage(dagControlProgressMessage(operation))
-    void props.api.client.dag
-      .control({ dagID: wf, operation })
-      .then(() => {
-        setActionMessage(`Workflow ${operation} requested`)
-        return fetchNodes(wf)
-      })
-      .catch((error: unknown) => {
-        const message = `DAG ${operation} failed: ${error instanceof Error ? error.message : String(error)}`
-        setActionMessage(message)
-        props.api.ui.toast({
-          variant: "error",
-          message,
-        })
-      })
-  }
-
   const enterNode = () => {
     const node = orderedNodes().find((n) => n.id === selectedNode())
     if (!node) return
@@ -486,42 +416,6 @@ function DagInspector(props: { api: TuiPluginApi }) {
         moveWorkflow(-1)
       },
     },
-    {
-      name: "dag.pause",
-      title: "Pause selected workflow",
-      category: "Workflow",
-      namespace: "palette",
-      run() {
-        control("pause")
-      },
-    },
-    {
-      name: "dag.resume",
-      title: "Resume selected workflow",
-      category: "Workflow",
-      namespace: "palette",
-      run() {
-        control("resume")
-      },
-    },
-    {
-      name: "dag.step",
-      title: "Step selected workflow (run one node)",
-      category: "Workflow",
-      namespace: "palette",
-      run() {
-        control("step")
-      },
-    },
-    {
-      name: "dag.cancel",
-      title: "Cancel selected workflow",
-      category: "Workflow",
-      namespace: "palette",
-      run() {
-        control("cancel")
-      },
-    },
   ]
 
   useBindings(() => ({
@@ -538,9 +432,7 @@ function DagInspector(props: { api: TuiPluginApi }) {
   const selectedWorkflowSummary = createMemo(() => workflows().find((workflow) => workflow.id === selectedWorkflow()))
   const selectedNodeDetail = createMemo(() => orderedNodes().find((node) => node.id === selectedNode()))
 
-  // Footer advertises only the cursor-level affordances. Control operations
-  // (pause/resume/step/cancel) are unbound by default and reached through the
-  // command palette, so they never crowd this row.
+  // Footer advertises only the cursor-level affordances.
   const footerHints = createMemo(() =>
     [
       { key: enterShortcut(), label: "open session" },
@@ -869,16 +761,6 @@ const tui: TuiPlugin = async (api) => {
             returnRoute: current,
           })
           api.ui.dialog.clear()
-        },
-      },
-      {
-        name: "dag.cancel.active",
-        title: "Cancel active DAG workflow",
-        slashName: "dag-cancel",
-        category: "Workflow",
-        namespace: "palette",
-        run() {
-          cancelActiveWorkflow(api)
         },
       },
     ],

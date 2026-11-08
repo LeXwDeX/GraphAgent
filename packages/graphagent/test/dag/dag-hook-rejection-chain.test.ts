@@ -22,7 +22,10 @@ import { reply } from "../lib/llm-server"
 
 type Row = Record<string, any>
 
-for (const mode of ["complete", "cancel", "dispose"] as const) {
+// The cancel mode was dropped with the HTTP control endpoint (C1): cancel
+// semantics are covered by workflow-tool.test.ts, and dispose keeps the
+// abort/recovery boundary this chain exercises.
+for (const mode of ["complete", "dispose"] as const) {
   cliIt.live(
     `real hook denial followed by ${mode} preserves DAG dependency and recovery boundaries`,
     ({ opencode, home, llm }) =>
@@ -30,6 +33,7 @@ for (const mode of ["complete", "cancel", "dispose"] as const) {
         const directory = path.join(yield* Effect.promise(() => realpath(home)), "workspace")
         const protectedFile = path.join(directory, "protected.json")
         const reportFile = path.join(directory, "report.json")
+        const spec = path.join(directory, ".agents", "hook-rejection-chain.yaml")
         const proof = randomBytes(18).toString("hex")
         yield* Effect.promise(async () => {
           await mkdir(path.join(directory, ".agents"), { recursive: true })
@@ -55,20 +59,66 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
               ],
             }),
           )
+          await writeFile(
+            spec,
+            JSON.stringify({
+              title: `Hook rejection ${mode}`,
+              config: {
+                name: "hook-rejection-chain",
+                result_protocol: "final_response",
+                delivery_node: "review",
+                max_concurrency: 1,
+                nodes: [
+                  {
+                    id: "verify",
+                    name: "Verification",
+                    worker_type: "general",
+                    depends_on: [],
+                    required: true,
+                    prompt_template: {
+                      inline: `ISSUE777_VERIFY: Attempt ${protectedFile}, then recover into ${reportFile}.`,
+                    },
+                  },
+                  {
+                    id: "review",
+                    name: "Dependent review",
+                    worker_type: "general",
+                    depends_on: ["verify"],
+                    required: true,
+                    prompt_template: { inline: `ISSUE777_REVIEW: Read and review ${reportFile}.` },
+                  },
+                ],
+              },
+            }),
+          )
         })
-        yield* llm.push(reply().tool("write", { filePath: protectedFile, content: "{}" }, "denied_write"))
+        // The workflow starts through the parent's workflow tool, so every
+        // scripted reply must be scoped to the worker whose prompt carries the
+        // marker; unscoped parent requests fall through to the server's
+        // default acknowledgement.
+        const verifyMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("ISSUE777_VERIFY")
+        const reviewMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("ISSUE777_REVIEW")
+        yield* llm.toolMatch(({ body }) => JSON.stringify(body).includes("ISSUE777-START"), "workflow", {
+          params: { action: "start", spec_path: spec },
+        })
+        yield* llm.pushMatch(
+          verifyMatch,
+          reply().tool("write", { filePath: protectedFile, content: "{}" }, "denied_write"),
+        )
         let nextTurnRequested = false
         if (mode === "complete") {
           yield* llm.pushMatch(
-            ({ body }) => {
-              expect(JSON.stringify(body)).toContain("[Tool denied by hook]")
+            (hit) => {
+              if (!verifyMatch(hit)) return false
+              expect(JSON.stringify(hit.body)).toContain("[Tool denied by hook]")
               return true
             },
             reply().tool("read", { filePath: protectedFile }, "safe_read"),
           )
           yield* llm.pushMatch(
-            ({ body }) => {
-              expect(JSON.stringify(body)).toContain(proof)
+            (hit) => {
+              if (!verifyMatch(hit)) return false
+              expect(JSON.stringify(hit.body)).toContain(proof)
               return true
             },
             reply().tool(
@@ -77,14 +127,16 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
               "safe_write",
             ),
           )
-          yield* llm.text("Verification report completed after the permitted correction.")
-          yield* llm.push(reply().tool("read", { filePath: reportFile }, "review_read"))
-          yield* llm.textMatch(({ body }) => {
-            expect(JSON.stringify(body)).toContain(proof)
+          yield* llm.textMatch(verifyMatch, "Verification report completed after the permitted correction.")
+          yield* llm.pushMatch(reviewMatch, reply().tool("read", { filePath: reportFile }, "review_read"))
+          yield* llm.textMatch((hit) => {
+            if (!reviewMatch(hit)) return false
+            expect(JSON.stringify(hit.body)).toContain(proof)
             return true
           }, "Review approved the actual report.")
         } else {
-          yield* llm.pushMatch(() => {
+          yield* llm.pushMatch((hit) => {
+            if (!verifyMatch(hit) || !JSON.stringify(hit.body).includes("[Tool denied by hook]")) return false
             nextTurnRequested = true
             return true
           }, reply().hang())
@@ -105,36 +157,12 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             model: { providerID: "test", id: "test-model" },
             permission: [{ permission: "*", pattern: "*", action: "allow" }],
           })
-          const workflow = await request("/dag", {
-            session_id: parent.id,
-            title: `Hook rejection ${mode}`,
-            config: {
-              name: "hook-rejection-chain",
-              result_protocol: "final_response",
-              delivery_node: "review",
-              max_concurrency: 1,
-              nodes: [
-                {
-                  id: "verify",
-                  name: "Verification",
-                  worker_type: "general",
-                  depends_on: [],
-                  required: true,
-                  prompt_template: {
-                    inline: `ISSUE777_VERIFY: Attempt ${protectedFile}, then recover into ${reportFile}.`,
-                  },
-                },
-                {
-                  id: "review",
-                  name: "Dependent review",
-                  worker_type: "general",
-                  depends_on: ["verify"],
-                  required: true,
-                  prompt_template: { inline: `ISSUE777_REVIEW: Read and review ${reportFile}.` },
-                },
-              ],
-            },
+          await request(`/session/${parent.id}/message`, {
+            parts: [{ type: "text", text: "ISSUE777-START" }],
           })
+          const workflows: Row[] = await request(`/dag/session/${parent.id}`)
+          const workflow = workflows[0]
+          if (!workflow) throw new Error("workflow tool did not start a workflow")
           const nodes = (): Promise<Row[]> => request(`/dag/${workflow.id}/nodes`)
           const waitUntil = async <A>(read: () => Promise<A>, ready: (value: A) => boolean): Promise<A> => {
             const deadline = Date.now() + 60_000
@@ -162,10 +190,9 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             expect(messages.flatMap((message) => message.parts).some((part) => part.state?.metadata?.hookDenied)).toBe(
               true,
             )
-            await request(
-              mode === "dispose" ? "/instance/dispose" : `/dag/${workflow.id}/control`,
-              mode === "dispose" ? {} : { operation: "cancel" },
-            )
+            // The HTTP control endpoint is gone with C1; disposal is the abort
+            // boundary that remains reachable without a workflow tool call.
+            await request("/instance/dispose", {})
           }
           const terminal = await waitUntil(
             () => request(`/dag/${workflow.id}`),

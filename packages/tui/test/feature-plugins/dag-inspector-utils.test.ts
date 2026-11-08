@@ -2,9 +2,6 @@ import { describe, expect, test } from "bun:test"
 import {
   computeNodeRowIndex,
   computeWaves,
-  dagControlAllowed,
-  dagControlProgressMessage,
-  dagControlUnavailableMessage,
   dagNodeGlyph,
   dagNodeHistoryLabel,
   dagStatusColor,
@@ -36,8 +33,13 @@ describe("agent observations", () => {
   test("keeps legacy nodes compatible and distinguishes accepted input from frozen snapshots", () => {
     expect(formatDagAgentMessages(node("legacy"))).toBeUndefined()
     expect(formatDagAgentInput(node("legacy"))).toBeUndefined()
-    const observed = { ...node("worker"), attempt_id: "attempt-1", accepted_input_revision: 4, snapshot_revision: 2,
-      agent_messages: { queued: 2, delivered: 1, undeliverable: 1 } }
+    const observed = {
+      ...node("worker"),
+      attempt_id: "attempt-1",
+      accepted_input_revision: 4,
+      snapshot_revision: 2,
+      agent_messages: { queued: 2, delivered: 1, undeliverable: 1 },
+    }
     expect(formatDagAgentMessages(observed)).toBe("messages 2 queued · 1 delivered · 1 undeliverable")
     expect(formatDagAgentInput(observed)).toBe("attempt attempt-1 · input 4 · snapshot 2")
   })
@@ -99,41 +101,6 @@ describe("formatDagError", () => {
     expect(
       formatDagError("Cause([Die(ProviderModelNotFoundError: Model not found: local/local/glm. Did you mean: glm?)])"),
     ).toBe("Model not found: local/local/glm. Did you mean: glm?")
-  })
-})
-
-describe("DAG control state", () => {
-  test("allows only operations valid for the current workflow status", () => {
-    expect(dagControlUnavailableMessage("running", "pause")).toBeUndefined()
-    expect(dagControlUnavailableMessage("stepping", "pause")).toBeUndefined()
-    expect(dagControlUnavailableMessage("paused", "resume")).toBeUndefined()
-    expect(dagControlUnavailableMessage("completed", "pause")).toBe("Workflow is completed and cannot be paused")
-    expect(dagControlUnavailableMessage("cancelled", "cancel")).toBe("Workflow is cancelled and cannot be cancelled")
-    expect(dagControlUnavailableMessage("pending", "cancel")).toBe("Workflow is pending and cannot be cancelled")
-    expect(dagControlUnavailableMessage("archived", "cancel")).toBe("Workflow is archived and cannot be cancelled")
-  })
-
-  test("formats progress without component-level branching", () => {
-    expect(dagControlProgressMessage("pause")).toBe("Pausing workflow...")
-    expect(dagControlProgressMessage("resume")).toBe("Resuming workflow...")
-    expect(dagControlProgressMessage("cancel")).toBe("Cancelling workflow...")
-  })
-
-  test("step is available while running or stepping only", () => {
-    expect(dagControlUnavailableMessage("running", "step")).toBeUndefined()
-    expect(dagControlUnavailableMessage("stepping", "step")).toBeUndefined()
-    expect(dagControlUnavailableMessage("paused", "step")).toBe("Workflow is paused and cannot be stepped")
-    expect(dagControlProgressMessage("step")).toBe("Stepping workflow...")
-  })
-
-  test("dagControlAllowed mirrors the unavailable-message predicate", () => {
-    expect(dagControlAllowed("running", "pause")).toBe(true)
-    expect(dagControlAllowed("paused", "pause")).toBe(false)
-    expect(dagControlAllowed("paused", "resume")).toBe(true)
-    expect(dagControlAllowed("running", "resume")).toBe(false)
-    expect(dagControlAllowed("paused", "cancel")).toBe(true)
-    expect(dagControlAllowed("completed", "cancel")).toBe(false)
-    expect(dagControlAllowed(undefined, "pause")).toBe(false)
   })
 })
 
@@ -209,15 +176,15 @@ describe("node detail formatting", () => {
     // audit #8 — the incident shape: a cancelled workflow's 1 completed + 7
     // skipped must NOT read as a bare "8/8" success; the ✓/⊘ split exposes it.
     expect(formatDagProgress({ nodeCount: 8, completedNodes: 1, skippedNodes: 7 })).toBe("8/8 ✓1 ⊘7")
-    expect(formatDagProgress({ nodeCount: 8, completedNodes: 1, skippedNodes: 6, abortedNodes: 1 })).toBe("8/8 ✓1 ⊘6 ↯1")
+    expect(formatDagProgress({ nodeCount: 8, completedNodes: 1, skippedNodes: 6, abortedNodes: 1 })).toBe(
+      "8/8 ✓1 ⊘6 ↯1",
+    )
   })
 })
 
 describe("dagWorkflowSessions", () => {
   test("keeps first-seen order and drops duplicate owners", () => {
-    expect(
-      dagWorkflowSessions([{ session_id: "b" }, { session_id: "a" }, { session_id: "b" }]),
-    ).toEqual(["b", "a"])
+    expect(dagWorkflowSessions([{ session_id: "b" }, { session_id: "a" }, { session_id: "b" }])).toEqual(["b", "a"])
   })
 
   test("empty list yields no sessions", () => {

@@ -365,7 +365,6 @@
     "test/cli/heap.test.ts": 3,
     "test/cli/run/prompt.editor.test.ts": 3,
     "test/dag/dag-admission.test.ts": 3,
-    "test/dag/dag-final-output.live.test.ts": 3,
     "test/dag/dag-templates.test.ts": 3,
     "test/plugin/github-copilot-models.test.ts": 3,
     "test/plugin/shared.test.ts": 3,

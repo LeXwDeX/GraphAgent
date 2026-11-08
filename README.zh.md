@@ -23,14 +23,14 @@ GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，�
 
 以下功能都是本 fork 在 opencode 之上自行开发的，各自可选或自成体系；其余保留能力包括多 Provider、LSP、客户端/服务器和 TUI。
 
-| 功能                                  | 作用                                                                   | 怎么用                                               |
-| ------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------- |
-| [思考自动塑形](#思考自动塑形)         | 后台整理思考，在步骤边界采用已完成的改写（默认关闭）                     | `reasoningDistillation.enabled` + `small_model`      |
-| [DAG 工作流](#dag-工作流)             | 把任务拆成可持久化的子智能体依赖图并跑完                               | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc`  |
-| [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语                                 | `/memory on`                                         |
-| [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标                             | `/goal`、`/subgoal`                                  |
-| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                                      | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
-| [上下文管理](#上下文管理)             | 限制工具输出、限制工具调用、压缩长会话                                 | `tool_output`、`compaction`、`maxToolCalls`          |
+| 功能                                  | 作用                                                 | 怎么用                                               |
+| ------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
+| [思考自动塑形](#思考自动塑形)         | 后台整理思考，在步骤边界采用已完成的改写（默认关闭） | `reasoningDistillation.enabled` + `small_model`      |
+| [DAG 工作流](#dag-工作流)             | 把任务拆成可持久化的子智能体依赖图并跑完             | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc`  |
+| [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语               | `/memory on`                                         |
+| [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标           | `/goal`、`/subgoal`                                  |
+| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                    | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
+| [上下文管理](#上下文管理)             | 限制工具输出、限制工具调用、压缩长会话               | `tool_output`、`compaction`、`maxToolCalls`          |
 
 ---
 
@@ -274,21 +274,19 @@ config:
 - 准入问答覆盖六个维度（目标、范围、约束与假设、验收标准、证据、风险），策略有界：`LIGHT`（1 轮）、`STANDARD`（3 轮）、`GRILL`（5 轮，对抗式）。产出的 Requirement Brief 计算指纹（规范化形式的 SHA-256）；实质性变更使指纹失效并回到问答。消费后的准入记录随工作流持久化，恢复时不重放问答。
 - 审查节点必须如实声明阶段：`design` 审查实现前的产物；`diff` 审查实际实现，要求声明实现节点、通过验证的验证节点，并回显实现指纹。实现一变指纹就变，旧的 `ACCEPT` 过不了门禁。
 
-### 观察与控制
+### 观察
 
-- TUI DAG 检查器（命令面板 → `dag.open`）：工作流列表、按波次排序的节点视图（实时状态）、节点详情（依赖、错误、输出预览、截止倒计时），`p`/`r`/`s`/`x` 对应暂停/恢复/单步/取消，`enter` 进入节点的子会话。
+- TUI DAG 检查器（命令面板 → `dag.open`）：工作流列表、按波次排序的节点视图（实时状态）、节点详情（依赖、错误、输出预览、截止倒计时），`enter` 进入节点的子会话。工作流控制统一走 `workflow` 工具，检查器不再提供控制命令。
 - 侧边栏面板：按会话展示工作流进度（完成/运行/失败/排队），可展开节点列表，由瞬态摘要事件驱动，打开时再拉一次兜底，不做轮询。
-- HTTP API（与工具入口共用同一代码路径）：
+- HTTP API（只读查询；写操作统一走 `workflow` 工具）：
 
   ```
   GET  /dag                              列出工作流
-  POST /dag                              创建工作流
   GET  /dag/session/:sessionID           按会话列出工作流
   GET  /dag/session/:sessionID/summary   进度摘要
   GET  /dag/:dagID                       工作流详情
   GET  /dag/:dagID/nodes                 节点列表
   GET  /dag/:dagID/nodes/:nodeID         节点详情
-  POST /dag/:dagID/control               pause/resume/cancel/replan/extend/step/complete
   ```
 
 ### 项目配置文件
@@ -370,11 +368,11 @@ bun dev serve        # headless API 服务（端口 4096）
 
 混合许可证模型：
 
-| 内容                           | 许可证            | 文本                                                                                                                                           |
-| ------------------------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| 上游 opencode 代码（绝大多数） | MIT               | [`LICENSE`](./LICENSE)                                                                                                                         |
+| 内容                           | 许可证            | 文本                                                                                                                                               |
+| ------------------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 上游 opencode 代码（绝大多数） | MIT               | [`LICENSE`](./LICENSE)                                                                                                                             |
 | DAG 工作流引擎（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
-| 便携运行时资源（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                           |
+| 便携运行时资源（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                             |
 
 精确的文件边界列在 [`NOTICE`](./NOTICE) 中。AGPL 覆盖这些模块及其衍生品，包括网络服务部署；其他文件保持原有许可证。
 
