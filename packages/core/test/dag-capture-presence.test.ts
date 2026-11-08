@@ -56,6 +56,8 @@ function seed() {
         status: "running",
         config: "{}",
         seq: 0,
+        directory: "/project",
+        target_fingerprint: { kind: "none" },
       })
       .run()
       .pipe(Effect.orDie)

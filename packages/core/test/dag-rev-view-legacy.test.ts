@@ -79,6 +79,8 @@ function seed() {
       seq: 1,
       wake_reported: false,
       time_created: 1,
+      directory: "/project",
+      target_fingerprint: { kind: "none" },
     }).run().pipe(Effect.orDie)
     yield* database.db.insert(WorkflowNodeTable).values([
       node("wf-legacy", "a", "completed", 1),

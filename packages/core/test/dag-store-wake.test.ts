@@ -44,6 +44,8 @@ function seedBatch() {
       config: "{}",
       seq: 4,
       wake_reported: false,
+      directory: "/project",
+      target_fingerprint: { kind: "none" },
     }).run().pipe(Effect.orDie)
     yield* database.db.insert(WorkflowNodeTable).values([
       {
@@ -129,6 +131,8 @@ describe("DagStore wake batch", () => {
           config: "{}",
           seq: 1,
           wake_reported: false,
+          directory: "/project",
+          target_fingerprint: { kind: "none" },
         }).run().pipe(Effect.orDie)
         yield* database.db.insert(WorkflowNodeTable).values({
           id: "timeout-node",

@@ -54,6 +54,8 @@ function seed() {
         seq: 1,
         wake_reported: false,
         time_created: 2,
+        directory: "/project",
+        target_fingerprint: { kind: "none" },
       },
       {
         id: "wf-empty",
@@ -65,6 +67,8 @@ function seed() {
         seq: 2,
         wake_reported: false,
         time_created: 1,
+        directory: "/project",
+        target_fingerprint: { kind: "none" },
       },
     ]).run().pipe(Effect.orDie)
     yield* database.db.insert(WorkflowNodeTable).values([
