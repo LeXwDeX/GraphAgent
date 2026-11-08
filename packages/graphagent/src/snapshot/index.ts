@@ -10,6 +10,7 @@ import { Hash } from "@graphagent/core/util/hash"
 import { Config } from "@/config/config"
 import { Global } from "@graphagent/core/global"
 import { Info } from "@graphagent/schema/file-diff"
+import { TrackCoordinator } from "./track-coordinator"
 
 export const Patch = Schema.Struct({
   hash: Schema.String,
@@ -315,7 +316,7 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Serv
           )
         })
 
-        const track = Effect.fnUntraced(function* () {
+        const trackOnce = Effect.fnUntraced(function* () {
           return yield* locked(
             Effect.gen(function* () {
               if (!(yield* enabled())) return
@@ -345,6 +346,10 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Serv
             }),
           )
         })
+
+        // Coalesce concurrent track() calls per directory. patch/diffFull and
+        // the other locked operations stay on the semaphore alone.
+        const track = (yield* TrackCoordinator.make(trackOnce)).track
 
         const patch = Effect.fnUntraced(function* (hash: string) {
           return yield* locked(
