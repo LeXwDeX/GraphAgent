@@ -25,7 +25,7 @@ interface EnvironmentContext {
   parent?: { id: string; providerID: string }
 }
 
-type PreparedGraph =
+export type PreparedGraph =
   | {
       action: "start"
       nodes: NodeConfig[]
@@ -35,6 +35,13 @@ type PreparedGraph =
     }
   | { action: "extend"; nodes: NodeConfig[] }
   | { action: "replan"; nodes: NodeConfig[] }
+
+/** A prepared extend fragment, paired with the `extend` control op. */
+export type PreparedExtend = Extract<PreparedGraph, { action: "extend" }>
+/** A prepared replan fragment, paired with the `replan` control op. */
+export type PreparedReplan = Extract<PreparedGraph, { action: "replan" }>
+/** The prepared graphs a live control mutation may carry. */
+export type PreparedNodes = PreparedExtend | PreparedReplan
 
 interface Result extends DagValidation.ValidationResult {
   /** Strict decoded document. Boundary-owned legacy fields are not exposed. */
