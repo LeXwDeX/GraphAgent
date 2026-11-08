@@ -3,11 +3,13 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { testRender, useRenderer } from "@opentui/solid"
-import { onCleanup, type JSX, type ParentProps } from "solid-js"
+import { onCleanup, onMount, type JSX, type ParentProps } from "solid-js"
 import { TuiKeybind } from "../../src/config/keybind"
 import { setLanguage } from "../../src/i18n"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { Footer, useFooterKeyHints, type FooterHint } from "../../src/shell/footer"
+import { useFooterStatus } from "../../src/shell/footer-status"
+import { ToastProvider, useToast } from "../../src/ui/toast"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { ShellContexts, shellState } from "./contexts"
 
@@ -181,13 +183,81 @@ test("builds hints from registered keymap bindings", async () => {
 test("renders the shared right slot instead of idle hints", async () => {
   await using tmp = await shellState()
   const app = await render(
-    () => <Footer agent="build" agentAction="tab" hints={hints} right={<text>status: indexing</text>} />,
+    () => (
+      <Footer
+        agent="build"
+        agentAction="tab"
+        hints={hints}
+        meta={{ directory: "~/project:main", mcp: { count: 2, error: false }, version: "1.2.3" }}
+        right={<text>status: indexing</text>}
+      />
+    ),
     { width: 80, state: tmp.path },
   )
 
   try {
     const frame = app.captureCharFrame()
     expect(frame).toContain("status: indexing")
+    expect(frame).not.toContain("/ 命令")
+    expect(frame).not.toContain("~/project:main")
+    expect(frame).not.toContain("1.2.3")
+    expectWithin(frame, 80, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("renders home meta between the agent and the idle hints", async () => {
+  await using tmp = await shellState()
+  const app = await render(
+    () => (
+      <Footer
+        agent="build"
+        agentAction="tab"
+        hints={hints}
+        meta={{ directory: "~/project:main", mcp: { count: 2, error: false }, version: "1.2.3" }}
+      />
+    ),
+    { width: 120, state: tmp.path },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("~/project:main")
+    expect(frame).toContain("⊙ 2 MCP")
+    expect(frame).toContain("1.2.3")
+    expect(frame).toContain("/ 命令")
+    expectWithin(frame, 120, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+function FooterFromStatus() {
+  const toast = useToast()
+  const status = useFooterStatus()
+  onMount(() => {
+    toast.show({ message: "Copied to clipboard", variant: "info", duration: 30000 })
+  })
+  return (
+    <box>
+      <Footer agent="build" agentAction="tab" hints={hints} right={status()} />
+    </box>
+  )
+}
+
+test("renders a toast in the footer right slot instead of idle hints", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => (
+    <ToastProvider>
+      <FooterFromStatus />
+    </ToastProvider>
+  ), { width: 80, state: tmp.path })
+  await app.renderOnce()
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Copied to clipboard")
     expect(frame).not.toContain("/ 命令")
     expectWithin(frame, 80, 1)
   } finally {

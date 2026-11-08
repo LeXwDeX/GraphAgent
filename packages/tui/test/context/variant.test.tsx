@@ -27,7 +27,7 @@ import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { DialogProvider } from "../../src/ui/dialog"
-import { Toast, ToastProvider } from "../../src/ui/toast"
+import { ToastProvider } from "../../src/ui/toast"
 import { tmpdir } from "../fixture/fixture"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -120,7 +120,6 @@ async function mount(
                               <ProjectProvider>
                                 <SyncProvider>
                                   <ThemeProvider mode="dark">
-                                    <Toast />
                                     <LocalProvider>
                                       <PromptStashProvider>
                                         <DialogProvider>

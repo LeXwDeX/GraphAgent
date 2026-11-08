@@ -40,6 +40,16 @@ export function useFooterKeyHints(): () => FooterKeyHints {
   })
 }
 
+/** Compact home route information merged into the footer's meta row. */
+export type FooterMeta = {
+  /** Abbreviated destination directory, plus the branch when it is the current one. */
+  directory?: string
+  /** Connected MCP server count and whether any server failed. */
+  mcp?: { count: number; error: boolean }
+  /** Application version, shown on home. */
+  version?: string
+}
+
 export type FooterProps = {
   /** Current agent name, rendered in the brand color. */
   agent?: string
@@ -47,6 +57,8 @@ export type FooterProps = {
   agentAction?: string
   /** Right-hand idle hints. Ignored when `right` is present. */
   hints?: readonly FooterHint[]
+  /** Home route directory, MCP count and version. */
+  meta?: FooterMeta
   /** DAG mode indicator slot. */
   dag?: JSX.Element
   /** Shared right-hand slot for transient footer content. */
@@ -56,6 +68,7 @@ export type FooterProps = {
 const PADDING = 2
 const GAP = 1
 const HINT_SEPARATOR = " · "
+const META_SEPARATOR = " · "
 
 export function Footer(props: FooterProps) {
   const { theme } = useTheme()
@@ -78,6 +91,10 @@ export function Footer(props: FooterProps) {
       action && actionBudget > 0 ? (actionWidth <= actionBudget ? action : truncateCells(action, actionBudget, aw)) : ""
 
     const leftWidth = agentWidth + (agent && shownAction ? GAP : 0) + (shownAction ? cellWidth(shownAction, aw) : 0)
+
+    // The shared right slot replaces idle hints and leaves no room for meta.
+    if (props.right) return { agent, action: shownAction, hints: [] as FooterHint[], meta: "", metaGap: 0, spacer: 0 }
+
     const rightBudget = inner - leftWidth - (leftWidth > 0 ? GAP : 0)
 
     const selected: FooterHint[] = []
@@ -90,36 +107,65 @@ export function Footer(props: FooterProps) {
     }
 
     const hintsWidth = cellWidth(joined, aw)
-    const gap = props.right ? 0 : Math.max(leftWidth > 0 ? GAP : 0, inner - leftWidth - hintsWidth)
+    const metaParts: string[] = []
+    if (props.meta?.directory) metaParts.push(props.meta.directory)
+    if (props.meta?.mcp)
+      metaParts.push(`${props.meta.mcp.error ? "⊙!" : "⊙"} ${props.meta.mcp.count} MCP`)
+    if (props.meta?.version) metaParts.push(props.meta.version)
+    const metaText = metaParts.join(META_SEPARATOR)
+    const metaBudget =
+      inner -
+      leftWidth -
+      (leftWidth > 0 && metaText ? GAP : 0) -
+      hintsWidth -
+      (hintsWidth > 0 && (leftWidth > 0 || metaText) ? GAP : 0)
+    const meta = metaText && metaBudget > 0 ? truncateCells(metaText, metaBudget, aw) : ""
+    const metaGap = leftWidth > 0 && meta ? GAP : 0
+    const metaWidth = cellWidth(meta, aw)
+    const spacer = Math.max(
+      leftWidth + metaGap + metaWidth > 0 && hintsWidth > 0 ? GAP : 0,
+      inner - leftWidth - metaGap - metaWidth - hintsWidth,
+    )
 
     return {
       agent,
       action: shownAction,
       hints: selected,
-      gap,
+      meta,
+      metaGap,
+      spacer,
     }
   })
 
   return (
     <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-      <box flexDirection="row" gap={GAP}>
-        <Show when={layout().agent}>
-          <text fg={theme.primary} wrapMode="none">
-            <b>{layout().agent}</b>
-          </text>
-        </Show>
-        <Show when={props.dag}>{props.dag}</Show>
-        <Show when={layout().action}>
+      <Show when={layout().agent || props.dag || layout().action}>
+        <box flexDirection="row" gap={GAP}>
+          <Show when={layout().agent}>
+            <text fg={theme.primary} wrapMode="none">
+              <b>{layout().agent}</b>
+            </text>
+          </Show>
+          <Show when={props.dag}>{props.dag}</Show>
+          <Show when={layout().action}>
+            <text fg={theme.textMuted} wrapMode="none">
+              {layout().action}
+            </text>
+          </Show>
+        </box>
+      </Show>
+      <Show when={layout().meta}>
+        <box paddingLeft={layout().metaGap}>
           <text fg={theme.textMuted} wrapMode="none">
-            {layout().action}
+            {layout().meta}
           </text>
-        </Show>
-      </box>
+        </box>
+      </Show>
       <Show
         when={props.right}
         fallback={
           <>
-            <box width={layout().gap} flexShrink={0} />
+            <box width={layout().spacer} flexShrink={0} />
             <Hints hints={layout().hints} />
           </>
         }
