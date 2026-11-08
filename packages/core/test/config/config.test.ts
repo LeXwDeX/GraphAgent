@@ -154,6 +154,35 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("accepts the draft engine limits and rejects invalid values", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownSync(ConfigV1.Info)
+      expect(decode({}).engine).toBeUndefined()
+      expect(
+        decode({
+          engine: {
+            concurrency: { global: 24, perProvider: 12, childGlobal: 16, taskReserve: 2 },
+            cache: { staggerSiblings: true },
+            memory: { selectTimeoutMs: 3000 },
+          },
+        }).engine,
+      ).toEqual({
+        concurrency: { global: 24, perProvider: 12, childGlobal: 16, taskReserve: 2 },
+        cache: { staggerSiblings: true },
+        memory: { selectTimeoutMs: 3000 },
+      })
+      for (const key of ["global", "perProvider", "childGlobal", "taskReserve"] as const) {
+        for (const invalid of [0, -1, 1.5]) {
+          expect(() => decode({ engine: { concurrency: { [key]: invalid } } })).toThrow()
+        }
+      }
+      for (const invalid of [0, -1, 1.5]) {
+        expect(() => decode({ engine: { memory: { selectTimeoutMs: invalid } } })).toThrow()
+      }
+      expect(() => decode({ engine: { cache: { staggerSiblings: "true" } } })).toThrow()
+    }),
+  )
+
   it.effect("returns the latest defined scalar from priority-ordered documents", () =>
     Effect.sync(() => {
       const entries = [

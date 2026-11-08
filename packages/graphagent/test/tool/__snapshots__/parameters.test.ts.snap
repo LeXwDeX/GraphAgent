@@ -538,6 +538,13 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "action": {
+      "description": "Set to "cancel" together with task_id to cancel one of this session's background tasks. Omit for a normal task run. Only background tasks can be cancelled here; a foreground task is cancelled from the parent session.",
+      "enum": [
+        "cancel",
+      ],
+      "type": "string",
+    },
     "background": {
       "description": "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
       "type": "boolean",
@@ -547,27 +554,22 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "description": {
-      "description": "A short (3-5 words) description of the task",
+      "description": "A short (3-5 words) description of the task; required unless action is cancel",
       "type": "string",
     },
     "prompt": {
-      "description": "The task for the agent to perform",
+      "description": "The task for the agent to perform; required unless action is cancel",
       "type": "string",
     },
     "subagent_type": {
-      "description": "The type of specialized agent to use for this task",
+      "description": "The type of specialized agent to use for this task; required unless action is cancel",
       "type": "string",
     },
     "task_id": {
-      "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      "description": "With action "cancel": the background task to cancel. Otherwise set only to resume a previous task (pass a prior task_id and the task continues the same subagent session instead of creating a fresh one)",
       "type": "string",
     },
   },
-  "required": [
-    "description",
-    "prompt",
-    "subagent_type",
-  ],
   "type": "object",
 }
 `;

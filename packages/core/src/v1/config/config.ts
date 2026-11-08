@@ -140,6 +140,44 @@ export const Info = Schema.Struct({
     description:
       "Interface language and default assistant reply language. When unset, inferred from the system locale.",
   }),
+  engine: Schema.optional(
+    Schema.Struct({
+      concurrency: Schema.optional(
+        Schema.Struct({
+          global: Schema.optional(PositiveInt).annotate({
+            description: "Maximum concurrent model streams in this process (draft default: 24, subject to measurement).",
+          }),
+          perProvider: Schema.optional(PositiveInt).annotate({
+            description: "Maximum concurrent model streams per provider (draft default: 12, subject to measurement).",
+          }),
+          childGlobal: Schema.optional(PositiveInt).annotate({
+            description: "Maximum concurrent child runs in this process (draft default: 16, subject to measurement).",
+          }),
+          taskReserve: Schema.optional(PositiveInt).annotate({
+            description:
+              "Child-run slots reserved for the task tool inside childGlobal (draft default: 2, subject to measurement).",
+          }),
+        }),
+      ).annotate({ description: "Draft concurrency limits for the session engine; values are provisional." }),
+      cache: Schema.optional(
+        Schema.Struct({
+          staggerSiblings: Schema.optional(Schema.Boolean).annotate({
+            description:
+              "Release sibling child runs sharing a cache group one at a time until the first reports a token (default: true).",
+          }),
+        }),
+      ).annotate({ description: "Draft prompt-cache scheduling options; defaults are provisional." }),
+      memory: Schema.optional(
+        Schema.Struct({
+          selectTimeoutMs: Schema.optional(PositiveInt).annotate({
+            description: "Deadline for selecting project memory before a request (draft default: 3000 ms).",
+          }),
+        }),
+      ).annotate({ description: "Draft memory selection options; defaults are provisional." }),
+    }),
+  ).annotate({
+    description: "Draft session-engine limits. Defaults are provisional and subject to measurement.",
+  }),
   mode: Schema.optional(
     Schema.StructWithRest(
       Schema.Struct({ build: Schema.optional(ConfigAgentV1.Info), plan: Schema.optional(ConfigAgentV1.Info) }),

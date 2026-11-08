@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { Schema } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -40,3 +41,33 @@ test("published and embedded schemas match the generated schemas", async () => {
     await rm(directory, { recursive: true, force: true })
   }
 }, 30_000)
+
+// The published document is a JSON Schema whose object nodes carry the
+// annotations we assert on. Decode through narrow schemas instead of casting,
+// so a shape change fails here rather than silently reading undefined.
+const SectionNode = Schema.Struct({
+  properties: Schema.Record(
+    Schema.String,
+    Schema.Struct({ description: Schema.optional(Schema.String) }),
+  ),
+})
+const Document = Schema.Struct({
+  $ref: Schema.String,
+  $defs: Schema.Record(Schema.String, Schema.Unknown),
+})
+const Engine = Schema.Struct({
+  properties: Schema.Struct({ concurrency: SectionNode, cache: SectionNode, memory: SectionNode }),
+})
+const ConfigDocument = Schema.Struct({ properties: Schema.Struct({ engine: Engine }) })
+
+test("published config schema documents the draft engine limits", async () => {
+  const document = Schema.decodeUnknownSync(Document)(await Bun.file(published.config).json())
+  const engine = Schema.decodeUnknownSync(ConfigDocument)(document.$defs[document.$ref.replace("#/$defs/", "")])
+    .properties.engine.properties
+  expect(engine.concurrency.properties.global.description).toContain("draft default: 24")
+  expect(engine.concurrency.properties.perProvider.description).toContain("draft default: 12")
+  expect(engine.concurrency.properties.childGlobal.description).toContain("draft default: 16")
+  expect(engine.concurrency.properties.taskReserve.description).toContain("draft default: 2")
+  expect(engine.cache.properties.staggerSiblings.description).toContain("default: true")
+  expect(engine.memory.properties.selectTimeoutMs.description).toContain("draft default: 3000")
+})

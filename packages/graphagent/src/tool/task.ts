@@ -37,6 +37,10 @@ const BACKGROUND_DESCRIPTION = [
   "Use background only for independent work that can run while you continue elsewhere.",
   "You will be notified automatically when it finishes.",
 ].join(" ")
+const CANCEL_DESCRIPTION = [
+  'Cancellation: call with action="cancel" and the background task_id to stop one of this session\'s background tasks.',
+  "Only background tasks can be cancelled this way; a foreground task is cancelled from the parent session, and a task from another session is refused.",
+].join(" ")
 const BACKGROUND_STARTED = [
   "The task is working in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
@@ -116,26 +120,51 @@ function continuationFailure(cause: Cause.Cause<unknown>, prior: string): Effect
   )
 }
 
-const BaseParameterFields = {
-  description: Schema.String.annotate({ description: "A short (3-5 words) description of the task" }),
-  prompt: Schema.String.annotate({ description: "The task for the agent to perform" }),
-  subagent_type: Schema.String.annotate({ description: "The type of specialized agent to use for this task" }),
+const TaskParameterFields = {
+  action: Schema.optional(Schema.Literal("cancel")).annotate({
+    description:
+      'Set to "cancel" together with task_id to cancel one of this session\'s background tasks. Omit for a normal task run. Only background tasks can be cancelled here; a foreground task is cancelled from the parent session.',
+  }),
+  description: Schema.optional(Schema.String).annotate({
+    description: "A short (3-5 words) description of the task; required unless action is cancel",
+  }),
+  prompt: Schema.optional(Schema.String).annotate({
+    description: "The task for the agent to perform; required unless action is cancel",
+  }),
+  subagent_type: Schema.optional(Schema.String).annotate({
+    description: "The type of specialized agent to use for this task; required unless action is cancel",
+  }),
   task_id: Schema.optional(Schema.String).annotate({
     description:
-      "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      'With action "cancel": the background task to cancel. Otherwise set only to resume a previous task (pass a prior task_id and the task continues the same subagent session instead of creating a fresh one)',
   }),
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
 
-const BaseParameters = Schema.Struct(BaseParameterFields)
+type TaskShape = Schema.Schema.Type<Schema.Struct<typeof TaskParameterFields>>
+
+// The tool accepts two shapes on one object root: a start/resume call and
+// `{ action: "cancel", task_id }`. A root-level union is outside the OpenAI
+// tools contract (see Tool.assertObjectRootedParameters), so both shapes share
+// one optional-field struct and are distinguished here at decode time.
+const requireTaskShape = Schema.makeFilter<TaskShape>((value) => {
+  if (value.action === "cancel") {
+    return value.task_id ? undefined : 'task_id is required when action is "cancel"'
+  }
+  return value.description && value.prompt && value.subagent_type
+    ? undefined
+    : "description, prompt and subagent_type are required unless action is cancel"
+})
+
+const BaseParameters = Schema.Struct(TaskParameterFields).check(requireTaskShape)
 
 export const Parameters = Schema.Struct({
-  ...BaseParameterFields,
+  ...TaskParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
       "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
   }),
-})
+}).check(requireTaskShape)
 
 function repairBackgroundArgument(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value
@@ -192,6 +221,27 @@ export const TaskTool = Tool.define(
           new Error("Task delegation is available only to the main conversation, not child agents"),
         )
       }
+      if (params.action === "cancel") {
+        // Registered by C2 for H3 (#1026). The child-run cancellation service
+        // does not exist yet, so fail closed instead of starting a task.
+        return yield* Effect.fail(
+          new Error(
+            "Task cancellation is not implemented in this build; stop the parent session to cancel a foreground task.",
+          ),
+        )
+      }
+      if (
+        params.description === undefined ||
+        params.prompt === undefined ||
+        params.subagent_type === undefined
+      ) {
+        return yield* Effect.fail(
+          new Error("description, prompt and subagent_type are required unless action is cancel"),
+        )
+      }
+      const description: string = params.description
+      const prompt: string = params.prompt
+      const subagentType: string = params.subagent_type
       const cfg = yield* config.get()
       const runInBackground = params.background === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
@@ -203,18 +253,18 @@ export const TaskTool = Tool.define(
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: id,
-          patterns: [params.subagent_type],
+          patterns: [subagentType],
           always: ["*"],
           metadata: {
-            description: params.description,
-            subagent_type: params.subagent_type,
+            description,
+            subagent_type: subagentType,
           },
         })
       }
 
-      const next = yield* agent.get(params.subagent_type)
+      const next = yield* agent.get(subagentType)
       if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
+        return yield* Effect.fail(new Error(`Unknown agent type: ${subagentType} is not a valid agent type`))
       }
 
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined
@@ -238,7 +288,7 @@ export const TaskTool = Tool.define(
         session ??
         (yield* sessions.create({
           parentID: ctx.sessionID,
-          title: params.description + ` (@${next.name} subagent)`,
+          title: description + ` (@${next.name} subagent)`,
           agent: next.name,
           permission: [
             ...childPermission,
@@ -310,7 +360,7 @@ export const TaskTool = Tool.define(
       }
 
       yield* ctx.metadata({
-        title: params.description,
+        title: description,
         metadata,
       })
 
@@ -342,7 +392,7 @@ export const TaskTool = Tool.define(
           yield* SettingsHook.landSystemMessages(result, { sessionID: nextSession.id })
           startContexts = result.additionalContexts
         }
-        const parts = yield* ops.resolvePromptParts(params.prompt)
+        const parts = yield* ops.resolvePromptParts(prompt)
         // Queue immediately before ops.prompt (after parts resolved) so a failed resolve leaves no
         // stale queued context; admission of the child's first message drains it.
         if (startCtx) {
@@ -420,8 +470,8 @@ export const TaskTool = Tool.define(
                     state,
                     summary:
                       state === "completed"
-                        ? `Background task completed: ${params.description}`
-                        : `Background task failed: ${params.description}`,
+                        ? `Background task completed: ${description}`
+                        : `Background task failed: ${description}`,
                     text,
                   }),
                 },
@@ -451,7 +501,7 @@ export const TaskTool = Tool.define(
                 // wait now so the goal does not sleep until its deadline.
                 yield* wakeGoal(
                   jobID,
-                  `Background task ${params.description} ended without a result (${result.info?.status ?? "missing"})`,
+                  `Background task ${description} ended without a result (${result.info?.status ?? "missing"})`,
                   true,
                 )
                 return undefined
@@ -459,8 +509,8 @@ export const TaskTool = Tool.define(
               yield* wakeGoal(
                 jobID,
                 result.info.status === "completed"
-                  ? `Background task completed: ${params.description}`
-                  : `Background task failed: ${params.description}`,
+                  ? `Background task completed: ${description}`
+                  : `Background task failed: ${description}`,
                 false,
               )
               const { SessionAttention } = yield* Effect.promise(() => import("@/notification/attention"))
@@ -484,7 +534,7 @@ export const TaskTool = Tool.define(
 
       if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
         return {
-          title: params.description,
+          title: description,
           metadata: {
             ...metadata,
             background: true,
@@ -508,11 +558,11 @@ export const TaskTool = Tool.define(
         .start({
           id: nextSession.id,
           type: id,
-          title: params.description,
+          title: description,
           metadata,
           onPromote: Effect.all([
             ctx.metadata({
-              title: params.description,
+              title: description,
               metadata: { ...metadata, background: true, jobId: nextSession.id },
             }),
             notify(nextSession.id),
@@ -525,7 +575,7 @@ export const TaskTool = Tool.define(
 
       function backgroundResult() {
         return {
-          title: params.description,
+          title: description,
           metadata: {
             ...metadata,
             background: true,
@@ -567,7 +617,7 @@ export const TaskTool = Tool.define(
               if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
               if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
               return {
-                title: params.description,
+                title: description,
                 metadata,
                 output: renderOutput({ sessionID: nextSession.id, state: "completed", text: result?.output ?? "" }),
               }
@@ -730,9 +780,9 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: flags.experimentalBackgroundSubagents
-        ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
-        : DESCRIPTION,
+      description: [DESCRIPTION, ...(flags.experimentalBackgroundSubagents ? [BACKGROUND_DESCRIPTION] : []), CANCEL_DESCRIPTION].join(
+        "\n\n",
+      ),
       effects: "unknown",
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,

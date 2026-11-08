@@ -897,6 +897,68 @@
           ],
           "description": "Interface language and default assistant reply language. When unset, inferred from the system locale."
         },
+        "engine": {
+          "type": "object",
+          "properties": {
+            "concurrency": {
+              "type": "object",
+              "properties": {
+                "global": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Maximum concurrent model streams in this process (draft default: 24, subject to measurement)."
+                },
+                "perProvider": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Maximum concurrent model streams per provider (draft default: 12, subject to measurement)."
+                },
+                "childGlobal": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Maximum concurrent child runs in this process (draft default: 16, subject to measurement)."
+                },
+                "taskReserve": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Child-run slots reserved for the task tool inside childGlobal (draft default: 2, subject to measurement)."
+                }
+              },
+              "additionalProperties": true,
+              "description": "Draft concurrency limits for the session engine; values are provisional."
+            },
+            "cache": {
+              "type": "object",
+              "properties": {
+                "staggerSiblings": {
+                  "type": "boolean",
+                  "description": "Release sibling child runs sharing a cache group one at a time until the first reports a token (default: true)."
+                }
+              },
+              "additionalProperties": true,
+              "description": "Draft prompt-cache scheduling options; defaults are provisional."
+            },
+            "memory": {
+              "type": "object",
+              "properties": {
+                "selectTimeoutMs": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Deadline for selecting project memory before a request (draft default: 3000 ms)."
+                }
+              },
+              "additionalProperties": true,
+              "description": "Draft memory selection options; defaults are provisional."
+            }
+          },
+          "additionalProperties": true,
+          "description": "Draft session-engine limits. Defaults are provisional and subject to measurement."
+        },
         "mode": {
           "type": "object",
           "additionalProperties": {
