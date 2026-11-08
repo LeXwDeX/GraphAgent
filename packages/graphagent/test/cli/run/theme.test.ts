@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test"
 import { RGBA, ResourceContext, type CliRenderer, type TerminalColors } from "@opentui/core"
-import { RUN_THEME_FALLBACK, generateSystem, resolveRunTheme, resolveTheme } from "@/cli/cmd/run/theme"
+import { RUN_THEME_FALLBACK, generateSystem, resolveRunTheme } from "@/cli/cmd/run/theme"
+import { resolveTheme } from "@graphagent/tui/context/theme"
 
 const palette = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"] as const
 
@@ -104,6 +105,9 @@ test("keeps footer surfaces exact while scrollback stays palette matched", async
     expect(expectRgba(theme.footer.selected).toInts()).toEqual(expectRgba(exact.backgroundElement).toInts())
     expect(expectRgba(theme.footer.border).toInts()).toEqual(expectRgba(exact.border).toInts())
     expect(expectRgba(theme.footer.pane).toInts()).toEqual(expectRgba(exact.backgroundMenu).toInts())
+    expect(expectRgba(theme.footer.selectedText).toInts()).toEqual(expectRgba(exact.selectedListItemText).toInts())
+    expect(exact.textDim).toBeDefined()
+    expect(exact.statusRunning).toBeDefined()
     expect(expectRgba(theme.footer.selected).intent).toBe("rgb")
     expectIndexed(theme.block.highlight)
     expectIndexed(theme.block.warning)

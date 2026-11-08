@@ -86,12 +86,17 @@ function press(shortcut: string, text: string) {
 }
 
 function configShortcut(api: TuiPluginApi, command: string): TipShortcut {
-  return () =>
-    api.tuiConfig.keybinds
-      .get(command)
+  return () => {
+    const bindings = api.tuiConfig.keybinds.get(command)
+    const preferred =
+      command === "session.drawer.toggle" && process.env.TMUX
+        ? bindings.filter((binding) => typeof binding.key === "string" && binding.key.includes("<leader>"))
+        : bindings
+    return (preferred.length > 0 ? preferred : bindings)
       .map((binding) => api.keys.formatSequence(Array.from(api.keymap.parseKeySequence(binding.key))))
       .filter(Boolean)
       .join(", ")
+  }
 }
 
 export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
@@ -126,7 +131,7 @@ export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
     sessionPinToggle: configShortcut(props.api, "session.pin.toggle"),
     sessionQuickSwitch1: useCommandShortcut("session.quick_switch.1"),
     sessionQuickSwitch9: useCommandShortcut("session.quick_switch.9"),
-    sessionSidebarToggle: configShortcut(props.api, "session.sidebar.toggle"),
+    sessionSidebarToggle: configShortcut(props.api, "session.drawer.toggle"),
     sessionTimeline: configShortcut(props.api, "session.timeline"),
     statusView: useCommandShortcut("graphagent.status"),
     terminalSuspend: useCommandShortcut("terminal.suspend"),

@@ -67,6 +67,7 @@ import {
   COMMAND_PALETTE_COMMAND,
   GRAPHAGENT_BASE_MODE,
   GraphagentKeymapProvider,
+  hasManagedTextareaFocus,
   registerGraphagentKeymap,
   useBindings,
   useGraphagentKeymap,
@@ -113,8 +114,6 @@ const appBindingCommands = [
   "theme.switch",
   "theme.switch_mode",
   "theme.mode.lock",
-  "help.show",
-  "docs.open",
   "diff.open",
   "workspace.list",
   "app.debug",
@@ -931,6 +930,18 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       return current.current.input === ""
     },
     bindings: tuiConfig.keybinds.gather("app_exit", ["app.exit"]),
+  }))
+
+  useBindings(() => ({
+    mode: GRAPHAGENT_BASE_MODE,
+    enabled: () => {
+      if (route.data.type === "plugin" && route.data.id === "diff") return false
+      const current = promptRef.current
+      if (!current?.focused) return true
+      if (hasManagedTextareaFocus(renderer)) return false
+      return current.current.input === ""
+    },
+    bindings: tuiConfig.keybinds.gather("help", ["help.show"]),
   }))
 
   event.on("tui.toast.show", (evt, { workspace }) => {

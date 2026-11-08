@@ -13,6 +13,7 @@ import {
   type NativeResourceOwner,
   type TerminalColors,
 } from "@opentui/core"
+import type { Theme, ThemeJson } from "@graphagent/tui/context/theme"
 import type { TuiThemeCurrent } from "@graphagent/tui/plugin-api"
 import type { EntryKind } from "./types"
 
@@ -76,23 +77,8 @@ export type RunTheme = {
 }
 
 type ThemeColor = Exclude<keyof TuiThemeCurrent, "thinkingOpacity">
-type HexColor = `#${string}`
-type RefName = string
-type Variant = {
-  dark: HexColor | RefName
-  light: HexColor | RefName
-}
-type ColorValue = HexColor | RefName | Variant | RGBA | number
-type ThemeJson = {
-  defs?: Record<string, HexColor | RefName>
-  theme: Omit<Record<ThemeColor, ColorValue>, "selectedListItemText" | "backgroundMenu"> & {
-    selectedListItemText?: ColorValue
-    backgroundMenu?: ColorValue
-    thinkingOpacity?: number
-  }
-}
 
-type SharedSyntaxTheme = TuiThemeCurrent & {
+type SharedSyntaxTheme = Theme & {
   _hasSelectedListItemText: boolean
 }
 
@@ -283,58 +269,6 @@ function paletteColor(colors: TerminalColors, index: number): RGBA {
 function splashShadow(indexed: RGBA[], base: RGBA, overlay: RGBA, value: number): RGBA {
   const mixed = tint(base, overlay, value)
   return nearestIndexed(indexed, mixed)
-}
-
-export function resolveTheme(theme: ThemeJson, pick: "dark" | "light"): TuiThemeCurrent {
-  const defs = theme.defs ?? {}
-
-  const resolveColor = (value: ColorValue, chain: string[] = []): RGBA => {
-    if (value instanceof RGBA) return value
-
-    if (typeof value === "number") {
-      return RGBA.fromIndex(value, ansiToRgba(value))
-    }
-
-    if (typeof value !== "string") {
-      return resolveColor(value[pick], chain)
-    }
-
-    if (value === "transparent" || value === "none") {
-      return RGBA.fromInts(0, 0, 0, 0)
-    }
-
-    if (value.startsWith("#")) {
-      return RGBA.fromHex(value)
-    }
-
-    if (chain.includes(value)) {
-      throw new Error(`Circular color reference: ${[...chain, value].join(" -> ")}`)
-    }
-
-    const next = defs[value] ?? theme.theme[value as ThemeColor]
-    if (next === undefined) {
-      throw new Error(`Color reference "${value}" not found in defs or theme`)
-    }
-
-    return resolveColor(next, [...chain, value])
-  }
-
-  const resolved = Object.fromEntries(
-    Object.entries(theme.theme)
-      .filter(([key]) => key !== "selectedListItemText" && key !== "backgroundMenu" && key !== "thinkingOpacity")
-      .map(([key, value]) => [key, resolveColor(value as ColorValue)]),
-  ) as Partial<Record<ThemeColor, RGBA>>
-
-  return {
-    ...(resolved as Record<ThemeColor, RGBA>),
-    selectedListItemText:
-      theme.theme.selectedListItemText === undefined
-        ? resolved.background!
-        : resolveColor(theme.theme.selectedListItemText),
-    backgroundMenu:
-      theme.theme.backgroundMenu === undefined ? resolved.backgroundElement! : resolveColor(theme.theme.backgroundMenu),
-    thinkingOpacity: theme.theme.thinkingOpacity ?? 0.6,
-  }
 }
 
 function generateGrayScale(bg: RGBA, isDark: boolean, map: (rgba: RGBA) => RGBA): Record<number, RGBA> {
@@ -681,11 +615,14 @@ export async function resolveRunTheme(renderer: CliRenderer): Promise<RunTheme> 
     const pick = colors.defaultBackground
       ? mode(RGBA.fromHex(colors.defaultBackground))
       : (renderer.themeMode ?? mode(RGBA.fromHex(bg)))
-    const footerTheme = resolveTheme(generateSystem(colors, pick), pick)
+    const shared = await import("@graphagent/tui/context/theme")
+    // Use the TUI resolver so direct interactive mode receives the same
+    // optional-token fallbacks as the full TUI.
+    const footerTheme = shared.resolveTheme(generateSystem(colors, pick), pick)
     const indexed = indexedPalette(colors, 256)
     const scrollbackTheme = quantizeTheme(footerTheme, indexed)
-    const shared = await import("@graphagent/tui/context/theme")
     const syntaxTheme: SharedSyntaxTheme = {
+      ...footerTheme,
       ...scrollbackTheme,
       _hasSelectedListItemText: true,
     }

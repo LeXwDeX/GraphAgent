@@ -88,7 +88,13 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { getRevertDiffFiles } from "../../util/revert-diff"
-import { GRAPHAGENT_BASE_MODE, useBindings, useCommandShortcut, useGraphagentKeymap } from "../../keymap"
+import {
+  EscapePriority,
+  GRAPHAGENT_BASE_MODE,
+  useBindings,
+  useCommandShortcut,
+  useGraphagentKeymap,
+} from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { isQueuedMessage, orderedBefore } from "./queued-message"
@@ -98,13 +104,12 @@ addDefaultParsers(parsers.parsers)
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
 const sessionBindingCommands = [
-  "session.rename",
   "session.timeline",
   "session.fork",
   "session.compact",
   "session.undo",
   "session.redo",
-  "session.sidebar.toggle",
+  "session.drawer.toggle",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -120,9 +125,6 @@ const sessionBindingCommands = [
   "session.copy",
   "session.export",
   "session.child.first",
-  "session.parent",
-  "session.child.next",
-  "session.child.previous",
 ] as const
 
 const sessionGlobalBindingCommands = [
@@ -645,7 +647,7 @@ export function Session() {
     },
     {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
-      value: "session.sidebar.toggle",
+      value: "session.drawer.toggle",
       category: "Session",
       run: () => {
         batch(() => {
@@ -1088,6 +1090,17 @@ export function Session() {
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
+  }))
+
+  useBindings(() => ({
+    mode: GRAPHAGENT_BASE_MODE,
+    enabled: () => !!session()?.parentID,
+    priority: EscapePriority.subagent,
+    bindings: [
+      { key: "escape", desc: "Go to parent session", group: "Session", cmd: "session.parent" },
+      { key: "left", desc: "Previous child session", group: "Session", cmd: "session.child.previous" },
+      { key: "right", desc: "Next child session", group: "Session", cmd: "session.child.next" },
+    ],
   }))
 
   useBindings(() => ({

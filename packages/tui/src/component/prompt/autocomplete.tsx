@@ -19,7 +19,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
 import type { PromptInfo } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
-import { useBindings, useCommandSlashes, useGraphagentModeStack } from "../../keymap"
+import { EscapePriority, useBindings, useCommandSlashes, useGraphagentModeStack } from "../../keymap"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
 import type { FileSystemEntry } from "@graphagent/sdk/v2"
 
@@ -585,6 +585,7 @@ export function Autocomplete(props: {
 
   useBindings(() => ({
     target: props.input,
+    priority: EscapePriority.autocomplete,
     enabled: () => Boolean(store.visible),
     commands: [
       {

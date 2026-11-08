@@ -11,6 +11,7 @@ import dracula from "./assets/dracula.json" with { type: "json" }
 import everforest from "./assets/everforest.json" with { type: "json" }
 import flexoki from "./assets/flexoki.json" with { type: "json" }
 import github from "./assets/github.json" with { type: "json" }
+import graphagent from "./assets/graphagent.json" with { type: "json" }
 import gruvbox from "./assets/gruvbox.json" with { type: "json" }
 import kanagawa from "./assets/kanagawa.json" with { type: "json" }
 import lucentOrng from "./assets/lucent-orng.json" with { type: "json" }
@@ -21,7 +22,6 @@ import monokai from "./assets/monokai.json" with { type: "json" }
 import nightowl from "./assets/nightowl.json" with { type: "json" }
 import nord from "./assets/nord.json" with { type: "json" }
 import onedark from "./assets/one-dark.json" with { type: "json" }
-import opencode from "./assets/opencode.json" with { type: "json" }
 import orng from "./assets/orng.json" with { type: "json" }
 import osakaJade from "./assets/osaka-jade.json" with { type: "json" }
 import palenight from "./assets/palenight.json" with { type: "json" }
@@ -43,14 +43,24 @@ export type Theme = {
   readonly info: RGBA
   readonly text: RGBA
   readonly textMuted: RGBA
+  readonly textDim: RGBA
   readonly selectedListItemText: RGBA
   readonly background: RGBA
   readonly backgroundPanel: RGBA
   readonly backgroundElement: RGBA
   readonly backgroundMenu: RGBA
+  readonly backgroundSelected: RGBA
+  readonly backgroundUser: RGBA
   readonly border: RGBA
   readonly borderActive: RGBA
   readonly borderSubtle: RGBA
+  readonly borderWarning: RGBA
+  readonly logoFace: RGBA
+  readonly logoAccent: RGBA
+  readonly logoShadow: RGBA
+  readonly statusRunning: RGBA
+  readonly statusQueued: RGBA
+  readonly statusPaused: RGBA
   readonly diffAdded: RGBA
   readonly diffRemoved: RGBA
   readonly diffContext: RGBA
@@ -117,12 +127,35 @@ type Variant = {
   light: HexColor | RefName
 }
 type ColorValue = HexColor | RefName | Variant | RGBA
+type OptionalThemeColor =
+  | "selectedListItemText"
+  | "backgroundMenu"
+  | "textDim"
+  | "backgroundSelected"
+  | "backgroundUser"
+  | "borderWarning"
+  | "logoFace"
+  | "logoAccent"
+  | "logoShadow"
+  | "statusRunning"
+  | "statusQueued"
+  | "statusPaused"
 export type ThemeJson = {
   $schema?: string
   defs?: Record<string, HexColor | RefName>
-  theme: Omit<Record<ThemeColor, ColorValue>, "selectedListItemText" | "backgroundMenu"> & {
+  theme: Omit<Record<ThemeColor, ColorValue>, OptionalThemeColor> & {
     selectedListItemText?: ColorValue
     backgroundMenu?: ColorValue
+    textDim?: ColorValue
+    backgroundSelected?: ColorValue
+    backgroundUser?: ColorValue
+    borderWarning?: ColorValue
+    logoFace?: ColorValue
+    logoAccent?: ColorValue
+    logoShadow?: ColorValue
+    statusRunning?: ColorValue
+    statusQueued?: ColorValue
+    statusPaused?: ColorValue
     thinkingOpacity?: number
   }
 }
@@ -139,6 +172,7 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   everforest,
   flexoki,
   github,
+  graphagent,
   gruvbox,
   kanagawa,
   material,
@@ -149,7 +183,6 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   nord,
   ["one-dark"]: onedark,
   ["osaka-jade"]: osakaJade,
-  opencode,
   orng,
   ["lucent-orng"]: lucentOrng,
   palenight,
@@ -287,6 +320,19 @@ export function resolveTheme(theme: ThemeJson, mode: "dark" | "light") {
   } else {
     resolved.backgroundMenu = resolved.backgroundElement
   }
+
+  // New tokens are optional in theme files. Derive the fallbacks from colors
+  // that every theme defines, so existing themes keep working unchanged.
+  resolved.textDim ??= tint(resolved.textMuted!, resolved.background!, 0.5)
+  resolved.backgroundSelected ??= tint(resolved.backgroundPanel!, resolved.primary!, 0.12)
+  resolved.backgroundUser ??= resolved.backgroundElement!
+  resolved.borderWarning ??= tint(resolved.border!, resolved.warning!, 0.4)
+  resolved.logoFace ??= resolved.textMuted!
+  resolved.logoAccent ??= resolved.primary!
+  resolved.logoShadow ??= tint(resolved.background!, resolved.textMuted!, 0.25)
+  resolved.statusRunning ??= resolved.primary!
+  resolved.statusQueued ??= resolved.textDim!
+  resolved.statusPaused ??= resolved.warning!
 
   // Handle thinkingOpacity - optional with default of 0.6
   const thinkingOpacity = theme.theme.thinkingOpacity ?? 0.6

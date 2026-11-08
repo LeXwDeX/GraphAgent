@@ -31,6 +31,9 @@ export const Info = Schema.Struct({
     info: Color,
     text: Color,
     textMuted: Color,
+    textDim: Schema.optional(Color).annotate({
+      description: "Weakest text (hints, separators, queued); defaults to a 50% tint of textMuted over background",
+    }),
     selectedListItemText: Schema.optional(Color).annotate({
       description: "Foreground for the selected list item; defaults to the background color",
     }),
@@ -40,9 +43,36 @@ export const Info = Schema.Struct({
     backgroundMenu: Schema.optional(Color).annotate({
       description: "Menu background; defaults to backgroundElement",
     }),
+    backgroundSelected: Schema.optional(Color).annotate({
+      description: "Selected list/panel row; defaults to a 12% tint of primary over backgroundPanel",
+    }),
+    backgroundUser: Schema.optional(Color).annotate({
+      description: "User message block background; defaults to backgroundElement",
+    }),
     border: Color,
     borderActive: Color,
     borderSubtle: Color,
+    borderWarning: Schema.optional(Color).annotate({
+      description: "Warning panel border; defaults to a 40% tint of warning over border",
+    }),
+    logoFace: Schema.optional(Color).annotate({
+      description: "GraphAgent logo GRAPH face; defaults to textMuted",
+    }),
+    logoAccent: Schema.optional(Color).annotate({
+      description: "GraphAgent logo AGENT face; defaults to primary",
+    }),
+    logoShadow: Schema.optional(Color).annotate({
+      description: "GraphAgent logo outline shadow; defaults to a 25% tint of textMuted over background",
+    }),
+    statusRunning: Schema.optional(Color).annotate({
+      description: "Running DAG segments and spinners; defaults to primary",
+    }),
+    statusQueued: Schema.optional(Color).annotate({
+      description: "Queued or skipped states; defaults to textDim",
+    }),
+    statusPaused: Schema.optional(Color).annotate({
+      description: "Paused or waiting states; defaults to warning",
+    }),
     diffAdded: Color,
     diffRemoved: Color,
     diffContext: Color,
