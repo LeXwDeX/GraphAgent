@@ -285,8 +285,6 @@ import type {
   V2ProviderListResponses,
   V2ReferenceListErrors,
   V2ReferenceListResponses,
-  V2SkillListErrors,
-  V2SkillListResponses,
   VcsApplyErrors,
   VcsApplyResponses,
   VcsDiffErrors,
@@ -5116,30 +5114,6 @@ export class Command2 extends HeyApiClient {
   }
 }
 
-export class Skill extends HeyApiClient {
-  /**
-   * List skills
-   *
-   * Retrieve currently registered skills.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2SkillListResponses, V2SkillListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2SkillListResponses, V2SkillListErrors, ThrowOnError>({
-      url: "/api/skill",
-      ...options,
-      ...params,
-    })
-  }
-}
-
 export class Event2 extends HeyApiClient {
   /**
    * Subscribe to events
@@ -5340,11 +5314,6 @@ export class V2 extends HeyApiClient {
   private _command?: Command2
   get command(): Command2 {
     return (this._command ??= new Command2({ client: this.client }))
-  }
-
-  private _skill?: Skill
-  get skill(): Skill {
-    return (this._skill ??= new Skill({ client: this.client }))
   }
 
   private _event?: Event2

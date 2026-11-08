@@ -9,7 +9,10 @@ import { SessionPrompt } from "@/session/prompt"
 import { testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
-function commandLayer(commands: Record<string, { template: string; description?: string }> = {}) {
+function commandLayer(
+  commands: Record<string, { template: string; description?: string }> = {},
+  skills: Skill.Info[] = [],
+) {
   return Layer.mergeAll(
     Command.layer.pipe(
       Layer.provide(
@@ -24,7 +27,7 @@ function commandLayer(commands: Record<string, { template: string; description?:
       ),
       Layer.provide(
         Layer.mock(Skill.Service, {
-          all: () => Effect.succeed([]),
+          all: () => Effect.succeed(skills),
         }),
       ),
     ),
@@ -40,6 +43,18 @@ const overridden = testEffect(
       template: "Custom task:\n$ARGUMENTS",
     },
   }),
+)
+const withSkillCommands = testEffect(
+  commandLayer({}, [
+    { name: "visible-skill", description: "Visible skill.", location: "/skills/visible/SKILL.md", content: "Visible." },
+    {
+      name: "reference-only",
+      description: "Reference-only skill.",
+      location: "/skills/reference-only/SKILL.md",
+      content: "Reference only.",
+      hidden: true,
+    },
+  ]),
 )
 
 describe("legacy command registry", () => {
@@ -76,6 +91,15 @@ describe("legacy command registry", () => {
         hints: ["$ARGUMENTS"],
       })
       expect(yield* commands.get("workflow")).toBeUndefined()
+    }),
+  )
+
+  withSkillCommands.instance("registers visible skills as commands but keeps hidden skills reference-only", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+
+      expect(yield* commands.get("visible-skill")).toMatchObject({ name: "visible-skill", source: "skill" })
+      expect(yield* commands.get("reference-only")).toBeUndefined()
     }),
   )
 

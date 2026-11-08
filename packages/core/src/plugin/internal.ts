@@ -10,7 +10,6 @@ import { ConfigAgentPlugin } from "../config/plugin/agent"
 import { ConfigCommandPlugin } from "../config/plugin/command"
 import { ConfigProviderPlugin } from "../config/plugin/provider"
 import { ConfigReferencePlugin } from "../config/plugin/reference"
-import { ConfigSkillPlugin } from "../config/plugin/skill"
 import { EventV2 } from "../event"
 import { FileSystem } from "../filesystem"
 import { FSUtil } from "../fs-util"
@@ -21,13 +20,11 @@ import { ModelsDev } from "../models-dev"
 import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { Reference } from "../reference"
-import { SkillV2 } from "../skill"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { AgentPlugin } from "./agent"
 import { CommandPlugin } from "./command"
 import { ModelsDevPlugin } from "./models-dev"
 import { ProviderPlugins } from "./provider"
-import { SkillPlugin } from "./skill"
 import { VariantPlugin } from "./variant"
 
 export type Requirements =
@@ -45,7 +42,6 @@ export type Requirements =
   | ModelsDev.Service
   | Npm.Service
   | Reference.Service
-  | SkillV2.Service
 
 export interface Plugin<R = never> {
   readonly id: string
@@ -78,7 +74,6 @@ export const locationLayer = Layer.effect(
     const filesystem = yield* FileSystem.Service
     const global = yield* Global.Service
     const http = yield* HttpClient.HttpClient
-    const skill = yield* SkillV2.Service
     const reference = yield* Reference.Service
     const add = <R>(input: Plugin<R>) => {
       const loaded = {
@@ -100,7 +95,6 @@ export const locationLayer = Layer.effect(
               Effect.provideService(FileSystem.Service, filesystem),
               Effect.provideService(Global.Service, global),
               Effect.provideService(HttpClient.HttpClient, http),
-              Effect.provideService(SkillV2.Service, skill),
               Effect.provideService(Reference.Service, reference),
             ),
       }
@@ -111,11 +105,9 @@ export const locationLayer = Layer.effect(
       yield* add(ConfigReferencePlugin.Plugin)
       yield* add(AgentPlugin.Plugin)
       yield* add(CommandPlugin.Plugin)
-      yield* add(SkillPlugin.Plugin)
       yield* add(ModelsDevPlugin)
       yield* add(ConfigAgentPlugin.Plugin)
       yield* add(ConfigCommandPlugin.Plugin)
-      yield* add(ConfigSkillPlugin.Plugin)
       for (const item of ProviderPlugins) yield* add(item)
       yield* add(ConfigProviderPlugin.Plugin)
       yield* add(VariantPlugin.Plugin)

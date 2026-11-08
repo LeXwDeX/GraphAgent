@@ -19,8 +19,7 @@ import { Integration } from "@graphagent/schema/integration"
 import { LLM } from "@graphagent/schema/llm"
 import { Permission } from "@graphagent/schema/permission"
 import { Reference } from "@graphagent/schema/reference"
-import { Skill } from "@graphagent/schema/skill"
-import { AbsolutePath, DateTimeUtcFromMillis } from "@graphagent/schema/schema"
+import { DateTimeUtcFromMillis } from "@graphagent/schema/schema"
 import { ProviderV2 } from "@graphagent/core/provider"
 
 test("Core reuses the canonical shared schemas", async () => {
@@ -35,7 +34,6 @@ test("Core reuses the canonical shared schemas", async () => {
     corePermission,
     coreProject,
     coreReference,
-    coreSkill,
     coreV2Schema,
     coreWorkspace,
   ] = await Promise.all([
@@ -49,7 +47,6 @@ test("Core reuses the canonical shared schemas", async () => {
     import("@graphagent/core/permission"),
     import("@graphagent/core/project/schema"),
     import("@graphagent/core/reference"),
-    import("@graphagent/core/skill"),
     import("@graphagent/core/v2-schema"),
     import("@graphagent/core/workspace"),
   ])
@@ -109,11 +106,6 @@ test("Core reuses the canonical shared schemas", async () => {
     [coreReference.Source, Reference.Source],
     [SessionSchema.ID, Session.ID],
     [SessionSchema.Info, Session.Info],
-    [coreSkill.DirectorySource, Skill.DirectorySource],
-    [coreSkill.UrlSource, Skill.UrlSource],
-    [coreSkill.EmbeddedSource, Skill.EmbeddedSource],
-    [coreSkill.Source, Skill.Source],
-    [coreSkill.Info, Skill.Info],
     [coreV2Schema.DateTimeUtcFromMillis, DateTimeUtcFromMillis],
     [coreWorkspace.ID, Workspace.ID],
   ]
@@ -124,9 +116,6 @@ test("Core reuses the canonical shared schemas", async () => {
     ModelV2.Info.empty(ProviderV2.ID.make("test"), ModelV2.ID.make("model")),
   )
   expect(Provider.Info.empty(Provider.ID.make("test"))).toEqual(ProviderV2.Info.empty(ProviderV2.ID.make("test")))
-  expect(Skill.Source.key(Skill.DirectorySource.make({ type: "directory", path: AbsolutePath.make("/tmp") }))).toBe(
-    "directory:/tmp",
-  )
 })
 
 test("shared record schemas construct and decode plain objects", () => {

@@ -7,7 +7,6 @@ import { Npm } from "@graphagent/core/npm"
 import { PluginV2 } from "@graphagent/core/plugin"
 import { RepositoryCache } from "@graphagent/core/repository-cache"
 import { Ripgrep } from "@graphagent/core/ripgrep"
-import { SkillDiscovery } from "@graphagent/core/skill/discovery"
 import { Effect, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { tempLocationLayer } from "../fixture/location"
@@ -29,7 +28,6 @@ export const PluginTestLayer = Layer.mergeAll(FileSystem.locationLayer, PluginV2
         }),
       ),
       RepositoryCache.defaultLayer,
-      SkillDiscovery.defaultLayer,
       Ripgrep.defaultLayer,
       tempLocationLayer,
     ),

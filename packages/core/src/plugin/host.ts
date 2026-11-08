@@ -12,7 +12,6 @@ import { Integration } from "../integration"
 import { ModelV2 } from "../model"
 import { ProviderV2 } from "../provider"
 import { Reference } from "../reference"
-import { SkillV2 } from "../skill"
 
 export const make = Effect.fn("PluginHost.make")(function* () {
   const agents = yield* AgentV2.Service
@@ -21,7 +20,6 @@ export const make = Effect.fn("PluginHost.make")(function* () {
   const commands = yield* CommandV2.Service
   const integration = yield* Integration.Service
   const reference = yield* Reference.Service
-  const skill = yield* SkillV2.Service
 
   return {
     options: {},
@@ -211,30 +209,6 @@ export const make = Effect.fn("PluginHost.make")(function* () {
             list: draft.list,
           }),
         ),
-    },
-    skill: {
-      reload: skill.reload,
-      transform: (callback) =>
-        Effect.gen(function* () {
-          const pluginID = yield* SourceProvenance.CurrentPlugin
-          return yield* skill.transform((draft) =>
-            callback({
-              source: (source) => {
-                const decoded = Schema.decodeUnknownSync(SkillV2.Source)(source)
-                if (pluginID && pluginID !== "config-skill") {
-                  const provenance = {
-                    source: "builtin" as const,
-                    origin: pluginID + ":skill:" + SkillV2.Source.key(decoded),
-                  }
-                  SourceProvenance.setSkillSource(decoded, provenance)
-                  if (decoded.type === "embedded") SourceProvenance.setSkill(decoded.skill, provenance)
-                }
-                draft.source(decoded)
-              },
-              list: draft.list,
-            }),
-          )
-        }),
     },
   } satisfies Interface
 })

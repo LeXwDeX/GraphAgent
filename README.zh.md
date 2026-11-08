@@ -98,8 +98,8 @@ GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，�
 - `hooks.json` 从全局 opencode 配置目录和项目/worktree 的 `.opencode` 目录读取，按追加方式合并并热加载；也可以经 HTTP 按会话注册，无需工作区信任列表。
 - 各执行类型的 hook 都可以声明 `inputFormat: "claude-code"`，以 Claude Code 的工具名和参数键接收输入。这提供的是命名兼容，不是完整的行为等价。
 - Claude 的 `.claude/settings*.json` 不会自动加载：用 `/import-claude-hooks` 迁移，用 `/create-hook` 引导编写新 hook。
-- 后台等待：`asyncRewake` 命令 hook 可以盯着 CI、审查或部署，智能体继续干别的；有结论时脚本以退出码 2 结束并用一段有界摘要唤醒会话。Active Hooks 块会把这类 hook 标成 `background`。参见[后台监听配方](./packages/core/src/plugin/skill/configure-hooks.md#background-watcher-recipe)。
-- 参考：[hooks 指南](./packages/core/src/plugin/skill/configure-hooks.md)。
+- 后台等待：`asyncRewake` 命令 hook 可以盯着 CI、审查或部署，智能体继续干别的；有结论时脚本以退出码 2 结束并用一段有界摘要唤醒会话。Active Hooks 块会把这类 hook 标成 `background`。参见[后台监听配方](./packages/graphagent/src/skill/builtin/configure-hooks.md#background-watcher-recipe)。
+- 参考：[hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md)。
 
 ---
 
@@ -219,7 +219,7 @@ config:
 
 ### 3. 让智能体替你写
 
-内置的 **`create-dag-workflow`** skill 覆盖 spec 编写：工作流库作用域、文件结构、存盘 spec 必须守的规矩（不能钉死模型、`worker_type` 必须存在、模板必需变量必须给全），以及怎么验证。说一句「把这个存成可复用的工作流」，智能体会先跟你确认阶段和门禁，把文件写进你选的作用域，再真跑一次证明它能用。临时图则用 `workflow(action="draft")`：结构化图走工具参数，返回校验过的 `spec_path`，字段漂移到不了文件。
+临时图用 `workflow(action="draft")`：结构化图走工具参数，返回校验过的 `spec_path`，字段漂移到不了文件。
 
 通过 `prompt_template.id` 引用的节点 prompt 先从项目的 `.opencode/dag-prompts/<id>.md` 解析，再找全局 `<config dir>/dag-prompts/`。往那儿加一个 `.md` 就多一个模板；全局工作流建议用 `inline` prompt，否则会依赖某个仓库本地的模板。
 
@@ -238,7 +238,7 @@ config:
 | `prompt_template`  | 通过 `id` 引用模板（先项目、后全局的 `dag-prompts/`）或 `inline` 内联，支持 `{{var}}` 插值 |
 | `input_mapping`    | 把上游节点输出映射为模板变量（`"count": "node-b.output.count"`）                           |
 | `condition`        | 基于上游输出的表达式；为假则跳过节点，纯依赖它的下游级联跳过                               |
-| `output_schema`    | JSON Schema；子智能体的最终回复必须是匹配该 schema 的一个 JSON 值                         |
+| `output_schema`    | JSON Schema；子智能体的最终回复必须是匹配该 schema 的一个 JSON 值                          |
 | `required`         | 必需节点失败会使整个工作流失败                                                             |
 | `report_to_parent` | 节点到达终态时唤醒父智能体                                                                 |
 | `review`           | `design` 或 `diff` 审查阶段，带实现指纹契约（见下）                                        |
@@ -381,8 +381,7 @@ bun dev serve        # headless API 服务（端口 4096）
 - [`docs/architecture.md`](./docs/architecture.md) —— 系统总览、客户端/API 边界与源码索引
 - [`docs/功能清单.md`](./docs/功能清单.md)：功能与源码入口索引（非完整上游差异报告）
 - [`packages/graphagent/src/memory/CONTEXT.md`](./packages/graphagent/src/memory/CONTEXT.md) —— 项目 Memory 的模型与不变量
-- [hooks 指南](./packages/core/src/plugin/skill/configure-hooks.md) —— 事件、schema 与验证方法
-- [存盘工作流编写指南](./packages/core/src/plugin/skill/create-dag-workflow.md) —— `create-dag-workflow` skill 正文
+- [hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md) —— 事件、schema 与验证方法
 - [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) —— 精选工作流、可组合块与 worker prompt
 - [`AGENTS.md`](./AGENTS.md) —— 贡献与开发指南
 

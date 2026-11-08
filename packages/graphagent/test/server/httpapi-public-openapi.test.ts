@@ -64,13 +64,7 @@ describe("PublicApi OpenAPI v2 errors", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 
     expect(Object.keys(spec.components.schemas)).toEqual(
-      expect.arrayContaining([
-        "CredentialValue",
-        "IntegrationInputs",
-        "IntegrationMethod",
-        "IntegrationRef",
-        "SkillV2Source",
-      ]),
+      expect.arrayContaining(["CredentialValue", "IntegrationInputs", "IntegrationMethod", "IntegrationRef"]),
     )
   })
 

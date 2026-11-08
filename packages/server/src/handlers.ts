@@ -5,7 +5,6 @@ import { ModelHandler } from "./handlers/model"
 import { ProviderHandler } from "./handlers/provider"
 import { FileSystemHandler } from "./handlers/fs"
 import { CommandHandler } from "./handlers/command"
-import { SkillHandler } from "./handlers/skill"
 import { EventHandler } from "./handlers/event"
 import { AgentHandler } from "./handlers/agent"
 import { HealthHandler } from "./handlers/health"
@@ -26,12 +25,7 @@ export const handlers = Layer.mergeAll(
   CredentialHandler,
   FileSystemHandler,
   CommandHandler,
-  SkillHandler,
   EventHandler,
   ReferenceHandler,
   ProjectCopyHandler,
-).pipe(
-  Layer.provide(locationLayer),
-  Layer.provide(LocationServiceMap.layer),
-  Layer.provide(Credential.defaultLayer),
-)
+).pipe(Layer.provide(locationLayer), Layer.provide(LocationServiceMap.layer), Layer.provide(Credential.defaultLayer))

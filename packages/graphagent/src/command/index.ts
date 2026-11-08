@@ -184,6 +184,9 @@ export const layer = Layer.effect(
       }
 
       for (const item of yield* skill.all()) {
+        // Reference-only skills stay loadable through the skill tool but get no
+        // same-name slash command.
+        if (item.hidden) continue
         if (commands[item.name]) continue
         commands[item.name] = {
           name: item.name,

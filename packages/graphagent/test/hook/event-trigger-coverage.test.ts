@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readdirSync, readFileSync, statSync } from "fs"
 import path from "path"
 import { VALID_HOOK_EVENTS } from "@/hook/settings"
-import { ConfigureHooksDescription } from "@graphagent/core/plugin/skill"
+import { BUILTIN_SKILLS } from "@/skill/builtin"
 
 /**
  * Regression guard (hook-event-wiring D4): every event declared in the
@@ -31,12 +31,13 @@ describe("hook event trigger coverage", () => {
   test("bundled hook instructions name the supported event count", () => {
     const create = readFileSync(path.join(SRC_ROOT, "command/template/create-hook.txt"), "utf8")
     const migrate = readFileSync(path.join(SRC_ROOT, "command/template/import-claude-hooks.txt"), "utf8")
-    const skill = readFileSync(path.resolve(SRC_ROOT, "../../core/src/plugin/skill/configure-hooks.md"), "utf8")
+    const skill = readFileSync(path.join(SRC_ROOT, "skill/builtin/configure-hooks.md"), "utf8")
+    const description = BUILTIN_SKILLS.find((item) => item.name === "configure-hooks")?.description ?? ""
     expect(create).toContain(`${VALID_HOOK_EVENTS.size}-event list`)
     expect(create).toContain(`all ${VALID_HOOK_EVENTS.size} events`)
     expect(migrate).toContain(`${VALID_HOOK_EVENTS.size} events total`)
     expect(skill).toContain(`Events (${VALID_HOOK_EVENTS.size} total)`)
-    expect(ConfigureHooksDescription).toContain(`the ${VALID_HOOK_EVENTS.size} recognized events`)
+    expect(description).toContain(`the ${VALID_HOOK_EVENTS.size} recognized events`)
     for (const event of VALID_HOOK_EVENTS) {
       expect(create).toContain(event)
       expect(skill).toContain(event)

@@ -2066,6 +2066,9 @@
                       "content": {
                         "type": "string"
                       },
+                      "hidden": {
+                        "type": "boolean"
+                      },
                       "hooks": {},
                       "hookOrigin": {
                         "type": "string"
@@ -11181,87 +11184,6 @@
         ]
       }
     },
-    "/api/skill": {
-      "get": {
-        "tags": ["skills"],
-        "operationId": "v2.skill.list",
-        "parameters": [
-          {
-            "name": "location",
-            "in": "query",
-            "schema": {
-              "type": "object",
-              "properties": {
-                "directory": {
-                  "type": "string"
-                },
-                "workspace": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            },
-            "required": false,
-            "style": "deepObject",
-            "explode": true
-          }
-        ],
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "location": {
-                      "$ref": "#/components/schemas/LocationInfo"
-                    },
-                    "data": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/SkillV2Info"
-                      }
-                    }
-                  },
-                  "required": ["location", "data"],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestError"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "UnauthorizedError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedError"
-                }
-              }
-            }
-          }
-        },
-        "description": "Retrieve currently registered skills.",
-        "summary": "List skills",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.v2.skill.list({\n  ...\n})"
-          }
-        ]
-      }
-    },
     "/api/event": {
       "get": {
         "tags": ["events"],
@@ -19040,86 +18962,6 @@
         "required": ["id", "name"],
         "additionalProperties": false
       },
-      "SkillV2Source": {
-        "anyOf": [
-          {
-            "$ref": "#/components/schemas/SkillV2DirectorySource"
-          },
-          {
-            "$ref": "#/components/schemas/SkillV2UrlSource"
-          },
-          {
-            "$ref": "#/components/schemas/SkillV2EmbeddedSource"
-          }
-        ]
-      },
-      "SkillV2EmbeddedSource": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["embedded"]
-          },
-          "skill": {
-            "$ref": "#/components/schemas/SkillV2Info"
-          }
-        },
-        "required": ["type", "skill"],
-        "additionalProperties": false
-      },
-      "SkillV2Info": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "slash": {
-            "type": "boolean"
-          },
-          "location": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "hooks": {
-            "type": "object"
-          }
-        },
-        "required": ["name", "location", "content"],
-        "additionalProperties": false
-      },
-      "SkillV2UrlSource": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["url"]
-          },
-          "url": {
-            "type": "string"
-          }
-        },
-        "required": ["type", "url"],
-        "additionalProperties": false
-      },
-      "SkillV2DirectorySource": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["directory"]
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": ["type", "path"],
-        "additionalProperties": false
-      },
       "IntegrationEnvMethod": {
         "type": "object",
         "properties": {
@@ -26433,10 +26275,6 @@
     {
       "name": "commands",
       "description": "Experimental command routes."
-    },
-    {
-      "name": "skills",
-      "description": "Experimental skill routes."
     },
     {
       "name": "events",
