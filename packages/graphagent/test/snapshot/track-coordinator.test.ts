@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, type Scope } from "effect"
+import { Deferred, Effect, Exit, Fiber, Option, Scope } from "effect"
 import { TrackCoordinator } from "../../src/snapshot/track-coordinator"
 
 const scoped = <A, E>(program: Effect.Effect<A, E, Scope.Scope>) => Effect.runPromise(Effect.scoped(program))
@@ -124,4 +124,29 @@ test("interrupting a waiter does not cancel its batch", async () => {
   )
 
   expect(result).toEqual({ second: 2, runs: 2 })
+})
+
+test("closing the state scope fails waiting requests instead of stranding them", async () => {
+  const exit = await Effect.runPromise(
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const started = yield* Deferred.make<void>()
+      const coordinator = yield* TrackCoordinator.make(() =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          return yield* Effect.never
+        }),
+      ).pipe(Effect.provideService(Scope.Scope, scope))
+
+      const waiter = yield* coordinator.track().pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      yield* Scope.close(scope, Exit.void)
+
+      return yield* Fiber.await(waiter).pipe(Effect.timeoutOption("2 seconds"))
+    }),
+  )
+
+  expect(Option.isSome(exit)).toBe(true)
+  if (Option.isNone(exit)) return
+  expect(Exit.isFailure(exit.value)).toBe(true)
 })
