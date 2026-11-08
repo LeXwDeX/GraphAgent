@@ -91,6 +91,7 @@ export async function runDagCoreCoverageGate() {
         { file: "../core/src/dag/projector.ts", lines: 98, functions: 95 },
         { file: "../core/src/dag/store.ts", lines: 85, functions: 80 },
         { file: "src/dag/dag.ts", lines: 98, functions: 95 },
+        { file: "src/dag/control.ts", lines: 90, functions: 85 },
         { file: "src/dag/runtime/loop.ts", lines: 90, functions: 88 },
         { file: "src/dag/runtime/recovery.ts", lines: 95, functions: 75 },
         { file: "src/dag/runtime/spawn.ts", lines: 90, functions: 70 },
