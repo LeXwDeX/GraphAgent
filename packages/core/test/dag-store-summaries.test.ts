@@ -135,4 +135,19 @@ describe("DagStore.getWorkflowSummaries (SQL aggregation)", () => {
       }).pipe(Effect.provide(storeLayer()), Effect.scoped),
     )
   })
+
+  test("listSummariesByParent returns the same parent-scoped aggregation", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* DagStore.Service
+        yield* seed()
+
+        const summaries = yield* store.listSummariesByParent("ses_parent")
+        expect(summaries).toEqual(yield* store.getWorkflowSummaries("ses_parent"))
+        expect(summaries.map((summary) => summary.id)).toEqual(["wf-mixed", "wf-empty"])
+        expect(summaries[0].abortedNodes).toBe(1)
+        expect(yield* store.listSummariesByParent("ses_missing")).toEqual([])
+      }).pipe(Effect.provide(storeLayer()), Effect.scoped),
+    )
+  })
 })
