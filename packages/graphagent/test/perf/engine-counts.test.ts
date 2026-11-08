@@ -38,21 +38,13 @@ const WRITE = process.env.PERF_WRITE_BASELINE === "1"
 // difference (S1/S2/S7 assert 64 bytes); across processes only the counts,
 // steps and request shapes are comparable.
 const BYTES: ReadonlyArray<CounterKey> = ["json.parseBytes", "json.encodeBytes", "sha256Bytes"]
-// S6 streams hundreds of preview appends, so the same #523 real-millisecond
-// dedup applies: grouping changes in three-statement units with machine speed
-// (observed 3780 vs 3783 across runners), while the scenario test still proves
-// the two in-process passes are identical.
-const S6_VOLATILE: ReadonlyArray<CounterKey> = [
-  "json.parseBytes",
-  "json.encodeBytes",
-  "sha256Bytes",
-  "sql.read",
-  "sql.write",
-]
-// S4's #523 dedup drops the repeated tool-part appends that land in the same
-// real millisecond, which moves reads and writes together in three-statement
-// units; the scenario test states the bound.
-const S4_VOLATILE: ReadonlyArray<CounterKey> = [
+// The #523 dedup gate drops appends that repeat the latest event's type and
+// payload hash. Same-millisecond collisions make the drop count depend on
+// machine speed, so the SQL book moves in three-statement units (S6 observed
+// 3780 vs 3783 across runners). S4's repeated tool-part updates, S6's preview
+// stream and S7's hooked read all reach the gate; their scenario tests assert
+// the accounting instead of an exact value.
+const GATE_VOLATILE: ReadonlyArray<CounterKey> = [
   "json.parseBytes",
   "json.encodeBytes",
   "sha256Bytes",
@@ -133,7 +125,7 @@ function register<A extends ScenarioActual, R>(
 register("S1", s1Scenario(), BYTES)
 register("S2", s2Scenario(), BYTES)
 register("S3", s3Scenario(), BYTES)
-register("S4", s4Scenario(), S4_VOLATILE)
+register("S4", s4Scenario(), GATE_VOLATILE)
 register("S5", s5Scenario(), CONCURRENCY)
-register("S6", s6Scenario(), S6_VOLATILE)
-register("S7", s7Scenario(), BYTES)
+register("S6", s6Scenario(), GATE_VOLATILE)
+register("S7", s7Scenario(), GATE_VOLATILE)

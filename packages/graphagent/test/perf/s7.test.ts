@@ -1,14 +1,11 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import type { Counters } from "../lib/engine-probe"
 import { testEffect } from "../lib/effect"
+import { expectDeterministicPasses } from "./determinism"
 import { MESSAGES, s7Scenario } from "./scenarios/s7"
 
 const scenario = s7Scenario()
 const it = testEffect(scenario.layer)
-
-const withoutBytes = (counts: Counters) =>
-  Object.fromEntries(Object.entries(counts).filter(([key]) => key !== "json.encodeBytes" && key !== "sha256Bytes"))
 
 describe("S7 S2 history with PreToolUse/PostToolUse/Stop hooks", () => {
   it.instance(
@@ -30,10 +27,9 @@ describe("S7 S2 history with PreToolUse/PostToolUse/Stop hooks", () => {
         expect(result.first.counts["convert.messages"]).toBeGreaterThan(MESSAGES)
 
         expect(result.audit.map((entry) => entry.event)).toEqual(["PreToolUse", "PostToolUse", "Stop"])
-        expect(withoutBytes(result.counts)).toEqual(withoutBytes(result.first.counts))
-        expect(
-          Math.abs(result.counts["json.encodeBytes"] - result.first.counts["json.encodeBytes"]),
-        ).toBeLessThanOrEqual(64)
+        // The hooked read reaches the same #523 real-time dedup as S4, so the
+        // SQL book is compared by accounting and everything else exactly.
+        expectDeterministicPasses(result.counts, result.first.counts)
       }),
     scenario.instance,
     { timeout: scenario.timeout },
