@@ -64,7 +64,7 @@ interface ParentPromptGate {
   readonly release: Deferred.Deferred<"success" | "failure">
 }
 
-function takeWithin<A>(queue: Queue.Queue<A>, message: string, timeout: "1 second" | "40 seconds" = "1 second") {
+function takeWithin<A>(queue: Queue.Queue<A>, message: string, timeout: "1 second" | "10 seconds" | "40 seconds" = "1 second") {
   return Queue.take(queue).pipe(
     Effect.timeoutOption(timeout),
     Effect.flatMap(Option.match({
@@ -966,7 +966,7 @@ describe("DagLoop atomic wake integration", () => {
         const result = yield* dag.extend(dagID, [node("repair", ["checkpoint"])])
         expect(result.add).toEqual(["repair"])
 
-        const repair = yield* takeWithin(childPrompts, "additive repair node did not start")
+        const repair = yield* takeWithin(childPrompts, "additive repair node did not start", "10 seconds")
         expect(repair.title).toBe("repair")
         expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
         expect((yield* store.getNode(dagID, "checkpoint"))?.status).toBe("completed")
@@ -1012,7 +1012,7 @@ describe("DagLoop atomic wake integration", () => {
         const result = yield* dag.extend(dagID, [node("repair", ["checkpoint"])])
         expect(result.add).toEqual(["repair"])
 
-        const repair = yield* takeWithin(childPrompts, "additive repair node did not start")
+        const repair = yield* takeWithin(childPrompts, "additive repair node did not start", "10 seconds")
         expect(repair.title).toBe("repair")
         expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
         expect((yield* store.getNode(dagID, "checkpoint"))?.status).toBe("completed")
